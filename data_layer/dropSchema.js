@@ -1,12 +1,13 @@
 const fs = require('fs');
-const db_root = '../hdb';
-const base_path = db_root + '/schema/';
+var settings = require('settings');
+const base_path =settings.HDB_ROOT +  '/hdb/schema/';
+
 const validate = require('validate.js');
 
 
 
 
-function dropSchema(drop_schema_object, callback) {
+module.exports = function dropSchema(drop_schema_object, callback) {
 
     var constraints = {
         schema : {
@@ -72,9 +73,6 @@ function dropSchema(drop_schema_object, callback) {
     deleteSchemaStructure()
 
 
-}
+};
 
-dropSchema({schema:"test"}, function (err, result) {
-    console.log(err);
-    console.log(result);
-});
+

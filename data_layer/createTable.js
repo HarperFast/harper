@@ -1,9 +1,6 @@
 const fs = require('fs');
 var settings = require('settings');
-
-var PropertiesReader = require('properties-reader');
-var properties = PropertiesReader(settings.PROJECT_DIR+'/hdb.properties');
-const base_path = properties.get('hdb_root') +  '/hdb/schema/';
+const base_path =settings.HDB_ROOT +  '/hdb/schema/';
 const create_table_validation = require('../validation/createTableValidator.js');
 
 
