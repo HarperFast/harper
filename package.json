@@ -1,0 +1,16 @@
+{
+  "name": "harperdb",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "HarperDB, Inc.",
+  "license": "ISC",
+  "dependencies": {
+    "async": "^2.1.5",
+    "moment": "^2.17.1",
+    "validate.js": "^0.11.1"
+  }
+}
