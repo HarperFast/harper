@@ -38,7 +38,7 @@ module.exports = {
         var attribute_array = [];
 
         //add hash
-        attribute_array.push(this.createAttributeObject(insert_object, insert_object.hash_name));
+        attribute_array.push(this.createAttributeObject(insert_object, insert_object.hash_attribute));
 
         for (var property in insert_object.object) {
             if (insert_object.object.hasOwnProperty(property)) {
@@ -62,16 +62,30 @@ module.exports = {
         return attribute_object;
     },
 
+    checkAttributeSchema: function (attribute) {
+        var attribute_path = hdb_path + '\\' + attribute.schema + '\\' + attribute.table + '\\' + attribute.attribute_name;
+        if (!this.checkPathExists(attribute_path)) {
+            //need to write new attribute to the hdb_attribute table
+            fs.mkdirSync(attribute_path);
+        }
+    },
+
     insertObject: function (attribute_array) {
         //if attribute is new create atribute folder
         console.log(attribute_array);
         // insert record into /table/attribute/value-timestamp-hash.hdb
+        var checkPathExists = this.checkPathExists;
+        var createAttributeValueFile = this.createAttributeValueFile;
         async.each(attribute_array, function (attribute, callback) {
             //compare object attributes to known schema, if new attributes add to system.hdb_attribute table
-            this.checkAttributeSchema(attribute);
-            this.createAttributeValueFile(attribute, function (err, data) {
+            var attribute_path = hdb_path + '\\' + attribute.schema + '\\' + attribute.table + '\\' + attribute.attribute_name;
+            if (!checkPathExists(attribute_path)) {
+                //need to write new attribute to the hdb_attribute table
+                fs.mkdirSync(attribute_path);
+            }
+            createAttributeValueFile(attribute, function (err, data) {
                 if (err) {
-                    callback(err)
+                    callback(err);
                 } else {
                     //TODO mark pre - existing attribute value file for grep exclusion
                     callback();
@@ -82,19 +96,11 @@ module.exports = {
         });
     },
 
-    checkAttributeSchema: function (attribute) {
-        var attribute_path = hdb_path + '\\' + attribute.schema + '\\' + attribute.table + '\\' + attribute.attribute_name;
-        if (!this.checkPathExists(attribute_path)) {
-            //need to write new attribute to the hdb_attribute table
-            fs.mkdirSync(attribute_path);
-        }
-    },
-
     createAttributeValueFile: function (attribute, callback) {
         var attribute_path = hdb_path + '\\' + attribute.schema + '\\' + attribute.table + '\\' + attribute.attribute_name + '\\';
 
         var value_stripped = attribute.attribute_value.replace(/[^0-9a-z]/gi, '').substring(0, 206);
-        var attribute_file_name = value_stripped + '-' + new Date().getTime() + '-' + attribute.hash_value + '.hdb';
+        var attribute_file_name = attributevalue_stripped + '-' + new Date().getTime() + '-' + attribute.hash_value + '.hdb';
         fs.writeFile(attribute_path + attribute_file_name, attribute.attribute_value, function (err, data) {
             if (err) {
                 callback(err);
