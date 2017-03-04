@@ -1,7 +1,7 @@
-var createTable = require('../createTable.js');
-var createSchema = require('../createSchema.js');
-var dropTable = require('../dropTable.js');
-var dropSchema = require('../dropSchema');
+var createTable = require('../data_layer/createTable.js');
+var createSchema = require('../data_layer/createSchema.js');
+var dropTable = require('../data_layer/dropTable.js');
+var dropSchema = require('../data_layer/dropSchema');
 
 
 
