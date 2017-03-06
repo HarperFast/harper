@@ -2,6 +2,7 @@ const fs = require('fs');
 var settings = require('settings');
 const base_path =settings.HDB_ROOT +  '/hdb/schema/';
 const create_table_validation = require('../validation/createTableValidator.js');
+const insert = require('./insert.js');
 
 
 
@@ -16,6 +17,22 @@ module.exports = function createTable(create_table_object, callback){
     //need to insert record in hdb_table
     // need to insert hash into hdb_attribute
     function insertTableRecords(){
+
+        var table = {};
+        table.name = create_table_object.table;
+        table.hash_attribute = create_table_object.hash_attribute;
+        table.schema = create_table_object.schema;
+        var insertObject = {};
+        insertObject.schema = "system";
+        insertObject.table = 'hdb_table'; 
+        insertObject.hash_attribute = 'name';
+        insertObject.records = [table];
+        insert.insert(insertObject, function(err, result){
+            console.log(err);
+            console.log(result);
+        });
+
+
 
     }
 
@@ -47,8 +64,8 @@ module.exports = function createTable(create_table_object, callback){
 
     // delete this out once above insertSchemaRecords and trigger is working.
 
-    createTableStructure()
-
+    //createTableStructure()
+    insertTableRecords();
     
 
 

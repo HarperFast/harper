@@ -26,6 +26,20 @@ function createTest(){
 }
 
 
+function tableTest(){
+    var person_table_object = {};
+    person_table_object.table = 'person';
+    person_table_object.schema = 'test';
+    person_table_object.hash_attribute = 'id';
+    createTable(person_table_object, function(err, result){
+        console.log(err);
+        console.log(result);
+        return;
+
+    });
+}
+
+
 function fullTest(){
     createSchema({"schema":"test"}, function(err, result){
         console.log(err);
@@ -54,6 +68,7 @@ function fullTest(){
 
 
 //createTest();
-fullTest();
+//fullTest();
+tableTest();
 
 
