@@ -15,11 +15,9 @@ var objects = [];
 for(var x = 0; x < 10; x++){
     objects.push(
         {
-            hash_value : x + 1,
-            object: {
-                first_name: first_names[Math.floor(Math.random() * first_names.length)],
-                last_name: last_names[Math.floor(Math.random() * last_names.length)]
-            }
+            id : x + 1,
+            first_name: first_names[Math.floor(Math.random() * first_names.length)],
+            last_name: last_names[Math.floor(Math.random() * last_names.length)]
         }
     );
 }

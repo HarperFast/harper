@@ -2,9 +2,7 @@ const insert_validator = require('../validation/insertValidator.js'),
     fs = require('fs'),
     async = require('async'),
     path = require('path'),
-    settings = require('settings'),
-    hidefile = require('hidefile'),
-    glob = require('glob');
+    settings = require('settings');
 
 const hdb_path = path.join(settings.PROJECT_DIR, '/hdb/schema');
 
@@ -56,7 +54,7 @@ function checkAttributeSchema(insert_object) {
     var attributes = [insert_object.hash_attribute];
 
     insert_object.records.forEach(function(insert_object){
-        for (var property in insert_object.object) {
+        for (var property in insert_object) {
             if(attributes.indexOf(property) < 0){
                 attributes.push(property);
             }
@@ -78,8 +76,8 @@ function deconstructObject(schema, record) {
     //add hash
     attribute_array.push(createAttributeObject(schema, record, schema.hash_attribute));
 
-    for (var property in record.object) {
-        if (record.object.hasOwnProperty(property)) {
+    for (var property in record) {
+        if (record.hasOwnProperty(property)) {
             attribute_array.push(createAttributeObject(schema, record, property));
         }
     }
@@ -92,8 +90,8 @@ function createAttributeObject(schema, record, attribute_name) {
         schema: schema.schema,
         table: schema.table,
         attribute_name: attribute_name,
-        attribute_value: attribute_name === schema.hash_attribute ? record.hash_value : record.object[attribute_name],
-        hash_value: record.hash_value,
+        attribute_value: record[attribute_name],
+        hash_value: record[schema.hash_attribute],
         is_hash: attribute_name === schema.hash_attribute ? true : false
     };
 
@@ -113,6 +111,8 @@ function insertObject(attribute_array) {
 
     // insert record into /table/attribute/value-timestamp-hash.hdb
 
+    //TODO verify that object has hash attribute defined, if not throw error
+
     async.each(attribute_array, function (attribute, callback) {
         //compare object attributes to known schema, if new attributes add to system.hdb_attribute table
         var attribute_path = path.join(hdb_path, attribute.schema, attribute.table, attribute.attribute_name);
@@ -124,7 +124,6 @@ function insertObject(attribute_array) {
             if (err) {
                 callback(err);
             } else {
-                //TODO mark pre - existing attribute value file for grep exclusion
                 callback();
             }
         });
@@ -143,26 +142,10 @@ function createAttributeValueFile(attribute, callback) {
         if (err) {
             callback(err);
         } else {
-            if(!attribute.is_hash) {
-                glob('*-' + attribute.hash_value + '.hdb', {cwd: attribute_path}, function (err, d) {
-                    if (err) {
-                        console.error(err);
-                    } else {
-                        if(d.length > 0) {
-                            console.log(d.sort(sortByDate));
-                            //  d.forEach(function)
-                        }
-                    }
-                });
-            }
+
             callback(data);
 
         }
     });
 }
 
-function sortByDate(a,b) {
-    a_date = Number(a.split('-')[1]);
-    b_date = Number(b.split('-')[1]);
-    return a_date>b_date ? -1 : a<b ? 1 : 0;
-}
