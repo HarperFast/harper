@@ -19,12 +19,12 @@ module.exports = {
         }
         var table = {};
         table.name = create_table_object.table;
-        table.hash_attribute = create_table_object.hash_attribute;
         table.schema = create_table_object.schema;
+        table.schema_name = create_table_object.schema + "-" + create_table_object.table;
         var insertObject = {};
         insertObject.schema = "system";
         insertObject.table = 'hdb_table';
-        insertObject.hash_attribute = 'name';
+        insertObject.hash_attribute = 'schema_name';
         insertObject.records = [table];
         insert.insert(insertObject, function (err, result) {
             console.log(err);
