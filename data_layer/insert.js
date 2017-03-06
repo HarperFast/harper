@@ -6,11 +6,9 @@ const insert_validator = require('../validation/insertValidator.js'),
     hidefile = require('hidefile'),
     glob = require('glob');
 
-const relative_path = path.relative(__dirname, settings.PROJECT_DIR);
-const hdb_path = relative_path + '/hdb/schema';
+const hdb_path = path.join(settings.PROJECT_DIR, '/hdb/schema');
 
 module.exports = {
-
     insert: function (insert_object, callback) {
         //validate insert_object for required attributes
         var validator = insert_validator(insert_object);
@@ -20,7 +18,7 @@ module.exports = {
         }
 
         //check if schema / table directories exist
-        var table_path = hdb_path + '/' + insert_object.schema + '/' + insert_object.table;
+        var table_path = path.join(hdb_path, insert_object.schema, insert_object.table);
         if (!checkPathExists(table_path)) {
             callback('Table: ' + insert_object.schema + '.' + insert_object.table + ' does not exist');
             return;
@@ -30,12 +28,14 @@ module.exports = {
         //preprocess all record attributes
         checkAttributeSchema(insert_object);
 
-        insertRecords(insert_object);
-        callback();
+        insertRecords(insert_object, function(err, data){
+            callback();
+        });
+
     }
 };
 
-function insertRecords(insert_object){
+function insertRecords(insert_object, callback){
     var schema = {
         schema:insert_object.schema,
         table:insert_object.table,
@@ -47,7 +47,8 @@ function insertRecords(insert_object){
 
         insertObject(attribute_array);
     }, function(err){
-
+        //TODO handle errors
+        callback();
     });
 }
 
@@ -75,7 +76,7 @@ function deconstructObject(schema, record) {
     var attribute_array = [];
 
     //add hash
-    attribute_array.push(createAttributeObject(schema, schema.hash_attribute));
+    attribute_array.push(createAttributeObject(schema, record, schema.hash_attribute));
 
     for (var property in record.object) {
         if (record.object.hasOwnProperty(property)) {
@@ -100,7 +101,7 @@ function createAttributeObject(schema, record, attribute_name) {
 }
 
 function createAttributeFolder(schema, table, attribute_name) {
-    var attribute_path = hdb_path + '/' + schema + '/' + table + '/' + attribute_name;
+    var attribute_path = path.join(hdb_path, schema, table, attribute_name);
     if (!checkPathExists(attribute_path)) {
         //need to write new attribute to the hdb_attribute table
         fs.mkdirSync(attribute_path);
@@ -114,7 +115,7 @@ function insertObject(attribute_array) {
 
     async.each(attribute_array, function (attribute, callback) {
         //compare object attributes to known schema, if new attributes add to system.hdb_attribute table
-        var attribute_path = hdb_path + '/' + attribute.schema + '/' + attribute.table + '/' + attribute.attribute_name;
+        var attribute_path = path.join(hdb_path, attribute.schema, attribute.table, attribute.attribute_name);
         if (!checkPathExists(attribute_path)) {
             //need to write new attribute to the hdb_attribute table
             fs.mkdirSync(attribute_path);
@@ -133,7 +134,7 @@ function insertObject(attribute_array) {
 }
 
 function createAttributeValueFile(attribute, callback) {
-    var attribute_path = hdb_path + '/' + attribute.schema + '/' + attribute.table + '/' + attribute.attribute_name + '/';
+    var attribute_path = path.join(hdb_path, attribute.schema, attribute.table, attribute.attribute_name) + '/';
 
     var value_stripped = String(attribute.attribute_value).replace(/[^0-9a-z]/gi, '').substring(0, 206);
     var attribute_file_name = attribute.is_hash ? attribute.hash_value + '.hdb' :
