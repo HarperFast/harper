@@ -31,4 +31,5 @@ var insert_object = {
 
 insert.insert(insert_object, function(err, data){
     console.error(err);
+    console.log(data);
 });

@@ -27,7 +27,7 @@ module.exports = {
         checkAttributeSchema(insert_object);
 
         insertRecords(insert_object, function(err, data){
-            callback();
+            callback(null, 'success');
         });
 
     }
@@ -43,10 +43,17 @@ function insertRecords(insert_object, callback){
         //deconstruct object into seperate peices
         var attribute_array = deconstructObject(schema, record);
 
-        insertObject(attribute_array);
+        insertObject(attribute_array, function(err, data){
+            if(err){
+                callback(err);
+                return;
+            }
+
+            callback(null, null);
+        });
     }, function(err){
         //TODO handle errors
-        callback();
+        callback(null, null);
     });
 }
 
@@ -106,7 +113,7 @@ function createAttributeFolder(schema, table, attribute_name) {
     }
 }
 
-function insertObject(attribute_array) {
+function insertObject(attribute_array, callback) {
     //if attribute is new create atribute folder
 
     // insert record into /table/attribute/value-timestamp-hash.hdb
@@ -124,11 +131,11 @@ function insertObject(attribute_array) {
             if (err) {
                 callback(err);
             } else {
-                callback();
+                callback(null, null);
             }
         });
     }, function (err) {
-
+        callback(null, null)
     });
 }
 
@@ -143,7 +150,7 @@ function createAttributeValueFile(attribute, callback) {
             callback(err);
         } else {
 
-            callback(data);
+            callback(null, data);
 
         }
     });
