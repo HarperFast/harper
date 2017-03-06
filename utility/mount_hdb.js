@@ -6,10 +6,11 @@
  *
  */
 
-const fs = require('fs');
+const fs = require('fs'),
+    path = require('path');
 var settings = require('settings');
 
-function mount(path){
+function mount(hdb_path){
     function makeDirectory(cur_path) {
         if (fs.existsSync(cur_path)) {
             return;
@@ -19,19 +20,19 @@ function mount(path){
         return;
 
     }
-    if(fs.existsSync(path)){
-        makeDirectory(path + "hdb");
-        makeDirectory(path + "hdb/backup");
-        makeDirectory(path + "hdb/log");
-        makeDirectory(path + "hdb/config");
-        makeDirectory(path + "hdb/doc");
-        makeDirectory(path + "hdb/schema");
-        makeDirectory(path + "hdb/schema/system");
-        makeDirectory(path + "hdb/schema/system/hdb_attribute");
-        makeDirectory(path + "hdb/schema/system/hdb_schema");
-        makeDirectory(path + "hdb/schema/system/hdb_table");
-        makeDirectory(path + "hdb/schema/system/hdb_user");
-        makeDirectory(path + "hdb/schema/system/name_index");
+    if(fs.existsSync(hdb_path)){
+        makeDirectory(path.join(hdb_path, "hdb"));
+        makeDirectory(path.join(hdb_path, "hdb/backup"));
+        makeDirectory(path.join(hdb_path, "hdb/log"));
+        makeDirectory(path.join(hdb_path, "hdb/config"));
+        makeDirectory(path.join(hdb_path, "hdb/doc"));
+        makeDirectory(path.join(hdb_path, "hdb/schema"));
+        makeDirectory(path.join(hdb_path, "hdb/schema/system"));
+        makeDirectory(path.join(hdb_path, "hdb/schema/system/hdb_attribute"));
+        makeDirectory(path.join(hdb_path, "hdb/schema/system/hdb_schema"));
+        makeDirectory(path.join(hdb_path, "hdb/schema/system/hdb_table"));
+        makeDirectory(path.join(hdb_path, "hdb/schema/system/hdb_user"));
+        makeDirectory(path.join(hdb_path, "hdb/schema/system/name_index"));
     }
 
 
