@@ -10,13 +10,12 @@ const constraints = {
     hash_attribute :{
         presence : true
     },
-    hash_value: {
-        presence : true
-    },
-    object:{
+    records: {
         presence : true
     }
 };
+
 module.exports = function(insert_object) {
     return validate(insert_object, constraints);
 };
+

@@ -37,6 +37,10 @@ module.exports = {
             return;
         }
 
+        checkAttributeSchema(insert_object);
+
+
+
         //verify hash_attribute is correct for this table
 
         //deconstruct object into seperate peices
@@ -47,6 +51,26 @@ module.exports = {
         callback();
     }
 };
+
+function insertRecords(insert_object){
+    //async.each(insert_ob);
+}
+
+function checkAttributeSchema(insert_object) {
+    var attributes = [insert_object.hash_attribute];
+
+    insert_object.records.forEach(function(insert_object){
+        for (var property in insert_object.object) {
+            if(attributes.indexOf(property) < 0){
+                attributes.push(property);
+            }
+        }
+    });
+
+    attributes.forEach(function(attribute){
+        createAttributeFolder(insert_object.schema, insert_object.table, attribute);
+    });
+}
 
 function checkPathExists (path) {
     return fs.existsSync(path);
@@ -80,8 +104,8 @@ function createAttributeObject(insert_object, attribute_name) {
     return attribute_object;
 }
 
-function checkAttributeSchema(attribute) {
-    var attribute_path = hdb_path + '/' + attribute.schema + '/' + attribute.table + '/' + attribute.attribute_name;
+function createAttributeFolder(schema, table, attribute_name) {
+    var attribute_path = hdb_path + '/' + schema + '/' + table + '/' + attribute_name;
     if (!checkPathExists(attribute_path)) {
         //need to write new attribute to the hdb_attribute table
         fs.mkdirSync(attribute_path);
@@ -128,9 +152,10 @@ function createAttributeValueFile(attribute, callback) {
                     if (err) {
                         console.error(err);
                     } else {
-                        console.log(d);
-                      //  d.forEach(function)
-
+                        if(d.length > 0) {
+                            console.log(d.sort(sortByDate));
+                            //  d.forEach(function)
+                        }
                     }
                 });
             }
@@ -138,4 +163,10 @@ function createAttributeValueFile(attribute, callback) {
 
         }
     });
+}
+
+function sortByDate(a,b) {
+    a_date = Number(a.split('-')[1]);
+    b_date = Number(b.split('-')[1]);
+    return a_date>b_date ? -1 : a<b ? 1 : 0;
 }

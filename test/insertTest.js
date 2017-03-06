@@ -12,22 +12,25 @@ var insert = require('../data_layer/insert.js'),
     }
 });*/
 var objects = [];
-for(var x = 0; x < 10000; x++){
-
+for(var x = 0; x < 10; x++){
     objects.push(
         {
-            schema :  'dev',
-            table:'person',
-            hash_attribute: 'id',
-            hash_value : x+1,
-            object:{
-                first_name : first_names[Math.floor(Math.random() * first_names.length)],
+            hash_value : x + 1,
+            object: {
+                first_name: first_names[Math.floor(Math.random() * first_names.length)],
                 last_name: last_names[Math.floor(Math.random() * last_names.length)]
             }
         }
     );
 }
 
-insert.bulkInsert(objects, function(err, data){
+var insert_object = {
+    schema :  'dev',
+    table:'person',
+    hash_attribute: 'id',
+    records: objects
+};
+
+insert.insert(insert_object, function(err, data){
     console.error(err);
 });
