@@ -31,6 +31,10 @@ function mount(hdb_path){
         makeDirectory(path.join(hdb_path, "hdb/schema/system/hdb_attribute"));
         makeDirectory(path.join(hdb_path, "hdb/schema/system/hdb_schema"));
         makeDirectory(path.join(hdb_path, "hdb/schema/system/hdb_table"));
+        makeDirectory(path.join(hdb_path, "hdb/schema/system/hdb_table/schema_name"));
+        makeDirectory(path.join(hdb_path, "hdb/schema/system/hdb_table/schema"));
+        makeDirectory(path.join(hdb_path, "hdb/schema/system/hdb_table/name"));
+        makeDirectory(path.join(hdb_path, "hdb/schema/system/hdb_table/hash_attribute"));
         makeDirectory(path.join(hdb_path, "hdb/schema/system/hdb_user"));
         makeDirectory(path.join(hdb_path, "hdb/schema/system/name_index"));
     }

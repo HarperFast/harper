@@ -1,6 +1,7 @@
 const fs = require('fs');
 var settings = require('settings');
-const base_path = settings.HDB_ROOT + '/hdb/schema/';
+var path = require('path');
+const base_path =path.join(settings.HDB_ROOT, "hdb/schema/");
 const create_table_validation = require('../validation/createTableValidator.js');
 const insert = require('./insert.js');
 
@@ -20,7 +21,8 @@ module.exports = {
         var table = {};
         table.name = create_table_object.table;
         table.schema = create_table_object.schema;
-        table.schema_name = create_table_object.schema + "-" + create_table_object.table;
+        table.schema_name = create_table_object.schema + "." + create_table_object.table;
+        table.hash_attribute = create_table_object.hash_attribute;
         var insertObject = {};
         insertObject.schema = "system";
         insertObject.table = 'hdb_table';
@@ -29,6 +31,7 @@ module.exports = {
         insert.insert(insertObject, function (err, result) {
             console.log(err);
             console.log(result);
+            callback(err, result);
         });
 
 

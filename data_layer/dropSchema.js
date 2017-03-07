@@ -1,25 +1,28 @@
 const fs = require('fs');
 var settings = require('settings');
-const base_path =settings.HDB_ROOT +  '/hdb/schema/';
-
+var path = require('path');
+const base_path =path.join(settings.HDB_ROOT, "hdb/schema/");
 const validate = require('validate.js');
 
 
-
-
-module.exports = function dropSchema(drop_schema_object, callback) {
-
-    var constraints = {
-        schema : {
-            presence : true,
-            format: "[\\w\\-\\_]+",
-            exclusion: {
-                within: ["system"],
-                message: "You cannot drop the system schema!"
-            }
-
+var constraints = {
+    schema : {
+        presence : true,
+        format: "[\\w\\-\\_]+",
+        exclusion: {
+            within: ["system"],
+            message: "You cannot drop the system schema!"
         }
-    };
+
+    }
+};
+
+module.exports = {
+
+
+    dropSchema: function(drop_schema_object, callback) {
+
+
 
     var validation_error = validate(drop_schema_object, constraints);
     if(validation_error){
@@ -31,16 +34,27 @@ module.exports = function dropSchema(drop_schema_object, callback) {
     var schema = drop_schema_object.schema;
 
 
-    // need to delete schema record from hdb_schema
-    function deleteSchemaRecords() {
 
-    }
+
+    },
 
     // need to listen to https://nodejs.org/api/events.html#events_event_newlistener for the insert of a file
     // this event will  then call the code below
 
-    function deleteSchemaStructure() {
-        var deleteFolderRecursive = function (path, root) {
+   deleteSchemaStructure: function(drop_schema_object, callback) {
+
+       var validation_error = validate(drop_schema_object, constraints);
+       if(validation_error){
+           callback(validation_error, null);
+           return;
+       }
+
+
+       var schema = drop_schema_object.schema;
+
+
+
+       var deleteFolderRecursive = function (path, root) {
             if (fs.existsSync(path)) {
                 fs.readdirSync(path).forEach(function (file, index) {
                     var curPath = path + "/" + file;
@@ -68,9 +82,7 @@ module.exports = function dropSchema(drop_schema_object, callback) {
     }
 
 
-    // delete this out once above insertSchemaRecords and trigger is working.
 
-    deleteSchemaStructure()
 
 
 };
