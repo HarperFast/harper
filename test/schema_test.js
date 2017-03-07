@@ -53,7 +53,7 @@ function fullTest(callback) {
 
     createTest(function (err, result) {
         if (err) {
-            callback(err);
+            callback(err);  
 
         } else {
             dropTable({schema: result.schema, table: result.table}, function (err, result) {

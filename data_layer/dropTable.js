@@ -1,31 +1,35 @@
 const fs = require('fs');
 var settings = require('settings');
-const base_path =settings.HDB_ROOT +  '/hdb/schema/';
-
+var path = require('path');
+const base_path =path.join(settings.HDB_ROOT, "hdb/schema/");
 const validate = require('validate.js');
 
 
-
-
-module.exports = function dropTable(drop_table_object, callback) {
-
-    var constraints = {
-        schema : {
-            presence : true,
-            format: "[\\w\\-\\_]+",
-            exclusion: {
-                within: ["system"],
-                message: "You cannot alter the system schema!"
-            }
-
-        },
-
-        table : {
-            presence : true,
-            format: "[\\w\\-\\_]+",
-
+var constraints = {
+    schema : {
+        presence : true,
+        format: "[\\w\\-\\_]+",
+        exclusion: {
+            within: ["system"],
+            message: "You cannot alter the system schema!"
         }
-    };
+
+    },
+
+    table : {
+        presence : true,
+        format: "[\\w\\-\\_]+",
+
+    }
+};
+
+module.exports = {
+
+
+  dropTable:   function (drop_table_object, callback)
+ {
+
+    // need to add logic to remove files from system tables.
 
     var validation_error = validate(drop_table_object, constraints);
     if(validation_error){
@@ -38,16 +42,25 @@ module.exports = function dropTable(drop_table_object, callback) {
     var table = drop_table_object.table;
 
 
-    // need to delete schema record from hdb_schema
-    function deleteSchemaRecords() {
 
-    }
+    },
 
     // need to listen to https://nodejs.org/api/events.html#events_event_newlistener for the insert of a file
     // this event will  then call the code below
 
-    function deleteSchemaStructure() {
-        var deleteFolderRecursive = function (path, root) {
+  deleteTableStructure:   function  (drop_table_object, callback) {
+
+    var validation_error = validate(drop_table_object, constraints);
+    if(validation_error){
+        callback(validation_error, null);
+        return;
+    }
+
+
+    var schema = drop_table_object.schema;
+    var table = drop_table_object.table;
+
+    var deleteFolderRecursive = function (path, root) {
             if (fs.existsSync(path)) {
                 fs.readdirSync(path).forEach(function (file, index) {
                     var curPath = path + "/" + file;
@@ -80,9 +93,6 @@ module.exports = function dropTable(drop_table_object, callback) {
     }
 
 
-    // delete this out once above insertSchemaRecords and trigger is working.
-
-    deleteSchemaStructure()
 
 
 };

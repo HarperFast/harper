@@ -1,6 +1,7 @@
 const fs = require('fs');
 var settings = require('settings');
-const base_path = settings.HDB_ROOT + '/hdb/schema/';
+var path = require('path');
+const base_path =path.join(settings.HDB_ROOT, "hdb/schema/");
 const create_table_validation = require('../validation/createTableValidator.js');
 const insert = require('./insert.js');
 
