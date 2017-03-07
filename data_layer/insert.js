@@ -1,5 +1,5 @@
 const insert_validator = require('../validation/insertValidator.js'),
-    fs = require('fs'),
+    fs = require('graceful-fs'),
     async = require('async'),
     path = require('path'),
     settings = require('settings');
@@ -39,7 +39,9 @@ function insertRecords(insert_object, callback){
         table:insert_object.table,
         hash_attribute: insert_object.hash_attribute
     };
-    async.each(insert_object.records, function(record, callback){
+	console.log('WRITE');
+
+    async.eachLimit(insert_object.records, 100, function(record, callback){
         //deconstruct object into seperate peices
         var attribute_array = deconstructObject(schema, record);
 
@@ -48,7 +50,7 @@ function insertRecords(insert_object, callback){
                 callback(err);
                 return;
             }
-
+            //console.log(record.id + ' finished');
             callback(null, null);
         });
     }, function(err){
@@ -122,13 +124,14 @@ function insertObject(attribute_array, callback) {
 
     async.each(attribute_array, function (attribute, callback) {
         //compare object attributes to known schema, if new attributes add to system.hdb_attribute table
-        var attribute_path = path.join(hdb_path, attribute.schema, attribute.table, attribute.attribute_name);
+        /*var attribute_path = path.join(hdb_path, attribute.schema, attribute.table, attribute.attribute_name);
         if (!checkPathExists(attribute_path)) {
             //need to write new attribute to the hdb_attribute table
             fs.mkdirSync(attribute_path);
-        }
+        }*/
         createAttributeValueFile(attribute, function (err, data) {
             if (err) {
+                console.error(err);
                 callback(err);
             } else {
                 callback(null, null);
@@ -140,18 +143,16 @@ function insertObject(attribute_array, callback) {
 }
 
 function createAttributeValueFile(attribute, callback) {
-    var attribute_path = path.join(hdb_path, attribute.schema, attribute.table, attribute.attribute_name) + '/';
+    var attribute_path = path.join(hdb_path, attribute.schema, attribute.table, attribute.attribute_name);
 
     var value_stripped = String(attribute.attribute_value).replace(/[^0-9a-z]/gi, '').substring(0, 206);
     var attribute_file_name = attribute.is_hash ? attribute.hash_value + '.hdb' :
         value_stripped + '-' + new Date().getTime() + '-' + attribute.hash_value + '.hdb';
-    fs.writeFile(attribute_path + attribute_file_name, attribute.attribute_value, function (err, data) {
+    fs.writeFile(path.join(attribute_path, attribute_file_name), attribute.attribute_value, function (err, data) {
         if (err) {
             callback(err);
         } else {
-
             callback(null, data);
-
         }
     });
 }
