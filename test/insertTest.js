@@ -12,7 +12,7 @@ var insert = require('../data_layer/insert.js'),
     }
 });*/
 var objects = [];
-for(var x = 0; x < 10; x++){
+for(var x = 0; x < 100000; x++){
     objects.push(
         {
             id : x + 1,
@@ -29,6 +29,9 @@ var insert_object = {
     records: objects
 };
 
+console.log(Date.now());
 insert.insert(insert_object, function(err, data){
     console.error(err);
+    console.log(data);
+    console.log(Date.now());
 });

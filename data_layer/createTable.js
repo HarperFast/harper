@@ -20,7 +20,8 @@ module.exports = {
         var table = {};
         table.name = create_table_object.table;
         table.schema = create_table_object.schema;
-        table.schema_name = create_table_object.schema + "-" + create_table_object.table;
+        table.schema_name = create_table_object.schema + "." + create_table_object.table;
+        table.hash_attribute = create_table_object.hash_attribute;
         var insertObject = {};
         insertObject.schema = "system";
         insertObject.table = 'hdb_table';
@@ -29,6 +30,7 @@ module.exports = {
         insert.insert(insertObject, function (err, result) {
             console.log(err);
             console.log(result);
+            callback(err, result);
         });
 
 
