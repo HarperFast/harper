@@ -2,12 +2,15 @@ const insert_validator = require('../validation/insertValidator.js'),
     fs = require('graceful-fs'),
     async = require('async'),
     path = require('path'),
-    settings = require('settings');
+    settings = require('settings'),
+    moment = require('moment');
 
 const hdb_path = path.join(settings.PROJECT_DIR, '/hdb/schema');
 
 module.exports = {
     insert: function (insert_object, callback) {
+        //TODO move this all into async waterfall
+
         //validate insert_object for required attributes
         var validator = insert_validator(insert_object);
         if (validator) {
@@ -24,37 +27,42 @@ module.exports = {
         //TODO verify hash_attribute is correct for this table
 
         //preprocess all record attributes
-        checkAttributeSchema(insert_object);
+        var attributes = checkAttributeSchema(insert_object);
 
-        insertRecords(insert_object, function(err, data){
+        insertRecords(insert_object, attributes, function(err, data){
             callback(null, 'success');
         });
 
     }
 };
 
-function insertRecords(insert_object, callback){
+function insertRecords(insert_object, attributes, callback){
     var schema = {
         schema:insert_object.schema,
         table:insert_object.table,
-        hash_attribute: insert_object.hash_attribute
+        hash_attribute: insert_object.hash_attribute,
+        date: new Date().getTime(),
+        attributes:attributes
     };
-	console.log('WRITE');
+	//console.log(moment().format() + ' start deconstructing objects');
 
     async.eachLimit(insert_object.records, 100, function(record, callback){
-        //deconstruct object into seperate peices
-        var attribute_array = deconstructObject(schema, record);
-
-        insertObject(attribute_array, function(err, data){
+        async.waterfall([
+            //deconstruct object into seperate peices
+            deconstructObject.bind(null, schema, record),
+            //insert the row attribute values
+            insertObject
+        ], function(err, data){
             if(err){
                 callback(err);
                 return;
             }
-            //console.log(record.id + ' finished');
-            callback(null, null);
+
+            callback();
         });
     }, function(err){
         //TODO handle errors
+
         callback(null, null);
     });
 }
@@ -73,38 +81,36 @@ function checkAttributeSchema(insert_object) {
     attributes.forEach(function(attribute){
         createAttributeFolder(insert_object.schema, insert_object.table, attribute);
     });
+
+    return attributes;
 }
 
 function checkPathExists (path) {
     return fs.existsSync(path);
 }
 
-function deconstructObject(schema, record) {
+function deconstructObject(schema, record, callback) {
     var attribute_array = [];
 
-    //add hash
-    attribute_array.push(createAttributeObject(schema, record, schema.hash_attribute));
-
-    for (var property in record) {
-        if (record.hasOwnProperty(property)) {
-            attribute_array.push(createAttributeObject(schema, record, property));
+    schema.attributes.forEach(function(attribute){
+        if (record.hasOwnProperty(attribute)) {
+            attribute_array.push(createAttributeObject(schema, record, attribute));
         }
-    }
+    });
 
-    return attribute_array;
+    callback(null, attribute_array);
 }
 
 function createAttributeObject(schema, record, attribute_name) {
-    var attribute_object = {
-        schema: schema.schema,
-        table: schema.table,
-        attribute_name: attribute_name,
-        attribute_value: record[attribute_name],
-        hash_value: record[schema.hash_attribute],
-        is_hash: attribute_name === schema.hash_attribute ? true : false
-    };
+    var value_stripped = String(record[attribute_name]).replace(/[^0-9a-z]/gi, '').substring(0, 206);
+    var attribute_file_name = attribute_name === schema.hash_attribute ? record[schema.hash_attribute] + '.hdb' :
+       value_stripped + '-' + schema.date + '-' + record[schema.hash_attribute] + '.hdb';
+   var attribute_path = path.join(hdb_path, schema.schema, schema.table, attribute_name, attribute_file_name);
 
-    return attribute_object;
+    return {
+        path:attribute_path,
+        value:record[attribute_name]
+    };
 }
 
 function createAttributeFolder(schema, table, attribute_name) {
@@ -116,44 +122,36 @@ function createAttributeFolder(schema, table, attribute_name) {
 }
 
 function insertObject(attribute_array, callback) {
-    //if attribute is new create atribute folder
-
     // insert record into /table/attribute/value-timestamp-hash.hdb
 
     //TODO verify that object has hash attribute defined, if not throw error
-
     async.each(attribute_array, function (attribute, callback) {
-        //compare object attributes to known schema, if new attributes add to system.hdb_attribute table
-        /*var attribute_path = path.join(hdb_path, attribute.schema, attribute.table, attribute.attribute_name);
-        if (!checkPathExists(attribute_path)) {
-            //need to write new attribute to the hdb_attribute table
-            fs.mkdirSync(attribute_path);
-        }*/
+
         createAttributeValueFile(attribute, function (err, data) {
             if (err) {
-                console.error(err);
                 callback(err);
-            } else {
-                callback(null, null);
+                return;
             }
+
+            callback(null, null);
         });
     }, function (err) {
+        if(err) {
+            callback(err);
+            return;
+        }
+
         callback(null, null)
     });
 }
 
 function createAttributeValueFile(attribute, callback) {
-    var attribute_path = path.join(hdb_path, attribute.schema, attribute.table, attribute.attribute_name);
-
-    var value_stripped = String(attribute.attribute_value).replace(/[^0-9a-z]/gi, '').substring(0, 206);
-    var attribute_file_name = attribute.is_hash ? attribute.hash_value + '.hdb' :
-        value_stripped + '-' + new Date().getTime() + '-' + attribute.hash_value + '.hdb';
-    fs.writeFile(path.join(attribute_path, attribute_file_name), attribute.attribute_value, function (err, data) {
+    fs.writeFile(attribute.path, attribute.value, function (err, data) {
         if (err) {
             callback(err);
-        } else {
-            callback(null, data);
+            return;
         }
+
+        callback(null, data);
     });
 }
-

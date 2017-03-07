@@ -2,7 +2,8 @@ var insert = require('../data_layer/insert.js'),
     settings = require('settings'),
     first_names = require('./firstNames'),
     last_names = require('./lastNames'),
-    glob = require('glob');
+    glob = require('glob'),
+    moment = require('moment');
 
 /*glob('*-1.hdb', {cwd: '../hdb/schema/dev/person/first_name/', nodir:true}, function(err, data){
     if(err){
@@ -12,7 +13,7 @@ var insert = require('../data_layer/insert.js'),
     }
 });*/
 var objects = [];
-for(var x = 0; x < 20000; x++){
+for(var x = 0; x < 100000; x++){
     objects.push(
         {
             id : x + 1,
@@ -28,8 +29,7 @@ var insert_object = {
     hash_attribute: 'id',
     records: objects
 };
-
+console.log(moment().format() + ' BEGIN!');
 insert.insert(insert_object, function(err, data){
-    console.error(err);
-    console.log(data);
+    console.log(moment().format() + ' ' + data);
 });
