@@ -12,7 +12,7 @@ var insert = require('../data_layer/insert.js'),
     }
 });*/
 var objects = [];
-for(var x = 0; x < 10; x++){
+for(var x = 0; x < 20000; x++){
     objects.push(
         {
             id : x + 1,
