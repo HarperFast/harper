@@ -10,7 +10,7 @@ const hdb_path = path.join(settings.PROJECT_DIR, '/hdb/schema');
 module.exports = {
     insert: function (insert_object, callback) {
         //TODO move this all into async waterfall
-
+        console.log(insert_object.records.length + ' records to process');
         //validate insert_object for required attributes
         var validator = insert_validator(insert_object);
         if (validator) {
@@ -44,7 +44,7 @@ function insertRecords(insert_object, attributes, callback){
         date: new Date().getTime(),
         attributes:attributes
     };
-	//console.log(moment().format() + ' start deconstructing objects');
+	console.log(moment().format() + ' start deconstructing objects');
 
     async.eachLimit(insert_object.records, 100, function(record, callback){
         async.waterfall([
@@ -117,7 +117,11 @@ function createAttributeFolder(schema, table, attribute_name) {
     var attribute_path = path.join(hdb_path, schema, table, attribute_name);
     if (!checkPathExists(attribute_path)) {
         //need to write new attribute to the hdb_attribute table
-        fs.mkdirSync(attribute_path);
+        try {
+            fs.mkdirSync(attribute_path);
+        } catch(e){
+            console.log(e);
+        }
     }
 }
 
@@ -137,6 +141,7 @@ function insertObject(attribute_array, callback) {
         });
     }, function (err) {
         if(err) {
+            console.error('record ' + attribute_array + ' failed');
             callback(err);
             return;
         }
