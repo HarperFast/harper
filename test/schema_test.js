@@ -7,7 +7,7 @@ var dropSchema = require('../data_layer/dropSchema');
 function createTest(callback) {
    // var schema = "test_schema_" + JSON.stringify(Date.now());
     //var table = "test_schema_" + JSON.stringify(Date.now());
-    var schema = 'test';
+    var schema = 'dev';
     var table = 'person';
 
     createSchema.createSchema({"schema": schema}, function (err, result) {
@@ -37,7 +37,7 @@ function createTest(callback) {
 function tableTest() {
     var person_table_object = {};
     person_table_object.table = 'person';
-    person_table_object.schema = 'test';
+    person_table_object.schema = 'dev';
     person_table_object.hash_attribute = 'id';
     createTable(person_table_object, function (err, result) {
         console.log(err);
@@ -53,7 +53,7 @@ function fullTest(callback) {
 
     createTest(function (err, result) {
         if (err) {
-            callback(err);  
+            callback(err);
 
         } else {
             dropTable({schema: result.schema, table: result.table}, function (err, result) {
