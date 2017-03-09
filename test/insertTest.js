@@ -1,3 +1,5 @@
+'use strict'
+
 var insert = require('../data_layer/insert.js'),
     settings = require('settings'),
     first_names = require('./firstNames'),
@@ -8,30 +10,14 @@ var insert = require('../data_layer/insert.js'),
     os = require('os'),
     chunk = require('chunk');
 
-/*glob('*-1.hdb', {cwd: '../hdb/schema/dev/person/first_name/', nodir:true}, function(err, data){
-    if(err){
-        console.error(err);
-    } else {
-        console.log(data);
-    }
-});*/
-
-
-
-
-
-
-
-
-/*insert.insert(insert_object, function(err, data){
-    console.log(moment().format() + ' ' + data);
-});*/
-console.log('blerg');
+const record_size  = 10000;
+const schema = 'dev';
+const worker_count = 1;
 
 if (cluster.isMaster) {
-    console.log(moment().format() + ' BEGIN!');
+    console.log(moment().format() + ' ' + process.hrtime()[1] + ' BEGIN!');
     var objects = [];
-    for(var x = 0; x < 100000; x++){
+    for(var x = 0; x < record_size; x++){
         objects.push(
             {
                 id : x + 1,
@@ -42,12 +28,12 @@ if (cluster.isMaster) {
     }
 
     var insert_object = {
-        schema :  'dev',
+        schema :  schema,
         table:'person',
         hash_attribute: 'id',
         records: objects
     };
-    var cpu_count = 4;
+    var cpu_count = worker_count;
     var chunks = chunk(objects, objects.length / cpu_count);
     for (var i = 0; i < cpu_count; i += 1) {
         cluster.fork().send({objects: chunks[i]});
@@ -62,20 +48,10 @@ if (cluster.isMaster) {
             records: msg.objects
         };
         insert.insert(insert_object, function(err, data){
-            console.log(moment().format() + ' ' + data);
+            console.log(moment().format() + ' ' + process.hrtime()[1] + ' ' + data);
+            process.exit(0);
         });
     });
-    //console.log('work: ' + process.env["OBJECTS"]);
-    /*var insert_object = {
-        schema :  'dev',
-        table:'person',
-        hash_attribute: 'id',
-        records: JSON.parse(process.env["OBJECTS"])
-    };
-    insert.insert(insert_object, function(err, data){
-        console.log(moment().format() + ' ' + data);
-    });*/
-    //initializeAPIWorker();
 }
 
 

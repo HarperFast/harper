@@ -1,3 +1,5 @@
+'use strict'
+
 const insert_validator = require('../validation/insertValidator.js'),
     fs = require('graceful-fs'),
     async = require('async'),
@@ -10,7 +12,6 @@ const hdb_path = path.join(settings.PROJECT_DIR, '/hdb/schema');
 module.exports = {
     insert: function (insert_object, callback) {
         //TODO move this all into async waterfall
-        console.log(insert_object.records.length + ' records to process');
         //validate insert_object for required attributes
         var validator = insert_validator(insert_object);
         if (validator) {
@@ -44,7 +45,6 @@ function insertRecords(insert_object, attributes, callback){
         date: new Date().getTime(),
         attributes:attributes
     };
-	console.log(moment().format() + ' start deconstructing objects');
 
     async.eachLimit(insert_object.records, 100, function(record, callback){
         async.waterfall([
@@ -109,7 +109,8 @@ function createAttributeObject(schema, record, attribute_name) {
 
     return {
         path:attribute_path,
-        value:record[attribute_name]
+        value:record[attribute_name],
+        is_hash:attribute_name === schema.hash_attribute
     };
 }
 
@@ -141,7 +142,7 @@ function insertObject(attribute_array, callback) {
         });
     }, function (err) {
         if(err) {
-            console.error('record ' + attribute_array + ' failed');
+            console.error('record ' + attribute_array + ' failed due to: ' + err);
             callback(err);
             return;
         }
@@ -151,9 +152,13 @@ function insertObject(attribute_array, callback) {
 }
 
 function createAttributeValueFile(attribute, callback) {
-    fs.writeFile(attribute.path, attribute.value, function (err, data) {
+    fs.writeFile(attribute.path, attribute.value, {flag:'wx'}, function (err, data) {
         if (err) {
-            callback(err);
+            if(err.code === 'EEXIST'){
+                callback();
+            } else {
+                callback(err);
+            }
             return;
         }
 
