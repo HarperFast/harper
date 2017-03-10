@@ -4,16 +4,14 @@ var insert = require('../data_layer/insert.js'),
     settings = require('settings'),
     first_names = require('./firstNames'),
     last_names = require('./lastNames'),
-    glob = require('glob'),
     moment = require('moment'),
     cluster = require('cluster'),
     os = require('os'),
     chunk = require('chunk');
 
-const record_size  = 10000;
+const record_size  = 1000;
 const schema = 'dev';
 const worker_count = 1;
-
 if (cluster.isMaster) {
     console.log(moment().format() + ' ' + process.hrtime()[1] + ' BEGIN!');
     var objects = [];
@@ -47,12 +45,15 @@ if (cluster.isMaster) {
             hash_attribute: 'id',
             records: msg.objects
         };
+        var start = process.hrtime();
         insert.insert(insert_object, function(err, data){
-            console.log(moment().format() + ' ' + process.hrtime()[1] + ' ' + data);
+            var diff = process.hrtime(start);
+            console.log(`inserting ${insert_object.records.length} records took ${(diff[0] * 1e9 + diff[1]) / 1e9} seconds`);
             process.exit(0);
         });
     });
 }
+
 
 
 
