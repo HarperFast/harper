@@ -1,29 +1,26 @@
-var createTable = require('../data_layer/createTable.js');
-var createSchema = require('../data_layer/createSchema.js');
-var dropTable = require('../data_layer/dropTable.js');
-var dropSchema = require('../data_layer/dropSchema');
+var schema = require('../data_layer/schema.js');
 
 
 function createTest(callback) {
    // var schema = "test_schema_" + JSON.stringify(Date.now());
     //var table = "test_schema_" + JSON.stringify(Date.now());
-    var schema = 'dev';
+    var schema_value = 'dev';
     var table = 'person';
 
-    createSchema.createSchema({"schema": schema}, function (err, result) {
+    schema.createSchema({"schema": schema_value}, function (err, result) {
         console.log(err);
         console.log(result);
         var person_table_object = {};
         person_table_object.table = table;
-        person_table_object.schema = schema;
+        person_table_object.schema = schema_value;
         person_table_object.hash_attribute = 'id';
-        createTable.insertTable(person_table_object, function (err, result) {
+        schema.insertTable(person_table_object, function (err, result) {
             console.log(err);
             console.log(result);
             if (err) {
                 callback(err);
             } else {
-                callback(null, {"schema": schema, "table": table});
+                callback(null, {"schema": schema_value, "table": table});
             }
 
 
@@ -39,7 +36,7 @@ function tableTest() {
     person_table_object.table = 'person';
     person_table_object.schema = 'dev';
     person_table_object.hash_attribute = 'id';
-    createTable(person_table_object, function (err, result) {
+    schema(person_table_object, function (err, result) {
         console.log(err);
         console.log(result);
         return;
@@ -56,12 +53,12 @@ function fullTest(callback) {
             callback(err);
 
         } else {
-            dropTable({schema: result.schema, table: result.table}, function (err, result) {
+            schema.dropTable({schema: result.schema, table: result.table}, function (err, result) {
                 if (err) {
                     callback(err);
                 } else {
 
-                    dropSchema({schema: result.table}, function (err, result) {
+                    schema.dropSchema({schema: result.table}, function (err, result) {
                         if (err) {
                             callback(err);
                         } else {
@@ -80,7 +77,7 @@ function fullTest(callback) {
     });
 }
 
-    createTest(function (err, result) {
+    fullTest(function (err, result) {
         console.error(err);
         console.log(result);
         return;
