@@ -18,26 +18,25 @@ console.time('whole test');
 function searchByHash(search_object, callback) {
 
 
-    var validation_error =search_validator(search_object);
+    var validation_error = search_validator(search_object);
     if (validation_error) {
         callback(validation_error, null);
         return;
     }
 
 
-
-    var hash_path =  path.join(base_path,
+    var hash_path = path.join(base_path,
         search_object.schema + '/' + search_object.table + '/' + search_object.hash_attribute + '/');
 
-    fs.readFile(hash_path + search_object.hash_value + '.hdb', 'utf8', function(err, data){
-         if(err){
+    fs.readFile(hash_path + search_object.hash_value + '.hdb', 'utf8', function (err, data) {
+        if (err) {
             handleError();
             return;
-       }
-       var object = {};
-       object[search_object.hash_attribute] = data;
+        }
+        var object = {};
+        object[search_object.hash_attribute] = data;
 
-       var base_attr_path = path.join(base_path,
+        var base_attr_path = path.join(base_path,
             search_object.schema + '/' + search_object.table + '/');
 
         console.time('asyncStart');
@@ -50,35 +49,33 @@ function searchByHash(search_object, callback) {
                 }
 
 
-
-
                 var attr_path = base_attr_path + attribute;
 
 
-
-
-                console.time(attribute +' find command');
+                console.time(attribute + ' find command');
                 console.log('cd  ' + attr_path + '; find ./ -name \'*-' + search_object.hash_value + '.hdb\'')
                 // by using cd to get to the directory instead of providing the path as part of the find command the overall time drops by half for the find.
 
-                exec('cd  ' + attr_path + '; find . -name \'*-' + search_object.hash_value + '.hdb\'', function (error, stdout, stderr) {
-                    console.timeEnd(attribute +' find command');
-                     if (error) {
+                exec('cd  ' + attr_path + '; find . -name \'*-' + search_object.hash_value + '.hdb\';', function (error, stdout, stderr) {
+                    console.timeEnd(attribute + ' find command');
+                    if (error) {
                         caller(error);
                         return;
                     }
 
-                        fs.readFile(path.join(attr_path,  stdout.replace('\n', '').replace('.//', '')), 'utf8', function(err, data){
-                            object[attribute] = data;
-                            caller();
-                        });
+                    var results = stdout.split('./').join('').split('\n');
+                    results.sort(sortByDate);
 
+                    fs.readFile(path.join(attr_path, results[0]), 'utf8', function (err, data) {
+                        object[attribute] = data;
+                        caller();
+                    });
 
 
                 });
             },
             function (err, data) {
-                if(err){
+                if (err) {
                     callback(err, null);
                     return;
                 }
@@ -90,7 +87,7 @@ function searchByHash(search_object, callback) {
 
     });
 
-    function handleError(){
+    function handleError() {
 
         if (!fs.existsSync(base_path + search_object.schema)) {
             callback("schema does not exist");
@@ -115,10 +112,14 @@ function searchByHash(search_object, callback) {
     }
 
 
-
-
 }
 
+
+function sortByDate(a, b) {
+    a_date = Number(a.split('-')[1]);
+    b_date = Number(b.split('-')[1]);
+    return a_date > b_date ? -1 : a < b ? 1 : 0;
+}
 
 
 var search_obj = {};
@@ -126,19 +127,15 @@ var search_obj = {};
 search_obj.schema = 'dev';
 search_obj.table = 'person';
 search_obj.hash_attribute = 'id';
-search_obj.hash_value = '45';
+search_obj.hash_value = '1';
 search_obj.get_attributes = ['first_name', 'last_name']
 
 searchByHash(search_obj, function (err, result) {
 
-    if(err)
+    if (err)
         console.error(err);
     console.log(result);
     console.timeEnd('whole test');
-
-
-
-
 
 
 })
