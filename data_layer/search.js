@@ -55,16 +55,13 @@ function searchByHash(search_object, callback) {
                 var attr_path = base_attr_path + attribute;
 
 
-                if (!fs.existsSync(attr_path)) {
-                    caller('attribute does not exist');
-                    return;
-                }
+
 
                 console.time(attribute +' find command');
-                console.log('cd  ' + attr_path + '; find ./ -iname \'*-' + search_object.hash_value + '.hdb\'')
+                console.log('cd  ' + attr_path + '; find ./ -name \'*-' + search_object.hash_value + '.hdb\'')
                 // by using cd to get to the directory instead of providing the path as part of the find command the overall time drops by half for the find.
 
-                exec('cd  ' + attr_path + '; find ./ -iname \'*-' + search_object.hash_value + '.hdb\'', function (error, stdout, stderr) {
+                exec('cd  ' + attr_path + '; find . -name \'*-' + search_object.hash_value + '.hdb\'', function (error, stdout, stderr) {
                     console.timeEnd(attribute +' find command');
                      if (error) {
                         caller(error);
@@ -81,6 +78,11 @@ function searchByHash(search_object, callback) {
                 });
             },
             function (err, data) {
+                if(err){
+                    callback(err, null);
+                    return;
+                }
+
                 callback(null, object);
             }
         );
@@ -124,8 +126,8 @@ var search_obj = {};
 search_obj.schema = 'dev';
 search_obj.table = 'person';
 search_obj.hash_attribute = 'id';
-search_obj.hash_value = '1';
-search_obj.get_attributes = ['first_name', 'last_name', 'id']
+search_obj.hash_value = '45';
+search_obj.get_attributes = ['first_name', 'last_name']
 
 searchByHash(search_obj, function (err, result) {
 
