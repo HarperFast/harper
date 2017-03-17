@@ -1,13 +1,20 @@
 'use strict'
 
 const insert_validator = require('../validation/insertValidator.js'),
-    fs = require('graceful-fs'),
+    fs = require('fs'),
     async = require('async'),
     path = require('path'),
     settings = require('settings'),
-    moment = require('moment');
+    spawn = require('child_process').spawn,
+    util = require('util');
 
 const hdb_path = path.join(settings.PROJECT_DIR, '/hdb/schema');
+const regex = /[^0-9a-z]/gi;
+const printf_command = 'printf "%s" > %s';
+const mkdir_command = 'mkdir -p %s';
+const cd_command = 'cd %s';
+const insert_script_command = 'time sh %s';
+const shebang = '#!/usr/bin/env bash';
 
 module.exports = {
     insert: function (insert_object, callback) {
@@ -28,160 +35,73 @@ module.exports = {
         //TODO verify hash_attribute is correct for this table
 
         //preprocess all record attributes
-        var attributes = checkAttributeSchema(insert_object);
-
-        insertRecords(insert_object, attributes, function(err, data){
-            callback(null, 'success');
+        checkAttributeSchema(insert_object, function(error, attributes){
+            insertObject(attributes, function(err, data){
+                callback(null, 'success');
+            });
         });
 
     }
 };
 
-function insertRecords(insert_object, attributes, callback){
-    var schema = {
-        schema:insert_object.schema,
-        table:insert_object.table,
-        hash_attribute: insert_object.hash_attribute,
-        date: new Date().getTime(),
-        attributes:attributes
-    };
-
-    async.eachLimit(insert_object.records, 100, function(record, callback){
-        async.waterfall([
-            //deconstruct object into seperate peices
-            deconstructObject.bind(null, schema, record),
-            //insert the row attribute values
-            insertObject
-        ], function(err, data){
-            if(err){
-                callback(err);
-                return;
-            }
-
-            callback();
-        });
-    }, function(err){
-        //TODO handle errors
-
-        callback(null, null);
-    });
-}
-
-function checkAttributeSchema(insert_object) {
-    var attributes = [insert_object.hash_attribute];
-
-    insert_object.records.forEach(function(insert_object){
-        for (var property in insert_object) {
-            if(attributes.indexOf(property) < 0){
-                attributes.push(property);
-            }
+function checkAttributeSchema(insert_object, callerback) {
+    console.time('script_builder');
+    //var attributes = [insert_object.hash_attribute];
+    var date = new Date().getTime();
+    var insert_objects = [];
+    var folders = {};
+    var base_path = hdb_path + '/' + insert_object.schema + '/' + insert_object.table + '/';
+    async.each(insert_object.records, function(record, callback){
+        var attribute_objects = [];
+        for(var property in record){
+            var value_stripped = String(record[property]).replace(regex, '').substring(0, 4000);
+            var attribute_file_name = property === insert_object.hash_attribute ? `${record[insert_object.hash_attribute]}-${date}.hdb` :
+                record[insert_object.hash_attribute] + '.hdb';
+            var attribute_path =  property + '/' + value_stripped;
+            var value = property === insert_object.hash_attribute ? JSON.stringify(record) : record[property];
+            folders[attribute_path] = "";
+            attribute_objects.push(util.format(printf_command, value, attribute_path + '/' + attribute_file_name));
         }
-    });
+        //joining the attribute printf commands with & allows all printfs to execute together
+        insert_objects.push(attribute_objects.join(' & '));
+        callback();
+    }, function(err){
+        console.timeEnd('script_builder');
 
-    attributes.forEach(function(attribute){
-        createAttributeFolder(insert_object.schema, insert_object.table, attribute);
-    });
+        insert_objects.unshift(util.format(mkdir_command, Object.keys(folders).join(" ")));
+        insert_objects.unshift(util.format(cd_command, base_path));
+        insert_objects.unshift(shebang);
 
-    return attributes;
+        return callerback(null, insert_objects);
+    });
 }
 
 function checkPathExists (path) {
     return fs.existsSync(path);
 }
 
-function deconstructObject(schema, record, callback) {
-    var attribute_array = [];
-
-    async.map(schema.attributes,
-        function(attribute, caller){
-            createAttributeObject(schema, record, attribute, function(err, attribute_object){
-                if(err){
-                    caller(err);
-                    return;
-                }
-
-                attribute_array.push(attribute_object);
-                caller();
-            });
-        },
-        function(err, data){
-            callback(null, attribute_array);
-        }
-    );
-    /*schema.attributes.forEach(function(attribute){
-     if (record.hasOwnProperty(attribute)) {
-     attribute_array.push(createAttributeObject(schema, record, attribute));
-     }
-     });
-
-     callback(null, attribute_array);*/
-}
-
-function createAttributeObject(schema, record, attribute_name, callback) {
-    var value_stripped = String(record[attribute_name]).replace(/[^0-9a-z]/gi, '').substring(0, 206);
-    var attribute_file_name = attribute_name === schema.hash_attribute ? record[schema.hash_attribute] + '.hdb' :
-        value_stripped + '-' + schema.date + '-' + record[schema.hash_attribute] + '.hdb';
-    var attribute_path = path.join(hdb_path, schema.schema, schema.table, attribute_name, attribute_file_name);
-
-    var attribute = {
-        path:attribute_path,
-        value:record[attribute_name],
-        is_hash:attribute_name === schema.hash_attribute
-    };
-
-    callback(null, attribute);
-}
-
-function createAttributeFolder(schema, table, attribute_name) {
-    var attribute_path = path.join(hdb_path, schema, table, attribute_name);
-    if (!checkPathExists(attribute_path)) {
-        //need to write new attribute to the hdb_attribute table
-        try {
-            fs.mkdirSync(attribute_path);
-        } catch(e){
-            console.log(e);
-        }
-    }
-}
-
 function insertObject(attribute_array, callback) {
-    // insert record into /table/attribute/value-timestamp-hash.hdb
-
     //TODO verify that object has hash attribute defined, if not throw error
-    //var start = process.hrtime();
-    async.each(attribute_array, function (attribute, callback) {
 
-        createAttributeValueFile(attribute, function (err, data) {
-            if (err) {
-                callback(err);
-                return;
-            }
+    var filename = path.join(settings.PROJECT_DIR, `hdb/staging/scripts/${process.pid}-${new Date().getTime()}-${process.hrtime()[1]}.sh`);
+    console.time('file_write');
+    fs.writeFile(filename,attribute_array.join('\n'), function(err, data){
+        console.timeEnd('file_write');
+        console.time('script_run');
 
+        var terminal = spawn('bash');
+
+        terminal.stdout.on('data', function (data) {
+            console.log('stdout: ' + data);
+        });
+
+        terminal.on('exit', function (code) {
+            console.log('child process exited with code ' + code);
+            console.timeEnd('script_run');
             callback(null, null);
         });
-    }, function (err) {
-        if(err) {
-            console.error(`record ${attribute_array} failed due to: ${err}`);
-            callback(err);
-            return;
-        }
-        /*var diff = process.hrtime(start);
-         console.log(`Record ${start} took ${(diff[0] * 1e9 + diff[1]) / 1e9} seconds`);*/
-        callback(null, null)
-    });
-}
 
-function createAttributeValueFile(attribute, callback) {
-    fs.writeFile(attribute.path, attribute.value, {flag:'wx', encoding:'utf8'}, function (err, data) {
-        if (err) {
-            if(err.code === 'EEXIST'){
-                callback();
-            } else {
-                callback(err);
-            }
-            return;
-        }
-
-        callback(null, data);
+        terminal.stdin.write(util.format(insert_script_command, filename));
+        terminal.stdin.end();
     });
 }
