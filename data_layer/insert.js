@@ -8,7 +8,7 @@ const insert_validator = require('../validation/insertValidator.js'),
     spawn = require('child_process').spawn,
     util = require('util');
 
-const hdb_path = path.join(settings.PROJECT_DIR, '/hdb/schema');
+const hdb_path = path.join(settings.HDB_ROOT, '/schema');
 const regex = /[^0-9a-z]/gi;
 const printf_command = 'printf "%s" > %s';
 const mkdir_command = 'mkdir -p %s';
@@ -83,7 +83,7 @@ function checkPathExists (path) {
 function insertObject(attribute_array, callback) {
     //TODO verify that object has hash attribute defined, if not throw error
 
-    var filename = path.join(settings.PROJECT_DIR, `hdb/staging/scripts/${process.pid}-${new Date().getTime()}-${process.hrtime()[1]}.sh`);
+    var filename = path.join(settings.HDB_ROOT, `/staging/scripts/${process.pid}-${new Date().getTime()}-${process.hrtime()[1]}.sh`);
     console.time('file_write');
     fs.writeFile(filename,attribute_array.join('\n'), function(err, data){
         console.timeEnd('file_write');
