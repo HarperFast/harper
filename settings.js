@@ -1,4 +1,4 @@
 module.exports = {
     PROJECT_DIR : __dirname,
-    HDB_ROOT: '/home/kyle/hdb'
+    HDB_ROOT: '/Users/stephengoldberg/Projects/harperdb/hdb'
 };

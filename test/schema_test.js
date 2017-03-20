@@ -77,11 +77,10 @@ function fullTest(callback) {
     });
 }
 
-    fullTest(function (err, result) {
+createTest(function(err,data){
+    if(err)
         console.error(err);
-        console.log(result);
-        return;
-    });
-
+    console.log(data);
+});
 
 
