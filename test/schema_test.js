@@ -77,11 +77,21 @@ function fullTest(callback) {
     });
 }
 
-    fullTest(function (err, result) {
+
+var dObj = {};
+dObj.schema = 'dev';
+dObj.table ='person';
+
+
+schema.describeTable(dObj, function(err, result){
+    console.log(result);
+});
+
+   /** fullTest(function (err, result) {
         console.error(err);
         console.log(result);
         return;
-    });
+    });**/
 
 
 

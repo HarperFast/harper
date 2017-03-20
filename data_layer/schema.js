@@ -5,6 +5,7 @@ const base_path =path.join(settings.HDB_ROOT, "hdb/schema/");
 const validate = require('validate.js');
 const insert = require('./insert.js');
 const table_validation = require('../validation/table_validation.js');
+const exec = require('child_process').exec;
 
 
 
@@ -148,6 +149,28 @@ module.exports = {
         deleteFolderRecursive(path, true);
 
 
+    }, 
+    
+    describeTable: function(describe_table_object, callback){
+        var table_path = path.join(base_path, describe_table_object.schema +'/' + describe_table_object.table);
+        exec('ls ' + table_path, function (error, stdout, stderr) {
+            if(stderr){
+                callback(stderr);
+                return;
+            }
+            var result = {};
+            result.schema = describe_table_object.schema;
+            result.table = describe_table_object.table;
+            result.attibutes = stdout.split('\n');
+            result.attibutes.splice(result.attibutes.length -1, 1);
+            callback(null, result);
+            return;
+
+
+
+
+        });
+        
     },
 
 
@@ -283,6 +306,4 @@ module.exports = {
 
 
 };
-
-
 

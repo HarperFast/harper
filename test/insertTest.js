@@ -9,7 +9,7 @@ var insert = require('../data_layer/insert.js'),
     os = require('os'),
     chunk = require('chunk');
 
-const record_size  = 1000;
+const record_size  = 100000;
 const schema = 'dev';
 const worker_count = 1;
 if (cluster.isMaster) {
