@@ -96,7 +96,6 @@ function insertObject(attribute_array, callback) {
         });
 
         terminal.on('exit', function (code) {
-            console.log('child process exited with code ' + code);
             console.timeEnd('script_run');
             callback(null, null);
         });
