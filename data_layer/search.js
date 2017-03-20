@@ -55,12 +55,12 @@ function searchByHash(search_object, callback) {
                     caller();
                     return;
                 }
-                console.log('find ' + table_path + '/' + attribute + ' -name \'' + search_object.hash_value + '.hdb\' -mtime -' + Math.round((Date.now() - timestamp) / 1000 + 1) + 's')
-                var cmd = 'find ' + table_path + '/' + attribute + ' -name \'' + search_object.hash_value + '.hdb\' -mtime -' + Math.round((Date.now() - timestamp) / 1000 + 1) + 's';
+                console.log('find ' + table_path + '/' + attribute + ' -name \'' + search_object.hash_value + '.hdb\' -mtime -' + Math.round((Date.now() - timestamp) / 1000 + 1))
+                var cmd = 'find ' + table_path + '/' + attribute + ' -name \'' + search_object.hash_value + '.hdb\' -mtime -' + Math.round((Date.now() - timestamp) / 1000 + 1);
                 exec(cmd, function (error, stdout, stderr) {
                     console.time('time after');
-                    if (error) {'find ' + table_path + '/' + attribute + ' -name \'' + search_object.hash_value + '.hdb\' -mtime -' + Math.round((Date.now() - timestamp) / 1000 + 1) + 's'
-                        caller(error);
+                    if (error) {
+                        caller(error);_path + '/' + attr
                         return;
                     }
                     if (stdout) {
