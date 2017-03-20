@@ -22,6 +22,8 @@ function mount(hdb_path){
     }
     if(fs.existsSync(hdb_path)){
         makeDirectory(path.join(hdb_path, "hdb"));
+        makeDirectory(path.join(hdb_path, "hdb/staging"));
+        makeDirectory(path.join(hdb_path, "hdb/staging/scripts"));
         makeDirectory(path.join(hdb_path, "hdb/backup"));
         makeDirectory(path.join(hdb_path, "hdb/log"));
         makeDirectory(path.join(hdb_path, "hdb/config"));
@@ -43,7 +45,7 @@ function mount(hdb_path){
 }
 
 
-mount(settings.HDB_ROOT);
+mount(settings.PROJECT_DIR);
 
 
 
