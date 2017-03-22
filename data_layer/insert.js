@@ -63,7 +63,7 @@ function checkAttributeSchema(insert_object, callerback) {
             attribute_objects.push(util.format(printf_command, value, attribute_path + '/' + attribute_file_name));
         }
         //joining the attribute printf commands with & allows all printfs to execute together
-        insert_objects.push(attribute_objects.join(' & '));
+        insert_objects.push(attribute_objects.join('\n'));
         callback();
     }, function(err){
         console.timeEnd('script_builder');

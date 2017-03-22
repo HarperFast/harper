@@ -43,7 +43,6 @@ class Server {
 
                     //process.exit(0);
                 });
-                //server.broadcast(`${client.name} says: ${data}`, client);
             });
 
             // Triggered when this client disconnects
