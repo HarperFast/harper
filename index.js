@@ -1,9 +1,13 @@
-var InsertListener = require('./listeners/insertListener.js');
+#!/usr/bin/env node
+'use strict';
 
-var insert = {
-    schema:'dev',
-    table:'person',
-    hash_attribute:'id'
-};
+// importing Server class
+const Server = require('./server/Server');
 
-var listener = new InsertListener(insert);
+
+var server = new Server();
+
+// Starting our server
+server.start(() => {
+    console.log(`Server started`);
+});
