@@ -17,6 +17,7 @@ const fs = require('fs')
 
 //schema, table, hash_value, hash_attribute, get_attributues, callback
 function searchByHash(search_object, callback) {
+
     var hash_path = base_path +
         search_object.schema + '/' + search_object.table + '/' + search_object.hash_attribute + '/' + search_object.hash_value;
     var validation_error = search_validator(search_object, 'hash');
@@ -25,6 +26,7 @@ function searchByHash(search_object, callback) {
         return;
     }
     var items = [];
+
     for (var attr in search_object.get_attributes) {
         if (search_object.get_attributes[attr] != search_object.hash_attribute) {
             var item = {};
@@ -36,8 +38,8 @@ function searchByHash(search_object, callback) {
 
     }
 
-    fs.readdir(hash_path, function (err, data) {
 
+    fs.readdir(hash_path, function (err, data) {
         if (err) {
             handleError(search_object, err, callback);
             return;
@@ -56,10 +58,13 @@ function searchByHash(search_object, callback) {
 
 
         async.map(items, function (item, caller) {
-
-                var cmd = 'find ' + table_path + '/' + item.attribute + ' -name \'' + item.hash_value + '.hdb\' -mmin -' + Math.round((Date.now() - timestamp) / 1000 / 60 + 1);
+                var attr_path =  table_path + '/' + item.attribute;
+                var cmd = 'find ' + attr_path + '  -name \'' + item.hash_value + '.hdb\' -mmin -' + Math.round((Date.now() - timestamp) / 1000 / 60 + 1);
+                var cmd = 'cd '+attr_path+'; ls  ./*/1.hdb';
+                console.time('intest');
                 exec(cmd, function (error, stdout, stderr) {
-                    console.time('time after');
+                    console.timeEnd('intest');
+
                     if (error) {
                         caller(error);
                         return;
@@ -69,14 +74,14 @@ function searchByHash(search_object, callback) {
                         var results = parseStdout(stdout);
 
 
-                        readAttribute(results[0], function (err, data) {
+                        readAttribute(attr_path  + '/' + results[0], function (err, data) {
                             if (err) {
                                 caller(err);
                                 return;
                             }
                             object[item.attribute] = data;
                             caller();
-                            console.timeEnd('time after');
+
                             return;
 
 
@@ -164,7 +169,7 @@ function searchByHashes(search_object, callback) {
                 }
                 var cmd = 'find ' + table_path + '/' + item.attribute + nameArgs;
                 exec(cmd, function (error, stdout, stderr) {
-                    console.time('time after');
+
                     if (error) {
                         caller(error);
                         return;
