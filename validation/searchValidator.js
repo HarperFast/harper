@@ -25,13 +25,42 @@ var search_by_hash_constraints = {
     }
 };
 
-var search_by_attribute_constraints = {
+
+var search_by_hashes_constraints = {
     schema: {
         presence: true,
         format: "[\\w\\-\\_]+"
 
     },
     table: {
+        presence: true,
+        format: "[\\w\\-\\_]+"
+
+    },
+    hash_attribute: {
+        presence: true,
+        format: "[\\w\\-\\_]+"
+
+    },
+    hash_values: {
+        presence: true
+    },
+    get_attributes: {
+        presence: true,
+    }
+};
+
+var search_by_value_constraints = {
+    schema: {
+        presence: true,
+        format: "[\\w\\-\\_]+"
+
+    },
+    table: {
+        presence: true,
+        format: "[\\w\\-\\_]+"
+
+    },hash_attribute: {
         presence: true,
         format: "[\\w\\-\\_]+"
 
@@ -56,11 +85,10 @@ module.exports = function(search_object, type) {
      switch(type){
          case 'hash':
              return validate(search_object, search_by_hash_constraints);
-         case 'attribute':
-             return validate(search_object, search_by_attribute_constraints);
-         case 'all':
-             return validate(search_object, search_all_constraints);
-
+         case 'value':
+             return validate(search_object, search_by_value_constraints);
+         case 'hashes':
+             return validate(search_object, search_by_hashes_constraints);
      }
          
      
