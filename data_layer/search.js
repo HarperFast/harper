@@ -1,10 +1,11 @@
+'use strict';
 const fs = require('fs')
-    ,settings = require('settings')
-    ,base_path = settings.HDB_ROOT +  "/schema/"
-    ,exec = require('child_process').exec
-    ,search_validator = require('../validation/searchValidator.js')
-    ,async = require('async')
-    ,spawn = require('child_process').spawn,
+    , settings = require('settings')
+    , base_path = settings.HDB_ROOT + "/schema/"
+    , exec = require('child_process').exec
+    , search_validator = require('../validation/searchValidator.js')
+    , async = require('async')
+    , spawn = require('child_process').spawn,
     util = require('util');
 
 
@@ -17,15 +18,15 @@ const fs = require('fs')
 //schema, table, hash_value, hash_attribute, get_attributues, callback
 function searchByHash(search_object, callback) {
     var hash_path = base_path +
-        search_object.schema  + '/' + search_object.table + '/' + search_object.hash_attribute + '/' + search_object.hash_value;
+        search_object.schema + '/' + search_object.table + '/' + search_object.hash_attribute + '/' + search_object.hash_value;
     var validation_error = search_validator(search_object, 'hash');
     if (validation_error) {
         callback(validation_error, null);
         return;
     }
     var items = [];
-    for(attr in search_object.get_attributes){
-        if(search_object.get_attributes[attr] != search_object.hash_attribute){
+    for (var attr in search_object.get_attributes) {
+        if (search_object.get_attributes[attr] != search_object.hash_attribute) {
             var item = {};
             item.attribute = search_object.get_attributes[attr];
             item.hash_value = search_object.hash_value;
@@ -42,7 +43,7 @@ function searchByHash(search_object, callback) {
             return;
         }
 
-        if(!data)
+        if (!data)
             callback(null, null);
 
         var timestamp = data.sort(sortHashByData)[0].split('-')[1].replace('.hdb', '');
@@ -50,15 +51,13 @@ function searchByHash(search_object, callback) {
         var object = {};
         object[item.hash_attribute] = item.hash_value;
         //find ./ -name '1.hdb' -mtime -900000s
-        var table_path = base_path  +
+        var table_path = base_path +
             search_object.schema + '/' + search_object.table;
-
 
 
         async.map(items, function (item, caller) {
 
-                console.log('find ' + table_path + '/' + item.attribute + ' -name \'' + item.hash_value + '.hdb\' -mmin -' + Math.round((Date.now() - timestamp) / 1000 /60 + 1))
-                var cmd = 'find ' + table_path + '/' + item.attribute + ' -name \'' + item.hash_value + '.hdb\' -mmin -' + Math.round((Date.now() - timestamp) / 1000 /60 + 1);
+                var cmd = 'find ' + table_path + '/' + item.attribute + ' -name \'' + item.hash_value + '.hdb\' -mmin -' + Math.round((Date.now() - timestamp) / 1000 / 60 + 1);
                 exec(cmd, function (error, stdout, stderr) {
                     console.time('time after');
                     if (error) {
@@ -103,21 +102,25 @@ function searchByHash(search_object, callback) {
     });
 
 
-
-
 }
 
-function searchByHashes(search_object, callback){
+function searchByHashes(search_object, callback) {
+
     var hash_attr_path = base_path +
-        search_object.schema  + '/' + search_object.table + '/' + search_object.hash_attribute + '/';
+        search_object.schema + '/' + search_object.table + '/' + search_object.hash_attribute + '/';
+
+    // run validation
     var validation_error = search_validator(search_object, 'hashes');
     if (validation_error) {
         callback(validation_error, null);
         return;
     }
+
+    // put everything in local scoped variable for aysnc
+
     var items = [];
-    for(attr in search_object.get_attributes){
-        if(search_object.get_attributes[attr] != search_object.hash_attribute){
+    for (var attr in search_object.get_attributes) {
+        if (search_object.get_attributes[attr] != search_object.hash_attribute) {
             var item = {};
             item.attribute = search_object.get_attributes[attr];
             item.hash_value = search_object.hash_value;
@@ -127,17 +130,17 @@ function searchByHashes(search_object, callback){
 
     }
     var args = '';
-    for(hash in search_object.hash_values){
+    for (var hash in search_object.hash_values) {
         args += hash_attr_path + search_object.hash_values[hash] + ' ';
     }
-    li_multiple(args, function(err, version_hashes){
+    li_multiple(args, function (err, version_hashes) {
         console.log(err);
         // this takes less then 1 millsecond
-        version_hashes = version_hashes.replace('\n','').split(' ');
+        version_hashes = version_hashes.replace('\n', '').split(' ');
         var hashes = [];
-        for(item in version_hashes){
-            if(version_hashes[item].indexOf(':') > -1){
-                var tokens = version_hashes[parseInt(item) +1].replace('.hdb', '').split('-');
+        for (item in version_hashes) {
+            if (version_hashes[item].indexOf(':') > -1) {
+                var tokens = version_hashes[parseInt(item) + 1].replace('.hdb', '').split('-');
                 var hash_obj = {};
                 hash_obj.hash = tokens[0];
                 hash_obj.timestamp = tokens[1];
@@ -145,7 +148,7 @@ function searchByHashes(search_object, callback){
             }
         }
 
-        var table_path = base_path  +
+        var table_path = base_path +
             search_object.schema + '/' + search_object.table;
 
 
@@ -153,13 +156,12 @@ function searchByHashes(search_object, callback){
         async.map(items, function (item, caller) {
 
                 var nameArgs = '';
-                for(hash in hashes){
-                    if(hash != 0){
+                for (var hash in hashes) {
+                    if (hash != 0) {
                         nameArgs += ' -o ';
                     }
-                    nameArgs += ' -name \'' + hashes[hash].hash+ '.hdb\' -mmin -' + Math.round((Date.now() - hashes[hash].timestamp) / 1000 /60 + 1)
+                    nameArgs += ' -name \'' + hashes[hash].hash + '.hdb\' -mmin -' + Math.round((Date.now() - hashes[hash].timestamp) / 1000 / 60 + 1)
                 }
-                console.log('find ' + table_path + '/' + item.attribute + nameArgs);
                 var cmd = 'find ' + table_path + '/' + item.attribute + nameArgs;
                 exec(cmd, function (error, stdout, stderr) {
                     console.time('time after');
@@ -169,11 +171,21 @@ function searchByHashes(search_object, callback){
                     }
                     if (stdout) {
 
-                        field_results[item.attribute] = parseStdout(stdout);
-                        caller();
-                        console.timeEnd('time after');
-                        return;
+                        var tempArray = parseStdout(stdout);
+                        async.map(tempArray, function (path, cal) {
 
+                            renameMe(item.attribute, path, function (err, data) {
+                                field_results.push(data);
+                                cal();
+                            });
+
+
+                        }, function (err, data) {
+                            caller();
+                            console.timeEnd('time after');
+                            return;
+
+                        })
 
 
                     }
@@ -182,33 +194,73 @@ function searchByHashes(search_object, callback){
                 });
             },
             function (err, data) {
-                var search_results = [];
                 if (err) {
                     callback(err, null);
                     return;
                 }
 
-                callback(null, field_results);
-                return;
 
+                var search_results = [];
+
+                for(var hash in search_object.hash_values){
+                        var attributes = field_results.filter(function(value){
+                            return search_object.hash_values[hash] == value.hash;
+                        });
+                        var obj = {};
+                        obj[search_object.hash_attribute] = attributes[0].hash;
+                        for(attr in attributes){
+                               obj[attributes[attr].field]  = attributes[attr].value;
+                               
+                        }
+                    
+                       search_results.push(obj);
+                }
+
+
+
+
+
+
+
+
+
+                callback(null, search_results);
+                return;
 
 
             });
 
 
-
     });
-
-
-
-
-
-
 
 
 }
 
-function li_multiple(args, callback){
+function renameMe(field, path, callback) {
+    var result = {};
+    result.field = field;
+    result.hash = getHashFromPath(path);
+    readAttribute(path, function (err, data) {
+        if (err) {
+            callback(err);
+            return;
+        }
+        result.value = data;
+        callback(null, result);
+
+
+    });
+
+}
+
+
+function getHashFromPath(path) {
+    let token = path.replace('.hdb', '').split('/');
+    return token[token.length - 1];
+}
+
+
+function li_multiple(args, callback) {
     console.time('ls');
 
     var terminal = spawn('bash');
@@ -229,7 +281,7 @@ function li_multiple(args, callback){
 }
 
 
-function searchByValue(search_object, callback){
+function searchByValue(search_object, callback) {
     var hash_path = base_path + "/" +
         search_object.schema + '/' + search_object.table + '/' + search_object.hash_attribute + '/' + search_object.hash_value;
     var validation_error = search_validator(search_object, 'value');
@@ -238,71 +290,70 @@ function searchByValue(search_object, callback){
         return;
     }
 
-    var table_path = base_path + search_object.schema + '/' + search_object.table ;
+    var table_path = base_path + search_object.schema + '/' + search_object.table;
     var value_path = table_path + '/' + search_object.search_attribute;
     //find /Users/stephengoldberg/Projects/harperdb/hdb/schema/dev/person/first_name -name '[A-z,0-9]*o[A-z,0-9]*'
     var search_string = search_object.search_value.split('*').join('[A-z,0-9]*');
-    var cmd = 'find ' + value_path + ' -name \'' + search_string  +'\'';
+    var cmd = 'find ' + value_path + ' -name \'' + search_string + '\'';
     exec(cmd, function (error, stdout, stderr) {
-         if(error || stderr){
-             callback(error + ' ' + stderr);
-             return;
-         }
+        if (error || stderr) {
+            callback(error + ' ' + stderr);
+            return;
+        }
 
-         var results = parseStdout(stdout);
-         search_object.hash_values = [];
-         if(!results || results.length < 1){
-             callback(null, null);
-             return;
-         }
+        var results = parseStdout(stdout);
+        search_object.hash_values = [];
+        if (!results || results.length < 1) {
+            callback(null, null);
+            return;
+        }
 
 
-         async.map(results, function(path, caller){
-             fs.readdir(path, function(err, dirData){
-                 if(err){
-                     caller(err);
-                     return;
-                 }
+        async.map(results, function (path, caller) {
+            fs.readdir(path, function (err, dirData) {
+                if (err) {
+                    caller(err);
+                    return;
+                }
 
-                  for(item in dirData){
-                      search_object.hash_values.push(dirData[item].replace('.hdb', ''));
-                  }
+                for (var item in dirData) {
+                    search_object.hash_values.push(dirData[item].replace('.hdb', ''));
+                }
 
-                 caller();
+                caller();
 
-             });
+            });
 
-         }, function(err, data){
-             if (err) {
-                 callback(err, null);
-                 return;
-             }
+        }, function (err, data) {
+            if (err) {
+                callback(err, null);
+                return;
+            }
 
-             var index_of_attr =search_object.get_attributes.indexOf(search_object.search_attribute);
-             if(index_of_attr > -1){
-               search_object.get_attributes.splice(index_of_attr, 1);
+           /** var index_of_attr = search_object.get_attributes.indexOf(search_object.search_attribute);
+            if (index_of_attr > -1) {
+                search_object.get_attributes.splice(index_of_attr, 1);
 
-             }
+            } **/
 
-            searchByHashes(search_object, function(err, data){
-               callback(err, data);
+            searchByHashes(search_object, function (err, data) {
+
+
+
+                callback(err, data);
             });
 
 
-             return;
-         });
-
-
-
+            return;
+        });
 
 
     });
 
 
-
 }
 
-function parseStdout(stdout){
+function parseStdout(stdout) {
     var results = stdout.split('./').join('').split('\n');
     var x = 0;
     while (x < results.length) {
@@ -314,6 +365,27 @@ function parseStdout(stdout){
     results.sort(sortByDate);
     return results;
 }
+
+
+function readAttributeSync(path, callback) {
+
+    if (!path) {
+        callback("Missing path");
+        return;
+    }
+
+    fs.readFileSync(path, 'utf8', function (err, data) {
+        if (err) {
+            callback(err);
+            return;
+        }
+
+        callback(null, data);
+        return;
+    });
+
+}
+
 
 function readAttribute(path, callback) {
 
@@ -335,22 +407,20 @@ function readAttribute(path, callback) {
 }
 
 
-
-
 function sortHashByData(a, b) {
-    a_date = Number(a.split('-')[1].replace('.hdb', ''));
-    b_date = Number(b.split('-')[1].replace('.hdb', ''));
+    var a_date = Number(a.split('-')[1].replace('.hdb', ''));
+    var b_date = Number(b.split('-')[1].replace('.hdb', ''));
     return a_date > b_date ? -1 : a < b ? 1 : 0;
 }
 
 function sortByDate(a, b) {
-    a_date = Number(a.split('-')[1]);
-    b_date = Number(b.split('-')[1]);
+    var a_date = Number(a.split('-')[1]);
+    var b_date = Number(b.split('-')[1]);
     return a_date > b_date ? -1 : a < b ? 1 : 0;
 }
 
 
-function handleError(search_object,err, callback) {
+function handleError(search_object, err, callback) {
     var schema_path = base_path + '/' + search_object.schema + "/";
 
     if (!fs.existsSync(schema_path)) {
@@ -364,7 +434,7 @@ function handleError(search_object,err, callback) {
         return;
 
     }
-    if (!fs.existsSync(schema_path+ "/"
+    if (!fs.existsSync(schema_path + "/"
             + search_object.table + "/" + search_object.hash_attribute)) {
         callback("hash_atrribute does not exist");
         return;
@@ -376,25 +446,21 @@ function handleError(search_object,err, callback) {
 }
 
 
-
 var search_obj = {};
 search_obj.schema = 'dev';
 search_obj.table = 'person';
 search_obj.hash_attribute = 'id';
-search_obj.hash_values = ['1', '2', '3']
-//search_obj.hash_value = '1';
-search_obj.search_value = 'Tucker';
+search_obj.hash_values = ['124', '9926', '5678']
+search_obj.hash_value = '1';
+search_obj.search_value = 'Tuc*';
 search_obj.search_attribute = 'last_name';
 
 search_obj.get_attributes = ['id', 'first_name', 'last_name'];
 
 console.time('test');
-searchByHashes(search_obj, function (err, data) {
+searchByHash(search_obj, function (err, data) {
     if (err)
         console.error(err);
     console.log(data);
     console.timeEnd('test');
 });
-
-
-
