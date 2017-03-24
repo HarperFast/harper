@@ -64,7 +64,11 @@ function checkAttributeSchema(insert_object, callerback) {
             var attribute_path =  property + '/' + value_stripped;
             var value = property === insert_object.hash_attribute ? JSON.stringify(record) : record[property];
             folders[attribute_path] = "";
-            attribute_objects.push(util.format(printf_command, value, attribute_path + '/' + attribute_file_name));
+            folders[property + '/__hdb_hash'] = "";
+            attribute_objects.push(util.format(printf_command, value, `${attribute_path}/${attribute_file_name}`));
+            if(property !== insert_object.hash_attribute) {
+                attribute_objects.push(util.format(printf_command, value, `${property}/__hdb_hash/${attribute_file_name}`));
+            }
         }
         //joining the attribute printf commands with & allows all printfs to execute together
         insert_objects.push(attribute_objects.join('\n'));
