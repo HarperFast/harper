@@ -2,7 +2,7 @@
 'use strict';
 
 // importing Server class
-const Server = require('./server/Server');
+const Server = require('./Server');
 
 
 var server = new Server();

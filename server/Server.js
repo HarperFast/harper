@@ -2,56 +2,49 @@
 const net = require('net'),
     Client = require('./Client'),
     settings = require('settings'),
-    insert = require('../data_layer/insert.js');
+    insert = require('../data_layer/insert.js'),
+    max_data_size = 65536;
 
 class Server {
     constructor (port, address) {
         this.port = settings.HDB_PORT;
         this.address = settings.HDB_ADDRESS;
-        // Holds our currently connected clients
-        this.clients = [];
     }
-    /*
-     * Starting the server
-     * The callback argument is executed when the server finally inits
-     */
+
     start (callback) {
-        let server = this; // we'll use 'this' inside the callback below
-        // our old onClientConnected
+        let server = this;
+
         server.connection = net.createServer((socket) => {
+            socket.setEncoding('utf8');
             let client = new Client(socket);
+            let socket_data = '';
             console.log(`${client.name} connected.`);
 
-            // TODO 1: Broadcast to everyone connected the new client connection
-            server.broadcast(`${client.name} connected.\n`, client);
+            console.time('insertTest');
 
-            // Storing client for later usage
-            server.clients.push(client);
 
-            // Triggered on message received by this client
-            socket.on('data', (data) => {
-                let insert_object = JSON.parse(data.toString().replace(/[\n\r]*$/, ''));
-
-                socket.write(`We got your message`);
-
-                console.time('insertTest');
-                insert.insert(insert_object, function(err, data){
-                    if(err) {
-                        console.error(err);
-                    }
-                    console.timeEnd('insertTest');
-
-                    //process.exit(0);
-                });
+            socket.on('error', (err) => {
+                console.error(`Socket ${client.name} fail: ${err}`);
             });
 
-            // Triggered when this client disconnects
-            socket.on('end', () => {
-                // Removing the client from the list
-                server.clients.splice(server.clients.indexOf(client), 1);
+            socket.on('close', (err) => {
+                console.log(`Socket ${client.name} disconnected`);
+            });
 
-                // TODO 3: Broadcasting that this client left
-                server.broadcast(`${client.name} disconnected.\n`);
+            socket.on('data', (data) => {
+                socket_data += data;
+
+                if(data.length <= max_data_size && this.isJson(socket_data)) {
+                    let json = JSON.parse(socket_data);
+                    insert.insert(json, function(err, data){
+                        if(err) {
+                            console.error(err);
+                        }
+                        console.timeEnd('insertTest');
+
+                        socket.end(data);
+                    });
+                }
             });
         });
         // starting the server
@@ -60,13 +53,14 @@ class Server {
         this.connection.on('listening', callback);
     }
 
-
-    broadcast (message, clientSender) {
-        this.clients.forEach((client) => {
-            if (client === clientSender)
-                return;
-            client.receiveMessage(message);
-        });
+    isJson(string){
+        try {
+            JSON.parse(string);
+        } catch (e) {
+            return false;
+        }
+        return true;
     }
+
 }
 module.exports = Server;
