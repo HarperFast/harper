@@ -41,6 +41,7 @@ function searchByHash(search_object, callback) {
 
     fs.readdir(hash_path, function (err, data) {
         if (err) {
+            console.error(err);
             handleError(search_object, err, callback);
             return;
         }
@@ -48,49 +49,32 @@ function searchByHash(search_object, callback) {
         if (!data)
             callback(null, null);
 
-        var timestamp = data.sort(sortHashByData)[0].split('-')[1].replace('.hdb', '');
 
         var object = {};
         object[item.hash_attribute] = item.hash_value;
 
         var table_path = base_path +
-            search_object.schema + '/' + search_object.table;
+            search_object.schema + '/' +search_object.table;
 
 
         async.map(items, function (item, caller) {
-                var attr_path =  table_path + '/' + item.attribute;
-                var cmd = 'ls  -t '+attr_path+'/*/'+item.hash_value +'.hdb';
-                console.time('intest');
-                exec(cmd, function (error, stdout, stderr) {
-                    console.timeEnd('intest');
+                var attr_path =  table_path + '/' + item.attribute + '/__hdb_hash/' +item.hash_value +'.hdb';
 
-                    if (error) {
-                        caller(error);
+
+                readAttribute(attr_path, function(error, data){
+                    if (err) {
+                        console.error(err);
+                        caller(err);
                         return;
                     }
-                    if (stdout) {
+                    object[item.attribute] = data;
+                    caller();
 
-                        var results = parseStdout(stdout);
-
-
-                        readAttribute(results[0], function (err, data) {
-                            if (err) {
-                                caller(err);
-                                return;
-                            }
-                            object[item.attribute] = data;
-                            caller();
-
-                            return;
-
-
-                        });
-
-
-                    }
-
-
+                    return;
                 });
+
+
+
             },
             function (err, data) {
                 if (err) {
@@ -107,6 +91,35 @@ function searchByHash(search_object, callback) {
 
 
 }
+
+function searchByHashesParr(search_objectes, callback){
+    var results = [];
+    console.time('into map');
+
+    for (var i = 0, len = search_objectes.length; i < len; i++) {
+        console.timeEnd('into map');
+
+        searchByHash(search_objectes[i], function(err, data){
+            if(err){
+                callback(err);
+                console.error(err);
+                return;
+            }
+
+            results.push(data);
+            returnPayload();
+
+        });
+    }
+
+    function returnPayload(){
+        if(results.length == search_objectes.length)
+            return callback(null, results);
+    }
+
+
+}
+
 
 function searchByHashes(search_object, callback) {
     console.time('intest');
@@ -143,7 +156,7 @@ function searchByHashes(search_object, callback) {
     }
     console.timeEnd('intest');
     ls_multiple(args, function (err, version_hashes) {
-        console.log(err);
+        console.error(err);
         // this takes less then 1 millsecond
         version_hashes = version_hashes.replace('\n', '').split(' ');
         var hashes = [];
@@ -418,9 +431,9 @@ function readAttribute(path, callback) {
         callback("Missing path");
         return;
     }
-
     fs.readFile(path, 'utf8', function (err, data) {
         if (err) {
+            console.error(err);
             callback(err);
             return;
         }
@@ -446,6 +459,7 @@ function sortByDate(a, b) {
 
 
 function handleError(search_object, err, callback) {
+    console.error(err);
     var schema_path = base_path + '/' + search_object.schema + "/";
 
     if (!fs.existsSync(schema_path)) {
@@ -483,20 +497,29 @@ function getRandomInt(min, max) {
   return Math.floor(Math.random() * (max - min)) + min;search_obj.search_value = 'Tuc*';
 }
 
-var number_of_hashes = 250;
+    var number_of_hashes = 100000;
+var searchHashes = [];
 while(number_of_hashes > 0){
-    search_obj.hash_values.push(getRandomInt(1, 10000));
+
+    var search_obj_2 = {};
+    search_obj_2.schema = 'dev';
+    search_obj_2.table = 'person';
+    search_obj_2.hash_attribute = 'id';
+    search_obj_2.hash_value =getRandomInt(1, 10000);
+    search_obj_2.get_attributes = ['id', 'first_name', 'last_name'];
+
+    searchHashes.push(search_obj_2)
+
+
     number_of_hashes--;
 }
 
 
 
-search_obj.search_attribute = 'last_name';
 
-search_obj.get_attributes = ['id', 'first_name', 'last_name'];
 
 console.time('test');
-searchByHashes(search_obj, function (err, data) {
+searchByHashesParr(searchHashes, function (err, data) {
     if (err)
         console.error(err);
     console.log(data);
