@@ -62,7 +62,7 @@ function checkAttributeSchema(insert_object, callerback) {
             var attribute_file_name = property === insert_object.hash_attribute ? `${record[insert_object.hash_attribute]}-${date}.hdb` :
                 record[insert_object.hash_attribute] + '.hdb';
             var attribute_path =  property + '/' + value_stripped;
-            var value = property === insert_object.hash_attribute ? JSON.stringify(record) : record[property];
+            var value = property === insert_object.hash_attribute ? JSON.stringify(record).replace(/"/g, '\\\"') : record[property];
             folders[attribute_path] = "";
             folders[property + '/__hdb_hash'] = "";
             attribute_objects.push(util.format(printf_command, value, `${attribute_path}/${attribute_file_name}`));
