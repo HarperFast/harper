@@ -14,6 +14,8 @@ const printf_command = 'printf "%s" > %s';
 const mkdir_command = 'mkdir -p %s';
 const cd_command = 'cd %s';
 const insert_script_command = 'sh %s';
+const delete_command = 'rm -f %s';
+const symbolic_link_command = 'ln -sf %s %s';
 const shebang = '#!/usr/bin/env bash';
 
 module.exports = {
@@ -54,30 +56,37 @@ function checkAttributeSchema(insert_object, callerback) {
     var date = new Date().getTime();
     var insert_objects = [];
     var folders = {};
+    var delete_folders = {};
     var base_path = hdb_path + '/' + insert_object.schema + '/' + insert_object.table + '/';
     async.each(insert_object.records, function(record, callback){
         var attribute_objects = [];
+
         for(var property in record){
+            delete_folders[`${property}/*/${record[insert_object.hash_attribute]}.hdb`] = "";
             var value_stripped = String(record[property]).replace(regex, '').substring(0, 4000);
             var attribute_file_name = property === insert_object.hash_attribute ? `${record[insert_object.hash_attribute]}-${date}.hdb` :
                 record[insert_object.hash_attribute] + '.hdb';
             var attribute_path =  property + '/' + value_stripped;
-            var value = property === insert_object.hash_attribute ? JSON.stringify(record).replace(/"/g, '\\\"') : record[property];
+            var value = (property === insert_object.hash_attribute ? JSON.stringify(record) : record[property]).replace(/"/g, '\\\"');
             folders[attribute_path] = "";
-            folders[property + '/__hdb_hash'] = "";
-            attribute_objects.push(util.format(printf_command, value, `${attribute_path}/${attribute_file_name}`));
+
+
             if(property !== insert_object.hash_attribute) {
+                folders[property + '/__hdb_hash'] = "";
                 attribute_objects.push(util.format(printf_command, value, `${property}/__hdb_hash/${attribute_file_name}`));
+                attribute_objects.push(util.format(symbolic_link_command, `${base_path}${property}/__hdb_hash/${attribute_file_name}`, `${attribute_path}/${attribute_file_name}`));
+            } else {
+                attribute_objects.push(util.format(printf_command, value, `${attribute_path}/${attribute_file_name}`));
             }
         }
-        //joining the attribute printf commands with & allows all printfs to execute together
-        insert_objects.push(attribute_objects.join('\n'));
+
+        insert_objects.push(attribute_objects.join(' & \n'));
         callback();
     }, function(err){
-        //console.timeEnd('script_builder');
-
+       // insert_objects.unshift(util.format(delete_command, Object.keys(delete_folders).join(" ")));
         insert_objects.unshift(util.format(mkdir_command, Object.keys(folders).join(" ")));
         insert_objects.unshift(util.format(cd_command, base_path));
+
         //insert_objects.unshift(shebang);
 
         return callerback(null, insert_objects);
