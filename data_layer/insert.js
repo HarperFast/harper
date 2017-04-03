@@ -13,12 +13,11 @@ const regex = /[^0-9a-z]/gi;
 const printf_command = 'printf "%s" > %s';
 const mkdir_command = 'mkdir -p %s';
 const cd_command = 'cd %s';
-const insert_script_command = 'time sh %s';
+const insert_script_command = 'sh %s';
 const shebang = '#!/usr/bin/env bash';
 
 module.exports = {
     insert: function (insert_object, callback) {
-        //TODO move this all into async waterfall
         //validate insert_object for required attributes
         var validator = insert_validator(insert_object);
         if (validator) {
@@ -37,7 +36,12 @@ module.exports = {
         //preprocess all record attributes
         checkAttributeSchema(insert_object, function(error, attributes){
             insertObject(attributes, function(err, data){
-                callback(null, 'success');
+                if(err) {
+                    callback(err);
+                    return;
+                }
+
+                callback(null, `successfully wrote ${insert_object.records.length} records`);
             });
         });
 
@@ -45,8 +49,8 @@ module.exports = {
 };
 
 function checkAttributeSchema(insert_object, callerback) {
-    console.time('script_builder');
-    //var attributes = [insert_object.hash_attribute];
+    //console.time('script_builder');
+
     var date = new Date().getTime();
     var insert_objects = [];
     var folders = {};
@@ -58,19 +62,23 @@ function checkAttributeSchema(insert_object, callerback) {
             var attribute_file_name = property === insert_object.hash_attribute ? `${record[insert_object.hash_attribute]}-${date}.hdb` :
                 record[insert_object.hash_attribute] + '.hdb';
             var attribute_path =  property + '/' + value_stripped;
-            var value = property === insert_object.hash_attribute ? JSON.stringify(record) : record[property];
+            var value = property === insert_object.hash_attribute ? JSON.stringify(record).replace(/"/g, '\\\"') : record[property];
             folders[attribute_path] = "";
-            attribute_objects.push(util.format(printf_command, value, attribute_path + '/' + attribute_file_name));
+            folders[property + '/__hdb_hash'] = "";
+            attribute_objects.push(util.format(printf_command, value, `${attribute_path}/${attribute_file_name}`));
+            if(property !== insert_object.hash_attribute) {
+                attribute_objects.push(util.format(printf_command, value, `${property}/__hdb_hash/${attribute_file_name}`));
+            }
         }
         //joining the attribute printf commands with & allows all printfs to execute together
         insert_objects.push(attribute_objects.join('\n'));
         callback();
     }, function(err){
-        console.timeEnd('script_builder');
+        //console.timeEnd('script_builder');
 
         insert_objects.unshift(util.format(mkdir_command, Object.keys(folders).join(" ")));
         insert_objects.unshift(util.format(cd_command, base_path));
-        insert_objects.unshift(shebang);
+        //insert_objects.unshift(shebang);
 
         return callerback(null, insert_objects);
     });
@@ -84,10 +92,10 @@ function insertObject(attribute_array, callback) {
     //TODO verify that object has hash attribute defined, if not throw error
 
     var filename = path.join(settings.HDB_ROOT, `/staging/scripts/${process.pid}-${new Date().getTime()}-${process.hrtime()[1]}.sh`);
-    console.time('file_write');
+    //console.time('file_write');
     fs.writeFile(filename,attribute_array.join('\n'), function(err, data){
-        console.timeEnd('file_write');
-        console.time('script_run');
+        //console.timeEnd('file_write');
+        //console.time('script_run');
 
         var terminal = spawn('bash');
 
@@ -95,8 +103,13 @@ function insertObject(attribute_array, callback) {
             console.log('stdout: ' + data);
         });
 
+        terminal.stderr.on('data', function (data) {
+            console.log('stderr: ' + data);
+            callback(data);
+        });
+
         terminal.on('exit', function (code) {
-            console.timeEnd('script_run');
+          //  console.timeEnd('script_run');
             callback(null, null);
         });
 
