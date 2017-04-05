@@ -1,14 +1,14 @@
 const search = require('../data_layer/search');
-/**
+
 
 var search_obj = {};
 search_obj.schema = 'dev';
 search_obj.table = 'person';
 search_obj.hash_attribute = 'id';
-search_obj.search_attribute = 'last_name';
-search_obj.search_value = 'Ben*'
+search_obj.search_attribute = 'first_name';
+search_obj.search_value = "K*'.'+([0-9])"
 search_obj.hash_values = [];
-search_obj.get_attributes = ['id', 'first_name', 'last_name'];
+search_obj.get_attributes = ['id', 'first_name'];
 
 console.time('test');
 search.searchByValue(search_obj, function (err, data) {
@@ -17,16 +17,17 @@ search.searchByValue(search_obj, function (err, data) {
     console.log(data);
     console.timeEnd('test');
 });
-**/
+
+
 
 /**
 
 var search_obj = {};
 search_obj.schema = 'dev';
-search_obj.table = 'dog';
+search_obj.table = 'person';
 search_obj.hash_attribute = 'id';
 search_obj.hash_value = '1';
-search_obj.get_attributes = ['id', 'dog', 'breed', 'age', 'weight'];
+search_obj.get_attributes = ['id', 'first_name', 'last_name' ];
 
 console.time('test');
 search.searchByHash(search_obj, function (err, data) {
@@ -35,9 +36,9 @@ search.searchByHash(search_obj, function (err, data) {
     console.log(data);
     console.timeEnd('test');
 });
-**/
 
 
+/**
 
 var search_obj = {};
 search_obj.schema = 'system';
@@ -46,7 +47,7 @@ search_obj.hash_attribute = 'schema_name';
 search_obj.search_attribute = 'name';
 search_obj.search_value = '*'
 search_obj.hash_values = [];
-search_obj.get_attributes = ['name', 'bob', 'schema_name', 'hash_attribute', 'schema'];
+search_obj.get_attributes = ['name', 'schema_name', 'hash_attribute', 'schema'];
 console.time('test');
 search.searchByValue(search_obj, function (err, data) {
     if (err)
@@ -55,7 +56,7 @@ search.searchByValue(search_obj, function (err, data) {
     console.timeEnd('test');
     return;
 });
-
+**/
 /**
 
 var insert = require('../data_layer/insert');

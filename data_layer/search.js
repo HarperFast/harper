@@ -196,7 +196,7 @@ function searchByValue (search_object, callback) {
     var value_path = table_path + '/' + search_object.search_attribute;
     //var search_string = search_object.search_value.split('*').join('[A-z,0-9]*');
     var search_string = search_object.search_value;
-    var cmd = 'find ' + value_path + ' -maxdepth 1 -mindepth 1 -not -path *__hdb_hash* -name \'' + search_string + '\'';
+    var cmd = 'ls -d ' + value_path + '/' + search_string;
     console.log(cmd)
     exec(cmd, function (error, stdout, stderr) {
         if (error || stderr) {
