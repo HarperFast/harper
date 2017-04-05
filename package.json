@@ -16,6 +16,7 @@
     "hidefile": "^2.0.0",
     "moment": "^2.17.1",
     "validate.js": "^0.11.1",
-    "watchr": "^3.0.1"
+    "watchr": "^3.0.1",
+    "@harperdb/settings": "1.0.0"
   }
 }
