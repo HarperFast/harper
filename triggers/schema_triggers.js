@@ -1,140 +1,160 @@
-var chokidar = require('chokidar');
-var path = require('path');
-var settings = require('settings');
-var schema = require('../data_layer/schema');
-const insert = require('../data_layer/insert.js');
+'use strict';
+const fs = require('fs')
+    , settings = require('settings')
+    , base_path = settings.HDB_ROOT + "/schema/"
+    , exec = require('child_process').exec
+    , search_validator = require('../validation/searchValidator.js')
+    , async = require('async')
+    , spawn = require('child_process').spawn
+    , util = require('util')
+    , schema = require('../data_layer/schema')
+    , insert = require('../data_layer/insert.js')
+    , search = require('../data_layer/search.js');
 
 
-function makeSchema(path) {
-    var path_tokens = path.split('/');
-    var params = path_tokens[path_tokens.length - 1].split('.');
-    var schema_create_object = {};
-    schema_create_object.schema = params[0];
-    return schema_create_object;
+function initalize() {
+
+    var terminal = spawn('bash');
+
+    terminal.stderr.on('data', function (data) {
+        console.error('stderr: ' + data);
+        //Here is where the error output goes
+    });
+
+
+    terminal.stdout.on('data', function (data) {
+        console.log('Whole Enchilada:' + data);
+        if (data.indexOf('ISDIR') > 0) {
+            return;
+        }
+
+        var eventData = '' + data;
+
+
+        var tokens = eventData.split('\n');
+        for (var item in tokens) {
+            console.log(tokens[item]);
+            if (tokens[item])
+                eventHandler(tokens[item]);
+        }
+
+
+    });
+
+
+    terminal.on('exit', function (code) {
+        //initalize();
+    });
+
+    terminal.stdin.write(util.format('inotifywait -m -r -e create -e delete -e move -e moved_from %s ', settings.HDB_ROOT + '/schema/system'));
+    terminal.stdin.end();
 }
 
-
-chokidar.watch(path.join(settings.HDB_ROOT, "hdb/schema/system/hdb_schema/name"), {
-    ignored: /(^|[\/\\])\../, ignoreInitial: true
-}).on('all', function (event, path) {
-    try {
-        switch (event) {
-            case 'add':
-                var schemaObject = makeSchema(path);
-                schema.createSchemaStructure(schemaObject, function (err, result) {
-                    if (err)
-                        console.error(err);
+initalize();
 
 
-                });
-                break;
-            case 'unlink':
-                var schemaObject = makeSchema(path);
-                schema.deleteSchemaStructure(schemaObject, function (err, result) {
-                    if (err)
-                        console.error(err);
+function eventHandler(data) {
+    console.log(data);
+    var tokens = String(data).split(' ');
+    var path = tokens[0];
+    var event = tokens[1];
+    var file = tokens[2];
 
-                });
 
-                break;
+        if (path.indexOf('__hdb_hash') < 0 && file.indexOf('__hdb_hash') < 0) {
+            // need to remove value in path from path.
+            console.log('PATH:' + path);
+            console.log('EVENT:' + event);
+            console.log('FILE:' + file);
 
+            fs.readFile(path + file.replace('\n', ''), 'utf8', function (err, data) {
+                if (err) {
+                    console.error('readFileError' + err);
+                    initalize();
+                    setTimeout(function () {
+                        systemHandleEvent(path, file, data, event)
+                    }, 2500);
+                    return;
+                }
+
+                systemHandleEvent(path, file, data, event);
+
+            });
         }
-    } catch (e) {
-        console.log(e);
-    }
 
 
-});
 
-// fire on hdb_table modifications
-chokidar.watch(path.join(settings.HDB_ROOT, "hdb/schema/system/hdb_table/schema_name"), {
-    ignored: /(^|[\/\\])\../, ignoreInitial: true
-}).on('all', function (event, path) {
+}
+
+function systemHandleEvent(path, file, fileValue, event) {
 
 
-    try {
-        function makeTableObject(path) {
-            var path_tokens = path.split('/');
-            var params = path_tokens[path_tokens.length - 1].split('.');
+        if (path.indexOf('hdb_attribute') > 0) {
+            console.log('attr event' + data);
+            return;
+        }
+
+        if (path.indexOf('hdb_table/schema_name') > 0) {
+            var tableObject = JSON.parse(fileValue);
+            console.log(tableObject);
             var table_object = {};
-            table_object.schema = params[0];
-            table_object.table = params[1];
-            table_object.hash_attribute = 'unknown';
-            return table_object;
-        }
+            table_object.table = tableObject.name;
+            table_object.schema = tableObject.schema;
+            table_object.hash_attribute = tableObject.hash_attribute;
 
-
-        switch (event) {
-            case 'add':
-                var tableObject = makeTableObject(path);
-                schema.createTable(tableObject, function (err, result) {
+            console.log('TABLE OBJECT: ' + JSON.stringify(tableObject));
+            if (event == 'CREATE') {
+                schema.createTableStructure(table_object, function (err, result) {
                     if (err)
-                        console.error(err);
-                    setTimeout(schema.createTable(tableObject, function (err, result) {
-                        if (err)
-                            console.error(err);
+                        console.error('createTableError:' + err);
 
-
-                    }), 1000);
 
                 });
-                break;
-            case 'unlink':
-                var tableObject = makeTableObject(path);
-                schema.deleteTableStructure(tableObject, function (err, result) {
-                    if (err)
-                        console.error(err);
+                return;
 
-                });
+            }
 
-                break;
+            schema.deleteTableStructure(table_object, function (err, result) {
+                if (err)
+                    console.error('deleteTableError' + err);
+                return;
+
+            });
+
 
         }
 
-    } catch (e) {
-        console.error(e);
-    }
+        if (path.indexOf('hdb_schema') > 0) {
+            var schema_object = {"schema": JSON.parse(fileValue).name};
+            if (event == 'CREATE') {
+                schema.createSchemaStructure(schema_object, function (err, result) {
+                    if (err)
+                        console.error('schemaErrpr' + err);
 
-});
+                });
+                return;
+            }
 
-
-// fire on hdb_table modifications
-chokidar.watch(path.join(settings.HDB_ROOT, "hdb/schema/"), {
-    ignored: /(^|[\/\\])\../, ignoreInitial: true
-}).on('addDir', function (event, path) {
-
-    var tokens = event.split('/');
-    console.log(tokens.length - tokens.indexOf('schema'));
-    if (tokens.length - tokens.indexOf('schema') > 3 && tokens[tokens.indexOf('schema') + 1] != 'system') {
-        var schema = tokens[tokens.length - 3];
-        var table = tokens[tokens.length - 2];
-        var attribute = tokens[tokens.length - 1];
-        var attribute_object = {};
-        attribute_object.table = table;
-        attribute_object.schema = schema;tokens
-        attribute_object.name = attribute;
-        attribute_object.hash = schema + '.' + table + '.' + attribute;
+            schema.deleteSchemaStructure(schema_object, function (err, result) {
+                if (err)
+                    console.error('deleteSchemaErr' + rerr);
 
 
-        var insertWrapper = {};tokens
-        insertWrapper.hash_attribute = 'hash'
-        insertWrapper.table = 'hdb_attribute';
-        insertWrapper.schema = 'system';
-        insertWrapper.records = [attribute_object];
+            });
 
-        console.log(JSON.stringify(insertWrapper));
+        }
 
-        insert.insert(insertWrapper, function (err, result) {
+
+        return;
+}
+
+function deleteSchema(name) {
+        var schemaObject = makeSchema(path);
+        schema.deleteSchemaStructure(schemaObject, function (err, result) {
             if (err)
                 console.error(err);
-            console.log(result);
 
         });
 
+}
 
-    }
-    console.log(event);
-    console.log(path);
-
-
-});
