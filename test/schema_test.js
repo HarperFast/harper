@@ -3,7 +3,7 @@ var schema = require('../data_layer/schema.js');
 
 function createTest(callback) {
     var schema_value = 'dev';
-    var table = 'person';
+    var table = 'dog';
 
     schema.createSchema({"schema": schema_value}, function (err, result) {
         console.log(err);
