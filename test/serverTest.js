@@ -7,7 +7,7 @@ var net = require('net'),
 const args = processArgs();
 const port = args.port ? args.port : 9925;
 const address = args.address ? args.address : '127.0.0.1';
-const record_size = args.record_size ? args.record_size : 10000;
+const record_size = args.record_size ? args.record_size : 100000;
 const schema = args.schema ? args.schema : 'dev';
 
 function processArgs(){
@@ -48,7 +48,7 @@ function createData(){
             {
                 id : x + 1,
                 first_name: first_names[Math.floor(Math.random() * first_names.length)],
-                last_name: last_names[Math.floor(Math.random() * last_names.length)]
+                last_name: first_names[Math.floor(Math.random() * first_names.length)]
             }
         );
     }

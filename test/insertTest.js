@@ -4,7 +4,7 @@ var insert = require('../data_layer/insert.js'),
     first_names = require('./data/firstNames'),
     last_names = require('./data/lastNames');
 
-const record_size  = 10000;
+const record_size  = 1;
 const schema = 'dev';
 const worker_count = 1;
 
@@ -14,7 +14,7 @@ for(var x = 0; x < record_size; x++){
         {
             id : x + 1,
             first_name: first_names[Math.floor(Math.random() * first_names.length)],
-            last_name: last_names[Math.floor(Math.random() * last_names.length)]
+            last_name: first_names[Math.floor(Math.random() * first_names.length)]
         }
     );
 }
