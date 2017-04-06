@@ -18,7 +18,7 @@ const insert_script_command = 'sh %s && nohup sh %s & ';
 const delete_command = 'rm -f %s';
 const symbolic_link_command = 'ln -sfT %s %s';
 const shebang = '#!/usr/bin/env bash';
-const touch_date_command = 'touch -a -m -t %s %s';
+const touch_date_command = 'touch -a -m -t -h %s %s';
 
 module.exports = {
     insert: function (insert_object, callback) {
@@ -76,15 +76,15 @@ function checkAttributeSchema(insert_object, callerback) {
             var attribute_file_name = record[insert_object.hash_attribute] + '.hdb';
             var attribute_path =  property + '/' + value_stripped;
 
-            hash_folders[property + '/__hdb_hash'] = "";
-            attribute_objects.push(util.format(printf_command, record[property].toString().replace(/"/g, '\\\"'), `${property}/__hdb_hash/${attribute_file_name}`));
-            if(property !== insert_object.hash_attribute) {
 
+
+            if(property !== insert_object.hash_attribute && record[property]) {
                 folders[attribute_path] = "";
-
+                hash_folders[property + '/__hdb_hash'] = "";
+                attribute_objects.push(util.format(printf_command, record[property].toString().replace(/"/g, '\\\"'), `${property}/__hdb_hash/${attribute_file_name}`));
                 link_objects.push(util.format(symbolic_link_command, `../__hdb_hash/${attribute_file_name}`, `${attribute_path}/${attribute_file_name}`));
                 touch_links.push(`${attribute_path}/${attribute_file_name}`);
-            } else {
+            } else if(property === insert_object.hash_attribute){
                 hash_folders[attribute_path] = "";
                 attribute_objects.push(util.format(printf_command, JSON.stringify(record).replace(/"/g, '\\\"'), `${attribute_path}/${record[insert_object.hash_attribute]}-${epoch}.hdb`));
             }
