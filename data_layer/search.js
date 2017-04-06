@@ -28,9 +28,10 @@ module.exports = {
 
 
 function searchByHash (search_object, callback) {
+    var hash_stripped = String(search_object.hash_value).replace(hash_regex, '').substring(0, 4000);
 
     var hash_path = base_path +
-        search_object.schema + '/' + search_object.table + '/' + search_object.hash_attribute + '/' + search_object.hash_value;
+        search_object.schema + '/' + search_object.table + '/' + search_object.hash_attribute + '/' + hash_stripped;
     var validation_error = search_validator(search_object, 'hash');
     if (validation_error) {
         callback(validation_error, null);
@@ -46,6 +47,10 @@ function searchByHash (search_object, callback) {
 
     fs.readdir(hash_path, function (err, data) {
         if (err) {
+            if(err.errno == -2){
+                callback("schema does not exist", null);
+                return;
+            }
             console.error('error: ', err, 46);
             handleError(search_object, err, callback);
             return;
@@ -200,12 +205,13 @@ function searchByValue (search_object, callback) {
     console.log(cmd)
     exec(cmd, function (error, stdout, stderr) {
         if (error || stderr) {
-            console.error('error:', error, 199);
-            if(error.code == 1){
-                callback('search_attribute does not exist');
+
+            if(error.code == 2){
+                callback('search_attribute does not');
                 return
             }
 
+            console.error('error:', error, stack, error.code);
             callback(error + ' ' + stderr);
             return;
         }

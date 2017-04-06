@@ -4,7 +4,8 @@ const fs = require('fs')
     ,insert = require('./insert.js')
     ,table_validation = require('../validation/table_validation.js')
     ,exec = require('child_process').exec
-    ,search =require('./search.js');
+    ,search =require('./search.js')
+    ,uuidV4 = require('uuid/v4');
 
 
 
@@ -47,16 +48,32 @@ module.exports = {
             return;
         }
 
-        var insertObject = {};
-        insertObject.schema = "system";
-        insertObject.table = 'hdb_schema';
-        insertObject.hash_attribute = 'name';
-        insertObject.records = [{"name": schema_create_object.schema}];
-        insert.insert(insertObject, function (err, result) {
-            console.log('createSchema:' + err);
-            console.log(result);
-            callback(err, result);
+        var search_obj = {};
+        search_obj.schema = 'system';
+        search_obj.table = 'hdb_schema';
+        search_obj.hash_attribute = 'name';
+        search_obj.hash_value = schema_create_object.schema;
+        search_obj.get_attributes = ['name'];
+        search.searchByHash(search_obj, function(err,data){
+            if(data){
+                callback("schema already exsits");
+                return;
+            }
+
+            var insertObject = {};
+            insertObject.schema = "system";
+            insertObject.table = 'hdb_schema';
+            insertObject.hash_attribute = 'name';
+            insertObject.records = [{"name": schema_create_object.schema, "createddate": '' + Date.now()}];
+            insert.insert(insertObject, function (err, result) {
+                console.log('createSchema:' + err);
+                console.log(result);
+                callback(err, result);
+            });
+
         });
+
+
 
 
     },
@@ -64,7 +81,7 @@ module.exports = {
     // create folder structrue
     createSchemaStructure: function(schema_create_object, callback){
         var validation_error = validate(schema_create_object, schema_constraints);
-        if (validation_error) {table
+        if (validation_error) {
             callback(validation_error, null);
             return;
         }
@@ -184,21 +201,44 @@ module.exports = {
             callback(validator);
             return;
         }
-        var table = {};
-        table.name = create_table_object.table;
-        table.schema = create_table_object.schema;
-        table.schema_name = create_table_object.schema + "." + create_table_object.table;
-        table.hash_attribute = create_table_object.hash_attribute;
-        var insertObject = {};
-        insertObject.schema = "system";
-        insertObject.table = 'hdb_table';
-        insertObject.hash_attribute = 'schema_name';
-        insertObject.records = [table];
-        insert.insert(insertObject, function (err, result) {
-            console.log(err);
-            console.log(result);
-            callback(err, result);
+
+        var search_obj = {};
+        search_obj.schema = 'system';
+        search_obj.table = 'hdb_table';
+        search_obj.hash_attribute = 'id';
+        search_obj.search_attribute = 'name';
+        search_obj.search_value = create_table_object.table;
+        search_obj.get_attributes = ['name', 'schema'];
+        search.searchByValue(search_obj, function(err,data){
+            if(data){
+                for(item in data){
+                   if(data[item].schema == create_table_object.schema){
+                        callback('Table already exists');
+                        return;
+                    }
+                }
+            }
+
+            var table = {};
+            table.name = create_table_object.table;
+            table.schema = create_table_object.schema;
+            table.id = uuidV4();
+            table.hash_attribute = create_table_object.hash_attribute;
+            var insertObject = {};
+            insertObject.schema = "system";
+            insertObject.table = 'hdb_table';
+            insertObject.hash_attribute = 'id';
+            insertObject.records = [table];
+            insert.insert(insertObject, function (err, result) {
+                console.log(err);
+                console.log(result);
+                callback(err, result);
+            });
+
+
+
         });
+
 
 
     },

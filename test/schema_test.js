@@ -1,46 +1,11 @@
 var schema = require('../data_layer/schema.js');
 
-
-function createTest(callback) {
-    var schema_value = 'dev';
-    var table = 'dog';
-
-    schema.createSchema({"schema": schema_value}, function (err, result) {
-        console.log(err);
-        console.log(result);
-        var person_table_object = {};
-        person_table_object.table = table;
-        person_table_object.schema = schema_value;
-        person_table_object.hash_attribute = "schema_name";
-        schema.insertTable(person_table_object, function (err, result) {
-            console.log(err);
-            console.log(result);
-            if (err) {
-                callback(err);
-            } else {
-                callback(null, {"schema": schema_value, "table": table});
-            }
+var schema_value = 'test_schema';
+var table = 'test_table';
 
 
-        });
 
 
-    });
-}
-
-
-function tableTest() {
-    var person_table_object = {};
-    person_table_object.table = 'person';
-    person_table_object.schema = 'dev';
-    person_table_object.hash_attribute = 'id';
-    schema(person_table_object, function (err, result) {
-        console.log(err);
-        console.log(result);
-        return;
-
-    });
-}
 
 function deleteTest(delete_obj, callback){
     schema.dropTable({schema: delete_obj.schema, table: delete_obj.table}, function (err, result) {
@@ -96,11 +61,49 @@ function fullTest(callback) {
     });
 }
 
-createTest(function(err,data){
-    if(err)
+// create schema test
+
+function createSchema(callback){
+    schema.createSchema({"schema": schema_value}, function (err, result) {
         console.error(err);
-    console.log(data);
-});
+        console.log(result);
+        callback(err, result);
+        return;
+    });
+}
+
+function createTable(callback){
+    var person_table_object = {};
+    person_table_object.table = table;
+    person_table_object.schema = schema_value;
+    person_table_object.hash_attribute = "id";
+    schema.insertTable(person_table_object, function (err, result) {
+        console.log(err);
+        console.log(result);
+        if (err) {
+            callback(err);
+        } else {
+            callback(null, {"schema": schema_value, "table": table});
+        }
+
+
+    });
+}
+
+createSchema(function(err, data){
+    if(err){
+        console.log("ERROR: " + err);
+        return;
+    }
+    createTable(function(err, data){
+        if(err){
+            console.log(err);
+            return;
+        }
+        console.log(data);
+    });
+})
+
 
 //deleteTest({"schema": "test_schema_8", "table" : "test_table_8"});
 
