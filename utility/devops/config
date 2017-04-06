@@ -1,5 +1,0 @@
-#!/bin/bash
-script_home=$(pwd)
-echo $script_home
-sed -e "/HDB_ADDRESS/ s:\:.*:\:\'0\.0\.0\.0\':" -e "/HDB_ROOT/ s:__dirname.*:\'$(find /opt -name hdb)\',:" $script_home/settings.js
-
