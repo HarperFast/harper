@@ -9,15 +9,25 @@ const fs = require('fs')
     util = require('util');
 
 
+const hash_regex = /[^0-9a-z]/gi;
+
+
 // search by hash only
 // what attributes are you selecting
 // table selecting from
 // table selecting from
 // condition criteria
 
+module.exports = {
+    searchByHash: searchByHash,
+    searchByValue:searchByValue,
+    searchByHashes:searchByHashes
 
-//schema, table, hash_value, hash_attribute, get_attributues, callback
-function searchByHash(search_object, callback) {
+}
+
+
+
+function searchByHash (search_object, callback) {
 
     var hash_path = base_path +
         search_object.schema + '/' + search_object.table + '/' + search_object.hash_attribute + '/' + search_object.hash_value;
@@ -36,7 +46,7 @@ function searchByHash(search_object, callback) {
 
     fs.readdir(hash_path, function (err, data) {
         if (err) {
-            console.error(err);
+            console.error('error: ', err, 46);
             handleError(search_object, err, callback);
             return;
         }
@@ -60,7 +70,7 @@ function searchByHash(search_object, callback) {
                     console.timeEnd('readattr');
 
                     if (err) {
-                        console.error(err);
+                        console.error('error',err, 70);
                         caller(err);
                         return;
                     }
@@ -74,6 +84,7 @@ function searchByHash(search_object, callback) {
             },
             function (err, data) {
                 if (err) {
+                    console.error('error:', err, 84);
                     callback(err, null);
                     return;
                 }
@@ -104,15 +115,14 @@ function searchByHashes(search_object, callback) {
 
 
     async.map(search_object.hash_values, function (hash, caller) {
+        var hash_stripped = String(hash).replace(hash_regex, '').substring(0, 4000);
         var hash_path = base_path +
-            search_object.schema + '/' + search_object.table + '/' + search_object.hash_attribute + '/' + hash;
+            search_object.schema + '/' + search_object.table + '/' + search_object.hash_attribute + '/' + hash_stripped;
 
-        console.time('readdir')
         fs.readdir(hash_path, function (err, data) {
-            console.timeEnd('readdir')
             if (err) {
-               caller();
-               return;
+                caller(err);
+                return;
             }
 
             if (!data)
@@ -133,7 +143,7 @@ function searchByHashes(search_object, callback) {
                     readAttribute(attr_path, function (error, data) {
 
                         if (err) {
-                            console.error(err);
+                            console.error('error',err, 141 );
                             caller2(err);
                             return;
                         }
@@ -160,7 +170,7 @@ function searchByHashes(search_object, callback) {
 
     }, function (err, data) {
         if (err) {
-            console.error(err);
+            console.error('error',err, 173);
             callback(err);
             return;
         }
@@ -173,6 +183,88 @@ function searchByHashes(search_object, callback) {
 
 
 }
+function searchByValue (search_object, callback) {
+    var hash_path = base_path + "/" +
+        search_object.schema + '/' + search_object.table + '/' + search_object.hash_attribute + '/' + search_object.hash_value;
+    var validation_error = search_validator(search_object, 'value');
+    if (validation_error) {
+        callback(validation_error, null);
+        return;
+    }
+
+    var table_path = base_path + search_object.schema + '/' + search_object.table;
+    var value_path = table_path + '/' + search_object.search_attribute;
+    //var search_string = search_object.search_value.split('*').join('[A-z,0-9]*');
+    var search_string = search_object.search_value;
+    var cmd = 'find ' + value_path + ' -maxdepth 1 -mindepth 1 -not -path *__hdb_hash* -name \'' + search_string + '\'';
+    console.log(cmd)
+    exec(cmd, function (error, stdout, stderr) {
+        if (error || stderr) {
+            console.error('error:', error, 199);
+            if(error.code == 1){
+                callback('search_attribute does not exist');
+                return
+            }
+
+            callback(error + ' ' + stderr);
+            return;
+        }
+
+        var results = parseStdout(stdout);
+        search_object.hash_values = [];
+        if (!results || results.length < 1) {
+            callback(null, null);
+            return;
+        }
+
+
+        async.map(results, function (path, caller) {
+            fs.readdir(path, function (err, dirData) {
+                if (err) {
+                    caller(err);
+                    return;
+                }
+
+                for (var item in dirData) {
+                    if(dirData[item].indexOf('__hdb_hash') < 0)
+                        search_object.hash_values.push(dirData[item].replace('.hdb', ''));
+                }
+
+                caller();
+
+            });
+
+        }, function (err, data) {
+            if (err) {
+                console.error('error:', err, 229)
+                callback(err, null);
+                return;
+            }
+
+            /** var index_of_attr = search_object.get_attributes.indexOf(search_object.search_attribute);
+             if (index_of_attr > -1) {
+                search_object.get_attributes.splice(index_of_attr, 1);
+
+            } **/
+
+            searchByHashes(search_object, function (err, data) {
+
+
+                callback(err, data);
+            });
+
+
+            return;
+        });
+
+
+    });
+
+
+}
+
+
+
 
 
 function renameMe(field, path, callback) {
@@ -181,6 +273,7 @@ function renameMe(field, path, callback) {
     result.hash = getHashFromPath(path);
     readAttribute(path, function (err, data) {
         if (err) {
+            console.error('error:', err, 266);
             callback(err);
             return;
         }
@@ -206,7 +299,7 @@ function checkFolderExists(path, callback) {
     var results = '';
 
    terminal.stderr.on('data', function(data) {
-        console.error('stderr: ' + data);
+        console.error(data, 288);
         //Here is where the error output goes
     });
 
@@ -250,82 +343,13 @@ function ls_multiple(args, callback) {
 }
 
 
-function searchByValue(search_object, callback) {
-    var hash_path = base_path + "/" +
-        search_object.schema + '/' + search_object.table + '/' + search_object.hash_attribute + '/' + search_object.hash_value;
-    var validation_error = search_validator(search_object, 'value');
-    if (validation_error) {
-        callback(validation_error, null);
-        return;
-    }
-
-    var table_path = base_path + search_object.schema + '/' + search_object.table;
-    var value_path = table_path + '/' + search_object.search_attribute;
-    var search_string = search_object.search_value.split('*').join('[A-z,0-9]*');
-    var cmd = 'find ' + value_path + ' -name \'' + search_string + '\'';
-    exec(cmd, function (error, stdout, stderr) {
-        if (error || stderr) {
-            callback(error + ' ' + stderr);
-            return;
-        }
-
-        var results = parseStdout(stdout);
-        search_object.hash_values = [];
-        if (!results || results.length < 1) {
-            callback(null, null);
-            return;
-        }
-
-
-        async.map(results, function (path, caller) {
-            fs.readdir(path, function (err, dirData) {
-                if (err) {
-                    caller(err);
-                    return;
-                }
-
-                for (var item in dirData) {
-                    search_object.hash_values.push(dirData[item].replace('.hdb', ''));
-                }
-
-                caller();
-
-            });
-
-        }, function (err, data) {
-            if (err) {
-                callback(err, null);
-                return;
-            }
-
-            /** var index_of_attr = search_object.get_attributes.indexOf(search_object.search_attribute);
-             if (index_of_attr > -1) {
-                search_object.get_attributes.splice(index_of_attr, 1);
-
-            } **/
-
-            searchByHashes(search_object, function (err, data) {
-
-
-                callback(err, data);
-            });
-
-
-            return;
-        });
-
-
-    });
-
-
-}
 
 function parseStdout(stdout) {
     var results;
     if (stdout.indexOf('./') > -1)
         results = stdout.split('./').join('').split('\n');
     else
-        results = stdout.replace('\n', '').split(' ');
+        results = stdout.split('\n');
     var x = 0;
     while (x < results.length) {
         if (!results[x]) {
@@ -338,25 +362,6 @@ function parseStdout(stdout) {
 }
 
 
-function readAttributeSync(path, callback) {
-
-    if (!path) {
-        callback("Missing path");
-        return;
-    }
-
-    fs.readFileSync(path, 'utf8', function (err, data) {
-        if (err) {
-            callback(err);
-            return;
-        }
-
-        callback(null, data);
-        return;
-    });
-
-}
-
 
 function readAttribute(path, callback) {
 
@@ -366,8 +371,9 @@ function readAttribute(path, callback) {
     }
     fs.readFile(path, 'utf8', function (err, data) {
         if (err) {
-            console.error(err);
-            callback(err);
+            console.error('error',err, 379);
+            callback(null, null);
+            //callback('Attribute does not exist');
             return;
         }
 
@@ -392,7 +398,7 @@ function sortByDate(a, b) {
 
 
 function handleError(search_object, err, callback) {
-    console.error(err);
+    console.error('error',err, 405);
     var schema_path = base_path + '/' + search_object.schema + "/";
 
     if (!fs.existsSync(schema_path)) {
@@ -418,45 +424,5 @@ function handleError(search_object, err, callback) {
 }
 
 
-var search_obj = {};
-search_obj.schema = 'dev';
-search_obj.table = 'person';
-search_obj.hash_attribute = 'id';
-search_obj.hash_values = [];
-search_obj.get_attributes = ['id', 'first_name', 'last_name'];
-
-function getRandomInt(min, max) {
-    min = Math.ceil(min);
-    max = Math.floor(max);
-    search_obj.hash_value = '9870';
-    return Math.floor(Math.random() * (max - min)) + min;
-}
-
-var number_of_hashes = 1000;
-var searchHashes = [];
-
-//var command = "awk '{ print }'"
-
-while (number_of_hashes > 0) {
-
-    //command +=" 'first_name/__hdb_hash/"+getRandomInt(1, 10000)+".hdb' 'last_name/__hdb_hash/"+getRandomInt(1, 10000)+".hdb' ";
-
-    search_obj.hash_values.push(getRandomInt(1, 10000));
 
 
-
-    number_of_hashes--;
-}
-//console.log(command);
-
-
-search_obj.hash_values.push('a');
-
-
- console.time('test');
- searchByHashes(search_obj, function (err, data) {
-    if (err)
-        console.error(err);
-    console.log(data);
-    console.timeEnd('test');
-});

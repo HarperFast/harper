@@ -1,11 +1,10 @@
-const fs = require('fs');
-var settings = require('settings');
-var path = require('path');
-const base_path =path.join(settings.HDB_ROOT, "hdb/schema/");
-const validate = require('validate.js');
-const insert = require('./insert.js');
-const table_validation = require('../validation/table_validation.js');
-const exec = require('child_process').exec;
+const fs = require('fs')
+    ,settings = require('settings')
+    ,validate = require('validate.js')
+    ,insert = require('./insert.js')
+    ,table_validation = require('../validation/table_validation.js')
+    ,exec = require('child_process').exec
+    ,search =require('./search.js');
 
 
 
@@ -54,7 +53,7 @@ module.exports = {
         insertObject.hash_attribute = 'name';
         insertObject.records = [{"name": schema_create_object.schema}];
         insert.insert(insertObject, function (err, result) {
-            console.log(err);
+            console.log('createSchema:' + err);
             console.log(result);
             callback(err, result);
         });
@@ -64,14 +63,14 @@ module.exports = {
 
     // create folder structrue
     createSchemaStructure: function(schema_create_object, callback){
-        var validation_error = validate(schema_create_object, constraints);
-        if (validation_error) {
+        var validation_error = validate(schema_create_object, schema_constraints);
+        if (validation_error) {table
             callback(validation_error, null);
             return;
         }
 
         var schema = schema_create_object.schema;
-        fs.mkdir(base_path + schema, function(err, data){
+        fs.mkdir(settings.HDB_ROOT +'/schema/' + schema, function(err, data){
             if(err){
                 if(err.errno == -17){
                     callback("schema already exists", null);
@@ -102,6 +101,7 @@ module.exports = {
 
 
         var schema = drop_schema_object.schema;
+
 
 
 
@@ -145,14 +145,14 @@ module.exports = {
                 return;
             }
         }
-        var path = base_path + schema;
-        deleteFolderRecursive(path, true);
+
+        deleteFolderRecursive(settings.HDB_ROOT + '/schema/' + schema, true);
 
 
     }, 
     
     describeTable: function(describe_table_object, callback){
-        var table_path = path.join(base_path, describe_table_object.schema +'/' + describe_table_object.table);
+        var table_path = settings.HDB_ROOT + '/schema/' + describe_table_object.schema +'/' + describe_table_object.table;
         exec('ls ' + table_path, function (error, stdout, stderr) {
             if(stderr){
                 callback(stderr);
@@ -206,13 +206,13 @@ module.exports = {
     // need to listen to https://nodejs.org/api/events.html#events_event_newlistener for the insert of a file
     // this event will  then call the code below
 
-    createTable: function (create_table_object, callback) {
+    createTableStructure: function (create_table_object, callback) {
         var validator = table_validation(create_table_object);
         if (validator) {
             callback(validator);
             return;
         }
-        fs.mkdir(base_path + create_table_object.schema + '/' + create_table_object.table, function (err, data) {
+        fs.mkdir(settings.HDB_ROOT +'/schema/' + create_table_object.schema + '/' + create_table_object.table, function (err, data) {
             if (err) {
                 if (err.errno == -2) {
                     callback("schema does not exist", null);
@@ -224,7 +224,8 @@ module.exports = {
                     return;
 
                 } else {
-                    return err.message;
+                    callback('createTableStrucuture:' + err.message);
+                    return
                 }
             }
 
@@ -290,8 +291,8 @@ module.exports = {
             }
         }
 
-        if (fs.existsSync(base_path + schema + "/")) {
-            var path = base_path + schema + "/" + table;
+        if (fs.existsSync(settings.HDB_ROOT + '/schema/'+  schema + "/")) {
+            var path = settings.HDB_ROOT + '/schema/' + schema + "/" + table;
             deleteFolderRecursive(path, true);
         }else{
             callback("schema does not exist");
