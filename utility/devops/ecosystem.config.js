@@ -43,7 +43,7 @@ module.exports = {
       ref  : "origin/master",
       repo : "git@github.com:HarperDB/harperdb.git",
       path : "/opt/harperdb_git",
-      "post-deploy" : "npm install && mv node_modules/@harperdb/settings node_modules/settings && pm2 startOrRestart utility/devops/ecosystem.config.js --only HarperDB",
+      "post-deploy" : "npm install && pm2 startOrRestart utility/devops/ecosystem.config.js --only HarperDB",
       env  : {
         NODE_ENV: "dev"
       }
