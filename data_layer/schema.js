@@ -5,7 +5,9 @@ const fs = require('fs')
     ,table_validation = require('../validation/table_validation.js')
     ,exec = require('child_process').exec
     ,search =require('./search.js')
-    ,uuidV4 = require('uuid/v4');
+    ,uuidV4 = require('uuid/v4')
+    ,attribute_validation = require('../validation/attribute_insert_valdiation.js');
+
 
 
 
@@ -194,7 +196,7 @@ module.exports = {
 
     //need to insert record in hdb_table
     // need to insert hash into hdb_attribute
-    insertTable: function (create_table_object, callback) {
+    createTable: function (create_table_object, callback) {
 
         var validator = table_validation(create_table_object);
         if (validator) {
@@ -339,6 +341,32 @@ module.exports = {
 
         }
 
+    },
+    createAttribute: function (create_attribute_object, callback){
+
+        var validation_error = attribute_validation(create_attribute_object);
+        if(validation_error){
+            callback(validation_error, null);
+            return;
+        }
+
+        var record = {};
+        record.schema = create_attribute_object.schema;
+        record.table = create_attribute_object.table;
+        record.attribute = create_attribute_object.attribute;
+        record.id = uuidV4();
+        record.schema_table = record.schema + '.' + record.table;
+
+        var insertObject = {};
+        insertObject.schema = "system";
+        insertObject.table = 'hdb_attribute';
+        insertObject.hash_attribute = 'id';
+        insertObject.records = [record];
+        insert.insert(insertObject, function (err, result) {
+            console.log('attribute:' + err);
+            console.log(result);
+            callback(err, result);
+        });
     }
 
 

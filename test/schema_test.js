@@ -1,7 +1,7 @@
 var schema = require('../data_layer/schema.js');
 
-var schema_value = 'test_schema';
-var table = 'test_table';
+var schema_value = 'dev';
+var table = 'person';
 
 
 
@@ -77,7 +77,7 @@ function createTable(callback){
     person_table_object.table = table;
     person_table_object.schema = schema_value;
     person_table_object.hash_attribute = "id";
-    schema.insertTable(person_table_object, function (err, result) {
+    schema.createTable(person_table_object, function (err, result) {
         console.log(err);
         console.log(result);
         if (err) {

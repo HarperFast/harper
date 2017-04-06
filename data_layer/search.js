@@ -225,6 +225,11 @@ function searchByValue (search_object, callback) {
 
 
         async.map(results, function (path, caller) {
+            //remove this if statmeent after replacing ls with awk.
+            if(path.indexOf('__hdb_hash') >0){
+                caller();
+                return;
+            }
             fs.readdir(path, function (err, dirData) {
                 if (err) {
                     caller(err);

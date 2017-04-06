@@ -23,20 +23,7 @@ function initalize() {
 
 
     terminal.stdout.on('data', function (data) {
-        console.log('Whole Enchilada:' + data);
-        if (data.indexOf('ISDIR') > 0) {
-            return;
-        }
-
-        var eventData = '' + data;
-
-
-        var tokens = eventData.split('\n');
-        for (var item in tokens) {
-            console.log(tokens[item]);
-            if (tokens[item])
-                eventHandler(tokens[item]);
-        }
+        parseEventData(data);
 
 
     });
@@ -50,7 +37,19 @@ function initalize() {
     terminal.stdin.end();
 }
 
-initalize();
+function parseEventData(data){
+    console.log("EVENT DATA PACKET:" + data);
+
+    var eventData = '' + data;
+
+
+    var tokens = eventData.split('\n');
+    for (var item in tokens) {
+        console.log(tokens[item]);
+        if (tokens[item])
+            eventHandler(tokens[item]);
+    }
+}
 
 
 function eventHandler(data) {
@@ -60,33 +59,26 @@ function eventHandler(data) {
     var event = tokens[1];
     var file = tokens[2];
 
+    if (data.indexOf('ISDIR') > 0) {
+        return;
+    }
 
-        if (path.indexOf('__hdb_hash') < 0 && file.indexOf('__hdb_hash') < 0) {
+
+
+    if (path.indexOf('__hdb_hash') < 0 && file.indexOf('__hdb_hash') < 0) {
             // need to remove value in path from path.
             console.log('PATH:' + path);
             console.log('EVENT:' + event);
             console.log('FILE:' + file);
+            systemHandleEvent(path, file, event);
 
-            fs.readFile(path + file.replace('\n', ''), 'utf8', function (err, data) {
-                if (err) {
-                    console.error('readFileError' + err);
-                    initalize();
-                    setTimeout(function () {
-                        systemHandleEvent(path, file, data, event)
-                    }, 2500);
-                    return;
-                }
-
-                systemHandleEvent(path, file, data, event);
-
-            });
         }
 
 
 
 }
 
-function systemHandleEvent(path, file, fileValue, event) {
+function systemHandleEvent(path, file, event) {
 
 
         if (path.indexOf('hdb_attribute') > 0) {
@@ -94,53 +86,78 @@ function systemHandleEvent(path, file, fileValue, event) {
             return;
         }
 
-        if (path.indexOf('hdb_table/schema_name') > 0) {
-            var tableObject = JSON.parse(fileValue);
-            console.log(tableObject);
-            var table_object = {};
-            table_object.table = tableObject.name;
-            table_object.schema = tableObject.schema;
-            table_object.hash_attribute = tableObject.hash_attribute;
+        if (path.indexOf('hdb_table/id') > 0) {
+            fs.readFile(path + file.replace('\n', ''), 'utf8', function (err, data) {
+                if (err) {
+                    console.error('readFileError' + err);
+                    return;
+                }
 
-            console.log('TABLE OBJECT: ' + JSON.stringify(tableObject));
-            if (event == 'CREATE') {
-                schema.createTableStructure(table_object, function (err, result) {
-                    if (err)
-                        console.error('createTableError:' + err);
+                var tableObject = JSON.parse(data);
+                console.log(tableObject);
+                var table_object = {};
+                table_object.table = tableObject.name;
+                table_object.schema = tableObject.schema;
+                table_object.hash_attribute = tableObject.hash_attribute;
+
+                console.log('TABLE OBJECT: ' + JSON.stringify(tableObject));
+                if (event == 'CREATE') {
+                    schema.createTableStructure(table_object, function (err, result) {
+                        if (err)
+                            console.error('createTableError:' + err);
 
 
-                });
-                return;
+                    });
 
-            }
 
-            schema.deleteTableStructure(table_object, function (err, result) {
-                if (err)
-                    console.error('deleteTableError' + err);
-                return;
+                }else{
+                    schema.deleteTableStructure(table_object, function (err, result) {
+                        if (err)
+                            console.error('deleteTableError' + err);
+                        return;
+
+                    });
+                }
+
 
             });
 
 
         }
 
-        if (path.indexOf('hdb_schema') > 0) {
-            var schema_object = {"schema": JSON.parse(fileValue).name};
-            if (event == 'CREATE') {
-                schema.createSchemaStructure(schema_object, function (err, result) {
-                    if (err)
-                        console.error('schemaErrpr' + err);
+        if (path.indexOf('hdb_schema/name') > 0) {
+            fs.readFile(path + file.replace('\n', ''), 'utf8', function (err, data) {
+                if (err) {
+                    console.error('readFileError' + err);
+                    return;
+                }
 
-                });
-                return;
-            }
+                var schema_object = {"schema": JSON.parse(data).name};
+                if (event == 'CREATE') {
+                    schema.createSchemaStructure(schema_object, function (err, result) {
+                        if (err){
+                            console.error('schemaError' + err);
+                            return;
+                        }
 
-            schema.deleteSchemaStructure(schema_object, function (err, result) {
-                if (err)
-                    console.error('deleteSchemaErr' + rerr);
+                        return;
+
+                    });
+
+                }else{
+                    schema.deleteSchemaStructure(schema_object, function (err, result) {
+                        if (err)
+                            console.error('deleteSchemaErr' + rerr);
+
+
+                    });
+                }
+
 
 
             });
+
+
 
         }
 
@@ -158,3 +175,7 @@ function deleteSchema(name) {
 
 }
 
+
+initalize();
+//parseEventData("/home/stephen/hdb/schema/system/hdb_schema/name/dev/ CREATE dev-1491497413605.hdb")
+//parseEventData("/home/stephen/hdb/schema/system/hdb_table/id/9eb52e5c96e94b5486d5f628e579685c/ CREATE 9eb52e5c-96e9-4b54-86d5-f628e579685c-1491493900895.hdb");
