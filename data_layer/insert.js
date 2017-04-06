@@ -6,7 +6,8 @@ const insert_validator = require('../validation/insertValidator.js'),
     path = require('path'),
     settings = require('settings'),
     spawn = require('child_process').spawn,
-    util = require('util');
+    util = require('util'),
+    moment = require('moment');
 
 const hdb_path = path.join(settings.HDB_ROOT, '/schema');
 const regex = /[^0-9a-z]/gi;
@@ -17,9 +18,11 @@ const insert_script_command = 'sh %s && nohup sh %s & ';
 const delete_command = 'rm -f %s';
 const symbolic_link_command = 'ln -sfT %s %s';
 const shebang = '#!/usr/bin/env bash';
+const touch_date_command = 'touch -a -m -t %s %s';
 
 module.exports = {
     insert: function (insert_object, callback) {
+
         //validate insert_object for required attributes
         var validator = insert_validator(insert_object);
         if (validator) {
@@ -52,47 +55,51 @@ module.exports = {
 
 function checkAttributeSchema(insert_object, callerback) {
     //console.time('script_builder');
+    var date = new moment();
+    var epoch = date.valueOf();
 
-    var date = new Date().getTime();
     var insert_objects = [];
     var symbolic_links = [];
+    var touch_links = [];
+
     var folders = {};
     var hash_folders = {};
     var delete_folders = {};
     var base_path = hdb_path + '/' + insert_object.schema + '/' + insert_object.table + '/';
     async.each(insert_object.records, function(record, callback){
         var attribute_objects = [];
+        var link_objects = [];
 
         for(var property in record){
             delete_folders[`${property}/*/${record[insert_object.hash_attribute]}.hdb`] = "";
             var value_stripped = String(record[property]).replace(regex, '').substring(0, 4000);
-            var attribute_file_name = property === insert_object.hash_attribute ? `${record[insert_object.hash_attribute]}-${date}.hdb` :
-                record[insert_object.hash_attribute] + '.hdb';
+            var attribute_file_name = record[insert_object.hash_attribute] + '.hdb';
             var attribute_path =  property + '/' + value_stripped;
-            var value = (property === insert_object.hash_attribute ? JSON.stringify(record) : record[property]).replace(/"/g, '\\\"');
 
-
-
+            hash_folders[property + '/__hdb_hash'] = "";
+            attribute_objects.push(util.format(printf_command, record[property].toString().replace(/"/g, '\\\"'), `${property}/__hdb_hash/${attribute_file_name}`));
             if(property !== insert_object.hash_attribute) {
-                hash_folders[property + '/__hdb_hash'] = "";
+
                 folders[attribute_path] = "";
-                attribute_objects.push(util.format(printf_command, value, `${property}/__hdb_hash/${attribute_file_name}`));
-                symbolic_links.push(util.format(symbolic_link_command, `../__hdb_hash/${attribute_file_name}`, `${attribute_path}/${attribute_file_name}`));
-                //symbolic_links.push(` > ${attribute_path}/${attribute_file_name}`);
+
+                link_objects.push(util.format(symbolic_link_command, `../__hdb_hash/${attribute_file_name}`, `${attribute_path}/${attribute_file_name}`));
+                touch_links.push(`${attribute_path}/${attribute_file_name}`);
             } else {
                 hash_folders[attribute_path] = "";
-                attribute_objects.push(util.format(printf_command, value, `${attribute_path}/${attribute_file_name}`));
+                attribute_objects.push(util.format(printf_command, JSON.stringify(record).replace(/"/g, '\\\"'), `${attribute_path}/${record[insert_object.hash_attribute]}-${epoch}.hdb`));
             }
         }
-
         insert_objects.push(attribute_objects.join('\n'));
+        symbolic_links.push(link_objects.join('\n'));
         callback();
     }, function(err){
        // insert_objects.unshift(util.format(delete_command, Object.keys(delete_folders).join(" ")));
         insert_objects.unshift(util.format(mkdir_command, Object.keys(hash_folders).join(" ")));
         insert_objects.unshift(util.format(cd_command, base_path));
 
-        symbolic_links.unshift(util.format(mkdir_command, Object.keys(folders).join(" ")));
+        symbolic_links.push(touch_links.length > 0 ? util.format(touch_date_command, date.format('YYYYMMDDhhmm.ss'), touch_links.join(' ')): "");
+
+        symbolic_links.unshift(Object.keys(folders).length > 0 ? util.format(mkdir_command, Object.keys(folders).join(" ")) : "");
         symbolic_links.unshift(util.format(cd_command, base_path));
 
         insert_objects.unshift(shebang);
