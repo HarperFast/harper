@@ -34,5 +34,5 @@ insert.insert(insert_object, function(err, data){
         console.log(data);
     }
     console.timeEnd('insertTest');
-    //process.exit(0);
+    process.exit(0);
 });
