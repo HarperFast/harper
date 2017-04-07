@@ -66,15 +66,15 @@ var search_by_value_constraints = {
 
     },
     search_attribute: {
-        presence: true,
-        format: "[\\w\\-\\_]+"
+        presence: true
+
 
     },
     search_value: {
         presence: true
     },
     get_attributes: {
-        presence: true,
+        presence: true
     }
 };
 

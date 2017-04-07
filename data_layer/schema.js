@@ -2,11 +2,13 @@ const fs = require('fs')
     ,settings = require('settings')
     ,validate = require('validate.js')
     ,insert = require('./insert.js')
-    ,table_validation = require('../validation/table_validation.js')
+    , async = require('async')
+    ,table_validation = require('../validation/tableValidator.js')
+    ,describe_table_validation = require('../validation/describeTableValidator.js')
     ,exec = require('child_process').exec
     ,search =require('./search.js')
     ,uuidV4 = require('uuid/v4')
-    ,attribute_validation = require('../validation/attribute_insert_valdiation.js');
+    ,attribute_validation = require('../validation/attributeInsertValidator.js');
 
 
 
@@ -171,24 +173,74 @@ module.exports = {
     }, 
     
     describeTable: function(describe_table_object, callback){
-        var table_path = settings.HDB_ROOT + '/schema/' + describe_table_object.schema +'/' + describe_table_object.table;
-        exec('ls ' + table_path, function (error, stdout, stderr) {
-            if(stderr){
-                callback(stderr);
-                return;
-            }
-            var result = {};
-            result.schema = describe_table_object.schema;
-            result.table = describe_table_object.table;
-            result.attibutes = stdout.split('\n');
-            result.attibutes.splice(result.attibutes.length -1, 1);
-            callback(null, result);
+        var validation = describe_table_validation(describe_table_object);
+        if(validation){
+            callback(validation);
             return;
+        }
+
+                var table_search_obj = {};
+                table_search_obj.schema = 'system';
+                table_search_obj.table = 'hdb_table';
+                table_search_obj.hash_attribute = 'id';
+                table_search_obj.search_attribute = 'name';
+                table_search_obj.search_value = describe_table_object.table;
+                table_search_obj.hash_values = [];
+                table_search_obj.get_attributes = ['hash_attribute', 'id', 'name', 'schema'];
+                var table_result = {};
+                search.searchByValue(table_search_obj, function (err, tables) {
+                    if (err) {
+                        console.error(err);
+                        //initialize();
+                        return;
+                    }
+
+                    async.map(tables, function(table, caller){
+                        if(table.schema == describe_table_object.schema){
+                            table_result = table;
+                        }
+                        caller();
+
+                    },function(err, data){
+                        if(err){
+                            callback(err);
+                            return;
+                        }
+
+                        var attribute_search_obj = {};
+                        attribute_search_obj.schema = 'system';
+                        attribute_search_obj.table = 'hdb_attribute';
+                        attribute_search_obj.hash_attribute = 'id';
+                        attribute_search_obj.search_attribute = 'schema_table';
+                        attribute_search_obj.search_value = describe_table_object.schema + "." + describe_table_object.table;
+                        attribute_search_obj.get_attributes = ['attribute', 'id', 'schema', 'table', 'schema_table'];
+
+
+                        search.searchByValue(attribute_search_obj, function (err, attributes) {
+                            if (err) {
+                                console.error(err);
+                                //initialize();
+                                return;
+                            }
+
+                            table_result.attributes = attributes
+                            callback(null, table_result);
 
 
 
 
-        });
+                        });
+
+                    });
+
+
+
+                });
+
+
+
+
+
         
     },
 

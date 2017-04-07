@@ -20,7 +20,12 @@ var constraints = {
         format: "[\\w\\-\\_]+"
 
     }
+    ,
+    hash_value :{
+        presence : true,
+
+    }
 };
-module.exports = function(table_create_object) {
-    return validate(table_create_object, constraints);
+module.exports = function(delete_object) {
+    return validate(delete_object, constraints);
 };

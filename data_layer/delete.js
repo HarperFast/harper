@@ -1,20 +1,32 @@
 const fs = require('fs')
-    ,settings = require('settings')
     ,validate = require('validate.js')
-    ,insert = require('./insert.js')
-    ,table_validation = require('../validation/table_validation.js')
-    ,exec = require('child_process').exec
+    ,schema = require('./schema')
+    ,settings = require('settings')
+    ,spawn = require('child_process').spawn
+    ,delete_validator = require('../validation/deleteValidator')
     ,search =require('search.js');
 
 
 module.exports ={
   delete: function(delete_object){
-      var search_obj = {};
-      search_obj.schema = 'dev';
-      search_obj.table = 'person';
-      search_obj.hash_attribute = 'id';
-      search_obj.hash_values = [];
-      search_obj.get_attributes = ['id', 'first_name', 'last_name'];
+      validation = delete_validator(delete_object);
+      if(validation){
+          callback(validation);
+          return;
+      }
+
+      schema.describeTable({"table": delete_object.table, "schema": delete_object.schema},function(err, table_result){
+          var cmd = 'ls -d ' + value_path + '/' + search_string;
+          console.log(cmd)
+          exec(cmd, function (error, stdout, stderr) {
+            // do some stuff.
+              console.log(stdout);
+          });
+
+      } );
+
+
+
 
 
 
