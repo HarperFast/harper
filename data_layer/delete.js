@@ -1,29 +1,34 @@
 const fs = require('fs')
     ,validate = require('validate.js')
-    ,schema = require('./schema')
     ,settings = require('settings')
-    ,spawn = require('child_process').spawn
+    , exec = require('child_process').exec
     ,delete_validator = require('../validation/deleteValidator')
-    ,search =require('search.js');
 
 
 module.exports ={
-  delete: function(delete_object){
+  delete: function(delete_object, callback){
       validation = delete_validator(delete_object);
       if(validation){
           callback(validation);
           return;
       }
 
-      schema.describeTable({"table": delete_object.table, "schema": delete_object.schema},function(err, table_result){
-          var cmd = 'ls -d ' + value_path + '/' + search_string;
+          var cmd = 'cd ' + settings.HDB_ROOT +'/schema/' + delete_object.schema + '/' + delete_object.table+  ';';
+            cmd += 'rm */__hdb_hash/'+delete_object.hash_value+'.hdb;'
+            cmd += 'rm ' + delete_object.hash_attribute + '/' + delete_object.hash_value + ' -r -f ';
           console.log(cmd)
+          console.log(cmd);
           exec(cmd, function (error, stdout, stderr) {
-            // do some stuff.
-              console.log(stdout);
+                if(stderr){
+                    console.error(error);
+                    callback('delete failed');
+                    return;
+                }
+
+                callback(null, delete_object.hash_value + ' successfully deleted');
           });
 
-      } );
+
 
 
 
