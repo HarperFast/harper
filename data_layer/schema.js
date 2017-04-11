@@ -5,6 +5,7 @@ const fs = require('fs')
     , async = require('async')
     ,table_validation = require('../validation/tableValidator.js')
     ,describe_table_validation = require('../validation/describeTableValidator.js')
+    ,describe_schema_validation = require('../validation/describeSchemaValidation.js')
     ,exec = require('child_process').exec
     ,search =require('./search.js')
     ,uuidV4 = require('uuid/v4')
@@ -242,6 +243,40 @@ module.exports = {
 
 
         
+    },
+
+    describeSchema: function(describe_schema_object, callback){
+        var validation = describe_schema_validation(describe_schema_object);
+        if(validation){
+            callback(validation);
+            return;
+        }
+
+        var table_search_obj = {};
+        table_search_obj.schema = 'system';
+        table_search_obj.table = 'hdb_table';
+        table_search_obj.hash_attribute = 'id';
+        table_search_obj.search_attribute = 'schema';
+        table_search_obj.search_value = describe_schema_object.schema;
+        table_search_obj.hash_values = [];
+        table_search_obj.get_attributes = ['hash_attribute', 'id', 'name', 'schema'];
+        var table_result = {};
+        search.searchByValue(table_search_obj, function (err, tables) {
+            if (err) {
+                console.error(err);
+                //initialize();
+                return;
+            }
+
+
+            callback(null, tables);
+            return;
+
+
+        });
+
+
+
     },
 
 
