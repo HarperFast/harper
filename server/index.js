@@ -3,12 +3,12 @@
 
 // importing Server class
 const Server = require('./../lib/server/Server'),
-    insert_server = require('./../lib/server/insertServer');
+    tcp_server = require('./../lib/server/tcp_server');
 
 
 var server = new Server();
 
 // Starting our server
-server.start(insert_server, () => {
+server.start(tcp_server, () => {
     console.log(`Server started`);
 });
