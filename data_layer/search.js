@@ -10,6 +10,7 @@ const fs = require('fs')
 
 
 const hash_regex = /[^0-9a-z]/gi;
+const search_regex =  /[^0-9a-z\*_]/gi;
 
 
 // search by hash only
@@ -200,7 +201,8 @@ function searchByValue (search_object, callback) {
     var table_path = base_path + search_object.schema + '/' + search_object.table;
     var value_path = table_path + '/' + search_object.search_attribute;
     //var search_string = search_object.search_value.split('*').join('[A-z,0-9]*');
-    var search_string = search_object.search_value;
+    var search_string = String(search_object.search_value).replace(search_regex, '').substring(0, 4000);
+
     var cmd = 'ls -d ' + value_path + '/' + search_string;
     console.log(cmd)
     exec(cmd, function (error, stdout, stderr) {
@@ -226,7 +228,7 @@ function searchByValue (search_object, callback) {
 
         async.map(results, function (path, caller) {
             //remove this if statmeent after replacing ls with awk.
-            if(path.indexOf('__hdb_hash') >0){
+            if(path.indexOf('__hdb_hash') > 0){
                 caller();
                 return;
             }

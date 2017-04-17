@@ -3,5 +3,6 @@ script_home=$(pwd)
 mv $script_home/node_modules/@harperdb/settings/ $script_home/node_modules/settings
 rm -rf $script_home/node_modules/@harperdb
 #echo $script_home
-sed -ie "/HDB_ADDRESS/ s:\:.*:\:\'0\.0\.0\.0\':" $script_home/settings.js 
-sed -ie "/HDB_ROOT/ s:__dirname.*:\'$(find /opt -name hdb)\',:" $script_home/settings.js
+sed -ie "/PROJECT_DIR/ s:\:.*:\: '\/opt\/harperdb_git\/current',:" $script_home/settings.js
+sed -ie "/HDB_ADDRESS/ s:\:.*:\: \'0\.0\.0\.0\':" $script_home/settings.js 
+sed -ie "/HDB_ROOT/ s:\:.*:\: \'$(find /opt -name hdb)\',:" $script_home/settings.js

@@ -56,6 +56,7 @@ function createData(){
     return {
         schema :  schema,
         table:'person',
+        operation: 'insert',
         hash_attribute: 'id',
         records: objects
     };

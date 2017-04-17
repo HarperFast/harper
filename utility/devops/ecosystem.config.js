@@ -7,8 +7,9 @@ module.exports = {
 
     // First application
     {
-      name      : "HarperDB",
+      name      : "Search",
       script    : "./server/index.js",
+      args	: "search",
       env: {
         COMMON_VARIABLE: "true"
       },
@@ -16,13 +17,27 @@ module.exports = {
         NODE_ENV: "production"
       }
     },
-
-    // Second application
-    {
-      name      : "WEB",
-      script    : "web.js"
-    }
-  ],
+{
+      name      : "Write",
+      script    : "./server/index.js",
+      args	: "write",
+      env: {
+        COMMON_VARIABLE: "true"
+      },
+      env_production : {
+        NODE_ENV: "production"
+      }
+    },
+{
+      name      : "Delete",
+      script    : "./server/index.js",
+      args	: "delete",
+      env: {
+        COMMON_VARIABLE: "true"
+      },
+      env_production : {
+        NODE_ENV: "production"
+      }}],
 
   /**
    * Deployment section
@@ -44,7 +59,7 @@ module.exports = {
       repo : "git@github.com:HarperDB/harperdb.git",
       path : "/opt/harperdb_git",
       "pre-setup" : "rm -rf ./node_modules",
-      "post-deploy" : "npm install && pm2 startOrRestart utility/devops/ecosystem.config.js --only HarperDB",
+      "post-deploy" : "npm install && pm2 startOrRestart utility/devops/ecosystem.config.js",
       env  : {
         NODE_ENV: "dev"
       }
