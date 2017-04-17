@@ -48,9 +48,10 @@ module.exports = {
       user : "ubuntu",
       host : "54.80.74.126",
       ref  : "origin/master",
-      repo : "git@github.com:repo.git:HarperDB/harperdb.git",
+      repo : "git@github.com:HarperDB/harperdb.git",
       path : "/opt/harperdb_git",
-      "post-deploy" : "npm install && pm2 startOrRestart ecosystem.config.js --only HarperDB"
+      "pre-setup" : "rm -rf ./node_modules",
+      "post-deploy" : "npm install && pm2 startOrRestart ecosystem.config.js"
     },
 	dev : {
       user : "harperdb",
