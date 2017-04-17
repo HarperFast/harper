@@ -26,6 +26,7 @@ module.exports ={
                 }
 
                 callback(null, delete_object.hash_value + ' successfully deleted');
+                return;
           });
 
 

@@ -7,8 +7,9 @@ module.exports = {
 
     // First application
     {
-      name      : "HarperDB",
+      name      : "Search",
       script    : "./server/index.js",
+      args	: "search",
       env: {
         COMMON_VARIABLE: "true"
       },
@@ -16,13 +17,27 @@ module.exports = {
         NODE_ENV: "production"
       }
     },
-
-    // Second application
-    {
-      name      : "WEB",
-      script    : "web.js"
-    }
-  ],
+{
+      name      : "Write",
+      script    : "./server/index.js",
+      args	: "write",
+      env: {
+        COMMON_VARIABLE: "true"
+      },
+      env_production : {
+        NODE_ENV: "production"
+      }
+    },
+{
+      name      : "Delete",
+      script    : "./server/index.js",
+      args	: "delete",
+      env: {
+        COMMON_VARIABLE: "true"
+      },
+      env_production : {
+        NODE_ENV: "production"
+      }}],
 
   /**
    * Deployment section
