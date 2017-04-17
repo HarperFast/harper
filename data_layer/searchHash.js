@@ -26,7 +26,7 @@ function callAWK(callback){
     //var files = ['first_name/*/*'];
     var table_path = `${settings.HDB_ROOT}/schema/dev/person/`;
     var staging_path = `${settings.HDB_ROOT}/staging/scripts/search/`;
-    terminal.stdin.write(`bash ${settings.PROJECT_DIR}/bash/search.sh ${table_path} ${staging_path} first_name A* A first_name,last_name`);
+    terminal.stdin.write(`bash ${settings.PROJECT_DIR}/bash/awkFiles.sh ${table_path} ${staging_path} id,first_name,last_name 1006 978 4 10000`);
     terminal.stdin.end();
 }
 
@@ -74,7 +74,7 @@ callAWK(function(err, data){
             });
         }, function(err){
             //console.log(file_data);
-            return parseData(file_data);
+            console.log(parseData(file_data));
         });
     }
 
