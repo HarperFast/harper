@@ -74,7 +74,7 @@ callAWK(function(err, data){
             });
         }, function(err){
             //console.log(file_data);
-            return parseData(file_data);
+            return console.log(parseData(file_data));
         });
     }
 

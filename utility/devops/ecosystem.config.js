@@ -44,13 +44,14 @@ module.exports = {
    * http://pm2.keymetrics.io/docs/usage/deployment/
    */
   deploy : {
-    production : {
-      user : "harperdb",
-      host : "127.0.0.1",
+    aws : {
+      user : "ubuntu",
+      host : "54.80.74.126",
       ref  : "origin/master",
-      repo : "git@github.com:repo.git:HarperDB/harperdb.git",
-      path : "/harperdb",
-      "post-deploy" : "npm install && pm2 startOrRestart ecosystem.config.js --only HarperDB"
+      repo : "git@github.com:HarperDB/harperdb.git",
+      path : "/opt/harperdb_git",
+      "pre-setup" : "rm -rf ./node_modules",
+      "post-deploy" : "npm install && pm2 startOrRestart ecosystem.config.js"
     },
 	dev : {
       user : "harperdb",
