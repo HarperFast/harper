@@ -25,7 +25,7 @@ function callAWK(callback){
 
     //var files = ['first_name/*/*'];
     var table_path = `${settings.HDB_ROOT}/schema/dev/person/`;
-    var staging_path = `${settings.HDB_ROOT}/staging/scripts/search/`;
+    var staging_path = `${settings.HDB_ROOT}/staging/search/dev/person/`;
     terminal.stdin.write(`bash ${settings.PROJECT_DIR}/bash/search.sh ${table_path} ${staging_path} first_name A* A first_name,last_name`);
     terminal.stdin.end();
 }

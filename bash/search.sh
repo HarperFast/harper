@@ -40,7 +40,7 @@ awkFiles() {
     file="$2"
     cd "${table_path}${attribute}/__hdb_hash"
     shift
-
+    mkdir -p ${staging_path}
     awk -v file="$file" 'function basename(file, a, n) {
             n = split(file, a, "/")
             return a[n]

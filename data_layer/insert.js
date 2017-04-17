@@ -7,7 +7,8 @@ const insert_validator = require('../validation/insertValidator.js'),
     settings = require('settings'),
     spawn = require('child_process').spawn,
     util = require('util'),
-    moment = require('moment');
+    moment = require('moment'),
+    mkdirp = require('mkdirp');
 
 const hdb_path = path.join(settings.HDB_ROOT, '/schema');
 const regex = /[^0-9a-z]/gi;
@@ -40,7 +41,7 @@ module.exports = {
 
         //preprocess all record attributes
         checkAttributeSchema(insert_object, function(error, attributes, links){
-            insertObject(attributes, links, function(err, data){
+            insertObject(insert_object.schema, insert_object.table, attributes, links, function(err, data){
                 if(err) {
                     callback(err);
                     return;
@@ -113,55 +114,65 @@ function checkPathExists (path) {
     return fs.existsSync(path);
 }
 
-function insertObject(attribute_array, links, callback) {
+function insertObject(schema, table, attribute_array, links, callback) {
     //TODO verify that object has hash attribute defined, if not throw error
+    let date = new moment();
+    let part_file_name = `${process.pid}-${date.format('HH:mm:ss.' + process.hrtime()[1])}.sh`;
+    let script_path = path.join(settings.HDB_ROOT, `/staging/scripts/${schema}/${table}/${date.format('YYYY-MM-DD')}`);
 
-    var part_file_name = `${process.pid}-${new Date().getTime()}-${process.hrtime()[1]}.sh`;
-    async.parallel([
-        function(caller){
-            var filename = path.join(settings.HDB_ROOT, `/staging/scripts/data-${part_file_name}`);
-            fs.writeFile(filename,attribute_array.join('\n'), function(err, data){
-                if(err) {
-                    caller(err);
-                } else {
-                    caller(null, filename);
-                }
-            });
-        },
-        function(caller){
-            var filename = path.join(settings.HDB_ROOT, `/staging/scripts/link-${process.pid}-${part_file_name}`);
-            fs.writeFile(filename,links.join('\n'), function(err, data){
-                if(err) {
-                    caller(err);
-                } else {
-                    caller(null, filename);
-                }
-            });
-        }
-    ], function(err, results){
-
-        if(err){
+    mkdirp(script_path, function (err) {
+        if (err) {
             callback(err);
-        } else {
-
-            var terminal = spawn('bash');
-
-            terminal.stdout.on('data', function (data) {
-                console.log('stdout: ' + data);
-            });
-
-            terminal.stderr.on('data', function (data) {
-                console.log('stderr: ' + data);
-                callback(data);
-            });
-
-            terminal.on('exit', function (code) {
-
-                callback(null, null);
-            });
-
-            terminal.stdin.write(util.format(insert_script_command, results[0], results[1]));
-            terminal.stdin.end();
+            return;
         }
+
+        async.parallel([
+            function(caller){
+                let filename = path.join(script_path, `data-${part_file_name}`);
+                fs.writeFile(filename,attribute_array.join('\n'), function(err, data){
+                    if(err) {
+                        caller(err);
+                    } else {
+                        caller(null, filename);
+                    }
+                });
+            },
+            function(caller){
+                let filename = path.join(script_path, `link-${part_file_name}`);
+                fs.writeFile(filename,links.join('\n'), function(err, data){
+                    if(err) {
+                        caller(err);
+                    } else {
+                        caller(null, filename);
+                    }
+                });
+            }
+        ], function(err, results){
+
+            if(err){
+                callback(err);
+            } else {
+
+                var terminal = spawn('bash');
+
+                terminal.stdout.on('data', function (data) {
+                    console.log('stdout: ' + data);
+                });
+
+                terminal.stderr.on('data', function (data) {
+                    console.log('stderr: ' + data);
+                    callback(data);
+                });
+
+                terminal.on('exit', function (code) {
+
+                    callback(null, null);
+                });
+
+                terminal.stdin.write(util.format(insert_script_command, results[0], results[1]));
+                terminal.stdin.end();
+            }
+        });
     });
+
 }
