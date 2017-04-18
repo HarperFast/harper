@@ -25,7 +25,7 @@ module.exports = {
   deploy : {
     aws : {
       user : "ubuntu",
-      host : "54.80.74.126",
+      host : "dev.harperdb.io",
       ref  : "origin/master",
       repo : "git@github.com:HarperDB/harperdb.git",
       path : "/opt/harperdb_git",
