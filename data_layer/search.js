@@ -6,11 +6,13 @@ const fs = require('fs')
     , search_validator = require('../validation/searchValidator.js')
     , async = require('async')
     , spawn = require('child_process').spawn,
-    util = require('util');
+    util = require('util'),
+    path = require('path');
 
 
 const hash_regex = /[^0-9a-z]/gi;
 const search_regex =  /[^0-9a-z\*_]/gi;
+const staging_path = `${settings.HDB_ROOT}/staging/scripts/search/`;
 
 
 // search by hash only
@@ -26,83 +28,98 @@ module.exports = {
 
 }
 
+function spawnTerminal(command, callback){
+    let terminal = spawn('bash');
 
+    let stdout_data = '';
+    let stderr_data = '';
+    terminal.stdout.on('data', function (data) {
+        stdout_data += data.toString();
+    });
 
-function searchByHash (search_object, callback) {
-    var hash_stripped = String(search_object.hash_value).replace(hash_regex, '').substring(0, 4000);
+    terminal.stderr.on('data', function (data) {
+        stderr_data += data.toString();
+    });
 
-    var hash_path = base_path +
-        search_object.schema + '/' + search_object.table + '/' + search_object.hash_attribute + '/' + hash_stripped;
-    var validation_error = search_validator(search_object, 'hash');
-    if (validation_error) {
-        callback(validation_error, null);
-        return;
-    }
-
-
-
-    var indexOfHash = search_object.get_attributes.indexOf(search_object.hash_attribute);
-    if (indexOfHash > -1) {
-        search_object.get_attributes.splice(indexOfHash, 1);
-    }
-
-    fs.readdir(hash_path, function (err, data) {
-        if (err) {
-            if(err.errno == -2){
-                callback("schema does not exist", null);
-                return;
-            }
-            console.error('error: ', err, 46);
-            handleError(search_object, err, callback);
-            return;
-        }
-
-        if (!data)
-            callback(null, null);
-
-
-        var object = {};
-        object[search_object.hash_attribute] = search_object.hash_value;
-
-        var table_path = base_path +
-            search_object.schema + '/' + search_object.table;
-
-
-        async.map(search_object.get_attributes, function (attribute, caller) {
-                var attr_path = table_path + '/' + attribute + '/__hdb_hash/' + search_object.hash_value + '.hdb';
-
-                console.time('readattr');
-                readAttribute(attr_path, function (error, data) {
-                    console.timeEnd('readattr');
-
-                    if (err) {
-                        console.error('error',err, 70);
-                        caller(err);
-                        return;
-                    }
-                    object[attribute] = data;
-                    caller();
-
-                    return;
-                });
-
-
-            },
-            function (err, data) {
-                if (err) {
-                    console.error('error:', err, 84);
-                    callback(err, null);
-                    return;
-                }
-
-                callback(null, object);
-                return;
-            });
-
-
+    terminal.on('exit', function (code) {
+        callback(stderr_data, stdout_data);
     });
 
 
+    terminal.stdin.write(command);
+    terminal.stdin.end();
+}
+
+function consolidateData(data_blob, callback){
+    let data_array = [];
+    let data_keys = Object.keys(data_blob);
+    let source_object = data_blob[data_keys[0]];
+
+    Object.keys(source_object).forEach(function(key){
+        let data_object = {};
+
+        data_keys.forEach(function(attribute){
+            data_object[attribute] = data_blob[attribute][key];
+        });
+        data_array.push(data_object);
+    });
+    callback(null, data_array);
+}
+
+function readSearchResultFiles(files, callback){
+    let data_array = files.split("\n");
+    let file_data = {};
+    async.each(data_array, (file, caller)=>{
+        if(!file) {
+            caller();
+            return;
+        }
+
+        fs.readFile(file, (err, data) => {
+            if (err) {
+                caller(err);
+                return;
+            }
+            let attribute = path.basename(file, '.txt').split('.')[0];
+            file_data[attribute] = JSON.parse(`{${data.toString().replace(/,$/, "")}}`);
+            caller(null, null);
+        });
+    }, (err)=>{
+        if(err) {
+            callback(err);
+        }
+        callback(null, file_data);
+    });
+}
+
+function executeSearch(command, callback){
+    async.waterfall([
+        spawnTerminal.bind(null, command),
+        readSearchResultFiles,
+        consolidateData
+    ], (err, data)=>{
+        if(err){
+            callback(err);
+            return;
+        }
+
+        callback(null, data);
+    });
+}
+
+function searchByHash (search_object, callback) {
+    let hash_stripped = String(search_object.hash_value).replace(hash_regex, '').substring(0, 4000);
+    let table_path = `${base_path + search_object.schema}/${search_object.table}/`;
+
+    let command = `bash ${settings.PROJECT_DIR}/bash/searchByHash.sh ${table_path} ${staging_path} ${search_object.get_attributes.join(',')} ${hash_stripped}`;
+    executeSearch(command, (err, data)=>{
+        if(err) {
+            callback(err);
+            return;
+        }
+
+        callback(null, data);
+    });
 }
 
 function searchByHashes(search_object, callback) {
@@ -112,85 +129,39 @@ function searchByHashes(search_object, callback) {
         return;
     }
 
-    var results = [];
+    let table_path = `${base_path + search_object.schema}/${search_object.table}/`;
 
-    var indexOfHash = search_object.get_attributes.indexOf(search_object.hash_attribute);
-    if (indexOfHash > -1) {
-        search_object.get_attributes.splice(indexOfHash, 1);
-    }
-
-
-    async.map(search_object.hash_values, function (hash, caller) {
-        var hash_stripped = String(hash).replace(hash_regex, '').substring(0, 4000);
-        var hash_path = base_path +
-            search_object.schema + '/' + search_object.table + '/' + search_object.hash_attribute + '/' + hash_stripped;
-
-        fs.readdir(hash_path, function (err, data) {
-            if (err) {
-                caller(err);
-                return;
-            }
-
-            if (!data)
-                callback(null, null);
-
-
-            var object = {};
-            object[search_object.hash_attribute] = hash;
-
-            var table_path = base_path +
-                search_object.schema + '/' + search_object.table;
-
-
-            async.map(search_object.get_attributes, function (attribute, caller2) {
-                    var attr_path = table_path + '/' + attribute + '/__hdb_hash/' + hash + '.hdb';
-
-
-                    readAttribute(attr_path, function (error, data) {
-
-                        if (err) {
-                            console.error('error',err, 141 );
-                            caller2(err);
-                            return;
-                        }
-                        object[attribute] = data;
-                        caller2();
-
-                        return;
-                    });
-
-
-                },
-                function (err, data) {
-                    if (err) {
-                        caller(err);
-                        return;
-                    }
-                    results.push(object);
-                    caller();
-                    return;
-                });
-
-
-        });
-
-    }, function (err, data) {
-        if (err) {
-            console.error('error',err, 173);
+    let command = `bash ${settings.PROJECT_DIR}/bash/searchByHash.sh ${table_path} ${staging_path} ${search_object.get_attributes.join(',')} ${search_object.hash_values.join(' ')}`;
+    executeSearch(command, (err, data)=>{
+        if(err) {
             callback(err);
             return;
         }
 
-        callback(null, results);
+        callback(null, data);
+    });
+}
+
+function searchByValue (search_object, callback) {
+    var validation_error = search_validator(search_object, 'value');
+    if (validation_error) {
+        callback(validation_error, null);
         return;
+    }
 
+    let table_path = `${base_path + search_object.schema}/${search_object.table}/`;
+    var search_string = `*${String(search_object.search_value).replace(search_regex, '').substring(0, 4000)}*`;
+    let command = `bash ${settings.PROJECT_DIR}/bash/search.sh ${table_path} ${staging_path} ${search_object.search_attribute} ${search_string} ${search_object.get_attributes.join(',')}`;
+    executeSearch(command, (err, data)=>{
+        if(err) {
+            callback(err);
+            return;
+        }
 
+        callback(null, data);
     });
 
-
-}
-function searchByValue (search_object, callback) {
-    var hash_path = base_path + "/" +
+    /*var hash_path = base_path + "/" +
         search_object.schema + '/' + search_object.table + '/' + search_object.hash_attribute + '/' + search_object.hash_value;
     var validation_error = search_validator(search_object, 'value');
     if (validation_error) {
@@ -254,11 +225,11 @@ function searchByValue (search_object, callback) {
                 return;
             }
 
-            /** var index_of_attr = search_object.get_attributes.indexOf(search_object.search_attribute);
+            /!** var index_of_attr = search_object.get_attributes.indexOf(search_object.search_attribute);
              if (index_of_attr > -1) {
                 search_object.get_attributes.splice(index_of_attr, 1);
 
-            } **/
+            } **!/
 
             searchByHashes(search_object, function (err, data) {
 
@@ -271,7 +242,7 @@ function searchByValue (search_object, callback) {
         });
 
 
-    });
+    });*/
 
 
 }
