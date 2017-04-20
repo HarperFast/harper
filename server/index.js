@@ -11,9 +11,14 @@
     var numPorts = settings.TCP_PORT_RANGE_END - settings.TCP_PORT_RANGE_BEGIN;
     var counter =0;
 
-function conn(socket) {
-    let socket_data = '';
+var port = process.argv[2] ? process.argv[2] : 9925;
 
+net.createServer(conn).listen(port, settings.HDB_ADDRESS);
+
+function conn(socket) {
+    socket.setEncoding('utf8');
+    let socket_data = '';
+    console.log('connected');
     socket.on('error', (err) => {
         console.error(`Socket ${client.name} fail: ${err}`);
     });
@@ -29,6 +34,7 @@ function conn(socket) {
 
         if (data.length <= max_data_size && isJson(socket_data)) {
             let json = JSON.parse(socket_data);
+
             if (!Object.keys(json)[0]) {
                 socket.end('Missing operation');
                 return;
@@ -52,7 +58,7 @@ function conn(socket) {
 
     function handleOperation(json, callback) {
         let payload = json[Object.keys(json)[0]];
-        console.log(payload);
+        //console.log(payload);
         switch (Object.keys(json)[0]) {
             case 'write':
                 insert.insert(payload, function (err, data) {
@@ -93,7 +99,7 @@ function conn(socket) {
         return true;
     }
 }
-
+/*
 if (cluster.isMaster) {
     // Fork workers.
     for (var i = 0; i <= numPorts; i++) {
@@ -105,4 +111,4 @@ if (cluster.isMaster) {
     console.log(port);
     net.createServer(conn).listen(port, settings.HDB_ADDRESS);
     counter++;
-}
+}*/
