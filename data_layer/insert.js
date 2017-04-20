@@ -12,12 +12,12 @@ const insert_validator = require('../validation/insertValidator.js'),
 
 const hdb_path = path.join(settings.HDB_ROOT, '/schema');
 const regex = /[^0-9a-z]/gi;
-const printf_command = 'printf "%s" > %s & ';
+const printf_command = 'printf "%s" > %s';
 const mkdir_command = 'mkdir -p %s';
 const cd_command = 'cd %s';
 const insert_script_command = 'dash %s && nohup sh %s & ';
 const delete_command = 'rm -f %s';
-const symbolic_link_command = 'ln -sfT %s %s & ';
+const symbolic_link_command = 'ln -sfT %s %s';
 const shebang = '#!/usr/bin/env bash';
 const touch_date_command = 'touch -m -h -d "%s" %s';
 
