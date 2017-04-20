@@ -42,7 +42,7 @@ function conn(socket) {
         //socket_data += data;
         insert.insert(JSON.parse(data).write, function (err, results) {
             if(err) {
-                winston.log('error', err);
+                winston.log('error', err.toString());
             }
 
             socket.end(JSON.stringify(results));
