@@ -6,7 +6,14 @@
         hdb_delete = require('../data_layer/delete.js'),
         max_data_size = 65536,
         net = require('net'),
-        cluster = require('cluster');
+        cluster = require('cluster'),
+    winston=require('winston');
+
+winston.configure({
+    transports: [
+        new (winston.transports.File)({ filename: 'error.log' })
+    ]
+});
 
     var numPorts = settings.TCP_PORT_RANGE_END - settings.TCP_PORT_RANGE_BEGIN;
     var counter =0;
@@ -32,6 +39,10 @@ function conn(socket) {
     function onSocketData(data) {
         //socket_data += data;
         insert.insert(JSON.parse(data).write, function (err, results) {
+            if(err) {
+                winston.log('error', err);
+            }
+            winston.log('info', results);
             socket.end(JSON.stringify(results));
             return;
             //callback(err, data);
