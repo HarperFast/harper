@@ -20,14 +20,16 @@ winston.configure({
 
 var port = process.argv[2] ? process.argv[2] : 9925;
 
-net.createServer(conn).listen(port, settings.HDB_ADDRESS);
+net.createServer(conn).listen(port, settings.HDB_ADDRESS).on('error', (error)=>{
+    winston.log('error',`TCP fail: ${error}`);
+});
 
 function conn(socket) {
     socket.setEncoding('utf8');
     let socket_data = '';
     console.log('connected');
     socket.on('error', (err) => {
-        console.error(`Socket ${client.name} fail: ${err}`);
+        winston.log('error',`Socket ${client.name} fail: ${err}`);
     });
 
     socket.on('close', (err) => {
