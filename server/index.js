@@ -30,7 +30,9 @@ function conn(socket) {
     socket.on('data', onSocketData);
 
     function onSocketData(data) {
-        socket_data += data;
+        socket.end('thanks');
+        return;
+        /*socket_data += data;
 
         if (data.length <= max_data_size && isJson(socket_data)) {
             let json = JSON.parse(socket_data);
@@ -53,7 +55,7 @@ function conn(socket) {
             });
 
 
-        }
+        }*/
     }
 
     function handleOperation(json, callback) {
