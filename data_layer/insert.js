@@ -170,7 +170,7 @@ function writeScript(script_name, data, callback){
 }
 
 function executeScripts(files, callback){
-    let terminal = spawn('bash');
+    let terminal = spawn('dash');
 
     terminal.stdout.on('data', function (data) {
         console.log('stdout: ' + data);
