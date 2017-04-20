@@ -31,7 +31,7 @@ function conn(socket) {
 
     function onSocketData(data) {
         //socket_data += data;
-        insert.insert(JSON.parse(data), function (err, results) {
+        insert.insert(JSON.parse(data).write, function (err, results) {
             socket.end(JSON.stringify(results));
             return;
             //callback(err, data);
