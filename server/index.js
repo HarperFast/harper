@@ -44,7 +44,7 @@ function conn(socket) {
             if(err) {
                 winston.log('error', err);
             }
-            winston.log('info', results);
+
             socket.end(JSON.stringify(results));
             return;
             //callback(err, data);
