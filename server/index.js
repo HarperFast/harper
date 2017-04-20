@@ -30,11 +30,13 @@ function conn(socket) {
     socket.on('data', onSocketData);
 
     function onSocketData(data) {
-        socket.end('thanks');
-        return;
-        /*socket_data += data;
-
-        if (data.length <= max_data_size && isJson(socket_data)) {
+        //socket_data += data;
+        insert.insert(JSON.parse(data), function (err, results) {
+            socket.end(JSON.stringify(results));
+            return;
+            //callback(err, data);
+        });
+        /*if (data.length <= max_data_size && isJson(socket_data)) {
             let json = JSON.parse(socket_data);
 
             if (!Object.keys(json)[0]) {
