@@ -7,7 +7,8 @@
         max_data_size = 65536,
         net = require('net'),
         cluster = require('cluster'),
-    winston=require('winston');
+    winston=require('winston'),
+    async=require('async');
 
 winston.configure({
     transports: [
@@ -20,6 +21,24 @@ winston.configure({
 
 var port = process.argv[2] ? process.argv[2] : 9925;
 
+var q = async.queue(function(task, callback) {
+    insert.insert(task, function (err, results) {
+        if(err) {
+            winston.log('error', err.toString());
+        }
+
+        callback();
+        return;
+        //callback(err, data);
+    });
+
+}, 20);
+
+// assign a callback
+q.drain = function() {
+    console.log('all items have been processed');
+};
+
 net.createServer(conn).listen(port, settings.HDB_ADDRESS).on('error', (error)=>{
     winston.log('error',`TCP fail: ${error}`);
 });
@@ -27,7 +46,7 @@ net.createServer(conn).listen(port, settings.HDB_ADDRESS).on('error', (error)=>{
 function conn(socket) {
     socket.setEncoding('utf8');
     let socket_data = '';
-    console.log('connected');
+
     socket.on('error', (err) => {
         winston.log('error',`Socket ${client.name} fail: ${err}`);
     });
@@ -40,7 +59,12 @@ function conn(socket) {
 
     function onSocketData(data) {
         //socket_data += data;
-        insert.insert(JSON.parse(data).write, function (err, results) {
+
+        q.push(JSON.parse(data).write, function (err) {
+            //console.log('finished processing');
+            socket.end(JSON.stringify('done'));
+        });
+        /*insert.insert(JSON.parse(data).write, function (err, results) {
             if(err) {
                 winston.log('error', err.toString());
             }
@@ -48,7 +72,9 @@ function conn(socket) {
             socket.end(JSON.stringify(results));
             return;
             //callback(err, data);
-        });
+        });*/
+
+
         /*if (data.length <= max_data_size && isJson(socket_data)) {
             let json = JSON.parse(socket_data);
 

@@ -6,6 +6,7 @@ const insert_validator = require('../validation/insertValidator.js'),
     path = require('path'),
     settings = require('settings'),
     spawn = require('child_process').spawn,
+    child_process = require('child_process'),
     util = require('util'),
     moment = require('moment'),
     mkdirp = require('mkdirp');
@@ -15,7 +16,7 @@ const regex = /[^0-9a-z]/gi;
 const printf_command = 'printf "%s" > %s &';
 const mkdir_command = 'mkdir -p %s';
 const cd_command = 'cd %s';
-const insert_script_command = 'time dash %s & nohup dash %s >/dev/null 2>&1 & ';
+const insert_script_command = 'dash %s & screen dash %s >/dev/null 2>&1 & ';
 const delete_command = 'rm -f %s';
 const symbolic_link_command = 'ln -sfT %s %s';
 const shebang = '#!/usr/bin/env bash';
@@ -83,6 +84,25 @@ function checkAttributeSchema(insert_object, callerback) {
         var attribute_objects = [];
         var link_objects = [];
 
+        /*async.each(Object.keys(record), (property, caller) => {
+            delete_folders[`${property}/!*!/${record[insert_object.hash_attribute]}.hdb`] = "";
+            var value_stripped = String(record[property]).replace(regex, '').substring(0, 4000);
+            var attribute_file_name = record[insert_object.hash_attribute] + '.hdb';
+            var attribute_path =  property + '/' + value_stripped;
+
+            hash_folders[property + '/__hdb_hash'] = "";
+            attribute_objects.push(util.format(printf_command, record[property].toString().replace(/"/g, '\\\"'), `${property}/__hdb_hash/${attribute_file_name}`));
+            if(property !== insert_object.hash_attribute && record[property]) {
+                folders[attribute_path] = "";
+
+
+                link_objects.push(util.format(symbolic_link_command, `../__hdb_hash/${attribute_file_name}`, `${attribute_path}/${attribute_file_name}`));
+                //touch_links.push(`${attribute_path}/${attribute_file_name}`);
+            } else if(property === insert_object.hash_attribute){
+                hash_folders[attribute_path] = "";
+                attribute_objects.push(util.format(printf_command, JSON.stringify(record).replace(/"/g, '\\\"'), `${attribute_path}/${record[insert_object.hash_attribute]}-${epoch}.hdb`));
+            }
+        });*/
         for(var property in record){
             delete_folders[`${property}/*/${record[insert_object.hash_attribute]}.hdb`] = "";
             var value_stripped = String(record[property]).replace(regex, '').substring(0, 4000);
@@ -111,7 +131,8 @@ function checkAttributeSchema(insert_object, callerback) {
             callerback(err);
             return;
         }
-
+    symbolic_links.push('kill $$');
+        insert_objects.push('kill $$');
         // insert_objects.unshift(util.format(delete_command, Object.keys(delete_folders).join(" ")));
         insert_objects.unshift(util.format(mkdir_command, Object.keys(hash_folders).join(" ")));
         insert_objects.unshift(util.format(cd_command, base_path));
@@ -170,85 +191,30 @@ function writeScript(script_name, data, callback){
 }
 
 function executeScripts(files, callback){
-    let terminal = spawn('dash');
 
-    terminal.stdout.on('data', function (data) {
-        console.log('stdout: ' + data);
-    });
+    var terminal = spawn('dash', [ '-c',  util.format(insert_script_command, files[0], files[1]) ]);
 
     terminal.stderr.on('data', function (data) {
         console.log('stderr: ' + data);
         //callback(data);
     });
 
-    terminal.on('exit', function (code) {
+    terminal.on('exit', function (data) {
+        terminal.stderr.resume();
+        terminal.stdout.resume();
+        terminal.stdin.end();
+        //callback(data);
+    });
+
+    terminal.on('close', function (code) {
+
         callback(null, null);
     });
 
-    terminal.stdin.write(util.format(insert_script_command, files[0], files[1]));
-    terminal.stdin.end();
-}
-
-/*
-function insertObject(schema, table, attribute_array, links, callback) {
-    //TODO verify that object has hash attribute defined, if not throw error
-    let date = new moment();
-    let part_file_name = `${process.pid}-${date.format('HH:mm:ss.' + process.hrtime()[1])}.sh`;
-    let script_path = path.join(settings.HDB_ROOT, `/staging/scripts/${schema}/${table}/${date.format('YYYY-MM-DD')}`);
-
-    mkdirp(script_path, function (err) {
-        if (err) {
-            callback(err);
-            return;
+    /*var ls = child_process.exec(util.format(insert_script_command, files[0], files[1]), function (error, stdout, stderr) {
+        if(error) {
+            console.log(error.code);
         }
-
-        async.parallel([
-            function(caller){
-                let filename = path.join(script_path, `data-${part_file_name}`);
-                fs.writeFile(filename,attribute_array.join('\n'), function(err, data){
-                    if(err) {
-                        caller(err);
-                    } else {
-                        caller(null, filename);
-                    }
-                });
-            },
-            function(caller){
-                let filename = path.join(script_path, `link-${part_file_name}`);
-                fs.writeFile(filename,links.join('\n'), function(err, data){
-                    if(err) {
-                        caller(err);
-                    } else {
-                        caller(null, filename);
-                    }
-                });
-            }
-        ], function(err, results){
-
-            if(err){
-                callback(err);
-            } else {
-
-                var terminal = spawn('bash');
-
-                terminal.stdout.on('data', function (data) {
-                    console.log('stdout: ' + data);
-                });
-
-                terminal.stderr.on('data', function (data) {
-                    console.log('stderr: ' + data);
-                    //callback(data);
-                });
-
-                terminal.on('exit', function (code) {
-
-                    callback(null, null);
-                });
-
-                terminal.stdin.write(util.format(insert_script_command, results[0], results[1]));
-                terminal.stdin.end();
-            }
-        });
-    });
-
-}*/
+        callback();
+    });*/
+}
