@@ -1,14 +1,13 @@
 #!/usr/bin/env node
 'use strict';
-    const     settings = require('settings'),
-        insert = require('../data_layer/insert.js'),
-        search  = require('../data_layer/search.js'),
-        hdb_delete = require('../data_layer/delete.js'),
-        max_data_size = 65536,
-        net = require('net'),
-        cluster = require('cluster'),
-    winston=require('winston'),
-    async=require('async');
+const     settings = require('settings'),
+    insert = require('../data_layer/insert.js'),
+    search  = require('../data_layer/search.js'),
+    hdb_delete = require('../data_layer/delete.js'),
+    max_data_size = 65536,
+    net = require('net'),
+    cluster = require('cluster'),
+    winston=require('winston');
 
 winston.configure({
     transports: [
@@ -16,28 +15,10 @@ winston.configure({
     ]
 });
 
-    var numPorts = settings.TCP_PORT_RANGE_END - settings.TCP_PORT_RANGE_BEGIN;
-    var counter =0;
+var numPorts = settings.TCP_PORT_RANGE_END - settings.TCP_PORT_RANGE_BEGIN;
+var counter =0;
 
 var port = process.argv[2] ? process.argv[2] : 9925;
-
-var q = async.queue(function(task, callback) {
-    insert.insert(task, function (err, results) {
-        if(err) {
-            winston.log('error', err.toString());
-        }
-
-        callback();
-        return;
-        //callback(err, data);
-    });
-
-}, 20);
-
-// assign a callback
-q.drain = function() {
-    console.log('all items have been processed');
-};
 
 net.createServer(conn).listen(port, settings.HDB_ADDRESS).on('error', (error)=>{
     winston.log('error',`TCP fail: ${error}`);
@@ -46,7 +27,7 @@ net.createServer(conn).listen(port, settings.HDB_ADDRESS).on('error', (error)=>{
 function conn(socket) {
     socket.setEncoding('utf8');
     let socket_data = '';
-
+    console.log('connected');
     socket.on('error', (err) => {
         winston.log('error',`Socket ${client.name} fail: ${err}`);
     });
@@ -59,44 +40,37 @@ function conn(socket) {
 
     function onSocketData(data) {
         //socket_data += data;
-
-        q.push(JSON.parse(data).write, function (err) {
-            //console.log('finished processing');
-            socket.end(JSON.stringify('done'));
-        });
-        /*insert.insert(JSON.parse(data).write, function (err, results) {
+        insert.insert(JSON.parse(data).write, function (err, results) {
             if(err) {
-                winston.log('error', err.toString());
+                winston.log('error', err);
             }
 
             socket.end(JSON.stringify(results));
             return;
             //callback(err, data);
-        });*/
-
-
+        });
         /*if (data.length <= max_data_size && isJson(socket_data)) {
-            let json = JSON.parse(socket_data);
+         let json = JSON.parse(socket_data);
 
-            if (!Object.keys(json)[0]) {
-                socket.end('Missing operation');
-                return;
-            }
+         if (!Object.keys(json)[0]) {
+         socket.end('Missing operation');
+         return;
+         }
 
-            handleOperation(json, function (err, data) {
-                if (err) {
-                    console.error(err);
-                    socket.end(JSON.stringify(err));
-                    return;
-                }
-                //console.log(`${client.name} ${data}`);
+         handleOperation(json, function (err, data) {
+         if (err) {
+         console.error(err);
+         socket.end(JSON.stringify(err));
+         return;
+         }
+         //console.log(`${client.name} ${data}`);
 
-                socket.end(JSON.stringify(data));
-                return;
-            });
+         socket.end(JSON.stringify(data));
+         return;
+         });
 
 
-        }*/
+         }*/
     }
 
     function handleOperation(json, callback) {
@@ -143,15 +117,15 @@ function conn(socket) {
     }
 }
 /*
-if (cluster.isMaster) {
-    // Fork workers.
-    for (var i = 0; i <= numPorts; i++) {
-        cluster.fork({port:settings.TCP_PORT_RANGE_BEGIN + i});
-    }
-} else {
+ if (cluster.isMaster) {
+ // Fork workers.
+ for (var i = 0; i <= numPorts; i++) {
+ cluster.fork({port:settings.TCP_PORT_RANGE_BEGIN + i});
+ }
+ } else {
 
-    let port = process.env['port'];
-    console.log(port);
-    net.createServer(conn).listen(port, settings.HDB_ADDRESS);
-    counter++;
-}*/
+ let port = process.env['port'];
+ console.log(port);
+ net.createServer(conn).listen(port, settings.HDB_ADDRESS);
+ counter++;
+ }*/
