@@ -35,16 +35,15 @@ module.exports = {
         //check if schema / table directories exist
         var table_path = path.join(hdb_path, insert_object.schema, insert_object.table);
         /*if (!checkPathExists(table_path)) {
-            callback('Table: ' + insert_object.schema + '.' + insert_object.table + ' does not exist');
-            return;
-        }*/
+         callback('Table: ' + insert_object.schema + '.' + insert_object.table + ' does not exist');
+         return;
+         }*/
         //TODO verify hash_attribute is correct for this table
 
         //preprocess all record attributes
         async.waterfall([
             checkAttributeSchema.bind(null, insert_object),
-            writeScripts.bind(null, insert_object.schema, insert_object.table),
-            executeScripts
+            processData
         ], (err) =>{
             if(err){
                 callback(err);
@@ -53,17 +52,6 @@ module.exports = {
 
             callback(null, `successfully wrote ${insert_object.records.length} records`);
         });
-        /*checkAttributeSchema(insert_object, function(error, attributes, links){
-            insert_object(insert_object.schema, insert_object.table, attributes, links, function(err, data){
-                if(err) {
-                    callback(err);
-                    return;
-                }
-
-                callback(null, `successfully wrote ${insert_object.records.length} records`);
-            });
-        });
-        */
     }
 };
 
@@ -84,137 +72,132 @@ function checkAttributeSchema(insert_object, callerback) {
         var attribute_objects = [];
         var link_objects = [];
 
-        /*async.each(Object.keys(record), (property, caller) => {
-            delete_folders[`${property}/!*!/${record[insert_object.hash_attribute]}.hdb`] = "";
-            var value_stripped = String(record[property]).replace(regex, '').substring(0, 4000);
-            var attribute_file_name = record[insert_object.hash_attribute] + '.hdb';
-            var attribute_path =  property + '/' + value_stripped;
-
-            hash_folders[property + '/__hdb_hash'] = "";
-            attribute_objects.push(util.format(printf_command, record[property].toString().replace(/"/g, '\\\"'), `${property}/__hdb_hash/${attribute_file_name}`));
-            if(property !== insert_object.hash_attribute && record[property]) {
-                folders[attribute_path] = "";
-
-
-                link_objects.push(util.format(symbolic_link_command, `../__hdb_hash/${attribute_file_name}`, `${attribute_path}/${attribute_file_name}`));
-                //touch_links.push(`${attribute_path}/${attribute_file_name}`);
-            } else if(property === insert_object.hash_attribute){
-                hash_folders[attribute_path] = "";
-                attribute_objects.push(util.format(printf_command, JSON.stringify(record).replace(/"/g, '\\\"'), `${attribute_path}/${record[insert_object.hash_attribute]}-${epoch}.hdb`));
-            }
-        });*/
         for(var property in record){
-            delete_folders[`${property}/*/${record[insert_object.hash_attribute]}.hdb`] = "";
             var value_stripped = String(record[property]).replace(regex, '').substring(0, 4000);
             var attribute_file_name = record[insert_object.hash_attribute] + '.hdb';
-            var attribute_path =  property + '/' + value_stripped;
+            var attribute_path =  base_path + property + '/' + value_stripped;
 
-            hash_folders[property + '/__hdb_hash'] = "";
-            attribute_objects.push(util.format(printf_command, record[property].toString().replace(/"/g, '\\\"'), `${property}/__hdb_hash/${attribute_file_name}`));
+            hash_folders[base_path + property + '/__hdb_hash'] = "";
+            attribute_objects.push({file_name:`${base_path + property}/__hdb_hash/${attribute_file_name}`, value:record[property]});
             if(property !== insert_object.hash_attribute && record[property]) {
                 folders[attribute_path] = "";
 
-
-                link_objects.push(util.format(symbolic_link_command, `../__hdb_hash/${attribute_file_name}`, `${attribute_path}/${attribute_file_name}`));
-                //touch_links.push(`${attribute_path}/${attribute_file_name}`);
+                link_objects.push({link:`../__hdb_hash/${attribute_file_name}`, file_name:`${attribute_path}/${attribute_file_name}`});
             } else if(property === insert_object.hash_attribute){
                 hash_folders[attribute_path] = "";
-                attribute_objects.push(util.format(printf_command, JSON.stringify(record).replace(/"/g, '\\\"'), `${attribute_path}/${record[insert_object.hash_attribute]}-${epoch}.hdb`));
+                attribute_objects.push({file_name:`${attribute_path}/${record[insert_object.hash_attribute]}-${epoch}.hdb`, value:JSON.stringify(record)});
             }
         }
-        insert_objects.push(attribute_objects.join('\n'));
-        insert_objects.push('wait');
-        symbolic_links.push(link_objects.join('\n'));
+        insert_objects = insert_objects.concat(attribute_objects);
+        symbolic_links = symbolic_links.concat(link_objects);
         callback();
     }, function(err){
         if(err) {
             callerback(err);
             return;
         }
-    symbolic_links.push('kill $$');
-        insert_objects.push('kill $$');
-        // insert_objects.unshift(util.format(delete_command, Object.keys(delete_folders).join(" ")));
-        insert_objects.unshift(util.format(mkdir_command, Object.keys(hash_folders).join(" ")));
-        insert_objects.unshift(util.format(cd_command, base_path));
+        var data_wrapper = {
+            data_folders:Object.keys(hash_folders),
+            data:insert_objects,
+            link_folders:Object.keys(folders),
+            links:symbolic_links
+        };
 
-        //symbolic_links.push(touch_links.length > 0 ? util.format(touch_date_command, date, touch_links.join(' ')): "");
-
-        symbolic_links.unshift(Object.keys(folders).length > 0 ? util.format(mkdir_command, Object.keys(folders).join(" ")) : "");
-        symbolic_links.unshift(util.format(cd_command, base_path));
-
-        insert_objects.unshift(shebang);
-        symbolic_links.unshift(shebang);
-
-        return callerback(null, insert_objects, symbolic_links);
+        return callerback(null, data_wrapper);
     });
 }
 
-function checkPathExists (path) {
-    return fs.existsSync(path);
+function processData(data_wrapper, callback){
+    async.parallel([
+        writeRawData.bind(null, data_wrapper.data_folders, data_wrapper.data),
+        writeLinks.bind(null, data_wrapper.link_folders, data_wrapper.links),
+    ], (err, results)=>{
+        callback();
+    });
 }
 
-function writeScripts(schema, table, attribute_array, links, callback){
-    let date = new moment();
-    let part_file_name = `${process.pid}-${date.format('HH:mm:ss.' + process.hrtime()[1])}.sh`;
-    let script_path = path.join(settings.HDB_ROOT, `/staging/scripts/${schema}/${table}/${date.format('YYYY-MM-DD')}`);
-    let data_script_path = path.join(script_path, `data-${part_file_name}`);
-    let link_script_path = path.join(script_path, `link-${part_file_name}`);
-    mkdirp(script_path, function (err) {
-        if (err) {
+function writeRawData(folders, data, callback) {
+    async.waterfall([
+        createFolders.bind(null, folders),
+        writeRawDataFiles.bind(null, data)
+    ], (err, results)=>{
+        if(err){
+            callback(err);
+            return;
+        }
+        callback();
+    });
+}
+
+function writeRawDataFiles(data, callback){
+    async.each(data, (attribute, caller)=>{
+        fs.writeFile(attribute.file_name, attribute.value, (err)=>{
+            if(err){
+                caller(err);
+                return;
+            }
+
+            caller();
+        });
+    }, function(err){
+        if(err){
             callback(err);
             return;
         }
 
-        async.parallel([
-            writeScript.bind(null, data_script_path, attribute_array),
-            writeScript.bind(null, link_script_path, links)
-        ], function(err, results){
+        callback();
+    });
+}
 
+function writeLinks(folders, links, callback){
+    async.waterfall([
+        createFolders.bind(null, folders),
+        writeLinkFiles.bind(null, links)
+    ], (err, results)=>{
+        if(err){
+            callback(err);
+            return;
+        }
+        callback();
+    });
+}
+
+function writeLinkFiles(links, callback){
+    async.each(links, (link, caller)=>{
+        fs.symlink(link.link, link.file_name, (err)=>{
             if(err){
-                callback(err);
+                caller(err);
                 return;
             }
 
-            callback(null, results);
+            caller();
         });
-    });
-}
-
-function writeScript(script_name, data, callback){
-    fs.writeFile(script_name,data.join('\n'), function(err, data){
-        if(err) {
+    }, function(err){
+        if(err){
             callback(err);
-        } else {
-            callback(null, script_name);
+            return;
         }
+
+        callback();
     });
 }
 
-function executeScripts(files, callback){
+function createFolders(folders, callback){
+    async.each(folders, (folder, caller)=>{
+        mkdirp(folder, (err)=>{
+            if(err){
+                caller(err);
+                return;
+            }
 
-    var terminal = spawn('dash', [ '-c',  util.format(insert_script_command, files[0], files[1]) ]);
-
-    terminal.stderr.on('data', function (data) {
-        console.log('stderr: ' + data);
-        //callback(data);
-    });
-
-    terminal.on('exit', function (data) {
-        terminal.stderr.resume();
-        terminal.stdout.resume();
-        terminal.stdin.end();
-        //callback(data);
-    });
-
-    terminal.on('close', function (code) {
-
-        callback(null, null);
-    });
-
-    /*var ls = child_process.exec(util.format(insert_script_command, files[0], files[1]), function (error, stdout, stderr) {
-        if(error) {
-            console.log(error.code);
+            caller();
+        });
+    }, function(err){
+        if(err){
+            callback(err);
+            return;
         }
+
         callback();
-    });*/
+    });
 }
