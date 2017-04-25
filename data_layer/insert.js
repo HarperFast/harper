@@ -112,6 +112,10 @@ function processData(data_wrapper, callback){
         writeRawData.bind(null, data_wrapper.data_folders, data_wrapper.data),
         writeLinks.bind(null, data_wrapper.link_folders, data_wrapper.links),
     ], (err, results)=>{
+        if(err) {
+            callback(err);
+            return;
+        }
         callback();
     });
 }
@@ -165,7 +169,7 @@ function writeLinks(folders, links, callback){
 function writeLinkFiles(links, callback){
     async.each(links, (link, caller)=>{
         fs.symlink(link.link, link.file_name, (err)=>{
-            if(err){
+            if(err && err.code !== 'EEXIST'){
                 caller(err);
                 return;
             }
@@ -186,7 +190,7 @@ function createFolders(folders, callback){
     async.each(folders, (folder, caller)=>{
         mkdirp(folder, (err)=>{
             if(err){
-                caller(err);
+                caller(`mkdir on: ${folder} failed ${err}`);
                 return;
             }
 
