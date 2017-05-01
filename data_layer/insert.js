@@ -77,12 +77,12 @@ function checkAttributeSchema(insert_object, callerback) {
             var attribute_file_name = record[insert_object.hash_attribute] + '.hdb';
             var attribute_path =  base_path + property + '/' + value_stripped;
 
-            hash_folders[base_path + property + '/__hdb_hash'] = "";
-            attribute_objects.push({file_name:`${base_path + property}/__hdb_hash/${attribute_file_name}`, value:record[property]});
+            hash_folders[`${base_path}__hdb_hash/${property}`] = "";
+            attribute_objects.push({file_name:`${base_path}__hdb_hash/${property}/${attribute_file_name}`, value:record[property]});
             if(property !== insert_object.hash_attribute && record[property]) {
                 folders[attribute_path] = "";
 
-                link_objects.push({link:`../__hdb_hash/${attribute_file_name}`, file_name:`${attribute_path}/${attribute_file_name}`});
+                link_objects.push({link:`../../__hdb_hash/${property}/${attribute_file_name}`, file_name:`${attribute_path}/${attribute_file_name}`});
             } else if(property === insert_object.hash_attribute){
                 hash_folders[attribute_path] = "";
                 attribute_objects.push({file_name:`${attribute_path}/${record[insert_object.hash_attribute]}-${epoch}.hdb`, value:JSON.stringify(record)});
