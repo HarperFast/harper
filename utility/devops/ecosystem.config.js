@@ -8,7 +8,7 @@ module.exports = {
     // First application
     {
       name      : "Search",
-      script    : "./server/index.js",
+      script    : "./server/express.js",
       env: {
         COMMON_VARIABLE: "true"
       },
