@@ -4,7 +4,7 @@ search_obj.schema = 'dev';
 search_obj.table = 'person';
 search_obj.hash_attribute = 'id';
 search_obj.search_attribute = 'first_name';
-search_obj.search_value = "Ky"
+search_obj.search_value = "*"
 search_obj.hash_values = [];
 search_obj.get_attributes = ['id', 'first_name'];
 
