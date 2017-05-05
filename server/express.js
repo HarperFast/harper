@@ -1,5 +1,5 @@
 const cluster = require('cluster');
-const numCPUs = 3;
+const numCPUs = 5;
 
 if (cluster.isMaster) {
     console.log(`Master ${process.pid} is running`);
@@ -16,23 +16,56 @@ if (cluster.isMaster) {
     const express = require('express'),
         app = express(),
         bodyParser = require('body-parser'),
-        insert = require('../data_layer/insert');
+        write = require('../data_layer/insert').insert,
+        search = require('../data_layer/search');
 
     app.use(bodyParser.json()); // support json encoded bodies
     app.use(bodyParser.urlencoded({extended: true}));
 
     app.post('/', function (req, res) {
-        insert.insert(req.body, function (err, data) {
+        chooseOperation(req.body, (err, operation_function) => {
             if (err) {
                 res.status(500).send(err);
                 return;
             }
 
-            res.status(200).send(JSON.stringify(data));
+            operation_function(req.body, (error, data) => {
+                if (error) {
+                    res.status(500).send(err);
+                    return;
+                }
+
+                res.status(200).send(data);
+            });
         });
-        //console.log(req.body);
 
     });
+
+    function chooseOperation(json, callback) {
+        let operation_function = nullOperation;
+        switch (json.operation) {
+            case 'write':
+                operation_function = write;
+                break;
+            case 'search_by_hash':
+                operation_function = search.searchByHash;
+                break;
+            case 'search_by_hashes':
+                operation_function = search.searchByHashes;
+                break;
+            case 'search_by_value':
+                operation_function = search.searchByValue;
+                break;
+            default:
+                break;
+        }
+
+        callback(null, operation_function);
+    }
+
+    function nullOperation(json, callback) {
+        callback('Invalid operation');
+    }
 
     app.listen(5299, function () {
         console.log('Example app listening on port 5299!')
