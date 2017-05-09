@@ -1,38 +1,47 @@
-/**
- * Created by kyle on 5/1/17.
- */
-var sqliteParser = require('sqlite-parser'),
-    insert = require('../data_layer/insert');
+const sqliteParser = require('sqlite-parser'),
+    insert = require('../data_layer/insert'),
+    schema = require('../data_layer/schema'),
+    search = require('../data_layer/search');
 
 module.exports = {
     evaluateSQL: evaluateSQL,
-}
+};
 
 function evaluateSQL(sql, callback) {
-    console.time('ast');
-    let ast = sqliteParser(sql);
-    console.timeEnd('ast');
-    let sql_function = nullFunction;
-    switch (ast.statement[0].variant) {
-        case 'select':
-            sql_function = convertSelect;
-            break;
-        case 'insert':
-            //TODO add validator for insert, need to make sure columns are specified
-            sql_function = convertInsert;
-            break;
-        default:
-            break;
-    }
-
-    sql_function(ast.statement[0], (err, data) => {
-        if (err) {
+    schema.describeSchema({schema:'dev'}, (err, data)=>{
+        if(err){
             callback(err);
             return;
         }
 
-        callback(null, data);
+        global.hdb_schema = data;
+
+        console.time('ast');
+        let ast = sqliteParser(sql);
+        console.timeEnd('ast');
+        let sql_function = nullFunction;
+        switch (ast.statement[0].variant) {
+            case 'select':
+                sql_function = convertSelect;
+                break;
+            case 'insert':
+                //TODO add validator for insert, need to make sure columns are specified
+                sql_function = convertInsert;
+                break;
+            default:
+                break;
+        }
+
+        sql_function(ast.statement[0], (err, data) => {
+            if (err) {
+                callback(err);
+                return;
+            }
+
+            callback(null, data);
+        });
     });
+
 }
 
 function nullFunction(sql) {
@@ -45,13 +54,12 @@ function convertInsert(statement, callback) {
     insert_object.schema = schema_table[0];
     insert_object.table = schema_table[1];
 
-    let objects = [];
     let columns = statement.into.columns.map((column) => {
         return column.name;
     });
 
     insert_object.records = createDataObjects(columns, statement.result);
-    insert_object.hash_attribute = 'id'
+    insert_object.hash_attribute = 'id';
 
     insert.insert(insert_object, (err, data) => {
         if (err) {
@@ -75,7 +83,6 @@ function convertUpdate(statement, callback) {
 function createDataObjects(columns, expressions) {
     let records = [];
     expressions.forEach((values) => {
-        let column = 0;
         let record = {};
         for (let x = 0; x < values.expression.length; x++) {
             record[columns[x]] = values.expression[x].value;
@@ -96,5 +103,22 @@ function convertSelect(statement, callback) {
         return column.name;
     });
 
-    callback(null, search_object);
+    if(statement.where){
+
+    } else {
+        search_object.search_attribute = global.hdb_schema.filter(function (item) {
+            return item.schema === schema_table[0] &&
+                item.name === schema_table[1];
+        })[0].hash_attribute;
+        search_object.search_value = '*';
+    }
+
+    search.searchByValue(search_object, (err, results)=>{
+        if(err){
+            callback(err);
+            return;
+        }
+
+        callback(null, results);
+    });
 }

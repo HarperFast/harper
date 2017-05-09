@@ -3,8 +3,7 @@ const fs = require('fs')
     , settings = require('settings')
     , base_path = settings.HDB_ROOT + "/schema/"
     , search_validator = require('../validation/searchValidator.js')
-    , async = require('async')
-    , spawn = require('child_process').spawn,
+    , async = require('async'),
     path = require('path'),
     Glob = require('glob').Glob;
 
@@ -22,7 +21,7 @@ module.exports = {
     searchByHash: searchByHash,
     searchByValue:searchByValue,
     searchByHashes:searchByHashes
-}
+};
 
 function searchByHash(search_object, callback){
     let hash_stripped = String(search_object.hash_value).replace(hash_regex, '').substring(0, 4000);
@@ -72,7 +71,8 @@ function searchByValue (search_object, callback) {
     let folder_pattern = `*${search_string}*/*.hdb`;
     let file_pattern = search_string === '*' ? '*' : new RegExp(search_string);
     let table_path = `${base_path}${search_object.schema}/${search_object.table}/`;
-    let search_path = `${table_path + search_object.search_attribute}/`;
+    let search_path = search_object.search_attribute === search_object.hash_attribute ? `${table_path + search_object.search_attribute}/` :
+        `${table_path + '__hdb_hash/' + search_object.search_attribute}/`;
 
     if(search_object.get_attributes.indexOf(search_object.hash_attribute) < 0){
         search_object.get_attributes.push(search_object.hash_attribute);
