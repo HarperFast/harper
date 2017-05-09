@@ -11,6 +11,10 @@ const fs = require('fs')
     , insert = require('../data_layer/insert.js')
     , search = require('../data_layer/search.js');
 
+module.exports = {
+    fireTableTrigger: spinUpTableTrigger
+
+};
 
 function initialize(){
 
@@ -25,7 +29,7 @@ function initialize(){
     search.searchByValue(search_obj, function (err, tables) {
         if (err) {
             console.error(err);
-            //initialize();
+            initialize();
             return;
         }
 
@@ -33,6 +37,7 @@ function initialize(){
            spinUpTableTrigger(table);
 
         },function(err, data){
+            initialize()
 
         });
 
@@ -78,6 +83,7 @@ function spinUpTableTrigger(table){
                 schema.createAttribute(create_attribute_object, function(err, data){
                     if(err){
                         console.error(err);
+                        initialize();
                     }
                     console.log(data);
                 });
@@ -103,6 +109,9 @@ function spinUpTableTrigger(table){
 
     terminal.stdin.write(util.format('inotifywait -m  -e create  %s ', settings.HDB_ROOT + '/schema/' +table.schema + '/' + table.name));
     terminal.stdin.end();
+
+    console.log("trigger fired:" +'inotifywait -m  -e create  %s ', settings.HDB_ROOT + '/schema/' +table.schema + '/' + table.name );
+
 
 }
 

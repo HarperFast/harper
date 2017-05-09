@@ -21,30 +21,29 @@ function mount(hdb_path){
 
     }
     if(fs.existsSync(hdb_path)){
-        makeDirectory(path.join(hdb_path, "hdb"));
-        makeDirectory(path.join(hdb_path, "hdb/staging"));
-        makeDirectory(path.join(hdb_path, "hdb/staging/scripts"));
-        makeDirectory(path.join(hdb_path, "hdb/backup"));
-        makeDirectory(path.join(hdb_path, "hdb/log"));
-        makeDirectory(path.join(hdb_path, "hdb/config"));
-        makeDirectory(path.join(hdb_path, "hdb/doc"));
-        makeDirectory(path.join(hdb_path, "hdb/schema"));
-        makeDirectory(path.join(hdb_path, "hdb/schema/system"));
-        makeDirectory(path.join(hdb_path, "hdb/schema/system/hdb_attribute"));
-        makeDirectory(path.join(hdb_path, "hdb/schema/system/hdb_schema"));
-        makeDirectory(path.join(hdb_path, "hdb/schema/system/hdb_table"));
-        makeDirectory(path.join(hdb_path, "hdb/schema/system/hdb_table/schema"));
-        makeDirectory(path.join(hdb_path, "hdb/schema/system/hdb_table/name"));
-        makeDirectory(path.join(hdb_path, "hdb/schema/system/hdb_table/hash_attribute"));
-        makeDirectory(path.join(hdb_path, "hdb/schema/system/hdb_user"));
-        makeDirectory(path.join(hdb_path, "hdb/schema/system/name_index"));
+        makeDirectory(path.join(hdb_path, "staging"));
+        makeDirectory(path.join(hdb_path, "staging/scripts"));
+        makeDirectory(path.join(hdb_path, "backup"));
+        makeDirectory(path.join(hdb_path, "log"));
+        makeDirectory(path.join(hdb_path, "config"));
+        makeDirectory(path.join(hdb_path, "doc"));
+        makeDirectory(path.join(hdb_path, "schema"));
+        makeDirectory(path.join(hdb_path, "schema/system"));
+        makeDirectory(path.join(hdb_path, "schema/system/hdb_attribute"));
+        makeDirectory(path.join(hdb_path, "schema/system/hdb_schema"));
+        makeDirectory(path.join(hdb_path, "schema/system/hdb_table"));
+        makeDirectory(path.join(hdb_path, "schema/system/hdb_table/schema"));
+        makeDirectory(path.join(hdb_path, "schema/system/hdb_table/name"));
+        makeDirectory(path.join(hdb_path, "schema/system/hdb_table/hash_attribute"));
+        makeDirectory(path.join(hdb_path, "schema/system/hdb_user"));
+        makeDirectory(path.join(hdb_path, "schema/system/name_index"));
     }
 
 
 }
 
 
-mount(settings.PROJECT_DIR);
+mount(settings.HDB_ROOT);
 
 
 

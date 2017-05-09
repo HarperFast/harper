@@ -1,27 +1,27 @@
-# Node.js app Docker file
+# HarperDB Docker file
+# In HarperDB repo. run: sudo docker build .
+# Run Image after build with:
+# sudo docker run -d -v /path/to/host/harperdb/data/dir:/opt/HarperDB/hdb -p 8080:5299 imagenumber_from_sudo docker images
 
 FROM ubuntu
 
 
 ENV DEBIAN_FRONTEND noninteractive
 
-RUN apt-get update
-RUN apt-get -qq update
-RUN apt-get install -y curl
-# TODO could uninstall some build dependencies
-RUN curl -sL https://deb.nodesource.com/setup_7.x | /bin/bash -
-RUN apt-get install -y nodejs
+RUN apt-get update && apt-get install -y curl \
+&& curl -sL https://deb.nodesource.com/setup_7.x | /bin/bash - \
+&& apt-get install -y nodejs
 
-VOLUME ["/harperdb","/opt/HarperDB/hdb"]
+VOLUME ["/opt/HarperDB/hdb"]
 
-ADD . /haperdb
-RUN cd /harperdb && npm install -g npm-cli-login && npm install -g pm2
-RUN NPM_USER=zaxary NPM_PASS=BFfsng5KFaKGJXQ0A15UqRqp NPM_EMAIL=zachary@harperdb.io npm-cli-login && npm install
-
+ADD . /opt/harperdb/
+RUN cd /opt/harperdb && npm install -g npm-cli-login && npm install -g pm2 \
+&& NPM_USER=zaxary NPM_PASS=BFfsng5KFaKGJXQ0A15UqRqp NPM_EMAIL=zachary@harperdb.io npm-cli-login \
+&& npm install
 
 
 EXPOSE 5299
 
-WORKDIR /harperdb
+WORKDIR /opt/harperdb
 
-CMD ["pm2", "start utility/devops/ecosystem.config.js"]
+CMD ["pm2-docker","utility/devops/ecosystem.config.js"]
