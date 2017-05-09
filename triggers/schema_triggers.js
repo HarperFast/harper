@@ -9,7 +9,9 @@ const fs = require('fs')
     , util = require('util')
     , schema = require('../data_layer/schema')
     , insert = require('../data_layer/insert.js')
-    , search = require('../data_layer/search.js');
+    , search = require('../data_layer/search.js')
+    ,attribute_trigger = require('./attribute_trigger');
+
 
 
 function initalize() {
@@ -30,7 +32,7 @@ function initalize() {
 
 
     terminal.on('exit', function (code) {
-        //initalize();
+        initalize();
     });
 
     terminal.stdin.write(util.format('inotifywait -m -r -e create -e delete -e move -e moved_from %s ', settings.HDB_ROOT + '/schema/system'));
@@ -81,10 +83,7 @@ function eventHandler(data) {
 function systemHandleEvent(path, file, event) {
 
 
-        if (path.indexOf('hdb_attribute') > 0) {
-            console.log('attr event' + data);
-            return;
-        }
+
 
         if (path.indexOf('hdb_table/id') > 0) {
             fs.readFile(path + file.replace('\n', ''), 'utf8', function (err, data) {
@@ -103,11 +102,18 @@ function systemHandleEvent(path, file, event) {
                 console.log('TABLE OBJECT: ' + JSON.stringify(tableObject));
                 if (event == 'CREATE') {
                     schema.createTableStructure(table_object, function (err, result) {
-                        if (err)
+                        if (err){
                             console.error('createTableError:' + err);
+                        }else{
+
+                            attribute_trigger.fireTableTrigger(tableObject);
+
+                        }
 
 
                     });
+
+
 
 
                 }else{
