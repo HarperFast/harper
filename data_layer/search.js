@@ -63,12 +63,12 @@ function searchByHashes(search_object, callback){
 function searchByValue (search_object, callback) {
     let validation_error = search_validator(search_object, 'value');
     if (validation_error) {
-        callback(validation_error, null);
+        callback(validation_error);
         return;
     }
 
     let search_string = String(search_object.search_value).replace(search_regex, '').substring(0, 4000);
-    let folder_pattern = `*${search_string}*/*.hdb`;
+    let folder_pattern = search_string === '*' ? '*.hdb' : `*${search_string}*/*.hdb`;
     let file_pattern = search_string === '*' ? '*' : new RegExp(search_string);
     let table_path = `${base_path}${search_object.schema}/${search_object.table}/`;
     let search_path = search_object.search_attribute === search_object.hash_attribute ? `${table_path + '__hdb_hash/' + search_object.search_attribute}/` :
@@ -96,7 +96,7 @@ function searchByValue (search_object, callback) {
 function consolidateData(hash_attribute, attributes_data, callback){
     let data_array = [];
     let data_keys = Object.keys(attributes_data);
-    let ids = Object.keys(attributes_data[hash_attribute]);
+    let ids = Object.keys(attributes_data[hash_attribute] ? attributes_data[hash_attribute] : attributes_data[Object.keys(attributes_data)[0]]);
 
     ids.forEach(function(key){
         let data_object = {};
@@ -136,7 +136,11 @@ function readAttributeFiles(table_path, attribute, hash_files, callback){
     async.each(hash_files, (file, caller)=>{
         fs.readFile(`${table_path}__hdb_hash/${attribute}/${file}.hdb`, (error, data)=>{
             if(error){
-                caller(error);
+                if(error.code === 'ENOENT'){
+                    caller(null, null);
+                } else {
+                    caller(error);
+                }
                 return;
             }
 

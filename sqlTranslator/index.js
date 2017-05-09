@@ -1,6 +1,6 @@
 const sqliteParser = require('sqlite-parser'),
     insert = require('../data_layer/insert'),
-    schema = require('../data_layer/schema'),
+    global_schema = require('../utility/globalSchema'),
     search = require('../data_layer/search');
 
 module.exports = {
@@ -8,14 +8,25 @@ module.exports = {
 };
 
 function evaluateSQL(sql, callback) {
-    schema.describeSchema({schema:'dev'}, (err, data)=>{
+    global_schema.setSchemaDataToGlobal((err, data)=>{
         if(err){
             callback(err);
             return;
         }
 
-        global.hdb_schema = data;
+        processSQL(sql, (error, results)=>{
+            if(error){
+                callback(error);
+                return;
+            }
 
+            callback(null, results);
+        });
+    });
+}
+
+function processSQL(sql, callback){
+    try {
         console.time('ast');
         let ast = sqliteParser(sql);
         console.timeEnd('ast');
@@ -40,8 +51,9 @@ function evaluateSQL(sql, callback) {
 
             callback(null, data);
         });
-    });
-
+    } catch(e){
+        callback(e);
+    }
 }
 
 function nullFunction(sql) {
@@ -103,13 +115,17 @@ function convertSelect(statement, callback) {
         return column.name;
     });
 
+    let table_info = global.hdb_schema.filter(function (item) {
+        return item.schema === schema_table[0] &&
+            item.name === schema_table[1];
+    })[0];
+
+    search_object.hash_attribute = table_info.hash_attribute;
+
     if(statement.where){
 
     } else {
-        search_object.search_attribute = global.hdb_schema.filter(function (item) {
-            return item.schema === schema_table[0] &&
-                item.name === schema_table[1];
-        })[0].hash_attribute;
+        search_object.search_attribute = table_info.hash_attribute;
         search_object.search_value = '*';
     }
 
