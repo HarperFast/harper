@@ -29,7 +29,7 @@ function initialize(){
     search.searchByValue(search_obj, function (err, tables) {
         if (err) {
             console.error(err);
-            initialize();
+            //initialize();
             return;
         }
 
@@ -37,7 +37,8 @@ function initialize(){
            spinUpTableTrigger(table);
 
         },function(err, data){
-            initialize()
+            return;
+            //initialize()
 
         });
 
@@ -52,6 +53,8 @@ function initialize(){
 
 
 function spinUpTableTrigger(table){
+
+
 
     var terminal = spawn('bash');
 
@@ -83,7 +86,7 @@ function spinUpTableTrigger(table){
                 schema.createAttribute(create_attribute_object, function(err, data){
                     if(err){
                         console.error(err);
-                        initialize();
+                        //initialize();
                     }
                     console.log(data);
                 });
@@ -106,6 +109,7 @@ function spinUpTableTrigger(table){
     terminal.on('exit', function (code) {
         //initalize();
     });
+
 
     terminal.stdin.write(util.format('inotifywait -m  -e create  %s ', settings.HDB_ROOT + '/schema/' +table.schema + '/' + table.name));
     terminal.stdin.end();

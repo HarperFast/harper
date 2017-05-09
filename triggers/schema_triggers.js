@@ -32,7 +32,7 @@ function initalize() {
 
 
     terminal.on('exit', function (code) {
-        initalize();
+       // initalize();
     });
 
     terminal.stdin.write(util.format('inotifywait -m -r -e create -e delete -e move -e moved_from %s ', settings.HDB_ROOT + '/schema/system'));
@@ -133,12 +133,13 @@ function systemHandleEvent(path, file, event) {
 
         if (path.indexOf('hdb_schema/name') > 0) {
             fs.readFile(path + file.replace('\n', ''), 'utf8', function (err, data) {
+                var dataValue = '' + data;
                 if (err) {
                     console.error('readFileError' + err);
                     return;
                 }
-
-                var schema_object = {"schema": JSON.parse(data).name};
+                console.log("i am the offending data:" + dataValue);
+                var schema_object = {"schema": JSON.parse(dataValue).name};
                 if (event == 'CREATE') {
                     schema.createSchemaStructure(schema_object, function (err, result) {
                         if (err){
