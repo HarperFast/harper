@@ -4,7 +4,7 @@ var schema_value = 'dev';
 var table = 'person';
 
 
-
+// author sgeezy
 
 
 function deleteTest(delete_obj, callback){
