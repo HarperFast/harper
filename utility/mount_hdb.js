@@ -23,6 +23,7 @@ function mount(hdb_path){
     if(fs.existsSync(hdb_path)){
         makeDirectory(path.join(hdb_path, "staging"));
         makeDirectory(path.join(hdb_path, "staging/scripts"));
+        makeDirectory(path.join(hdb_path, "staging/symlink_eraser"));
         makeDirectory(path.join(hdb_path, "backup"));
         makeDirectory(path.join(hdb_path, "log"));
         makeDirectory(path.join(hdb_path, "config"));
