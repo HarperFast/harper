@@ -1,18 +1,15 @@
 const fs = require('fs')
-    ,settings = require('settings')
-    ,validate = require('validate.js')
-    ,insert = require('./insert.js')
+    , settings = require('settings')
+    , validate = require('validate.js')
+    , insert = require('./insert.js')
     , async = require('async')
-    ,table_validation = require('../validation/tableValidator.js')
-    ,describe_table_validation = require('../validation/describeTableValidator.js')
-    ,describe_schema_validation = require('../validation/describeSchemaValidation.js')
-    ,exec = require('child_process').exec
-    ,search =require('./search.js')
-    ,uuidV4 = require('uuid/v4')
-    ,attribute_validation = require('../validation/attributeInsertValidator.js');
-
-
-
+    , table_validation = require('../validation/tableValidator.js')
+    , describe_table_validation = require('../validation/describeTableValidator.js')
+    , describe_schema_validation = require('../validation/describeSchemaValidation.js')
+    , exec = require('child_process').exec
+    , search = require('./search.js')
+    , uuidV4 = require('uuid/v4')
+    , attribute_validation = require('../validation/attributeInsertValidator.js');
 
 
 var schema_constraints = {
@@ -24,10 +21,9 @@ var schema_constraints = {
 };
 
 
-
 var drop_table_constraints = {
-    schema : {
-        presence : true,
+    schema: {
+        presence: true,
         format: "[\\w\\-\\_]+",
         exclusion: {
             within: ["system"],
@@ -36,15 +32,15 @@ var drop_table_constraints = {
 
     },
 
-    table : {
-        presence : true,
+    table: {
+        presence: true,
         format: "[\\w\\-\\_]+",
 
     }
 };
 
 module.exports = {
-    createSchema: function(schema_create_object, callback) {
+    createSchema: function (schema_create_object, callback) {
 
 
         var validation_error = validate(schema_create_object, schema_constraints);
@@ -59,8 +55,8 @@ module.exports = {
         search_obj.hash_attribute = 'name';
         search_obj.hash_value = schema_create_object.schema;
         search_obj.get_attributes = ['name'];
-        search.searchByHash(search_obj, function(err,data){
-            if(data && data.length > 1){
+        search.searchByHash(search_obj, function (err, data) {
+            if (data && data.length > 1) {
                 callback("schema already exsits");
                 return;
             }
@@ -79,12 +75,10 @@ module.exports = {
         });
 
 
-
-
     },
 
     // create folder structrue
-    createSchemaStructure: function(schema_create_object, callback){
+    createSchemaStructure: function (schema_create_object, callback) {
         var validation_error = validate(schema_create_object, schema_constraints);
         if (validation_error) {
             callback(validation_error, null);
@@ -92,13 +86,13 @@ module.exports = {
         }
 
         var schema = schema_create_object.schema;
-        fs.mkdir(settings.HDB_ROOT +'/schema/' + schema, function(err, data){
-            if(err){
-                if(err.errno == -17){
+        fs.mkdir(settings.HDB_ROOT + '/schema/' + schema, function (err, data) {
+            if (err) {
+                if (err.errno == -17) {
                     callback("schema already exists", null);
                     return;
 
-                }else{
+                } else {
                     callback(err.message, null);
                     return;
                 }
@@ -111,21 +105,17 @@ module.exports = {
     },
 
 
-    dropSchema: function(drop_schema_object, callback) {
-
+    dropSchema: function (drop_schema_object, callback) {
 
 
         var validation_error = validate(drop_schema_object, constraints);
-        if(validation_error){
+        if (validation_error) {
             callback(validation_error, null);
             return;
         }
 
 
         var schema = drop_schema_object.schema;
-
-
-
 
 
     },
@@ -133,17 +123,16 @@ module.exports = {
     // need to listen to https://nodejs.org/api/events.html#events_event_newlistener for the insert of a file
     // this event will  then call the code below
 
-    deleteSchemaStructure: function(drop_schema_object, callback) {
+    deleteSchemaStructure: function (drop_schema_object, callback) {
 
         var validation_error = validate(drop_schema_object, schema_constraints);
-        if(validation_error){
+        if (validation_error) {
             callback(validation_error, null);
             return;
         }
 
 
         var schema = drop_schema_object.schema;
-
 
 
         var deleteFolderRecursive = function (path, root) {
@@ -158,11 +147,11 @@ module.exports = {
                 });
 
                 fs.rmdirSync(path);
-                if(root)
+                if (root)
                     return callback(null, "success");
 
 
-            }else{
+            } else {
                 callback("schema does not exist");
                 return;
             }
@@ -171,83 +160,13 @@ module.exports = {
         deleteFolderRecursive(settings.HDB_ROOT + '/schema/' + schema, true);
 
 
-    }, 
-    
-    describeTable: function(describe_table_object, callback){
-        var validation = describe_table_validation(describe_table_object);
-        if(validation){
-            callback(validation);
-            return;
-        }
-
-                var table_search_obj = {};
-                table_search_obj.schema = 'system';
-                table_search_obj.table = 'hdb_table';
-                table_search_obj.hash_attribute = 'id';
-                table_search_obj.search_attribute = 'name';
-                table_search_obj.search_value = describe_table_object.table;
-                table_search_obj.hash_values = [];
-                table_search_obj.get_attributes = ['hash_attribute', 'id', 'name', 'schema'];
-                var table_result = {};
-                search.searchByValue(table_search_obj, function (err, tables) {
-                    if (err) {
-                        console.error(err);
-                        //initialize();
-                        return;
-                    }
-
-                    async.map(tables, function(table, caller){
-                        if(table.schema == describe_table_object.schema){
-                            table_result = table;
-                        }
-                        caller();
-
-                    },function(err, data){
-                        if(err){
-                            callback(err);
-                            return;
-                        }
-
-                        var attribute_search_obj = {};
-                        attribute_search_obj.schema = 'system';
-                        attribute_search_obj.table = 'hdb_attribute';
-                        attribute_search_obj.hash_attribute = 'id';
-                        attribute_search_obj.search_attribute = 'schema_table';
-                        attribute_search_obj.search_value = describe_table_object.schema + "." + describe_table_object.table;
-                        attribute_search_obj.get_attributes = ['attribute', 'id', 'schema', 'table', 'schema_table'];
-
-
-                        search.searchByValue(attribute_search_obj, function (err, attributes) {
-                            if (err) {
-                                console.error(err);
-                                //initialize();
-                                return;
-                            }
-
-                            table_result.attributes = attributes
-                            callback(null, table_result);
-
-
-
-
-                        });
-
-                    });
-
-
-
-                });
-
-
-
-
-
-        
     },
 
-    describeSchema: function(describe_schema_object, callback){
+    describeTable: descTable,
+
+    describeSchema: function (describe_schema_object, callback) {
         var validation = describe_schema_validation(describe_schema_object);
-        if(validation){
+        if (validation) {
             callback(validation);
             return;
         }
@@ -276,9 +195,7 @@ module.exports = {
         });
 
 
-
     },
-
 
 
     //need to insert record in hdb_table
@@ -298,10 +215,10 @@ module.exports = {
         search_obj.search_attribute = 'name';
         search_obj.search_value = create_table_object.table;
         search_obj.get_attributes = ['name', 'schema'];
-        search.searchByValue(search_obj, function(err,data){
-            if(data){
-                for(item in data){
-                   if(data[item].schema == create_table_object.schema){
+        search.searchByValue(search_obj, function (err, data) {
+            if (data) {
+                for (item in data) {
+                    if (data[item].schema == create_table_object.schema) {
                         callback('Table already exists');
                         return;
                     }
@@ -325,9 +242,7 @@ module.exports = {
             });
 
 
-
         });
-
 
 
     },
@@ -341,7 +256,7 @@ module.exports = {
             callback(validator);
             return;
         }
-        fs.mkdir(settings.HDB_ROOT +'/schema/' + create_table_object.schema + '/' + create_table_object.table, function (err, data) {
+        fs.mkdir(settings.HDB_ROOT + '/schema/' + create_table_object.schema + '/' + create_table_object.table, function (err, data) {
             if (err) {
                 if (err.errno == -2) {
                     callback("schema does not exist", null);
@@ -364,13 +279,12 @@ module.exports = {
         });
     },
 
-    dropTable:   function (drop_table_object, callback)
-    {
+    dropTable: function (drop_table_object, callback) {
 
         // need to add logic to remove files from system tables.
 
         var validation_error = validate(drop_table_object, drop_table_constraints);
-        if(validation_error){
+        if (validation_error) {
             callback(validation_error, null);
             return;
         }
@@ -380,16 +294,15 @@ module.exports = {
         var table = drop_table_object.table;
 
 
-
     },
 
     // need to listen to https://nodejs.org/api/events.html#events_event_newlistener for the insert of a file
     // this event will  then call the code below
 
-    deleteTableStructure:   function  (drop_table_object, callback) {
+    deleteTableStructure: function (drop_table_object, callback) {
 
         var validation_error = validate(drop_table_object, constraints);
-        if(validation_error){
+        if (validation_error) {
             callback(validation_error, null);
             return;
         }
@@ -410,29 +323,29 @@ module.exports = {
                 });
 
                 fs.rmdirSync(path);
-                if(root)
+                if (root)
                     return callback(null, "success");
 
 
-            }else{
+            } else {
                 callback("table does not exist");
                 return;
             }
         }
 
-        if (fs.existsSync(settings.HDB_ROOT + '/schema/'+  schema + "/")) {
+        if (fs.existsSync(settings.HDB_ROOT + '/schema/' + schema + "/")) {
             var path = settings.HDB_ROOT + '/schema/' + schema + "/" + table;
             deleteFolderRecursive(path, true);
-        }else{
+        } else {
             callback("schema does not exist");
 
         }
 
     },
-    createAttribute: function (create_attribute_object, callback){
+    createAttribute: function (create_attribute_object, callback) {
 
         var validation_error = attribute_validation(create_attribute_object);
-        if(validation_error){
+        if (validation_error) {
             callback(validation_error, null);
             return;
         }
@@ -454,8 +367,127 @@ module.exports = {
             console.log(result);
             callback(err, result);
         });
+    },
+    describeAll: function (callback) {
+
+        var table_search_obj = {};
+        table_search_obj.schema = 'system';
+        table_search_obj.table = 'hdb_table';
+        table_search_obj.hash_attribute = 'id';
+        table_search_obj.search_attribute = 'id';
+        table_search_obj.search_value = '*';
+        table_search_obj.hash_values = [];
+        table_search_obj.get_attributes = ['hash_attribute', 'id', 'name', 'schema'];
+        search.searchByValue(table_search_obj, function (err, tables) {
+            if (err) {
+                console.error(err);
+                //initialize();
+                return;
+            }
+
+
+            var t_results = [];
+            async.map(tables, function (table, caller) {
+                descTable({"schema": table.schema, "table": table.name}, function (err, desc) {
+                    if (err) {
+                        caller(err)
+                        return;
+                    }
+                    t_results.push(desc);
+                    caller();
+
+                })
+
+            }, function (err, data) {
+                if (err) {
+                    callback(err);
+                    return;
+                }
+
+                var hdb_description = {};
+                for (t in t_results) {
+                    if (hdb_description[t_results[t].schema] == null) {
+                        hdb_description[t_results[t].schema] = {};
+
+                    }
+
+                    hdb_description[t_results[t].schema][t_results[t].name] = t_results[t];
+
+
+
+                }
+                callback(null, hdb_description);
+
+            });
+
+
+        });
+
+
     }
-
-
 };
 
+function descTable(describe_table_object, callback) {
+    var validation = describe_table_validation(describe_table_object);
+    if (validation) {
+        callback(validation);
+        return;
+    }
+
+    var table_search_obj = {};
+    table_search_obj.schema = 'system';
+    table_search_obj.table = 'hdb_table';
+    table_search_obj.hash_attribute = 'id';
+    table_search_obj.search_attribute = 'name';
+    table_search_obj.search_value = describe_table_object.table;
+    table_search_obj.hash_values = [];
+    table_search_obj.get_attributes = ['hash_attribute', 'id', 'name', 'schema'];
+    var table_result = {};
+    search.searchByValue(table_search_obj, function (err, tables) {
+        if (err) {
+            console.error(err);
+            //initialize();
+            return;
+        }
+
+        async.map(tables, function (table, caller) {
+            if (table.schema == describe_table_object.schema) {
+                table_result = table;
+            }
+            caller();
+
+        }, function (err, data) {
+            if (err) {
+                callback(err);
+                return;
+            }
+
+            var attribute_search_obj = {};
+            attribute_search_obj.schema = 'system';
+            attribute_search_obj.table = 'hdb_attribute';
+            attribute_search_obj.hash_attribute = 'id';
+            attribute_search_obj.search_attribute = 'schema_table';
+            attribute_search_obj.search_value = describe_table_object.schema + "." + describe_table_object.table;
+            attribute_search_obj.get_attributes = ['attribute'];
+
+
+            search.searchByValue(attribute_search_obj, function (err, attributes) {
+                if (err) {
+                    console.error(err);
+                    //initialize();
+                    return;
+                }
+
+                table_result.attributes = attributes
+                callback(null, table_result);
+
+
+            });
+
+        });
+
+
+    });
+
+
+}

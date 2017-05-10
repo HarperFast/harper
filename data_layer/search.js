@@ -69,7 +69,7 @@ function searchByValue (search_object, callback) {
 
     let search_string = String(search_object.search_value).replace(search_regex, '').substring(0, 4000);
     let folder_pattern = search_string === '*' ? '*.hdb' : `*${search_string}*/*.hdb`;
-    let file_pattern = search_string === '*' ? '*' : new RegExp(search_string);
+    let file_pattern = search_string === '*' ? '*' : new RegExp(search_object.search_value);
     let table_path = `${base_path}${search_object.schema}/${search_object.table}/`;
     let search_path = search_object.search_attribute === search_object.hash_attribute ? `${table_path + '__hdb_hash/' + search_object.search_attribute}/` :
         `${table_path + search_object.search_attribute}/`;
