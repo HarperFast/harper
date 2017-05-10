@@ -4,11 +4,7 @@ var schema_value = 'dev';
 var table = 'person';
 
 
-function describeSchema(schema_val){
-    schema.describeSchema ({"schema":schema_val}, function(err, result){
-            console.log(result);
-    });
-}
+// author sgeezy
 
 
 function deleteTest(delete_obj, callback){
@@ -94,7 +90,6 @@ function createTable(callback){
     });
 }
 
-
 createSchema(function(err, data){
     if(err){
         console.log("ERROR: " + err);
@@ -113,4 +108,3 @@ createSchema(function(err, data){
 //deleteTest({"schema": "test_schema_8", "table" : "test_table_8"});
 
 
-//describeSchema("dev2")
