@@ -7,7 +7,7 @@ module.exports = {
 
     // First application
     {
-      name      : "Search",
+      name      : "HarperDB",
       script    : "./server/express.js",
       env: {
         COMMON_VARIABLE: "true"
