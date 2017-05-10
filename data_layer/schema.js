@@ -60,7 +60,7 @@ module.exports = {
         search_obj.hash_value = schema_create_object.schema;
         search_obj.get_attributes = ['name'];
         search.searchByHash(search_obj, function(err,data){
-            if(data){
+            if(data && data.length > 1){
                 callback("schema already exsits");
                 return;
             }
@@ -135,7 +135,7 @@ module.exports = {
 
     deleteSchemaStructure: function(drop_schema_object, callback) {
 
-        var validation_error = validate(drop_schema_object, constraints);
+        var validation_error = validate(drop_schema_object, schema_constraints);
         if(validation_error){
             callback(validation_error, null);
             return;

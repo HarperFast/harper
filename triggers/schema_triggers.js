@@ -132,14 +132,9 @@ function systemHandleEvent(path, file, event) {
         }
 
         if (path.indexOf('hdb_schema/name') > 0) {
-            fs.readFile(path + file.replace('\n', ''), 'utf8', function (err, data) {
-                var dataValue = '' + data;
-                if (err) {
-                    console.error('readFileError' + err);
-                    return;
-                }
-                console.log("i am the offending data:" + dataValue);
-                var schema_object = {"schema": JSON.parse(dataValue).name};
+
+
+                var schema_object = {"schema": file.split("-")[0]};
                 if (event == 'CREATE') {
                     schema.createSchemaStructure(schema_object, function (err, result) {
                         if (err){
@@ -154,7 +149,7 @@ function systemHandleEvent(path, file, event) {
                 }else{
                     schema.deleteSchemaStructure(schema_object, function (err, result) {
                         if (err)
-                            console.error('deleteSchemaErr' + rerr);
+                            console.error('deleteSchemaErr' + err);
 
 
                     });
@@ -162,7 +157,7 @@ function systemHandleEvent(path, file, event) {
 
 
 
-            });
+
 
 
 
