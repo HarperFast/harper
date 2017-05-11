@@ -15,7 +15,7 @@
     "body-parser": "^1.17.1",
     "chunk": "0.0.2",
     "express": "^4.15.2",
-    "glob": "^7.1.1",
+    "globby": "^6.1.0",
     "mkdirp": "^0.5.1",
     "moment": "^2.17.1",
     "sqlite-parser": "^1.0.0",

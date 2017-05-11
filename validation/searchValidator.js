@@ -1,7 +1,7 @@
 const validate = require('validate.js');
 
 
-var search_by_hash_constraints = {
+let search_by_hash_constraints = {
     schema: {
         presence: true,
         format: "[\\w\\-\\_]+"
@@ -26,7 +26,7 @@ var search_by_hash_constraints = {
 };
 
 
-var search_by_hashes_constraints = {
+let search_by_hashes_constraints = {
     schema: {
         presence: true,
         format: "[\\w\\-\\_]+"
@@ -50,7 +50,7 @@ var search_by_hashes_constraints = {
     }
 };
 
-var search_by_value_constraints = {
+let search_by_value_constraints = {
     schema: {
         presence: true,
         format: "[\\w\\-\\_]+"
@@ -78,6 +78,31 @@ var search_by_value_constraints = {
     }
 };
 
+let search_by_conditions = {
+    schema: {
+        presence: true,
+        format: "[\\w\\-\\_]+"
+
+    },
+    table: {
+        presence: true,
+        format: "[\\w\\-\\_]+"
+
+    },
+    condition: {
+        presence: true
+    },
+    "condition.attribute": {
+        presence: true
+    },
+    "condition.operation": {
+        presence: true
+    },
+    get_attributes: {
+        presence: true
+    }
+};
+
 
 
 
@@ -89,6 +114,8 @@ module.exports = function(search_object, type) {
              return validate(search_object, search_by_value_constraints);
          case 'hashes':
              return validate(search_object, search_by_hashes_constraints);
+         case 'conditions':
+             return validate(search_object, search_by_conditions);
      }
          
      
