@@ -5,7 +5,7 @@ const fs = require('fs')
     , search_validator = require('../validation/searchValidator.js')
     , async = require('async'),
     path = require('path'),
-    Glob = require('glob').Glob;
+    globby = require('globby');
 
 
 const hash_regex = /[^0-9a-z]/gi;
@@ -20,7 +20,8 @@ const search_regex =  /[^0-9a-z\*_]/gi;
 module.exports = {
     searchByHash: searchByHash,
     searchByValue:searchByValue,
-    searchByHashes:searchByHashes
+    searchByHashes:searchByHashes,
+    searchByConditions: searchByConditions
 };
 
 function searchByHash(search_object, callback){
@@ -74,10 +75,6 @@ function searchByValue (search_object, callback) {
     let search_path = search_object.search_attribute === search_object.hash_attribute ? `${table_path + '__hdb_hash/' + search_object.search_attribute}/` :
         `${table_path + search_object.search_attribute}/`;
 
-    if(search_object.get_attributes.indexOf(search_object.hash_attribute) < 0){
-        search_object.get_attributes.push(search_object.hash_attribute);
-    }
-
     async.waterfall([
         findFiles.bind(null, search_path, folder_pattern),
         verifyFileMatches.bind(null, file_pattern, `${table_path}/__hdb_hash/${search_object.search_attribute}/`),
@@ -91,6 +88,63 @@ function searchByValue (search_object, callback) {
 
         callback(null, data);
     });
+}
+
+function searchByConditions(search_object, callback){
+    let validation_error = search_validator(search_object, 'conditions');
+    if (validation_error) {
+        callback(validation_error);
+        return;
+    }
+
+    let table_schema = global.hdb_schema[search_object.schema][search_object.table];
+
+    let patterns = createPatterns(search_object.condition, table_schema);
+
+    async.waterfall([
+        findFiles.bind(null, patterns.folder_search_path, patterns.folder_search),
+        verifyFileMatches.bind(null, patterns.file_search, patterns.hash_path),
+        getAttributeFiles.bind(null, search_object.get_attributes, patterns.table_path),
+        consolidateData.bind(null, table_schema.hash_attribute)
+    ], (error, data)=>{
+        if(error){
+            callback(error);
+            return;
+        }
+
+        callback(null, data);
+    });
+}
+
+RegExp.escape= function(s) {
+    return s.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+};
+
+function createPatterns(condition, table_schema){
+    let table_path = `${base_path}${table_schema.schema}/${table_schema.name}/`;
+    let pattern = {};
+    pattern.table_path = table_path;
+    let stripped_search_string = condition.compare_value === '*' ? '*' :String(condition.compare_value).replace(search_regex, '').substring(0, 4000);
+    switch(condition.operation){
+        case '=':
+            pattern.folder_search = stripped_search_string;
+            pattern.file_search = condition.compare_value === '*' ? '*' : new RegExp(`^${RegExp.escape(condition.compare_value)}`);
+            break;
+        default:
+            break;
+    }
+
+    pattern.hash_path = `${table_path + '__hdb_hash/' + condition.attribute}/`;
+
+    if(condition.attribute === table_schema.hash_attribute || condition.compare_value === '*'){
+        pattern.folder_search = `${pattern.folder_search}.hdb`;
+        pattern.folder_search_path = pattern.hash_path;
+    } else {
+        pattern.folder_search = `${pattern.folder_search}/*.hdb`;
+        pattern.folder_search_path = `${table_path + condition.attribute}/`;
+    }
+
+    return pattern;
 }
 
 function consolidateData(hash_attribute, attributes_data, callback){
@@ -191,17 +245,14 @@ function verifyFileMatches(pattern, search_path, files, callback){
 }
 
 function findFiles(cwd, pattern, callback){
-    Glob(pattern, {cwd:cwd}, (err, matches)=>{
-        if(err){
-            callback(err);
-            return;
-        }
-
+    globby(pattern, {cwd:cwd}).then(matches => {
         let match_set = new Set();
         matches.forEach(function(match) {
             match_set.add(path.basename(match).replace('.hdb', ''));
         });
         callback(null, match_set);
+    }).catch((err)=>{
+        callback(err);
     });
 }
 

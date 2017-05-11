@@ -6,13 +6,12 @@ const fs = require('fs')
     , table_validation = require('../validation/tableValidator.js')
     , describe_table_validation = require('../validation/describeTableValidator.js')
     , describe_schema_validation = require('../validation/describeSchemaValidation.js')
-    , exec = require('child_process').exec
     , search = require('./search.js')
     , uuidV4 = require('uuid/v4')
     , attribute_validation = require('../validation/attributeInsertValidator.js');
 
 
-var schema_constraints = {
+let schema_constraints = {
     schema: {
         presence: true,
         format: "[\\w\\-\\_]+"
@@ -21,7 +20,7 @@ var schema_constraints = {
 };
 
 
-var drop_table_constraints = {
+let drop_table_constraints = {
     schema: {
         presence: true,
         format: "[\\w\\-\\_]+",
@@ -43,13 +42,13 @@ module.exports = {
     createSchema: function (schema_create_object, callback) {
 
 
-        var validation_error = validate(schema_create_object, schema_constraints);
+        let validation_error = validate(schema_create_object, schema_constraints);
         if (validation_error) {
             callback(validation_error, null);
             return;
         }
 
-        var search_obj = {};
+        let search_obj = {};
         search_obj.schema = 'system';
         search_obj.table = 'hdb_schema';
         search_obj.hash_attribute = 'name';
@@ -61,7 +60,7 @@ module.exports = {
                 return;
             }
 
-            var insertObject = {};
+            let insertObject = {};
             insertObject.schema = "system";
             insertObject.table = 'hdb_schema';
             insertObject.hash_attribute = 'name';
@@ -79,13 +78,13 @@ module.exports = {
 
     // create folder structrue
     createSchemaStructure: function (schema_create_object, callback) {
-        var validation_error = validate(schema_create_object, schema_constraints);
+        let validation_error = validate(schema_create_object, schema_constraints);
         if (validation_error) {
             callback(validation_error, null);
             return;
         }
 
-        var schema = schema_create_object.schema;
+        let schema = schema_create_object.schema;
         fs.mkdir(settings.HDB_ROOT + '/schema/' + schema, function (err, data) {
             if (err) {
                 if (err.errno == -17) {
@@ -106,18 +105,13 @@ module.exports = {
 
 
     dropSchema: function (drop_schema_object, callback) {
-
-
-        var validation_error = validate(drop_schema_object, constraints);
+        let validation_error = validate(drop_schema_object, constraints);
         if (validation_error) {
             callback(validation_error, null);
             return;
         }
 
-
-        var schema = drop_schema_object.schema;
-
-
+        let schema = drop_schema_object.schema;
     },
 
     // need to listen to https://nodejs.org/api/events.html#events_event_newlistener for the insert of a file
@@ -125,20 +119,19 @@ module.exports = {
 
     deleteSchemaStructure: function (drop_schema_object, callback) {
 
-        var validation_error = validate(drop_schema_object, schema_constraints);
+        let validation_error = validate(drop_schema_object, schema_constraints);
         if (validation_error) {
             callback(validation_error, null);
             return;
         }
 
 
-        var schema = drop_schema_object.schema;
+        let schema = drop_schema_object.schema;
 
-
-        var deleteFolderRecursive = function (path, root) {
+        let deleteFolderRecursive = function (path, root) {
             if (fs.existsSync(path)) {
                 fs.readdirSync(path).forEach(function (file, index) {
-                    var curPath = path + "/" + file;
+                    let curPath = path + "/" + file;
                     if (fs.lstatSync(curPath).isDirectory()) { // recurse
                         deleteFolderRecursive(curPath, false);
                     } else { // delete file
@@ -155,7 +148,7 @@ module.exports = {
                 callback("schema does not exist");
                 return;
             }
-        }
+        };
 
         deleteFolderRecursive(settings.HDB_ROOT + '/schema/' + schema, true);
 
@@ -165,13 +158,13 @@ module.exports = {
     describeTable: descTable,
 
     describeSchema: function (describe_schema_object, callback) {
-        var validation = describe_schema_validation(describe_schema_object);
+        let validation = describe_schema_validation(describe_schema_object);
         if (validation) {
             callback(validation);
             return;
         }
 
-        var table_search_obj = {};
+        let table_search_obj = {};
         table_search_obj.schema = 'system';
         table_search_obj.table = 'hdb_table';
         table_search_obj.hash_attribute = 'id';
@@ -179,7 +172,7 @@ module.exports = {
         table_search_obj.search_value = describe_schema_object.schema;
         table_search_obj.hash_values = [];
         table_search_obj.get_attributes = ['hash_attribute', 'id', 'name', 'schema'];
-        var table_result = {};
+        let table_result = {};
         search.searchByValue(table_search_obj, function (err, tables) {
             if (err) {
                 console.error(err);
@@ -202,13 +195,13 @@ module.exports = {
     // need to insert hash into hdb_attribute
     createTable: function (create_table_object, callback) {
 
-        var validator = table_validation(create_table_object);
+        let validator = table_validation(create_table_object);
         if (validator) {
             callback(validator);
             return;
         }
 
-        var search_obj = {};
+        let search_obj = {};
         search_obj.schema = 'system';
         search_obj.table = 'hdb_table';
         search_obj.hash_attribute = 'id';
@@ -218,19 +211,19 @@ module.exports = {
         search.searchByValue(search_obj, function (err, data) {
             if (data) {
                 for (item in data) {
-                    if (data[item].schema == create_table_object.schema) {
+                    if (data[item].schema === create_table_object.schema) {
                         callback('Table already exists');
                         return;
                     }
                 }
             }
 
-            var table = {};
+            let table = {};
             table.name = create_table_object.table;
             table.schema = create_table_object.schema;
             table.id = uuidV4();
             table.hash_attribute = create_table_object.hash_attribute;
-            var insertObject = {};
+            let insertObject = {};
             insertObject.schema = "system";
             insertObject.table = 'hdb_table';
             insertObject.hash_attribute = 'id';
@@ -251,19 +244,19 @@ module.exports = {
     // this event will  then call the code below
 
     createTableStructure: function (create_table_object, callback) {
-        var validator = table_validation(create_table_object);
+        let validator = table_validation(create_table_object);
         if (validator) {
             callback(validator);
             return;
         }
         fs.mkdir(settings.HDB_ROOT + '/schema/' + create_table_object.schema + '/' + create_table_object.table, function (err, data) {
             if (err) {
-                if (err.errno == -2) {
+                if (err.errno === -2) {
                     callback("schema does not exist", null);
                     return;
                 }
 
-                if (err.errno == -17) {
+                if (err.errno === -17) {
                     callback("table already exists", null);
                     return;
 
@@ -283,15 +276,15 @@ module.exports = {
 
         // need to add logic to remove files from system tables.
 
-        var validation_error = validate(drop_table_object, drop_table_constraints);
+        let validation_error = validate(drop_table_object, drop_table_constraints);
         if (validation_error) {
             callback(validation_error, null);
             return;
         }
 
 
-        var schema = drop_table_object.schema;
-        var table = drop_table_object.table;
+        let schema = drop_table_object.schema;
+        let table = drop_table_object.table;
 
 
     },
@@ -300,21 +293,19 @@ module.exports = {
     // this event will  then call the code below
 
     deleteTableStructure: function (drop_table_object, callback) {
-
-        var validation_error = validate(drop_table_object, constraints);
+        let validation_error = validate(drop_table_object, constraints);
         if (validation_error) {
             callback(validation_error, null);
             return;
         }
 
+        let schema = drop_table_object.schema;
+        let table = drop_table_object.table;
 
-        var schema = drop_table_object.schema;
-        var table = drop_table_object.table;
-
-        var deleteFolderRecursive = function (path, root) {
+        let deleteFolderRecursive = function (path, root) {
             if (fs.existsSync(path)) {
                 fs.readdirSync(path).forEach(function (file, index) {
-                    var curPath = path + "/" + file;
+                    let curPath = path + "/" + file;
                     if (fs.lstatSync(curPath).isDirectory()) { // recurse
                         deleteFolderRecursive(curPath, false);
                     } else { // delete file
@@ -331,10 +322,10 @@ module.exports = {
                 callback("table does not exist");
                 return;
             }
-        }
+        };
 
         if (fs.existsSync(settings.HDB_ROOT + '/schema/' + schema + "/")) {
-            var path = settings.HDB_ROOT + '/schema/' + schema + "/" + table;
+            let path = settings.HDB_ROOT + '/schema/' + schema + "/" + table;
             deleteFolderRecursive(path, true);
         } else {
             callback("schema does not exist");
@@ -344,20 +335,20 @@ module.exports = {
     },
     createAttribute: function (create_attribute_object, callback) {
 
-        var validation_error = attribute_validation(create_attribute_object);
+        let validation_error = attribute_validation(create_attribute_object);
         if (validation_error) {
             callback(validation_error, null);
             return;
         }
 
-        var record = {};
+        let record = {};
         record.schema = create_attribute_object.schema;
         record.table = create_attribute_object.table;
         record.attribute = create_attribute_object.attribute;
         record.id = uuidV4();
         record.schema_table = record.schema + '.' + record.table;
 
-        var insertObject = {};
+        let insertObject = {};
         insertObject.schema = "system";
         insertObject.table = 'hdb_attribute';
         insertObject.hash_attribute = 'id';
@@ -369,15 +360,14 @@ module.exports = {
         });
     },
     describeAll: function (callback) {
-
-        var table_search_obj = {};
+        let table_search_obj = {};
         table_search_obj.schema = 'system';
         table_search_obj.table = 'hdb_table';
         table_search_obj.hash_attribute = 'id';
         table_search_obj.search_attribute = 'id';
         table_search_obj.search_value = '*';
         table_search_obj.hash_values = [];
-        table_search_obj.get_attributes = ['hash_attribute', 'id', 'name', 'schema'];
+        table_search_obj.get_attributes = ['hash_attribute', 'name', 'schema'];
         search.searchByValue(table_search_obj, function (err, tables) {
             if (err) {
                 console.error(err);
@@ -386,11 +376,11 @@ module.exports = {
             }
 
 
-            var t_results = [];
+            let t_results = [];
             async.map(tables, function (table, caller) {
                 descTable({"schema": table.schema, "table": table.name}, function (err, desc) {
                     if (err) {
-                        caller(err)
+                        caller(err);
                         return;
                     }
                     t_results.push(desc);
@@ -404,9 +394,9 @@ module.exports = {
                     return;
                 }
 
-                var hdb_description = {};
+                let hdb_description = {};
                 for (t in t_results) {
-                    if (hdb_description[t_results[t].schema] == null) {
+                    if (!hdb_description[t_results[t].schema]) {
                         hdb_description[t_results[t].schema] = {};
 
                     }
@@ -428,13 +418,13 @@ module.exports = {
 };
 
 function descTable(describe_table_object, callback) {
-    var validation = describe_table_validation(describe_table_object);
+    let validation = describe_table_validation(describe_table_object);
     if (validation) {
         callback(validation);
         return;
     }
 
-    var table_search_obj = {};
+    let table_search_obj = {};
     table_search_obj.schema = 'system';
     table_search_obj.table = 'hdb_table';
     table_search_obj.hash_attribute = 'id';
@@ -442,7 +432,7 @@ function descTable(describe_table_object, callback) {
     table_search_obj.search_value = describe_table_object.table;
     table_search_obj.hash_values = [];
     table_search_obj.get_attributes = ['hash_attribute', 'id', 'name', 'schema'];
-    var table_result = {};
+    let table_result = {};
     search.searchByValue(table_search_obj, function (err, tables) {
         if (err) {
             console.error(err);
@@ -451,7 +441,7 @@ function descTable(describe_table_object, callback) {
         }
 
         async.map(tables, function (table, caller) {
-            if (table.schema == describe_table_object.schema) {
+            if (table.schema === describe_table_object.schema) {
                 table_result = table;
             }
             caller();
@@ -462,7 +452,7 @@ function descTable(describe_table_object, callback) {
                 return;
             }
 
-            var attribute_search_obj = {};
+            let attribute_search_obj = {};
             attribute_search_obj.schema = 'system';
             attribute_search_obj.table = 'hdb_attribute';
             attribute_search_obj.hash_attribute = 'id';
@@ -478,7 +468,7 @@ function descTable(describe_table_object, callback) {
                     return;
                 }
 
-                table_result.attributes = attributes
+                table_result.attributes = attributes;
                 callback(null, table_result);
 
 

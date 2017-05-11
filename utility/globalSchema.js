@@ -6,7 +6,7 @@ module.exports = {
 
 function setSchemaDataToGlobal(callback){
     if(!global.hdb_schema){
-        schema.describeSchema({schema:'dev'}, (err, data)=> {
+        schema.describeAll((err, data)=> {
             if (err) {
                 callback(err);
                 return;
@@ -17,6 +17,4 @@ function setSchemaDataToGlobal(callback){
     } else {
         callback(null, null);
     }
-
-
 }
