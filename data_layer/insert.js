@@ -5,87 +5,85 @@ const insert_validator = require('../validation/insertValidator.js'),
     async = require('async'),
     path = require('path'),
     settings = require('settings'),
-    spawn = require('child_process').spawn,
     child_process = require('child_process'),
     util = require('util'),
     moment = require('moment'),
-    mkdirp = require('mkdirp');
+    mkdirp = require('mkdirp'),
+    global_schema = require('../utility/globalSchema');
 
 const hdb_path = path.join(settings.HDB_ROOT, '/schema');
 const regex = /[^0-9a-z]/gi;
-const printf_command = 'printf "%s" > %s &';
-const mkdir_command = 'mkdir -p %s';
-const cd_command = 'cd %s';
-const insert_script_command = 'dash %s & nohup dash %s >/dev/null 2>&1 & ';
-const delete_command = 'rm -f %s';
-const symbolic_link_command = 'ln -sfT %s %s';
-const shebang = '#!/usr/bin/env bash';
-const touch_date_command = 'touch -m -h -d "%s" %s';
 
 module.exports = {
     insert: function (insert_object, callback) {
-
-        //validate insert_object for required attributes
-        var validator = insert_validator(insert_object);
-        if (validator) {
-            callback(validator);
-            return;
-        }
-
-        //check if schema / table directories exist
-        var table_path = path.join(hdb_path, insert_object.schema, insert_object.table);
-        /*if (!checkPathExists(table_path)) {
-         callback('Table: ' + insert_object.schema + '.' + insert_object.table + ' does not exist');
-         return;
-         }*/
-        //TODO verify hash_attribute is correct for this table
-
-        //preprocess all record attributes
-        async.waterfall([
-            checkAttributeSchema.bind(null, insert_object),
-            processData
-        ], (err) =>{
-            if(err){
+        global_schema.setSchemaDataToGlobal((err, data)=> {
+            if (err) {
                 callback(err);
                 return;
             }
+            //validate insert_object for required attributes
+            let validator = insert_validator(insert_object);
+            if (validator) {
+                callback(validator);
+                return;
+            }
 
-            callback(null, `successfully wrote ${insert_object.records.length} records`);
+            //check if schema / table directories exist
+            if(!global.hdb_schema[insert_object.schema][insert_object.table]){
+                callback('Table: ' + insert_object.schema + '.' + insert_object.table + ' does not exist');
+                return;
+            }
+            //TODO verify hash_attribute is correct for this table
+
+            async.waterfall([
+                checkAttributeSchema.bind(null, insert_object),
+                processData
+            ], (err) => {
+                if (err) {
+                    callback(err);
+                    return;
+                }
+
+                callback(null, `successfully wrote ${insert_object.records.length} records`);
+            });
         });
     }
 };
 
 function checkAttributeSchema(insert_object, callerback) {
-    //console.time('script_builder')
-    var epoch = new Date().valueOf();
-    var date = new moment().format(`YYYY-MM-DD HH:mm:ss.${process.hrtime()[1]} ZZ`);
+    let table_schema = global.hdb_schema[insert_object.schema][insert_object.table];
+    let hash_attribute = table_schema.hash_attribute;
+    let epoch = new Date().valueOf();
+    //let date = new moment().format(`YYYY-MM-DD HH:mm:ss.${process.hrtime()[1]} ZZ`);
 
-    var insert_objects = [];
-    var symbolic_links = [];
-    var touch_links = [];
+    let insert_objects = [];
+    let symbolic_links = [];
+    //let touch_links = [];
 
-    var folders = {};
-    var hash_folders = {};
-    var delete_folders = {};
-    var base_path = hdb_path + '/' + insert_object.schema + '/' + insert_object.table + '/';
+    let folders = {};
+    let hash_folders = {};
+    //let delete_folders = {};
+    let hash_paths = {};
+    let base_path = hdb_path + '/' + insert_object.schema + '/' + insert_object.table + '/';
+
     async.each(insert_object.records, function(record, callback){
-        var attribute_objects = [];
-        var link_objects = [];
-
-        for(var property in record){
-            var value_stripped = String(record[property]).replace(regex, '').substring(0, 4000);
-            var attribute_file_name = record[insert_object.hash_attribute] + '.hdb';
-            var attribute_path =  base_path + property + '/' + value_stripped;
+        let attribute_objects = [];
+        let link_objects = [];
+        hash_paths[`${base_path}__hdb_hash/${hash_attribute}/${record[hash_attribute]}.hdb`] = '';
+        for(let property in record){
+            let value_stripped = String(record[property]).replace(regex, '').substring(0, 4000);
+            let attribute_file_name = record[hash_attribute] + '.hdb';
+            let attribute_path =  base_path + property + '/' + value_stripped;
 
             hash_folders[`${base_path}__hdb_hash/${property}`] = "";
             attribute_objects.push({file_name:`${base_path}__hdb_hash/${property}/${attribute_file_name}`, value:record[property]});
-            if(property !== insert_object.hash_attribute && record[property]) {
+            if(property !== hash_attribute && record[property]) {
                 folders[attribute_path] = "";
 
                 link_objects.push({link:`../../__hdb_hash/${property}/${attribute_file_name}`, file_name:`${attribute_path}/${attribute_file_name}`});
-            } else if(property === insert_object.hash_attribute){
+            } else if(property === hash_attribute){
                 hash_folders[attribute_path] = "";
-                attribute_objects.push({file_name:`${attribute_path}/${record[insert_object.hash_attribute]}-${epoch}.hdb`, value:JSON.stringify(record)});
+                attribute_objects.push({file_name:`${attribute_path}/${record[hash_attribute]}-${epoch}.hdb`, value:JSON.stringify(record)});
             }
         }
         insert_objects = insert_objects.concat(attribute_objects);
@@ -96,27 +94,70 @@ function checkAttributeSchema(insert_object, callerback) {
             callerback(err);
             return;
         }
-        var data_wrapper = {
+        let data_wrapper = {
             data_folders:Object.keys(hash_folders),
             data:insert_objects,
             link_folders:Object.keys(folders),
-            links:symbolic_links
+            links:symbolic_links,
+            hash_paths:hash_paths,
+            operation:insert_object.operation
         };
 
         return callerback(null, data_wrapper);
     });
 }
 
-function processData(data_wrapper, callback){
-    async.parallel([
-        writeRawData.bind(null, data_wrapper.data_folders, data_wrapper.data),
-        writeLinks.bind(null, data_wrapper.link_folders, data_wrapper.links),
-    ], (err, results)=>{
+function checkRecordsExist(hash_paths, operation, callback){
+    async.each(Object.keys(hash_paths), (hash_path)=> {
+        fs.access(hash_path, (err) => {
+            switch(operation){
+                case 'update':
+                    if(err && err.code === 'ENOENT'){
+                        callback('record does not exist');
+                    } else {
+                        callback();
+                    }
+                    break;
+                case 'insert':
+                    if(err && err.code === 'ENOENT'){
+                        callback();
+                    } else {
+                        callback('record exists');
+                    }
+                    break;
+                default:
+                    callback('invalid operation ' + operation);
+                    break;
+            }
+        });
+
+    }, function(err){
         if(err) {
+            callback(err);
+        } else {
+            callback();
+        }
+    });
+}
+
+function processData(data_wrapper, callback){
+    checkRecordsExist(data_wrapper.hash_paths, data_wrapper.operation, (err, data)=>
+    {
+        if(err){
             callback(err);
             return;
         }
-        callback();
+
+        async.parallel([
+            writeRawData.bind(null, data_wrapper.data_folders, data_wrapper.data),
+            writeLinks.bind(null, data_wrapper.link_folders, data_wrapper.links),
+        ], (err, results) => {
+            if (err) {
+                callback(err);
+                return;
+            }
+            callback();
+        });
     });
 }
 
