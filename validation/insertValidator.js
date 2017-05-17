@@ -7,9 +7,6 @@ const constraints = {
     table : {
         presence : true
     },
-    hash_attribute :{
-        presence : true
-    },
     records: {
         presence : true
     }
