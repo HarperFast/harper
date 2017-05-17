@@ -62,17 +62,20 @@ function nullFunction(sql, callback) {
 }
 
 function convertInsert(statement, callback) {
-    let insert_object = {};
+
     let schema_table = statement.into.name.split('.');
-    insert_object.schema = schema_table[0];
-    insert_object.table = schema_table[1];
+    let insert_object = {
+        schema : schema_table[0],
+        table : schema_table[1],
+        operation:'insert'
+    };
 
     let columns = statement.into.columns.map((column) => {
         return column.name;
     });
 
     insert_object.records = createDataObjects(columns, statement.result);
-    insert_object.hash_attribute = 'id';
+    insert_object.hash_attribute = global.hdb_schema[schema_table[0]][schema_table[1]].hash_attribute;
 
     insert.insert(insert_object, (err, data) => {
         if (err) {
