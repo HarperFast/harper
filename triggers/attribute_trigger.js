@@ -110,6 +110,7 @@ function spinUpTableTrigger(table){
         //initalize();
     });
 
+    // change this to monitor __hdb_hash instead then can avoid picking up this folder.
 
     terminal.stdin.write(util.format('inotifywait -m  -e create  %s ', settings.HDB_ROOT + '/schema/' +table.schema + '/' + table.name));
     terminal.stdin.end();

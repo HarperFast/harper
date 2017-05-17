@@ -18,6 +18,7 @@
     "glob": "^7.1.1",
     "mkdirp": "^0.5.1",
     "moment": "^2.17.1",
+    "node-schedule": "^1.2.1",
     "sqlite-parser": "^1.0.0",
     "uuid": "^3.0.1",
     "validate.js": "^0.11.1",
