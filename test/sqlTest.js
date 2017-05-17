@@ -2,7 +2,7 @@ const sql_trans = require('../sqlTranslator/index');
 
 //let sql = "INSERT INTO dev.person (id, first_name, dob) VALUES(1, 'Kyle', '09/24/1973'), (2, 'Zax', '03/12/1983')";
 
-let sql = "select id, first_name from dev.person where ";
+let sql = "select id, first_name, last_name from dev.person where first_name  = 'Aadithya'";
 console.time('sql');
 sql_trans.evaluateSQL(sql, (err, data) => {
     console.timeEnd('sql');

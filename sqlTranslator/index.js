@@ -1,10 +1,10 @@
 const sqliteParser = require('sqlite-parser'),
     insert = require('../data_layer/insert'),
     global_schema = require('../utility/globalSchema'),
-    search = require('../data_layer/search');
+    select_translator = require('./selectTranslator').convertSelect;
 
 module.exports = {
-    evaluateSQL: evaluateSQL,
+    evaluateSQL: evaluateSQL
 };
 
 function evaluateSQL(sql, callback) {
@@ -33,7 +33,7 @@ function processSQL(sql, callback){
         let sql_function = nullFunction;
         switch (ast.statement[0].variant) {
             case 'select':
-                sql_function = convertSelect;
+                sql_function = select_translator;
                 break;
             case 'insert':
                 //TODO add validator for insert, need to make sure columns are specified
@@ -56,22 +56,26 @@ function processSQL(sql, callback){
     }
 }
 
-function nullFunction(sql) {
+function nullFunction(sql, callback) {
+    callback();
     console.log(sql);
 }
 
 function convertInsert(statement, callback) {
-    let insert_object = {};
+
     let schema_table = statement.into.name.split('.');
-    insert_object.schema = schema_table[0];
-    insert_object.table = schema_table[1];
+    let insert_object = {
+        schema : schema_table[0],
+        table : schema_table[1],
+        operation:'insert'
+    };
 
     let columns = statement.into.columns.map((column) => {
         return column.name;
     });
 
     insert_object.records = createDataObjects(columns, statement.result);
-    insert_object.hash_attribute = 'id';
+    insert_object.hash_attribute = global.hdb_schema[schema_table[0]][schema_table[1]].hash_attribute;
 
     insert.insert(insert_object, (err, data) => {
         if (err) {
@@ -103,38 +107,4 @@ function createDataObjects(columns, expressions) {
     });
 
     return records;
-}
-
-function convertSelect(statement, callback) {
-    let search_object = {};
-    let schema_table = statement.from.name.split('.');
-    search_object.schema = schema_table[0];
-    search_object.table = schema_table[1];
-
-    search_object.get_attributes = statement.result.map((column) => {
-        return column.name;
-    });
-
-    let table_info = global.hdb_schema.filter(function (item) {
-        return item.schema === schema_table[0] &&
-            item.name === schema_table[1];
-    })[0];
-
-    search_object.hash_attribute = table_info.hash_attribute;
-
-    if(statement.where){
-
-    } else {
-        search_object.search_attribute = table_info.hash_attribute;
-        search_object.search_value = '*';
-    }
-
-    search.searchByValue(search_object, (err, results)=>{
-        if(err){
-            callback(err);
-            return;
-        }
-
-        callback(null, results);
-    });
 }

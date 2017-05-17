@@ -4,9 +4,8 @@ var insert = require('../data_layer/insert.js'),
     first_names = require('./data/firstNames'),
     last_names = require('./data/lastNames');
 
-const record_size  = 1000;
+const record_size  = 1;
 const schema = 'dev';
-const worker_count = 1;
 
 var objects = [];
 for(var x = 0; x < record_size; x++){
@@ -14,12 +13,14 @@ for(var x = 0; x < record_size; x++){
         {
             id : x + 1,
             first_name: first_names[Math.floor(Math.random() * first_names.length)],
-            last_name: first_names[Math.floor(Math.random() * first_names.length)]
+            last_name: first_names[Math.floor(Math.random() * first_names.length)],
+            num_children: Math.floor(Math.random() * (10 - 0)) + 1
         }
     );
 }
 
 var insert_object = {
+    operation:'update',
     schema :  schema,
     table:'person',
     hash_attribute: 'id',
