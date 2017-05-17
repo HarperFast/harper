@@ -44,7 +44,8 @@ if (cluster.isMaster) {
     function chooseOperation(json, callback) {
         let operation_function = nullOperation;
         switch (json.operation) {
-            case 'write':
+            case 'insert':
+            case 'update':
                 operation_function = write;
                 break;
             case 'search_by_hash':
