@@ -364,18 +364,22 @@ module.exports = {
             return;
         }
 
-        var record = {};
-        record.schema = create_attribute_object.schema;
-        record.table = create_attribute_object.table;
-        record.attribute = create_attribute_object.attribute;
-        record.id = uuidV4();
-        record.schema_table = record.schema + '.' + record.table;
+        var record = {
+            schema: create_attribute_object.schema,
+            table: create_attribute_object.table,
+            attribute: create_attribute_object.attribute,
+            id: uuidV4(),
+            schema_table: create_attribute_object.schema + '.' + create_attribute_object.table
+        };
 
-        var insertObject = {};
-        insertObject.schema = "system";
-        insertObject.table = 'hdb_attribute';
-        insertObject.hash_attribute = 'id';
-        insertObject.records = [record];
+        var insertObject = {
+            operation: 'insert',
+            schema: 'system',
+            table: 'hdb_attribute',
+            hash_attribute: 'id',
+            records: [record]
+        };
+
         insert.insert(insertObject, function (err, result) {
             console.log('attribute:' + err);
             console.log(result);
