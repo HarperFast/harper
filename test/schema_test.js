@@ -3,8 +3,13 @@ var schema = require('../data_layer/schema.js');
 var schema_value = 'dev';
 var table = 'person';
 
-
 // author sgeezy
+function describeSchema(schema_val){
+    schema.describeSchema ({"schema":schema_val}, function(err, result){
+            console.log(result);
+    });
+}
+
 
 
 function deleteTest(delete_obj, callback){
