@@ -29,7 +29,7 @@ module.exports = {
             }
 
             //check if schema / table directories exist
-            if(!global.hdb_schema[insert_object.schema][insert_object.table]){
+            if(!global.hdb_schema[insert_object.schema] || !global.hdb_schema[insert_object.schema][insert_object.table]){
                 callback('Table: ' + insert_object.schema + '.' + insert_object.table + ' does not exist');
                 return;
             }
