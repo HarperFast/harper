@@ -1,4 +1,4 @@
-'use strict'
+'use strict';
 
 const insert_validator = require('../validation/insertValidator.js'),
     fs = require('fs'),
@@ -13,7 +13,7 @@ const insert_validator = require('../validation/insertValidator.js'),
     search = require('./search');
 
 const hdb_path = path.join(settings.HDB_ROOT, '/schema');
-const regex = /[^0-9a-z]/gi;
+const regex = /\//g;
 
 module.exports = {
     insert: function (insert_object, callback) {
@@ -36,15 +36,15 @@ module.exports = {
             }
             //TODO verify hash_attribute is correct for this table
             // create hashpaths
-            var hash_paths = [];
+            let hash_paths = [];
             let table_schema = global.hdb_schema[insert_object.schema][insert_object.table];
             let hash_attribute = table_schema.hash_attribute;
             let base_path = hdb_path + '/' + insert_object.schema + '/' + insert_object.table + '/';
-            var hashes = [];
+            let hashes = [];
 
-            for (var r in insert_object.records) {
-                var record = insert_object.records[r];
-                hash_paths.push(`${base_path}__hdb_hash/${hash_attribute}/${record[hash_attribute]}.hdb`)
+            for (let r in insert_object.records) {
+                let record = insert_object.records[r];
+                hash_paths.push(`${base_path}__hdb_hash/${hash_attribute}/${record[hash_attribute]}.hdb`);
                 hashes.push(record[hash_attribute]);
             }
 
@@ -55,7 +55,7 @@ module.exports = {
                     return;
                 }
 
-                if (insert_object.operation == 'update') {
+                if (insert_object.operation === 'update') {
                     proccessUpdate(insert_object, hash_attribute, hash_paths, hashes, callback);
 
                 } else {
@@ -85,11 +85,11 @@ module.exports = {
 };
 
 function proccessUpdate(insert_object, hash_attribute, hash_paths, hashes, callback) {
-    var attributes = [];
+    let attributes = [];
     for (let attr in insert_object.records[0]) {
         attributes.push(attr);
     }
-    var search_obj = {};
+    let search_obj = {};
     search_obj.schema = insert_object.schema;
     search_obj.table = insert_object.table;
     search_obj.hash_attribute = 'id';
@@ -98,13 +98,13 @@ function proccessUpdate(insert_object, hash_attribute, hash_paths, hashes, callb
     let base_path = hdb_path + '/' + insert_object.schema + '/' + insert_object.table + '/';
 
     search.searchByHashes(search_obj, function (err, search_results) {
-        var hashMap = [];
-        for (var search_result in search_results) {
+        let hashMap = [];
+        for (let search_result in search_results) {
             hashMap[search_results[search_result][hash_attribute]] = search_results[search_result];
         }
 
         async.each(insert_object.records, function (record, wallyback) {
-            var existingRecord = hashMap[record[hash_attribute]];
+            let existingRecord = hashMap[record[hash_attribute]];
             for (let attr in record) {
                 if (existingRecord && existingRecord[attr] && existingRecord[attr] == record[attr] && hash_attribute != attr) {
                     console.log(`removed attribute ${attr}`);
@@ -287,7 +287,7 @@ function writeRawData(folders, data, callback) {
 }
 
 function writeRawDataFiles(data, callback) {
-    async.each(data, (attribute, caller) => {
+    async.eachLimit(data, 100, (attribute, caller) => {
         fs.writeFile(attribute.file_name, attribute.value, (err) => {
             if (err) {
                 caller(err);
@@ -320,7 +320,7 @@ function writeLinks(folders, links, callback) {
 }
 
 function writeLinkFiles(links, callback) {
-    async.each(links, (link, caller) => {
+    async.eachLimit(links, 100, (link, caller) => {
         fs.symlink(link.link, link.file_name, (err) => {
             if (err && err.code !== 'EEXIST') {
                 caller(err);
@@ -340,7 +340,7 @@ function writeLinkFiles(links, callback) {
 }
 
 function createFolders(folders, callback) {
-    async.each(folders, (folder, caller) => {
+    async.eachLimit(folders, 100, (folder, caller) => {
         mkdirp(folder, (err) => {
             if (err) {
                 caller(`mkdir on: ${folder} failed ${err}`);

@@ -7,9 +7,7 @@ const fs = require('fs')
     path = require('path'),
     globby = require('globby');
 
-
-const hash_regex = /[^0-9a-z]/gi;
-const search_regex =  /[^0-9a-z\*_]/gi;
+const slash_regex =  /\//g;
 
 // search by hash only
 // what attributes are you selecting
@@ -25,7 +23,7 @@ module.exports = {
 };
 
 function searchByHash(search_object, callback){
-    let hash_stripped = String(search_object.hash_value).replace(hash_regex, '').substring(0, 4000);
+    let hash_stripped = String(search_object.hash_value).replace(slash_regex, '').substring(0, 4000);
     let table_path = `${base_path}${search_object.schema}/${search_object.table}/`;
     async.waterfall([
         getAttributeFiles.bind(null, search_object.get_attributes, table_path, [hash_stripped]),
@@ -68,7 +66,7 @@ function searchByValue (search_object, callback) {
         return;
     }
 
-    let search_string = String(search_object.search_value).replace(search_regex, '').substring(0, 4000);
+    let search_string = String(search_object.search_value).replace(slash_regex, '').substring(0, 4000);
     let folder_pattern = search_string === '*' ? '*.hdb' : `*${search_string}*/*.hdb`;
     let file_pattern = search_string === '*' ? '*' : new RegExp(search_object.search_value);
     let table_path = `${base_path}${search_object.schema}/${search_object.table}/`;
@@ -124,25 +122,41 @@ function createPatterns(condition, table_schema){
     let table_path = `${base_path}${table_schema.schema}/${table_schema.name}/`;
     let pattern = {};
     pattern.table_path = table_path;
-    let stripped_search_string = condition.compare_value === '*' ? '*' :String(condition.compare_value).replace(search_regex, '').substring(0, 4000);
+    pattern.hash_path = `${table_path + '__hdb_hash/' + condition.attribute}/`;
     switch(condition.operation){
         case '=':
+            let stripped_search_string = condition.compare_value === '*' ? '*' :String(condition.compare_value).replace(slash_regex, '').substring(0, 4000);
             pattern.folder_search = stripped_search_string;
             pattern.file_search = condition.compare_value === '*' ? '*' : new RegExp(`^${RegExp.escape(condition.compare_value)}`);
+
+            if(condition.attribute === table_schema.hash_attribute || condition.compare_value === '*'){
+                pattern.folder_search = `${pattern.folder_search}.hdb`;
+                pattern.folder_search_path = pattern.hash_path;
+            } else {
+                pattern.folder_search = `${pattern.folder_search}/*.hdb`;
+                pattern.folder_search_path = `${table_path + condition.attribute}/`;
+            }
+
+            break;
+        case 'in':
+
+            let file_searches = [];
+            let folder_searches = [];
+            condition.compare_value.forEach((value)=>{
+                let stripped_value = String(value).replace(slash_regex, '').substring(0, 4000);
+                pattern.folder_search_path = condition.attribute === table_schema.hash_attribute ? pattern.hash_path : `${table_path + condition.attribute}/`;
+
+                folder_searches.push(stripped_value);
+                file_searches.push(RegExp.escape(stripped_value));
+            });
+            pattern.file_search = new RegExp(file_searches.join('|'));
+            pattern.folder_search = condition.attribute === table_schema.hash_attribute ? `?(${folder_searches.join('|')}).hdb` : `?(${folder_searches.join('|')})/*.hdb`;
             break;
         default:
             break;
     }
 
-    pattern.hash_path = `${table_path + '__hdb_hash/' + condition.attribute}/`;
 
-    if(condition.attribute === table_schema.hash_attribute || condition.compare_value === '*'){
-        pattern.folder_search = `${pattern.folder_search}.hdb`;
-        pattern.folder_search_path = pattern.hash_path;
-    } else {
-        pattern.folder_search = `${pattern.folder_search}/*.hdb`;
-        pattern.folder_search_path = `${table_path + condition.attribute}/`;
-    }
 
     return pattern;
 }
