@@ -17,7 +17,8 @@ if (cluster.isMaster) {
         app = express(),
         bodyParser = require('body-parser'),
         write = require('../data_layer/insert').insert,
-        search = require('../data_layer/search');
+        search = require('../data_layer/search'),
+        sql = require('../sqlTranslator/index').evaluateSQL;
 
     app.use(bodyParser.json()); // support json encoded bodies
     app.use(bodyParser.urlencoded({extended: true}));
@@ -56,6 +57,9 @@ if (cluster.isMaster) {
                 break;
             case 'search_by_value':
                 operation_function = search.searchByValue;
+                break;
+            case 'sql':
+                operation_function = sql;
                 break;
             default:
                 break;
