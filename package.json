@@ -14,6 +14,7 @@
     "async": "^2.1.5",
     "body-parser": "^1.17.1",
     "chunk": "0.0.2",
+    "csvtojson": "^1.1.5",
     "express": "^4.15.2",
     "globby": "^6.1.0",
     "is-root": "^1.0.0",
