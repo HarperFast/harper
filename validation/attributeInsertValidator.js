@@ -1,4 +1,4 @@
-var validate = require('validate.js');
+const validate = require('validate.js');
 
 var constraints = {
     schema : {

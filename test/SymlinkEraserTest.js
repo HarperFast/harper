@@ -1,9 +1,19 @@
 const settings = require('settings'),
       search = require('../data_layer/search'),
-      net = require('net');
+      net = require('net'),
+      fs = require('fs');
 
 
-    test();
+    //test();
+
+    console.time('unlink')
+    fs.unlink(settings.HDB_ROOT + '/schema/dev/person/first_name/Aailyah/641.hdb', function(err, result){
+        console.timeEnd('unlink')
+
+        console.error(err);
+        console.log(result);
+    });
+
 
 function test(){
      var search_obj = {};
