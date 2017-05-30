@@ -130,5 +130,5 @@ function hashLicense(fingerprint, company) {
   //  let hmac = crypto.createHmac('sha256', 'a secret')
    // hmac.update(`061183${fingerprint}${company}`);
    // return hmac.digest('hex');
-    password.hash(`061183${fingerprint}${company}`);
+    return password.hash(`061183${fingerprint}${company}`);
 }

@@ -3,11 +3,14 @@ const prompt = require('prompt'),
     password = require('./utility/password'),
     mount = require('./utility/mount_hdb'),
     fs = require('fs'),
-    settings = require('./settings'),
     colors = require("colors/safe"),
     hdb_license = require('./utility/hdb_license'),
     isRoot = require('is-root'),
-    async = require('async');
+    async = require('async'),
+    boot_loader = require('./utility/hdb_boot_loader'),
+    register = require('./register');
+
+var settings = null;
 
 
 //
@@ -26,12 +29,10 @@ module.exports = {
 }
 
 
-
-
-
 //'HDB_ROOT', 'HDB_PORT', 'TCP_PORT','USERNAME', 'PASSWORD'
 
 var wizard_result;
+var newInstall = true;
 
 function run_install(callback) {
 
@@ -44,7 +45,7 @@ function run_install(callback) {
         createSettingsFile,
         mount,
         setupService,
-       checkRegister
+        checkRegister
 
     ], function (err, result) {
         callback(err, result);
@@ -52,17 +53,29 @@ function run_install(callback) {
     });
 
 
+}
+
+function checkInstall(callback){
+    boot_loader.getBootLoader(function (err, data) {
+
+        if(err){
+            callback(err);
+            return;
+        }
+        if(data){
+            settings = require(data.settings);
+            callback(null, data);
+            return;
+        }
 
 
-
-
-
-
+    })
 }
 
 function checkRegister(callback) {
+    console.log(`wizaard register:` + wizard_result.HDB_REGISTER);
     if (wizard_result.HDB_REGISTER) {
-        register(function (err, result) {
+        register.register(function (err, result) {
             if (err) {
                 callback(err);
                 returnl
@@ -79,12 +92,9 @@ function checkRegister(callback) {
 }
 
 
+
 function wizard(callback) {
     prompt.message = 'Install HarperDB ' + __dirname;
-    var newInstall = true;
-    if (settings && settings.PROJECT_DIR) {
-        newInstall = false;
-    }
 
 
     var install_schema = {
@@ -98,14 +108,8 @@ function wizard(callback) {
                     return !newInstall;
                 }
 
-            },
-            CUSTOMER_COMPANY: {
-                description: colors.magenta(`[CUSTOMER_COMPANY] Please enter your company name`),
-                required: true,
-                ask: function () {
-                    return newInstall || !newInstall && prompt.history('REINSTALL').value;
-                }
             }
+
             ,
             HDB_ROOT: {
                 description: colors.magenta(`[HDB_ROOT] Please enter the destination for HarperDB`),
@@ -189,73 +193,28 @@ function createSettingsFile(callback) {
             HDB_ADMIN_PASSWORD: '${password.hash(wizard_result.HDB_ADMIN_PASSWORD)}'
 
         };`
-    fs.writeFile(`${__dirname}/settings.js`, settings_file, (err) => {
-        if (err) {
-            callback(err);
-            return;
-        }
-        callback(null, wizard_result.HDB_ROOT);
 
 
-    });
-}
-
-
-function register(lk, callback) {
-    hdb_license.generateFingerPrint(function (fingerprint) {
-        prompt.start();
-        prompt.get({
-            HDB_LICENSE: {
-                description: colors.magenta(`[HDB_LICENSE] Your fingerprint is ${fingerprint}
-                                                 \n Please enter your license key:`),
-                required: true
-
+    boot_loader.insertBootLoader(`${wizard_result.HDB_ROOT}/config/settings.js`, (err) => {
+        fs.writeFile(`${wizard_result.HDB_ROOT}/config/settings.js`, settings_file, function(err, data){
+            if (err) {
+                callback(err);
+                return;
             }
-        }, function (err, data) {
-
-            hdb_license.validateLicense(lk, function (err, validation) {
-                if (!validation.valid_license) {
-                    callback('Invalid license!');
-                    return;
-                }
-
-                if (!validation.valid_date) {
-                    callback('License expired!');
-                    return;
-                }
-
-
-                if (!validation.valid_machine) {
-                    callback('This license is in use on another machine!');
-                    return;
-                }
-
-                let insert = require('./data_layer/insert');
-                var insert_object = {
-                    operation: 'insert',
-                    schema: 'system',
-                    table: 'hdb_license',
-                    hash_attribute: 'license',
-                    records: [{"license_key": lk}]
-                };
-                insert(insert_object, function (err, data) {
-                    console.log(err);
-                    console.log(data);
-                    callback(null, 'Succesfully registered');
-                });
-
-
-            });
+            settings = settings_file;
+            callback(null, wizard_result.HDB_ROOT);
         });
 
+
+
     });
 }
 
 
-function setupService(callback) {
+
+function setupService(mount_success, callback) {
     fs.readFile(`${__dirname}/utility/install/harperdb.service`, 'utf8', function (err, data) {
         var fileData = data.replace('{{project_dir}}', `${__dirname}`).replace('{{hdb_directory}}', settings.HDB_ROOT);
-
         fs.writeFile('/etc/systemd/system/harperdb.service', fileData, function (err, result) {
 
             if (err) {

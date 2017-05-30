@@ -3,7 +3,7 @@ module.exports = {
             HDB_ROOT: '/home/stephen/hdb',
             TCP_PORT: '9925',
             HTTP_PORT:'5529',
-            HDB_ADMIN_USERNAME: 'admin',
-            HDB_ADMIN_PASSWORD: 'BiGT9LQVy1ae7aba2504da42dcecf4e4c23b86701'
+            HDB_ADMIN_USERNAME: 'HDB_ADMIN',
+            HDB_ADMIN_PASSWORD: 'lcuDt2NT0b474eca7329e90db775429f02b3c17fe'
 
         };

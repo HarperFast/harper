@@ -40,7 +40,7 @@ module.exports = function (hdb_path, callback){
         makeDirectory(path.join(hdb_path, "schema/system/hdb_table/hash_attribute"));
         makeDirectory(path.join(hdb_path, "schema/system/hdb_user"));
         makeDirectory(path.join(hdb_path, "schema/system/name_index"));
-        callback('complete');
+        callback(null, 'complete');
 
 
 

@@ -1,9 +1,9 @@
 const fs = require('fs'),
     spawn = require('child_process').spawn,
     util = require('util')
-    winston = require('winston'),
+winston = require('winston'),
     install = require('./installer.js'),
-    settings = require('./settings');
+    boot_loader = require('./utility/hdb_boot_loader');
 
 winston.configure({
     transports: [
@@ -11,15 +11,22 @@ winston.configure({
     ]
 });
 
+
+var settings;
+
 run();
 
 // check settings.js if null run install
 function run() {
-    winston.log('lets get this party started!');
-    if (settings && settings.PROJECT_DIR && settings.HDB_ROOT) {
-        completeRun();
-        return
-    }else{
+    boot_loader.getBootLoader(function (err, data) {
+        console.error(err);
+        console.log(data);
+        if (data) {
+            settings = require(data.settings);
+            completeRun();
+            return;
+        }
+
         install.install(function (err, result) {
             if (err) {
                 console.log(err);
@@ -30,10 +37,8 @@ function run() {
             return;
 
         });
-    }
 
-
-
+    });
 
 
 }
@@ -60,13 +65,8 @@ function completeRun() {
     });
 
 
-
-
-
     terminal2.stdin.write(`node ./server/express.js`);
     terminal2.stdin.end();
-
-
 
 
 }
