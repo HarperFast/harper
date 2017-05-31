@@ -14,10 +14,13 @@ if (cluster.isMaster) {
     });
 } else {
     const express = require('express'),
+        boot_loader = require('../utility/hdb_boot_loader')
+        settings =require(boot_loader.settings()),
         app = express(),
         bodyParser = require('body-parser'),
         write = require('../data_layer/insert').insert,
         search = require('../data_layer/search');
+
 
     app.use(bodyParser.json()); // support json encoded bodies
     app.use(bodyParser.urlencoded({extended: true}));
@@ -68,7 +71,8 @@ if (cluster.isMaster) {
         callback('Invalid operation');
     }
 
-    app.listen(5299, function () {
-        console.log('Example app listening on port 5299!')
+    app.listen(settings.HTTP_PORT, function () {
+        console.log(`Express server running on ${settings.HTTP_PORT}`)
     });
+
 }

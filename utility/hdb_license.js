@@ -82,6 +82,7 @@ function validateLicense(license_key, company, callback) {
     license_validation_object.valid_date = true;
     license_validation_object.valid_license = true;
     license_validation_object.valid_machine = true;
+    console.log(`license: ${JSON.stringify(license_tokens)}`)
     let decrypted = decipher.update(license_tokens[0], 'hex', 'utf8');
     decrypted += decipher.final('utf8');
     console.log(decrypted);
@@ -100,19 +101,19 @@ function validateLicense(license_key, company, callback) {
             let fingerPrint = '' + data;
          //   var newHash = hashLicense(fingerPrint, company);
            // console.log(`new hash: ${newHash}`)
-            if (password.validate(license_tokens[1], `061183${data}${company}`)) {
+            if (!password.validate(license_tokens[1], `061183${data}${company}`)) {
                 license_validation_object.valid_license = false;
 
             }
 
-            callback(license_validation_object);
+            callback(null, license_validation_object);
             return;
 
 
         });
     } catch (e) {
         license_validation_object.valid_machine = false;
-        callback(license_validation_object);
+        callback(null, license_validation_object);
         return;
     }
 

@@ -42,8 +42,8 @@ function run_install(callback) {
     }
     async.waterfall([
         wizard,
-        createSettingsFile,
         mount,
+        createSettingsFile,
         setupService,
         checkRegister
 
@@ -72,10 +72,10 @@ function checkInstall(callback){
     })
 }
 
-function checkRegister(callback) {
-    console.log(`wizaard register:` + wizard_result.HDB_REGISTER);
+function checkRegister(service_setup_status, callback) {
+
     if (wizard_result.HDB_REGISTER) {
-        register.register(function (err, result) {
+        register(function (err, result) {
             if (err) {
                 callback(err);
                 returnl
@@ -87,7 +87,7 @@ function checkRegister(callback) {
 
     } else {
         callback(null, 'Successful installation!');
-        console.log('Successful installation!');
+        console.log('HarperDB successfully installed!');
     }
 }
 
@@ -134,7 +134,7 @@ function wizard(callback) {
                 pattern: /^([0-9]{1,4}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$/,
                 description: colors.magenta(`[HTTP_PORT] Please enter an HTTP listening port for HarperDB`),
                 message: 'Invalid port.',
-                default: 5529,
+                default: 5299,
                 required: false,
                 ask: function () {
                     return newInstall || !newInstall && prompt.history('REINSTALL').value;
@@ -172,18 +172,30 @@ function wizard(callback) {
 
 
     console.log(colors.magenta('' + fs.readFileSync(`./utility/install/ascii_logo`)));
+    console.log(colors.magenta('                    Installer' ));
+
     prompt.start();
 
     prompt.get(install_schema, function (err, result) {
         wizard_result = result;
         prompt.stop();
-        callback(err);
+        if(err){
+            callback(err);
+            return;
+        }
+
+        callback(null, wizard_result.HDB_ROOT);
 
 
     });
 }
 
-function createSettingsFile(callback) {
+function createSettingsFile(mount_status, callback) {
+
+    if(mount_status != 'complete'){
+        callback('mount failed');
+        return;
+    }
     var settings_file = `module.exports = {
             PROJECT_DIR : __dirname,
             HDB_ROOT: '${wizard_result.HDB_ROOT}',
@@ -196,13 +208,19 @@ function createSettingsFile(callback) {
 
 
     boot_loader.insertBootLoader(`${wizard_result.HDB_ROOT}/config/settings.js`, (err) => {
+        if(err){
+            callback(err);
+            return;
+        }
         fs.writeFile(`${wizard_result.HDB_ROOT}/config/settings.js`, settings_file, function(err, data){
             if (err) {
                 callback(err);
                 return;
             }
             settings = settings_file;
-            callback(null, wizard_result.HDB_ROOT);
+            callback(null);
+            return;
+
         });
 
 
@@ -212,7 +230,7 @@ function createSettingsFile(callback) {
 
 
 
-function setupService(mount_success, callback) {
+function setupService(callback) {
     fs.readFile(`${__dirname}/utility/install/harperdb.service`, 'utf8', function (err, data) {
         var fileData = data.replace('{{project_dir}}', `${__dirname}`).replace('{{hdb_directory}}', settings.HDB_ROOT);
         fs.writeFile('/etc/systemd/system/harperdb.service', fileData, function (err, result) {
@@ -226,7 +244,7 @@ function setupService(mount_success, callback) {
             var terminal = spawn('bash');
             terminal.stderr.on('data', function (data) {
                 //console.log('error',`Express server failed to run: ${data}`);
-                console.log('' + data);
+                //console.log('' + data);
                 //Here is where the error output goes
             });
 

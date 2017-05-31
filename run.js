@@ -3,6 +3,7 @@ const fs = require('fs'),
     util = require('util')
 winston = require('winston'),
     install = require('./installer.js'),
+    colors = require("colors/safe"),
     boot_loader = require('./utility/hdb_boot_loader');
 
 winston.configure({
@@ -19,24 +20,26 @@ run();
 // check settings.js if null run install
 function run() {
     boot_loader.getBootLoader(function (err, data) {
-        console.error(err);
-        console.log(data);
+       if(err) {
+           install.install(function (err, result) {
+               if (err) {
+                   console.log(err);
+                   winston.log('error', `start fail: ${err}`);
+                   return;
+               }
+               completeRun();
+               return;
+
+           });
+       }
+
         if (data) {
             settings = require(data.settings);
             completeRun();
             return;
         }
 
-        install.install(function (err, result) {
-            if (err) {
-                console.log(err);
-                winston.log('error', `start fail: ${err}`);
-                return;
-            }
-            completeRun();
-            return;
 
-        });
 
     });
 
@@ -51,7 +54,6 @@ function completeRun() {
     var terminal = spawn('bash');
     terminal.stderr.on('data', function (data) {
         //winston.log('error',`Schema trigger failed to run: ${data}`);
-        console.log('' + data);
         //Here is where the error output goes
     });
     terminal.stdin.write(`node ./triggers/schema_triggers.js`);
@@ -59,14 +61,17 @@ function completeRun() {
 
     var terminal2 = spawn('bash');
     terminal2.stderr.on('data', function (data) {
-        //winston.log('error',`Express server failed to run: ${data}`);
-        console.log('' + data);
+        winston.log('error',`Express server failed to run: ${data}`);
         //Here is where the error output goes
     });
 
 
     terminal2.stdin.write(`node ./server/express.js`);
     terminal2.stdin.end();
+
+    console.log(colors.magenta('' + fs.readFileSync(`./utility/install/ascii_logo`)));
+    console.log(colors.magenta('|------------- HarperDB succesfully started ------------|'));
+
 
 
 }

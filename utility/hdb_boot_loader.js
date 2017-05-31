@@ -5,7 +5,8 @@ const fs = require('fs'),
     module.exports = {
 
     insertBootLoader: insertBootLoader,
-    getBootLoader: getBootLoader
+    getBootLoader: getBootLoader,
+    settings:getSettingsFile
 
 }
 
@@ -27,11 +28,27 @@ function insertBootLoader(settings_path, callback){
             return;
         }
 
-        callback(data);
+        callback(null, data);
         return;
 
 
     });
+
+}
+
+
+function getSettingsFile(){
+
+   try{
+       return JSON.parse(fs.readFileSync('/etc/hdb_bootloader.hdb')).settings;
+
+   }catch(e){
+       console.log(e);
+       return null;
+   }
+
+
+
 
 }
 

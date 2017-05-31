@@ -27,13 +27,13 @@ hdb_license.generateFingerPrint(function(err, fingerprint){
 
 
 var licenseKeyObject = {};
-licenseKeyObject.fingerprint = 'FuwY2GEC0929ea1bf366794b95955a0f913196b19';
+licenseKeyObject.fingerprint = 'SkP74dSz99ff95e7e4ac72f4580fbda6339f2d8b3';
 licenseKeyObject.exp_date = '2017-07-11';
 licenseKeyObject.company = 'HarperDB';
 hdb_license.generateLicense(licenseKeyObject, function(err, license){
     console.log(JSON.stringify(license))
     console.error(err);
-    hdb_license.validateLicense(license, 'HarperDB, Inc.', function(data){
+    hdb_license.validateLicense(license, 'HarperDB', function(data){
         console.log(JSON.stringify(data));
 
     });

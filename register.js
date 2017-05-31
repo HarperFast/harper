@@ -7,7 +7,7 @@ module.exports ={
 
 }
 
-function register(company, callback) {
+function register(callback) {
 
 
     hdb_license.generateFingerPrint(function (err, fingerprint) {
@@ -29,13 +29,18 @@ function register(company, callback) {
 
 
 
-        console.log(fingerprint);
         prompt.start();
         prompt.get(register_schema, function (err, data) {
 
 
 
             hdb_license.validateLicense(data.HDB_LICENSE, data.CUSTOMER_COMPANY, function (err, validation) {
+                if(err){
+                    console.error(err);
+                    callback(err);
+                    return;
+                }
+
                 if (!validation.valid_license) {
                     callback('Invalid license!');
                     return;
@@ -58,11 +63,14 @@ function register(company, callback) {
                     schema: 'system',
                     table: 'hdb_license',
                     hash_attribute: 'license',
-                    records: [{"license_key": lk}]
+                    records: [{"license_key": data.HDB_LICENSE}]
                 };
-                insert(insert_object, function (err, data) {
-                    console.log(err);
-                    console.log(data);
+                insert.insert(insert_object, function (err, data) {
+                    if(err){
+                        console.error(err);
+                        return;
+                    }
+
                     callback(null, 'Successfully registered');
                 });
 

@@ -107,7 +107,7 @@ function proccessUpdate(insert_object, hash_attribute, hash_paths, hashes, callb
             var existingRecord = hashMap[record[hash_attribute]];
             for (let attr in record) {
                 if (existingRecord && existingRecord[attr] && existingRecord[attr] == record[attr] && hash_attribute != attr) {
-                    console.log(`removed attribute ${attr}`);
+                    console.log(`removed attribuc6a8d0685220d216b8fd77d87cdf3b5bmofi25dtGLusNqa5975542e73f523f01105c7dd72e6f7a0te ${attr}`);
                     delete record[attr];
                 } else if (existingRecord && existingRecord[attr] && attr != hash_attribute) {
                     fs.unlink(`${base_path}${attr}/${existingRecord[attr]}/${existingRecord[hash_attribute]}.hdb`,

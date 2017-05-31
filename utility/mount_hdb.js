@@ -8,7 +8,6 @@
 
 const fs = require('fs'),
     path = require('path');
-var settings = require('settings');
 
 module.exports = function (hdb_path, callback){
     function makeDirectory(cur_path) {
