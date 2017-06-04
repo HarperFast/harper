@@ -5,7 +5,9 @@ const fs = require('fs')
     , search_validator = require('../validation/searchValidator.js')
     , async = require('async'),
     path = require('path'),
-    globby = require('globby');
+    globby = require('globby'),
+    _ = require('lodash'),
+    joins = require('lodash-joins');
 
 const slash_regex =  /\//g;
 
@@ -19,7 +21,8 @@ module.exports = {
     searchByHash: searchByHash,
     searchByValue:searchByValue,
     searchByHashes:searchByHashes,
-    searchByConditions: searchByConditions
+    searchByConditions: searchByConditions,
+    searchByJoinConditions: searchByJoinConditions
 };
 
 function searchByHash(search_object, callback){
@@ -102,7 +105,7 @@ function searchByConditions(search_wrapper, callback){
 
     async.waterfall([
         findFiles.bind(null, patterns.folder_search_path, patterns.folder_search),
-        verifyFileMatches.bind(null, patterns.file_search, patterns.hash_path),
+        //verifyFileMatches.bind(null, patterns.file_search, patterns.hash_path),
         getAttributeFiles.bind(null, search_object.get_attributes, patterns.table_path),
         consolidateData.bind(null, table_schema.hash_attribute)
     ], (error, data)=>{
@@ -115,6 +118,96 @@ function searchByConditions(search_wrapper, callback){
     });
 }
 
+function searchByJoinConditions(search_wrapper, callback){
+    let values = searchByConditions(search_wrapper, (err, data)=>{
+        if(err){
+            callback(err);
+            return;
+        }
+
+        let next_table = search_wrapper.tables[1];
+        let join = search_wrapper.joins[0];
+
+        next_table.condition =  convertJoinToCondition(search_wrapper.tables[0], search_wrapper.tables[1], join, data);
+
+
+        searchByConditions({tables:[next_table]}, (err, data2)=> {
+            if (err) {
+                callback(err);
+                return;
+            }
+            let comparators = Object.values(join)[0];
+            let left_attribute = comparators[0].split('.');
+            let right_attribute = comparators[1].split('.');
+
+            let left_attribute_name = findAttributeAlias(search_wrapper.tables, left_attribute[0], left_attribute[1]);
+            let right_attribute_name = findAttributeAlias(search_wrapper.tables, right_attribute[0], right_attribute[1]);
+
+            let joined = joins.hashInnerJoin(data, (obj)=>{return obj[left_attribute_name]}, data2, (obj)=>{return obj[right_attribute_name]});
+
+            callback(null, joined);
+        });
+    });
+}
+
+function convertJoinToCondition(left_table, right_table, join, data){
+    let condition_attribute;
+    let condition_values = [];
+    let comparators = Object.values(join)[0];
+    let left_attribute = comparators[0].split('.');
+    let right_attribute = comparators[1].split('.');
+    let data_attribute;
+
+    if(left_attribute[0] === right_table.alias || left_attribute === right_table.table){
+        condition_attribute = left_attribute[1];
+        data_attribute = findAttributeAlias([left_table, right_table], right_attribute[0], right_attribute[1]);
+    } else if(right_attribute[0] === right_table.alias || right_attribute[0] === right_table.table){
+        condition_attribute = right_attribute[1];
+        data_attribute = findAttributeAlias([left_table, right_table], left_attribute[0], left_attribute[1]);
+    }
+
+    condition_values = data.map((row)=> {
+        return row[data_attribute];
+    });
+
+    let condition = {
+        'in' : [condition_attribute, condition_values]
+    };
+
+    return condition;
+}
+
+function findAttributeAlias(tables, table_alias, attribute_alias){
+    let table = findTable(tables, table_alias);
+    return findAttribute(table, attribute_alias).alias;
+}
+
+function findTable(tables, table_alias) {
+    return _.filter(tables, (table)=> {
+        return table.name === table_alias || table.alias === table_alias;
+    })[0];
+}
+
+function findAttribute(table, attribute_alias){
+    return _.filter(table.get_attributes, (attribute)=> {
+        return attribute.attribute === attribute_alias;
+    })[0];
+}
+
+function mergeJoinTables(master_data, join_data, join_type){
+
+
+
+    switch(join_type){
+        case 'join':
+        case 'inner join':
+            join_data.forEach((row)=>{
+
+        });
+            break;
+    }
+}
+
 RegExp.escape= function(s) {
     return s.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
 };
@@ -122,20 +215,26 @@ RegExp.escape= function(s) {
 function createPatterns(condition, table_schema){
     let table_path = `${base_path}${table_schema.schema}/${table_schema.name}/`;
     let pattern = {};
+    let operation = Object.keys(condition)[0];
+    let comparators = Object.values(condition)[0];
+    let column = comparators[0].split('.');
+    let attribute_name = column.length > 1 ? column[1] : column[0];
     pattern.table_path = table_path;
-    pattern.hash_path = `${table_path + '__hdb_hash/' + condition.attribute}/`;
-    switch(condition.operation){
-        case '=':
-            let stripped_search_string = condition.compare_value === '*' ? '*' :String(condition.compare_value).replace(slash_regex, '').substring(0, 4000);
-            pattern.folder_search = stripped_search_string;
-            pattern.file_search = condition.compare_value === '*' ? '*' : new RegExp(`^${RegExp.escape(condition.compare_value)}`);
 
-            if(condition.attribute === table_schema.hash_attribute || condition.compare_value === '*'){
+    pattern.hash_path = `${table_path}__hdb_hash/${attribute_name}/`;
+
+    switch(operation){
+        case '=':
+            let stripped_search_string = comparators[1] === '*' ? '*' :String(comparators[1]).replace(slash_regex, '').substring(0, 4000);
+            pattern.folder_search = stripped_search_string;
+            pattern.file_search = comparators[1] === '*' ? '*' : new RegExp(`^${RegExp.escape(comparators[1])}`);
+
+            if(attribute_name === table_schema.hash_attribute || comparators[1] === '*'){
                 pattern.folder_search = `${pattern.folder_search}.hdb`;
                 pattern.folder_search_path = pattern.hash_path;
             } else {
                 pattern.folder_search = `${pattern.folder_search}/*.hdb`;
-                pattern.folder_search_path = `${table_path + condition.attribute}/`;
+                pattern.folder_search_path = `${table_path + attribute_name}/`;
             }
 
             break;
@@ -143,15 +242,15 @@ function createPatterns(condition, table_schema){
 
             let file_searches = [];
             let folder_searches = [];
-            condition.compare_value.forEach((value)=>{
+            comparators[1].forEach((value)=>{
                 let stripped_value = String(value).replace(slash_regex, '').substring(0, 4000);
-                pattern.folder_search_path = condition.attribute === table_schema.hash_attribute ? pattern.hash_path : `${table_path + condition.attribute}/`;
+                pattern.folder_search_path = attribute_name === table_schema.hash_attribute ? pattern.hash_path : `${table_path + attribute_name}/`;
 
                 folder_searches.push(stripped_value);
                 file_searches.push(RegExp.escape(stripped_value));
             });
             pattern.file_search = new RegExp(file_searches.join('|'));
-            pattern.folder_search = condition.attribute === table_schema.hash_attribute ? `?(${folder_searches.join('|')}).hdb` : `?(${folder_searches.join('|')})/*.hdb`;
+            pattern.folder_search = attribute_name === table_schema.hash_attribute ? `?(${folder_searches.join('|')}).hdb` : `?(${folder_searches.join('|')})/*.hdb`;
             break;
         default:
             break;
@@ -181,13 +280,17 @@ function consolidateData(hash_attribute, attributes_data, callback){
 function getAttributeFiles(get_attributes, table_path, hash_files, callback){
     let attributes_data = {};
     async.each(get_attributes, (attribute, caller)=>{
-        readAttributeFiles(table_path, attribute, hash_files, (err, results)=>{
+        //evaluate if an array of strings or objects has been passed in and assign values accordingly
+        let attribute_name = (typeof attribute === 'string') ? attribute : attribute.attribute;
+        let alias_name = (typeof attribute === 'string') ? attribute :
+            (attribute.alias ? attribute.alias : attribute.name);
+        readAttributeFiles(table_path, attribute_name, hash_files, (err, results)=>{
             if(err){
                 caller(err);
                 return;
             }
 
-            attributes_data[attribute]=results;
+            attributes_data[alias_name]=results;
             caller();
         });
     }, (error)=>{

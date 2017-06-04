@@ -92,12 +92,6 @@ let search_by_conditions = {
     condition: {
         presence: true
     },
-    "condition.attribute": {
-        presence: true
-    },
-    "condition.operation": {
-        presence: true
-    },
     get_attributes: {
         presence: true
     }
