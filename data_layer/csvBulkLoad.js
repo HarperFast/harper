@@ -3,7 +3,8 @@ const csv=require('csvtojson'),
     _ = require('lodash'),
     request=require('request')
     record_batch_size = 1000,
-    async = require('async');
+    async = require('async'),
+    csv_converter = csv({flatKeys:true,workerNum:4,ignoreEmpty:true});
 
 module.exports = {
     csvDataLoad: csvDataLoad,
@@ -14,7 +15,7 @@ module.exports = {
 function csvDataLoad(csv_object, callback){
     csv_records = [];
 
-    csv()
+    csv_converter
         .fromString(csv_object.data)
         .on('json',(jsonObj, rowIndex)=>{
             jsonObj.id = parseInt(rowIndex) +1;
@@ -35,7 +36,7 @@ function csvDataLoad(csv_object, callback){
 function csvURLLoad(csv_object, callback){
     csv_records = [];
 
-    csv()
+    csv_converter
         .fromStream(request.get(csv_object.csv_url))
         .on('json',(jsonObj, rowIndex)=>{
             jsonObj.id = parseInt(rowIndex) +1;
@@ -48,7 +49,7 @@ function csvURLLoad(csv_object, callback){
                     return;
                 }
 
-                callback(`successfully loaded ${csv_records.length} records`);
+                callback(null, `successfully loaded ${csv_records.length} records`);
             });
         });
 }
@@ -56,7 +57,7 @@ function csvURLLoad(csv_object, callback){
 function csvFileLoad(csv_object, callback){
     csv_records = [];
 
-    csv()
+    csv_converter
         .fromFile(csv_object.file_path)
         .on('json',(jsonObj, rowIndex)=>{
             jsonObj.id = parseInt(rowIndex) +1;
@@ -69,15 +70,17 @@ function csvFileLoad(csv_object, callback){
                     return;
                 }
 
-                callback(`successfully loaded ${csv_records.length} records`);
+                callback(null, `successfully loaded ${csv_records.length} records`);
             });
+        }).on('error',(err)=>{
+            callback(err);
         });
 }
 
 function bulkLoad(records, schema, table, callback){
     let chunks = _.chunk(records, record_batch_size);
 
-    async.eachLimit(chunks, 2, (record_chunk, caller)=>{
+    async.eachLimit(chunks, 4, (record_chunk, caller)=>{
         let insert_object = {
             operation: 'insert',
             schema: schema,

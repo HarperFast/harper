@@ -69,6 +69,8 @@ function generateAdvancedSearchObject(statement){
 
 function addSupplementalFields(search_wrapper){
     search_wrapper.joins.forEach((join)=>{
+
+
         let join_info = join.attribute.split('.');
         let join_to_info = join.compare_attribute.split('.');
         search_wrapper.tables.forEach((table)=>{

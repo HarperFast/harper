@@ -119,6 +119,8 @@ function searchByConditions(search_wrapper, callback){
 }
 
 function searchByJoinConditions(search_wrapper, callback){
+    addSupplementalFields(search_wrapper);
+
     let values = searchByConditions(search_wrapper, (err, data)=>{
         if(err){
             callback(err);
@@ -148,6 +150,24 @@ function searchByJoinConditions(search_wrapper, callback){
             callback(null, joined);
         });
     });
+}
+
+function addSupplementalFields(search_wrapper){
+    search_wrapper.joins.forEach((join)=>{
+        let comparators = Object.values(join)[0];
+
+        let join_info = join.attribute.split('.');
+
+        search_wrapper.tables.forEach((table)=>{
+            if((table.table === join.left_table || table.alias === v) && table.get_attributes.indexOf(join.left_table) < 0){
+                table.supplemental_fields.push(join_info[1]);
+            } else if((table.table === join_to_info[0] || table.alias === join_to_info[0])  && table.get_attributes.indexOf(join_to_info[1]) < 0){
+                table.supplemental_fields.push(join_to_info[1]);
+            }
+        });
+    });
+
+    return search_wrapper;
 }
 
 function convertJoinToCondition(left_table, right_table, join, data){
@@ -192,20 +212,6 @@ function findAttribute(table, attribute_alias){
     return _.filter(table.get_attributes, (attribute)=> {
         return attribute.attribute === attribute_alias;
     })[0];
-}
-
-function mergeJoinTables(master_data, join_data, join_type){
-
-
-
-    switch(join_type){
-        case 'join':
-        case 'inner join':
-            join_data.forEach((row)=>{
-
-        });
-            break;
-    }
 }
 
 RegExp.escape= function(s) {
