@@ -1,5 +1,4 @@
 const fs = require('fs')
-    , settings = require('settings')
     , validate = require('validate.js')
     , insert = require('./insert.js')
     , async = require('async')
@@ -11,7 +10,10 @@ const fs = require('fs')
     , uuidV4 = require('uuid/v4')
     , attribute_validation = require('../validation/attributeInsertValidator.js'),
     //this is to avoid a circular dependency with insert.  insert needs the describe all function but so does this module.  as such the functions have been broken out into a seperate module.
-    schema_describe = require('./schemaDescribe');
+    schema_describe = require('./schemaDescribe'),
+    PropertiesReader = require('properties-reader'),
+    hdb_properties = PropertiesReader('/etc/hdb_boot_properties.file');
+    hdb_properties.append(hdb_properties.get('settings_path'));
 
 
 var schema_constraints = {
@@ -95,7 +97,7 @@ module.exports = {
         }
 
         var schema = schema_create_object.schema;
-        fs.mkdir(settings.HDB_ROOT + '/schema/' + schema, function (err, data) {
+        fs.mkdir(hdb_properties.get('HDB_ROOT') + '/schema/' + schema, function (err, data) {
             if (err) {
                 if (err.errno == -17) {
                     callback("schema already exists", null);
@@ -166,7 +168,7 @@ module.exports = {
             }
         }
 
-        deleteFolderRecursive(settings.HDB_ROOT + '/schema/' + schema, true);
+        deleteFolderRecursive(hdb_properties.get('HDB_ROOT') + '/schema/' + schema, true);
 
 
     },
@@ -270,7 +272,7 @@ module.exports = {
             callback(validator);
             return;
         }
-        fs.mkdir(settings.HDB_ROOT + '/schema/' + create_table_object.schema + '/' + create_table_object.table, function (err, data) {
+        fs.mkdir(hdb_properties.get('HDB_ROOT') + '/schema/' + create_table_object.schema + '/' + create_table_object.table, function (err, data) {
             if (err) {
                 if (err.errno == -2) {
                     callback("schema does not exist", null);
@@ -347,8 +349,8 @@ module.exports = {
             }
         }
 
-        if (fs.existsSync(settings.HDB_ROOT + '/schema/' + schema + "/")) {
-            var path = settings.HDB_ROOT + '/schema/' + schema + "/" + table;
+        if (fs.existsSync(hdb_properties.get('HDB_ROOT') + '/schema/' + schema + "/")) {
+            var path = hdb_properties('HDB_ROOT') + '/schema/' + schema + "/" + table;
             deleteFolderRecursive(path, true);
         } else {
             callback("schema does not exist");

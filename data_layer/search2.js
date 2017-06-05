@@ -1,8 +1,10 @@
 const spawn = require('child_process').spawn,
-    settings = require('settings'),
     async = require('async'),
     fs = require('fs'),
-    path=require('path');
+    path=require('path'),
+    PropertiesReader = require('properties-reader'),
+    hdb_properties = PropertiesReader('/etc/hdb_boot_properties.file');
+    hdb_properties.append(hdb_properties.get('settings_path'));
 
 function callAWK(callback){
     console.time('awk');
@@ -24,9 +26,9 @@ function callAWK(callback){
     });
 
     //var files = ['first_name/*/*'];
-    var table_path = `${settings.HDB_ROOT}/schema/dev/person/`;
-    var staging_path = `${settings.HDB_ROOT}/staging/search/dev/person/`;
-    terminal.stdin.write(`bash ${settings.PROJECT_DIR}/bash/search.sh ${table_path} ${staging_path} first_name *di* first_name,last_name`);
+    var table_path = `${hdb_properties.get('HDB_ROOT')}/schema/dev/person/`;
+    var staging_path = `${hdb_properties.get('HDB_ROOT')}/staging/search/dev/person/`;
+    terminal.stdin.write(`bash ${hdb_properties.get('PROJECT_DIR')}/bash/search.sh ${table_path} ${staging_path} first_name *di* first_name,last_name`);
     terminal.stdin.end();
 }
 

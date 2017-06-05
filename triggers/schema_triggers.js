@@ -1,12 +1,14 @@
 'use strict';
 const fs = require('fs')
-    , settings = require('settings')
-    , base_path = settings.HDB_ROOT + "/schema/"
+    , base_path = hdb_properties.get('HDB_ROOT') + "/schema/"
     , async = require('async')
     , spawn = require('child_process').spawn
     , util = require('util')
     , schema = require('../data_layer/schema')
-    ,attribute_trigger = require('./attribute_trigger');
+    ,attribute_trigger = require('./attribute_trigger'),
+    PropertiesReader = require('properties-reader'),
+    hdb_properties = PropertiesReader('/etc/hdb_boot_properties.file');
+    hdb_properties.append(hdb_properties.get('settings_path'));
 
 
 
@@ -31,7 +33,7 @@ function initalize() {
        // initalize();
     });
 
-    terminal.stdin.write(util.format('inotifywait -m -r -e create -e delete -e move -e moved_from %s ', settings.HDB_ROOT + '/schema/system'));
+    terminal.stdin.write(util.format('inotifywait -m -r -e create -e delete -e move -e moved_from %s ', hdb_properties.get('HDB_ROOT') + '/schema/system'));
     terminal.stdin.end();
 }
 

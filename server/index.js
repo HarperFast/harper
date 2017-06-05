@@ -1,13 +1,17 @@
 #!/usr/bin/env node
 'use strict';
-const     settings = require('settings'),
+const
     insert = require('../data_layer/insert.js'),
     search  = require('../data_layer/search.js'),
     hdb_delete = require('../data_layer/delete.js'),
     max_data_size = 65536,
     net = require('net'),
     cluster = require('cluster'),
-    winston=require('winston');
+    winston=require('winston'),
+    PropertiesReader = require('properties-reader'),
+    hdb_properties = PropertiesReader('/etc/hdb_boot_properties.file');
+    hdb_properties.append(hdb_properties.get('settings_path'));
+
 
 winston.configure({
     transports: [
@@ -15,12 +19,12 @@ winston.configure({
     ]
 });
 
-var numPorts = settings.TCP_PORT_RANGE_END - settings.TCP_PORT_RANGE_BEGIN;
+var numPorts = hdb_properties.get('TCP_PORT_RANGE_END') -  hdb_properties.get('TCP_PORT_RANGE_BEGIN');
 var counter =0;
 
 var port = process.argv[2] ? process.argv[2] : 9925;
 
-net.createServer(conn).listen(port, settings.HDB_ADDRESS).on('error', (error)=>{
+net.createServer(conn).listen(port,  hdb_properties.get('HDB_ADDRESS')).on('error', (error)=>{
     winston.log('error',`TCP fail: ${error}`);
 });
 

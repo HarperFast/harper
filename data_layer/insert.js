@@ -4,15 +4,17 @@ const insert_validator = require('../validation/insertValidator.js'),
     fs = require('fs'),
     async = require('async'),
     path = require('path'),
-    settings = require('settings'),
     child_process = require('child_process'),
     util = require('util'),
     moment = require('moment'),
     mkdirp = require('mkdirp'),
     global_schema = require('../utility/globalSchema'),
-    search = require('./search');
+    search = require('./search'),
+    PropertiesReader = require('properties-reader'),
+    hdb_properties = PropertiesReader('/etc/hdb_boot_properties.file');
+    hdb_properties.append(hdb_properties.get('settings_path'));
 
-const hdb_path = path.join(settings.HDB_ROOT, '/schema');
+const hdb_path = path.join(hdb_properties.get('HDB_ROOT'), '/schema');
 const regex = /[^0-9a-z]/gi;
 
 module.exports = {

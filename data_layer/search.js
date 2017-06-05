@@ -1,7 +1,9 @@
 'use strict';
-const fs = require('fs')
-    , settings = require('settings')
-    , base_path = settings.HDB_ROOT + "/schema/"
+const fs = require('fs'),
+    PropertiesReader = require('properties-reader'),
+    hdb_properties = PropertiesReader('/etc/hdb_boot_properties.file');
+    hdb_properties.append(hdb_properties.get('settings_path'));
+const base_path = hdb_properties.get('HDB_ROOT') + "/schema/"
     , search_validator = require('../validation/searchValidator.js')
     , async = require('async'),
     path = require('path'),

@@ -20,7 +20,7 @@ if (cluster.isMaster) {
         bodyParser = require('body-parser'),
         write = require('../data_layer/insert').insert,
         search = require('../data_layer/search');
-    hdb_properties.append(hdb_properties.get('settings_path')),
+       hdb_properties.append(hdb_properties.get('settings_path')),
 
 
         app.use(bodyParser.json()); // support json encoded bodies

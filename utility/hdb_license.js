@@ -1,11 +1,13 @@
-const settings = require('../settings'),
-    fs = require('fs'),
+const fs = require('fs'),
     password = require('./password'),
     crypto = require('crypto'),
     cipher = crypto.createCipher('aes192', 'a password'),
     decipher = crypto.createDecipher('aes192', 'a password'),
     validation = require('../validation/license_key_object.js'),
-    moment = require('moment');
+    moment = require('moment'),
+    PropertiesReader = require('properties-reader'),
+    hdb_properties = PropertiesReader('/etc/hdb_boot_properties.file');
+    hdb_properties.append(hdb_properties.get('settings_path'));
 
 
 
@@ -21,7 +23,7 @@ function generateFingerPrint(callback) {
     const uuidV4 = require('uuid/v4');
     var hash = uuidV4(); // -> '110ec58a-a0f2-4ac4-8393-c866d813b8d1'
     var hashed_hash = password.hash(hash)
-    fs.writeFile(`${settings.PROJECT_DIR}/utility/keys/060493.ks`, hashed_hash, function (err, result) {
+    fs.writeFile(`${hdb_properties.get('PROJECT_DIR')}/utility/keys/060493.ks`, hashed_hash, function (err, result) {
         if (err) {
             callback(err);
             return;
@@ -64,7 +66,7 @@ function generateFingerPrint(callback) {
     const uuidV4 = require('uuid/v4');
     var hash = uuidV4(); // -> '110ec58a-a0f2-4ac4-8393-c866d813b8d1'
     var hashed_hash = password.hash(hash)
-    fs.writeFile(`${settings.PROJECT_DIR}/utility/keys/060493.ks`, hashed_hash, function (err, result) {
+    fs.writeFile(`${hdb_properties.get('PROJECT_DIR')}/utility/keys/060493.ks`, hashed_hash, function (err, result) {
         if (err) {
             callback(err);
             return;
@@ -95,9 +97,9 @@ function validateLicense(license_key, company, callback) {
 
 
     try {
-        console.log(`${settings.PROJECT_DIR}/utility/keys/060493.ks`);
+        console.log(`${hdb_properties.get('PROJECT_DIR')}/utility/keys/060493.ks`);
 
-        fs.readFile(`${settings.PROJECT_DIR}/utility/keys/060493.ks`, function (err, data) {
+        fs.readFile(`${hdb_properties.get('PROJECT_DIR')}/utility/keys/060493.ks`, function (err, data) {
             let fingerPrint = '' + data;
          //   var newHash = hashLicense(fingerPrint, company);
            // console.log(`new hash: ${newHash}`)
