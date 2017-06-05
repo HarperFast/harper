@@ -18,7 +18,8 @@ if (cluster.isMaster) {
         bodyParser = require('body-parser'),
         write = require('../data_layer/insert').insert,
         search = require('../data_layer/search'),
-        sql = require('../sqlTranslator/index').evaluateSQL;
+        sql = require('../sqlTranslator/index').evaluateSQL,
+        csv = require('../data_layer/csvBulkLoad');
 
     app.use(bodyParser.json()); // support json encoded bodies
     app.use(bodyParser.urlencoded({extended: true}));
@@ -60,6 +61,15 @@ if (cluster.isMaster) {
                 break;
             case 'sql':
                 operation_function = sql;
+                break;
+            case 'csv_data_load':
+                operation_function = csv.csvDataLoad;
+                break
+            case 'csv_file_load':
+                operation_function = csv.csvFileLoad;
+                break;
+            case 'csv_url_load':
+                operation_function = csv.csvDataLoad;
                 break;
             default:
                 break;
