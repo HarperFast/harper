@@ -60,16 +60,16 @@ function run() {
 
 function completeRun() {
 
+    kickOffTriggers();
+    kickOffExpress();
 
 
-    //spin up schema trigger
-    var terminal = spawn('bash');
-    terminal.stderr.on('data', function (data) {
-        //winston.log('error',`Schema trigger failed to run: ${data}`);
-        //Here is where the error output goes
-    });
-    terminal.stdin.write(`node ./triggers/schema_triggers.js`);
-    terminal.stdin.end();
+
+
+
+}
+
+function kickOffExpress(){
 
     var terminal2 = spawn('bash');
     terminal2.stderr.on('data', function (data) {
@@ -84,9 +84,21 @@ function completeRun() {
     console.log(colors.magenta('' + fs.readFileSync(`./utility/install/ascii_logo`)));
     console.log(colors.magenta('|------------- HarperDB succesfully started ------------|'));
 
-
-
 }
+
+function kickOffTriggers(){
+
+    //spin up schema trigger
+    var terminal = spawn('bash');
+    terminal.stderr.on('data', function (data) {
+        kickOffTriggers();
+
+    });
+    terminal.stdin.write(`node ./triggers/schema_triggers.js`);
+    terminal.stdin.end();
+}
+
+
 
 
 //check lk exists and is valid.
