@@ -4,10 +4,8 @@ const prompt = require('prompt'),
     mount = require('./utility/mount_hdb'),
     fs = require('fs'),
     colors = require("colors/safe"),
-    hdb_license = require('./utility/hdb_license'),
     isRoot = require('is-root'),
     async = require('async'),
-    register = require('./register'),
     PropertiesReader = require('properties-reader');
     var hdb_boot_properties = null,
     hdb_properties = null;
@@ -78,6 +76,7 @@ function checkInstall(callback){
 function checkRegister(service_setup_status, callback) {
 
     if (wizard_result.HDB_REGISTER) {
+        register = require('./register'),
         register(function (err, result) {
             if (err) {
                 callback(err);
