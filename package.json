@@ -24,6 +24,7 @@
     "node-schedule": "^1.2.1",
     "nodejs-license-file": "^1.1.0",
     "prompt": "^1.0.0",
+    "properties-reader": "0.0.15",
     "sqlite-parser": "^1.0.0",
     "systeminformation": "^3.17.3",
     "uuid": "^3.0.1",
