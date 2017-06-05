@@ -10,7 +10,7 @@ var hdb_boot_properties = null,
 
 winston.configure({
     transports: [
-        new (winston.transports.File)({filename: 'startup_error.log'})
+        new (winston.transports.File)({filename: 'startup.log'})
     ]
 });
 
@@ -77,6 +77,9 @@ function kickOffExpress(){
         //Here is where the error output goes
     });
 
+    terminal2.stdout.on('data', function(data){
+        winston.log('info', `Express Server started`);
+    });
 
     terminal2.stdin.write(`node ./server/express.js`);
     terminal2.stdin.end();
@@ -91,7 +94,13 @@ function kickOffTriggers(){
     //spin up schema trigger
     var terminal = spawn('bash');
     terminal.stderr.on('data', function (data) {
-        kickOffTriggers();
+        if(data.indexOf('Beware: since -r was given') < 0){
+            winston.log('error',`Schema trigger failed to run: ${data}`);
+            kickOffTriggers();
+        }else{
+            winston.log('info',`Schema trigger started: ${data}`);
+        }
+
 
     });
     terminal.stdin.write(`node ./triggers/schema_triggers.js`);

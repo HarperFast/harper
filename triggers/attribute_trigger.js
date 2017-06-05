@@ -1,4 +1,8 @@
 'use strict';
+const PropertiesReader = require('properties-reader'),
+    hdb_properties = PropertiesReader('/etc/hdb_boot_properties.file');
+hdb_properties.append(hdb_properties.get('settings_path'));
+
 const fs = require('fs')
     , base_path = hdb_properties.get('HDB_ROOT') + "/schema/"
     , exec = require('child_process').exec
@@ -8,10 +12,8 @@ const fs = require('fs')
     , util = require('util')
     , schema = require('../data_layer/schema')
     , insert = require('../data_layer/insert.js')
-    , search = require('../data_layer/search.js'),
-    PropertiesReader = require('properties-reader'),
-    hdb_properties = PropertiesReader('/etc/hdb_boot_properties.file');
-    hdb_properties.append(hdb_properties.get('settings_path'));
+    , search = require('../data_layer/search.js');
+
 
 
 module.exports = {
