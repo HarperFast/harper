@@ -7,10 +7,11 @@ const prompt = require('prompt'),
     hdb_license = require('./utility/hdb_license'),
     isRoot = require('is-root'),
     async = require('async'),
-    boot_loader = require('./utility/hdb_boot_loader'),
-    register = require('./register');
-
-var settings = null;
+    register = require('./register'),
+    PropertiesReader = require('properties-reader');
+    var hdb_boot_properties = null,
+    hdb_properties = null;
+//var settings = null;
 
 
 //
@@ -56,20 +57,22 @@ function run_install(callback) {
 }
 
 function checkInstall(callback){
-    boot_loader.getBootLoader(function (err, data) {
 
-        if(err){
-            callback(err);
-            return;
-        }
-        if(data){
-            settings = require(data.settings);
-            callback(null, data);
-            return;
-        }
+       if(!hdb_boot_properties){
+           hdb_boot_properties = PropertiesReader('/etc/hdb_boot_properties.file');
+           hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
+           if(hdb_properties.get('HDB_ROOT')){
+               callback(null, data);
+               return;
+           }else{
+               callback(null ,null);
+           }
+       }else{
+           callback(null, null);
+       }
 
 
-    })
+
 }
 
 function checkRegister(service_setup_status, callback) {
@@ -196,32 +199,30 @@ function createSettingsFile(mount_status, callback) {
         callback('mount failed');
         return;
     }
-    var settings_file = `module.exports = {
-            PROJECT_DIR : __dirname,
-            HDB_ROOT: '${wizard_result.HDB_ROOT}',
-            TCP_PORT: '${wizard_result.TCP_PORT}',
-            HTTP_PORT:'${wizard_result.HTTP_PORT}',
-            HDB_ADMIN_USERNAME: '${wizard_result.HDB_ADMIN_USERNAME}',
-            HDB_ADMIN_PASSWORD: '${password.hash(wizard_result.HDB_ADMIN_PASSWORD)}'
-
-        };`
 
 
-    boot_loader.insertBootLoader(`${wizard_result.HDB_ROOT}/config/settings.js`, (err) => {
+   createBootPropertiesFile(`${wizard_result.HDB_ROOT}/config/settings.js`, (err) => {
         if(err){
             callback(err);
             return;
         }
-        fs.writeFile(`${wizard_result.HDB_ROOT}/config/settings.js`, settings_file, function(err, data){
-            if (err) {
-                callback(err);
-                return;
-            }
-            settings = settings_file;
-            callback(null);
-            return;
+
+
+        var hdb_props_value = `PROJECT_DIR = __dirname
+        HDB_ROOT= ${wizard_result.HDB_ROOT}
+        TCP_PORT = ${wizard_result.TCP_PORT}
+        HTTP_PORT = ${wizard_result.HTTP_PORT}
+        HDB_ADMIN_USERNAME = ${wizard_result.HDB_ADMIN_USERNAME}
+        HDB_ADMIN_PASSWORD = ${password.hash(wizard_result.HDB_ADMIN_PASSWORD)}`;
+
+        fs.writeFile(hdb_boot_properties.get('settings_path'), hdb_props_value, function(err, data) {
+
+
+           hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
 
         });
+        callback(null);
+        return;
 
 
 
@@ -232,7 +233,8 @@ function createSettingsFile(mount_status, callback) {
 
 function setupService(callback) {
     fs.readFile(`${__dirname}/utility/install/harperdb.service`, 'utf8', function (err, data) {
-        var fileData = data.replace('{{project_dir}}', `${__dirname}`).replace('{{hdb_directory}}', settings.HDB_ROOT);
+        var fileData = data.replace('{{project_dir}}', `${__dirname}`).replace('{{hdb_directory}}',
+            hdb_properties.get('HDB_ROOT'));
         fs.writeFile('/etc/systemd/system/harperdb.service', fileData, function (err, result) {
 
             if (err) {
@@ -259,3 +261,30 @@ function setupService(callback) {
     });
 }
 
+function createBootPropertiesFile(settings_path, callback){
+    if (!isRoot()) {
+        callback("Must run as root!");
+        return;
+    }
+
+    if(!settings_path){
+        callback('missing setings');
+        return;
+    }
+
+    fs.writeFile('/etc/hdb_boot_properties.file', `settings_path = ${settings_path}`, function(err, data){
+        hdb_boot_properties = PropertiesReader('/etc/hdb_boot_properties.file');
+        console.log(err);
+        if (err) {
+            callback(err);
+            return;
+        }
+
+        callback(null, data);
+        return;
+
+
+
+    });
+
+}

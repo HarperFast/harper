@@ -1,10 +1,12 @@
 const fs = require('fs'),
     spawn = require('child_process').spawn,
     util = require('util')
-winston = require('winston'),
+    winston = require('winston'),
     install = require('./installer.js'),
     colors = require("colors/safe"),
-    boot_loader = require('./utility/hdb_boot_loader');
+    PropertiesReader = require('properties-reader');
+var hdb_boot_properties = null,
+    hdb_properties = null;
 
 winston.configure({
     transports: [
@@ -13,35 +15,45 @@ winston.configure({
 });
 
 
-var settings;
+
 
 run();
 
-// check settings.js if null run install
+
 function run() {
-    boot_loader.getBootLoader(function (err, data) {
-       if(err) {
-           install.install(function (err, result) {
-               if (err) {
-                   console.log(err);
-                   winston.log('error', `start fail: ${err}`);
-                   return;
-               }
-               completeRun();
-               return;
-
-           });
-       }
-
-        if (data) {
-            settings = require(data.settings);
+    try {
+        hdb_boot_properties = PropertiesReader('/etc/hdb_boot_properties.file');
+        console.log(hdb_boot_properties.get('settings_path'));
+        // doesn't do a null check.
+        hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
+        completeRun();
+        return;
+    }catch(e){
+        install.install(function (err, result) {
+            if (err) {
+                console.log(err);
+                winston.log('error', `start fail: ${err}`);
+                return;
+            }
+            hdb_boot_properties = PropertiesReader('/etc/hdb_boot_properties.file');
+            hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
             completeRun();
             return;
-        }
+
+        });
+    }
 
 
 
-    });
+
+
+
+
+
+
+
+
+
 
 
 }

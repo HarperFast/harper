@@ -20,7 +20,7 @@ for(var x = 0; x < record_size; x++){
 }
 
 var insert_object = {
-    operation:'update',
+    operation:'insert',
     schema :  'dev',
     table:'person',
     hash_attribute: 'id',

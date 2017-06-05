@@ -14,15 +14,16 @@ if (cluster.isMaster) {
     });
 } else {
     const express = require('express'),
-        boot_loader = require('../utility/hdb_boot_loader')
-        settings =require(boot_loader.settings()),
+        PropertiesReader = require('properties-reader'),
+        hdb_properties = PropertiesReader('/etc/hdb_boot_properties.file'),
         app = express(),
         bodyParser = require('body-parser'),
         write = require('../data_layer/insert').insert,
         search = require('../data_layer/search');
+    hdb_properties.append(hdb_properties.get('settings_path')),
 
 
-    app.use(bodyParser.json()); // support json encoded bodies
+        app.use(bodyParser.json()); // support json encoded bodies
     app.use(bodyParser.urlencoded({extended: true}));
 
     app.post('/', function (req, res) {
@@ -71,8 +72,8 @@ if (cluster.isMaster) {
         callback('Invalid operation');
     }
 
-    app.listen(settings.HTTP_PORT, function () {
-        console.log(`Express server running on ${settings.HTTP_PORT}`)
+    app.listen(hdb_properties.get('HTTP_PORT'), function () {
+        console.log(`Express server running on ${hdb_properties.get('HTTP_PORT')}`)
     });
 
 }
