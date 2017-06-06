@@ -2,18 +2,17 @@ const csvFilePath='./data/fci-breeds.csv',
     csv=require('csvtojson'),
     insert = require('../data_layer/insert');
 
-var insert_object = {
+let insert_object = {
     operation:'insert',
     schema :  'dev',
-    table:'license',
+    table:'breed',
     hash_attribute: 'id',
     records: []
 };
-/*
 csv()
     .fromFile(csvFilePath)
     .on('json',(jsonObj, rowIndex)=>{
-        jsonObj.id = parseInt(rowIndex) +1
+        jsonObj.id = parseInt(rowIndex) +1;
         insert_object.records.push(jsonObj);
     })
     .on('done',(error)=>{
@@ -24,9 +23,9 @@ csv()
 
             console.log(data);
         });
-    });*/
+    });
 
-csv()
+/*csv()
     .fromFile('./data/2017-dog-license.csv')
     .on('json',(jsonObj, rowIndex)=>{
         jsonObj.id = parseInt(rowIndex) + 1;
@@ -41,6 +40,6 @@ csv()
 
             console.log(data);
         });
-    });
+    });*/
 
 

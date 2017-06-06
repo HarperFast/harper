@@ -27,8 +27,10 @@ if (cluster.isMaster) {
         app = express(),
         bodyParser = require('body-parser'),
         write = require('../data_layer/insert').insert,
-        search = require('../data_layer/search');
-       hdb_properties.append(hdb_properties.get('settings_path')),
+        search = require('../data_layer/search'),
+        sql = require('../sqlTranslator/index').evaluateSQL,
+        csv = require('../data_layer/csvBulkLoad'),
+       hdb_properties.append(hdb_properties.get('settings_path'));
 
 
         app.use(bodyParser.json()); // support json encoded bodies
@@ -71,6 +73,18 @@ if (cluster.isMaster) {
             case 'search_by_value':
                 operation_function = search.searchByValue;
                 break;
+            case 'sql':
+                operation_function = sql;
+                break;
+            case 'csv_data_load':
+                operation_function = csv.csvDataLoad;
+                break
+            case 'csv_file_load':
+                operation_function = csv.csvFileLoad;
+                break;
+            case 'csv_url_load':
+                operation_function = csv.csvDataLoad;
+                break;
             default:
                 break;
         }
@@ -85,5 +99,4 @@ if (cluster.isMaster) {
     app.listen(hdb_properties.get('HTTP_PORT'), function () {
         console.log(`Express server running on ${hdb_properties.get('HTTP_PORT')}`)
     });
-
 }

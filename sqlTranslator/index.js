@@ -14,7 +14,7 @@ function evaluateSQL(sql, callback) {
             return;
         }
 
-        processSQL(sql, (error, results)=>{
+        processSQL(sql.sql, (error, results)=>{
             if(error){
                 callback(error);
                 return;
