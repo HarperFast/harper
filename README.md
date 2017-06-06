@@ -61,7 +61,7 @@ copy and paste this to the command line where requested.
 
 You should then be successfully registered.
 
-    *Each fingerprint is unique to a device.  Each license is unique to a fingerprint. *
+    *Each fingerprint is unique to a device.  Each license is unique to a fingerprint.*
 
 
 
@@ -93,7 +93,7 @@ node stop
 
 ## Need Help?
 
-*contact us via email: support@harperdb.io
+-contact us via email: support@harperdb.io
 
 
 
