@@ -5,7 +5,7 @@
 
 [Getting Started](https://github.com/HarperDB/harperdb/blob/master/README.md#getting-started)
 [Registering HarperDB](https://github.com/HarperDB/harperdb/blob/master/README.md#registration)
-[Running HarperDB](#running-harperdb)
+[Running HarperDB](/#running-harperdb)
 [Stopping HarperDB](https://github.com/HarperDB/harperdb/blob/master/README.md#stopping-harperdb)
 [Need Help](https://github.com/HarperDB/harperdb/blob/master/README.md#need-help)
 
