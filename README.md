@@ -3,11 +3,11 @@
 
 ## Contents
 
-1. [Getting Started](https://github.com/HarperDB/harperdb/blob/master/README.md#getting-started)
-2. [Registering HarperDB](https://github.com/HarperDB/harperdb/blob/master/README.md#registering-harperdb)
-3. [Running HarperDB](https://github.com/HarperDB/harperdb/blob/master/README.md#running-harperdb)
+1. [Getting Started](#getting-started)
+2. [Registering HarperDB](#register-harperdb)
+3. [Running HarperDB](#running-harperdb)
 4. [Stopping HarperDB](#stopping-harperdb)
-5. [Need Help](https://github.com/HarperDB/harperdb/blob/master/README.md#need-help)
+5. [Need Help?](#need-help)
 
 
 
@@ -44,7 +44,7 @@ node install
 *    If HarperDB is already installed bin/run will **NOT** run the installer.
 
 
-## Registering HarperDB
+## Register HarperDB
 
 During the installation process you will be asked to if you wish to register at that time.
 
