@@ -10,7 +10,7 @@ var hdb_boot_properties = null,
 
 winston.configure({
     transports: [
-        new (winston.transports.File)({filename: 'hdb.log'})
+        new (winston.transports.File)({filename: '../hdb.log'})
     ]
 });
 

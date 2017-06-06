@@ -1,82 +1,12 @@
-const hdb_license = require('./utility/hdb_license'),
-    colors = require("colors/safe"),
-    prompt = require('prompt');
+const registerationHandler = require('../utility/registrationHandler');
 
-module.exports ={
-    register: register
+registerationHandler.register(null,function(err, result){
+    if(err) {
+        console.error(err);
+        return;
+    }
 
-}
+    console.log(result);
+    return;
 
-function register(callback) {
-
-
-    hdb_license.generateFingerPrint(function (err, fingerprint) {
-        var register_schema = {
-            properties: {
-                CUSTOMER_COMPANY: {
-                    description: colors.magenta(`[COMPANY] Please enter your company name:`),
-                    required: true
-
-                },
-                HDB_LICENSE: {
-                    description: colors.magenta(`[HDB_LICENSE] Your fingerprint is ${fingerprint} Please enter your license key:`),
-                    required: true
-
-                }
-            }
-        }
-
-
-
-
-        prompt.start();
-        prompt.get(register_schema, function (err, data) {
-
-
-
-            hdb_license.validateLicense(data.HDB_LICENSE, data.CUSTOMER_COMPANY, function (err, validation) {
-                if(err){
-                    console.error(err);
-                    callback(err);
-                    return;
-                }
-
-                if (!validation.valid_license) {
-                    callback('Invalid license!');
-                    return;
-                }
-
-                if (!validation.valid_date) {
-                    callback('License expired!');
-                    return;
-                }
-
-
-                if (!validation.valid_machine) {
-                    callback('This license is in use on another machine!');
-                    return;
-                }
-
-                let insert = require('./data_layer/insert');
-                var insert_object = {
-                    operation: 'insert',
-                    schema: 'system',
-                    table: 'hdb_license',
-                    hash_attribute: 'license',
-                    records: [{"license_key": data.HDB_LICENSE}]
-                };
-                insert.insert(insert_object, function (err, data) {
-                    if(err){
-                        console.error(err);
-                        return;
-                    }
-
-                    callback(null, 'Successfully registered');
-                });
-
-
-            });
-        });
-
-    });
-}
+});

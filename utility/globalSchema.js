@@ -34,6 +34,11 @@ function setSchemaDataToGlobal(callback){
                         hash_attribute:'id',
                         name:'hdb_user',
                         schema:'system'
+                    },
+                    hdb_license:{
+                        hash_attribute:'license_key',
+                        name:'hdb_license',
+                        schema:'system'
                     }
                 };
             }
