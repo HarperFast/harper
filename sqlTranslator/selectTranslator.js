@@ -61,28 +61,23 @@ function generateAdvancedSearchObject(statement){
             search_wrapper.joins.push(search.join);
         }
     }
-//TODO fix this!
-    //search_wrapper = addSupplementalFields(search_wrapper);
 
+    search_wrapper.order = parseOrderby(statement.order);
+    
     return search_wrapper;
 }
 
-function addSupplementalFields(search_wrapper){
-    search_wrapper.joins.forEach((join)=>{
-
-
-        let join_info = join.attribute.split('.');
-        let join_to_info = join.compare_attribute.split('.');
-        search_wrapper.tables.forEach((table)=>{
-            if((table.table === join.left_table || table.alias === v) && table.get_attributes.indexOf(join.left_table) < 0){
-                table.supplemental_fields.push(join_info[1]);
-            } else if((table.table === join_to_info[0] || table.alias === join_to_info[0])  && table.get_attributes.indexOf(join_to_info[1]) < 0){
-                table.supplemental_fields.push(join_to_info[1]);
-            }
+function parseOrderby(order_by_clause){
+    let order = [];
+    
+    order_by_clause.forEach((order_by)=>{
+        order.push({
+            attribute:order_by.expression ? order_by.expression.name : order_by.name,
+            direction: order_by.direction ? order_by.direction : 'asc'
         });
     });
-
-    return search_wrapper;
+    
+    return order;
 }
 
 function generateObject(statement, from_level){
@@ -91,7 +86,7 @@ function generateObject(statement, from_level){
     let table_info = {};
     if(from_level === 0){
         from_info = parseFromSource(statement.from.source);
-        table_info = global.hdb_schema[from_info.schema][from_info.table]
+        table_info = global.hdb_schema[from_info.schema][from_info.table];
     } else {
         let from_clause = statement.from.map[from_level - 1];
         from_info = parseFromSource(from_clause.source);

@@ -78,7 +78,7 @@ function searchByValue (search_object, callback) {
 
     async.waterfall([
         findFiles.bind(null, search_path, folder_pattern),
-        verifyFileMatches.bind(null, file_pattern, `${table_path}/__hdb_hash/${search_object.search_attribute}/`),
+        //verifyFileMatches.bind(null, file_pattern, `${table_path}/__hdb_hash/${search_object.search_attribute}/`),
         getAttributeFiles.bind(null, search_object.get_attributes, table_path),
         consolidateData.bind(null, search_object.hash_attribute)
     ], (error, data)=>{
@@ -102,11 +102,19 @@ function searchByConditions(search_wrapper, callback){
     let table_schema = global.hdb_schema[search_object.schema][search_object.table];
 
     let patterns = createPatterns(search_object.condition, table_schema);
+    let get_attributes = new Set();
+    if(search_object.supplemental_fields && search_object.supplemental_fields.length > 0) {
+        let all_attributes = search_object.get_attributes.concat(search_object.supplemental_fields);
+
+        get_attributes = new Set(all_attributes);
+    } else {
+        get_attributes = new Set(search_object.get_attributes);
+    }
 
     async.waterfall([
         findFiles.bind(null, patterns.folder_search_path, patterns.folder_search),
         //verifyFileMatches.bind(null, patterns.file_search, patterns.hash_path),
-        getAttributeFiles.bind(null, search_object.get_attributes, patterns.table_path),
+        getAttributeFiles.bind(null, get_attributes, patterns.table_path),
         consolidateData.bind(null, table_schema.hash_attribute)
     ], (error, data)=>{
         if(error){
@@ -119,8 +127,8 @@ function searchByConditions(search_wrapper, callback){
 }
 
 function searchByJoinConditions(search_wrapper, callback){
-    addSupplementalFields(search_wrapper);
-
+    search_wrapper = addSupplementalFields(search_wrapper);
+//TODO create all the necessary aliases on the attribute columns
     let values = searchByConditions(search_wrapper, (err, data)=>{
         if(err){
             callback(err);
@@ -146,23 +154,70 @@ function searchByJoinConditions(search_wrapper, callback){
             let right_attribute_name = findAttributeAlias(search_wrapper.tables, right_attribute[0], right_attribute[1]);
 
             let joined = joins.hashInnerJoin(data, (obj)=>{return obj[left_attribute_name]}, data2, (obj)=>{return obj[right_attribute_name]});
+//TODO only do this part if there are supplemental fields
+            let get_attributes = [];
 
-            callback(null, joined);
+            search_wrapper.tables.forEach((table)=>{
+                table.get_attributes.forEach((attribute)=>{
+                    get_attributes.push(attribute.alias);
+                });
+            });
+
+            let results = [];
+            joined.forEach((record)=>{
+                results.push(_.pick(record, get_attributes));
+            });
+
+            if(search_wrapper.order && search_wrapper.order.length > 0){
+                results = sortData(results, search_wrapper);
+            }
+
+            callback(null, results);
         });
     });
 }
 
+function sortData(data, search_wrapper){
+    let get_attributes = [];
+
+    search_wrapper.tables.forEach((table)=>{
+        table.get_attributes.forEach((attribute)=>{
+            get_attributes.push(attribute.alias);
+        });
+    });
+
+    let columns = [];
+    let orders = [];
+    search_wrapper.order.forEach((order_by)=>{
+        let order_column = _.find(get_attributes, function(o) { return o === order_by.attribute; });
+        if(!order_column){
+            let order_split = order_by.attribute.split('.');
+            let table = findTable(search_wrapper.tables, order_split[0]);
+            order_column = table.table + '.' + order_split[1];
+        }
+        columns.push(order_column);
+        orders.push(order_by.direction ? order_by.direction : 'asc');
+    });
+
+    return _.orderBy(data, columns, orders);
+}
+
 function addSupplementalFields(search_wrapper){
+    search_wrapper.tables.forEach((table)=>{
+        table.supplemental_fields = [];
+    });
+
     search_wrapper.joins.forEach((join)=>{
         let comparators = Object.values(join)[0];
 
-        let join_info = join.attribute.split('.');
+        let left_side = comparators[0].split('.');
+        let right_side = comparators[1].split('.');
 
         search_wrapper.tables.forEach((table)=>{
-            if((table.table === join.left_table || table.alias === v) && table.get_attributes.indexOf(join.left_table) < 0){
-                table.supplemental_fields.push(join_info[1]);
-            } else if((table.table === join_to_info[0] || table.alias === join_to_info[0])  && table.get_attributes.indexOf(join_to_info[1]) < 0){
-                table.supplemental_fields.push(join_to_info[1]);
+            if((table.table === left_side[0] || table.alias === left_side[0])){
+                table.supplemental_fields.push({attribute: left_side[1], alias:table.table + '.' + left_side[1]});
+            } else if((table.table === right_side[0] || table.alias === right_side[0])){
+                table.supplemental_fields.push({attribute: right_side[1], alias:table.table + '.' + right_side[1]});
             }
         });
     });
@@ -199,7 +254,13 @@ function convertJoinToCondition(left_table, right_table, join, data){
 
 function findAttributeAlias(tables, table_alias, attribute_alias){
     let table = findTable(tables, table_alias);
-    return findAttribute(table, attribute_alias).alias;
+    let attribute = findAttributeByAlias(table, attribute_alias);
+
+    if(!attribute) {
+        attribute = findSupplementalAttributeByAlias(table, attribute_alias);
+    }
+
+    return attribute.alias;
 }
 
 function findTable(tables, table_alias) {
@@ -208,9 +269,21 @@ function findTable(tables, table_alias) {
     })[0];
 }
 
-function findAttribute(table, attribute_alias){
+function findSupplementalAttributeByAlias(table, attribute_alias){
+    return _.filter(table.supplemental_fields, (attribute)=> {
+        return attribute.attribute === attribute_alias;
+    })[0];
+}
+
+function findAttributeByAlias(table, attribute_alias){
     return _.filter(table.get_attributes, (attribute)=> {
         return attribute.attribute === attribute_alias;
+    })[0];
+}
+
+function findAttributeByName(table, attribute_name){
+    return _.filter(table.get_attributes, (attribute)=> {
+        return attribute.attribute === attribute_name;
     })[0];
 }
 

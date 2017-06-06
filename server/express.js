@@ -83,6 +83,6 @@ if (cluster.isMaster) {
     }
 
     app.listen(5299, function () {
-        console.log('Example app listening on port 5299!')
+        console.log('HarperDB listening on port 5299!')
     });
 }
