@@ -28,9 +28,9 @@ node install
 
 ```
 
-*    HarperDB requires root/admin access to install inotifywait.*
+*    HarperDB requires root/admin access to install inotifywait.
 
-*    You will be prompted to for a password during the install.*
+*    You will be prompted to for a password during the install.
 
 *    If HarperDB is already installed bin/run will **NOT** run the installer.
 
