@@ -1,5 +1,4 @@
-# HarperDB ![alt text](https://s3.amazonaws.com/hdb-marketing/purple_dog_only_small.png)
-
+![alt text](https://s3.amazonaws.com/hdb-marketing/purple_dog_only_small.png)
 
 ## Contents
 
