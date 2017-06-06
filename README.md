@@ -49,18 +49,19 @@ node register
 
 Enter your company name when prompted **IMPORTANT: you must remember your entry exactly**
 
-You will then be supplied a fingerprint like so JmLiR4xj60042e9ee22a91956ab630b490b48c083.
+You will then be supplied a fingerprint like so **JmLiR4xj60042e9ee22a91956ab630b490b48c083.**
 Then navigate to [HarperDB] (http://harperdb.io/register. in your web browser.)
+
 
 You will be asked to enter your company name and fingerprint.
 
-You will be returned a license key like so c6a8d0685220d216b8fd77d87cdf3b5bmofi25U7GkrYHmQ1d718f878c31a2e88178c2c76646e8ee
+You will be returned a license key like so **c6a8d0685220d216b8fd77d87cdf3b5bmofi25U7GkrYHmQ1d718f878c31a2e88178c2c76646e8ee**
 
 copy and paste this to the command line where requested.
 
 You should then be successfully registered.
 
-
+    *Each fingerprint is unique to a device.  Each license is unique to a fingerprint. *
 
 
 
@@ -89,6 +90,10 @@ cd bin
 node stop
 
 ```
+
+## Need Help?
+
+*contact us via email: support@harperdb.io
 
 
 
