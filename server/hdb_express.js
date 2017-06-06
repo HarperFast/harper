@@ -1,5 +1,12 @@
 const cluster = require('cluster');
 const numCPUs = 5;
+const winston = require('winston');
+winston.configure({
+    transports: [
+        new (winston.transports.File)({filename: 'hdb.log'})
+    ]
+});
+
 
 if (cluster.isMaster) {
     console.log(`Master ${process.pid} is running`);
@@ -13,9 +20,10 @@ if (cluster.isMaster) {
         console.log(`worker ${worker.process.pid} died`);
     });
 } else {
+    winston.log('In express' + process.cwd());
     const express = require('express'),
         PropertiesReader = require('properties-reader'),
-        hdb_properties = PropertiesReader('/etc/hdb_boot_properties.file'),
+        hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`),
         app = express(),
         bodyParser = require('body-parser'),
         write = require('../data_layer/insert').insert,
@@ -29,12 +37,14 @@ if (cluster.isMaster) {
     app.post('/', function (req, res) {
         chooseOperation(req.body, (err, operation_function) => {
             if (err) {
+                console.log(err);
                 res.status(500).send(err);
                 return;
             }
 
             operation_function(req.body, (error, data) => {
                 if (error) {
+                    console.log(error);
                     res.status(500).send(err);
                     return;
                 }

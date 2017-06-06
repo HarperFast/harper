@@ -1,9 +1,10 @@
 const prompt = require('prompt'),
     spawn = require('child_process').spawn,
-    password = require('./utility/password'),
-    mount = require('./utility/mount_hdb'),
+    password = require('./../password'),
+    mount = require('./../mount_hdb'),
     fs = require('fs'),
     colors = require("colors/safe"),
+    winston = require('winston'),
     isRoot = require('is-root'),
     async = require('async'),
     PropertiesReader = require('properties-reader');
@@ -28,22 +29,23 @@ module.exports = {
 }
 
 
+
+
+
 //'HDB_ROOT', 'HDB_PORT', 'TCP_PORT','USERNAME', 'PASSWORD'
 
 var wizard_result;
 var newInstall = true;
 
 function run_install(callback) {
+    //winston.add(winston.transports.File, { filename: 'installer.log' });
 
-    if (!isRoot()) {
-        callback("Must install as root!");
-        return;
-    }
+
     async.waterfall([
         wizard,
         mount,
         createSettingsFile,
-        setupService,
+        //setupService,
         checkRegister
 
     ], function (err, result) {
@@ -57,7 +59,7 @@ function run_install(callback) {
 function checkInstall(callback){
 
        if(!hdb_boot_properties){
-           hdb_boot_properties = PropertiesReader('/etc/hdb_boot_properties.file');
+           hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
            hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
            if(hdb_properties.get('HDB_ROOT')){
                callback(null, data);
@@ -73,7 +75,7 @@ function checkInstall(callback){
 
 }
 
-function checkRegister(service_setup_status, callback) {
+function checkRegister(callback) {
 
     if (wizard_result.HDB_REGISTER) {
         register = require('./register'),
@@ -89,7 +91,7 @@ function checkRegister(service_setup_status, callback) {
 
     } else {
         callback(null, 'Successful installation!');
-        console.log('HarperDB successfully installed!');
+        winston.log('info','HarperDB successfully installed!');
     }
 }
 
@@ -173,7 +175,7 @@ function wizard(callback) {
     };
 
 
-    console.log(colors.magenta('' + fs.readFileSync(`./utility/install/ascii_logo`)));
+    console.log(colors.magenta('' + fs.readFileSync(`${process.cwd()}/../utility/install/ascii_logo.txt`)));
     console.log(colors.magenta('                    Installer' ));
 
     prompt.start();
@@ -237,7 +239,7 @@ function setupService(callback) {
         fs.writeFile('/etc/systemd/system/harperdb.service', fileData, function (err, result) {
 
             if (err) {
-                console.error(err);
+                winston.log('error',`Service Setup Error ${err}`);
                 callback(err);
                 return;
             }
@@ -261,23 +263,25 @@ function setupService(callback) {
 }
 
 function createBootPropertiesFile(settings_path, callback){
-    if (!isRoot()) {
-        callback("Must run as root!");
-        return;
-    }
+
 
     if(!settings_path){
         callback('missing setings');
         return;
     }
 
-    fs.writeFile('/etc/hdb_boot_properties.file', `settings_path = ${settings_path}`, function(err, data){
-        hdb_boot_properties = PropertiesReader('/etc/hdb_boot_properties.file');
-        console.log(err);
+    fs.writeFile(`${process.cwd()}/../hdb_boot_properties.file`, `settings_path = ${settings_path}`, function(err, data){
         if (err) {
-            callback(err);
+            winston.log('error',`Bootloader ${err}`);
+            console.log(err);
+
+            //callback(err);
             return;
         }
+
+        hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
+
+
 
         callback(null, data);
         return;

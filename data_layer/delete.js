@@ -1,7 +1,7 @@
 const fs = require('fs')
     , validate = require('validate.js'),
     PropertiesReader = require('properties-reader'),
-    hdb_properties = PropertiesReader('/etc/hdb_boot_properties.file'),
+    hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`),
     exec = require('child_process').exec
     delete_validator = require('../validation/deleteValidator');
     hdb_properties.append(hdb_properties.get('settings_path'));

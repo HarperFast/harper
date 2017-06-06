@@ -2,7 +2,7 @@ const fs = require('fs'),
     spawn = require('child_process').spawn,
     util = require('util')
     winston = require('winston'),
-    install = require('./installer.js'),
+    install = require('../utility/install/installer.js'),
     colors = require("colors/safe"),
     PropertiesReader = require('properties-reader');
 var hdb_boot_properties = null,
@@ -10,7 +10,7 @@ var hdb_boot_properties = null,
 
 winston.configure({
     transports: [
-        new (winston.transports.File)({filename: 'startup.log'})
+        new (winston.transports.File)({filename: 'hdb.log'})
     ]
 });
 
@@ -22,7 +22,7 @@ run();
 
 function run() {
     try {
-        hdb_boot_properties = PropertiesReader('/etc/hdb_boot_properties.file');
+        hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
         console.log(hdb_boot_properties.get('settings_path'));
         // doesn't do a null check.
         hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
@@ -35,7 +35,7 @@ function run() {
                 winston.log('error', `start fail: ${err}`);
                 return;
             }
-            hdb_boot_properties = PropertiesReader('/etc/hdb_boot_properties.file');
+            hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
             hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
             completeRun();
             return;
@@ -81,10 +81,10 @@ function kickOffExpress(){
         winston.log('info', `Express Server started`);
     });
 
-    terminal2.stdin.write(`./node_modules/pm2/bin/pm2 start ./server/express.js`);
+    terminal2.stdin.write(`../node_modules/pm2/bin/pm2 start ../server/hdb_express.js`);
     terminal2.stdin.end();
 
-    console.log(colors.magenta('' + fs.readFileSync(`./utility/install/ascii_logo`)));
+    console.log(colors.magenta('' + fs.readFileSync(`${process.cwd()}/../utility/install/ascii_logo.txt`)));
     console.log(colors.magenta('|------------- HarperDB succesfully started ------------|'));
 
 }
@@ -103,7 +103,7 @@ function kickOffTriggers(){
 
 
     });
-    terminal.stdin.write(`./node_modules/pm2/bin/pm2 start ./triggers/schema_triggers.js`);
+    terminal.stdin.write(`../node_modules/pm2/bin/pm2 start ../triggers/hdb_schema_triggers.js`);
     terminal.stdin.end();
 }
 

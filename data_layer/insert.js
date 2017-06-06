@@ -11,7 +11,7 @@ const insert_validator = require('../validation/insertValidator.js'),
     global_schema = require('../utility/globalSchema'),
     search = require('./search'),
     PropertiesReader = require('properties-reader'),
-    hdb_properties = PropertiesReader('/etc/hdb_boot_properties.file');
+    hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
     hdb_properties.append(hdb_properties.get('settings_path'));
 
 const hdb_path = path.join(hdb_properties.get('HDB_ROOT'), '/schema');

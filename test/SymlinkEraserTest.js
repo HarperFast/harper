@@ -2,7 +2,7 @@ const search = require('../data_layer/search'),
       net = require('net'),
       fs = require('fs'),
     PropertiesReader = require('properties-reader'),
-    hdb_properties = PropertiesReader('/etc/hdb_boot_properties.file');
+    hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
     hdb_properties.append(hdb_properties.get('settings_path'));
 
 

@@ -12,7 +12,7 @@ const fs = require('fs')
     //this is to avoid a circular dependency with insert.  insert needs the describe all function but so does this module.  as such the functions have been broken out into a seperate module.
     schema_describe = require('./schemaDescribe'),
     PropertiesReader = require('properties-reader'),
-    hdb_properties = PropertiesReader('/etc/hdb_boot_properties.file');
+    hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
     hdb_properties.append(hdb_properties.get('settings_path'));
 
 
