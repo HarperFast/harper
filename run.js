@@ -81,7 +81,7 @@ function kickOffExpress(){
         winston.log('info', `Express Server started`);
     });
 
-    terminal2.stdin.write(`node ./server/express.js`);
+    terminal2.stdin.write(`./node_modules/pm2/bin/pm2 start ./server/express.js`);
     terminal2.stdin.end();
 
     console.log(colors.magenta('' + fs.readFileSync(`./utility/install/ascii_logo`)));
@@ -103,7 +103,7 @@ function kickOffTriggers(){
 
 
     });
-    terminal.stdin.write(`node ./triggers/schema_triggers.js`);
+    terminal.stdin.write(`./node_modules/pm2/bin/pm2 start ./triggers/schema_triggers.js`);
     terminal.stdin.end();
 }
 

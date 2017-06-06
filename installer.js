@@ -231,7 +231,7 @@ function createSettingsFile(mount_status, callback) {
 
 
 function setupService(callback) {
-    fs.readFile(`${__dirname}/utility/install/harperdb.service`, 'utf8', function (err, data) {
+    fs.readFile(`./utility/install/harperdb.service`, 'utf8', function (err, data) {
         var fileData = data.replace('{{project_dir}}', `${hdb_properties.get('PROJECT_DIR')}`).replace('{{hdb_directory}}',
             hdb_properties.get('HDB_ROOT'));
         fs.writeFile('/etc/systemd/system/harperdb.service', fileData, function (err, result) {

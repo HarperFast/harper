@@ -2,15 +2,13 @@
   "name": "harperdb",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "run.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "postinstall": "utility/devops/config.sh"
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
   "author": "HarperDB, Inc.",
   "license": "ISC",
   "dependencies": {
-    "@harperdb/settings": "1.0.0",
     "async": "^2.1.5",
     "body-parser": "^1.17.1",
     "chunk": "0.0.2",
@@ -23,6 +21,7 @@
     "moment": "^2.17.1",
     "node-schedule": "^1.2.1",
     "nodejs-license-file": "^1.1.0",
+    "pm2": "^2.4.6",
     "prompt": "^1.0.0",
     "properties-reader": "0.0.15",
     "sqlite-parser": "^1.0.0",
