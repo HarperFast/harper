@@ -1,9 +1,21 @@
-const settings = require('settings'),
-      search = require('../data_layer/search'),
-      net = require('net');
+const search = require('../data_layer/search'),
+      net = require('net'),
+      fs = require('fs'),
+    PropertiesReader = require('properties-reader'),
+    hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
+    hdb_properties.append(hdb_properties.get('settings_path'));
 
 
-    test();
+    //test();
+
+    console.time('unlink')
+    fs.unlink(hdb_properties.get('HDB_ROOT') + '/schema/dev/person/first_name/Aailyah/641.hdb', function(err, result){
+        console.timeEnd('unlink')
+
+        console.error(err);
+        console.log(result);
+    });
+
 
 function test(){
      var search_obj = {};
@@ -55,7 +67,7 @@ function test(){
         let client = new net.Socket();
 
         try {
-            client.connect(settings.ERASER_PORT, settings.HDB_ADDRESS, function () {
+            client.connect(hdb_properties.get('ERASER_PORT'), hdb_properties.get('settings.HDB_ADDRESS'), function () {
                 //console.log('Connected');
                 client.write(JSON.stringify(test_obj));
                 return;

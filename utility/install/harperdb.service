@@ -1,0 +1,14 @@
+[Unit]
+Description=harperdb
+
+[Service]
+ExecStart={{project_dir}}
+Restart=always
+User=harperdb
+Group=harperdb
+Environment=PATH=/usr/bin:/usr/local/bin
+Environment=NODE_ENV=production
+WorkingDirectory={{hdb_directory}}
+
+[Install]
+WantedBy=multi-user.target

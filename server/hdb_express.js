@@ -1,5 +1,12 @@
 const cluster = require('cluster');
 const numCPUs = 5;
+const winston = require('winston');
+winston.configure({
+    transports: [
+        new (winston.transports.File)({filename: 'hdb.log'})
+    ]
+});
+
 
 if (cluster.isMaster) {
     console.log(`Master ${process.pid} is running`);
@@ -13,26 +20,33 @@ if (cluster.isMaster) {
         console.log(`worker ${worker.process.pid} died`);
     });
 } else {
+    winston.log('In express' + process.cwd());
     const express = require('express'),
+        PropertiesReader = require('properties-reader'),
+        hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`),
         app = express(),
         bodyParser = require('body-parser'),
         write = require('../data_layer/insert').insert,
         search = require('../data_layer/search'),
         sql = require('../sqlTranslator/index').evaluateSQL,
-        csv = require('../data_layer/csvBulkLoad');
+        csv = require('../data_layer/csvBulkLoad'),
+       hdb_properties.append(hdb_properties.get('settings_path'));
 
-    app.use(bodyParser.json()); // support json encoded bodies
+
+        app.use(bodyParser.json()); // support json encoded bodies
     app.use(bodyParser.urlencoded({extended: true}));
 
     app.post('/', function (req, res) {
         chooseOperation(req.body, (err, operation_function) => {
             if (err) {
+                console.log(err);
                 res.status(500).send(err);
                 return;
             }
 
             operation_function(req.body, (error, data) => {
                 if (error) {
+                    console.log(error);
                     res.status(500).send(err);
                     return;
                 }
@@ -82,7 +96,7 @@ if (cluster.isMaster) {
         callback('Invalid operation');
     }
 
-    app.listen(5299, function () {
-        console.log('HarperDB listening on port 5299!')
+    app.listen(hdb_properties.get('HTTP_PORT'), function () {
+        console.log(`Express server running on ${hdb_properties.get('HTTP_PORT')}`)
     });
 }

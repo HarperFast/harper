@@ -4,7 +4,7 @@ var insert = require('../data_layer/insert.js'),
     first_names = require('./data/firstNames'),
     last_names = require('./data/lastNames');
 
-const record_size  = 50;
+const record_size  = 5000;
 const schema = 'dev';
 
 var objects = [];

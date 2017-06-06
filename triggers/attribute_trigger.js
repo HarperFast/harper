@@ -1,7 +1,10 @@
 'use strict';
+const PropertiesReader = require('properties-reader'),
+    hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
+hdb_properties.append(hdb_properties.get('settings_path'));
+
 const fs = require('fs')
-    , settings = require('settings')
-    , base_path = settings.HDB_ROOT + "/schema/"
+    , base_path = hdb_properties.get('HDB_ROOT') + "/schema/"
     , exec = require('child_process').exec
     , search_validator = require('../validation/searchValidator.js')
     , async = require('async')
@@ -10,6 +13,8 @@ const fs = require('fs')
     , schema = require('../data_layer/schema')
     , insert = require('../data_layer/insert.js')
     , search = require('../data_layer/search.js');
+
+
 
 module.exports = {
     fireTableTrigger: spinUpTableTrigger
@@ -112,10 +117,10 @@ function spinUpTableTrigger(table){
 
     // change this to monitor __hdb_hash instead then can avoid picking up this folder.
 
-    terminal.stdin.write(util.format('inotifywait -m  -e create  %s ', settings.HDB_ROOT + '/schema/' +table.schema + '/' + table.name));
+    terminal.stdin.write(util.format('inotifywait -m  -e create  %s ', hdb_properties.get('HDB_ROOT') + '/schema/' +table.schema + '/' + table.name));
     terminal.stdin.end();
 
-    console.log("trigger fired:" +'inotifywait -m  -e create  %s ', settings.HDB_ROOT + '/schema/' +table.schema + '/' + table.name );
+    console.log("trigger fired:" +'inotifywait -m  -e create  %s ', hdb_properties.get('HDB_ROOT') + '/schema/' +table.schema + '/' + table.name );
 
 
 }
