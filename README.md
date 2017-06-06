@@ -17,7 +17,7 @@ cd bin
 node run
 
 ```
-
+or run
 ```
 
 cd bin
@@ -47,7 +47,7 @@ node register
 Enter your company name when prompted **IMPORTANT: you must remember your entry exactly**
 
 You will then be supplied a fingerprint like so JmLiR4xj60042e9ee22a91956ab630b490b48c083.
-Then navigate to http://harperdb.io/register. in your web browser.
+Then navigate to [HarperDB] (http://harperdb.io/register. in your web browser.)
 
 You will be asked to enter your company name and fingerprint.
 
