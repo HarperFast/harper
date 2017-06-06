@@ -17,7 +17,10 @@ cd bin
 node run
 
 ```
+
 or run
+
+
 ```
 
 cd bin
