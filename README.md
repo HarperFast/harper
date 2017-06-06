@@ -3,11 +3,11 @@
 
 ## Contents
 
-*[Getting Started](https://github.com/HarperDB/harperdb/blob/master/README.md#getting-started)
-*[Registering HarperDB](https://github.com/HarperDB/harperdb/blob/master/README.md#registration)
-*[Running HarperDB](https://github.com/HarperDB/harperdb/blob/master/README.md#running-harperdb)
-*[Stopping HarperDB](https://github.com/HarperDB/harperdb/blob/master/README.md#stopping-harperdb)
-*[Need Help](https://github.com/HarperDB/harperdb/blob/master/README.md#need-help)
+1. [Getting Started](https://github.com/HarperDB/harperdb/blob/master/README.md#getting-started)
+2. [Registering HarperDB](https://github.com/HarperDB/harperdb/blob/master/README.md#registration)
+3. [Running HarperDB](https://github.com/HarperDB/harperdb/blob/master/README.md#running-harperdb)
+4. [Stopping HarperDB](https://github.com/HarperDB/harperdb/blob/master/README.md#stopping-harperdb)
+5. [Need Help](https://github.com/HarperDB/harperdb/blob/master/README.md#need-help)
 
 
 
