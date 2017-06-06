@@ -15,7 +15,7 @@ winston.configure({
 });
 
 
-
+// TODO need to check if hdb is already running and stop it first before running again.
 
 run();
 
