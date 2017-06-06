@@ -1,8 +1,7 @@
 # HarperDB
 
-## Getting started
 
-### Installation
+## Getting Started
 HarperDB can be installed in one of two ways
 * bin/run
 * bin/install
@@ -35,7 +34,7 @@ node install
 *    If HarperDB is already installed bin/run will **NOT** run the installer.
 
 
-### Registration
+## Registration
 
 During the installation process you will be asked to if you wish to register at that time.
 
@@ -70,7 +69,7 @@ You should then be successfully registered.
 
 
 
-### Running HarperDB
+## Running HarperDB
 
 To run HarperDB after it is installed from the HarperDB directoy run the following commands:
 
@@ -81,7 +80,7 @@ node run
 
 ```
 
-### Stopping HarperDB
+## Stopping HarperDB
 
 To stop HarperDB once it is running from the HarperDB directory run the following commmands:
 ```
