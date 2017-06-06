@@ -69,7 +69,6 @@ function register(prompt, callback) {
                     records: [{"license_key": data.HDB_LICENSE}]
                 };
 
-                console.log(JSON.stringify(insert_object));
                 insert.insert(insert_object, function (err, data) {
                     if(err){
                         console.error(err);

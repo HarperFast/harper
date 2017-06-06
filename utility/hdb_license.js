@@ -47,11 +47,9 @@ function generateLicense(license_object, callback) {
     let encrypted_exp = hashDate(moment(license_object.exp_date).unix());
 
 
-    console.log(encrypted_exp);
     let hash_license = hashLicense(fingerprint, company);
 
     let license = `${encrypted_exp}mofi25${hash_license}`
-    console.log(license);
     callback(null, license);
 
 
@@ -84,10 +82,8 @@ function validateLicense(license_key, company, callback) {
     license_validation_object.valid_date = true;
     license_validation_object.valid_license = true;
     license_validation_object.valid_machine = true;
-    console.log(`license: ${JSON.stringify(license_tokens)}`)
     let decrypted = decipher.update(license_tokens[0], 'hex', 'utf8');
     decrypted += decipher.final('utf8');
-    console.log(decrypted);
 
     var curDate = new Date();
     if (decrypted < moment().unix()) {
@@ -97,7 +93,6 @@ function validateLicense(license_key, company, callback) {
 
 
     try {
-        console.log(`${hdb_properties.get('PROJECT_DIR')}/utility/keys/060493.ks`);
 
         fs.readFile(`${hdb_properties.get('PROJECT_DIR')}/utility/keys/060493.ks`, function (err, data) {
             let fingerPrint = '' + data;
