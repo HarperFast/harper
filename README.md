@@ -1,4 +1,4 @@
-![alt text](https://s3.amazonaws.com/hdb-marketing/purple_logo_transparent_1000x604.png)
+![alt text](https://s3.amazonaws.com/hdb-marketing/purple_logo_transparent_662x400.png)
 
 ## Contents
 
