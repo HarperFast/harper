@@ -1,7 +1,7 @@
 'use strict';
 
 const insert_validator = require('../validation/insertValidator.js'),
-    fs = require('fs'),
+    fs = require('graceful-fs'),
     async = require('async'),
     path = require('path'),
     child_process = require('child_process'),

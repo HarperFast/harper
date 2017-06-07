@@ -1,10 +1,9 @@
 const csv=require('csvtojson'),
     insert = require('./insert'),
     _ = require('lodash'),
-    request=require('request')
+    request=require('request'),
     record_batch_size = 1000,
-    async = require('async'),
-    csv_converter = csv({flatKeys:true,workerNum:4,ignoreEmpty:true});
+    async = require('async');
 
 module.exports = {
     csvDataLoad: csvDataLoad,
@@ -15,13 +14,18 @@ module.exports = {
 function csvDataLoad(csv_object, callback){
     csv_records = [];
 
-    csv_converter
+    csv()
         .fromString(csv_object.data)
         .on('json',(jsonObj, rowIndex)=>{
             jsonObj.id = parseInt(rowIndex) +1;
             csv_records.push(jsonObj);
         })
         .on('done',(error)=>{
+            if(error){
+                callback(error);
+                return;
+            }
+
             bulkLoad(csv_records, csv_object.schema, csv_object.table, (err, data)=>{
                 if(err){
                     callback(err);
@@ -36,13 +40,18 @@ function csvDataLoad(csv_object, callback){
 function csvURLLoad(csv_object, callback){
     csv_records = [];
 
-    csv_converter
+    csv()
         .fromStream(request.get(csv_object.csv_url))
         .on('json',(jsonObj, rowIndex)=>{
             jsonObj.id = parseInt(rowIndex) +1;
             csv_records.push(jsonObj);
         })
         .on('done',(error)=>{
+            if(error){
+                callback(error);
+                return;
+            }
+
             bulkLoad(csv_records, csv_object.schema, csv_object.table, (err, data)=>{
                 if(err){
                     callback(err);
@@ -57,13 +66,18 @@ function csvURLLoad(csv_object, callback){
 function csvFileLoad(csv_object, callback){
     csv_records = [];
 
-    csv_converter
+    csv()
         .fromFile(csv_object.file_path)
         .on('json',(jsonObj, rowIndex)=>{
             jsonObj.id = parseInt(rowIndex) +1;
             csv_records.push(jsonObj);
         })
         .on('done',(error)=>{
+            if(error){
+                callback(error);
+                return;
+            }
+
             bulkLoad(csv_records, csv_object.schema, csv_object.table, (err, data)=>{
                 if(err){
                     callback(err);
