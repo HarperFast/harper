@@ -28,6 +28,12 @@ module.exports = {
 };
 
 function searchByHash(search_object, callback){
+
+    if(!search_object.get_attributes || search_object.get_attributes.length < 1 ){
+        callback("missing get_attributes... whats the point of searching if you don't want to find anything?");
+        return;
+    }
+
     let hash_stripped = String(search_object.hash_value).replace(slash_regex, '').substring(0, 4000);
     let table_path = `${base_path}${search_object.schema}/${search_object.table}/`;
     async.waterfall([

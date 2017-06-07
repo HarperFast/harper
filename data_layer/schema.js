@@ -8,11 +8,14 @@ const fs = require('fs')
     , exec = require('child_process').exec
     , search = require('./search.js')
     , uuidV4 = require('uuid/v4')
-    , attribute_validation = require('../validation/attributeInsertValidator.js'),
-    //this is to avoid a circular dependency with insert.  insert needs the describe all function but so does this module.  as such the functions have been broken out into a seperate module.
-    schema_describe = require('./schemaDescribe'),
-    PropertiesReader = require('properties-reader'),
-    hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
+    ,delete_ = require('../data_layer/delete')
+    , attribute_validation = require('../validation/attributeInsertValidator.js')
+    //this is to avoid a circular dependency with insert.
+    // insert needs the describe all function but so does this module.
+    // as such the functions have been broken out into a seperate module.
+    ,schema_describe = require('./schemaDescribe')
+    ,PropertiesReader = require('properties-reader');
+    var hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
     hdb_properties.append(hdb_properties.get('settings_path'));
 
 
@@ -308,6 +311,50 @@ module.exports = {
 
         var schema = drop_table_object.schema;
         var table = drop_table_object.table;
+        var search_obj = {};
+        search_obj.schema = 'system';
+        search_obj.table = 'hdb_table';
+        search_obj.hash_attribute = 'id';
+        search_obj.search_attribute = 'name';
+        search_obj.search_value = drop_table_object.table;
+        search_obj.get_attributes = ['name', 'schema', 'id'];
+        search.searchByValue(search_obj, function (err, data) {
+
+            if(err){
+                callback(err);
+                return;
+            }
+
+            var delete_tb = null;
+            for(let item in data){
+                if(data[item].name == drop_table_object.table && data[item].schema == drop_table_object.schema){
+                    delete_tb = data[item];
+                }
+            }
+
+            if(delete_tb){
+                var delete_table_object = {
+                    "table": "hdb_table",
+                    "schema": "system",
+                    "hash_attribute": "id",
+                    "hash_value": delete_tb.id
+                }
+
+                delete_.delete(delete_table_object, function(err, data){
+                    callback(err, data);
+                    return;
+
+                });
+            } else{
+                callback("Table not found!");
+            }
+
+
+
+
+        });
+
+
 
 
     },

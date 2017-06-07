@@ -41,10 +41,10 @@ search.searchByHashes(search_obj, function (err, data) {
     return;
 });*/
 
-let search_obj ={"schema":"system","table":"hdb_table","hash_attribute":"id","search_attribute":"id","search_value":"*","hash_values":[],"get_attributes":["hash_attribute","id","name","schema"]};
+let search_obj = {"schema":"dog","table":"tags","hash_attribute":"id","hash_value":"104071","get_attributes":[]}
 
 console.time('searchByHash');
-search.searchByValue(search_obj, function (err, data) {
+search.searchByHash(search_obj, function (err, data) {
     if (err){
         console.error(err);
         return;
