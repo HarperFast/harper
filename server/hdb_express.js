@@ -29,7 +29,8 @@ if (cluster.isMaster) {
         write = require('../data_layer/insert').insert,
         search = require('../data_layer/search'),
         sql = require('../sqlTranslator/index').evaluateSQL,
-        csv = require('../data_layer/csvBulkLoad'),
+        csv = require('../data_layer/csvBulkLoad');
+
        hdb_properties.append(hdb_properties.get('settings_path'));
 
 

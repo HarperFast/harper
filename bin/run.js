@@ -60,7 +60,7 @@ function run() {
 
 function completeRun() {
 
-    kickOffTriggers();
+//    kickOffTriggers();
     kickOffExpress();
 
 
@@ -81,7 +81,7 @@ function kickOffExpress(){
         winston.log('info', `Express Server started`);
     });
 
-    terminal2.stdin.write(`../node_modules/pm2/bin/pm2 start ../server/hdb_express.js`);
+    terminal2.stdin.write(`../node_modules/pm2/bin/pm2 start ../utility/devops/ecosystem.config.js`);
     terminal2.stdin.end();
 
     console.log(colors.magenta('' + fs.readFileSync(`${process.cwd()}/../utility/install/ascii_logo.txt`)));

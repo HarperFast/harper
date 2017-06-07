@@ -8,14 +8,24 @@ module.exports = {
     // First application
     {
       name      : "HarperDB",
-      script    : "./server/hdb_express.js",
+      script    : "../server/hdb_express.js",
       env: {
         COMMON_VARIABLE: "true"
       },
       env_production : {
         NODE_ENV: "production"
       }
-    }
+    },
+	  {
+		        name      : "HarperDB_triggers",
+		        script    : "../triggers/hdb_schema_triggers.js",
+		        env: {
+				        COMMON_VARIABLE: "true"
+				      },
+				      env_production : {
+				        NODE_ENV: "production"
+				      }
+		      }
  ],
 
   /**
