@@ -1,5 +1,5 @@
 'use strict';
-const fs = require('fs'),
+const fs = require('graceful-fs'),
     PropertiesReader = require('properties-reader'),
     hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
     hdb_properties.append(hdb_properties.get('settings_path'));
@@ -86,7 +86,6 @@ function searchByValue (search_object, callback) {
 
     async.waterfall([
         findFiles.bind(null, search_path, folder_pattern),
-        //verifyFileMatches.bind(null, file_pattern, `${table_path}/__hdb_hash/${search_object.search_attribute}/`),
         getAttributeFiles.bind(null, search_object.get_attributes, table_path),
         consolidateData.bind(null, search_object.hash_attribute)
     ], (error, data)=>{
@@ -121,7 +120,6 @@ function searchByConditions(search_wrapper, callback){
 
     async.waterfall([
         findFiles.bind(null, patterns.folder_search_path, patterns.folder_search),
-        //verifyFileMatches.bind(null, patterns.file_search, patterns.hash_path),
         getAttributeFiles.bind(null, get_attributes, patterns.table_path),
         consolidateData.bind(null, table_schema.hash_attribute)
     ], (error, data)=>{
@@ -136,8 +134,9 @@ function searchByConditions(search_wrapper, callback){
 
 function searchByJoinConditions(search_wrapper, callback){
     search_wrapper = addSupplementalFields(search_wrapper);
-//TODO create all the necessary aliases on the attribute columns
-    let values = searchByConditions(search_wrapper, (err, data)=>{
+    search_wrapper = setAdditionalAttributeData(search_wrapper);
+
+    searchByConditions(search_wrapper, (err, data)=>{
         if(err){
             callback(err);
             return;
@@ -155,13 +154,10 @@ function searchByJoinConditions(search_wrapper, callback){
                 return;
             }
             let comparators = Object.values(join)[0];
-            let left_attribute = comparators[0].split('.');
-            let right_attribute = comparators[1].split('.');
+            let left_attribute_name = findAttribute(search_wrapper.all_get_attributes, comparators[0]);
+            let right_attribute_name = findAttribute(search_wrapper.all_get_attributes, comparators[1]);
 
-            let left_attribute_name = findAttributeAlias(search_wrapper.tables, left_attribute[0], left_attribute[1]);
-            let right_attribute_name = findAttributeAlias(search_wrapper.tables, right_attribute[0], right_attribute[1]);
-
-            let joined = joins.hashInnerJoin(data, (obj)=>{return obj[left_attribute_name]}, data2, (obj)=>{return obj[right_attribute_name]});
+            let joined = joins.hashInnerJoin(data, (obj)=>{return obj[left_attribute_name.alias]}, data2, (obj)=>{return obj[right_attribute_name.alias]});
 //TODO only do this part if there are supplemental fields
             let get_attributes = [];
 
@@ -176,122 +172,123 @@ function searchByJoinConditions(search_wrapper, callback){
                 results.push(_.pick(record, get_attributes));
             });
 
-            if(search_wrapper.order && search_wrapper.order.length > 0){
-                results = sortData(results, search_wrapper);
-            }
+            results = sortData(results, search_wrapper);
 
             callback(null, results);
         });
     });
 }
 
-function sortData(data, search_wrapper){
-    let get_attributes = [];
+function setAdditionalAttributeData(search_wrapper){
+    search_wrapper.all_get_attributes = [];
 
     search_wrapper.tables.forEach((table)=>{
+        search_wrapper.all_get_attributes = search_wrapper.all_get_attributes.concat(table.supplemental_fields);
         table.get_attributes.forEach((attribute)=>{
-            get_attributes.push(attribute.alias);
-        });
-    });
+            attribute.table = table.table;
+            attribute.table_alias = table.alias;
 
-    let columns = [];
-    let orders = [];
-    search_wrapper.order.forEach((order_by)=>{
-        let order_column = _.find(get_attributes, function(o) { return o === order_by.attribute; });
-        if(!order_column){
-            let order_split = order_by.attribute.split('.');
-            let table = findTable(search_wrapper.tables, order_split[0]);
-            order_column = table.table + '.' + order_split[1];
-        }
-        columns.push(order_column);
-        orders.push(order_by.direction ? order_by.direction : 'asc');
-    });
-
-    return _.orderBy(data, columns, orders);
-}
-
-function addSupplementalFields(search_wrapper){
-    search_wrapper.tables.forEach((table)=>{
-        table.supplemental_fields = [];
-    });
-
-    search_wrapper.joins.forEach((join)=>{
-        let comparators = Object.values(join)[0];
-
-        let left_side = comparators[0].split('.');
-        let right_side = comparators[1].split('.');
-
-        search_wrapper.tables.forEach((table)=>{
-            if((table.table === left_side[0] || table.alias === left_side[0])){
-                table.supplemental_fields.push({attribute: left_side[1], alias:table.table + '.' + left_side[1]});
-            } else if((table.table === right_side[0] || table.alias === right_side[0])){
-                table.supplemental_fields.push({attribute: right_side[1], alias:table.table + '.' + right_side[1]});
-            }
+            search_wrapper.all_get_attributes.push(attribute);
         });
     });
 
     return search_wrapper;
 }
 
-function convertJoinToCondition(left_table, right_table, join, data){
-    let condition_attribute;
-    let condition_values = [];
-    let comparators = Object.values(join)[0];
-    let left_attribute = comparators[0].split('.');
-    let right_attribute = comparators[1].split('.');
-    let data_attribute;
+function sortData(data, search_wrapper){
+    if(search_wrapper.order && search_wrapper.order.length > 0) {
+        /*let get_attributes = [];
 
-    if(left_attribute[0] === right_table.alias || left_attribute === right_table.table){
-        condition_attribute = left_attribute[1];
-        data_attribute = findAttributeAlias([left_table, right_table], right_attribute[0], right_attribute[1]);
-    } else if(right_attribute[0] === right_table.alias || right_attribute[0] === right_table.table){
-        condition_attribute = right_attribute[1];
-        data_attribute = findAttributeAlias([left_table, right_table], left_attribute[0], left_attribute[1]);
+        search_wrapper.tables.forEach((table) => {
+            table.get_attributes.forEach((attribute) => {
+                get_attributes.push(attribute.alias);
+            });
+        });*/
+
+        let columns = [];
+        let orders = [];
+        search_wrapper.order.forEach((order_by) => {
+            let order_column = findAttribute(search_wrapper.all_get_attributes, order_by.attribute).alias;
+            columns.push(order_column);
+            orders.push(order_by.direction ? order_by.direction : 'asc');
+        });
+
+        return _.orderBy(data, columns, orders);
     }
 
-    condition_values = data.map((row)=> {
+    return data;
+}
+
+function addSupplementalFields(search_wrapper){
+    if(search_wrapper.joins && search_wrapper.joins.length > 0) {
+        search_wrapper.tables.forEach((table) => {
+            table.supplemental_fields = [];
+        });
+
+        search_wrapper.joins.forEach((join) => {
+            let comparators = Object.values(join)[0];
+
+            let left_side = comparators[0].split('.');
+            let right_side = comparators[1].split('.');
+
+            search_wrapper.tables.forEach((table) => {
+                if ((table.table === left_side[0] || table.alias === left_side[0])) {
+                    table.supplemental_fields.push({
+                        attribute: left_side[1],
+                        alias: table.table + '.' + left_side[1],
+                        table: table.table,
+                        table_alias: table.alias
+                    });
+                } else if ((table.table === right_side[0] || table.alias === right_side[0])) {
+                    table.supplemental_fields.push({
+                        attribute: right_side[1],
+                        alias: table.table + '.' + right_side[1],
+                        table: table.table,
+                        table_alias: table.alias
+                    });
+                }
+            });
+        });
+    }
+
+    return search_wrapper;
+}
+
+function convertJoinToCondition(left_table, right_table, join, data){
+    let condition_attribute;
+    let comparators = Object.values(join)[0];
+    let all_attributes = [].concat(left_table.get_attributes, left_table.supplemental_fields, right_table.get_attributes, right_table.supplemental_fields);
+    let left_attribute = findAttribute(all_attributes, comparators[0]);
+    let right_attribute = findAttribute(all_attributes, comparators[1]);
+    let data_attribute;
+    //the left_table is always the table with the data we need to get the values from, the right table is the one being joined to
+    // however the order of the join clause could be reversed because people be crazy so we need to figure it out
+    if(left_attribute.alias === right_table.alias || left_attribute.table === right_table.table){
+        condition_attribute = left_attribute.attribute;
+        data_attribute = right_attribute.alias;
+    } else if(right_attribute.alias === right_table.alias || right_attribute.table === right_table.table){
+        condition_attribute = right_attribute.attribute;
+        data_attribute = left_attribute.alias;
+    }
+
+    let condition_values = data.map((row)=> {
         return row[data_attribute];
     });
 
-    let condition = {
+    return {
         'in' : [condition_attribute, condition_values]
     };
-
-    return condition;
 }
 
-function findAttributeAlias(tables, table_alias, attribute_alias){
-    let table = findTable(tables, table_alias);
-    let attribute = findAttributeByAlias(table, attribute_alias);
+function findAttribute(all_attributes, raw_column){
+    let table_column = raw_column.split('.');
 
-    if(!attribute) {
-        attribute = findSupplementalAttributeByAlias(table, attribute_alias);
-    }
+    return _.filter(all_attributes, (attribute)=> {
+        if (table_column.length === 1) {
+            return attribute.alias === table_column[0];
+        }
 
-    return attribute.alias;
-}
-
-function findTable(tables, table_alias) {
-    return _.filter(tables, (table)=> {
-        return table.name === table_alias || table.alias === table_alias;
-    })[0];
-}
-
-function findSupplementalAttributeByAlias(table, attribute_alias){
-    return _.filter(table.supplemental_fields, (attribute)=> {
-        return attribute.attribute === attribute_alias;
-    })[0];
-}
-
-function findAttributeByAlias(table, attribute_alias){
-    return _.filter(table.get_attributes, (attribute)=> {
-        return attribute.attribute === attribute_alias;
-    })[0];
-}
-
-function findAttributeByName(table, attribute_name){
-    return _.filter(table.get_attributes, (attribute)=> {
-        return attribute.attribute === attribute_name;
+        return (attribute.table === table_column[0] || attribute.table_alias === table_column[0]) && (attribute.attribute === table_column[1]);
     })[0];
 }
 
@@ -416,39 +413,6 @@ function readAttributeFiles(table_path, attribute, hash_files, callback){
     });
 }
 
-function verifyFileMatches(pattern, search_path, files, callback){
-    if (pattern === '*') {
-        callback(null, files);
-        return;
-    }
-
-    let matches = [];
-    async.each(files, function(file_name, caller){
-
-        let file_path = `${search_path}${file_name}.hdb`;
-        matchFile(file_path, pattern, (err, is_match)=>{
-            if(err){
-                //if there is an error log it out but don't halt the process
-                console.error(err);
-                return;
-            }
-
-            if(is_match){
-                matches.push(file_name);
-            }
-
-            caller();
-        });
-    }, function(err){
-        if(err){
-            callback(err);
-            return;
-        }
-
-        callback(null, matches);
-    });
-}
-
 function findFiles(cwd, pattern, callback){
     globby(pattern, {cwd:cwd}).then(matches => {
         let match_set = new Set();
@@ -458,16 +422,5 @@ function findFiles(cwd, pattern, callback){
         callback(null, match_set);
     }).catch((err)=>{
         callback(err);
-    });
-}
-
-function matchFile(file_path, pattern, callback){
-    fs.readFile(file_path, (err, data)=>{
-        if(err) {
-            callback(err);
-            return;
-        }
-
-        callback(null, pattern.test(data.toString()));
     });
 }

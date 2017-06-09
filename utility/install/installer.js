@@ -49,7 +49,7 @@ function run_install(callback) {
                wizard,
                mount,
                createSettingsFile,
-               installInotify,
+            //   installInotify,
                checkRegister
 
            ], function (err, result) {

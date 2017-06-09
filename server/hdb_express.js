@@ -8,7 +8,7 @@ winston.configure({
 });
 
 
-/**if (cluster.isMaster) {
+if (cluster.isMaster) {
     console.log(`Master ${process.pid} is running`);
 
     // Fork workers.
@@ -19,7 +19,7 @@ winston.configure({
     cluster.on('exit', (worker, code, signal) => {
         console.log(`worker ${worker.process.pid} died`);
     });
-} else { **/
+} else {
     winston.log('In express' + process.cwd());
     const express = require('express'),
         PropertiesReader = require('properties-reader'),
@@ -29,7 +29,7 @@ winston.configure({
         write = require('../data_layer/insert').insert,
         search = require('../data_layer/search'),
         sql = require('../sqlTranslator/index').evaluateSQL,
-        csv = require('../data_layer/csvBulkLoad'),
+        csv = require('../data_layer/csvBulkLoad');
         schema = require('../data_layer/schema'),
         delete_ = require('../data_layer/delete');
 
@@ -132,4 +132,4 @@ winston.configure({
     app.listen(hdb_properties.get('HTTP_PORT'), function () {
         console.log(`Express server running on ${hdb_properties.get('HTTP_PORT')}`)
     });
-//}
+}
