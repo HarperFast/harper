@@ -100,7 +100,7 @@ function searchByConditions(search_wrapper, callback){
 
     let table_schema = global.hdb_schema[search_object.schema][search_object.table];
 
-    let patterns = condition_patterns.createPatterns(search_object.condition, table_schema, base_path);
+    //let patterns = condition_patterns.createPatterns(search_object.condition, table_schema, base_path);
     let get_attributes = new Set();
     if(search_object.supplemental_fields && search_object.supplemental_fields.length > 0) {
         let all_attributes = search_object.get_attributes.concat(search_object.supplemental_fields);
@@ -111,8 +111,9 @@ function searchByConditions(search_wrapper, callback){
     }
 
     async.waterfall([
-        file_search.findIDsByRegex.bind(null, patterns.folder_search_path, patterns.folder_search),
-        getAttributeFiles.bind(null, get_attributes, patterns.table_path),
+        //file_search.findIDsByRegex.bind(null, patterns.folder_search_path, patterns.folder_search),
+        multiConditionSearch.bind(null, search_object.conditions, table_schema),
+        getAttributeFiles.bind(null, get_attributes, `${base_path}${table_schema.schema}/${table_schema.name}/`),
         consolidateData.bind(null, table_schema.hash_attribute)
     ], (error, data)=>{
         if(error){
@@ -135,7 +136,7 @@ function multiConditionSearch(conditions, table_schema, callback){
             condition = condition[condition_key];
         }
 
-        let pattern = patterns.createPatterns(condition, table_schema, base_path);
+        let pattern = condition_patterns.createPatterns(condition, table_schema, base_path);
 
         file_search.findIDsByRegex(pattern.folder_search_path, pattern.folder_search, (err, results)=>{
             if(err) {
@@ -151,8 +152,8 @@ function multiConditionSearch(conditions, table_schema, callback){
             return;
         }
 
-        let matched_ids = [];
-
+        let matched_ids = all_ids[0].ids;
+        all_ids.shift();
         all_ids.forEach((ids)=>{
             if(!ids.operation || ids.operation === 'or'){
                 matched_ids = matched_ids.concat(ids.ids);
@@ -160,6 +161,10 @@ function multiConditionSearch(conditions, table_schema, callback){
                 matched_ids = _.intersection(matched_ids, ids.ids);
             }
         });
+        if(matched_ids.length === 0){
+            callback(null, matched_ids);
+            return;
+        }
 
         callback(null, _.uniq(matched_ids));
     });
@@ -178,7 +183,7 @@ function searchByJoinConditions(search_wrapper, callback){
         let next_table = search_wrapper.tables[1];
         let join = search_wrapper.joins[0];
 
-        next_table.condition =  convertJoinToCondition(search_wrapper.tables[0], search_wrapper.tables[1], join, data);
+        next_table.conditions.push(convertJoinToCondition(search_wrapper.tables[0], search_wrapper.tables[1], join, data));
 
 
         searchByConditions({tables:[next_table]}, (err, data2)=> {
@@ -302,7 +307,9 @@ function convertJoinToCondition(left_table, right_table, join, data){
     });
 
     return {
-        'in' : [condition_attribute, condition_values]
+        'and': {
+            'in': [condition_attribute, condition_values]
+        }
     };
 }
 

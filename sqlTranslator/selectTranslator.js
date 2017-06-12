@@ -83,14 +83,11 @@ function parseOrderby(order_by_clause){
 function generateObject(statement, from_level){
     let from_info = {};
     let join = {};
-    let table_info = {};
     if(from_level === 0){
         from_info = parseFromSource(statement.from.source);
-        table_info = global.hdb_schema[from_info.schema][from_info.table];
     } else {
         let from_clause = statement.from.map[from_level - 1];
         from_info = parseFromSource(from_clause.source);
-        table_info = global.hdb_schema[from_info.schema][from_info.table];
         join = parseWhereClause(from_clause.constraint.on, table_info);
     }
     let search_object = {
@@ -112,31 +109,13 @@ function generateObject(statement, from_level){
 
     search_object.get_attributes = search_object.get_attributes.filter( Boolean );
 
-    search_object.condition = parseWhereClause(statement.where ? statement.where[0] : null, table_info);
+    search_object.conditions = parseConditions(statement.where, from_info);
+
     return {
         table: search_object,
         join: join
     };
 }
-/*
-function createJoinObject(from_clause, table_info){
-    let join = parseWhereClause(from_clause.constraint.on, table_info);
-    join.type = from_clause.variant;
-
-    let left_split = join.attribute.split('.');
-    let right_split = join.compare_attribute.split('.');
-
-    join.left_table = left_split[0];
-    join.left_attribute = left_split[1];
-
-    join.right_table = right_split[0];
-    join.right_attribute = right_split[1];
-
-    delete join.attribute;
-    delete join.compare_attribute;
-
-    return join;
-}*/
 
 function parseFromSource(source){
     let schema_table = source.name.split('.');
@@ -147,12 +126,53 @@ function parseFromSource(source){
     };
 }
 
-function parseWhereClause(where, table_info) {
-    if(!where){
+function parseConditions(where_clause, table_info){
+    if(!where_clause){
         return {
             '=' : [`${table_info.hash_attribute}`, '*']
         };
     }
+
+    let conditions = [];
+    let left = where_clause[0];
+
+/*
+    if(conditionTableMatch(where_clause[0].right, table_info)) {
+        conditions.push(createConditionObject(where_clause[0].operation, where_clause[0].right));
+    }
+*/
+
+    while(left.type === 'expression' && left.right.type === 'expression'){
+        if(conditionTableMatch(left.right, table_info)) {
+            conditions.push(createConditionObject(left.operation, left.right));
+        }
+        left = left.left;
+    }
+
+    if(conditionTableMatch(left, table_info)) {
+        conditions.push(createConditionObject('and', left));
+    }
+
+    return conditions
+}
+
+function conditionTableMatch(condition, table_info){
+    let column_info = condition.left.name.split('.');
+    return column_info.length === 1 || (column_info.length > 1 && (column_info[0] === table_info.table || column_info[0] === table_info.alias));
+}
+
+function createConditionObject(operation, condition){
+    let condition_object = {};
+    if(operation) {
+        condition_object[operation] = parseWhereClause(condition);
+    } else{
+        condition_object = parseWhereClause(condition);
+    }
+    return condition_object;
+}
+
+function parseWhereClause(where) {
+
 
     let condition_object = {};
     condition_object[where.operation] = [];
@@ -160,6 +180,7 @@ function parseWhereClause(where, table_info) {
 
     switch(where.operation){
         case '=':
+        case 'like':
             if(where.right.value) {
                 condition_object[where.operation].push(where.right.value);
             } else {

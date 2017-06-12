@@ -89,7 +89,7 @@ let search_by_conditions = {
         format: "[\\w\\-\\_]+"
 
     },
-    condition: {
+    conditions: {
         presence: true
     },
     get_attributes: {
