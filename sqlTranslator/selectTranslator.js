@@ -8,28 +8,34 @@ module.exports = {
 };
 
 function convertSelect(statement, callback) {
-    let final_search_object = {};
-    let search_function;
-    if(statement.from.type === 'identifier') {
-        final_search_object = {
-            tables:[
-                generateBasicSearchObject(statement)
-            ]
-        };
-        search_function = searchByConditions;
-    } else {
-        final_search_object = generateAdvancedSearchObject(statement);
-        search_function = searchByJoinConditions;
-    }
-
-    search_function(final_search_object, (err, results)=>{
-        if(err){
-            callback(err);
-            return;
+    try {
+        let final_search_object = {};
+        let search_function;
+        if (statement.from.type === 'identifier') {
+            final_search_object = {
+                tables: [
+                    generateBasicSearchObject(statement)
+                ]
+            };
+            search_function = searchByConditions;
+        } else {
+            final_search_object = generateAdvancedSearchObject(statement);
+            search_function = searchByJoinConditions;
         }
 
-        callback(null, results);
-    });
+
+        search_function(final_search_object, (err, results)=>{
+            if(err){
+                callback(err);
+                return;
+            }
+
+            callback(null, results);
+        });
+
+    } catch(e) {
+        callback(e);
+    }
 }
 
 
@@ -88,7 +94,7 @@ function generateObject(statement, from_level){
     } else {
         let from_clause = statement.from.map[from_level - 1];
         from_info = parseFromSource(from_clause.source);
-        join = parseWhereClause(from_clause.constraint.on, table_info);
+        join = parseWhereClause(from_clause.constraint.on, from_info);
     }
     let search_object = {
         schema:from_info.schema,
@@ -108,8 +114,9 @@ function generateObject(statement, from_level){
     });
 
     search_object.get_attributes = search_object.get_attributes.filter( Boolean );
-
-    search_object.conditions = parseConditions(statement.where, from_info);
+    let table_info = global.hdb_schema[from_info.schema][from_info.table];
+    table_info.alias = from_info.alias;
+    search_object.conditions = parseConditions(statement.where, table_info);
 
     return {
         table: search_object,
@@ -127,33 +134,27 @@ function parseFromSource(source){
 }
 
 function parseConditions(where_clause, table_info){
-    if(!where_clause){
-        return {
-            '=' : [`${table_info.hash_attribute}`, '*']
-        };
-    }
-
     let conditions = [];
-    let left = where_clause[0];
+    if(where_clause) {
+        let left = where_clause[0];
 
-/*
-    if(conditionTableMatch(where_clause[0].right, table_info)) {
-        conditions.push(createConditionObject(where_clause[0].operation, where_clause[0].right));
-    }
-*/
-
-    while(left.type === 'expression' && left.right.type === 'expression'){
-        if(conditionTableMatch(left.right, table_info)) {
-            conditions.push(createConditionObject(left.operation, left.right));
+        while (left.type === 'expression' && left.right.type === 'expression') {
+            if (conditionTableMatch(left.right, table_info)) {
+                conditions.push(createConditionObject(left.operation, left.right));
+            }
+            left = left.left;
         }
-        left = left.left;
+
+        if (conditionTableMatch(left, table_info)) {
+            conditions.push(createConditionObject('and', left));
+        }
     }
 
-    if(conditionTableMatch(left, table_info)) {
-        conditions.push(createConditionObject('and', left));
+    if(conditions.length === 0){
+        conditions.push({'=': [`${table_info.hash_attribute}`, '*']});
     }
 
-    return conditions
+    return conditions;
 }
 
 function conditionTableMatch(condition, table_info){
@@ -162,6 +163,7 @@ function conditionTableMatch(condition, table_info){
 }
 
 function createConditionObject(operation, condition){
+    //operation = '||' ? 'like' : operation;
     let condition_object = {};
     if(operation) {
         condition_object[operation] = parseWhereClause(condition);
@@ -172,19 +174,19 @@ function createConditionObject(operation, condition){
 }
 
 function parseWhereClause(where) {
-
-
+//we had replaced LIKE with || before generating the AST, now we need to switch it back.
+    let operation = where.operation === '||' ? 'like' : where.operation;
     let condition_object = {};
-    condition_object[where.operation] = [];
-    condition_object[where.operation].push(`${where.left.name}`);
+    condition_object[operation] = [];
+    condition_object[operation].push(`${where.left.name}`);
 
-    switch(where.operation){
+    switch(operation){
         case '=':
         case 'like':
             if(where.right.value) {
-                condition_object[where.operation].push(where.right.value);
+                condition_object[operation].push(where.right.value);
             } else {
-                condition_object[where.operation].push(`${where.right.name}`);
+                condition_object[operation].push(`${where.right.name}`);
             }
             break;
         case 'in':
@@ -192,7 +194,7 @@ function parseWhereClause(where) {
             where.right.expression.forEach((value_object)=>{
                 compare_value.push(value_object.value);
             });
-            condition_object[where.operation].push(compare_value);
+            condition_object[operation].push(compare_value);
             break;
         default:
             break;
