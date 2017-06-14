@@ -154,6 +154,8 @@ function parseConditions(where_clause, table_info){
         conditions.push({'=': [`${table_info.hash_attribute}`, '*']});
     }
 
+    conditions.reverse();
+
     return conditions;
 }
 
