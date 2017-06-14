@@ -91,10 +91,10 @@ let search_by_conditions = {
     },
     conditions: {
         presence: true
-    },
+    }/*,
     get_attributes: {
         presence: true
-    }
+    }*/
 };
 
 

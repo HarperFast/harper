@@ -32,7 +32,8 @@ function searchByHash(search_object, callback){
     let hash_stripped = String(search_object.hash_value).replace(slash_regex, '').substring(0, 4000);
     let table_path = `${base_path}${search_object.schema}/${search_object.table}/`;
     async.waterfall([
-        getAttributeFiles.bind(null, search_object.get_attributes, table_path, [hash_stripped]),
+        evaluateTableAttributes.bind(null, search_object.get_attributes, search_object),
+        getAttributeFiles.bind(null, null, table_path, [hash_stripped]),
         consolidateData.bind(null, search_object.hash_attribute)
     ], (error, data)=>{
         if(error){
@@ -53,6 +54,7 @@ function searchByHashes(search_object, callback){
 
     let table_path = `${base_path}${search_object.schema}/${search_object.table}/`;
     async.waterfall([
+        evaluateTableAttributes.bind(null, search_object.get_attributes, search_object),
         getAttributeFiles.bind(null, search_object.get_attributes, table_path, search_object.hash_values),
         consolidateData.bind(null, search_object.hash_attribute)
     ], (error, data)=>{
@@ -76,7 +78,18 @@ function searchByValue (search_object, callback) {
     let patterns = condition_patterns.createPatterns(condition, {name:search_object.table, schema:search_object.schema, hash_attribute:search_object.hash_attribute}, base_path);
 
     async.waterfall([
-        //findFiles.bind(null, search_path, folder_pattern),
+        (callback)=>{
+            evaluateTableAttributes(search_object.get_attributes, search_object, (err, attributes)=>{
+                if(err){
+                    callback(err);
+                    return;
+                }
+
+                search_object.get_attributes = attributes;
+                callback();
+            });
+        },
+
         file_search.findIDsByRegex.bind(null, patterns.folder_search_path, patterns.folder_search),
         getAttributeFiles.bind(null, search_object.get_attributes, patterns.table_path),
         consolidateData.bind(null, search_object.hash_attribute)
@@ -101,28 +114,32 @@ function searchByConditions(search_wrapper, callback){
     let table_schema = global.hdb_schema[search_object.schema][search_object.table];
 
     //let patterns = condition_patterns.createPatterns(search_object.condition, table_schema, base_path);
-    let get_attributes = new Set();
+    let get_attributes = search_object.get_attributes;
     if(search_object.supplemental_fields && search_object.supplemental_fields.length > 0) {
-        let all_attributes = search_object.get_attributes.concat(search_object.supplemental_fields);
-
-        get_attributes = new Set(all_attributes);
-    } else {
-        get_attributes = new Set(search_object.get_attributes);
+        get_attributes = _.uniq(search_object.get_attributes.concat(search_object.supplemental_fields));
     }
-
-    async.waterfall([
-        //file_search.findIDsByRegex.bind(null, patterns.folder_search_path, patterns.folder_search),
-        multiConditionSearch.bind(null, search_object.conditions, table_schema),
-        getAttributeFiles.bind(null, get_attributes, `${base_path}${table_schema.schema}/${table_schema.name}/`),
-        consolidateData.bind(null, table_schema.hash_attribute)
-    ], (error, data)=>{
-        if(error){
-            callback(error);
+    evaluateTableAttributes(get_attributes, search_object, (err, attributes)=>{
+        if(err){
+            callback(err);
             return;
         }
 
-        callback(null, data);
+        async.waterfall([
+            multiConditionSearch.bind(null, search_object.conditions, table_schema),
+            getAttributeFiles.bind(null, attributes, `${base_path}${table_schema.schema}/${table_schema.name}/`),
+            consolidateData.bind(null, table_schema.hash_attribute)
+        ], (error, data)=>{
+            if(error){
+                callback(error);
+                return;
+            }
+
+            callback(null, data);
+        });
+
     });
+
+
 }
 
 function multiConditionSearch(conditions, table_schema, callback){
@@ -171,49 +188,78 @@ function multiConditionSearch(conditions, table_schema, callback){
 }
 
 function searchByJoinConditions(search_wrapper, callback){
-    search_wrapper = addSupplementalFields(search_wrapper);
-    search_wrapper = setAdditionalAttributeData(search_wrapper);
+    getAsteriskFieldsForTables(search_wrapper, (error, search_wrapper)=> {
+        search_wrapper = addSupplementalFields(search_wrapper);
+        search_wrapper = setAdditionalAttributeData(search_wrapper);
+        searchByConditions(search_wrapper, (err, data) => {
+            if (err) {
+                callback(err);
+                return;
+            }
 
-    searchByConditions(search_wrapper, (err, data)=>{
+            let next_table = search_wrapper.tables[1];
+            let join = search_wrapper.joins[0];
+
+            next_table.conditions.push(convertJoinToCondition(search_wrapper.tables[0], search_wrapper.tables[1], join, data));
+
+
+            searchByConditions({tables: [next_table]}, (err, data2) => {
+                if (err) {
+                    callback(err);
+                    return;
+                }
+                let comparators = Object.values(join)[0];
+                let left_attribute_name = findAttribute(search_wrapper.all_get_attributes, comparators[0]);
+                let right_attribute_name = findAttribute(search_wrapper.all_get_attributes, comparators[1]);
+
+                let joined = joins.hashInnerJoin(data, (obj) => {
+                    return obj[left_attribute_name.alias]
+                }, data2, (obj) => {
+                    return obj[right_attribute_name.alias]
+                });
+//TODO only do this part if there are supplemental fields
+                let get_attributes = [];
+
+                search_wrapper.tables.forEach((table) => {
+                    table.get_attributes.forEach((attribute) => {
+                        get_attributes.push(attribute.alias);
+                    });
+                });
+
+                let results = [];
+                joined.forEach((record) => {
+                    results.push(_.pick(record, get_attributes));
+                });
+
+                results = sortData(results, search_wrapper);
+
+                callback(null, results);
+            });
+        });
+    });
+}
+
+function getAsteriskFieldsForTables(search_wrapper, callback){
+    let tables = [];
+    async.eachLimit(search_wrapper.tables, 1, (table, caller)=>{
+        evaluateTableAttributes(table.get_attributes, table, (err, attributes)=> {
+            if (err) {
+                caller(err);
+                return;
+            }
+
+            table.get_attributes = attributes;
+            tables.push(table);
+            caller();
+        });
+    }, (err)=>{
         if(err){
             callback(err);
             return;
         }
 
-        let next_table = search_wrapper.tables[1];
-        let join = search_wrapper.joins[0];
-
-        next_table.conditions.push(convertJoinToCondition(search_wrapper.tables[0], search_wrapper.tables[1], join, data));
-
-
-        searchByConditions({tables:[next_table]}, (err, data2)=> {
-            if (err) {
-                callback(err);
-                return;
-            }
-            let comparators = Object.values(join)[0];
-            let left_attribute_name = findAttribute(search_wrapper.all_get_attributes, comparators[0]);
-            let right_attribute_name = findAttribute(search_wrapper.all_get_attributes, comparators[1]);
-
-            let joined = joins.hashInnerJoin(data, (obj)=>{return obj[left_attribute_name.alias]}, data2, (obj)=>{return obj[right_attribute_name.alias]});
-//TODO only do this part if there are supplemental fields
-            let get_attributes = [];
-
-            search_wrapper.tables.forEach((table)=>{
-                table.get_attributes.forEach((attribute)=>{
-                    get_attributes.push(attribute.alias);
-                });
-            });
-
-            let results = [];
-            joined.forEach((record)=>{
-                results.push(_.pick(record, get_attributes));
-            });
-
-            results = sortData(results, search_wrapper);
-
-            callback(null, results);
-        });
+        search_wrapper.tables = tables;
+        callback(null, search_wrapper);
     });
 }
 
@@ -394,5 +440,49 @@ function readAttributeFiles(table_path, attribute, hash_files, callback){
         }
 
         callback(null, attribute_data);
+    });
+}
+
+function evaluateTableAttributes(get_attributes, table_info, callback){
+    let star_attribute =  _.filter(get_attributes, (attribute)=> {
+        return attribute === '*' || attribute.attribute === '*';
+    });
+
+    if(star_attribute && star_attribute.length > 0){
+        getAllAttributeNames(table_info, (err, attributes)=>{
+            if(err){
+                callback(err);
+                return;
+            }
+            get_attributes = _.filter(get_attributes, (attribute)=>{
+                return attribute !== '*' && attribute.attribute !== '*';
+            });
+            callback(null, _.uniq(get_attributes.concat(attributes)));
+        });
+    }else {
+        callback(null, get_attributes);
+    }
+}
+
+function getAllAttributeNames(table_info, callback){
+    let search_path = `${base_path}${table_info.schema}/${table_info.table}/__hdb_hash/`;
+
+    file_search.findDirectoriesByRegex(search_path, /.*/, (err, folders)=>{
+        if(err){
+            callback(err);
+            return;
+        }
+
+        let attributes = [];
+        folders.forEach((folder)=>{
+            attributes.push({
+                attribute:folder,
+                alias:`${table_info.table}.${folder}`,
+                table:table_info.table,
+                table_alias:table_info.alias
+            });
+        });
+
+        callback(null, attributes);
     });
 }
