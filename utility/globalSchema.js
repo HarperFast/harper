@@ -18,8 +18,15 @@ function setSchemaDataToGlobal(callback){
                     hdb_table:{
                         hash_attribute:'id',
                         name:'hdb_table',
-                        schema:'system'
-                    },
+                        schema:'system',
+                        attributes:
+                            [ { attribute: 'id' },
+                                { attribute: 'name' },
+                                { attribute: 'hash_attribute' },
+                                { attribute: 'schema' }
+                            ]
+
+                },
                     hdb_attribute:{
                         hash_attribute:'id',
                         name:'hdb_attribute',

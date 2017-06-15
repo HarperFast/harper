@@ -30,6 +30,8 @@ if (cluster.isMaster) {
         search = require('../data_layer/search'),
         sql = require('../sqlTranslator/index').evaluateSQL,
         csv = require('../data_layer/csvBulkLoad');
+        schema = require('../data_layer/schema'),
+        delete_ = require('../data_layer/delete');
 
        hdb_properties.append(hdb_properties.get('settings_path'));
 
@@ -45,15 +47,19 @@ if (cluster.isMaster) {
                 return;
             }
 
-            operation_function(req.body, (error, data) => {
-                if (error) {
-                    console.log(error);
-                    res.status(500).send(err);
-                    return;
-                }
+            try {
+                operation_function(req.body, (error, data) => {
+                    if (error) {
+                        console.log(error);
+                        res.status(500).json(error);
+                        return;
+                    }
 
-                res.status(200).send(data);
-            });
+                    res.status(200).json(data);
+                });
+            }catch(e){
+                res.status(500).json(e);
+            }
         });
 
     });
@@ -86,6 +92,32 @@ if (cluster.isMaster) {
             case 'csv_url_load':
                 operation_function = csv.csvDataLoad;
                 break;
+            case 'create_schema':
+                operation_function = schema.createSchema;
+                break;
+            case 'create_table':
+                operation_function = schema.createTable;
+                break;
+            case 'drop_schema':
+                operation_function = schema.dropSchema;
+                break;
+            case 'drop_table':
+                operation_function = schema.dropTable;
+                break;
+            case 'describe_schema':
+                operation_function = schema.describeSchema;
+                break;
+            case 'describe_table':
+                operation_function = schema.describeTable;
+                break;
+            case 'describe_all':
+                operation_function = schema.describeAll;
+            case 'delete':
+                operation_function = delete_.delete;
+                break;
+
+
+
             default:
                 break;
         }
