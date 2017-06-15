@@ -2,8 +2,7 @@ const sql_trans = require('../sqlTranslator/index');
 
 //let sql = "INSERT INTO dev.person (id, first_name, dob) VALUES(1, 'Kyle', '09/24/1973'), (2, 'Zax', '03/12/1983')";
 
-let sql = {sql:"select b.* from dev.breed as b inner join dev.license as l on b.id = l.breed "  +
-    "where l.color LIKE '%AC%' or l.dog_name = 'JENNA' order by breed.name asc"};
+let sql = {sql:"select id from dev.breed"};
 console.time('sql');
 sql_trans.evaluateSQL(sql, (err, data) => {
     console.timeEnd('sql');

@@ -7,7 +7,7 @@ winston.configure({
     ]
 });
 
-
+/*
 if (cluster.isMaster) {
     console.log(`Master ${process.pid} is running`);
 
@@ -19,7 +19,7 @@ if (cluster.isMaster) {
     cluster.on('exit', (worker, code, signal) => {
         console.log(`worker ${worker.process.pid} died`);
     });
-} else {
+} else {*/
     winston.log('In express' + process.cwd());
     const express = require('express'),
         PropertiesReader = require('properties-reader'),
@@ -31,7 +31,8 @@ if (cluster.isMaster) {
         sql = require('../sqlTranslator/index').evaluateSQL,
         csv = require('../data_layer/csvBulkLoad');
         schema = require('../data_layer/schema'),
-        delete_ = require('../data_layer/delete');
+        delete_ = require('../data_layer/delete'),
+        global_schema = require('../utility/globalSchema');
 
        hdb_properties.append(hdb_properties.get('settings_path'));
 
@@ -130,6 +131,14 @@ if (cluster.isMaster) {
     }
 
     app.listen(hdb_properties.get('HTTP_PORT'), function () {
-        console.log(`Express server running on ${hdb_properties.get('HTTP_PORT')}`)
+        console.log(`HarperDB Server running on ${hdb_properties.get('HTTP_PORT')}`);
+
+        global_schema.setSchemaDataToGlobal((err, data) => {
+            if (err) {
+                winston.log('error', err);
+                return;
+            }
+
+        });
     });
-}
+//}

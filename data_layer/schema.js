@@ -56,39 +56,32 @@ module.exports = {
             return;
         }
 
-        var search_obj = {};
-        search_obj.schema = 'system';
-        search_obj.table = 'hdb_schema';
-        search_obj.hash_attribute = 'name';
-        search_obj.hash_value = schema_create_object.schema;
-        search_obj.get_attributes = ['name'];
-        search.searchByHash(search_obj, function (err, data) {
-            if (data && data.length > 1) {
-                callback("schema already exsits");
+        if(global.hdb_schema[schema_create_object.schema]){
+            callback(`Schema ${schema_create_object.schema} already exists`);
+            return;
+        }
+
+        var insertObject = {
+            operation: 'insert',
+            schema: 'system',
+            table: 'hdb_schema',
+            records: [
+                {
+                    name: schema_create_object.schema,
+                    createddate: '' + Date.now()
+                }
+            ]
+        };
+
+        insert.insert(insertObject, function (err, result) {
+            if(err){
+                callback(err);
                 return;
             }
+            console.log('createSchema:' + err);
 
-            var insertObject = {
-                operation: 'insert',
-                schema: 'system',
-                table: 'hdb_schema',
-                records: [
-                    {
-                        name: schema_create_object.schema,
-                        createddate: '' + Date.now()
-                    }
-                ]
-            };
-
-            insert.insert(insertObject, function (err, result) {
-                console.log('createSchema:' + err);
-                console.log(result);
-                callback(err, result);
-            });
-
+            callback(err, `schema ${schema_create_object.schema} successfully created`);
         });
-
-
     },
 
     // create folder structrue
@@ -255,9 +248,12 @@ module.exports = {
             };
 
             insert.insert(insertObject, function (err, result) {
-                console.log(err);
-                console.log(result);
-                callback(err, result);
+                if(err){
+                    callback(err);
+                    return;
+                }
+
+                callback(null, `table ${create_table_object.schema}.${create_table_object.table} successfully created.`);
             });
 
 

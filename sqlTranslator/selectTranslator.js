@@ -51,6 +51,15 @@ function generateBasicSearchObject(statement){
         return column.name;
     });
 
+    if(!global.hdb_schema[schema_table[0]]){
+        throw `Schema ${schema_table[0]} does not exist`;
+        return;
+    }
+
+    if(!global.hdb_schema[schema_table[0]][schema_table[1]]){
+        throw `Table ${schema_table[0]}.${schema_table[1]} does not exist`;
+    }
+
     let table_info = global.hdb_schema[schema_table[0]][schema_table[1]];
 
     search_object.condition = parseWhereClause(statement.where[0], table_info);
