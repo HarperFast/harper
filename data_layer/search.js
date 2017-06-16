@@ -25,6 +25,7 @@ module.exports = {
     searchByValue:searchByValue,
     searchByHashes:searchByHashes,
     searchByConditions: searchByConditions,
+    searchByJoin:searchByJoin,
     searchByJoinConditions: searchByJoinConditions
 };
 
@@ -190,6 +191,17 @@ function multiConditionSearch(conditions, table_schema, callback){
         }
 
         callback(null, _.uniq(matched_ids));
+    });
+}
+
+function searchByJoin(search_wrapper, callback){
+    searchByJoinConditions(search_wrapper.search, (err, data)=>{
+        if(err){
+            callback(err);
+            return;
+        }
+
+        callback(null, data);
     });
 }
 
