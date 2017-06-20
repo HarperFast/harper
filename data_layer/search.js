@@ -26,7 +26,8 @@ module.exports = {
     searchByHashes:searchByHashes,
     searchByConditions: searchByConditions,
     searchByJoin:searchByJoin,
-    searchByJoinConditions: searchByJoinConditions
+    searchByJoinConditions: searchByJoinConditions,
+    multiConditionSearch: multiConditionSearch
 };
 
 function searchByHash(search_object, callback){
@@ -38,17 +39,24 @@ function searchByHash(search_object, callback){
 
     let hash_stripped = String(search_object.hash_value).replace(slash_regex, '').substring(0, 4000);
     let table_path = `${base_path}${search_object.schema}/${search_object.table}/`;
-    async.waterfall([
-        evaluateTableAttributes.bind(null, search_object.get_attributes, search_object),
-        getAttributeFiles.bind(null, null, table_path, [hash_stripped]),
-        consolidateData.bind(null, search_object.hash_attribute)
-    ], (error, data)=>{
-        if(error){
+
+    evaluateTableAttributes(search_object.get_attributes, search_object, (error, get_attributes)=> {
+        if (error) {
             callback(error);
             return;
         }
 
-        callback(null, data);
+        async.waterfall([
+            getAttributeFiles.bind(null, get_attributes, table_path, [hash_stripped]),
+            consolidateData.bind(null, search_object.hash_attribute)
+        ], (error, data) => {
+            if (error) {
+                callback(error);
+                return;
+            }
+
+            callback(null, data);
+        });
     });
 }
 
@@ -60,18 +68,25 @@ function searchByHashes(search_object, callback){
     }
 
     let table_path = `${base_path}${search_object.schema}/${search_object.table}/`;
-    async.waterfall([
-        evaluateTableAttributes.bind(null, search_object.get_attributes, search_object),
-        getAttributeFiles.bind(null, search_object.get_attributes, table_path, search_object.hash_values),
-        consolidateData.bind(null, search_object.hash_attribute)
-    ], (error, data)=>{
+    evaluateTableAttributes(search_object.get_attributes, search_object, (error, get_attributes)=>{
         if(error){
             callback(error);
             return;
         }
 
-        callback(null, data);
+        async.waterfall([
+            getAttributeFiles.bind(null, get_attributes, table_path, search_object.hash_values),
+            consolidateData.bind(null, search_object.hash_attribute)
+        ], (error, data)=>{
+            if(error){
+                callback(error);
+                return;
+            }
+
+            callback(null, data);
+        });
     });
+
 }
 
 function searchByValue (search_object, callback) {
@@ -226,15 +241,9 @@ function searchByJoinConditions(search_wrapper, callback){
                     callback(err);
                     return;
                 }
-                let comparators = Object.values(join)[0];
-                let left_attribute_name = findAttribute(search_wrapper.all_get_attributes, comparators[0]);
-                let right_attribute_name = findAttribute(search_wrapper.all_get_attributes, comparators[1]);
 
-                let joined = joins.hashInnerJoin(data, (obj) => {
-                    return obj[left_attribute_name.alias]
-                }, data2, (obj) => {
-                    return obj[right_attribute_name.alias]
-                });
+                let joined = joinData(join, search_wrapper.all_get_attributes, data, data2);
+
 //TODO only do this part if there are supplemental fields
                 let get_attributes = [];
 
@@ -255,6 +264,35 @@ function searchByJoinConditions(search_wrapper, callback){
             });
         });
     });
+}
+
+function joinData(join, all_get_attributes, data, data2){
+    let comparators = Object.values(join)[0];
+    let left_attribute_name = findAttribute(all_get_attributes, comparators[0]);
+    let right_attribute_name = findAttribute(all_get_attributes, comparators[1]);
+
+    let join_function;
+    switch(join.type){
+        case 'join':
+        case 'inner join':
+            join_function = joins.hashInnerJoin;
+            break;
+        case 'left join':
+        case 'left outer join':
+            join_function = joins.hashLeftOuterJoin;
+            break;
+        default:
+            join_function = joins.hashInnerJoin;
+            break;
+    }
+
+    let joined = join_function(data, (obj) => {
+        return obj[left_attribute_name.alias]
+    }, data2, (obj) => {
+        return obj[right_attribute_name.alias]
+    });
+
+    return joined;
 }
 
 function getAsteriskFieldsForTables(search_wrapper, callback){
@@ -437,7 +475,7 @@ function getAttributeFiles(get_attributes, table_path, hash_files, callback){
 
 function readAttributeFiles(table_path, attribute, hash_files, callback){
     let attribute_data = {};
-    async.each(hash_files, (file, caller)=>{
+    async.eachLimit(hash_files, 1000, (file, caller)=>{
         fs.readFile(`${table_path}__hdb_hash/${attribute}/${file}.hdb`, (error, data)=>{
             if(error){
                 if(error.code === 'ENOENT'){

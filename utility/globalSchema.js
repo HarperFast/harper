@@ -1,7 +1,8 @@
 const schema = require('../data_layer/schemaDescribe');
 
 module.exports = {
-    setSchemaDataToGlobal: setSchemaDataToGlobal
+    setSchemaDataToGlobal: setSchemaDataToGlobal,
+    getTableSchema: getTableSchema
 };
 
 function setSchemaDataToGlobal(callback){
@@ -57,3 +58,25 @@ function setSchemaDataToGlobal(callback){
         callback(null, null);
     }
 }
+
+function getTableSchema(schema_name, table_name, callback){
+    if(!global.hdb_schema[schema_name] || !global.hdb_schema[schema_name][table_name]){
+        schema.describeAll((err, schema_data)=> {
+            if (err) {
+                callback(err);
+                return;
+            }
+
+            global.hdb_schema = schema_data;
+
+            if(!global.hdb_schema[schema_name] || !global.hdb_schema[schema_name][table_name]){
+                callback(`table ${schema_name}.${table_name} does not exist`);
+            } else {
+                callback(null, global.hdb_schema[schema_name][table_name]);
+            }
+        });
+    } else {
+        callback(null, global.hdb_schema[schema_name][table_name]);
+    }
+}
+
