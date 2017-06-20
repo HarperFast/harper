@@ -27,7 +27,7 @@ function initialize(){
     search_obj.schema = 'system';
     search_obj.table = 'hdb_table';
     search_obj.hash_attribute = 'id';
-    search_obj.search_attribute = 'name';
+    search_obj.search_attribute = 'id';
     search_obj.search_value = '*'
     search_obj.hash_values = [];
     search_obj.get_attributes = ['hash_attribute', 'id', 'name', 'schema'];
@@ -83,18 +83,21 @@ function spinUpTableTrigger(table){
                 var path = tokens[0];
                 var event = tokens[1];
                 var folder = tokens[2].replace('\n','');
-                // /home/stephen/hdb/schema/dev/person/ CREATE,ISDIR first_name
-                var create_attribute_object = {};
-                create_attribute_object.attribute = folder;
-                create_attribute_object.table = table.name;
-                create_attribute_object.schema = table.schema;
-                schema.createAttribute(create_attribute_object, function(err, data){
-                    if(err){
-                        console.error(err);
-                        //initialize();
-                    }
-                    console.log(data);
-                });
+                if(folder != '__hdb_hash'){
+                    // /home/stephen/hdb/schema/dev/person/ CREATE,ISDIR first_name
+                    var create_attribute_object = {};
+                    create_attribute_object.attribute = folder;
+                    create_attribute_object.table = table.name;
+                    create_attribute_object.schema = table.schema;
+                    schema.createAttribute(create_attribute_object, function(err, data){
+                        if(err){
+                            console.error(err);
+                            //initialize();
+                        }
+                        console.log(data);
+                    });
+                }
+
             }
 
         }

@@ -41,7 +41,12 @@ search.searchByHashes(search_obj, function (err, data) {
     return;
 });*/
 
-let search_obj = {"schema":"dog","table":"tags","hash_attribute":"id","hash_value":"104071","get_attributes":[]}
+let search_obj = {"schema":"system",
+"table":"hdb_drop_schema",
+"hash_attribute":"id",
+"hash_value":"949b06cc-09c6-42b8-83a7-7651b4e6e362-1497019594294",
+"get_attributes":["name","schema","id"]}
+
 
 console.time('searchByHash');
 search.searchByHash(search_obj, function (err, data) {

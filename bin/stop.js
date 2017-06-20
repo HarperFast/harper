@@ -17,7 +17,8 @@ function stop(){
         winston.log('info', `Express Server stoped`);
     });
 
-    terminal.stdin.write(`../node_modules/pm2/bin/pm2 stop hdb_express; ../node_modules/pm2/bin/pm2 stop hdb_schema_triggers; `);
+    terminal.stdin.write(`../node_modules/pm2/bin/pm2 stop HarperDB; ../node_modules/pm2/bin/pm2 stop HarperDB_schema_trigger;
+    `);
     terminal.stdin.end();
 
 

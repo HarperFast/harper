@@ -34,6 +34,7 @@ module.exports = function (hdb_path, callback){
         makeDirectory(path.join(hdb_path, "schema/system/hdb_attribute"));
         makeDirectory(path.join(hdb_path, "schema/system/hdb_schema"));
         makeDirectory(path.join(hdb_path, "schema/system/hdb_table"));
+        makeDirectory(path.join(hdb_path, "schema/system/hdb_drop_schema"));
         makeDirectory(path.join(hdb_path, "schema/system/hdb_table/schema"));
         makeDirectory(path.join(hdb_path, "schema/system/hdb_table/name"));
         makeDirectory(path.join(hdb_path, "schema/system/hdb_table/hash_attribute"));

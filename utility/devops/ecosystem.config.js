@@ -17,7 +17,7 @@ module.exports = {
       }
     },
 	  {
-		        name      : "HarperDB_triggers",
+		        name      : "HarperDB_schema_trigger",
 		        script    : "../triggers/hdb_schema_triggers.js",
 		        env: {
 				        COMMON_VARIABLE: "true"
@@ -25,7 +25,17 @@ module.exports = {
 				      env_production : {
 				        NODE_ENV: "production"
 				      }
-		      }
+		      },
+      {
+          name      : "HarperDB_attribute_trigger",
+          script    : "../triggers/attribute_triggers.js",
+          env: {
+              COMMON_VARIABLE: "true"
+          },
+          env_production : {
+              NODE_ENV: "production"
+          }
+      }
  ],
 
   /**

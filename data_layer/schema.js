@@ -122,14 +122,27 @@ module.exports = {
     dropSchema: function (drop_schema_object, callback) {
 
 
-        var validation_error = validate(drop_schema_object, constraints);
+        var validation_error = validate(drop_schema_object, schema_constraints);
         if (validation_error) {
             callback(validation_error, null);
             return;
         }
 
 
+
+
         var schema = drop_schema_object.schema;
+
+        var delete_schema_object = {
+            "table": "hdb_schema",
+            "schema": "system",
+            "hash_attribute": "name",
+            "hash_value": schema
+        }
+
+        delete_.delete(delete_schema_object, function (err, result) {
+            callback(err, result);
+        })
 
 
     },
@@ -231,6 +244,7 @@ module.exports = {
         search_obj.get_attributes = ['name', 'schema'];
         search.searchByValue(search_obj, function (err, data) {
             if (data) {
+
                 for (item in data) {
                     if (data[item].schema == create_table_object.schema) {
                         callback('Table already exists');
@@ -239,27 +253,42 @@ module.exports = {
                 }
             }
 
-            var table = {
-                name: create_table_object.table,
-                schema: create_table_object.schema,
-                id: uuidV4(),
-                hash_attribute: create_table_object.hash_attribute
-            };
 
-            var insertObject = {
-                operation:'insert',
-                schema: 'system',
-                table: 'hdb_table',
-                hash_attribute: 'id',
-                records: [table]
-            };
+                var search_obj = {};
+                search_obj.schema = 'system';
+                search_obj.table = 'hdb_schema';
+                search_obj.hash_attribute = 'id';
+                search_obj.search_attribute = 'name';
+                search_obj.search_value = create_table_object.schema;
+                search_obj.get_attributes = ['name', 'schema'];
+                search.searchByValue(search_obj, function (err, data) {
+                    if(!data || err){
+                        callback("Schema does not exist... A house divided against itself cannot stand")
+                        return;
+                    }
 
-            insert.insert(insertObject, function (err, result) {
-                console.log(err);
-                console.log(result);
-                callback(err, result);
-            });
+                    var table = {
+                        name: create_table_object.table,
+                        schema: create_table_object.schema,
+                        id: uuidV4(),
+                        hash_attribute: create_table_object.hash_attribute
+                    };
 
+                    var insertObject = {
+                        operation: 'insert',
+                        schema: 'system',
+                        table: 'hdb_table',
+                        hash_attribute: 'id',
+                        records: [table]
+                    };
+
+                    insert.insert(insertObject, function (err, result) {
+                        console.log(err);
+                        console.log(result);
+                        callback(err, result);
+                    });
+
+                });
 
         });
 
@@ -333,6 +362,8 @@ module.exports = {
             }
 
             if(delete_tb){
+
+
                 var delete_table_object = {
                     "table": "hdb_table",
                     "schema": "system",
@@ -340,11 +371,32 @@ module.exports = {
                     "hash_value": delete_tb.id
                 }
 
-                delete_.delete(delete_table_object, function(err, data){
-                    callback(err, data);
-                    return;
+
+                let insert_object ={};
+                insert_object.operation = 'insert';
+                insert_object.hash_attribute = 'id';
+                insert_object.records = [delete_tb];
+                insert_object.table = 'hdb_drop_schema';
+                insert_object.schema = 'system';
+
+
+                insert.insert(insert_object, function(err, data){
+                   if(err){
+                       console.log(err);
+                       callback('drop table failed!');
+                       return;
+                   }
+                    delete_.delete(delete_table_object, function(err, data){
+                        callback(err, data);
+                        return;
+
+                    });
 
                 });
+
+
+
+
             } else{
                 callback("Table not found!");
             }
@@ -363,13 +415,14 @@ module.exports = {
     // this event will  then call the code below
 
     deleteTableStructure: function (drop_table_object, callback) {
+        console.log(`drop table object ${JSON.stringify(drop_table_object)}`);
 
-        var validation_error = validate(drop_table_object, constraints);
+        var validation_error = validate(drop_table_object, describe_table_validation);
         if (validation_error) {
             callback(validation_error, null);
             return;
         }
-
+        console.log('dtos' + drop_table_object.schema);
 
         var schema = drop_table_object.schema;
         var table = drop_table_object.table;
@@ -395,12 +448,13 @@ module.exports = {
                 return;
             }
         }
+        console.log(`schema ${schema}`);
 
         if (fs.existsSync(hdb_properties.get('HDB_ROOT') + '/schema/' + schema + "/")) {
-            var path = hdb_properties('HDB_ROOT') + '/schema/' + schema + "/" + table;
+            var path = hdb_properties.get('HDB_ROOT') + '/schema/' + schema + "/" + table;
             deleteFolderRecursive(path, true);
         } else {
-            callback("schema does not exist");
+            callback(" schema does not exist");
 
         }
 

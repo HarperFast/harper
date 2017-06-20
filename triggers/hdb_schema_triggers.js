@@ -1,6 +1,6 @@
 'use strict';
 const PropertiesReader = require('properties-reader'),
-hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
+    hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
 hdb_properties.append(hdb_properties.get('settings_path'));
 
 
@@ -10,7 +10,8 @@ const fs = require('fs')
     , spawn = require('child_process').spawn
     , util = require('util')
     , schema = require('../data_layer/schema')
-    , attribute_trigger = require('./attribute_trigger');
+    , attribute_trigger = require('./attribute_trigger')
+    , search = require('../data_layer/search');
 
 
 function initalize() {
@@ -79,23 +80,26 @@ function eventHandler(data) {
 
 function systemHandleEvent(path, file, event) {
 
-
+    console.log(`path ${path} file ${file} event ${event}`);
     if (path.indexOf('hdb_table/id') > 0) {
-        fs.readFile(path + file.replace('\n', ''), 'utf8', function (err, data) {
-            if (err) {
-                console.error('readFileError' + err);
-                return;
-            }
+        if (event == 'CREATE') {
+            fs.readFile(path + file.replace('\n', ''), 'utf8', function (err, data) {
+                if (err) {
+                    console.error('schema trigger ' + err);
+                    return;
+                }
 
-            var tableObject = JSON.parse(data);
-            console.log(tableObject);
-            var table_object = {};
-            table_object.table = tableObject.name;
-            table_object.schema = tableObject.schema;
-            table_object.hash_attribute = tableObject.hash_attribute;
+                console.log('file data from create:' + data);
 
-            console.log('TABLE OBJECT: ' + JSON.stringify(tableObject));
-            if (event == 'CREATE') {
+                var tableObject = JSON.parse(data);
+                console.log(tableObject);
+                var table_object = {};
+                table_object.table = tableObject.name;
+                table_object.schema = tableObject.schema;
+                table_object.hash_attribute = tableObject.hash_attribute;
+
+                console.log('TABLE OBJECT: ' + JSON.stringify(tableObject));
+
                 schema.createTableStructure(table_object, function (err, result) {
                     if (err) {
                         console.error('createTableError:' + err);
@@ -108,18 +112,44 @@ function systemHandleEvent(path, file, event) {
 
                 });
 
+            });
 
-            } else {
-                schema.deleteTableStructure(table_object, function (err, result) {
-                    if (err)
-                        console.error('deleteTableError' + err);
-                    return;
+        } else {
 
-                });
+            let hashTokens = file.replace('.hdb', '').replace('\n', '').split('-');
+            let i = 0;
+
+            hashTokens.splice(hashTokens.length -1,1);
+            let hash = hashTokens.join('-');
+
+
+
+            let search_obj = {
+                "schema": "system",
+                "table": "hdb_drop_schema",
+                "hash_attribute": "id",
+                "hash_value":hash ,
+                "get_attributes": ["name", "schema", "id"]
             }
 
 
-        });
+
+
+            console.log('searchObj' + JSON.stringify(search_obj));
+            search.searchByHash(search_obj, function (err, data) {
+                if (err) {
+                    console.error(err);
+                    return;
+                }
+                schema.deleteTableStructure(data[0], function (err, result) {
+                    if (err)
+                        console.error('deleteTableError ' + err);
+                    return;
+
+                });
+            });
+
+        }
 
 
     }

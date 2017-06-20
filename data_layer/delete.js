@@ -4,6 +4,7 @@ const fs = require('fs')
     hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`),
     exec = require('child_process').exec
     delete_validator = require('../validation/deleteValidator'),
+    del = require('del'),
     schema = require('./schemaDescribe'),
     search = require('./search');
     hdb_properties.append(hdb_properties.get('settings_path'));
@@ -48,26 +49,27 @@ module.exports ={
                   callback("Item not found!");
                   return;
               }
+              const regex = /\//g;
+              let hash_value_stripped = String(delete_object.hash_value).replace(regex, '').substring(0, 4000);
 
-              var cmd = 'cd ' + hdb_properties.get('HDB_ROOT') +'/schema/' + delete_object.schema + '/' + delete_object.table+  ';';
-              cmd += 'rm ./__hdb_hash/*/'+delete_object.hash_value+'.hdb;'
-              cmd += 'rm ' + delete_object.hash_attribute + '/' + delete_object.hash_value + ' -r -f; ';
-
+              var commandArray = [];
+             // var cmd = 'cd ' + hdb_properties.get('HDB_ROOT') +'/schema/' + delete_object.schema + '/' + delete_object.table+  ';';
+              commandArray.push(`${hdb_properties.get('HDB_ROOT')}/schema/${delete_object.schema}/${delete_object.table}/__hdb_hash/*/${delete_object.hash_value}.hdb`);
+              commandArray.push(`${hdb_properties.get('HDB_ROOT')}/schema/${delete_object.schema}/${delete_object.table}/${delete_object.hash_attribute}/${hash_value_stripped}`);
               for(attr in data[0]){
-                  cmd += 'rm ' + attr + '/' + data[0][attr]  + '/' +delete_object.hash_value + ' -r -f; ';
+                  let attr_value_stripped = String(data[0][attr]).replace(regex, '').substring(0, 4000);
+                  commandArray.push(`${hdb_properties.get('HDB_ROOT')}/schema/${delete_object.schema}/${delete_object.table}/${attr}/${attr_value_stripped}/${delete_object.hash_value}.hdb`);
 
               }
-              exec(cmd, function (error, stdout, stderr) {
-                  if(stderr){
-                      console.log(stderr);
-                      console.error(error);
-                      callback('delete failed');
-                      return;
-                  }
 
+              del(commandArray, {force: true}).then(paths => {
                   callback(null, delete_object.hash_value + ' successfully deleted');
                   return;
+              }).catch((err)=>{
+                  callback(err);
               });
+
+
           });
 
 

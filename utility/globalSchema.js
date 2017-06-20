@@ -27,6 +27,11 @@ function setSchemaDataToGlobal(callback){
                             ]
 
                 },
+                    hdb_drop_schema:{
+                        hash_attribute:'id',
+                        name:'hdb_drop_schema',
+                        schema:'system'
+                    },
                     hdb_attribute:{
                         hash_attribute:'id',
                         name:'hdb_attribute',
@@ -35,7 +40,12 @@ function setSchemaDataToGlobal(callback){
                     hdb_schema:{
                         hash_attribute:'name',
                         name:'hdb_schema',
-                        schema:'system'
+                        schema:'system',
+                        attributes:
+                            [
+                                { attribute: 'name' },
+                                { attribute: 'createddate' }
+                            ]
                     },
                     hdb_user:{
                         hash_attribute:'id',

@@ -7,8 +7,10 @@ winston.configure({
     ]
 });
 
+var debug = false;
 
-if (cluster.isMaster) {
+
+if (cluster.isMaster && !debug) {
     console.log(`Master ${process.pid} is running`);
 
     // Fork workers.
