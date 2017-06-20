@@ -27,9 +27,9 @@ function evaluateSQL(sql, callback) {
 
 function processSQL(sql, callback){
     try {
-        console.time('ast');
+        //the LIKE operator causes the format of the where ast to go bonkers so we replace with something palatable and replace again on the otherside
+        sql = sql.replace(/ like /gi, ' || ');
         let ast = sqliteParser(sql);
-        console.timeEnd('ast');
         let sql_function = nullFunction;
         switch (ast.statement[0].variant) {
             case 'select':

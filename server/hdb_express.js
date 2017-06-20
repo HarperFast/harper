@@ -1,5 +1,5 @@
 const cluster = require('cluster');
-const numCPUs = 5;
+const numCPUs = 1;
 const winston = require('winston');
 winston.configure({
     transports: [
@@ -7,10 +7,7 @@ winston.configure({
     ]
 });
 
-var debug = false;
-
-
-if (cluster.isMaster && !debug) {
+if (cluster.isMaster) {
     console.log(`Master ${process.pid} is running`);
 
     // Fork workers.
@@ -33,7 +30,8 @@ if (cluster.isMaster && !debug) {
         sql = require('../sqlTranslator/index').evaluateSQL,
         csv = require('../data_layer/csvBulkLoad');
         schema = require('../data_layer/schema'),
-        delete_ = require('../data_layer/delete');
+        delete_ = require('../data_layer/delete'),
+        global_schema = require('../utility/globalSchema');
 
        hdb_properties.append(hdb_properties.get('settings_path'));
 
@@ -82,17 +80,20 @@ if (cluster.isMaster && !debug) {
             case 'search_by_value':
                 operation_function = search.searchByValue;
                 break;
+            case 'search_by_join':
+                operation_function = search.searchByJoin;
+                break;
             case 'sql':
                 operation_function = sql;
                 break;
             case 'csv_data_load':
                 operation_function = csv.csvDataLoad;
-                break
+                break;
             case 'csv_file_load':
                 operation_function = csv.csvFileLoad;
                 break;
             case 'csv_url_load':
-                operation_function = csv.csvDataLoad;
+                operation_function = csv.csvURLLoad;
                 break;
             case 'create_schema':
                 operation_function = schema.createSchema;
@@ -132,6 +133,14 @@ if (cluster.isMaster && !debug) {
     }
 
     app.listen(hdb_properties.get('HTTP_PORT'), function () {
-        console.log(`Express server running on ${hdb_properties.get('HTTP_PORT')}`)
+        console.log(`HarperDB Server running on ${hdb_properties.get('HTTP_PORT')}`);
+
+        global_schema.setSchemaDataToGlobal((err, data) => {
+            if (err) {
+                winston.log('error', err);
+                return;
+            }
+
+        });
     });
 }
