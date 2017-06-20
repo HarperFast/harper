@@ -1,5 +1,5 @@
 const cluster = require('cluster');
-const numCPUs = 5;
+const numCPUs = 1;
 const winston = require('winston');
 winston.configure({
     transports: [
@@ -7,7 +7,6 @@ winston.configure({
     ]
 });
 
-/*
 if (cluster.isMaster) {
     console.log(`Master ${process.pid} is running`);
 
@@ -19,7 +18,7 @@ if (cluster.isMaster) {
     cluster.on('exit', (worker, code, signal) => {
         console.log(`worker ${worker.process.pid} died`);
     });
-} else {*/
+} else {
     winston.log('In express' + process.cwd());
     const express = require('express'),
         PropertiesReader = require('properties-reader'),
@@ -81,17 +80,20 @@ if (cluster.isMaster) {
             case 'search_by_value':
                 operation_function = search.searchByValue;
                 break;
+            case 'search_by_join':
+                operation_function = search.searchByJoin;
+                break;
             case 'sql':
                 operation_function = sql;
                 break;
             case 'csv_data_load':
                 operation_function = csv.csvDataLoad;
-                break
+                break;
             case 'csv_file_load':
                 operation_function = csv.csvFileLoad;
                 break;
             case 'csv_url_load':
-                operation_function = csv.csvDataLoad;
+                operation_function = csv.csvURLLoad;
                 break;
             case 'create_schema':
                 operation_function = schema.createSchema;
@@ -141,4 +143,4 @@ if (cluster.isMaster) {
 
         });
     });
-//}
+}

@@ -62,7 +62,13 @@ function generateBasicSearchObject(statement){
 
     let table_info = global.hdb_schema[schema_table[0]][schema_table[1]];
 
-    search_object.condition = parseWhereClause(statement.where[0], table_info);
+    /*if(!where && !where[0]){
+        search_object.condition = {'=': [`${table_info.hash_attribute}`, '*']};
+    } else {
+        search_object.condition = parseWhereClause(statement.where[0], table_info);
+    }*/
+
+    search_object.conditions  = parseConditions(statement.where, table_info);
 
     return search_object;
 }
@@ -84,13 +90,14 @@ function generateAdvancedSearchObject(statement){
 
 function parseOrderby(order_by_clause){
     let order = [];
-    
-    order_by_clause.forEach((order_by)=>{
-        order.push({
-            attribute:order_by.expression ? order_by.expression.name : order_by.name,
-            direction: order_by.direction ? order_by.direction : 'asc'
+    if(order_by_clause) {
+        order_by_clause.forEach((order_by) => {
+            order.push({
+                attribute: order_by.expression ? order_by.expression.name : order_by.name,
+                direction: order_by.direction ? order_by.direction : 'asc'
+            });
         });
-    });
+    }
     
     return order;
 }
@@ -147,7 +154,7 @@ function parseConditions(where_clause, table_info){
     if(where_clause) {
         let left = where_clause[0];
 
-        while (left.type === 'expression' && left.right.type === 'expression') {
+        while (left.left.type === 'expression') {
             if (conditionTableMatch(left.right, table_info)) {
                 conditions.push(createConditionObject(left.operation, left.right));
             }
@@ -185,7 +192,7 @@ function createConditionObject(operation, condition){
 }
 
 function parseWhereClause(where) {
-//we had replaced LIKE with || before generating the AST, now we need to switch it back.
+    //we had replaced LIKE with || before generating the AST, now we need to switch it back.
     let operation = where.operation === '||' ? 'like' : where.operation;
     let condition_object = {};
     condition_object[operation] = [];
