@@ -1,5 +1,5 @@
 const cluster = require('cluster');
-const numCPUs = 1;
+const numCPUs = 4;
 const winston = require('winston');
 winston.configure({
     transports: [
@@ -115,12 +115,10 @@ if (cluster.isMaster) {
                 break;
             case 'describe_all':
                 operation_function = schema.describeAll;
+                break;
             case 'delete':
                 operation_function = delete_.delete;
                 break;
-
-
-
             default:
                 break;
         }
@@ -138,7 +136,6 @@ if (cluster.isMaster) {
         global_schema.setSchemaDataToGlobal((err, data) => {
             if (err) {
                 winston.log('error', err);
-                return;
             }
 
         });

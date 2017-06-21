@@ -40,22 +40,26 @@ function searchByHash(search_object, callback){
     let hash_stripped = String(search_object.hash_value).replace(slash_regex, '').substring(0, 4000);
     let table_path = `${base_path}${search_object.schema}/${search_object.table}/`;
 
-    evaluateTableAttributes(search_object.get_attributes, search_object, (error, get_attributes)=> {
+    evaluateTableAttributes(search_object.get_attributes, search_object, (error, attributes)=> {
         if (error) {
             callback(error);
             return;
         }
 
+        let table_info = global.hdb_schema[search_object.schema][search_object.table];
+
+        attributes = removeTableFromAttributeAlias(attributes, search_object.table);
+
         async.waterfall([
-            getAttributeFiles.bind(null, get_attributes, table_path, [hash_stripped]),
-            consolidateData.bind(null, search_object.hash_attribute)
+            getAttributeFiles.bind(null, attributes, table_path, [hash_stripped]),
+            consolidateData.bind(null, table_info.hash_attribute)
         ], (error, data) => {
             if (error) {
                 callback(error);
                 return;
             }
 
-            callback(null, data);
+            callback(null, data[0]);
         });
     });
 }
@@ -68,15 +72,17 @@ function searchByHashes(search_object, callback){
     }
 
     let table_path = `${base_path}${search_object.schema}/${search_object.table}/`;
-    evaluateTableAttributes(search_object.get_attributes, search_object, (error, get_attributes)=>{
+    evaluateTableAttributes(search_object.get_attributes, search_object, (error, attributes)=>{
         if(error){
             callback(error);
             return;
         }
 
+        let table_info = global.hdb_schema[search_object.schema][search_object.table];
+        attributes = removeTableFromAttributeAlias(attributes, search_object.table);
         async.waterfall([
-            getAttributeFiles.bind(null, get_attributes, table_path, search_object.hash_values),
-            consolidateData.bind(null, search_object.hash_attribute)
+            getAttributeFiles.bind(null, attributes, table_path, search_object.hash_values),
+            consolidateData.bind(null, table_info.hash_attribute)
         ], (error, data)=>{
             if(error){
                 callback(error);
@@ -87,6 +93,14 @@ function searchByHashes(search_object, callback){
         });
     });
 
+}
+
+function removeTableFromAttributeAlias(attributes, table_name){
+    attributes.forEach((attribute)=>{
+        attribute.alias = attribute.alias.replace(`${table_name}.`, '');
+    });
+
+    return attributes;
 }
 
 function searchByValue (search_object, callback) {
