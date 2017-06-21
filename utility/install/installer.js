@@ -1,5 +1,6 @@
 const prompt = require('prompt'),
     spawn = require('child_process').spawn,
+    path = require('path'),
     password = require('./../password'),
     mount = require('./../mount_hdb'),
     fs = require('fs'),
@@ -216,7 +217,7 @@ function wizard(callback) {
     };
 
 
-    console.log(colors.magenta('' + fs.readFileSync(`${process.cwd()}/../utility/install/ascii_logo.txt`)));
+    console.log(colors.magenta('' + fs.readFileSync(path.join(__dirname,'./ascii_logo.txt'))));
     console.log(colors.magenta('                    Installer'));
 
 

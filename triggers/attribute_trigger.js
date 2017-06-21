@@ -12,8 +12,13 @@ const fs = require('fs')
     , util = require('util')
     , schema = require('../data_layer/schema')
     , insert = require('../data_layer/insert.js')
-    , search = require('../data_layer/search.js');
-
+    , search = require('../data_layer/search.js')
+    , winston = require('winston');
+winston.configure({
+    transports: [
+        new (winston.transports.File)({filename: 'hdb_triggers.log'})
+    ]
+});
 
 
 module.exports = {
@@ -33,7 +38,7 @@ function initialize(){
     search_obj.get_attributes = ['hash_attribute', 'id', 'name', 'schema'];
     search.searchByValue(search_obj, function (err, tables) {
         if (err) {
-            console.error(err);
+            winston.error(err);
             //initialize();
             return;
         }
@@ -64,7 +69,7 @@ function spinUpTableTrigger(table){
     var terminal = spawn('bash');
 
     terminal.stderr.on('data', function (data) {
-        console.error('stderr: ' + data);
+        winston.error('stderr: ' + data);
         //Here is where the error output goes
     });
 
@@ -76,9 +81,9 @@ function spinUpTableTrigger(table){
 
         var events = eventData.split('\n');
         for (var item in events) {
-            console.log(events[item]);
+            winston.log(events[item]);
             if (events[item]){
-                console.log(data);
+                winston.log(data);
                 var tokens = String(events[item]).split(' ');
                 var path = tokens[0];
                 var event = tokens[1];
@@ -90,10 +95,10 @@ function spinUpTableTrigger(table){
                 create_attribute_object.schema = table.schema;
                 schema.createAttribute(create_attribute_object, function(err, data){
                     if(err){
-                        console.error(err);
+                        winston.error(err);
                         //initialize();
                     }
-                    console.log(data);
+                    winston.log(data);
                 });
             }
 
@@ -117,10 +122,10 @@ function spinUpTableTrigger(table){
 
     // change this to monitor __hdb_hash instead then can avoid picking up this folder.
 
-    terminal.stdin.write(util.format('inotifywait -m  -e create  %s ', hdb_properties.get('HDB_ROOT') + '/schema/' +table.schema + '/' + table.name));
+    terminal.stdin.write(util.format('inotifywait -o hdb_inotify -m  -e create  %s ', hdb_properties.get('HDB_ROOT') + '/schema/' +table.schema + '/' + table.name));
     terminal.stdin.end();
 
-    console.log("trigger fired:" +'inotifywait -m  -e create  %s ', hdb_properties.get('HDB_ROOT') + '/schema/' +table.schema + '/' + table.name );
+    winston.log("trigger fired:" +'inotifywait -o hdb_inotify -m  -e create  %s ', hdb_properties.get('HDB_ROOT') + '/schema/' +table.schema + '/' + table.name );
 
 
 }

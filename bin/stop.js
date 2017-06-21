@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 const spawn = require('child_process').spawn,
 
     winston = require('winston');
@@ -16,8 +17,7 @@ function stop(){
     terminal.stdout.on('data', function(data){
         winston.log('info', `Express Server stoped`);
     });
-
-    terminal.stdin.write(`../node_modules/pm2/bin/pm2 stop hdb_express; ../node_modules/pm2/bin/pm2 stop hdb_schema_triggers; `);
+    terminal.stdin.write(`kill $(ps -ef | grep [h]db_ | awk '{print $2}') && kill $(ps -ef | grep [i]notify | awk '{print $2}')`);
     terminal.stdin.end();
 
 

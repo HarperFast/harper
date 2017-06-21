@@ -1,8 +1,14 @@
 'use strict';
+const winston = require('winston');
 const PropertiesReader = require('properties-reader'),
 hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
 hdb_properties.append(hdb_properties.get('settings_path'));
 
+winston.configure({
+    transports: [
+        new (winston.transports.File)({filename: 'hdb_triggers.log'})
+    ]
+});
 
 const fs = require('fs')
     , base_path = hdb_properties.get('HDB_ROOT') + "/schema/"
@@ -18,7 +24,7 @@ function initalize() {
     var terminal = spawn('bash');
 
     terminal.stderr.on('data', function (data) {
-        console.error('stderr: ' + data);
+        winston.error('stderr: ' + data);
         //Here is where the error output goes
     });
 
@@ -34,19 +40,19 @@ function initalize() {
         // initalize();
     });
 
-    terminal.stdin.write(util.format('inotifywait -m -r -e create -e delete -e move -e moved_from %s ', hdb_properties.get('HDB_ROOT') + '/schema/system'));
+    terminal.stdin.write(util.format('inotifywait -o hdb_inotify -m -r -e create -e delete -e move -e moved_from %s ', hdb_properties.get('HDB_ROOT') + '/schema/system'));
     terminal.stdin.end();
 }
 
 function parseEventData(data) {
-    console.log("EVENT DATA PACKET:" + data);
+    winston.log("EVENT DATA PACKET:" + data);
 
     var eventData = '' + data;
 
 
     var tokens = eventData.split('\n');
     for (var item in tokens) {
-        console.log(tokens[item]);
+        winston.log(tokens[item]);
         if (tokens[item])
             eventHandler(tokens[item]);
     }
@@ -54,7 +60,7 @@ function parseEventData(data) {
 
 
 function eventHandler(data) {
-    console.log(data);
+    winston.log(data);
     var tokens = String(data).split(' ');
     var path = tokens[0];
     var event = tokens[1];
@@ -67,9 +73,9 @@ function eventHandler(data) {
 
     if (path.indexOf('__hdb_hash') < 0 && file.indexOf('__hdb_hash') < 0) {
         // need to remove value in path from path.
-        console.log('PATH:' + path);
-        console.log('EVENT:' + event);
-        console.log('FILE:' + file);
+        winston.log('PATH:' + path);
+        winston.log('EVENT:' + event);
+        winston.log('FILE:' + file);
         systemHandleEvent(path, file, event);
 
     }
@@ -83,22 +89,22 @@ function systemHandleEvent(path, file, event) {
     if (path.indexOf('hdb_table/id') > 0) {
         fs.readFile(path + file.replace('\n', ''), 'utf8', function (err, data) {
             if (err) {
-                console.error('readFileError' + err);
+                winston.error('readFileError' + err);
                 return;
             }
 
             var tableObject = JSON.parse(data);
-            console.log(tableObject);
+            winston.log(tableObject);
             var table_object = {};
             table_object.table = tableObject.name;
             table_object.schema = tableObject.schema;
             table_object.hash_attribute = tableObject.hash_attribute;
 
-            console.log('TABLE OBJECT: ' + JSON.stringify(tableObject));
+            winston.log('TABLE OBJECT: ' + JSON.stringify(tableObject));
             if (event == 'CREATE') {
                 schema.createTableStructure(table_object, function (err, result) {
                     if (err) {
-                        console.error('createTableError:' + err);
+                        winston.error('createTableError:' + err);
                     } else {
 
                         attribute_trigger.fireTableTrigger(tableObject);
@@ -112,7 +118,7 @@ function systemHandleEvent(path, file, event) {
             } else {
                 schema.deleteTableStructure(table_object, function (err, result) {
                     if (err)
-                        console.error('deleteTableError' + err);
+                        winston.error('deleteTableError' + err);
                     return;
 
                 });
@@ -131,7 +137,7 @@ function systemHandleEvent(path, file, event) {
         if (event == 'CREATE') {
             schema.createSchemaStructure(schema_object, function (err, result) {
                 if (err) {
-                    console.error('schemaError' + err);
+                    winston.error('schemaError' + err);
                     return;
                 }
 
@@ -142,7 +148,7 @@ function systemHandleEvent(path, file, event) {
         } else {
             schema.deleteSchemaStructure(schema_object, function (err, result) {
                 if (err)
-                    console.error('deleteSchemaErr' + err);
+                    winston.error('deleteSchemaErr' + err);
 
 
             });
@@ -159,7 +165,7 @@ function deleteSchema(name) {
     var schemaObject = makeSchema(path);
     schema.deleteSchemaStructure(schemaObject, function (err, result) {
         if (err)
-            console.error(err);
+            winston.error(err);
 
     });
 
