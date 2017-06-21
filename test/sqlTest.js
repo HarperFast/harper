@@ -1,13 +1,15 @@
 const sql_trans = require('../sqlTranslator/index');
 
-//let sql = "INSERT INTO dev.person (id, first_name, dob) VALUES(1, 'Kyle', '09/24/1973'), (2, 'Zax', '03/12/1983')";
+//let sql = {sql:"INSERT INTO dev.person (id, dog_name) VALUES(1, 'Penny')"};
 
-let sql = {sql:"select id from dev.breed"};
+//let sql = {sql:"select name, section from dev.breed where id = 1"};
+//let sql = {sql:"update dev.breed set section = 'stuff' where id = 2"};
+let sql = {sql:"DELETE FROM dev.dog WHERE adorable = 'true'"};
 console.time('sql');
 sql_trans.evaluateSQL(sql, (err, data) => {
     console.timeEnd('sql');
     if(err){
-        console.error(err.message);
+        console.error(err);
     } else {
         console.log(data);
         console.log(data.length);
