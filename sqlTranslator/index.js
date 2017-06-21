@@ -2,7 +2,8 @@ const sqliteParser = require('sqlite-parser'),
     insert = require('../data_layer/insert'),
     global_schema = require('../utility/globalSchema'),
     select_translator = require('./selectTranslator').convertSelect,
-    update_translator = require('./updateTranslator').convertUpdate;
+    update_translator = require('./updateTranslator').convertUpdate,
+    delete_translator = require('./deleteTranslator').convertDelete;
 
 module.exports = {
     evaluateSQL: evaluateSQL
@@ -43,6 +44,9 @@ function processSQL(sql, callback){
             case 'update':
                 sql_function = update_translator;
                 break;
+            case 'delete':
+                sql_function = delete_translator;
+                break;
             default:
                 break;
         }
@@ -61,7 +65,7 @@ function processSQL(sql, callback){
 }
 
 function nullFunction(sql, callback) {
-    callback();
+    callback('unknown sql statement');
     console.log(sql);
 }
 

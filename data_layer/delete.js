@@ -3,6 +3,7 @@ const validate = require('validate.js'),
     hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`),
     delete_validator = require('../validation/deleteValidator'),
     bulk_delete_validator = require('../validation/bulkDeleteValidator'),
+    conditional_delete_validator = require('../validation/conditionalDeleteValidator'),
     search = require('./search');
     hdb_properties.append(hdb_properties.get('settings_path')),
     async = require('async'),
@@ -15,7 +16,8 @@ const base_path = hdb_properties.get('HDB_ROOT') + "/schema/";
 
 module.exports ={
   delete: deleteRecord,
-    bulkDelete:bulkDelete
+    bulkDelete:bulkDelete,
+    conditionalDelete:conditionalDelete
 };
 
 function deleteRecord(delete_object, callback){
@@ -80,6 +82,40 @@ function bulkDelete(delete_object, callback){
 
         callback(null, 'records successfully deleted');
     });
+}
+
+function conditionalDelete(delete_object, callback){
+    let validation = conditional_delete_validator(delete_object);
+    if(validation){
+        callback(validation);
+        return;
+    }
+
+    async.waterfall([
+        global_schema.getTableSchema.bind(null, delete_object.schema, delete_object.table),
+        (table_info, callback)=>{
+            callback(null, delete_object.conditions, table_info);
+        },
+        search.multiConditionSearch,
+        (ids, callback)=>{
+            let delete_wrapper = {
+                schema: delete_object.schema,
+                table: delete_object.table,
+                hash_values: ids
+            };
+
+            callback(null, delete_wrapper);
+        },
+        bulkDelete
+    ], (err, data)=>{
+        if(err){
+            callback(err);
+            return;
+        }
+
+        callback(null, 'records successfully deleted');
+    });
+
 }
 
 function deleteRecords(delete_object, records, callback){

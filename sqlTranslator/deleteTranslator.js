@@ -8,19 +8,14 @@ module.exports = {
 function convertDelete(statement, callback){
     try{
         let delete_wrapper = {};
-        let schema_table = statement.into.name.split('.');
-
-        if(schema_table.length !== 2){
-            callback(`invalid table ${statement.into.name}`);
-            return;
-        }
+        let schema_table = statement.from.name.split('.');
 
         delete_wrapper.schema = schema_table[0];
         delete_wrapper.table = schema_table[1];
 
         delete_wrapper.conditions = condition_parser.parseConditions(statement.where);
 
-        deleter.delete(delete_wrapper, (err, results)=>{
+        deleter.conditionalDelete(delete_wrapper, (err, results)=>{
             if(err){
                 callback(err);
                 return;

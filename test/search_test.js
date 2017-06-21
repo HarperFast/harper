@@ -20,13 +20,13 @@ search.searchByValue(search_obj, function (err, data) {
     console.log(data);
     return;
 });*/
-/*
+
 var search_obj = {};
 search_obj.schema = 'dev';
-search_obj.table = 'person';
+search_obj.table = 'breed';
 search_obj.hash_attribute = 'id';
-search_obj.hash_values = ['1', '465', '343', '436', '765'];
-search_obj.get_attributes = ['id', 'first_name', 'last_name' ];
+search_obj.hash_values = ['2', '3', '4', '5', '6'];
+search_obj.get_attributes = ['*'];
 
 console.time('searchByHash');
 search.searchByHashes(search_obj, function (err, data) {
@@ -39,8 +39,8 @@ search.searchByHashes(search_obj, function (err, data) {
     console.timeEnd('searchByHash');
     console.log(data);
     return;
-});*/
-
+});
+/*
 let search_obj = {"schema":"dog","table":"tags","hash_attribute":"id","hash_value":"104071","get_attributes":[]}
 
 console.time('searchByHash');
@@ -54,7 +54,7 @@ search.searchByHash(search_obj, function (err, data) {
     console.timeEnd('searchByHash');
     console.log(data);
     return;
-});
+});*/
 
 
 
