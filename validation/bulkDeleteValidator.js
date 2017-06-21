@@ -12,9 +12,8 @@ const constraints = {
 
     }
     ,
-    hash_value :{
+    hash_values :{
         presence : true,
-
     }
 };
 module.exports = function(delete_object) {

@@ -1,4 +1,5 @@
-const schema = require('../data_layer/schemaDescribe');
+const schema = require('../data_layer/schemaDescribe'),
+    async = require('async');
 
 module.exports = {
     setSchemaDataToGlobal: setSchemaDataToGlobal,
@@ -60,23 +61,33 @@ function setSchemaDataToGlobal(callback){
 }
 
 function getTableSchema(schema_name, table_name, callback){
-    if(!global.hdb_schema[schema_name] || !global.hdb_schema[schema_name][table_name]){
-        schema.describeAll((err, schema_data)=> {
-            if (err) {
-                callback(err);
-                return;
-            }
-
-            global.hdb_schema = schema_data;
-
+    async.during(
+        (caller)=>{
+            return caller(null, !global.hdb_schema);
+        },
+        setSchemaDataToGlobal,
+        (err)=>{
             if(!global.hdb_schema[schema_name] || !global.hdb_schema[schema_name][table_name]){
-                callback(`table ${schema_name}.${table_name} does not exist`);
+                schema.describeAll((err, schema_data)=> {
+                    if (err) {
+                        callback(err);
+                        return;
+                    }
+
+                    global.hdb_schema = schema_data;
+
+                    if(!global.hdb_schema[schema_name] || !global.hdb_schema[schema_name][table_name]){
+                        callback(`table ${schema_name}.${table_name} does not exist`);
+                    } else {
+                        callback(null, global.hdb_schema[schema_name][table_name]);
+                    }
+                });
             } else {
                 callback(null, global.hdb_schema[schema_name][table_name]);
             }
-        });
-    } else {
-        callback(null, global.hdb_schema[schema_name][table_name]);
-    }
+        }
+    );
+
+
 }
 

@@ -42,6 +42,7 @@ function processSQL(sql, callback){
                 break;
             case 'update':
                 sql_function = update_translator;
+                break;
             default:
                 break;
         }
@@ -78,7 +79,6 @@ function convertInsert(statement, callback) {
     });
 
     insert_object.records = createDataObjects(columns, statement.result);
-    insert_object.hash_attribute = global.hdb_schema[schema_table[0]][schema_table[1]].hash_attribute;
 
     insert.insert(insert_object, (err, data) => {
         if (err) {
