@@ -1,5 +1,5 @@
 const cluster = require('cluster');
-const numCPUs = 4;
+const numCPUs = 1;
 const winston = require('winston');
 winston.configure({
     transports: [
@@ -25,7 +25,7 @@ if (cluster.isMaster) {
         hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`),
         app = express(),
         bodyParser = require('body-parser'),
-        write = require('../data_layer/insert').insert,
+        write = require('../data_layer/insert'),
         search = require('../data_layer/search'),
         sql = require('../sqlTranslator/index').evaluateSQL,
         csv = require('../data_layer/csvBulkLoad');
@@ -68,8 +68,10 @@ if (cluster.isMaster) {
         let operation_function = nullOperation;
         switch (json.operation) {
             case 'insert':
+                operation_function = write.insert;
+                break;
             case 'update':
-                operation_function = write;
+                operation_function = write.update;
                 break;
             case 'search_by_hash':
                 operation_function = search.searchByHash;

@@ -84,6 +84,10 @@ function insertData(insert_object, callback){
 }
 
 function updateData(update_object, callback){
+    if(update_object.operation !== 'update'){
+        callback('invalid operation, must be update');
+    }
+
     async.waterfall([
         validation.bind(null, update_object),
         (table_schema, caller)=>{
@@ -150,7 +154,7 @@ function compareUpdatesToExistingRecords(update_object, hash_attribute, existing
             let update = {};
 
             for (let attr in update_record) {
-                if (existing_record[attr] !== update_record[attr]) {
+                if (existing_record[attr] != update_record[attr]) {
                     update[attr] = update_record[attr];
 
                     let value_stripped = String(existing_record[attr]).replace(regex, '').substring(0, 4000);
@@ -166,7 +170,7 @@ function compareUpdatesToExistingRecords(update_object, hash_attribute, existing
 
             if (Object.keys(update).length > 0) {
                 update[hash_attribute] = existing_record[hash_attribute];
-                update_objects.push()
+                update_objects.push(update);
             }
         });
 
@@ -216,6 +220,10 @@ function checkAttributeSchema(insert_object, callerback) {
         let link_objects = [];
         hash_paths[`${base_path}__hdb_hash/${hash_attribute}/${record[hash_attribute]}.hdb`] = '';
         for (let property in record) {
+            if(record[property] === null || record[property] === undefined){
+                return;
+            }
+
             let value_stripped = String(record[property]).replace(regex, '').substring(0, 4000);
             let attribute_file_name = record[hash_attribute] + '.hdb';
             let attribute_path = base_path + property + '/' + value_stripped;
@@ -225,14 +233,14 @@ function checkAttributeSchema(insert_object, callerback) {
                 file_name: `${base_path}__hdb_hash/${property}/${attribute_file_name}`,
                 value: record[property]
             });
-            if (property !== hash_attribute && record[property]) {
+            if (property !== hash_attribute) {
                 folders[attribute_path] = "";
 
                 link_objects.push({
                     link: `../../__hdb_hash/${property}/${attribute_file_name}`,
                     file_name: `${attribute_path}/${attribute_file_name}`
                 });
-            } else if (property === hash_attribute) {
+            } else {
                 hash_folders[attribute_path] = "";
                 attribute_objects.push({
                     file_name: `${attribute_path}/${record[hash_attribute]}-${epoch}.hdb`,
@@ -263,7 +271,7 @@ function checkAttributeSchema(insert_object, callerback) {
 
 function checkRecordsExist(hash_paths, callback) {
     async.map(hash_paths, function(hash_path, inner_callback) {
-        fs.open(hash_path, 'wx', (err) => {
+        fs.access(hash_path, (err) => {
             if (err && err.code === 'ENOENT') {
                 inner_callback();
             } else {
