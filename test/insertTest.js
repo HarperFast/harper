@@ -4,7 +4,7 @@ var insert = require('../data_layer/insert.js'),
     first_names = require('./data/firstNames'),
     last_names = require('./data/lastNames');
 
-const record_size  = 1;
+/*const record_size  = 1;
 const schema = 'dev';
 
 var objects = [];
@@ -25,10 +25,27 @@ var insert_object = {
     table:'person',
     hash_attribute: 'id',
     records: objects
+};*/
+
+let insert_object = {
+    "operation":"update",
+    "schema" :  "dev",
+    "table":"dog",
+    "records": [
+    {
+        "id" : 1,
+        "dog_name" : "Penny",
+        "owner_name": "Kyle",
+        "breed_id":154,
+        "age":5,
+        "weight_lbs":35,
+        "adorable":true
+    }
+]
 };
 
 console.time('insertTest');
-insert.insert(insert_object, function(err, data){
+insert.update(insert_object, function(err, data){
     if(err) {
         console.error(err);
     } else {

@@ -13,6 +13,7 @@
     "body-parser": "^1.17.1",
     "chunk": "0.0.2",
     "csvtojson": "^1.1.5",
+    "deep-diff": "^0.3.8",
     "express": "^4.15.2",
     "getos": "^3.0.1",
     "globby": "^6.1.0",
