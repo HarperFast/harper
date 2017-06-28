@@ -1,5 +1,6 @@
 const cluster = require('cluster');
 const numCPUs = 4;
+const DEBUG = true;
 const winston = require('winston');
 winston.configure({
     transports: [
@@ -7,7 +8,8 @@ winston.configure({
     ]
 });
 
-if (cluster.isMaster) {
+
+if (cluster.isMaster && !DEBUG) {
     console.log(`Master ${process.pid} is running`);
 
     // Fork workers.
@@ -58,6 +60,7 @@ if (cluster.isMaster) {
                     res.status(200).json(data);
                 });
             }catch(e){
+                console.log(e);
                 res.status(500).json(e);
             }
         });

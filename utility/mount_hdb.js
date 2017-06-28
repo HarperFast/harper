@@ -23,6 +23,8 @@ module.exports = function (hdb_path, callback){
         makeDirectory(path.join(hdb_path, "staging"));
         makeDirectory(path.join(hdb_path, "staging/scripts"));
         makeDirectory(path.join(hdb_path, "staging/symlink_eraser"));
+        makeDirectory(path.join(hdb_path, "staging/schema_op_queue"));
+        makeDirectory(path.join(hdb_path, "staging/schema_op_log"));
         makeDirectory(path.join(hdb_path, "backup"));
         makeDirectory(path.join(hdb_path, "keys"));
         makeDirectory(path.join(hdb_path, "log"));
@@ -34,7 +36,6 @@ module.exports = function (hdb_path, callback){
         makeDirectory(path.join(hdb_path, "schema/system/hdb_attribute"));
         makeDirectory(path.join(hdb_path, "schema/system/hdb_schema"));
         makeDirectory(path.join(hdb_path, "schema/system/hdb_table"));
-        makeDirectory(path.join(hdb_path, "schema/system/hdb_drop_schema"));
         makeDirectory(path.join(hdb_path, "schema/system/hdb_table/schema"));
         makeDirectory(path.join(hdb_path, "schema/system/hdb_table/name"));
         makeDirectory(path.join(hdb_path, "schema/system/hdb_table/hash_attribute"));
