@@ -12,10 +12,9 @@ const constraints = {
 
     }
     ,
-    hash_value :{
+    conditions :{
         presence : true,
-
-    }
+    },
 };
 module.exports = function(delete_object) {
     return validate(delete_object, constraints);

@@ -1,7 +1,9 @@
 const sqliteParser = require('sqlite-parser'),
     insert = require('../data_layer/insert'),
     global_schema = require('../utility/globalSchema'),
-    select_translator = require('./selectTranslator').convertSelect;
+    select_translator = require('./selectTranslator').convertSelect,
+    update_translator = require('./updateTranslator').convertUpdate,
+    delete_translator = require('./deleteTranslator').convertDelete;
 
 module.exports = {
     evaluateSQL: evaluateSQL
@@ -39,6 +41,12 @@ function processSQL(sql, callback){
                 //TODO add validator for insert, need to make sure columns are specified
                 sql_function = convertInsert;
                 break;
+            case 'update':
+                sql_function = update_translator;
+                break;
+            case 'delete':
+                sql_function = delete_translator;
+                break;
             default:
                 break;
         }
@@ -57,7 +65,7 @@ function processSQL(sql, callback){
 }
 
 function nullFunction(sql, callback) {
-    callback();
+    callback('unknown sql statement');
     console.log(sql);
 }
 
@@ -75,7 +83,6 @@ function convertInsert(statement, callback) {
     });
 
     insert_object.records = createDataObjects(columns, statement.result);
-    insert_object.hash_attribute = global.hdb_schema[schema_table[0]][schema_table[1]].hash_attribute;
 
     insert.insert(insert_object, (err, data) => {
         if (err) {
@@ -85,15 +92,6 @@ function convertInsert(statement, callback) {
 
         callback(null, data);
     });
-}
-
-function convertUpdate(statement, callback) {
-    let update_object = {};
-    let schema_table = statement.into.name.split('.');
-    update_object.schema = schema_table[0];
-    update_object.table = schema_table[1];
-
-
 }
 
 function createDataObjects(columns, expressions) {

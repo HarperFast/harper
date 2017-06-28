@@ -19,7 +19,7 @@ const regex = /\//g;
 
 module.exports = {
     insert: function (insert_object, callback) {
-        global_schema.setSchemaDataToGlobal((err, data) => {
+        global_schema.getTableSchema(insert_object.schema, insert_object.table, (err, table_schema) => {
             if (err) {
                 callback(err);
                 return;
@@ -31,15 +31,9 @@ module.exports = {
                 return;
             }
 
-            //check if schema / table directories exist
-            if(!global.hdb_schema[insert_object.schema] || !global.hdb_schema[insert_object.schema][insert_object.table]){
-                callback('Table: ' + insert_object.schema + '.' + insert_object.table + ' does not exist');
-                return;
-            }
             //TODO verify hash_attribute is correct for this table
             // create hashpaths
             let hash_paths = [];
-            let table_schema = global.hdb_schema[insert_object.schema][insert_object.table];
             let hash_attribute = table_schema.hash_attribute;
             let base_path = hdb_path + '/' + insert_object.schema + '/' + insert_object.table + '/';
             let hashes = [];

@@ -37,11 +37,6 @@ let search_by_hashes_constraints = {
         format: "[\\w\\-\\_]+"
 
     },
-    hash_attribute: {
-        presence: true,
-        format: "[\\w\\-\\_]+"
-
-    },
     hash_values: {
         presence: true
     },
