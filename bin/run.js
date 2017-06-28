@@ -71,7 +71,7 @@ function kickOffExpress(callback){
     callback();
 }
 
-function kickOffTriggers(){
+function kickOffTriggers(callback){
     var child = fork(path.join(__dirname,'../triggers/hdb_schema_triggers.js'),{
         detached: true,
         stdio: 'ignore'
