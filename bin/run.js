@@ -1,12 +1,17 @@
+#!/usr/bin/env node
+"use strict";
 const fs = require('fs'),
-    spawn = require('child_process').spawn,
-    util = require('util')
+    util = require('util'),
+    path = require('path'),
     winston = require('winston'),
     install = require('../utility/install/installer.js'),
     colors = require("colors/safe"),
-    PropertiesReader = require('properties-reader');
+    PropertiesReader = require('properties-reader'),
+    async = require('async');
+
 var hdb_boot_properties = null,
     hdb_properties = null;
+var fork = require('child_process').fork;
 
 winston.configure({
     transports: [
@@ -19,7 +24,6 @@ winston.configure({
 
 run();
 
-
 function run() {
     try {
         hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
@@ -27,7 +31,7 @@ function run() {
         // doesn't do a null check.
         hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
         completeRun();
-        return;
+
     }catch(e){
         install.install(function (err, result) {
             if (err) {
@@ -38,77 +42,50 @@ function run() {
             hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
             hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
             completeRun();
-            return;
+
 
         });
     }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
 }
 
 function completeRun() {
-
-//    kickOffTriggers();
-    kickOffExpress();
-
-
-
-
-
+    async.waterfall([
+        kickOffTriggers,
+        kickOffExpress,
+    ], (error, data) => {
+        exitInstall();
+    });
 }
 
-function kickOffExpress(){
+function kickOffExpress(callback){
 
-    var terminal2 = spawn('bash');
-    terminal2.stderr.on('data', function (data) {
-        winston.log('error',`Express server failed to run: ${data}`);
-        //Here is where the error output goes
+    var child = fork(path.join(__dirname,'../server/hdb_express.js'),{
+      detached: true,
+      stdio: 'ignore'
     });
 
-    terminal2.stdout.on('data', function(data){
-        winston.log('info', `Express Server started`);
-    });
-
-    terminal2.stdin.write(`../node_modules/pm2/bin/pm2 start ../utility/devops/ecosystem.config.js`);
-    terminal2.stdin.end();
-
-    console.log(colors.magenta('' + fs.readFileSync(`${process.cwd()}/../utility/install/ascii_logo.txt`)));
+    child.unref();
+    console.log(colors.magenta('' + fs.readFileSync(path.join(__dirname,'../utility/install/ascii_logo.txt'))));
     console.log(colors.magenta('|------------- HarperDB succesfully started ------------|'));
-
+    callback();
 }
 
-function kickOffTriggers(){
-
-    //spin up schema trigger
-    var terminal = spawn('bash');
-    terminal.stderr.on('data', function (data) {
-        if(data.indexOf('Beware: since -r was given') < 0){
-            winston.log('error',`Schema trigger failed to run: ${data}`);
-            kickOffTriggers();
-        }else{
-            winston.log('info',`Schema trigger started: ${data}`);
-        }
-
-
+function kickOffTriggers(callback){
+    var child = fork(path.join(__dirname,'../triggers/hdb_schema_triggers.js'),{
+        detached: true,
+        stdio: 'ignore'
     });
-    terminal.stdin.write(`../node_modules/pm2/bin/pm2 start ../triggers/hdb_schema_triggers.js`);
-    terminal.stdin.end();
+
+    child.unref;
+
+    callback();
 }
 
 
-
+function exitInstall(){
+    process.exit(0);
+}
 
 //check lk exists and is valid.
 //turn on express sever

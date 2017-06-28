@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "",
   "main": "run.js",
+  "bin":"./bin/run.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
@@ -39,5 +40,10 @@
     "uuid": "^3.0.1",
     "validate.js": "^0.11.1",
     "winston": "^2.3.1"
-  }
+  },
+"pkg":{
+	"scripts":["./server/hdb_express.js","./data_layer/*.js","./triggers/**","./utility/*.js","./sqlTranslator/*.js","./lib/**/*.js","./validation/*.js"],
+	"assets":["./utility/install/*.txt"]
+
+}
 }
