@@ -123,7 +123,7 @@ function checkRegister(callback) {
 
     if (wizard_result.HDB_REGISTER) {
         register = require('../registrationHandler'),
-            register(prompt, function (err, result) {
+            register.register(prompt, function (err, result) {
                 if (err) {
                     callback(err);
                     returnl
