@@ -295,12 +295,12 @@ function createTableStructure (create_table_object, callback) {
 
             fs.mkdir(hdb_properties.get('HDB_ROOT') + '/schema/' + create_table_object.schema + '/' + create_table_object.table, function (err, data) {
                 if (err) {
-                    if (err.errno == -2) {
+                    if (err.errno === -2) {
                         callback("schema does not exist", null);
                         return;
                     }
 
-                    if (err.errno == -17) {
+                    if (err.errno === -17) {
                         callback("table already exists", null);
                         return;
 
@@ -311,8 +311,6 @@ function createTableStructure (create_table_object, callback) {
                 }
 
                 callback(null, `table ${create_table_object.schema}.${create_table_object.table} successfully created.`);
-                return;
-
             });
 
 
@@ -360,7 +358,7 @@ function deleteTableStrucutre (drop_table_object, callback) {
                 "schema": "system",
                 "hash_attribute": "id",
                 "hash_value": delete_tb.id
-            }
+            };
 
             delete_.delete(delete_table_object, function (err, data) {
                 if(err){
@@ -385,9 +383,6 @@ function deleteTableStrucutre (drop_table_object, callback) {
                         }
 
                         callback(null,`successfully deleted ${table}`);
-                        return;
-
-
                     });
 
 
@@ -495,7 +490,7 @@ function deleteAttributeStructure(attribute_drop_object, callback){
         }
 
         if(attributes && attributes.length > 0){
-            let delete_table_object = {"table": "hdb_attribute", "schema": "system", "hash_values": []}
+            let delete_table_object = {"table": "hdb_attribute", "schema": "system", "hash_values": []};
             for(att in attributes){
                 if((attribute_drop_object.attribute && attribute_drop_object.attribute == attributes[att].attribute)
                     || !attribute_drop_object.attribute ){
@@ -553,7 +548,6 @@ function dropAttribute (drop_attribute_object, callback){
             return;
         }
         addAndRemoveFromQueue(drop_attribute_object, sucess, callback);
-        return;
     });
 
 }
