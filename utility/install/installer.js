@@ -50,7 +50,6 @@ function run_install(callback) {
                wizard,
                mount,
                createSettingsFile,
-            //   installInotify,
                checkRegister
 
            ], function (err, result) {
@@ -66,38 +65,6 @@ function run_install(callback) {
 }
 
 
-function installInotify(callback) {
-    var getos = require('getos')
-
-    getos(function (e, os) {
-        if (e) return console.log(e)
-
-        let command_str = 'yum install inotify-tools';
-        if (os.dist.toLowerCase().indexOf('ubuntu') > -1) {
-            command_str = 'apt-get install inotify-tools;';
-        }
-
-
-        var sudo = require('sudo-prompt');
-        var options = {
-            name: 'HarperDB',
-
-        };
-        sudo.exec(command_str, options, function (error, stdout, stderr) {
-            if (error || stderr) {
-                //winston.log('error', 'inotifyinstall error ' + error + ' ' + stderr)
-                callback(error + ' ' + stderr);
-                return;
-            }
-
-            callback();
-
-        });
-
-
-    })
-
-}
 
 function checkInstall(callback) {
     try{

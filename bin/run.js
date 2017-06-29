@@ -67,8 +67,7 @@ function run() {
 
 function completeRun() {
     async.waterfall([
-        kickOffTriggers,
-        kickOffExpress,
+       kickOffExpress
     ], (error, data) => {
         exitInstall();
     });
@@ -84,17 +83,6 @@ function kickOffExpress(callback){
     child.unref();
     console.log(colors.magenta('' + fs.readFileSync(path.join(__dirname,'../utility/install/ascii_logo.txt'))));
     console.log(colors.magenta('|------------- HarperDB succesfully started ------------|'));
-    callback();
-}
-
-function kickOffTriggers(callback){
-    var child = fork(path.join(__dirname,'../triggers/hdb_schema_triggers.js'),{
-        detached: true,
-        stdio: 'ignore'
-    });
-
-    child.unref;
-
     callback();
 }
 
