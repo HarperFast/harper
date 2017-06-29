@@ -36,50 +36,51 @@ function register(prompt, callback) {
         prompt.get(register_schema, function (err, data) {
 
 
-
-            hdb_license.validateLicense(data.HDB_LICENSE, data.CUSTOMER_COMPANY, function (err, validation) {
-                if(err){
-                    console.error(err);
-                    callback(err);
-                    return;
-                }
-
-                if (!validation.valid_license) {
-                    callback('Invalid license!');
-                    return;
-                }
-
-                if (!validation.valid_date) {
-                    callback('License expired!');
-                    return;
-                }
-
-
-                if (!validation.valid_machine) {
-                    callback('This license is in use on another machine!');
-                    return;
-                }
-
-                let insert = require('../data_layer/insert');
-                var insert_object = {
-                    operation: 'insert',
-                    schema: 'system',
-                    table: 'hdb_license',
-                    hash_attribute: 'license_key',
-                    records: [{"license_key": data.HDB_LICENSE}]
-                };
-
-                insert.insert(insert_object, function (err, data) {
-                    if(err){
+            if(data.HDB_LICENSE && data.CUSTOMER_COMPANY) {
+                hdb_license.validateLicense(data.HDB_LICENSE, data.CUSTOMER_COMPANY, function (err, validation) {
+                    if (err) {
                         console.error(err);
+                        callback(err);
                         return;
                     }
 
-                    callback(null, 'Successfully registered');
+                    if (!validation.valid_license) {
+                        callback('Invalid license!');
+                        return;
+                    }
+
+                    if (!validation.valid_date) {
+                        callback('License expired!');
+                        return;
+                    }
+
+
+                    if (!validation.valid_machine) {
+                        callback('This license is in use on another machine!');
+                        return;
+                    }
+
+                    let insert = require('../data_layer/insert');
+                    var insert_object = {
+                        operation: 'insert',
+                        schema: 'system',
+                        table: 'hdb_license',
+                        hash_attribute: 'license_key',
+                        records: [{"license_key": data.HDB_LICENSE}]
+                    };
+
+                    insert.insert(insert_object, function (err, data) {
+                        if (err) {
+                            console.error(err);
+                            return;
+                        }
+
+                        callback(null, 'Successfully registered');
+                    });
+
+
                 });
-
-
-            });
+            }
         });
 
     });
