@@ -77,7 +77,7 @@ function getTableSchema(schema_name, table_name, callback){
         },
         setSchemaDataToGlobal,
         (err)=>{
-            if(!global.hdb_schema || global.hdb_schema[schema_name] || !global.hdb_schema[schema_name][table_name]){
+            if(!global.hdb_schema || !global.hdb_schema[schema_name] || !global.hdb_schema[schema_name][table_name]){
                 setSchemaDataToGlobal((err, schema_data)=> {
                     if (err) {
                         callback(err);
