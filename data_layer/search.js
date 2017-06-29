@@ -97,7 +97,9 @@ function searchByHashes(search_object, callback){
 
 function removeTableFromAttributeAlias(attributes, table_name){
     attributes.forEach((attribute)=>{
-        attribute.alias = attribute.alias.replace(`${table_name}.`, '');
+        if(typeof attribute !== 'string') {
+            attribute.alias = attribute.alias.replace(`${table_name}.`, '');
+        }
     });
 
     return attributes;
