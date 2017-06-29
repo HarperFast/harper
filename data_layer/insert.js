@@ -10,137 +10,192 @@ const insert_validator = require('../validation/insertValidator.js'),
     mkdirp = require('mkdirp'),
     global_schema = require('../utility/globalSchema'),
     search = require('./search'),
+    _ = require('lodash'),
     PropertiesReader = require('properties-reader'),
     hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
     hdb_properties.append(hdb_properties.get('settings_path'));
+
 
 const hdb_path = path.join(hdb_properties.get('HDB_ROOT'), '/schema');
 const regex = /\//g;
 
 module.exports = {
-    insert: function (insert_object, callback) {
-        global_schema.getTableSchema(insert_object.schema, insert_object.table, (err, table_schema) => {
-            if (err) {
-                callback(err);
-                return;
-            }
-            //validate insert_object for required attributes
-            let validator = insert_validator(insert_object);
-            if (validator) {
-                callback(validator);
-                return;
-            }
+    insert: insertData,
+    update:updateData
+};
 
-            //TODO verify hash_attribute is correct for this table
-            // create hashpaths
-            let hash_paths = [];
+function validation(write_object, callback){
+    global_schema.getTableSchema(write_object.schema, write_object.table, (err, table_schema) => {
+        if (err) {
+            callback(err);
+            return;
+        }
+        //validate insert_object for required attributes
+        let validator = insert_validator(write_object);
+        if (validator) {
+            callback(validator);
+            return;
+        }
+        let hash_attribute = table_schema.hash_attribute;
+
+        //validate that every record has hash_attribute populated
+        let bad_records = _.filter(write_object.records, (record) => {
+            return !record[hash_attribute];
+        });
+
+        if (bad_records && bad_records.length > 0) {
+            callback(`hash attribute not populated: ${JSON.stringify(bad_records)}`);
+            return;
+        }
+
+        callback(null, table_schema);
+    });
+}
+
+function insertData(insert_object, callback){
+    if(insert_object.operation !== 'insert'){
+        callback('invalid operation, must be insert');
+    }
+
+    async.waterfall([
+        validation.bind(null, insert_object),
+        (table_schema, caller)=>{
             let hash_attribute = table_schema.hash_attribute;
+            let hash_paths = [];
             let base_path = hdb_path + '/' + insert_object.schema + '/' + insert_object.table + '/';
-            let hashes = [];
-
             for (let r in insert_object.records) {
                 let record = insert_object.records[r];
                 hash_paths.push(`${base_path}__hdb_hash/${hash_attribute}/${record[hash_attribute]}.hdb`);
-                hashes.push(record[hash_attribute]);
             }
-
-
-            checkRecordsExist(hash_paths, insert_object.operation, function (err) {
-                if (err) {
-                    callback(err);
-                    return;
-                }
-
-                if (insert_object.operation === 'update') {
-                    proccessUpdate(insert_object, hash_attribute, hash_paths, hashes, callback);
-
-                } else {
-                    async.waterfall([
-                        checkAttributeSchema.bind(null, insert_object),
-                        processData
-                    ], (err) => {
-                        if (err) {
-                            callback(err);
-                            return;
-                        }
-
-                        callback(null, `successfully wrote ${insert_object.records.length} records`);
-                        return;
-                    });
-                }
-
-
-            });
-
-
-            //  remove symbolic links for attributes that are being updated. fs.unlink
-
-
-        });
-    }
-};
-
-function proccessUpdate(insert_object, hash_attribute, hash_paths, hashes, callback) {
-    let attributes = [];
-    for (let attr in insert_object.records[0]) {
-        attributes.push(attr);
-    }
-    let search_obj = {};
-    search_obj.schema = insert_object.schema;
-    search_obj.table = insert_object.table;
-    search_obj.hash_attribute = 'id';
-    search_obj.hash_values = hashes;
-    search_obj.get_attributes = attributes;
-    let base_path = hdb_path + '/' + insert_object.schema + '/' + insert_object.table + '/';
-
-    search.searchByHashes(search_obj, function (err, search_results) {
-        let hashMap = [];
-        for (let search_result in search_results) {
-            hashMap[search_results[search_result][hash_attribute]] = search_results[search_result];
+            caller(null, hash_paths);
+        },
+        checkRecordsExist,
+        checkAttributeSchema.bind(null, insert_object),
+        processData
+    ], (err)=>{
+        if (err) {
+            callback(err);
+            return;
         }
 
-        async.each(insert_object.records, function (record, wallyback) {
-            let existingRecord = hashMap[record[hash_attribute]];
-            for (let attr in record) {
-                if (existingRecord && existingRecord[attr] && existingRecord[attr] == record[attr] && hash_attribute != attr) {
-                    console.log(`removed attribute ${attr}`);
-                    delete record[attr];
-                } else if (existingRecord && existingRecord[attr] && attr != hash_attribute) {
-                    fs.unlink(`${base_path}${attr}/${existingRecord[attr]}/${existingRecord[hash_attribute]}.hdb`,
-                        function (err, callback) {
-                            if (err) {
-                                console.error(err);
+        callback(null, `successfully wrote ${insert_object.records.length} records`);
+        return;
+    });
+}
 
-                            }
-                            console.log(`unliked ${base_path}${attr}/${existingRecord[attr]}/${existingRecord[hash_attribute]}.hdb `);
+function updateData(update_object, callback){
+    if(update_object.operation !== 'update'){
+        callback('invalid operation, must be update');
+    }
 
-
-                        });
-                } else if (!existingRecord) {
-                    console.log('No existing record for ' + JSON.stringify(record));
-                }
-            }
-            wallyback();
-
-
-        }, function (err) {
-            if (err) {
-                callback(err);
-                return;
-            }
-            async.waterfall([
-                checkAttributeSchema.bind(null, insert_object),
-                processData
-            ], (err) => {
-                if (err) {
-                    callback(err);
-                    return;
-                }
-
-                callback(null, `successfully wrote ${insert_object.records.length} records`);
-                return;
+    async.waterfall([
+        validation.bind(null, update_object),
+        (table_schema, caller)=>{
+            let attributes = new Set();
+            let hashes = [];
+            update_object.records.forEach((record)=>{
+                hashes.push(record[table_schema.hash_attribute]);
+                Object.keys(record).forEach((attribute)=>{
+                    attributes.add(attribute);
+                });
             });
+
+            let search_obj = {
+                schema: update_object.schema,
+                table: update_object.table,
+                hash_attribute: 'id',
+                hash_values: hashes,
+                get_attributes: Array.from(attributes)
+            };
+
+            caller(null, search_obj);
+        },
+        search.searchByHashes,
+        (existing_records, caller)=>{
+            let hash_attribute = global.hdb_schema[update_object.schema][update_object.table].hash_attribute;
+            caller(null, update_object, hash_attribute, existing_records);
+        },
+        compareUpdatesToExistingRecords,
+        unlinkFiles,
+        (update_objects, caller)=>{
+            update_object.records = update_objects;
+            caller(null, update_object);
+        },
+        checkAttributeSchema,
+        processData
+    ], (err)=>{
+        if (err) {
+            callback(err);
+            return;
+        }
+
+        callback(null, `successfully wrote ${update_object.records.length} records`);
+        return;
+    });
+}
+
+function compareUpdatesToExistingRecords(update_object, hash_attribute, existing_records, callback){
+
+    let base_path = hdb_path + '/' + update_object.schema + '/' + update_object.table + '/';
+
+    let unlink_paths = [];
+    let update_objects = [];
+
+    try {
+        let update_map = _.keyBy(update_object.records, function(record) {
+            return record[hash_attribute];
         });
+
+        existing_records.forEach((existing_record) => {
+            let update_record = update_map[existing_record[hash_attribute]];
+            if (!update_record) {
+                return;
+            }
+            let update = {};
+
+            for (let attr in update_record) {
+                if (existing_record[attr] != update_record[attr]) {
+                    update[attr] = update_record[attr];
+
+                    let value_stripped = String(existing_record[attr]).replace(regex, '').substring(0, 4000);
+                    if (existing_record[attr] !== null && existing_record[attr] !== undefined) {
+                        unlink_paths.push(`${base_path}${attr}/${value_stripped}/${existing_record[hash_attribute]}.hdb`);
+                    }
+
+                    if (update_record[attr] === null || update_record[attr] === undefined) {
+                        unlink_paths.push(`${base_path}__hdb_hash/${attr}/${existing_record[hash_attribute]}.hdb`);
+                    }
+                }
+            }
+
+            if (Object.keys(update).length > 0) {
+                update[hash_attribute] = existing_record[hash_attribute];
+                update_objects.push(update);
+            }
+        });
+
+        callback(null, unlink_paths, update_objects);
+    } catch(e){
+        callback(e);
+    }
+}
+
+function unlinkFiles(unlink_paths, update_objects, callback){
+    async.each(unlink_paths, (path, caller)=>{
+        fs.unlink(path, (err)=>{
+            if(err){
+                console.error(err);
+            }
+
+            caller();
+        });
+    }, (error)=>{
+        if(error){
+            callback(error);
+            return;
+        }
+
+        callback(null, update_objects);
     });
 }
 
@@ -165,6 +220,10 @@ function checkAttributeSchema(insert_object, callerback) {
         let link_objects = [];
         hash_paths[`${base_path}__hdb_hash/${hash_attribute}/${record[hash_attribute]}.hdb`] = '';
         for (let property in record) {
+            if(record[property] === null || record[property] === undefined){
+                return;
+            }
+
             let value_stripped = String(record[property]).replace(regex, '').substring(0, 4000);
             let attribute_file_name = record[hash_attribute] + '.hdb';
             let attribute_path = base_path + property + '/' + value_stripped;
@@ -174,14 +233,14 @@ function checkAttributeSchema(insert_object, callerback) {
                 file_name: `${base_path}__hdb_hash/${property}/${attribute_file_name}`,
                 value: record[property]
             });
-            if (property !== hash_attribute && record[property]) {
+            if (property !== hash_attribute) {
                 folders[attribute_path] = "";
 
                 link_objects.push({
                     link: `../../__hdb_hash/${property}/${attribute_file_name}`,
                     file_name: `${attribute_path}/${attribute_file_name}`
                 });
-            } else if (property === hash_attribute) {
+            } else {
                 hash_folders[attribute_path] = "";
                 attribute_objects.push({
                     file_name: `${attribute_path}/${record[hash_attribute]}-${epoch}.hdb`,
@@ -210,52 +269,25 @@ function checkAttributeSchema(insert_object, callerback) {
     });
 }
 
-function checkRecordsExist(hash_paths, operation, callback) {
-
-
+function checkRecordsExist(hash_paths, callback) {
     async.map(hash_paths, function(hash_path, inner_callback) {
         fs.access(hash_path, (err) => {
-            switch (operation) {
-                case 'update':
-                    if (err && err.code === 'ENOENT') {
-                        inner_callback('record does not exist');
-                    } else {
-                        inner_callback();
-                    }
-                    break;
-                case 'insert':
-                    if (err && err.code === 'ENOENT') {
-                        inner_callback();
-                    } else {
-                        inner_callback('record exists');
-                    }
-                    break;
-                default:
-                    inner_callback('invalid operation ' + operation);
-                    break;
-            }
-        });
-
-    }, function(err){
-            if (err) {
-                callback(err);
+            if (err && err.code === 'ENOENT') {
+                inner_callback();
             } else {
-                callback();
+                inner_callback('record exists');
             }
-
         });
-
-
+    }, function(err){
+        if (err) {
+            callback(err);
+        } else {
+            callback();
+        }
+    });
 }
 
 function processData(data_wrapper, callback) {
-    /*checkRecordsExist(data_wrapper.hash_paths, data_wrapper.operation, (err, data)=>
-     {
-     if(err){
-     callback(err);
-     return;
-     }
-     **/
     async.parallel([
         writeRawData.bind(null, data_wrapper.data_folders, data_wrapper.data),
         writeLinks.bind(null, data_wrapper.link_folders, data_wrapper.links),

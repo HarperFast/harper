@@ -49,7 +49,7 @@ function updateRecords(update_wrapper, records, callback){
         records:records
     };
 
-    write.insert(update_object, (err, results)=>{
+    write.update(update_object, (err, results)=>{
         if(err){
             callback(err);
             return;

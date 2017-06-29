@@ -10,7 +10,8 @@ const base_path = hdb_properties.get('HDB_ROOT') + "/schema/"
     file_search = require('../lib/fileSystem/fileSearch'),
     _ = require('lodash'),
     joins = require('lodash-joins'),
-    condition_patterns = require('../sqlTranslator/conditionPatterns');
+    condition_patterns = require('../sqlTranslator/conditionPatterns'),
+    autocast = require('autocast');
 
 const slash_regex =  /\//g;
 
@@ -97,7 +98,9 @@ function searchByHashes(search_object, callback){
 
 function removeTableFromAttributeAlias(attributes, table_name){
     attributes.forEach((attribute)=>{
-        attribute.alias = attribute.alias.replace(`${table_name}.`, '');
+        if(typeof attribute !== 'string') {
+            attribute.alias = attribute.alias.replace(`${table_name}.`, '');
+        }
     });
 
     return attributes;
@@ -500,7 +503,7 @@ function readAttributeFiles(table_path, attribute, hash_files, callback){
                 return;
             }
 
-            attribute_data[file]=data.toString();
+            attribute_data[file]=autocast(data.toString());
             caller();
         });
     }, (err)=>{

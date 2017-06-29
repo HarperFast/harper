@@ -77,14 +77,12 @@ function getTableSchema(schema_name, table_name, callback){
         },
         setSchemaDataToGlobal,
         (err)=>{
-            if(!global.hdb_schema[schema_name] || !global.hdb_schema[schema_name][table_name]){
-                schema.describeAll((err, schema_data)=> {
+            if(!global.hdb_schema || !global.hdb_schema[schema_name] || !global.hdb_schema[schema_name][table_name]){
+                setSchemaDataToGlobal((err, schema_data)=> {
                     if (err) {
                         callback(err);
                         return;
                     }
-
-                    global.hdb_schema = schema_data;
 
                     if(!global.hdb_schema[schema_name] || !global.hdb_schema[schema_name][table_name]){
                         callback(`table ${schema_name}.${table_name} does not exist`);
