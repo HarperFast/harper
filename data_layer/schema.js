@@ -182,6 +182,7 @@ function createSchemaStructure(schema_create_object, callback) {
 
 function deleteSchemaStructure (drop_schema_object, callback) {
 
+
     var validation_error = validate(drop_schema_object, schema_constraints);
     if (validation_error) {
         callback(validation_error, null);
