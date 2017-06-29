@@ -1,4 +1,4 @@
-const fs = require('fs-extra')
+const fs = require('fs.extra')
     , validate = require('validate.js')
     , insert = require('./insert.js')
     , async = require('async')
