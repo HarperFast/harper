@@ -1,5 +1,6 @@
 const prompt = require('prompt'),
     spawn = require('child_process').spawn,
+    path = require('path'),
     password = require('./../password'),
     mount = require('./../mount_hdb'),
     fs = require('fs'),
@@ -49,7 +50,6 @@ function run_install(callback) {
                wizard,
                mount,
                createSettingsFile,
-            //   installInotify,
                checkRegister
 
            ], function (err, result) {
@@ -65,38 +65,6 @@ function run_install(callback) {
 }
 
 
-function installInotify(callback) {
-    var getos = require('getos')
-
-    getos(function (e, os) {
-        if (e) return console.log(e)
-
-        let command_str = 'yum install inotify-tools';
-        if (os.dist.toLowerCase().indexOf('ubuntu') > -1) {
-            command_str = 'apt-get install inotify-tools;';
-        }
-
-
-        var sudo = require('sudo-prompt');
-        var options = {
-            name: 'HarperDB',
-
-        };
-        sudo.exec(command_str, options, function (error, stdout, stderr) {
-            if (error || stderr) {
-                //winston.log('error', 'inotifyinstall error ' + error + ' ' + stderr)
-                callback(error + ' ' + stderr);
-                return;
-            }
-
-            callback();
-
-        });
-
-
-    })
-
-}
 
 function checkInstall(callback) {
     try{
@@ -216,7 +184,7 @@ function wizard(callback) {
     };
 
 
-    console.log(colors.magenta('' + fs.readFileSync(`${process.cwd()}/../utility/install/ascii_logo.txt`)));
+    console.log(colors.magenta('' + fs.readFileSync(path.join(__dirname,'./ascii_logo.txt'))));
     console.log(colors.magenta('                    Installer'));
 
 

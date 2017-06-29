@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "",
   "main": "run.js",
+  "bin":"./bin/run.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
@@ -13,8 +14,9 @@
     "body-parser": "^1.17.1",
     "chunk": "0.0.2",
     "csvtojson": "^1.1.5",
-    "deep-diff": "^0.3.8",
+    "del": "^2.2.2",
     "express": "^4.15.2",
+    "fs-extra": "^3.0.1",
     "getos": "^3.0.1",
     "globby": "^6.1.0",
     "graceful-fs": "^4.1.11",
@@ -38,5 +40,10 @@
     "uuid": "^3.0.1",
     "validate.js": "^0.11.1",
     "winston": "^2.3.1"
-  }
+  },
+"pkg":{
+	"scripts":["./server/hdb_express.js","./data_layer/*.js","./triggers/**","./utility/*.js","./sqlTranslator/*.js","./lib/**/*.js","./validation/*.js"],
+	"assets":["./utility/install/*.txt"]
+
+}
 }
