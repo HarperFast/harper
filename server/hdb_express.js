@@ -10,7 +10,7 @@ winston.configure({
 
 
 if (cluster.isMaster && !DEBUG) {
-    console.log(`Master ${process.pid} is running`);
+    winston.log(`Master ${process.pid} is running`);
 
     // Fork workers.
     for (let i = 0; i < numCPUs; i++) {
@@ -18,7 +18,7 @@ if (cluster.isMaster && !DEBUG) {
     }
 
     cluster.on('exit', (worker, code, signal) => {
-        console.log(`worker ${worker.process.pid} died`);
+        winston.log(`worker ${worker.process.pid} died`);
     });
 } else {
     winston.log('In express' + process.cwd());
@@ -44,7 +44,7 @@ if (cluster.isMaster && !DEBUG) {
     app.post('/', function (req, res) {
         chooseOperation(req.body, (err, operation_function) => {
             if (err) {
-                console.log(err);
+                winston.log(err);
                 res.status(500).send(err);
                 return;
             }
@@ -52,7 +52,7 @@ if (cluster.isMaster && !DEBUG) {
             try {
                 operation_function(req.body, (error, data) => {
                     if (error) {
-                        console.log(error);
+                        winston.log(error);
                         res.status(500).json(error);
                         return;
                     }
@@ -60,7 +60,7 @@ if (cluster.isMaster && !DEBUG) {
                     res.status(200).json(data);
                 });
             }catch(e){
-                console.log(e);
+                winston.log(e);
                 res.status(500).json(e);
             }
         });
@@ -136,7 +136,7 @@ if (cluster.isMaster && !DEBUG) {
     }
 
     app.listen(hdb_properties.get('HTTP_PORT'), function () {
-        console.log(`HarperDB Server running on ${hdb_properties.get('HTTP_PORT')}`);
+        winston.log(`HarperDB Server running on ${hdb_properties.get('HTTP_PORT')}`);
 
         global_schema.setSchemaDataToGlobal((err, data) => {
             if (err) {

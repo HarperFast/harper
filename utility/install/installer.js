@@ -8,6 +8,7 @@ const prompt = require('prompt'),
     winston = require('winston'),
     isRoot = require('is-root'),
     async = require('async'),
+    optimist = require('optimist'),
     PropertiesReader = require('properties-reader');
 var hdb_boot_properties = null,
     hdb_properties = null;
@@ -40,6 +41,7 @@ var wizard_result;
 
 
 function run_install(callback) {
+    prompt.override = optimist.argv;
     prompt.start();
     //winston.add(winston.transports.File, { filename: 'installer.log' });
     winston.configure({
@@ -121,7 +123,7 @@ function checkInstall(callback) {
 
 function checkRegister(callback) {
 
-    if (wizard_result.HDB_REGISTER) {
+    if (wizard_result.HDB_REGISTER == 'true') {
         register = require('../registrationHandler'),
             register.register(prompt, function (err, result) {
                 if (err) {
@@ -177,9 +179,8 @@ function wizard(callback) {
                 required: true
             },
             HDB_REGISTER: {
-                description: colors.magenta('[REGISTER] Would you like to register now?'),
-                type: 'boolean',
-                default: true,
+                description: colors.magenta('[REGISTER] Would you like to register now?'),       
+                default: 'true',
                 required: true
             },
 
