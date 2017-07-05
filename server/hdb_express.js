@@ -30,42 +30,55 @@ if (cluster.isMaster && !DEBUG) {
         write = require('../data_layer/insert'),
         search = require('../data_layer/search'),
         sql = require('../sqlTranslator/index').evaluateSQL,
-        csv = require('../data_layer/csvBulkLoad');
+        csv = require('../data_layer/csvBulkLoad'),
         schema = require('../data_layer/schema'),
         delete_ = require('../data_layer/delete'),
+        auth = require('../security/auth'),
+        session = require('express-session'),
+        passport = require('passport'),
         global_schema = require('../utility/globalSchema');
 
-       hdb_properties.append(hdb_properties.get('settings_path'));
+    hdb_properties.append(hdb_properties.get('settings_path'));
 
 
-        app.use(bodyParser.json()); // support json encoded bodies
+    app.use(bodyParser.json()); // support json encoded bodies
     app.use(bodyParser.urlencoded({extended: true}));
-
+    app.use(session({ secret: 'keyboard cat' }));
+    app.use(passport.initialize());
+    app.use(passport.session());
     app.post('/', function (req, res) {
-        chooseOperation(req.body, (err, operation_function) => {
-            if (err) {
-                console.log(err);
-                res.status(500).send(err);
+        auth.authorize(req, res, function(err, user) {
+            if(err){
+                res.status(401).send(err);
                 return;
             }
 
-            try {
-                operation_function(req.body, (error, data) => {
-                    if (error) {
-                        console.log(error);
-                        res.status(500).json(error);
-                        return;
-                    }
+            chooseOperation(req.body, (err, operation_function) => {
+                if (err) {
+                    console.log(err);
+                    res.status(500).send(err);
+                    return;
+                }
 
-                    res.status(200).json(data);
-                });
-            }catch(e){
-                console.log(e);
-                res.status(500).json(e);
-            }
+                try {
+                    operation_function(req.body, (error, data) => {
+                        if (error) {
+                            console.log(error);
+                            res.status(500).json(error);
+                            return;
+                        }
+
+                        res.status(200).json(data);
+                    });
+                } catch (e) {
+                    console.log(e);
+                    res.status(500).json(e);
+                }
+            });
         });
 
     });
+
 
     function chooseOperation(json, callback) {
         let operation_function = nullOperation;
