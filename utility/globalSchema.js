@@ -50,6 +50,11 @@ function setSchemaDataToGlobal(callback){
                             ]
                     },
                     hdb_user:{
+                        hash_attribute:'username',
+                        name:'hdb_user',
+                        schema:'system'
+                    },
+                    hdb_role:{
                         hash_attribute:'id',
                         name:'hdb_user',
                         schema:'system'
