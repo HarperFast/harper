@@ -2,7 +2,7 @@
 const sqliteParser = require('sqlite-parser'),
     _ = require('lodash');
 
-let sql =  "select b.name, b.section, l.id, l.dog_name, b.id, l.color from dev.breed as b inner join dev.license as l on id = l.breed "  +
+let sql =  "select b.name, b.section, l.id, l.dog_name, b.id, l.color from dev.breed as b inner join dev.license as l on b.id = l.breed "  +
     "where l.color LIKE '%AC%' AND l.dog_name = 'JENNA' order by b.name asc, l.dog_name desc";
 sql = sql.replace(/ like /gi, ' || ');
 
@@ -38,10 +38,9 @@ function validator(statement, callback){
 
         //evaluate table joins
         if (statement.from.type === 'map') {
-           /* tables.push({name: statement.from.source.name, alias: statement.from.source.alias});
             statement.from.map.forEach((table) => {
-                tables.push({name: table.source.name, alias: table.source.alias});
-            });*/
+                validateConditions(table.constraint.on, tables);
+            });
         }
 
         statement.result.forEach((column) => {
@@ -54,7 +53,7 @@ function validator(statement, callback){
             select_columns.push({name: column.name, alias: column.alias});
         });
 
-        validateConditions(statement.where, tables);
+        validateConditions(statement.where[0], tables);
 
         statement.order.forEach((order_by) => {
             validateColumn(tables, order_by.expression.name);
@@ -86,7 +85,7 @@ function validateColumn(tables, column_name){
 
 function validateConditions(where_clause, tables){
     if(where_clause) {
-        let left = where_clause[0];
+        let left = where_clause;
 
         while (left.left.type === 'expression') {
             let condition = left.right;
