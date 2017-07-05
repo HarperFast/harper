@@ -8,7 +8,7 @@ const async = require('async'),
 module.exports = {
     describeAll:function (callback) {
 
-        var table_search_obj = {};
+        let table_search_obj = {};
         table_search_obj.schema = 'system';
         table_search_obj.table = 'hdb_table';
         table_search_obj.hash_attribute = 'id';
@@ -24,11 +24,11 @@ module.exports = {
             }
 
 
-            var t_results = [];
+            let t_results = [];
             async.map(tables, function (table, caller) {
                 descTable({"schema": table.schema, "table": table.name}, function (err, desc) {
                     if (err) {
-                        caller(err)
+                        caller(err);
                         return;
                     }
                     t_results.push(desc);
@@ -42,7 +42,7 @@ module.exports = {
                     return;
                 }
 
-                var hdb_description = {};
+                let hdb_description = {};
                 for (t in t_results) {
                     if (hdb_description[t_results[t].schema] == null) {
                         hdb_description[t_results[t].schema] = {};
@@ -66,22 +66,21 @@ module.exports = {
 };
 
 function descTable(describe_table_object, callback) {
-    var validation = describe_table_validation(describe_table_object);
+    let validation = describe_table_validation(describe_table_object);
     if (validation) {
         callback(validation);
         return;
     }
 
     if(describe_table_object.schema == 'system'){
-        var global_schema = require('../utility/globalSchema');
-        var schemaDescribe = require('../data_layer/schemaDescribe');
+        let global_schema = require('../utility/globalSchema');
         global_schema.setSchemaDataToGlobal(function(err, data){
            callback(null, global.hdb_schema['system'][describe_table_object.table]);
            return;
         });
     }else {
 
-        var table_search_obj = {};
+        let table_search_obj = {};
         table_search_obj.schema = 'system';
         table_search_obj.table = 'hdb_table';
         table_search_obj.hash_attribute = 'id';
@@ -89,7 +88,7 @@ function descTable(describe_table_object, callback) {
         table_search_obj.search_value = describe_table_object.table;
         table_search_obj.hash_values = [];
         table_search_obj.get_attributes = ['hash_attribute', 'id', 'name', 'schema'];
-        var table_result = {};
+        let table_result = {};
         search.searchByValue(table_search_obj, function (err, tables) {
             if (err) {
                 console.error(err);
@@ -98,7 +97,7 @@ function descTable(describe_table_object, callback) {
             }
 
             async.map(tables, function (table, caller) {
-                if (table.schema == describe_table_object.schema) {
+                if (table.schema === describe_table_object.schema) {
                     table_result = table;
                 }
                 caller();
@@ -109,7 +108,7 @@ function descTable(describe_table_object, callback) {
                     return;
                 }
 
-                var attribute_search_obj = {};
+                let attribute_search_obj = {};
                 attribute_search_obj.schema = 'system';
                 attribute_search_obj.table = 'hdb_attribute';
                 attribute_search_obj.hash_attribute = 'id';
@@ -125,7 +124,7 @@ function descTable(describe_table_object, callback) {
                         return;
                     }
 
-                    table_result.attributes = attributes
+                    table_result.attributes = attributes;
                     callback(null, table_result);
 
 
