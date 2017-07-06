@@ -5,12 +5,16 @@ module.exports = {
 };
 
 function validator(statement, callback){
+
     let select_columns = [];
-    let tables = [];
+
     let condition_columns = [];
     let order_by_columns = [];
 
     try {
+        if(!statement){
+            return callback('invalid sql statement');
+        }
         if (statement.group) {
             throw 'GROUP BY clauses are not supported at this time';
         }
@@ -20,41 +24,16 @@ function validator(statement, callback){
         }
 
         //get all of the tables
-        if (statement.from.type === 'map') {
-            tables.push(createTableObject(statement.from.source));
-            statement.from.map.forEach((table) => {
-                tables.push(createTableObject(table.source));
-            });
-        } else {
-            tables.push(createTableObject(statement.from));
-        }
+        let tables = validateTables(statement);
 
-        //evaluate table joins
-        if (statement.from.type === 'map') {
-            statement.from.map.forEach((table) => {
-                validateConditions(table.constraint.on, tables);
-            });
-        }
-
-        statement.result.forEach((column) => {
-            if (column.type !== 'identifier' && column.variant !== 'column') {
-                throw 'invalid column in SELECT, only columns are supported, no functions or literals can be defined';
-            }
-
-            validateColumn(tables, column.name);
-
-            let table_column = column.name.split('.');
-
-            let column_name = table_column.length === 1 ? table_column[0] : table_column[1];
-            select_columns.push({name: column_name, alias: column.alias});
-        });
+        let select_columns = validateSelectColumns(statement, tables);
 
         validateConditions(statement.where ? statement.where[0] : null, tables);
 
         if(statement.order) {
             statement.order.forEach((order_by) => {
                 let order = order_by.expression ? order_by.expression : order_by;
-                validateOrderByColumn(tables, select_columns, order.name);
+                validateOrderByColumn(select_columns, order.name);
                 order_by_columns.push(order.name);
             });
         }
@@ -67,6 +46,71 @@ function validator(statement, callback){
 
 }
 
+function validateTables(statement){
+    let tables = [];
+    if (statement.from.type === 'map') {
+        tables.push(createTableObject(statement.from.source));
+        statement.from.map.forEach((table) => {
+            tables.push(createTableObject(table.source));
+        });
+    } else {
+        tables.push(createTableObject(statement.from));
+    }
+
+    //make sure tables have unique names
+    let uniqe_tables = _.uniqBy(tables, 'alias');
+    if(uniqe_tables.length !== tables.length){
+        throw 'table name/aliases are not distinct';
+    }
+
+    //evaluate table joins
+    if (statement.from.type === 'map') {
+        statement.from.map.forEach((table) => {
+            validateConditions(table.constraint.on, tables);
+        });
+    }
+
+    return tables;
+}
+
+function validateSelectColumns(statement, tables){
+    let select_columns = [];
+    statement.result.forEach((column) => {
+        if (column.type !== 'identifier' && column.variant !== 'column') {
+            throw 'invalid column in SELECT, only columns are supported, no functions or literals can be defined';
+        }
+
+        validateColumn(tables, column.name);
+
+        let table_column = column.name.split('.');
+        let column_object = {
+            alias: column.alias
+        };
+
+        if(table_column.length > 1){
+            let found_table = _.filter(tables, (table)=>{
+                return table.alias === table_column[0];
+            });
+
+            if(found_table.length === 0){
+                throw `unknown table for column '${column.name}'`;
+            }
+
+            column_object.table = found_table[0].name;
+            column_object.table_alias = found_table[0].alias;
+            column_object.name = table_column[1];
+        } else {
+            column_object.table = tables[0].name;
+            column_object.table_alias = tables[0].alias;
+            column_object.name = table_column[0];
+        }
+
+        select_columns.push(column_object);
+    });
+
+    return select_columns;
+}
+
 function createTableObject(table){
     let schema_table = table.name.split('.');
 
@@ -75,7 +119,7 @@ function createTableObject(table){
     }
 
     return {
-        alias: table.alias,
+        alias: table.alias ? table.alias : schema_table,
         schema: schema_table[0],
         name: schema_table[1]
     };
@@ -100,12 +144,12 @@ function validateColumn(tables, column_name){
     }
 }
 
-function validateOrderByColumn(tables, select_columns, column_name){
+function validateOrderByColumn(select_columns, column_name){
     let table_column = column_name.split('.');
 
     if(table_column.length > 1){
-        let found_table = _.filter(tables, (table)=>{
-            return table.name === table_column[0] || table.alias === table_column[0];
+        let found_table = _.filter(select_columns, (column)=>{
+            return (column.table === table_column[0] || column.table_alias === table_column[0]) && (column.name === table_column[1] || column.name === '*');
         });
 
         if(found_table.length === 0){
