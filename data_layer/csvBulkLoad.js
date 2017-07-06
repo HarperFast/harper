@@ -12,83 +12,95 @@ module.exports = {
 };
 
 function csvDataLoad(csv_object, callback){
-    csv_records = [];
+    try {
+        csv_records = [];
 
-    csv()
-        .fromString(csv_object.data)
-        .on('json',(jsonObj, rowIndex)=>{
-            jsonObj.id = parseInt(rowIndex) +1;
-            csv_records.push(jsonObj);
-        })
-        .on('done',(error)=>{
-            if(error){
-                callback(error);
-                return;
-            }
-
-            bulkLoad(csv_records, csv_object.schema, csv_object.table, (err, data)=>{
-                if(err){
-                    callback(err);
+        csv()
+            .fromString(csv_object.data)
+            .on('json', (jsonObj, rowIndex) => {
+                jsonObj.id = parseInt(rowIndex) + 1;
+                csv_records.push(jsonObj);
+            })
+            .on('done', (error) => {
+                if (error) {
+                    callback(error);
                     return;
                 }
 
-                callback(null, `successfully loaded ${csv_records.length} records`);
+                bulkLoad(csv_records, csv_object.schema, csv_object.table, (err, data) => {
+                    if (err) {
+                        callback(err);
+                        return;
+                    }
+
+                    callback(null, `successfully loaded ${csv_records.length} records`);
+                });
             });
-        });
+    } catch(e){
+        callback(e);
+    }
 }
 
 function csvURLLoad(csv_object, callback){
-    csv_records = [];
+    try {
+        csv_records = [];
 
-    csv()
-        .fromStream(request.get(csv_object.csv_url))
-        .on('json',(jsonObj, rowIndex)=>{
-            jsonObj.id = parseInt(rowIndex) +1;
-            csv_records.push(jsonObj);
-        })
-        .on('done',(error)=>{
-            if(error){
-                callback(error);
-                return;
-            }
-
-            bulkLoad(csv_records, csv_object.schema, csv_object.table, (err, data)=>{
-                if(err){
-                    callback(err);
+        csv()
+            .fromStream(request.get(csv_object.csv_url))
+            .on('json', (jsonObj, rowIndex) => {
+                jsonObj.id = parseInt(rowIndex) + 1;
+                csv_records.push(jsonObj);
+            })
+            .on('done', (error) => {
+                if (error) {
+                    callback(error);
                     return;
                 }
 
-                callback(null, `successfully loaded ${csv_records.length} records`);
+                bulkLoad(csv_records, csv_object.schema, csv_object.table, (err, data) => {
+                    if (err) {
+                        callback(err);
+                        return;
+                    }
+
+                    callback(null, `successfully loaded ${csv_records.length} records`);
+                });
             });
-        });
+    } catch(e){
+        callback(e);
+    }
 }
 
 function csvFileLoad(csv_object, callback){
-    csv_records = [];
+    try {
+        csv_records = [];
 
-    csv()
-        .fromFile(csv_object.file_path)
-        .on('json',(jsonObj, rowIndex)=>{
-            jsonObj.id = parseInt(rowIndex) +1;
-            csv_records.push(jsonObj);
-        })
-        .on('done',(error)=>{
-            if(error){
-                callback(error);
-                return;
-            }
-
-            bulkLoad(csv_records, csv_object.schema, csv_object.table, (err, data)=>{
-                if(err){
-                    callback(err);
+        csv()
+            .fromFile(csv_object.file_path)
+            .on('json', (jsonObj, rowIndex) => {
+                jsonObj.id = parseInt(rowIndex) + 1;
+                csv_records.push(jsonObj);
+            })
+            .on('done', (error) => {
+                if (error) {
+                    callback(error);
                     return;
                 }
 
-                callback(null, `successfully loaded ${csv_records.length} records`);
-            });
-        }).on('error',(err)=>{
+                bulkLoad(csv_records, csv_object.schema, csv_object.table, (err, data) => {
+                    if (err) {
+                        callback(err);
+                        return;
+                    }
+
+                    callback(null, `successfully loaded ${csv_records.length} records`);
+                });
+            }).on('error', (err) => {
             callback(err);
         });
+    } catch(e){
+        callback(e);
+    }
 }
 
 function bulkLoad(records, schema, table, callback){

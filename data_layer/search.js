@@ -199,48 +199,52 @@ function searchByConditions(search_wrapper, callback){
 }
 
 function multiConditionSearch(conditions, table_schema, callback){
-    let all_ids = [];
+    try {
+        let all_ids = [];
 
-    async.forEachOf(conditions, (condition, key, caller) =>{
-        all_ids[key] = {};
-        let condition_key = Object.keys(condition)[0];
-        if(condition_key  === 'and' || condition_key === 'or'){
-            all_ids[key].operation = condition_key;
-            condition = condition[condition_key];
-        }
-
-        let pattern = condition_patterns.createPatterns(condition, table_schema, base_path);
-
-        file_search.findIDsByRegex(pattern.folder_search_path, pattern.folder_search, (err, results)=>{
-            if(err) {
-                console.error(err);
-            } else {
-                all_ids[key].ids = results;
+        async.forEachOf(conditions, (condition, key, caller) => {
+            all_ids[key] = {};
+            let condition_key = Object.keys(condition)[0];
+            if (condition_key === 'and' || condition_key === 'or') {
+                all_ids[key].operation = condition_key;
+                condition = condition[condition_key];
             }
-            caller();
-        });
-    }, (err)=>{
-        if(err){
-            callback(err);
-            return;
-        }
 
-        let matched_ids = all_ids[0].ids;
-        all_ids.shift();
-        all_ids.forEach((ids)=>{
-            if(!ids.operation || ids.operation === 'or'){
-                matched_ids = matched_ids.concat(ids.ids);
-            } else {
-                matched_ids = _.intersection(matched_ids, ids.ids);
+            let pattern = condition_patterns.createPatterns(condition, table_schema, base_path);
+
+            file_search.findIDsByRegex(pattern.folder_search_path, pattern.folder_search, (err, results) => {
+                if (err) {
+                    console.error(err);
+                } else {
+                    all_ids[key].ids = results;
+                }
+                caller();
+            });
+        }, (err) => {
+            if (err) {
+                callback(err);
+                return;
             }
-        });
-        if(matched_ids.length === 0){
-            callback(null, matched_ids);
-            return;
-        }
 
-        callback(null, _.uniq(matched_ids));
-    });
+            let matched_ids = all_ids[0].ids;
+            all_ids.shift();
+            all_ids.forEach((ids) => {
+                if (!ids.operation || ids.operation === 'or') {
+                    matched_ids = matched_ids.concat(ids.ids);
+                } else {
+                    matched_ids = _.intersection(matched_ids, ids.ids);
+                }
+            });
+            if (matched_ids.length === 0) {
+                callback(null, matched_ids);
+                return;
+            }
+
+            callback(null, _.uniq(matched_ids));
+        });
+    } catch(e){
+        callback(e);
+    }
 }
 
 function searchByJoin(search_wrapper, callback){
@@ -259,49 +263,53 @@ function searchByJoin(search_wrapper, callback){
 }
 
 function searchByJoinConditions(search_wrapper, callback){
-    getAsteriskFieldsForTables(search_wrapper, (error, search_wrapper)=> {
-        search_wrapper = addSupplementalFields(search_wrapper);
-        search_wrapper = setAdditionalAttributeData(search_wrapper);
-        searchByConditions(search_wrapper, (err, data) => {
-            if (err) {
-                callback(err);
-                return;
-            }
-
-            let next_table = search_wrapper.tables[1];
-            let join = search_wrapper.joins[0];
-
-            next_table.conditions.push(convertJoinToCondition(search_wrapper.tables[0], search_wrapper.tables[1], join, data));
-
-
-            searchByConditions({tables: [next_table]}, (err, data2) => {
+    try {
+        getAsteriskFieldsForTables(search_wrapper, (error, search_wrapper) => {
+            search_wrapper = addSupplementalFields(search_wrapper);
+            search_wrapper = setAdditionalAttributeData(search_wrapper);
+            searchByConditions(search_wrapper, (err, data) => {
                 if (err) {
                     callback(err);
                     return;
                 }
 
-                let joined = joinData(join, search_wrapper.all_get_attributes, data, data2);
+                let next_table = search_wrapper.tables[1];
+                let join = search_wrapper.joins[0];
+
+                next_table.conditions.push(convertJoinToCondition(search_wrapper.tables[0], search_wrapper.tables[1], join, data));
+
+
+                searchByConditions({tables: [next_table]}, (err, data2) => {
+                    if (err) {
+                        callback(err);
+                        return;
+                    }
+
+                    let joined = joinData(join, search_wrapper.all_get_attributes, data, data2);
 
 //TODO only do this part if there are supplemental fields
-                let get_attributes = [];
+                    let get_attributes = [];
 
-                search_wrapper.tables.forEach((table) => {
-                    table.get_attributes.forEach((attribute) => {
-                        get_attributes.push(attribute.alias);
+                    search_wrapper.tables.forEach((table) => {
+                        table.get_attributes.forEach((attribute) => {
+                            get_attributes.push(attribute.alias);
+                        });
                     });
+
+                    let results = [];
+                    joined.forEach((record) => {
+                        results.push(_.pick(record, get_attributes));
+                    });
+
+                    results = sortData(results, search_wrapper);
+
+                    callback(null, results);
                 });
-
-                let results = [];
-                joined.forEach((record) => {
-                    results.push(_.pick(record, get_attributes));
-                });
-
-                results = sortData(results, search_wrapper);
-
-                callback(null, results);
             });
         });
-    });
+    } catch(e){
+        callback(e);
+    }
 }
 
 function joinData(join, all_get_attributes, data, data2){
