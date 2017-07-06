@@ -21,101 +21,112 @@ module.exports ={
 };
 
 function deleteRecord(delete_object, callback){
-    let validation = delete_validator(delete_object);
-    if(validation){
-        callback(validation);
-        return;
-    }
-
-    let search_obj ={
-        schema: delete_object.schema,
-        table: delete_object.table,
-        hash_value:delete_object.hash_value,
-        get_attributes:['*']
-    };
-
-    async.waterfall([
-        global_schema.getTableSchema.bind(null, delete_object.schema, delete_object.table),
-        (table_info, callback)=>{
-            callback();
-        },
-        search.searchByHash.bind(null, search_obj),
-        deleteFiles.bind(null, delete_object)
-    ], (err)=>{
-        if(err){
-            callback(err);
+    try {
+        let validation = delete_validator(delete_object);
+        if (validation) {
+            callback(validation);
             return;
         }
 
-        callback(null, 'record successfully deleted');
-    });
+        let search_obj = {
+            schema: delete_object.schema,
+            table: delete_object.table,
+            hash_value: delete_object.hash_value,
+            get_attributes: ['*']
+        };
+
+        async.waterfall([
+            global_schema.getTableSchema.bind(null, delete_object.schema, delete_object.table),
+            (table_info, callback) => {
+                callback();
+            },
+            search.searchByHash.bind(null, search_obj),
+            deleteFiles.bind(null, delete_object)
+        ], (err) => {
+            if (err) {
+                callback(err);
+                return;
+            }
+
+            callback(null, 'record successfully deleted');
+        });
+    } catch(e){
+        callback(e);
+    }
 }
 
 function bulkDelete(delete_object, callback){
-    let validation = bulk_delete_validator(delete_object);
-    if(validation){
-        callback(validation);
-        return;
-    }
-
-    let search_obj =
-        {
-            schema: delete_object.schema,
-            table: delete_object.table,
-            hash_values:delete_object.hash_values,
-            hash_attribute:delete_object.hash,
-            get_attributes:['*']
-        };
-
-    async.waterfall([
-        global_schema.getTableSchema.bind(null, delete_object.schema, delete_object.table),
-        (table_info, callback)=>{
-          callback();
-        },
-        search.searchByHashes.bind(null, search_obj),
-        deleteRecords.bind(null, delete_object)
-    ], (err, data)=>{
-        if(err){
-            callback(err);
+    try {
+        let validation = bulk_delete_validator(delete_object);
+        if (validation) {
+            callback(validation);
             return;
         }
 
-        callback(null, 'records successfully deleted');
-    });
+        let search_obj =
+            {
+                schema: delete_object.schema,
+                table: delete_object.table,
+                hash_values: delete_object.hash_values,
+                hash_attribute: delete_object.hash,
+                get_attributes: ['*']
+            };
+
+        async.waterfall([
+            global_schema.getTableSchema.bind(null, delete_object.schema, delete_object.table),
+            (table_info, callback) => {
+                callback();
+            },
+            search.searchByHashes.bind(null, search_obj),
+            deleteRecords.bind(null, delete_object)
+        ], (err, data) => {
+            if (err) {
+                callback(err);
+                return;
+            }
+
+            callback(null, 'records successfully deleted');
+        });
+    } catch(e){
+        callback(e);
+    }
 }
 
 function conditionalDelete(delete_object, callback){
-    let validation = conditional_delete_validator(delete_object);
-    if(validation){
-        callback(validation);
-        return;
-    }
-
-    async.waterfall([
-        global_schema.getTableSchema.bind(null, delete_object.schema, delete_object.table),
-        (table_info, callback)=>{
-            callback(null, delete_object.conditions, table_info);
-        },
-        search.multiConditionSearch,
-        (ids, callback)=>{
-            let delete_wrapper = {
-                schema: delete_object.schema,
-                table: delete_object.table,
-                hash_values: ids
-            };
-
-            callback(null, delete_wrapper);
-        },
-        bulkDelete
-    ], (err, data)=>{
-        if(err){
-            callback(err);
+    try {
+        let validation = conditional_delete_validator(delete_object);
+        if (validation) {
+            callback(validation);
             return;
         }
 
-        callback(null, 'records successfully deleted');
-    });
+        async.waterfall([
+            global_schema.getTableSchema.bind(null, delete_object.schema, delete_object.table),
+            (table_info, callback) => {
+                callback(null, delete_object.conditions, table_info);
+            },
+            search.multiConditionSearch,
+            (ids, callback) => {
+                let delete_wrapper = {
+                    schema: delete_object.schema,
+                    table: delete_object.table,
+                    hash_values: ids
+                };
 
+                callback(null, delete_wrapper);
+            },
+            bulkDelete
+        ], (err, data) => {
+            if (err) {
+                callback(err);
+                return;
+            }
+
+            callback(null, 'records successfully deleted');
+        });
+    }catch(e){
+        callback(e);
+    }
 }
 
 function deleteRecords(delete_object, records, callback){
