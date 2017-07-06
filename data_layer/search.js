@@ -32,68 +32,74 @@ module.exports = {
 };
 
 function searchByHash(search_object, callback){
-
-    if(!search_object.get_attributes || search_object.get_attributes.length < 1 ){
-        callback("missing get_attributes... whats the point of searching if you don't want to find anything?");
-        return;
-    }
-
-    let hash_stripped = String(search_object.hash_value).replace(slash_regex, '').substring(0, 4000);
-    let table_path = `${base_path}${search_object.schema}/${search_object.table}/`;
-
-    evaluateTableAttributes(search_object.get_attributes, search_object, (error, attributes)=> {
-        if (error) {
-            callback(error);
+    try {
+        if (!search_object.get_attributes || search_object.get_attributes.length < 1) {
+            callback("missing get_attributes... whats the point of searching if you don't want to find anything?");
             return;
         }
 
-        let table_info = global.hdb_schema[search_object.schema][search_object.table];
+        let hash_stripped = String(search_object.hash_value).replace(slash_regex, '').substring(0, 4000);
+        let table_path = `${base_path}${search_object.schema}/${search_object.table}/`;
 
-        attributes = removeTableFromAttributeAlias(attributes, search_object.table);
-
-        async.waterfall([
-            getAttributeFiles.bind(null, attributes, table_path, [hash_stripped]),
-            consolidateData.bind(null, table_info.hash_attribute)
-        ], (error, data) => {
+        evaluateTableAttributes(search_object.get_attributes, search_object, (error, attributes) => {
             if (error) {
                 callback(error);
                 return;
             }
 
-            callback(null, data[0]);
+            let table_info = global.hdb_schema[search_object.schema][search_object.table];
+
+            attributes = removeTableFromAttributeAlias(attributes, search_object.table);
+
+            async.waterfall([
+                getAttributeFiles.bind(null, attributes, table_path, [hash_stripped]),
+                consolidateData.bind(null, table_info.hash_attribute)
+            ], (error, data) => {
+                if (error) {
+                    callback(error);
+                    return;
+                }
+
+                callback(null, data[0]);
+            });
         });
-    });
+    } catch(e) {
+        callback(e);
+    }
 }
 
 function searchByHashes(search_object, callback){
-    let validation_error = search_validator(search_object, 'hashes');
-    if (validation_error) {
-        callback(validation_error, null);
-        return;
-    }
-
-    let table_path = `${base_path}${search_object.schema}/${search_object.table}/`;
-    evaluateTableAttributes(search_object.get_attributes, search_object, (error, attributes)=>{
-        if(error){
-            callback(error);
+    try {
+        let validation_error = search_validator(search_object, 'hashes');
+        if (validation_error) {
+            callback(validation_error, null);
             return;
         }
 
-        let table_info = global.hdb_schema[search_object.schema][search_object.table];
-        attributes = removeTableFromAttributeAlias(attributes, search_object.table);
-        async.waterfall([
-            getAttributeFiles.bind(null, attributes, table_path, search_object.hash_values),
-            consolidateData.bind(null, table_info.hash_attribute)
-        ], (error, data)=>{
-            if(error){
+        let table_path = `${base_path}${search_object.schema}/${search_object.table}/`;
+        evaluateTableAttributes(search_object.get_attributes, search_object, (error, attributes) => {
+            if (error) {
                 callback(error);
                 return;
             }
 
-            callback(null, data);
-        });
-    });
+            let table_info = global.hdb_schema[search_object.schema][search_object.table];
+            attributes = removeTableFromAttributeAlias(attributes, search_object.table);
+            async.waterfall([
+                getAttributeFiles.bind(null, attributes, table_path, search_object.hash_values),
+                consolidateData.bind(null, table_info.hash_attribute)
+            ], (error, data) => {
+                if (error) {
+                    callback(error);
+                    return;
+                }
 
+                callback(null, data);
+            });
+        });
+    } catch(e){
+        callback(e);
+    }
 }
 
 function removeTableFromAttributeAlias(attributes, table_name){
@@ -107,77 +113,88 @@ function removeTableFromAttributeAlias(attributes, table_name){
 }
 
 function searchByValue (search_object, callback) {
-    let validation_error = search_validator(search_object, 'value');
-    if (validation_error) {
-        callback(validation_error);
-        return;
-    }
-
-    let condition = {'like':[search_object.search_attribute, search_object.search_value]};
-    let patterns = condition_patterns.createPatterns(condition, {name:search_object.table, schema:search_object.schema, hash_attribute:search_object.hash_attribute}, base_path);
-
-    async.waterfall([
-        (callback)=>{
-            evaluateTableAttributes(search_object.get_attributes, search_object, (err, attributes)=>{
-                if(err){
-                    callback(err);
-                    return;
-                }
-
-                search_object.get_attributes = attributes;
-                callback();
-            });
-        },
-
-        file_search.findIDsByRegex.bind(null, patterns.folder_search_path, patterns.folder_search),
-        getAttributeFiles.bind(null, search_object.get_attributes, patterns.table_path),
-        consolidateData.bind(null, search_object.hash_attribute)
-    ], (error, data)=>{
-        if(error){
-            callback(error);
+    try {
+        let validation_error = search_validator(search_object, 'value');
+        if (validation_error) {
+            callback(validation_error);
             return;
         }
 
-        callback(null, data);
-    });
-}
-
-function searchByConditions(search_wrapper, callback){
-    let search_object = search_wrapper.tables[0];
-    let validation_error = search_validator(search_object, 'conditions');
-    if (validation_error) {
-        callback(validation_error);
-        return;
-    }
-
-    let table_schema = global.hdb_schema[search_object.schema][search_object.table];
-
-    //let patterns = condition_patterns.createPatterns(search_object.condition, table_schema, base_path);
-    let get_attributes = search_object.get_attributes;
-    if(search_object.supplemental_fields && search_object.supplemental_fields.length > 0) {
-        get_attributes = _.uniq(search_object.get_attributes.concat(search_object.supplemental_fields));
-    }
-    evaluateTableAttributes(get_attributes, search_object, (err, attributes)=>{
-        if(err){
-            callback(err);
-            return;
-        }
+        let condition = {'like': [search_object.search_attribute, search_object.search_value]};
+        let patterns = condition_patterns.createPatterns(condition, {
+            name: search_object.table,
+            schema: search_object.schema,
+            hash_attribute: search_object.hash_attribute
+        }, base_path);
 
         async.waterfall([
-            multiConditionSearch.bind(null, search_object.conditions, table_schema),
-            getAttributeFiles.bind(null, attributes, `${base_path}${table_schema.schema}/${table_schema.name}/`),
-            consolidateData.bind(null, table_schema.hash_attribute)
-        ], (error, data)=>{
-            if(error){
+            (callback) => {
+                evaluateTableAttributes(search_object.get_attributes, search_object, (err, attributes) => {
+                    if (err) {
+                        callback(err);
+                        return;
+                    }
+
+                    search_object.get_attributes = attributes;
+                    callback();
+                });
+            },
+
+            file_search.findIDsByRegex.bind(null, patterns.folder_search_path, patterns.folder_search),
+            getAttributeFiles.bind(null, search_object.get_attributes, patterns.table_path),
+            consolidateData.bind(null, search_object.hash_attribute)
+        ], (error, data) => {
+            if (error) {
                 callback(error);
                 return;
             }
 
             callback(null, data);
         });
+    } catch(e){
+        callback(e);
+    }
+}
 
-    });
+function searchByConditions(search_wrapper, callback){
+    try {
+        let search_object = search_wrapper.tables[0];
+        let validation_error = search_validator(search_object, 'conditions');
+        if (validation_error) {
+            callback(validation_error);
+            return;
+        }
 
+        let table_schema = global.hdb_schema[search_object.schema][search_object.table];
+
+        //let patterns = condition_patterns.createPatterns(search_object.condition, table_schema, base_path);
+        let get_attributes = search_object.get_attributes;
+        if (search_object.supplemental_fields && search_object.supplemental_fields.length > 0) {
+            get_attributes = _.uniq(search_object.get_attributes.concat(search_object.supplemental_fields));
+        }
+        evaluateTableAttributes(get_attributes, search_object, (err, attributes) => {
+            if (err) {
+                callback(err);
+                return;
+            }
+
+            async.waterfall([
+                multiConditionSearch.bind(null, search_object.conditions, table_schema),
+                getAttributeFiles.bind(null, attributes, `${base_path}${table_schema.schema}/${table_schema.name}/`),
+                consolidateData.bind(null, table_schema.hash_attribute)
+            ], (error, data) => {
+                if (error) {
+                    callback(error);
+                    return;
+                }
+
+                callback(null, data);
+            });
+
+        });
+    } catch(e){
+        callback(e);
+    }
 
 }
 
@@ -227,14 +244,18 @@ function multiConditionSearch(conditions, table_schema, callback){
 }
 
 function searchByJoin(search_wrapper, callback){
-    searchByJoinConditions(search_wrapper.search, (err, data)=>{
-        if(err){
-            callback(err);
-            return;
-        }
+    try {
+        searchByJoinConditions(search_wrapper.search, (err, data) => {
+            if (err) {
+                callback(err);
+                return;
+            }
 
-        callback(null, data);
-    });
+            callback(null, data);
+        });
+    } catch(e){
+        callback(e);
+    }
 }
 
 function searchByJoinConditions(search_wrapper, callback){
