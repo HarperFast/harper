@@ -23,7 +23,7 @@ function addUser(user, callback){
     user.password = password.hash(user.password);
     delete user.operation;
 
-    var insert_object = {
+    let insert_object = {
         operation:'insert',
         schema :  'system',
         table:'hdb_user',
@@ -50,7 +50,8 @@ function alterUser(user, callback){
         return;
     }
 
-    var update_object = {
+
+    let update_object = {
         operation:'update',
         schema :  'system',
         table:'hdb_user',
@@ -77,7 +78,7 @@ function dropUser(user, callback){
         callback(validation_resp);
         return;
     }
-    var delete_object = {"table":"hdb_user", "schema":"system", "hash_value": user.username}
+    let delete_object = {"table":"hdb_user", "schema":"system", "hash_value": user.username}
     delete_.delete(delete_object, function(err, success){
        if(err){
            callback(err);

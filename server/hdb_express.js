@@ -154,7 +154,7 @@ if (cluster.isMaster && !DEBUG) {
                 operation_function = role.alterRole;
                 break;
             case 'drop_role':
-                operation_function = user.dropRole;
+                operation_function = role.dropRole;
                 break;
 
             default:

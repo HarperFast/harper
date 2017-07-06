@@ -26,7 +26,7 @@ function addRole(role, callback){
 
     delete role.operation;
 
-    var search_obj = {};
+    let search_obj = {};
     search_obj.schema = 'system';
     search_obj.table = 'hdb_role';
     search_obj.search_attribute = 'role'
@@ -44,7 +44,7 @@ function addRole(role, callback){
 
         role.id =  role.id = uuidV4();
 
-        var insert_object = {
+        let insert_object = {
             operation:'insert',
             schema :  'system',
             table:'hdb_role',
@@ -75,7 +75,7 @@ function alterRole(role, callback){
         return;
     }
 
-    var update_object = {
+    let update_object = {
         operation:'update',
         schema :  'system',
         table:'hdb_role',
@@ -102,16 +102,47 @@ function dropRole(role, callback){
         callback(validation_resp);
         return;
     }
-    var delete_object = {"table":"hdb_role", "schema":"system", "hash_value": role.rolename}
-    delete_.delete(delete_object, function(err, success){
-        if(err){
-            callback(err);
-            return;
+
+    let conditions = [
+        {
+            "and":
+                {"=":["role",role.id]}
+        },
+        {"and":
+            {"=":["active",true]}
         }
+    ];
 
-        callback(null, `${role.rolename} successfully deleted`);
 
+
+    let search_for_users = {
+        schema:'system',
+        table : 'hdb_user',
+        conditions: conditions,
+        get_attributes: ['username']
+    };
+
+
+
+
+    search.searchByConditions(search_for_users, function(err, users){
+        if(users && users.length > 0){
+            return callback(`Cannot drop role ${role.role} ${users.length} users are tied to this role`);
+        }
+        let delete_object = {"table":"hdb_role", "schema":"system", "hash_value": role.id}
+        delete_.delete(delete_object, function(err, success){
+            if(err){
+                callback(err);
+                return;
+            }
+
+            callback(null, `${role.rolename} successfully deleted`);
+
+        });
     });
+
+
+
 
 }
 

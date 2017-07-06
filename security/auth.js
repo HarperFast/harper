@@ -9,12 +9,12 @@ var passport = require('passport')
 
 
 function findAndValidateUser(username, password, done){
-    var search_obj = {};
+    let search_obj = {};
     search_obj.schema = 'system';
     search_obj.table = 'hdb_user';
     search_obj.hash_attribute = 'username';
     search_obj.hash_value = username;
-    search_obj.get_attributes = ['username', 'password', 'role'];
+    search_obj.get_attributes = ['username', 'password', 'role', 'active'];
     search.searchByHash(search_obj, function (err, user_data) {
         if (err) {
             return done(err);
@@ -22,6 +22,10 @@ function findAndValidateUser(username, password, done){
 
         if (!user_data) {
             return done('Cannot complete request: User not found', null);
+        }
+
+        if(user_data && !user_data.active){
+            return done('Cannot complete request: User is inactive', null);
         }
 
         if (!password_function.validate(user_data.password, password)) {
@@ -114,7 +118,7 @@ function checkPermissions(check_pemission_obj, callback) {
         return;
     }
 
-    var search_obj = {};
+    let search_obj = {};
     search_obj.schema = 'system';
     search_obj.table = 'hdb_role';
     search_obj.hash_attribute = 'id';
@@ -126,7 +130,7 @@ function checkPermissions(check_pemission_obj, callback) {
         }
 
 
-        var authoriziation_obj = {
+        let authoriziation_obj = {
             authroized: true,
             messages: []
         }
@@ -193,31 +197,6 @@ function checkPermissions(check_pemission_obj, callback) {
 
     });
 
-    /**
-     * {
-	super_admin: false
-	tables: [
-		person:{
-			read:true
-			write:false
-			update:true
-			delete:false
-			attribute_restrictions:[
-				first_name:{
-					read:false
-					write:true
-					update:true
-					delete:false
-				}
-
-			]
-		}
-
-	];
-
-
-}
-     */
 
 }
 

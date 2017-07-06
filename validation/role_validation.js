@@ -1,6 +1,6 @@
-var validate = require('validate.js');
+const validate = require('validate.js');
 
-var constraints = {
+const constraints = {
     role: {
         presence: true,
         format: "[\\w\\-\\_]+"
@@ -35,11 +35,11 @@ function dropRoleValidation(object) {
     constraints.role.presence = false;
     constraints.id.presence = true;
     constraints.permission.presence = false;
-    return customValidate(object);
+    return validate(object, constraints);
 }
 
 function customValidate(object) {
-    var validationErrors = [];
+    let validationErrors = [];
 
     if(validate(object, constraints)){
         validationErrors.push(validate(object, constraints));

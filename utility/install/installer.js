@@ -78,7 +78,7 @@ function checkInstall(callback) {
             hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
             if (hdb_properties.get('HDB_ROOT')) {
 
-                var schema = {
+                let schema = {
                     properties: {
                         REINSTALL: {
                             description: colors.red('It appears HarperDB is already installed.  Would you like to continue? Data loss may occur!'),
@@ -145,7 +145,7 @@ function wizard(callback) {
    prompt.message = 'Install HarperDB ' + __dirname;
 
 
-    var install_schema = {
+    let install_schema = {
         properties: {
             HDB_ROOT: {
                 description: colors.magenta(`[HDB_ROOT] Please enter the destination for HarperDB`),
@@ -230,6 +230,7 @@ function createAdminUser(callback){
         admin_user.username = wizard_result.HDB_ADMIN_USERNAME;
         admin_user.password =wizard_result.HDB_ADMIN_PASSWORD;
         admin_user.role = result.id
+        admin_user.active = true;
 
 
         user_ops.addUser(admin_user, function(err, result){
@@ -269,7 +270,7 @@ function createSettingsFile(mount_status, callback) {
         }
 
         const path = require('path');
-        var hdb_props_value = `PROJECT_DIR = ${path.resolve(process.cwd(),'../')}
+        let hdb_props_value = `PROJECT_DIR = ${path.resolve(process.cwd(),'../')}
         HDB_ROOT= ${wizard_result.HDB_ROOT}
         TCP_PORT = ${wizard_result.TCP_PORT}
         HTTP_PORT = ${wizard_result.HTTP_PORT}`;
