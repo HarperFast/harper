@@ -142,8 +142,7 @@ function searchByValue (search_object, callback) {
     });
 }
 
-function searchByConditions(search_wrapper, callback){
-    let search_object = search_wrapper.tables[0];
+function searchByConditions(search_object, callback){
     let validation_error = search_validator(search_object, 'conditions');
     if (validation_error) {
         callback(validation_error);
@@ -241,7 +240,7 @@ function searchByJoinConditions(search_wrapper, callback){
     getAsteriskFieldsForTables(search_wrapper, (error, search_wrapper)=> {
         search_wrapper = addSupplementalFields(search_wrapper);
         search_wrapper = setAdditionalAttributeData(search_wrapper);
-        searchByConditions(search_wrapper, (err, data) => {
+        searchByConditions(search_wrapper.tables[0], (err, data) => {
             if (err) {
                 callback(err);
                 return;
@@ -253,7 +252,7 @@ function searchByJoinConditions(search_wrapper, callback){
             next_table.conditions.push(convertJoinToCondition(search_wrapper.tables[0], search_wrapper.tables[1], join, data));
 
 
-            searchByConditions({tables: [next_table]}, (err, data2) => {
+            searchByConditions(next_table, (err, data2) => {
                 if (err) {
                     callback(err);
                     return;
