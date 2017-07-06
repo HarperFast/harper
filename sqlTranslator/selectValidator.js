@@ -5,12 +5,16 @@ module.exports = {
 };
 
 function validator(statement, callback){
+
     let select_columns = [];
 
     let condition_columns = [];
     let order_by_columns = [];
 
     try {
+        if(!statement){
+            return callback('invalid sql statement');
+        }
         if (statement.group) {
             throw 'GROUP BY clauses are not supported at this time';
         }
