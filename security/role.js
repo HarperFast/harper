@@ -26,13 +26,17 @@ function addRole(role, callback){
 
     delete role.operation;
 
-    let search_obj = {};
-    search_obj.schema = 'system';
-    search_obj.table = 'hdb_role';
-    search_obj.search_attribute = 'role'
-    search_obj.search_value = role.role;
-    search_obj.hash_attribute = 'id';
-    search_obj.get_attributes = ['id'];
+    let search_obj = {
+        schema: 'system',
+        table : 'hdb_role',
+        search_attribute : 'role',
+        search_value : role.role,
+        hash_attribute : 'id',
+        get_attributes: ['id']
+
+
+    };
+
     search.searchByValue(search_obj, function (err, search_role) {
         if(err){
             return callback(err);
