@@ -8,7 +8,7 @@ module.exports = {
     alterUser:alterUser,
     dropUser: dropUser
 
-}
+};
 
 
 
@@ -78,7 +78,12 @@ function dropUser(user, callback){
         callback(validation_resp);
         return;
     }
-    let delete_object = {"table":"hdb_user", "schema":"system", "hash_value": user.username}
+    let delete_object = {
+        table:"hdb_user",
+        schema:"system",
+        hash_values: [user.username]
+    };
+
     delete_.delete(delete_object, function(err, success){
        if(err){
            callback(err);

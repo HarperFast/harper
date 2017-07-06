@@ -11,7 +11,7 @@ const insert = require('../data_layer/insert'),
     alterRole:alterRole,
     dropRole: dropRole
 
-}
+};
 
 
 
@@ -133,7 +133,12 @@ function dropRole(role, callback){
         if(users && users.length > 0){
             return callback(`Cannot drop role ${role.role} ${users.length} users are tied to this role`);
         }
-        let delete_object = {"table":"hdb_role", "schema":"system", "hash_value": role.id}
+        let delete_object = {
+            table:"hdb_role",
+            schema:"system",
+            hash_values: [role.id]
+        };
+
         delete_.delete(delete_object, function(err, success){
             if(err){
                 callback(err);

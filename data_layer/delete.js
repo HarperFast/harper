@@ -1,7 +1,6 @@
 const validate = require('validate.js'),
     PropertiesReader = require('properties-reader'),
     hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`),
-    delete_validator = require('../validation/deleteValidator'),
     bulk_delete_validator = require('../validation/bulkDeleteValidator'),
     conditional_delete_validator = require('../validation/conditionalDeleteValidator'),
     search = require('./search');
@@ -16,46 +15,10 @@ const base_path = hdb_properties.get('HDB_ROOT') + "/schema/";
 
 module.exports ={
   delete: deleteRecord,
-    bulkDelete:bulkDelete,
     conditionalDelete:conditionalDelete
 };
 
 function deleteRecord(delete_object, callback){
-    try {
-        let validation = delete_validator(delete_object);
-        if (validation) {
-            callback(validation);
-            return;
-        }
-
-        let search_obj = {
-            schema: delete_object.schema,
-            table: delete_object.table,
-            hash_value: delete_object.hash_value,
-            get_attributes: ['*']
-        };
-
-        async.waterfall([
-            global_schema.getTableSchema.bind(null, delete_object.schema, delete_object.table),
-            (table_info, callback) => {
-                callback();
-            },
-            search.searchByHash.bind(null, search_obj),
-            deleteFiles.bind(null, delete_object)
-        ], (err) => {
-            if (err) {
-                callback(err);
-                return;
-            }
-
-            callback(null, 'record successfully deleted');
-        });
-    } catch(e){
-        callback(e);
-    }
-}
-
-function bulkDelete(delete_object, callback){
     try {
         let validation = bulk_delete_validator(delete_object);
         if (validation) {
@@ -68,7 +31,6 @@ function bulkDelete(delete_object, callback){
                 schema: delete_object.schema,
                 table: delete_object.table,
                 hash_values: delete_object.hash_values,
-                hash_attribute: delete_object.hash,
                 get_attributes: ['*']
             };
 
@@ -115,7 +77,7 @@ function conditionalDelete(delete_object, callback){
 
                 callback(null, delete_wrapper);
             },
-            bulkDelete
+            deleteRecord
         ], (err, data) => {
             if (err) {
                 callback(err);
@@ -171,11 +133,12 @@ function deleteFiles(delete_object, record, callback){
         (path, caller)=>{
             fs.unlink(path, (err)=>{
                 if(err){
-                    console.error(err);
+
                     if(err.code === 'ENOENT'){
                         caller();
                         return;
                     }
+                    console.error(err);
                     caller(err);
                     return;
                 }
