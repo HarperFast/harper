@@ -66,7 +66,7 @@ if (cluster.isMaster && !DEBUG) {
                     operation_function(req.body, (error, data) => {
                         if (error) {
                             console.log(error);
-                            res.status(500).json(error);
+                            res.status(400).json(error);
                             return;
                         }
 
