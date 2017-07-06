@@ -38,7 +38,7 @@
     "prompt": "^1.0.0",
     "properties-reader": "0.0.15",
     "request": "^2.81.0",
-    "sqlite-parser": "^1.0.0",
+    "sqlite-parser": "^1.0.1",
     "sudo-prompt": "^7.0.0",
     "systeminformation": "^3.17.3",
     "uuid": "^3.0.1",

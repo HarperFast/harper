@@ -160,6 +160,7 @@ function deleteFiles(delete_object, record, callback){
         (path, caller)=>{
             fs.unlink(path, (err)=>{
                 if(err){
+                    console.error(err);
                     if(err.code === 'ENOENT'){
                         caller();
                         return;

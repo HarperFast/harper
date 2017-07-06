@@ -231,7 +231,7 @@ function checkAttributeSchema(insert_object, callerback) {
             hash_folders[`${base_path}__hdb_hash/${property}`] = "";
             attribute_objects.push({
                 file_name: `${base_path}__hdb_hash/${property}/${attribute_file_name}`,
-                value: record[property]
+                value: typeof record[property] === 'object' ? JSON.stringify(record[property]) : record[property]
             });
             if (property !== hash_attribute) {
                 folders[attribute_path] = "";
