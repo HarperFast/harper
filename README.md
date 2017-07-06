@@ -99,6 +99,47 @@ node stop
 
 ```
 
+
+## Creating a Role in HarperDB
+
+```
+{
+"operation":"add_role",
+"role":"developer",
+"permission":{
+	"super_admin": false,
+	"dev":{
+
+   "tables": {
+     "dog": {
+         "read":true,
+         "write":false,
+         "update":true,
+         "delete":false,
+         "attribute_restrictions":[
+            {
+               "attribute_name": "breed",
+               "read":false,
+               "write":true,
+               "update":true,
+               "delete":false
+            }
+         ]
+      }
+   }
+}
+
+
+
+
+	}
+
+}
+
+```
+
+
+
 ## Need Help?
 
 -contact us via email: support@harperdb.io
