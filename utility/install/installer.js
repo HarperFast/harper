@@ -8,7 +8,6 @@ const prompt = require('prompt'),
     winston = require('winston'),
     isRoot = require('is-root'),
     async = require('async'),
-    uuidV4 = require('uuid/v4'),
     PropertiesReader = require('properties-reader');
 var hdb_boot_properties = null,
     hdb_properties = null;
@@ -216,7 +215,6 @@ function createAdminUser(callback){
 
     let role = {};
     role.role = 'super_user';
-    role.id = uuidV4();
     role.permission = {};
     role.permission.super_user = true;
 
@@ -230,8 +228,8 @@ function createAdminUser(callback){
 
         let admin_user = {};
         admin_user.username = wizard_result.HDB_ADMIN_USERNAME;
-        admin_user.password = password.hash(wizard_result.HDB_ADMIN_PASSWORD);
-        admin_user.role = role.id;
+        admin_user.password =wizard_result.HDB_ADMIN_PASSWORD;
+        admin_user.role = result.id
 
 
         user_ops.addUser(admin_user, function(err, result){

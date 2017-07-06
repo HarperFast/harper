@@ -36,7 +36,9 @@ if (cluster.isMaster && !DEBUG) {
         auth = require('../security/auth'),
         session = require('express-session'),
         passport = require('passport'),
-        global_schema = require('../utility/globalSchema');
+        global_schema = require('../utility/globalSchema'),
+        user = require('../security/user'),
+        role = require('../security/role');
 
     hdb_properties.append(hdb_properties.get('settings_path'));
 
@@ -136,7 +138,25 @@ if (cluster.isMaster && !DEBUG) {
                 break;
             case 'delete':
                 operation_function = delete_.delete;
+            case 'add_user':
+                operation_function = user.addUser;
                 break;
+            case 'alter_user':
+                operation_function = user.alterUser;
+                break;
+            case 'drop_user':
+                operation_function = user.dropUser;
+                break;
+            case 'add_role':
+                operation_function = role.addRole;
+                break;
+            case 'alter_role':
+                operation_function = role.alterRole;
+                break;
+            case 'drop_role':
+                operation_function = user.dropRole;
+                break;
+
             default:
                 break;
         }

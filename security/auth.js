@@ -1,7 +1,8 @@
 const express = require('express');
 router = express.Router(),
     search = require('../data_layer/search'),
-    password_function = require('../utility/password');
+    password_function = require('../utility/password'),
+    validation = require('../validation/check_permissions');
 var passport = require('passport')
     , LocalStrategy = require('passport-local').Strategy,
     BasicStrategy = require('passport-http').BasicStrategy;
@@ -20,11 +21,11 @@ function findAndValidateUser(username, password, done){
         }
 
         if (!user_data) {
-            return done('User not found', null);
+            return done('Cannot complete request: User not found', null);
         }
 
         if (!password_function.validate(user_data.password, password)) {
-            return done('Invalid password', false);
+            return done('Cannot complete request:  Invalid password', false);
         }
 
         return done(null, user_data);
@@ -104,11 +105,124 @@ function authorize(req, res, next) {
 
 }
 
-function checkPermissions(user, table, attribute, operation) {
+function checkPermissions(check_pemission_obj, callback) {
+
+    let validation_results = validation(check_pemission_obj);
+
+    if(validation_results){
+        callback(validation_results);
+        return;
+    }
+
+    var search_obj = {};
+    search_obj.schema = 'system';
+    search_obj.table = 'hdb_role';
+    search_obj.hash_attribute = 'id';
+    search_obj.hash_value = check_pemission_obj.user.role;
+    search_obj.get_attributes = ['id', 'role', 'permission'];
+    search.searchByHash(search_obj, function (err, role) {
+        if (err) {
+            return callback(err);
+        }
+
+
+        var authoriziation_obj = {
+            authroized: true,
+            messages: []
+        }
+
+
+        if(!role || !role.permission){
+            return callback('Invalid role');
+        }
+        let permission = JSON.parse(role.permission);
+
+        if(permission.super_user){
+            return callback(null, authoriziation_obj);
+        }
+
+        if(!permission[check_pemission_obj.schema]){
+            authoriziation_obj.authroized = false;
+            authoriziation_obj.messages.push(`Not authorized to access ${check_pemission_obj.schema} schema`);
+            return callback(null, authoriziation_obj);
+        }
+
+        if(!permission[check_pemission_obj.schema].tables[check_pemission_obj.table]){
+            authoriziation_obj.authroized = false;
+            authoriziation_obj.messages.push(`Not authorized to access ${check_pemission_obj.table} table`);
+            return callback(null, authoriziation_obj);
+
+        }
+
+        if(!permission[check_pemission_obj.schema].tables[check_pemission_obj.table][check_pemission_obj.operation]){
+            authoriziation_obj.authroized = false;
+            authoriziation_obj.messages.push(`Not authorized to access ${check_pemission_obj.operation} on ${check_pemission_obj.table} table`);
+            return callback(null, authoriziation_obj);
+        }
+
+
+        if(permission[check_pemission_obj.schema].tables[check_pemission_obj.table].attribute_restrictions
+            && !check_pemission_obj.attributes ){
+
+            authoriziation_obj.authroized = false;
+            authoriziation_obj.messages.push(`${check_pemission_obj.schema}.${check_pemission_obj.table} has attribute restrictions. Missing attributes to validate`);
+            return callback(null, authoriziation_obj);
+        }
+
+        if(permission[check_pemission_obj.schema].tables[check_pemission_obj.table].attribute_restrictions
+            && check_pemission_obj.attributes ){
+
+            let restricted_attrs = permission[check_pemission_obj.schema].tables[check_pemission_obj.table].attribute_restrictions;
+            for(r_attr in restricted_attrs){
+                if(check_pemission_obj.attributes.indexOf(restricted_attrs[r_attr].attribute_name) > -1 && !restricted_attrs[r_attr][check_pemission_obj.operation]){
+                    authoriziation_obj.authroized = false;
+                    authoriziation_obj.messages.push(`Not authorized to ${check_pemission_obj.operation} ${restricted_attrs[r_attr].attribute_name} `);
+
+
+                }
+
+            }
+
+        }
+
+        callback(null, authoriziation_obj);
+        return;
+
+
+
+
+    });
+
+    /**
+     * {
+	super_admin: false
+	tables: [
+		person:{
+			read:true
+			write:false
+			update:true
+			delete:false
+			attribute_restrictions:[
+				first_name:{
+					read:false
+					write:true
+					update:true
+					delete:false
+				}
+
+			]
+		}
+
+	];
+
+
+}
+     */
 
 }
 
 
 module.exports = {
-    authorize: authorize
+    authorize: authorize,
+    checkPermissions: checkPermissions
 }

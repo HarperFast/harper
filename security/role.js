@@ -1,8 +1,12 @@
 const insert = require('../data_layer/insert'),
+    search = require('../data_layer/search'),
     delete_ = require('../data_layer/delete'),
-    validation = require('../validation/role_validation');
+    validation = require('../validation/role_validation'),
+    uuidV4 = require('uuid/v4');
 
-module.exports = {
+
+
+    module.exports = {
     addRole: addRole,
     alterRole:alterRole,
     dropRole: dropRole
@@ -19,23 +23,48 @@ function addRole(role, callback){
         return;
     }
 
-    var insert_object = {
-        operation:'insert',
-        schema :  'system',
-        table:'hdb_role',
-        hash_attribute: 'id',
-        records: [role]
-    };
 
-    insert.insert(insert_object, function(err, success){
+    delete role.operation;
+
+    var search_obj = {};
+    search_obj.schema = 'system';
+    search_obj.table = 'hdb_role';
+    search_obj.search_attribute = 'role'
+    search_obj.search_value = role.role;
+    search_obj.hash_attribute = 'id';
+    search_obj.get_attributes = ['id'];
+    search.searchByValue(search_obj, function (err, search_role) {
         if(err){
-            callback(err);
-            return;
+            return callback(err);
+        }
+        if(search_role && search_role.length > 0){
+            return callback('Role already exists');
+
         }
 
-        callback(null, `${role.rolename} successfully added`);
+        role.id =  role.id = uuidV4();
 
-    });
+        var insert_object = {
+            operation:'insert',
+            schema :  'system',
+            table:'hdb_role',
+            hash_attribute: 'id',
+            records: [role]
+        };
+
+        insert.insert(insert_object, function(err, success){
+            if(err){
+                callback(err);
+                return;
+            }
+
+            callback(null, role);
+
+        });
+
+
+    })
+
 
 }
 
@@ -54,13 +83,13 @@ function alterRole(role, callback){
         records: [role]
     };
 
-    insert.update(insert_object, function(err, success){
+    insert.update(update_object, function(err, success){
         if(err){
             callback(err);
             return;
         }
 
-        callback(null, `${role.rolename} successfully altered`);
+        callback(null, `${role.role} successfully altered`);
 
     });
 
@@ -83,6 +112,32 @@ function dropRole(role, callback){
         callback(null, `${role.rolename} successfully deleted`);
 
     });
+
+}
+
+
+function validatePermission(table_obj){
+    if(!table_obj){
+        return "Missing role";
+    }
+
+    if(!table_obj.role){
+        return "role.role must be defined";
+    }
+
+    if(!table_obj.permission){
+        return "role.permission must be defined";
+
+    }
+
+    if(table_obj.su)
+
+
+
+
+
+    return;
+
 
 }
 

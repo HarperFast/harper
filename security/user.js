@@ -1,5 +1,6 @@
 const insert = require('../data_layer/insert'),
       delete_ = require('../data_layer/delete'),
+      password = require('../utility/password'),
       validation = require('../validation/user_validation');
 
 module.exports = {
@@ -18,6 +19,9 @@ function addUser(user, callback){
         callback(validation_resp);
         return;
     }
+
+    user.password = password.hash(user.password);
+    delete user.operation;
 
     var insert_object = {
         operation:'insert',
@@ -54,7 +58,7 @@ function alterUser(user, callback){
         records: [user]
     };
 
-    insert.update(insert_object, function(err, success){
+    insert.update(update_object, function(err, success){
         if(err){
             callback(err);
             return;
