@@ -156,7 +156,7 @@ function searchByValue (search_object, callback) {
     }
 }
 
-function searchByConditions(search_wrapper, callback){
+function searchByConditions(search_object, callback){
     try {
         let validation_error = search_validator(search_object, 'conditions');
         if (validation_error) {
