@@ -158,7 +158,6 @@ function searchByValue (search_object, callback) {
 
 function searchByConditions(search_wrapper, callback){
     try {
-        let search_object = search_wrapper.tables[0];
         let validation_error = search_validator(search_object, 'conditions');
         if (validation_error) {
             callback(validation_error);
@@ -267,7 +266,7 @@ function searchByJoinConditions(search_wrapper, callback){
         getAsteriskFieldsForTables(search_wrapper, (error, search_wrapper) => {
             search_wrapper = addSupplementalFields(search_wrapper);
             search_wrapper = setAdditionalAttributeData(search_wrapper);
-            searchByConditions(search_wrapper, (err, data) => {
+            searchByConditions(search_wrapper.tables[0], (err, data) => {
                 if (err) {
                     callback(err);
                     return;
@@ -279,11 +278,11 @@ function searchByJoinConditions(search_wrapper, callback){
                 next_table.conditions.push(convertJoinToCondition(search_wrapper.tables[0], search_wrapper.tables[1], join, data));
 
 
-                searchByConditions({tables: [next_table]}, (err, data2) => {
-                    if (err) {
-                        callback(err);
-                        return;
-                    }
+            searchByConditions(next_table, (err, data2) => {
+                if (err) {
+                    callback(err);
+                    return;
+                }
 
                     let joined = joinData(join, search_wrapper.all_get_attributes, data, data2);
 
@@ -387,12 +386,19 @@ function sortData(data, search_wrapper){
         let columns = [];
         let orders = [];
         search_wrapper.order.forEach((order_by) => {
-            let order_column = findAttribute(search_wrapper.all_get_attributes, order_by.attribute).alias;
-            columns.push(order_column);
-            orders.push(order_by.direction ? order_by.direction : 'asc');
+            let order_attribute = findAttribute(search_wrapper.all_get_attributes, order_by.attribute);
+            if(order_attribute) {
+                let order_column = order_attribute.alias;
+                columns.push(order_column);
+                orders.push(order_by.direction ? order_by.direction : 'asc');
+            }
         });
 
-        return _.orderBy(data, columns, orders);
+        if(orders) {
+            return _.orderBy(data, columns, orders);
+        }
+
+        return data;
     }
 
     return data;

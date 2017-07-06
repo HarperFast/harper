@@ -3,7 +3,8 @@ const search = require('../data_layer/search'),
     searchByJoinConditions = search.searchByJoinConditions,
     global_schema = require('../utility/globalSchema'),
     async = require('async'),
-    condition_parser = require('./conditionParser');
+    condition_parser = require('./conditionParser'),
+    select_validator = require('./selectValidator').validator;
 
 
 module.exports = {
@@ -12,35 +13,40 @@ module.exports = {
 
 function convertSelect(statement, callback) {
     try {
-        let final_search_object = {};
-        let converter_function;
-        let search_function;
-        if (statement.from.type === 'identifier') {
-            converter_function = generateBasicSearchObject;
-            search_function = searchByConditions;
-        } else {
-            converter_function = generateAdvancedSearchObject;
-            search_function = searchByJoinConditions;
-        }
 
-        async.waterfall([
-            converter_function.bind(null, statement),
-            search_function
-        ], (err, results)=>{
+
+        select_validator(statement, (err)=> {
             if(err){
                 callback(err);
                 return;
             }
 
-            callback(null, results);
-        });
+            let converter_function;
+            let search_function;
+            if (statement.from.type === 'identifier') {
+                converter_function = generateBasicSearchObject;
+                search_function = searchByConditions;
+            } else {
+                converter_function = generateAdvancedSearchObject;
+                search_function = searchByJoinConditions;
+            }
 
+            async.waterfall([
+                converter_function.bind(null, statement),
+                search_function
+            ], (err, results) => {
+                if (err) {
+                    callback(err);
+                    return;
+                }
+
+                callback(null, results);
+            });
+        });
     } catch(e) {
         callback(e);
     }
 }
-
-
 
 function generateBasicSearchObject(statement, callback){
     let schema_table = statement.from.name.split('.');
