@@ -357,12 +357,19 @@ function sortData(data, search_wrapper){
         let columns = [];
         let orders = [];
         search_wrapper.order.forEach((order_by) => {
-            let order_column = findAttribute(search_wrapper.all_get_attributes, order_by.attribute).alias;
-            columns.push(order_column);
-            orders.push(order_by.direction ? order_by.direction : 'asc');
+            let order_attribute = findAttribute(search_wrapper.all_get_attributes, order_by.attribute);
+            if(order_attribute) {
+                let order_column = order_attribute.alias;
+                columns.push(order_column);
+                orders.push(order_by.direction ? order_by.direction : 'asc');
+            }
         });
 
-        return _.orderBy(data, columns, orders);
+        if(orders) {
+            return _.orderBy(data, columns, orders);
+        }
+
+        return data;
     }
 
     return data;
