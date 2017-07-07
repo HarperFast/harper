@@ -59,7 +59,7 @@ module.exports = {
 function setSchemaDataToGlobal(callback){
 
     if(!global.hdb_schema){
-        schema.describeAll((err, data)=> {
+        schema.describeAll(null, (err, data)=> {
             if (err) {
                 callback(err);
                 return;
