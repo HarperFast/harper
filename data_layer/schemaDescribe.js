@@ -6,7 +6,7 @@ const async = require('async'),
 
 
 module.exports = {
-    describeAll:function (callback) {
+    describeAll:function (op_obj, callback) {
         try {
             let table_search_obj = {};
             table_search_obj.schema = 'system';
