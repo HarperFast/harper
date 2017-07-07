@@ -51,9 +51,34 @@ function run() {
             hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
             console.log(hdb_boot_properties.get('settings_path'));
             // doesn't do a null check.
-            hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
-            completeRun();
-            return;
+            fs.stat(hdb_boot_properties.get('settings_path'), function(err, stats) {
+                if (err) {
+                    if (err.errno === -2) {
+                        install.install(function (err, result) {
+                            if (err) {
+                                console.log(err);
+                                winston.log('error', `start fail: ${err}`);
+                                return;
+                            }
+                            hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
+                            hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
+                            completeRun();
+                            return;
+
+
+                        });
+                    } else {
+                        winston.log('error', `start fail: ${err}`);
+                        return;
+                    }
+
+                } else {
+
+                    hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
+                    completeRun();
+                    return;
+                }
+            });
         }
 
 

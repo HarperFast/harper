@@ -56,6 +56,7 @@ function run_install(callback) {
                wizard,
                mount,
                createSettingsFile,
+               createAdminUser,
                checkRegister
 
            ], function (err, result) {
@@ -79,7 +80,7 @@ function checkInstall(callback) {
             hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
             if (hdb_properties.get('HDB_ROOT')) {
 
-                var schema = {
+                let schema = {
                     properties: {
                         REINSTALL: {
                             description: colors.red('It appears HarperDB is already installed.  Would you like to continue? Data loss may occur!'),
@@ -146,7 +147,7 @@ function wizard(callback) {
    prompt.message = 'Install HarperDB ' + __dirname;
 
 
-    var install_schema = {
+    let install_schema = {
         properties: {
             HDB_ROOT: {
                 description: colors.magenta(`[HDB_ROOT] Please enter the destination for HarperDB`),
@@ -209,6 +210,48 @@ function wizard(callback) {
     });
 }
 
+function createAdminUser(callback){
+    var user_ops = require('../../security/user');
+    var role_ops = require('../../security/role');
+
+    let role = {};
+    role.role = 'super_user';
+    role.permission = {};
+    role.permission.super_user = true;
+
+
+    role_ops.addRole(role, function(err, result){
+       if(err){
+           winston.log('info', 'role failed to create ' + err);
+           callback(err);
+           return;
+       }
+
+        let admin_user = {};
+        admin_user.username = wizard_result.HDB_ADMIN_USERNAME;
+        admin_user.password =wizard_result.HDB_ADMIN_PASSWORD;
+        admin_user.role = result.id
+        admin_user.active = true;
+
+
+        user_ops.addUser(admin_user, function(err, result){
+           if(err){
+               winston.log('info', 'user creation error' + err);
+               callback(err);
+           }
+           callback(null);
+           return;
+        });
+
+
+    });
+
+
+
+
+}
+
+
 function createSettingsFile(mount_status, callback) {
 
     if (mount_status != 'complete') {
@@ -228,12 +271,11 @@ function createSettingsFile(mount_status, callback) {
         }
 
         const path = require('path');
-        var hdb_props_value = `PROJECT_DIR = ${path.resolve(process.cwd(),'../')}
+        let hdb_props_value = `PROJECT_DIR = ${path.resolve(process.cwd(),'../')}
         HDB_ROOT= ${wizard_result.HDB_ROOT}
         TCP_PORT = ${wizard_result.TCP_PORT}
-        HTTP_PORT = ${wizard_result.HTTP_PORT}
-        HDB_ADMIN_USERNAME = ${wizard_result.HDB_ADMIN_USERNAME}
-        HDB_ADMIN_PASSWORD = ${password.hash(wizard_result.HDB_ADMIN_PASSWORD)}`;
+        HTTP_PORT = ${wizard_result.HTTP_PORT}`;
+
 
         winston.log('info', `hdb_props_value ${JSON.stringify(hdb_props_value)}`);
         winston.log('info', `settings path: ${hdb_boot_properties.get('settings_path')}`);

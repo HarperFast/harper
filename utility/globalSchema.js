@@ -35,6 +35,11 @@ const system_schema = {
             ]
     },
     hdb_user:{
+        hash_attribute:'username',
+        name:'hdb_user',
+        schema:'system'
+    },
+    hdb_role:{
         hash_attribute:'id',
         name:'hdb_user',
         schema:'system'
@@ -54,7 +59,7 @@ module.exports = {
 function setSchemaDataToGlobal(callback){
 
     if(!global.hdb_schema){
-        schema.describeAll((err, data)=> {
+        schema.describeAll(null, (err, data)=> {
             if (err) {
                 callback(err);
                 return;
