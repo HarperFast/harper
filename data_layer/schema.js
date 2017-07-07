@@ -194,7 +194,11 @@ function deleteSchemaStructure (drop_schema_object, callback) {
         let schema = drop_schema_object.schema;
 
 
-        let delete_schema_object = {"table": "hdb_schema", "schema": "system", "hash_value": schema};
+        let delete_schema_object = {
+            table: "hdb_schema",
+            schema: "system",
+            hash_values: [schema]
+        };
 
         delete_.delete(delete_schema_object, function (err, data) {
             if (err) {
@@ -202,14 +206,15 @@ function deleteSchemaStructure (drop_schema_object, callback) {
                 return;
             }
 
-            let search_obj = {};
-            search_obj.schema = 'system';
-            search_obj.table = 'hdb_table';
-            search_obj.hash_attribute = 'id';
-            search_obj.search_attribute = 'schema';
-            search_obj.search_value = schema;
-            search_obj.hash_values = [];
-            search_obj.get_attributes = ['id'];
+            let search_obj = {
+                schema: 'system',
+                table: 'hdb_table',
+                hash_attribute: 'id',
+                search_attribute: 'schema',
+                search_value: schema,
+                get_attributes: ['id']
+            };
+
             search.searchByValue(search_obj, function (err, tables) {
                 if (err) {
                     callback(err);
@@ -217,13 +222,17 @@ function deleteSchemaStructure (drop_schema_object, callback) {
 
                 }
                 if (tables && tables.length > 0) {
-                    let delete_table_object = {"table": "hdb_table", "schema": "system", "hash_values": []};
+                    let delete_table_object = {
+                        table: "hdb_table",
+                        schema: "system",
+                        hash_values: []
+                    };
+
                     for (t in tables) {
                         delete_table_object.hash_values.push(tables[t].id);
-
                     }
 
-                    delete_.bulkDelete(delete_table_object, function (err, data) {
+                    delete_.delete(delete_table_object, function (err, data) {
                         if (err) {
                             callback(err);
                             return;
@@ -368,10 +377,10 @@ function deleteTableStrucutre (drop_table_object, callback) {
 
             if (delete_tb) {
                 let delete_table_object = {
-                    "table": "hdb_table",
-                    "schema": "system",
-                    "hash_attribute": "id",
-                    "hash_value": delete_tb.id
+                    table: "hdb_table",
+                    schema: "system",
+                    hash_attribute: "id",
+                    hash_values: [delete_tb.id]
                 };
 
                 delete_.delete(delete_table_object, function (err, data) {
@@ -521,7 +530,7 @@ function deleteAttributeStructure(attribute_drop_object, callback){
 
             }
 
-            delete_.bulkDelete(delete_table_object, function(err, success){
+            delete_.delete(delete_table_object, function(err, success){
                 if(err){
                     callback(err);
                     return;
