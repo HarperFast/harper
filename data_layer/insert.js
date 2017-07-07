@@ -53,85 +53,93 @@ function validation(write_object, callback){
 }
 
 function insertData(insert_object, callback){
-    if(insert_object.operation !== 'insert'){
-        callback('invalid operation, must be insert');
-    }
-
-    async.waterfall([
-        validation.bind(null, insert_object),
-        (table_schema, caller)=>{
-            let hash_attribute = table_schema.hash_attribute;
-            let hash_paths = [];
-            let base_path = hdb_path + '/' + insert_object.schema + '/' + insert_object.table + '/';
-            for (let r in insert_object.records) {
-                let record = insert_object.records[r];
-                hash_paths.push(`${base_path}__hdb_hash/${hash_attribute}/${record[hash_attribute]}.hdb`);
-            }
-            caller(null, hash_paths);
-        },
-        checkRecordsExist,
-        checkAttributeSchema.bind(null, insert_object),
-        processData
-    ], (err)=>{
-        if (err) {
-            callback(err);
-            return;
+    try {
+        if (insert_object.operation !== 'insert') {
+            callback('invalid operation, must be insert');
         }
 
-        callback(null, `successfully wrote ${insert_object.records.length} records`);
-        return;
-    });
+        async.waterfall([
+            validation.bind(null, insert_object),
+            (table_schema, caller) => {
+                let hash_attribute = table_schema.hash_attribute;
+                let hash_paths = [];
+                let base_path = hdb_path + '/' + insert_object.schema + '/' + insert_object.table + '/';
+                for (let r in insert_object.records) {
+                    let record = insert_object.records[r];
+                    hash_paths.push(`${base_path}__hdb_hash/${hash_attribute}/${record[hash_attribute]}.hdb`);
+                }
+                caller(null, hash_paths);
+            },
+            checkRecordsExist,
+            checkAttributeSchema.bind(null, insert_object),
+            processData
+        ], (err) => {
+            if (err) {
+                callback(err);
+                return;
+            }
+
+            callback(null, `successfully wrote ${insert_object.records.length} records`);
+            return;
+        });
+    } catch(e){
+        callback(e);
+    }
 }
 
 function updateData(update_object, callback){
-    if(update_object.operation !== 'update'){
-        callback('invalid operation, must be update');
-    }
-
-    async.waterfall([
-        validation.bind(null, update_object),
-        (table_schema, caller)=>{
-            let attributes = new Set();
-            let hashes = [];
-            update_object.records.forEach((record)=>{
-                hashes.push(record[table_schema.hash_attribute]);
-                Object.keys(record).forEach((attribute)=>{
-                    attributes.add(attribute);
-                });
-            });
-
-            let search_obj = {
-                schema: update_object.schema,
-                table: update_object.table,
-                hash_attribute: 'id',
-                hash_values: hashes,
-                get_attributes: Array.from(attributes)
-            };
-
-            caller(null, search_obj);
-        },
-        search.searchByHashes,
-        (existing_records, caller)=>{
-            let hash_attribute = global.hdb_schema[update_object.schema][update_object.table].hash_attribute;
-            caller(null, update_object, hash_attribute, existing_records);
-        },
-        compareUpdatesToExistingRecords,
-        unlinkFiles,
-        (update_objects, caller)=>{
-            update_object.records = update_objects;
-            caller(null, update_object);
-        },
-        checkAttributeSchema,
-        processData
-    ], (err)=>{
-        if (err) {
-            callback(err);
-            return;
+    try {
+        if (update_object.operation !== 'update') {
+            callback('invalid operation, must be update');
         }
 
-        callback(null, `successfully wrote ${update_object.records.length} records`);
-        return;
-    });
+        async.waterfall([
+            validation.bind(null, update_object),
+            (table_schema, caller) => {
+                let attributes = new Set();
+                let hashes = [];
+                update_object.records.forEach((record) => {
+                    hashes.push(record[table_schema.hash_attribute]);
+                    Object.keys(record).forEach((attribute) => {
+                        attributes.add(attribute);
+                    });
+                });
+
+                let search_obj = {
+                    schema: update_object.schema,
+                    table: update_object.table,
+                    hash_attribute: 'id',
+                    hash_values: hashes,
+                    get_attributes: Array.from(attributes)
+                };
+
+                caller(null, search_obj);
+            },
+            search.searchByHashes,
+            (existing_records, caller) => {
+                let hash_attribute = global.hdb_schema[update_object.schema][update_object.table].hash_attribute;
+                caller(null, update_object, hash_attribute, existing_records);
+            },
+            compareUpdatesToExistingRecords,
+            unlinkFiles,
+            (update_objects, caller) => {
+                update_object.records = update_objects;
+                caller(null, update_object);
+            },
+            checkAttributeSchema,
+            processData
+        ], (err) => {
+            if (err) {
+                callback(err);
+                return;
+            }
+
+            callback(null, `successfully wrote ${update_object.records.length} records`);
+            return;
+        });
+    } catch(e){
+        callback(e);
+    }
 }
 
 function compareUpdatesToExistingRecords(update_object, hash_attribute, existing_records, callback){
@@ -224,14 +232,15 @@ function checkAttributeSchema(insert_object, callerback) {
                 return;
             }
 
-            let value_stripped = String(record[property]).replace(regex, '').substring(0, 4000);
+            let value = typeof record[property] === 'object' ? JSON.stringify(record[property]) : record[property];
+            let value_stripped = String(value).replace(regex, '').substring(0, 4000);
             let attribute_file_name = record[hash_attribute] + '.hdb';
             let attribute_path = base_path + property + '/' + value_stripped;
 
             hash_folders[`${base_path}__hdb_hash/${property}`] = "";
             attribute_objects.push({
                 file_name: `${base_path}__hdb_hash/${property}/${attribute_file_name}`,
-                value: typeof record[property] === 'object' ? JSON.stringify(record[property]) : record[property]
+                value: value
             });
             if (property !== hash_attribute) {
                 folders[attribute_path] = "";
