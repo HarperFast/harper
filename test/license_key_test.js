@@ -1,5 +1,5 @@
 const hdb_license = require('../utility/hdb_license'),
-    winston = require('winston');
+    winston = require('../utility/logging/winston_logger');
 
 /**
 hdb_license.generateFingerPrint(function(err, fingerprint){
@@ -28,7 +28,7 @@ hdb_license.generateFingerPrint(function(err, fingerprint){
 
 
 var licenseKeyObject = {};
-licenseKeyObject.fingerprint = 'iqg7BUzmsb2cb6c014ad4c3140bc2a83369d9ff6c';
+licenseKeyObject.fingerprint = 'y2h76kHqNc1222acdbcb40e827c07483c434924ff';
 licenseKeyObject.exp_date = '2017-07-11';
 licenseKeyObject.company = 'hdb';
 hdb_license.generateLicense(licenseKeyObject, function(err, license){

@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 const spawn = require('child_process').spawn,
-
-    winston = require('winston');
+    winston = require('../utility/logging/winston_logger');
 
 
 stop();

@@ -1,5 +1,6 @@
 const hdb_license = require('./hdb_license'),
-    colors = require("colors/safe");
+    colors = require("colors/safe"),
+    winston = require('../utility/logging/winston_logger');
 
 
 module.exports ={

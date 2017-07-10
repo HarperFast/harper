@@ -33,7 +33,8 @@ if (cluster.isMaster && !DEBUG) {
         passport = require('passport'),
         global_schema = require('../utility/globalSchema'),
         user = require('../security/user'),
-        role = require('../security/role');
+        role = require('../security/role'),
+        read_log = require('../utility/logging/read_logs');
 
     hdb_properties.append(hdb_properties.get('settings_path'));
 
@@ -45,7 +46,7 @@ if (cluster.isMaster && !DEBUG) {
     app.use(passport.initialize());
     app.use(passport.session());
     app.post('/', function (req, res) {
-        winston.info(req.body);
+        winston.info(JSON.stringify(req.body));
         auth.authorize(req, res, function(err, user) {
             if(err){
                 res.status(401).send(err);
@@ -152,6 +153,9 @@ if (cluster.isMaster && !DEBUG) {
                 break;
             case 'drop_role':
                 operation_function = role.dropRole;
+                break;
+            case 'read_log':
+                operation_function = read_log.read_log;
                 break;
             default:
                 break;

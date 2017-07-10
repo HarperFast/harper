@@ -2,6 +2,7 @@
 
 const async = require('async'),
     search = require('./search'),
+    winston = require('../utility/logging/winston_logger'),
     describe_table_validation = require('../validation/describeTableValidator.js');
 
 

@@ -6,6 +6,7 @@ const fs = require('graceful-fs'),
 const base_path = hdb_properties.get('HDB_ROOT') + "/schema/"
     , search_validator = require('../validation/searchValidator.js')
     , async = require('async'),
+    winston = require('../utility/logging/winston_logger'),
     path = require('path'),
     file_search = require('../lib/fileSystem/fileSearch'),
     _ = require('lodash'),

@@ -6,6 +6,7 @@ const fs = require('fs.extra')
     , attribute_validation = require('../validation/attributeInsertValidator')
     , describe_schema_validation = require('../validation/describeSchemaValidation.js')
     , search = require('./search.js')
+    ,winston = require('../utility/logging/winston_logger')
     , uuidV4 = require('uuid/v4')
     , delete_ = require('../data_layer/delete')
     //this is to avoid a circular dependency with insert.

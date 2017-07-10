@@ -1,6 +1,7 @@
 const search = require('../data_layer/search'),
     async = require('async'),
     global_schema = require('../utility/globalSchema'),
+    winston = require('../utility/logging/winston_logger'),
     write = require('./insert');
 
 module.exports = {

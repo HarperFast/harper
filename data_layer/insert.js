@@ -10,6 +10,7 @@ const insert_validator = require('../validation/insertValidator.js'),
     mkdirp = require('mkdirp'),
     global_schema = require('../utility/globalSchema'),
     search = require('./search'),
+    winston = require('../utility/logging/winston_logger'),
     _ = require('lodash'),
     PropertiesReader = require('properties-reader'),
     hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);

@@ -3,7 +3,8 @@ const sqliteParser = require('sqlite-parser'),
     global_schema = require('../utility/globalSchema'),
     select_translator = require('./selectTranslator').convertSelect,
     update_translator = require('./updateTranslator').convertUpdate,
-    delete_translator = require('./deleteTranslator').convertDelete;
+    delete_translator = require('./deleteTranslator').convertDelete,
+    winston = require('../utility/logging/winston_logger');
 
 module.exports = {
     evaluateSQL: evaluateSQL
