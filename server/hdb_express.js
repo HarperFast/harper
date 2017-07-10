@@ -1,16 +1,11 @@
 const cluster = require('cluster');
 const numCPUs = 4;
 const DEBUG = true;
-const winston = require('winston');
-winston.configure({
-    transports: [
-        new (winston.transports.File)({filename: 'hdb.log'})
-    ]
-});
+const winston = require('../utility/logging/winston_logger');
 
 
 if (cluster.isMaster && !DEBUG) {
-    winston.log(`Master ${process.pid} is running`);
+    winston.info(`Master ${process.pid} is running`);
 
     // Fork workers.
     for (let i = 0; i < numCPUs; i++) {
@@ -18,10 +13,10 @@ if (cluster.isMaster && !DEBUG) {
     }
 
     cluster.on('exit', (worker, code, signal) => {
-        winston.log(`worker ${worker.process.pid} died`);
+        winston.info(`worker ${worker.process.pid} died`);
     });
 } else {
-    winston.log('In express' + process.cwd());
+    winston.info('In express' + process.cwd());
     const express = require('express'),
         PropertiesReader = require('properties-reader'),
         hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`),
@@ -38,17 +33,20 @@ if (cluster.isMaster && !DEBUG) {
         passport = require('passport'),
         global_schema = require('../utility/globalSchema'),
         user = require('../security/user'),
-        role = require('../security/role');
+        role = require('../security/role'),
+        read_log = require('../utility/logging/read_logs');
 
     hdb_properties.append(hdb_properties.get('settings_path'));
 
 
     app.use(bodyParser.json()); // support json encoded bodies
     app.use(bodyParser.urlencoded({extended: true}));
-    app.use(session({ secret: 'keyboard cat' }));
+    app.use(session({ secret: 'keyboard cat',     resave: true,
+        saveUninitialized: true }));
     app.use(passport.initialize());
     app.use(passport.session());
     app.post('/', function (req, res) {
+        winston.info(JSON.stringify(req.body));
         auth.authorize(req, res, function(err, user) {
             if(err){
                 res.status(401).send(err);
@@ -57,7 +55,7 @@ if (cluster.isMaster && !DEBUG) {
 
             chooseOperation(req.body, (err, operation_function) => {
                 if (err) {
-                    winston.log(err);
+                    winston.info(err);
                     res.status(500).send(err);
                     return;
                 }
@@ -65,7 +63,7 @@ if (cluster.isMaster && !DEBUG) {
                 try {
                     operation_function(req.body, (error, data) => {
                         if (error) {
-                            winston.log(error);
+                            winston.info(error);
                             res.status(400).json(error);
                             return;
                         }
@@ -73,7 +71,7 @@ if (cluster.isMaster && !DEBUG) {
                         res.status(200).json(data);
                     });
                 } catch (e) {
-                    winston.log(e);
+                    winston.info(e);
                     res.status(500).json(e);
                 }
             });
@@ -156,6 +154,9 @@ if (cluster.isMaster && !DEBUG) {
             case 'drop_role':
                 operation_function = role.dropRole;
                 break;
+            case 'read_log':
+                operation_function = read_log.read_log;
+                break;
             default:
                 break;
         }
@@ -167,14 +168,19 @@ if (cluster.isMaster && !DEBUG) {
         callback('Invalid operation');
     }
 
-    app.listen(hdb_properties.get('HTTP_PORT'), function () {
-        winston.log(`HarperDB Server running on ${hdb_properties.get('HTTP_PORT')}`);
+    try{
 
-        global_schema.setSchemaDataToGlobal((err, data) => {
-            if (err) {
-                winston.log('error', err);
-            }
+        app.listen(hdb_properties.get('HTTP_PORT'), function () {
+            winston.info(`HarperDB Server running on ${hdb_properties.get('HTTP_PORT')}`);
 
+            global_schema.setSchemaDataToGlobal((err, data) => {
+                if (err) {
+                    winston.info('error', err);
+                }
+
+            });
         });
-    });
+    }catch(e){
+        winston.error(e);
+    }
 }

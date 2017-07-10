@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 const spawn = require('child_process').spawn,
-
-    winston = require('winston');
+    winston = require('../utility/logging/winston_logger');
 
 
 stop();
@@ -9,15 +8,15 @@ function stop(){
 
     var terminal = spawn('bash');
     terminal.stderr.on('data', function (data) {
-        winston.log('error',`Express server failed to run: ${data}`);
-        console.log('|------------- HarperDB successfully stopped ------------|');
+        winston.info('error',`Express server failed to run: ${data}`);
+        winston.info('|------------- HarperDB successfully stopped ------------|');
         //Here is where the error output goes
     });
 
     terminal.stdout.on('data', function(data){
-        winston.log('info', `Express Server stoped`);
+        winston.info('info', `Express Server stopped`);
     });
-    terminal.stdin.write(`kill $(ps -ef | grep [h]db_ | awk '{print $2}') && kill $(ps -ef | grep [i]notify | awk '{print $2}')`);
+    terminal.stdin.write(`kill $(ps -ef | grep [h]db_ | awk '{print $2}') 2> /dev/null && kill $(ps -ef | grep [i]notify | awk '{print $2}') 2> /dev/null`);
     terminal.stdin.end();
 
 

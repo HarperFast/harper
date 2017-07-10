@@ -18,10 +18,10 @@ csv()
     .on('done',(error)=>{
         insert.insert(insert_object, (err, data)=>{
             if(err){
-                console.error(err);
+                winston.error(err);
             }
 
-            console.log(data);
+            winston.info(data);
         });
     });
 
@@ -35,10 +35,10 @@ csv()
     .on('done',(error)=>{
         insert.insert(insert_object, (err, data)=>{
             if(err){
-                console.error(err);
+                winston.error(err);
             }
 
-            console.log(data);
+            winston.info(data);
         });
     });*/
 

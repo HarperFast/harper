@@ -6,6 +6,7 @@ const fs = require('fs.extra')
     , attribute_validation = require('../validation/attributeInsertValidator')
     , describe_schema_validation = require('../validation/describeSchemaValidation.js')
     , search = require('./search.js')
+    ,winston = require('../utility/logging/winston_logger')
     , uuidV4 = require('uuid/v4')
     , delete_ = require('../data_layer/delete')
     //this is to avoid a circular dependency with insert.
@@ -114,7 +115,7 @@ function describeSchema (describe_schema_object, callback) {
         let table_result = {};
         search.searchByValue(table_search_obj, function (err, tables) {
             if (err) {
-                console.error(err);
+                winston.error(err);
                 callback(err);
                 return;
             }
@@ -483,8 +484,8 @@ function createAttributeStructure(create_attribute_object, callback){
         };
 
         insert.insert(insertObject, function (err, result) {
-            console.log('attribute:' + err);
-            console.log(result);
+            winston.info('attribute:' + err);
+            winston.info(result);
             callback(err, result);
         });
     } catch(e){

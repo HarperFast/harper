@@ -25,19 +25,19 @@ var counter =0;
 var port = process.argv[2] ? process.argv[2] : 9925;
 
 net.createServer(conn).listen(port,  hdb_properties.get('HDB_ADDRESS')).on('error', (error)=>{
-    winston.log('error',`TCP fail: ${error}`);
+    winston.info('error',`TCP fail: ${error}`);
 });
 
 function conn(socket) {
     socket.setEncoding('utf8');
     let socket_data = '';
-    console.log('connected');
+    winston.info('connected');
     socket.on('error', (err) => {
-        winston.log('error',`Socket ${client.name} fail: ${err}`);
+        winston.info('error',`Socket ${client.name} fail: ${err}`);
     });
 
     socket.on('close', (err) => {
-        //console.log(`Socket ${client.name} disconnected`);
+        //winston.info(`Socket ${client.name} disconnected`);
     });
 
     socket.on('data', onSocketData);
@@ -46,7 +46,7 @@ function conn(socket) {
         //socket_data += data;
         insert.insert(JSON.parse(data).write, function (err, results) {
             if(err) {
-                winston.log('error', err);
+                winston.info('error', err);
             }
 
             socket.end(JSON.stringify(results));
@@ -63,11 +63,11 @@ function conn(socket) {
 
          handleOperation(json, function (err, data) {
          if (err) {
-         console.error(err);
+         winston.error(err);
          socket.end(JSON.stringify(err));
          return;
          }
-         //console.log(`${client.name} ${data}`);
+         //winston.info(`${client.name} ${data}`);
 
          socket.end(JSON.stringify(data));
          return;
@@ -79,7 +79,7 @@ function conn(socket) {
 
     function handleOperation(json, callback) {
         let payload = json[Object.keys(json)[0]];
-        //console.log(payload);
+        //winston.info(payload);
         switch (Object.keys(json)[0]) {
             case 'write':
                 insert.insert(payload, function (err, data) {
@@ -129,7 +129,7 @@ function conn(socket) {
  } else {
 
  let port = process.env['port'];
- console.log(port);
+ winston.info(port);
  net.createServer(conn).listen(port, settings.HDB_ADDRESS);
  counter++;
  }*/
