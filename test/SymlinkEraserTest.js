@@ -12,8 +12,8 @@ const search = require('../data_layer/search'),
     fs.unlink(hdb_properties.get('HDB_ROOT') + '/schema/dev/person/first_name/Aailyah/641.hdb', function(err, result){
         console.timeEnd('unlink')
 
-        console.error(err);
-        console.log(result);
+        winston.error(err);
+        winston.info(result);
     });
 
 
@@ -28,7 +28,7 @@ function test(){
 
     search.searchByValue(search_obj, function (err, data) {
         if (err){
-            console.error(err);
+            winston.error(err);
             return;
         }
 
@@ -68,27 +68,27 @@ function test(){
 
         try {
             client.connect(hdb_properties.get('ERASER_PORT'), hdb_properties.get('settings.HDB_ADDRESS'), function () {
-                //console.log('Connected');
+                //winston.info('Connected');
                 client.write(JSON.stringify(test_obj));
                 return;
             });
         }catch(e){
-            console.error(e);
+            winston.error(e);
             return;
         }
 
         client.on('data', function (data) {
-            console.log(data);
+            winston.info(data);
             return;
         });
 
         client.on('close', function () {
-            //console.log('Connection closed');
+            //winston.info('Connection closed');
             return;
         });
 
         client.on('error', function (err) {
-            console.error(err);
+            winston.error(err);
             return;
         });
 

@@ -41,15 +41,19 @@ var wizard_result;
 
 
 function run_install(callback) {
+    winston.configure({
+        transports: [
+
+            new (winston.transports.File)({ filename: '../install_log.log',  level: 'verbose', handleExceptions: true,
+                prettyPrint:true })
+        ],exitOnError:false
+    });
+
     prompt.override = optimist.argv;
     prompt.start();
     //winston.add(winston.transports.File, { filename: 'installer.log' });
-    winston.configure({
-        transports: [
-            new (winston.transports.File)({filename: '../install_hdb.log'})
-        ]
-    });
-    winston.log('info', 'starting install');
+
+    winston.info('info', 'starting install');
     checkInstall(function(err, keepGoing){
        if(keepGoing){
            async.waterfall([
@@ -129,8 +133,9 @@ function checkRegister(callback) {
             register.register(prompt, function (err, result) {
                 if (err) {
                     callback(err);
-                    returnl
+                    return;
                 }
+
                 callback(null, "Successful installation!!");
                 return;
             });
@@ -138,7 +143,7 @@ function checkRegister(callback) {
 
     } else {
         callback(null, 'Successful installation!');
-        winston.log('info', 'HarperDB successfully installed!');
+        console.log('info', 'HarperDB successfully installed!');
     }
 }
 
@@ -197,7 +202,7 @@ function wizard(callback) {
 
     prompt.get(install_schema, function (err, result) {
         wizard_result = result;
-        winston.log('info', 'wizard result : ' + JSON.stringify(wizard_result));
+        winston.info('info', 'wizard result : ' + JSON.stringify(wizard_result));
         //prompt.stop();
         if (err) {
             callback(err);
@@ -222,7 +227,7 @@ function createAdminUser(callback){
 
     role_ops.addRole(role, function(err, result){
        if(err){
-           winston.log('info', 'role failed to create ' + err);
+           winston.info('info', 'role failed to create ' + err);
            callback(err);
            return;
        }
@@ -236,7 +241,7 @@ function createAdminUser(callback){
 
         user_ops.addUser(admin_user, function(err, result){
            if(err){
-               winston.log('info', 'user creation error' + err);
+               winston.info('info', 'user creation error' + err);
                callback(err);
            }
            callback(null);
@@ -261,11 +266,11 @@ function createSettingsFile(mount_status, callback) {
 
 
     createBootPropertiesFile(`${wizard_result.HDB_ROOT}/config/settings.js`, (err) => {
-        winston.log('info', `creating settings file....`);
+        winston.info('info', `creating settings file....`);
 
 
         if (err) {
-            winston.log('info', 'boot properties error' + err);
+            winston.info('info', 'boot properties error' + err);
             callback(err);
             return;
         }
@@ -277,12 +282,12 @@ function createSettingsFile(mount_status, callback) {
         HTTP_PORT = ${wizard_result.HTTP_PORT}`;
 
 
-        winston.log('info', `hdb_props_value ${JSON.stringify(hdb_props_value)}`);
-        winston.log('info', `settings path: ${hdb_boot_properties.get('settings_path')}`);
+        winston.info('info', `hdb_props_value ${JSON.stringify(hdb_props_value)}`);
+        winston.info('info', `settings path: ${hdb_boot_properties.get('settings_path')}`);
         try {
             fs.writeFile(hdb_boot_properties.get('settings_path'), hdb_props_value, function (err, data) {
                 if (err) {
-                    winston.log('info', err);
+                    winston.info('info', err);
                 }
                 hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
                 callback(null);
@@ -290,8 +295,8 @@ function createSettingsFile(mount_status, callback) {
             });
         }catch(e)
         {
-            console.log(e);
-            winston.log('info', e);
+            winston.info(e);
+            winston.info('info', e);
         }
 
 
@@ -307,15 +312,15 @@ function setupService(callback) {
         fs.writeFile('/etc/systemd/system/harperdb.service', fileData, function (err, result) {
 
             if (err) {
-                winston.log('error', `Service Setup Error ${err}`);
+                winston.info('error', `Service Setup Error ${err}`);
                 callback(err);
                 return;
             }
 
             var terminal = spawn('bash');
             terminal.stderr.on('data', function (data) {
-                //console.log('error',`Express server failed to run: ${data}`);
-                //console.log('' + data);
+                //winston.info('error',`Express server failed to run: ${data}`);
+                //winston.info('' + data);
                 //Here is where the error output goes
             });
 
@@ -332,9 +337,9 @@ function setupService(callback) {
 
 function createBootPropertiesFile(settings_path, callback) {
 
-    winston.log('info', 'creating boot file');
+    winston.info('info', 'creating boot file');
     if (!settings_path) {
-        winston.log('info', 'missing settings path');
+        winston.info('info', 'missing settings path');
         callback('missing setings');
         return;
     }
@@ -342,14 +347,14 @@ function createBootPropertiesFile(settings_path, callback) {
     fs.writeFile(`${process.cwd()}/../hdb_boot_properties.file`, `settings_path = ${settings_path}`, function (err) {
 
         if (err) {
-            winston.log('info', `Bootloader error ${err}`);
-            console.log(err);
+            winston.info('info', `Bootloader error ${err}`);
+            winston.info(err);
             callback(err);
             return;
         }
-        winston.log('info', `props path ${process.cwd()}/../hdb_boot_properties.file`)
+        winston.info('info', `props path ${process.cwd()}/../hdb_boot_properties.file`)
         hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
-        winston.log('hdb_boot_properties' + hdb_boot_properties);
+        winston.info('hdb_boot_properties' + hdb_boot_properties);
 
 
         callback(null, 'success');

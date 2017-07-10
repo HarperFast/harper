@@ -97,7 +97,7 @@ function validateLicense(license_key, company, callback) {
         fs.readFile(`${hdb_properties.get('PROJECT_DIR')}/utility/keys/060493.ks`, function (err, data) {
             let fingerPrint = '' + data;
          //   var newHash = hashLicense(fingerPrint, company);
-           // console.log(`new hash: ${newHash}`)
+           // winston.info(`new hash: ${newHash}`)
             if (!password.validate(license_tokens[1], `061183${data}${company}`)) {
                 license_validation_object.valid_license = false;
 

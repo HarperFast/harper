@@ -6,6 +6,7 @@ const fs = require('graceful-fs'),
 const base_path = hdb_properties.get('HDB_ROOT') + "/schema/"
     , search_validator = require('../validation/searchValidator.js')
     , async = require('async'),
+    winston = require('../utility/logging/winston_logger'),
     path = require('path'),
     file_search = require('../lib/fileSystem/fileSearch'),
     _ = require('lodash'),
@@ -213,7 +214,7 @@ function multiConditionSearch(conditions, table_schema, callback){
 
             file_search.findIDsByRegex(pattern.folder_search_path, pattern.folder_search, (err, results) => {
                 if (err) {
-                    console.error(err);
+                    winston.error(err);
                 } else {
                     all_ids[key].ids = results;
                 }

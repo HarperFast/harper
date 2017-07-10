@@ -3,9 +3,9 @@
 const fs = require('fs'),
     util = require('util'),
     path = require('path'),
-    winston = require('winston'),
     install = require('../utility/install/installer.js'),
     colors = require("colors/safe"),
+    basic_winston  = require('winston'),
     PropertiesReader = require('properties-reader'),
     async = require('async');
 
@@ -13,11 +13,7 @@ var hdb_boot_properties = null,
     hdb_properties = null;
 var fork = require('child_process').fork;
 
-winston.configure({
-    transports: [
-        new (winston.transports.File)({filename: '../hdb.log'})
-    ]
-});
+
 
 
 // TODO need to check if hdb is already running and stop it first before running again.
@@ -25,14 +21,21 @@ winston.configure({
 run();
 
 function run() {
+    basic_winston.configure({
+        transports: [
+
+            new (basic_winston.transports.File)({ filename: '../run_log.log',  level: 'verbose', handleExceptions: true,
+                prettyPrint:true })
+        ],exitOnError:false
+    });
 
     fs.stat(`${process.cwd()}/../hdb_boot_properties.file`, function(err, stats){
         if(err){
             if(err.errno === -2){
                 install.install(function (err, result) {
                     if (err) {
-                        console.log(err);
-                        winston.log('error', `start fail: ${err}`);
+                        basic_winston.error(err);
+
                         return;
                     }
                     hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
@@ -43,21 +46,18 @@ function run() {
 
                 });
             }else{
-                winston.log('error', `start fail: ${err}`);
+                basic_winston.error(`start fail: ${err}`);
                 return;
             }
 
         }else{
             hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
-            console.log(hdb_boot_properties.get('settings_path'));
-            // doesn't do a null check.
             fs.stat(hdb_boot_properties.get('settings_path'), function(err, stats) {
                 if (err) {
                     if (err.errno === -2) {
                         install.install(function (err, result) {
                             if (err) {
-                                console.log(err);
-                                winston.log('error', `start fail: ${err}`);
+                                basic_winston.error(err);
                                 return;
                             }
                             hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
@@ -68,14 +68,15 @@ function run() {
 
                         });
                     } else {
-                        winston.log('error', `start fail: ${err}`);
+                        basic_winston.error(`start fail: ${err}`);
                         return;
                     }
 
                 } else {
-
+                    const winston = require("../utility/logging/winston_logger");
                     hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
                     completeRun();
+                    winston.info('HarperDB Run complete');
                     return;
                 }
             });
@@ -107,7 +108,7 @@ function kickOffExpress(callback){
 
     child.unref();
     console.log(colors.magenta('' + fs.readFileSync(path.join(__dirname,'../utility/install/ascii_logo.txt'))));
-    console.log(colors.magenta('|------------- HarperDB succesfully started ------------|'));
+    console.log(colors.magenta('|------------- HarperDB successfully started ------------|'));
     callback();
 }
 

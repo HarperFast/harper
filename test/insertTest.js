@@ -30,9 +30,9 @@ var insert_object = {
 console.time('insertTest');
 insert.insert(insert_object, function(err, data){
     if(err) {
-        console.error(err);
+        winston.error(err);
     } else {
-        console.log(data);
+        winston.info(data);
     }
     console.timeEnd('insertTest');
     process.exit(0);

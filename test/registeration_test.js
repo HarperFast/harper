@@ -5,10 +5,10 @@ test();
 function test(){
     register.registe(function(err, result){
         if(err) {
-            console.error(err);
+            winston.error(err);
             return;
         }
-        console.log(result);
+        winston.info(result);
         return;
 
 

@@ -11,13 +11,13 @@ search_obj.get_attributes = ['hash_attribute', 'id', 'name', 'schema'];
 console.time('searchByValue');
 search.searchByValue(search_obj, function (err, data) {
     if (err){
-        console.error(err);
+        winston.error(err);
         return;
     }
 
-    console.log('PASS searchByValue');
+    winston.info('PASS searchByValue');
     console.timeEnd('searchByValue');
-    console.log(data);
+    winston.info(data);
     return;
 });*/
 
@@ -31,13 +31,13 @@ search_obj.get_attributes = ['*'];
 console.time('searchByHash');
 search.searchByHashes(search_obj, function (err, data) {
     if (err){
-        console.error(err);
+        winston.error(err);
         return;
     }
 
-    console.log('PASS searchByHash');
+    winston.info('PASS searchByHash');
     console.timeEnd('searchByHash');
-    console.log(data);
+    winston.info(data);
     return;
 });
 /*
@@ -46,13 +46,13 @@ let search_obj = {"schema":"dog","table":"tags","hash_attribute":"id","hash_valu
 console.time('searchByHash');
 search.searchByHash(search_obj, function (err, data) {
     if (err){
-        console.error(err);
+        winston.error(err);
         return;
     }
 
-    console.log('PASS searchByHash');
+    winston.info('PASS searchByHash');
     console.timeEnd('searchByHash');
-    console.log(data);
+    winston.info(data);
     return;
 });*/
 

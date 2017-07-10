@@ -24,20 +24,20 @@ function processArgs(){
 
 var client = new net.Socket();
 client.connect(port, address, function() {
-    console.log('Connected');
+    winston.info('Connected');
     client.write(JSON.stringify(createData()));
 });
 
 client.on('data', function(data) {
-    console.log('Received: ' + data);
+    winston.info('Received: ' + data);
 });
 
 client.on('close', function() {
-    console.log('Connection closed');
+    winston.info('Connection closed');
 });
 
 client.on('err', function(err) {
-    console.error(err);
+    winston.error(err);
 });
 
 

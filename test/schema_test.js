@@ -6,7 +6,7 @@ var table = 'person';
 // author sgeezy
 function describeSchema(schema_val){
     schema.describeSchema ({"schema":schema_val}, function(err, result){
-            console.log(result);
+            winston.info(result);
     });
 }
 
@@ -70,8 +70,8 @@ function fullTest(callback) {
 
 function createSchema(callback){
     schema.createSchema({"schema": schema_value}, function (err, result) {
-        console.error(err);
-        console.log(result);
+        winston.error(err);
+        winston.info(result);
         callback(err, result);
         return;
     });
@@ -83,8 +83,8 @@ function createTable(callback){
     person_table_object.schema = schema_value;
     person_table_object.hash_attribute = "id";
     schema.createTable(person_table_object, function (err, result) {
-        console.log(err);
-        console.log(result);
+        winston.info(err);
+        winston.info(result);
         if (err) {
             callback(err);
         } else {
@@ -97,15 +97,15 @@ function createTable(callback){
 
 createSchema(function(err, data){
     if(err){
-        console.log("ERROR: " + err);
+        winston.info("ERROR: " + err);
         return;
     }
     createTable(function(err, data){
         if(err){
-            console.log(err);
+            winston.info(err);
             return;
         }
-        console.log(data);
+        winston.info(data);
     });
 })
 

@@ -3,7 +3,7 @@ const csv_load = require('../data_layer/csvBulkLoad'),
 
 /*fs.readFile('./data/shelter.csv', (err, data)=>{
    if(err){
-       console.error(err);
+       winston.error(err);
        return;
    }
 
@@ -15,11 +15,11 @@ const csv_load = require('../data_layer/csvBulkLoad'),
 
    csv_load.csvDataLoad(csv_object, (err, data)=>{
        if(err){
-           console.error(err);
+           winston.error(err);
            return;
        }
 
-       console.log(data);
+       winston.info(data);
    });
 });*/
 let csv_object = {
@@ -29,10 +29,10 @@ let csv_object = {
 };
 csv_load.csvFileLoad(csv_object, (err, data)=>{
     if(err){
-        console.error(err);
+        winston.error(err);
         return;
     }
 
-    console.log(data);
+    winston.info(data);
 });
 
