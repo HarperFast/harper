@@ -18,8 +18,8 @@ function testPermissions(){
     global_schema.getTableSchema(check_permission_object.schema, check_permission_object.table, (err, table_schema) => {
 
     auth.checkPermissions(check_permission_object, function( err, data){
-       console.log(err);
-       console.log(data);
+       winston.info(err);
+       winston.info(data);
 
     })});
 

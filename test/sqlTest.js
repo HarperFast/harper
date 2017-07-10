@@ -9,9 +9,9 @@ console.time('sql');
 sql_trans.evaluateSQL(sql, (err, data) => {
     console.timeEnd('sql');
     if(err){
-        console.error(err);
+        winston.error(err);
     } else {
-        console.log(data);
-        console.log(data.length);
+        winston.info(data);
+        winston.info(data.length);
     }
 });

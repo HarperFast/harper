@@ -9,8 +9,8 @@ let delete_table_object = {
 console.time('delete table test');
 
 delete_.delete(delete_table_object, function(err, data){
-    console.log(data);
-    console.error(err);
+    winston.info(data);
+    winston.error(err);
     console.timeEnd('delete table test');
 });
 

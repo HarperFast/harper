@@ -35,14 +35,14 @@ async.forEachOf(conditions, (condition, key, callback) =>{
 
     file_search.findIDsByRegex(pattern.folder_search_path, pattern.folder_search, (err, results)=>{
         if(err) {
-            console.error(err);
+            winston.error(err);
         } else {
             all_ids[key].ids = results;
         }
         callback();
     });
 }, (err)=>{
-    console.log(all_ids);
+    winston.info(all_ids);
 
     let matched_ids = [];
 
@@ -54,16 +54,16 @@ async.forEachOf(conditions, (condition, key, callback) =>{
         }
     });
 
-    console.log(matched_ids);
+    winston.info(matched_ids);
 });*/
 
 /*let pattern = patterns.createPatterns({'=':['id', '257']}, {name:'breed', schema:'dev', hash_attribute:'id'}, hdb_path);
 
 file_search.findDirectoriesByRegex(pattern.folder_search_path, pattern.folder_search, (err, results)=>{
     if(err) {
-        console.error(err);
+        winston.error(err);
     } else {
-        console.log(results);
+        winston.info(results);
     }
 });*/
 
@@ -81,7 +81,7 @@ fs.readdir(hdb_path + 'dev/breed/__hdb_hash/id', (err, folders)=> {
         let filtered_folders = folders.filter((folder) => {
             return regex.test(folder);
         });
-        console.log(filtered_folders);
+        winston.info(filtered_folders);
         //callback(null, filtered_folders);
     }
 });

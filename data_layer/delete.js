@@ -138,7 +138,7 @@ function deleteFiles(delete_object, record, callback){
                         caller();
                         return;
                     }
-                    console.error(err);
+                    winston.error(err);
                     caller(err);
                     return;
                 }

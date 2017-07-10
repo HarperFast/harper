@@ -114,7 +114,7 @@ function describeSchema (describe_schema_object, callback) {
         let table_result = {};
         search.searchByValue(table_search_obj, function (err, tables) {
             if (err) {
-                console.error(err);
+                winston.error(err);
                 callback(err);
                 return;
             }
@@ -483,8 +483,8 @@ function createAttributeStructure(create_attribute_object, callback){
         };
 
         insert.insert(insertObject, function (err, result) {
-            console.log('attribute:' + err);
-            console.log(result);
+            winston.info('attribute:' + err);
+            winston.info(result);
             callback(err, result);
         });
     } catch(e){

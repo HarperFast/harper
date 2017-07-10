@@ -1,8 +1,9 @@
-installer = require('../utility/install/installer');
+const installer = require('../utility/install/installer');
+
 installer.install(function(err, result){
    if(err){
-       console.error(err);
+       winston.error(err);
        return;
    }
-   console.log(result);
+
 });

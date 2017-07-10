@@ -39,7 +39,7 @@ function register(prompt, callback) {
             if(data.HDB_LICENSE && data.CUSTOMER_COMPANY) {
                 hdb_license.validateLicense(data.HDB_LICENSE, data.CUSTOMER_COMPANY, function (err, validation) {
                     if (err) {
-                        console.error(err);
+                        winston.error(err);
                         callback(err);
                         return;
                     }
@@ -71,7 +71,7 @@ function register(prompt, callback) {
 
                     insert.insert(insert_object, function (err, data) {
                         if (err) {
-                            console.error(err);
+                            winston.error(err);
                             return;
                         }
 

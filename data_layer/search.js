@@ -213,7 +213,7 @@ function multiConditionSearch(conditions, table_schema, callback){
 
             file_search.findIDsByRegex(pattern.folder_search_path, pattern.folder_search, (err, results) => {
                 if (err) {
-                    console.error(err);
+                    winston.error(err);
                 } else {
                     all_ids[key].ids = results;
                 }

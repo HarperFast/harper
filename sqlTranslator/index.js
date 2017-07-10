@@ -66,7 +66,7 @@ function processSQL(sql, callback){
 
 function nullFunction(sql, callback) {
     callback('unknown sql statement');
-    console.log(sql);
+    winston.info(sql);
 }
 
 function convertInsert(statement, callback) {

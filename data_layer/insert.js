@@ -192,7 +192,7 @@ function unlinkFiles(unlink_paths, update_objects, callback){
     async.each(unlink_paths, (path, caller)=>{
         fs.unlink(path, (err)=>{
             if(err){
-                console.error(err);
+                winston.error(err);
             }
 
             caller();

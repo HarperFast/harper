@@ -18,7 +18,7 @@ module.exports = {
             table_search_obj.get_attributes = ['hash_attribute', 'id', 'name', 'schema'];
             search.searchByValue(table_search_obj, function (err, tables) {
                 if (err) {
-                    console.error(err);
+                    winston.error(err);
                     //initialize();
                     return;
                 }
@@ -94,7 +94,7 @@ function descTable(describe_table_object, callback) {
             let table_result = {};
             search.searchByValue(table_search_obj, function (err, tables) {
                 if (err) {
-                    console.error(err);
+                    winston.error(err);
                     //initialize();
                     return;
                 }
@@ -122,7 +122,7 @@ function descTable(describe_table_object, callback) {
 
                     search.searchByValue(attribute_search_obj, function (err, attributes) {
                         if (err) {
-                            console.error(err);
+                            winston.error(err);
                             //initialize();
                             return;
                         }
