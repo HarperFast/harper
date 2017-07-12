@@ -116,7 +116,7 @@ function updateData(update_object, callback){
 
                 caller(null, search_obj);
             },
-            search.searchByHashes,
+            search.searchByHash,
             (existing_records, caller) => {
                 let hash_attribute = global.hdb_schema[update_object.schema][update_object.table].hash_attribute;
                 caller(null, update_object, hash_attribute, existing_records);
