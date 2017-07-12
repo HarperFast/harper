@@ -15,7 +15,7 @@ HarperDB can be installed in one of two ways
 * hdb_run
 * hdb_install
 
-The process is the same; however, bin/run will also start HarperDB.
+The process is the same; however, bin/hdb_run will also start HarperDB.
 
 From the HarperDB root directory execute either of the following:
 
@@ -39,7 +39,9 @@ hdb_install
 
 *    You will be prompted to for a database user name and password during the install.
 
-*    If HarperDB is already installed bin/run will **NOT** run the installer.
+*    If HarperDB is already installed bin/hdb_run will **NOT** run the installer.
+
+*    Logs for installation are found in the harperdb directory. Other logs are located at HDB_HOME/log/.
 
 
 ## Register HarperDB
