@@ -94,6 +94,6 @@ hdb_stop
 ## Need Help?
 
 -contact us via email: support@harperdb.io
--[Support Portal] (harperdbhelp.zendesk.com)
+-[Support Portal](https://harperdbhelp.zendesk.com)
 
 
