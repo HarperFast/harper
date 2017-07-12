@@ -133,6 +133,7 @@ if (cluster.isMaster && !DEBUG) {
                 break;
             case 'delete':
                 operation_function = delete_.delete;
+                break;
             case 'add_user':
                 operation_function = user.addUser;
                 break;
