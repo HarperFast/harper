@@ -79,14 +79,14 @@ function login(body, callback){
     search_obj.schema = 'system';
     search_obj.table = 'hdb_role';
     search_obj.hash_attribute = 'id';
-    search_obj.hash_value = user.role;
+    search_obj.hash_values = [user.role];
     search_obj.get_attributes = ['*'];
     search.searchByHash(search_obj, function (err, role_data) {
         if (err) {
             return callback(err);
         }
 
-        user.role = role_data;
+        user.role = role_data[0];
         delete user.password;
 
         return callback(null, user);
