@@ -12,8 +12,8 @@
 
 ## Getting Started
 HarperDB can be installed in one of two ways
-* bin/run
-* bin/install
+* hdb_run
+* hdb_install
 
 The process is the same; however, bin/run will also start HarperDB.
 
@@ -22,7 +22,7 @@ From the HarperDB root directory execute either of the following:
 ```
 
 cd bin
-node run
+hdb_run
 
 ```
 
@@ -32,13 +32,12 @@ or run
 ```
 
 cd bin
-node install
+hdb_install
 
 ```
+*    You will need read and write access to the HDB_HOME directory, default path is your current working directory.  
 
-*    HarperDB requires root/admin access to install inotifywait.
-
-*    You will be prompted to for a password during the install.
+*    You will be prompted to for a database user name and password during the install.
 
 *    If HarperDB is already installed bin/run will **NOT** run the installer.
 
@@ -51,7 +50,7 @@ If you do not register at that time execute the following commands from the Harp
 
 ```
 cd bin
-node register
+hdb_register
 
 ```
 
@@ -85,7 +84,7 @@ To run HarperDB after it is installed from the HarperDB directoy run the followi
 ```
 
 cd bin
-node run
+hdb_run
 
 ```
 
@@ -95,7 +94,7 @@ To stop HarperDB once it is running from the HarperDB directory run the followin
 ```
 
 cd bin
-node stop
+hdb_stop
 
 ```
 

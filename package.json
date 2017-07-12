@@ -53,6 +53,7 @@
       "./data_layer/*.js",
       "./triggers/**",
       "./utility/*.js",
+      "./utility/**/*.js",
       "./sqlTranslator/*.js",
       "./lib/**/*.js",
       "./validation/*.js"
