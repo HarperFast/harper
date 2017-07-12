@@ -270,6 +270,32 @@ function search(search_wrapper, callback){
     }
 }
 
+function tableSearch(search_wrapper, callback){
+    let search_data = [];
+
+    let primary_tables = search_wrapper.tables[0];
+
+    joins.forEach((join)=>{
+
+    });
+
+
+    async.waterfall([
+        searchByConditions.bind(null, search_wrapper.tables[0]),
+        (results, caller)=>{
+            search_data[0] = {table:search_wrapper.tables[0], data: data};
+            caller();
+        },
+        async.eachOfLimit(search_wrapper.joins, 1, (join, index, call)=>{
+
+        }, (err, data)=>{
+
+        })
+    ], (err)=>{
+
+    });
+}
+
 function joinData(join, all_get_attributes, data, data2){
     let comparators = Object.values(join)[0];
     let left_attribute_name = findAttribute(all_get_attributes, comparators[0]);
