@@ -42,6 +42,7 @@ function findAndValidateUser(username, password, done){
 
 
 
+
 passport.use(new LocalStrategy(
     function (username, password, done) {
         findAndValidateUser(username,password,done);
@@ -71,6 +72,30 @@ router.post('/',
         // `req.user` contains the authenticated user.
         res.status(200).send(req.user.username);
     });
+
+function login(body, callback){
+    let user = body.hdb_user;
+    let search_obj = {};
+    search_obj.schema = 'system';
+    search_obj.table = 'hdb_role';
+    search_obj.hash_attribute = 'id';
+    search_obj.hash_values = [user.role];
+    search_obj.get_attributes = ['*'];
+    search.searchByHash(search_obj, function (err, role_data) {
+        if (err) {
+            return callback(err);
+        }
+
+        user.role = role_data[0];
+        delete user.password;
+
+        return callback(null, user);
+
+
+
+    });
+
+}
 
 function authorize(req, res, next) {
 
@@ -205,5 +230,6 @@ function checkPermissions(check_pemission_obj, callback) {
 
 module.exports = {
     authorize: authorize,
-    checkPermissions: checkPermissions
+    checkPermissions: checkPermissions,
+    login: login
 }

@@ -52,7 +52,7 @@ if (cluster.isMaster && !DEBUG) {
                 res.status(401).send(err);
                 return;
             }
-
+            req.body.hdb_user = user;
             chooseOperation(req.body, (err, operation_function) => {
                 if (err) {
                     winston.info(err);
@@ -150,6 +150,9 @@ if (cluster.isMaster && !DEBUG) {
                 break;
             case 'drop_role':
                 operation_function = role.dropRole;
+                break;
+            case 'login':
+                operation_function = auth.login;
                 break;
             case 'read_log':
                 operation_function = read_log.read_log;
