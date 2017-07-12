@@ -327,7 +327,9 @@ function setAdditionalAttributeData(search_wrapper){
     search_wrapper.all_get_attributes = [];
 
     search_wrapper.tables.forEach((table)=>{
-        search_wrapper.all_get_attributes = search_wrapper.all_get_attributes.concat(table.supplemental_fields);
+        if(table.supplemental_fields) {
+            search_wrapper.all_get_attributes = search_wrapper.all_get_attributes.concat(table.supplemental_fields);
+        }
         table.get_attributes.forEach((attribute)=>{
             attribute.table = table.table;
             attribute.table_alias = table.alias;
@@ -445,7 +447,21 @@ RegExp.escape= function(s) {
 function consolidateData(hash_attribute, attributes_data, callback){
     let data_array = [];
     let data_keys = Object.keys(attributes_data);
-    let ids = Object.keys(attributes_data[hash_attribute] ? attributes_data[hash_attribute] : attributes_data[Object.keys(attributes_data)[0]]);
+    let ids;
+    if(attributes_data[hash_attribute]){
+        ids = Object.keys(attributes_data[hash_attribute]);
+    } else {
+        Object.keys(attributes_data).forEach((key)=>{
+            let split_key = key.split('.');
+            if(split_key.length > 1 && split_key[1] === hash_attribute){
+                ids = Object.keys(attributes_data[key]);
+            }
+        });
+    }
+
+    if(!ids) {
+        ids = Object.keys(attributes_data[Object.keys(attributes_data)[0]]);
+    }
 
     ids.forEach(function(key){
         let data_object = {};
