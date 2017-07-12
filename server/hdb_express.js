@@ -52,7 +52,7 @@ if (cluster.isMaster && !DEBUG) {
                 res.status(401).send(err);
                 return;
             }
-
+            req.body.hdb_user = user;
             chooseOperation(req.body, (err, operation_function) => {
                 if (err) {
                     winston.info(err);
@@ -92,14 +92,11 @@ if (cluster.isMaster && !DEBUG) {
             case 'search_by_hash':
                 operation_function = search.searchByHash;
                 break;
-            case 'search_by_hashes':
-                operation_function = search.searchByHashes;
-                break;
             case 'search_by_value':
                 operation_function = search.searchByValue;
                 break;
-            case 'search_by_join':
-                operation_function = search.searchByJoin;
+            case 'search':
+                operation_function = search.search;
                 break;
             case 'sql':
                 operation_function = sql;
@@ -153,6 +150,9 @@ if (cluster.isMaster && !DEBUG) {
                 break;
             case 'drop_role':
                 operation_function = role.dropRole;
+                break;
+            case 'login':
+                operation_function = auth.login;
                 break;
             case 'read_log':
                 operation_function = read_log.read_log;
