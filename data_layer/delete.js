@@ -39,7 +39,7 @@ function deleteRecord(delete_object, callback){
             (table_info, callback) => {
                 callback();
             },
-            search.searchByHashes.bind(null, search_obj),
+            search.searchByHash.bind(null, search_obj),
             deleteRecords.bind(null, delete_object)
         ], (err, data) => {
             if (err) {
