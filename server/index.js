@@ -91,11 +91,6 @@ function conn(socket) {
                     callback(err, data);
                 });
                 break;
-            case 'search_by_hashes':
-                search.searchByHashes(payload, function (err, data) {
-                    callback(err, data);
-                });
-                break;
             case 'search_by_value':
                 search.searchByValue(payload, function (err, data) {
                     callback(err, data);

@@ -13,26 +13,28 @@ function findAndValidateUser(username, password, done){
     search_obj.schema = 'system';
     search_obj.table = 'hdb_user';
     search_obj.hash_attribute = 'username';
-    search_obj.hash_value = username;
+    search_obj.hash_values = [username];
     search_obj.get_attributes = ['username', 'password', 'role', 'active'];
     search.searchByHash(search_obj, function (err, user_data) {
         if (err) {
             return done(err);
         }
 
-        if (!user_data) {
+        if (!user_data || user_data.length === 0) {
             return done('Cannot complete request: User not found', null);
         }
 
-        if(user_data && !user_data.active){
+        let user = user_data[0];
+
+        if(user && !user.active){
             return done('Cannot complete request: User is inactive', null);
         }
 
-        if (!password_function.validate(user_data.password, password)) {
+        if (!password_function.validate(user.password, password)) {
             return done('Cannot complete request:  Invalid password', false);
         }
 
-        return done(null, user_data);
+        return done(null, user);
 
 
     });
@@ -147,7 +149,7 @@ function checkPermissions(check_pemission_obj, callback) {
     search_obj.schema = 'system';
     search_obj.table = 'hdb_role';
     search_obj.hash_attribute = 'id';
-    search_obj.hash_value = check_pemission_obj.user.role;
+    search_obj.hash_values = [check_pemission_obj.user.role];
     search_obj.get_attributes = ['id', 'role', 'permission'];
     search.searchByHash(search_obj, function (err, role) {
         if (err) {
@@ -161,10 +163,10 @@ function checkPermissions(check_pemission_obj, callback) {
         }
 
 
-        if(!role || !role.permission){
+        if(!role || role.length === 0 || !role[0].permission){
             return callback('Invalid role');
         }
-        let permission = JSON.parse(role.permission);
+        let permission = JSON.parse(role[0].permission);
 
         if(permission.super_user){
             return callback(null, authoriziation_obj);
