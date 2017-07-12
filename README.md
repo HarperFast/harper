@@ -20,7 +20,6 @@ The process is the same; however, bin/hdb_run will also start HarperDB.
 From the HarperDB root directory execute either of the following:
 
 ```
-
 cd bin
 hdb_run
 
@@ -30,18 +29,17 @@ or run
 
 
 ```
-
 cd bin
 hdb_install
 
 ```
-*    You will need read and write access to the HDB_HOME directory, default path is your current working directory.  
+*    You will need read and write access to the HDB_ROOT directory, default path is your current working directory.  
 
-*    You will be prompted to for a database user name and password during the install.
+*    You will be prompted for a database username and password during the install.
 
 *    If HarperDB is already installed bin/hdb_run will **NOT** run the installer.
 
-*    Logs for installation are found in the harperdb directory. Other logs are located at HDB_HOME/log/.
+*    Logs for installation are found in the HarperDB home directory. Other logs are located at HDB_ROOT/log/.
 
 
 ## Register HarperDB
@@ -74,41 +72,28 @@ You should then be successfully registered.
 
 
 
-
-
-
-
-
 ## Running HarperDB
 
 To run HarperDB after it is installed from the HarperDB directoy run the following commands:
 
 ```
-
 cd bin
 hdb_run
 
 ```
-* HarperDB runs on port 5299, if you are not running from local host, update your firewall.
+* HarperDB runs on port 5299, if you are not running from localhost update your firewall.
 
 ## Stopping HarperDB
 
 To stop HarperDB once it is running from the HarperDB directory run the following commmands:
-```
 
+```
 cd bin
 hdb_stop
 
 ```
-
 ## Need Help?
 
 -contact us via email: support@harperdb.io
-
-
-
-
-
-
 
 
