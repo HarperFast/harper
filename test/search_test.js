@@ -29,21 +29,6 @@ search_obj.hash_values = ['2', '3', '4', '5', '6'];
 search_obj.get_attributes = ['*'];
 
 console.time('searchByHash');
-search.searchByHashes(search_obj, function (err, data) {
-    if (err){
-        winston.error(err);
-        return;
-    }
-
-    winston.info('PASS searchByHash');
-    console.timeEnd('searchByHash');
-    winston.info(data);
-    return;
-});
-/*
-let search_obj = {"schema":"dog","table":"tags","hash_attribute":"id","hash_value":"104071","get_attributes":[]}
-
-console.time('searchByHash');
 search.searchByHash(search_obj, function (err, data) {
     if (err){
         winston.error(err);
@@ -54,7 +39,4 @@ search.searchByHash(search_obj, function (err, data) {
     console.timeEnd('searchByHash');
     winston.info(data);
     return;
-});*/
-
-
-
+});

@@ -92,14 +92,11 @@ if (cluster.isMaster && !DEBUG) {
             case 'search_by_hash':
                 operation_function = search.searchByHash;
                 break;
-            case 'search_by_hashes':
-                operation_function = search.searchByHashes;
-                break;
             case 'search_by_value':
                 operation_function = search.searchByValue;
                 break;
-            case 'search_by_join':
-                operation_function = search.searchByJoin;
+            case 'search':
+                operation_function = search.search;
                 break;
             case 'sql':
                 operation_function = sql;
