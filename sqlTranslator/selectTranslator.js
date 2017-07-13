@@ -58,7 +58,13 @@ function generateBasicSearchObject(statement, callback){
         };
 
         search_object.get_attributes = statement.result.map((column) => {
-            return column.name;
+            let column_info = column.name.split('.');
+            let column_name = column_info.length === 1 ? column_info[0] : column_info[1];
+
+            return {
+                attribute: column_name,
+                alias: column.alias ? column.alias : search_object.table + '.' + column_name
+            };
         });
 
         search_object.conditions = condition_parser.parseConditions(statement.where, table_info);
