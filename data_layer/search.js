@@ -213,6 +213,9 @@ function search(search_wrapper, callback){
         //TODO add validation on search object
 
         getAsteriskFieldsForTables(search_wrapper, (error, search_wrapper) => {
+            if(error){
+                return callback(error);
+            }
             search_wrapper = addSupplementalFields(search_wrapper);
             search_wrapper = setAdditionalAttributeData(search_wrapper);
 
@@ -224,36 +227,10 @@ function search(search_wrapper, callback){
                 });
             });
 
-            searchByConditions(search_wrapper.tables[0], (err, data) => {
-                if (err) {
-                    callback(err);
-                    return;
-                }
-
-                if(search_wrapper.tables.length > 1 && search_wrapper.joins && search_wrapper.joins.length > 0) {
-                    let next_table = search_wrapper.tables[1];
-                    let join = search_wrapper.joins[0];
-
-                    next_table.conditions.push(convertJoinToCondition(search_wrapper.tables[0], search_wrapper.tables[1], join, data));
-
-                    searchByConditions(next_table, (err, data2) => {
-                        if (err) {
-                            callback(err);
-                            return;
-                        }
-
-                        let joined = joinData(join, search_wrapper.all_get_attributes, data, data2);
-
-                        let results = [];
-                        joined.forEach((record) => {
-                            results.push(_.pick(record, get_attributes));
-                        });
-
-                        results = sortData(results, search_wrapper);
-
-                        callback(null, results);
-                    });
-                } else {
+            async.waterfall([
+                tableSearch.bind(null, search_wrapper),
+                processDataJoins.bind(null, search_wrapper),
+                (data, caller)=>{
                     let results = [];
                     data.forEach((record) => {
                         results.push(_.pick(record, get_attributes));
@@ -261,13 +238,109 @@ function search(search_wrapper, callback){
 
                     results = sortData(results, search_wrapper);
 
-                    callback(null, results);
+                    caller(null, results);
                 }
+            ], (exception, results)=>{
+                if(exception){
+                    return callback(exception);
+                }
+
+                callback(null, results);
             });
         });
     } catch(e){
         callback(e);
     }
+}
+
+function processDataJoins(search_wrapper, search_data, callback){
+    try {
+        if (!search_data || search_data.length === 0) {
+            return callback(null, []);
+        }
+
+        let results = search_data[0].data;
+        //because we have processed the data in the order of the joins all we need to do is iterate thru the search_data array and tie the sets together according to the join
+        for (let x = 1; x < search_data.length; x++) {
+            let join = search_data[x].join;
+
+            results = joinData(join, search_wrapper.all_get_attributes, results, search_data[x].data);
+        }
+
+        callback(null, results);
+    } catch(e) {
+        callback(e);
+    }
+}
+
+function tableSearch(search_wrapper, callback){
+    let search_data = [];
+
+    async.waterfall([
+        searchByConditions.bind(null, search_wrapper.tables[0]),
+        (results, caller)=>{
+            search_data.push({table: search_wrapper.tables[0], data: results, join: null});
+            caller(null, search_data);
+        },
+        fetchJoinData.bind(null, search_wrapper)
+    ], (err, results)=>{
+        if(err){
+            return callback(err);
+        }
+
+        callback(null, results);
+    });
+}
+
+function fetchJoinData(search_wrapper, search_data, callback){
+    if(!search_wrapper.joins || search_wrapper.joins.length === 0) {
+        return callback(null, search_data);
+    }
+    async.eachOfLimit(search_wrapper.joins, 1, (join, index, call) => {
+        //evaluate join to find linked tables
+        let comparators = Object.values(join)[0];
+        let first_attribute = findAttribute(search_wrapper.all_get_attributes, comparators[0]);
+        let second_attribute = findAttribute(search_wrapper.all_get_attributes, comparators[1]);
+
+        //find primary table to get data from & create condition
+        let primary_table_data = {};
+        search_data.forEach((the_data) => {
+            if (the_data.table.table === first_attribute.table || the_data.table.alias === first_attribute.table_alias ||
+                the_data.table.table === second_attribute.table || the_data.table.alias === second_attribute.table_alias) {
+                primary_table_data = the_data;
+                return;
+            }
+        });
+
+        //find table to select from
+        let secondary_table = {};
+        search_wrapper.tables.forEach((table) => {
+            if (table.table === first_attribute.table || table.alias === first_attribute.table_alias ||
+                table.table === second_attribute.table || table.alias === second_attribute.table_alias) {
+                secondary_table = table;
+                return;
+            }
+        });
+
+        //convert the join to a condition and add to the secondary table
+        secondary_table.conditions.push(convertJoinToCondition(primary_table_data.table, secondary_table, join, primary_table_data.data));
+
+        //fetch the data
+        searchByConditions(secondary_table, (error, results) => {
+            if (error) {
+                return call(error);
+            }
+
+            search_data.push({table: secondary_table, data: results, join: join});
+            call();
+        });
+    }, (err) => {
+        if(err){
+            return callback(err);
+        }
+
+        return callback(null, search_data);
+    });
 }
 
 function joinData(join, all_get_attributes, data, data2){
