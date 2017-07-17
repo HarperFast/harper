@@ -1,4 +1,5 @@
-const child = require('child_process');
+const child = require('child_process'),
+    global_schema = require('../utility/globalSchema');
 
 module.exports = {
     signalSchemaChange
@@ -6,7 +7,7 @@ module.exports = {
 
 function signalSchemaChange(message){
     if (process.send === undefined) {
-        console.log('not a child process');
+        global_schema.schemaSignal();
     } else {
         process.send(message);
     }

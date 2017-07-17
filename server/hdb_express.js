@@ -21,10 +21,8 @@ if (cluster.isMaster && !DEBUG) {
 
     function messageHandler(msg) {
         forks.forEach((fork)=>{
-            console.log(fork.process.pid);
+            fork.send(msg);
         });
-        console.log('received message');
-        console.log(msg);
     }
 
 } else {
@@ -43,10 +41,10 @@ if (cluster.isMaster && !DEBUG) {
         auth = require('../security/auth'),
         session = require('express-session'),
         passport = require('passport'),
-        global_schema = require('../utility/globalSchema'),
         user = require('../security/user'),
         role = require('../security/role'),
-        read_log = require('../utility/logging/read_logs');
+        read_log = require('../utility/logging/read_logs'),
+        global_schema = require('../utility/globalSchema');
 
     hdb_properties.append(hdb_properties.get('settings_path'));
 
@@ -180,6 +178,12 @@ if (cluster.isMaster && !DEBUG) {
     function nullOperation(json, callback) {
         callback('Invalid operation');
     }
+
+    process.on('message', (msg)=>{
+        global_schema.schemaSignal((err)=>{
+
+        });
+    });
 
     try{
 
