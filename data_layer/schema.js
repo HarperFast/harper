@@ -14,7 +14,8 @@ const fs = require('fs.extra')
     // as such the functions have been broken out into a seperate module.
     , schema_describe = require('./schemaDescribe')
     , schema_ops = require('../utility/schema_ops')
-    , PropertiesReader = require('properties-reader');
+    , PropertiesReader = require('properties-reader'),
+    signalling = require('../utility/signalling');
 let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
 hdb_properties.append(hdb_properties.get('settings_path'));
 
@@ -69,6 +70,7 @@ module.exports = {
 function createSchema  (schema_create_object, callback) {
     try {
         createSchemaStructure(schema_create_object, function (err, success) {
+            signalling.signalSchemaChange({message:"fuck there", pid: process.pid});
             if (err) {
                 callback(err);
                 return;

@@ -1,6 +1,6 @@
 const cluster = require('cluster');
 const numCPUs = 4;
-const DEBUG = true;
+const DEBUG = false;
 const winston = require('../utility/logging/winston_logger');
 
 
@@ -8,13 +8,25 @@ if (cluster.isMaster && !DEBUG) {
     winston.info(`Master ${process.pid} is running`);
 
     // Fork workers.
+    let forks = [];
     for (let i = 0; i < numCPUs; i++) {
-        cluster.fork();
+        let forked = cluster.fork();
+        forked.on('message', messageHandler);
+        forks.push(forked);
     }
 
     cluster.on('exit', (worker, code, signal) => {
         winston.info(`worker ${worker.process.pid} died`);
     });
+
+    function messageHandler(msg) {
+        forks.forEach((fork)=>{
+            console.log(fork.process.pid);
+        });
+        console.log('received message');
+        console.log(msg);
+    }
+
 } else {
     winston.info('In express' + process.cwd());
     const express = require('express'),
