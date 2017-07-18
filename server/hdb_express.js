@@ -162,8 +162,8 @@ if (cluster.isMaster && !DEBUG) {
             case 'drop_role':
                 operation_function = role.dropRole;
                 break;
-            case 'login':
-                operation_function = auth.login;
+            case 'user_info':
+                operation_function = user.userInfo
                 break;
             case 'read_log':
                 operation_function = read_log.read_log;
