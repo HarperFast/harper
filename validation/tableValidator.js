@@ -3,7 +3,6 @@ var validate = require('validate.js');
 var constraints = {
     schema : {
         presence : true,
-        format: "[\\w\\-\\_]+",
         exclusion: {
             within: ["system"],
             message: "You cannot create tables within the system schema"
@@ -12,7 +11,6 @@ var constraints = {
     },
     table: {
         presence : true,
-        format: "[\\w\\-\\_]+"
 
     },
     hash_attribute :{

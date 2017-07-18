@@ -2,18 +2,18 @@ const validate = require('validate.js');
 
 var constraints = {
     schema : {
-        presence : true,
-        format: "[\\w\\-\\_]+"
+        presence : true
+
 
     },
     table: {
-        presence : true,
-        format: "[\\w\\-\\_]+"
+        presence : true
+
 
     },
     attribute :{
-        presence : true,
-        format: "[\\w\\-\\_]+"
+        presence : true
+
 
     }
 };

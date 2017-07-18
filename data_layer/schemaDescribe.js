@@ -29,6 +29,7 @@ module.exports = {
                 async.map(tables, function (table, caller) {
                     descTable({"schema": table.schema, "table": table.name}, function (err, desc) {
                         if (err) {
+
                             caller(err);
                             return;
                         }

@@ -2,8 +2,8 @@ var validate = require('validate.js');
 
 var constraints = {
     schema : {
-        presence : true,
-        format: "[\\w\\-\\_]+"
+        presence : true
+
 
     }
 };
