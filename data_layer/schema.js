@@ -1,10 +1,7 @@
 const fs = require('fs.extra')
-    , validate = require('validate.js')
     , insert = require('./insert.js')
     , async = require('async')
-    , table_validation = require('../validation/tableValidator.js')
-    , attribute_validation = require('../validation/attributeInsertValidator')
-    , describe_schema_validation = require('../validation/describeSchemaValidation.js')
+    , validation = require('../validation/schema_validator')
     , search = require('./search.js')
     ,winston = require('../utility/logging/winston_logger')
     , uuidV4 = require('uuid/v4')
@@ -19,14 +16,6 @@ const fs = require('fs.extra')
 let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
 hdb_properties.append(hdb_properties.get('settings_path'));
 
-
-let schema_constraints = {
-    schema: {
-        presence: true,
-        format: "[\\w\\-\\_]+"
-
-    }
-};
 
 
 let drop_table_constraints = {
@@ -103,7 +92,7 @@ function dropSchema (drop_schema_object, callback) {
 
 function describeSchema (describe_schema_object, callback) {
     try {
-        let validation = describe_schema_validation(describe_schema_object);
+        let validation = validation.schema_object(describe_schema_object);
         if (validation) {
             callback(validation);
             return;
@@ -134,7 +123,7 @@ function describeSchema (describe_schema_object, callback) {
 function createSchemaStructure(schema_create_object, callback) {
     try {
 
-        let validation_error = validate(schema_create_object, schema_constraints);
+        let validation_error = validation.schema_object(schema_create_object);
         if (validation_error) {
             callback(validation_error, null);
             return;
@@ -193,7 +182,7 @@ function deleteSchemaStructure (drop_schema_object, callback) {
     try {
 
 
-        let validation_error = validate(drop_schema_object, schema_constraints);
+        let validation_error = validation.schema_object(drop_schema_object);
         if (validation_error) {
             callback(validation_error, null);
             return;
@@ -280,7 +269,7 @@ function deleteSchemaStructure (drop_schema_object, callback) {
 
 function createTableStructure (create_table_object, callback) {
 
-    let validator = table_validation(create_table_object);
+    let validator = validation.table_object(create_table_object);
     if (validator) {
         callback(validator);
         return;
@@ -517,7 +506,7 @@ function dropTable (drop_table_object, callback) {
 
 function createAttributeStructure(create_attribute_object, callback){
     try {
-        let validation_error = attribute_validation(create_attribute_object);
+        let validation_error = validation.attribute_object(create_attribute_object);
         if (validation_error) {
             callback(validation_error, null);
             return;
@@ -627,7 +616,7 @@ function createAttribute (create_attribute_object, callback) {
 
 function dropAttribute (drop_attribute_object, callback){
     try {
-        let validation_error = attribute_validation(create_attribute_object);
+        let validation_error = validation.attribute_object(create_attribute_object);
         if (validation_error) {
             callback(validation_error, null);
             return;
