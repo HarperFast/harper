@@ -1,6 +1,6 @@
 const cluster = require('cluster');
 const numCPUs = 4;
-const DEBUG = false;
+const DEBUG = true;
 const winston = require('../utility/logging/winston_logger');
 
 
@@ -181,7 +181,9 @@ if (cluster.isMaster && !DEBUG) {
 
     process.on('message', (msg)=>{
         global_schema.schemaSignal((err)=>{
-
+            if(err){
+                winston.error(err);
+            }
         });
     });
 
