@@ -2,8 +2,10 @@
 const spawn = require('child_process').spawn,
     winston = require('../utility/logging/winston_logger');
 
+module.exports = {
+    stop:stop
+}
 
-stop();
 function stop(){
 
     var terminal = spawn('bash');

@@ -24,7 +24,7 @@ From the HarperDB root directory execute either of the following:
 
 ```
 cd HDB_HOME/bin
-./hdb_install
+./harperdb install
 
 ```
 
@@ -33,7 +33,7 @@ or run
 
 ```
 cd HDB_HOME/bin
-./hdb_run
+./harperdb run
 
 ```
 *    You will need read and write access to the HDB_ROOT (location of the root directory of the database) directory, default path is your current working directory.
@@ -52,7 +52,7 @@ If you do choose to register at a later time execute the following commands from
 
 ```
 cd HDB_HOME/bin
-./hdb_register
+./harperdb register
 
 ```
 
@@ -77,7 +77,7 @@ To run HarperDB after it is installed from the HarperDB home (HDB_HOME) director
 
 ```
 cd HDB_HOME/bin
-./hdb_run
+./harperdb run
 
 ```
 * You may need to update your firewall if you are not running locally, by default HarperDB runs on port 5299.  If you are unsure see your properties file at HDB_ROOT/config/settings.js.
@@ -88,7 +88,7 @@ To stop HarperDB once it is running from the HarperDB home (HDB_HOME) directory 
 
 ```
 cd HDB_HOME/bin
-./hdb_stop
+./harperdb stop
 
 ```
 ## Need Help?
