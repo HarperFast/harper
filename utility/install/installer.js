@@ -3,7 +3,7 @@ const prompt = require('prompt'),
     path = require('path'),
     password = require('./../password'),
     mount = require('./../mount_hdb'),
-    fs = require('fs'),
+    fs = require('fs.extra'),
     colors = require("colors/safe"),
     winston = require('winston'),
     isRoot = require('is-root'),
@@ -100,7 +100,23 @@ function checkInstall(callback) {
                         callback(err);
                     }
                     if(result.REINSTALL){
-                        callback(null, true);
+                        fs.rmrf(hdb_properties.get('HDB_ROOT'), function(err){
+                            if(err){
+                                winston.error(err);
+                               return callback(err);
+                            }
+                            fs.unlink(`${process.cwd()}/../hdb_boot_properties.file`, function(err){
+                                if(err){
+                                    winston.error(err);
+                                    return callback(err);
+                                }
+                               return callback(null, true);
+
+                            });
+
+
+
+                        });
 
                     }
 
