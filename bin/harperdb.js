@@ -1,8 +1,4 @@
-const run = require('./run'),
-      install = require('./install'),
-      register = require('./register'),
-      stop = require('./stop');
-
+const run = require('./run');
 
 haperDBService();
 function haperDBService(){
@@ -12,18 +8,23 @@ function haperDBService(){
     }
     switch(service){
         case "run":
+
             run.run();
             break;
-        case "install":
+       case "install":
+           const install = require('./install');
             install.install();
             break;
         case "register":
+            const register = require('./register');
             register.register();
             break;
         case "stop":
+            const stop = require('./stop');
             stop.stop();
             break;
         default:
+
             run.run();
             break
     }
