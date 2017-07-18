@@ -19,15 +19,23 @@ const constraints = {
     },
     hash_attribute :{
         presence : true,
-        format: "[\\w\\-\\_]+"
+        format:  "^[a-zA-Z0-9_]*$"
 
     }
 };
 
 
+function makeAttributesStrings(object){
+    for(attr in object){
+        object[attr] = object[attr].toString();
+    }
 
+
+    return object;
+}
 
 function schema_object(object){
+    object = makeAttributesStrings(object);
     constraints.schema.presence = true;
     constraints.table.presence = false;
     constraints.attribute.presence = false;
@@ -37,6 +45,7 @@ function schema_object(object){
 }
 
 function table_object(object){
+    object = makeAttributesStrings(object);
     constraints.schema.presence = true;
     constraints.table.presence = true;
     constraints.attribute.presence = false;
@@ -45,6 +54,7 @@ function table_object(object){
 }
 
 function attribute_object(object){
+    object = makeAttributesStrings(object);
     constraints.schema.presence = true;
     constraints.table.presence = true;
     constraints.attribute.presence = true;
@@ -53,8 +63,9 @@ function attribute_object(object){
 }
 
 function describe_table(object){
+    object = makeAttributesStrings(object);
     constraints.schema.presence = true;
-    constraints.table.presence = false;
+    constraints.table.presence = true;
     constraints.attribute.presence = false;
     constraints.hash_attribute.presence = false;
 
