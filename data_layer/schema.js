@@ -1,7 +1,7 @@
 const fs = require('fs.extra')
     , insert = require('./insert.js')
     , async = require('async')
-    , validation = require('../validation/schema_validator')
+    , validation = require('../validation/schema_validator.js')
     , search = require('./search.js')
     ,winston = require('../utility/logging/winston_logger')
     , uuidV4 = require('uuid/v4')
@@ -18,23 +18,7 @@ hdb_properties.append(hdb_properties.get('settings_path'));
 
 
 
-let drop_table_constraints = {
-    schema: {
-        presence: true,
-        format: "[\\w\\-\\_]+",
-        exclusion: {
-            within: ["system"],
-            message: "You cannot alter the system schema!"
-        }
 
-    },
-
-    table: {
-        presence: true,
-        format: "[\\w\\-\\_]+",
-
-    }
-};
 
 module.exports = {
     createSchema: createSchema,
@@ -92,9 +76,9 @@ function dropSchema (drop_schema_object, callback) {
 
 function describeSchema (describe_schema_object, callback) {
     try {
-        let validation = validation.schema_object(describe_schema_object);
-        if (validation) {
-            callback(validation);
+        let validation_msg = validation.schema_object(describe_schema_object);
+        if (validation_msg) {
+            callback(validation_msg);
             return;
         }
 
@@ -387,7 +371,7 @@ function searchForTable(schema_name, table_name, callback){
 
 function deleteTableStrucutre (drop_table_object, callback) {
     try {
-        let validation_error = validate(drop_table_object, drop_table_constraints);
+        let validation_error = validation.table_object(drop_table_object, drop_table_constraints);
         if (validation_error) {
             callback(validation_error, null);
             return;
