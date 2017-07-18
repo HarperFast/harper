@@ -1,5 +1,6 @@
 const schema = require('../data_layer/schemaDescribe'),
-    async = require('async');
+    async = require('async'),
+    winston = require('../utility/logging/winston_logger');
 
 const system_schema = {
     hdb_table:{
@@ -53,12 +54,13 @@ const system_schema = {
 
 module.exports = {
     setSchemaDataToGlobal: setSchemaDataToGlobal,
-    getTableSchema: getTableSchema
+    getTableSchema: getTableSchema,
+    schemaSignal
 };
 
 function setSchemaDataToGlobal(callback){
 
-    if(!global.hdb_schema){
+    //if(!global.hdb_schema){
         schema.describeAll(null, (err, data)=> {
             if (err) {
                 callback(err);
@@ -72,9 +74,9 @@ function setSchemaDataToGlobal(callback){
             global.hdb_schema = data;
             callback(null, null);
         });
-    } else {
+    /*} else {
         callback(null, null);
-    }
+    }*/
 }
 
 function getTableSchema(schema_name, table_name, callback){
@@ -141,4 +143,12 @@ function setTableDataToGlobal(schema_name, table, callback){
     });
 }
 
+function schemaSignal(callback){
+    setSchemaDataToGlobal((err)=>{
+        if(err){
+           return winston.error(err);
+        }
 
+        callback();
+    });
+}

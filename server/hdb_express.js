@@ -1,6 +1,6 @@
 const cluster = require('cluster');
 const numCPUs = 4;
-const DEBUG = true;
+const DEBUG = false;
 const winston = require('../utility/logging/winston_logger');
 
 
@@ -8,13 +8,23 @@ if (cluster.isMaster && !DEBUG) {
     winston.info(`Master ${process.pid} is running`);
 
     // Fork workers.
+    let forks = [];
     for (let i = 0; i < numCPUs; i++) {
-        cluster.fork();
+        let forked = cluster.fork();
+        forked.on('message', messageHandler);
+        forks.push(forked);
     }
 
     cluster.on('exit', (worker, code, signal) => {
         winston.info(`worker ${worker.process.pid} died`);
     });
+
+    function messageHandler(msg) {
+        forks.forEach((fork)=>{
+            fork.send(msg);
+        });
+    }
+
 } else {
     winston.info('In express' + process.cwd());
     const express = require('express'),
@@ -31,10 +41,10 @@ if (cluster.isMaster && !DEBUG) {
         auth = require('../security/auth'),
         session = require('express-session'),
         passport = require('passport'),
-        global_schema = require('../utility/globalSchema'),
         user = require('../security/user'),
         role = require('../security/role'),
-        read_log = require('../utility/logging/read_logs');
+        read_log = require('../utility/logging/read_logs'),
+        global_schema = require('../utility/globalSchema');
 
     hdb_properties.append(hdb_properties.get('settings_path'));
 
@@ -168,6 +178,12 @@ if (cluster.isMaster && !DEBUG) {
     function nullOperation(json, callback) {
         callback('Invalid operation');
     }
+
+    process.on('message', (msg)=>{
+        global_schema.schemaSignal((err)=>{
+
+        });
+    });
 
     try{
 
