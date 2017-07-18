@@ -6,7 +6,8 @@ const insert = require('../data_layer/insert'),
 module.exports = {
     addUser: addUser,
     alterUser:alterUser,
-    dropUser: dropUser
+    dropUser: dropUser,
+    userInfo: user_info,
 
 };
 
@@ -96,3 +97,27 @@ function dropUser(user, callback){
 
 }
 
+
+function user_info(body, callback){
+    let user = body.hdb_user;
+    let search_obj = {};
+    search_obj.schema = 'system';
+    search_obj.table = 'hdb_role';
+    search_obj.hash_attribute = 'id';
+    search_obj.hash_values = [user.role];
+    search_obj.get_attributes = ['*'];
+    search.searchByHash(search_obj, function (err, role_data) {
+        if (err) {
+            return callback(err);
+        }
+
+        user.role = role_data[0];
+        delete user.password;
+
+        return callback(null, user);
+
+
+
+    });
+
+}

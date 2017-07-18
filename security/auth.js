@@ -73,30 +73,6 @@ router.post('/',
         res.status(200).send(req.user.username);
     });
 
-function login(body, callback){
-    let user = body.hdb_user;
-    let search_obj = {};
-    search_obj.schema = 'system';
-    search_obj.table = 'hdb_role';
-    search_obj.hash_attribute = 'id';
-    search_obj.hash_values = [user.role];
-    search_obj.get_attributes = ['*'];
-    search.searchByHash(search_obj, function (err, role_data) {
-        if (err) {
-            return callback(err);
-        }
-
-        user.role = role_data[0];
-        delete user.password;
-
-        return callback(null, user);
-
-
-
-    });
-
-}
-
 function authorize(req, res, next) {
 
     let strategy;
@@ -230,6 +206,5 @@ function checkPermissions(check_pemission_obj, callback) {
 
 module.exports = {
     authorize: authorize,
-    checkPermissions: checkPermissions,
-    login: login
+    checkPermissions: checkPermissions
 }
