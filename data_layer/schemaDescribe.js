@@ -3,7 +3,7 @@
 const async = require('async'),
     search = require('./search'),
     winston = require('../utility/logging/winston_logger'),
-    describe_table_validation = require('../validation/describeTableValidator.js');
+    validator = require('../validation/schema_validator');
 
 
 module.exports = {
@@ -71,7 +71,7 @@ module.exports = {
 
 function descTable(describe_table_object, callback) {
     try {
-        let validation = describe_table_validation(describe_table_object);
+        let validation = validator.describe_table(describe_table_object);
         if (validation) {
             callback(validation);
             return;
