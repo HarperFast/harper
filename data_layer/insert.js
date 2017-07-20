@@ -42,7 +42,7 @@ function validation(write_object, callback){
 
         //validate that every record has hash_attribute populated
         let bad_records = _.filter(write_object.records, (record) => {
-            return !record[hash_attribute] || record[hash_attribute];
+            return !record[hash_attribute];
         });
 
         if (bad_records && bad_records.length > 0) {
