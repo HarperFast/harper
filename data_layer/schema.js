@@ -97,7 +97,10 @@ function describeSchema (describe_schema_object, callback) {
                 callback(err);
                 return;
             }
-            callback(null, tables);
+            if(tables && tables.length < 1 ){
+                return callback('schema not found');
+            }
+            return callback(null, tables);
         });
     }catch(e){
         callback(e);
