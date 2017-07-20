@@ -12,6 +12,7 @@ const insert_validator = require('../validation/insertValidator.js'),
     search = require('./search'),
     winston = require('../utility/logging/winston_logger'),
     _ = require('lodash'),
+    text_chunk = require("node-text-chunk"),
     PropertiesReader = require('properties-reader'),
     hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
     hdb_properties.append(hdb_properties.get('settings_path'));
@@ -41,7 +42,7 @@ function validation(write_object, callback){
 
         //validate that every record has hash_attribute populated
         let bad_records = _.filter(write_object.records, (record) => {
-            return !record[hash_attribute];
+            return !record[hash_attribute] || record[hash_attribute];
         });
 
         if (bad_records && bad_records.length > 0) {
@@ -234,9 +235,10 @@ function checkAttributeSchema(insert_object, callerback) {
             }
 
             let value = typeof record[property] === 'object' ? JSON.stringify(record[property]) : record[property];
-            let value_stripped = String(value).replace(regex, '').substring(0, 4000);
+            let value_stripped = String(value).replace(regex, '').substring(0, 3500);
             let attribute_file_name = record[hash_attribute] + '.hdb';
-            let attribute_path = base_path + property + '/' + value_stripped;
+            let value_chunked = value_stripped.length > 255 ? text_chunk.text(value_stripped, 250) : [value_stripped];
+            let attribute_path = base_path + property + '/' + value_chunked.join('[>>>]/');
 
             hash_folders[`${base_path}__hdb_hash/${property}`] = "";
             attribute_objects.push({
@@ -247,7 +249,7 @@ function checkAttributeSchema(insert_object, callerback) {
                 folders[attribute_path] = "";
 
                 link_objects.push({
-                    link: `../../__hdb_hash/${property}/${attribute_file_name}`,
+                    link: `${base_path}/__hdb_hash/${property}/${attribute_file_name}`,
                     file_name: `${attribute_path}/${attribute_file_name}`
                 });
             } else {
@@ -381,7 +383,7 @@ function createFolders(folders, callback) {
     async.each(folders, (folder, caller) => {
         mkdirp(folder, (err) => {
             if (err) {
-                caller(`mkdir on: ${folder} failed ${err}`);
+                caller(err);
                 return;
             }
 

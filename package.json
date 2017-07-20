@@ -33,6 +33,7 @@
     "mkdirp": "^0.5.1",
     "moment": "^2.17.1",
     "node-schedule": "^1.2.1",
+    "node-text-chunk": "^0.1.1",
     "nodejs-license-file": "^1.1.0",
     "optimist": "^0.6.1",
     "passport": "^0.3.2",
