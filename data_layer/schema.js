@@ -371,7 +371,7 @@ function searchForTable(schema_name, table_name, callback){
 
 function deleteTableStrucutre (drop_table_object, callback) {
     try {
-        let validation_error = validation.table_object(drop_table_object, drop_table_constraints);
+        let validation_error = validation.table_object(drop_table_object);
         if (validation_error) {
             callback(validation_error, null);
             return;
