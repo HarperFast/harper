@@ -3,7 +3,11 @@ const validate = require('validate.js');
 const constraints = {
     schema : {
         presence : true,
-        format: "^[a-zA-Z0-9_]*$",
+        format: {
+
+            pattern: "^[a-zA-Z0-9_]*$",
+            message: "schema must be alpha numeric"
+        },
         length: {
             maximum:250,
             tooLong: 'cannot exceed 250 characters'
@@ -11,7 +15,11 @@ const constraints = {
     },
     table: {
         presence : true,
-        format: "^[a-zA-Z0-9_]*$",
+        format: {
+
+            pattern: "^[a-zA-Z0-9_]*$",
+            message: "table must be alpha numeric"
+        },
         length: {
             maximum:250,
             tooLong: 'cannot exceed 250 characters'
@@ -19,12 +27,20 @@ const constraints = {
     },
     attribute :{
         presence : true,
-        format: "^[a-zA-Z0-9_]*$"
+        format: {
+
+            pattern: "^[a-zA-Z0-9_]*$",
+            message: "attribute must be alpha numeric"
+        }
 
     },
     hash_attribute :{
         presence : true,
-        format:  "^[a-zA-Z0-9_]*$",
+        format: {
+
+            pattern: "^[a-zA-Z0-9_]*$",
+            message: "hash_attribute must be alpha numeric"
+        },
         length: {
             maximum:250,
             tooLong: 'cannot exceed 250 characters'
