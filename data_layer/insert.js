@@ -262,10 +262,10 @@ function checkAttributeSchema(insert_object, callerback) {
             }
 
             let value = typeof record[property] === 'object' ? JSON.stringify(record[property]) : record[property];
-            let value_stripped = String(value).replace(regex, '').substring(0, 3500);
+            let value_stripped = String(value).replace(regex, '');
+            let value_path = value_stripped.length > 255 ? value_stripped.substring(0, 255) + '/blob' : value_stripped;
             let attribute_file_name = record[hash_attribute] + '.hdb';
-            let value_chunked = value_stripped.length > 255 ? text_chunk.text(value_stripped, 250) : [value_stripped];
-            let attribute_path = base_path + property + '/' + value_chunked.join('[>>>]/');
+            let attribute_path = base_path + property + '/' + value_path;
 
             hash_folders[`${base_path}__hdb_hash/${property}`] = "";
             attribute_objects.push({
