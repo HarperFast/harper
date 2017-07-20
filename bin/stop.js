@@ -1,10 +1,12 @@
 #!/usr/bin/env node
-const spawn = require('child_process').spawn,
-    winston = require('../utility/logging/winston_logger');
 
+module.exports = {
+    stop:stop
+}
 
-stop();
 function stop(){
+    const spawn = require('child_process').spawn,
+        winston = require('../utility/logging/winston_logger');
 
     var terminal = spawn('bash');
     terminal.stderr.on('data', function (data) {

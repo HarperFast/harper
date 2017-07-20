@@ -18,7 +18,6 @@ var fork = require('child_process').fork;
 
 // TODO need to check if hdb is already running and stop it first before running again.
 
-run();
 
 function run() {
     basic_winston.configure({
@@ -122,6 +121,8 @@ function exitInstall(){
 
 
 
-
+module.exports ={
+    run:run
+}
 
 
