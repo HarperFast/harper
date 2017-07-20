@@ -243,7 +243,7 @@ function deleteSchemaStructure (drop_schema_object, callback) {
                     });
 
                 } else {
-                    callback(null, `Schema ${delete_schema_object.schea} successfully deleted.`)
+                    callback(null, `Schema ${drop_schema_object.schema} successfully deleted.`)
                 }
             });
         });

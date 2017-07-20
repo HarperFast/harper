@@ -73,7 +73,7 @@ function table_object(object){
     constraints.schema.presence = {"message":" is required"};
     constraints.table.presence = {"message":" is required"};
     constraints.attribute.presence = false;
-    constraints.hash_attribute.presence = true;
+    constraints.hash_attribute.presence = false;
     return validate(object, constraints);
 }
 
