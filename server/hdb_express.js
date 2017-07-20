@@ -1,6 +1,6 @@
 const cluster = require('cluster');
 const numCPUs = 4;
-const DEBUG = true;
+const DEBUG = false;
 const winston = require('../utility/logging/winston_logger');
 
 
