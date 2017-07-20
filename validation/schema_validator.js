@@ -3,14 +3,19 @@ const validate = require('validate.js');
 const constraints = {
     schema : {
         presence : true,
-        format: "^[a-zA-Z0-9_]*$"
-
-
+        format: "^[a-zA-Z0-9_]*$",
+        length: {
+            maximum:250,
+            tooLong: 'cannot exceed 250 characters'
+        }
     },
     table: {
         presence : true,
-        format: "^[a-zA-Z0-9_]*$"
-
+        format: "^[a-zA-Z0-9_]*$",
+        length: {
+            maximum:250,
+            tooLong: 'cannot exceed 250 characters'
+        }
     },
     attribute :{
         presence : true,
@@ -19,8 +24,11 @@ const constraints = {
     },
     hash_attribute :{
         presence : true,
-        format:  "^[a-zA-Z0-9_]*$"
-
+        format:  "^[a-zA-Z0-9_]*$",
+        length: {
+            maximum:250,
+            tooLong: 'cannot exceed 250 characters'
+        }
     }
 };
 
