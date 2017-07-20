@@ -3,7 +3,11 @@ const validate = require('validate.js');
 const constraints = {
     schema : {
         presence : true,
-        format: "^[a-zA-Z0-9_]*$",
+        format: {
+
+            pattern: "^[a-zA-Z0-9_]*$",
+            message: "schema must be alpha numeric"
+        },
         length: {
             maximum:250,
             tooLong: 'cannot exceed 250 characters'
@@ -11,7 +15,11 @@ const constraints = {
     },
     table: {
         presence : true,
-        format: "^[a-zA-Z0-9_]*$",
+        format: {
+
+            pattern: "^[a-zA-Z0-9_]*$",
+            message: "table must be alpha numeric"
+        },
         length: {
             maximum:250,
             tooLong: 'cannot exceed 250 characters'
@@ -19,12 +27,20 @@ const constraints = {
     },
     attribute :{
         presence : true,
-        format: "^[a-zA-Z0-9_]*$"
+        format: {
+
+            pattern: "^[a-zA-Z0-9_]*$",
+            message: "attribute must be alpha numeric"
+        }
 
     },
     hash_attribute :{
         presence : true,
-        format:  "^[a-zA-Z0-9_]*$",
+        format: {
+
+            pattern: "^[a-zA-Z0-9_]*$",
+            message: "hash_attribute must be alpha numeric"
+        },
         length: {
             maximum:250,
             tooLong: 'cannot exceed 250 characters'
@@ -44,7 +60,7 @@ function makeAttributesStrings(object){
 
 function schema_object(object){
     object = makeAttributesStrings(object);
-    constraints.schema.presence = true;
+    constraints.schema.presence = {"message":" is required"};
     constraints.table.presence = false;
     constraints.attribute.presence = false;
     constraints.hash_attribute.presence = false;
@@ -54,8 +70,8 @@ function schema_object(object){
 
 function table_object(object){
     object = makeAttributesStrings(object);
-    constraints.schema.presence = true;
-    constraints.table.presence = true;
+    constraints.schema.presence = {"message":" is required"};
+    constraints.table.presence = {"message":" is required"};
     constraints.attribute.presence = false;
     constraints.hash_attribute.presence = true;
     return validate(object, constraints);
@@ -63,17 +79,17 @@ function table_object(object){
 
 function attribute_object(object){
     object = makeAttributesStrings(object);
-    constraints.schema.presence = true;
-    constraints.table.presence = true;
-    constraints.attribute.presence = true;
+    constraints.schema.presence = {"message":" is required"};
+    constraints.table.presence = {"message":" is required"};
+    constraints.attribute.presence = {"message":" is required"};
     constraints.hash_attribute.presence = false;
     return validate(object, constraints);
 }
 
 function describe_table(object){
     object = makeAttributesStrings(object);
-    constraints.schema.presence = true;
-    constraints.table.presence = true;
+    constraints.schema.presence = {"message":" is required"};
+    constraints.table.presence = {"message":" is required"};
     constraints.attribute.presence = false;
     constraints.hash_attribute.presence = false;
 
