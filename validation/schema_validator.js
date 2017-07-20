@@ -60,7 +60,7 @@ function makeAttributesStrings(object){
 
 function schema_object(object){
     object = makeAttributesStrings(object);
-    constraints.schema.presence = true;
+    constraints.schema.presence = {"message":" is required"};
     constraints.table.presence = false;
     constraints.attribute.presence = false;
     constraints.hash_attribute.presence = false;
@@ -70,8 +70,8 @@ function schema_object(object){
 
 function table_object(object){
     object = makeAttributesStrings(object);
-    constraints.schema.presence = true;
-    constraints.table.presence = true;
+    constraints.schema.presence = {"message":" is required"};
+    constraints.table.presence = {"message":" is required"};
     constraints.attribute.presence = false;
     constraints.hash_attribute.presence = true;
     return validate(object, constraints);
@@ -79,17 +79,17 @@ function table_object(object){
 
 function attribute_object(object){
     object = makeAttributesStrings(object);
-    constraints.schema.presence = true;
-    constraints.table.presence = true;
-    constraints.attribute.presence = true;
+    constraints.schema.presence = {"message":" is required"};
+    constraints.table.presence = {"message":" is required"};
+    constraints.attribute.presence = {"message":" is required"};
     constraints.hash_attribute.presence = false;
     return validate(object, constraints);
 }
 
 function describe_table(object){
     object = makeAttributesStrings(object);
-    constraints.schema.presence = true;
-    constraints.table.presence = true;
+    constraints.schema.presence = {"message":" is required"};
+    constraints.table.presence = {"message":" is required"};
     constraints.attribute.presence = false;
     constraints.hash_attribute.presence = false;
 
