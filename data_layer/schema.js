@@ -97,7 +97,10 @@ function describeSchema (describe_schema_object, callback) {
                 callback(err);
                 return;
             }
-            callback(null, tables);
+            if(tables && tables.length < 1 ){
+                return callback('schema not found');
+            }
+            return callback(null, tables);
         });
     }catch(e){
         callback(e);
@@ -240,7 +243,7 @@ function deleteSchemaStructure (drop_schema_object, callback) {
                     });
 
                 } else {
-                    callback(null, `Schema ${delete_schema_object.schea} successfully deleted.`)
+                    callback(null, `Schema ${drop_schema_object.schema} successfully deleted.`)
                 }
             });
         });
@@ -371,7 +374,7 @@ function searchForTable(schema_name, table_name, callback){
 
 function deleteTableStrucutre (drop_table_object, callback) {
     try {
-        let validation_error = validation.table_object(drop_table_object, drop_table_constraints);
+        let validation_error = validation.table_object(drop_table_object);
         if (validation_error) {
             callback(validation_error, null);
             return;
