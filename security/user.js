@@ -125,21 +125,58 @@ function user_info(body, callback){
 }
 
 function list_users(body, callback){
-    let search_obj = {};
-    search_obj.schema = 'system';
-    search_obj.table = 'hdb_user';
-    search_obj.hash_attribute = 'username';
-    search_obj.hash_values = ['admin'];
-    search_obj.get_attributes = ['*'];
-    search.searchByHash(search_obj, function (err, users) {
+
+    let role_search_obj = {};
+    role_search_obj.schema = 'system';
+    role_search_obj.table = 'hdb_role';
+    role_search_obj.hash_attribute = 'id';
+    role_search_obj.search_value = '*';
+    role_search_obj.search_attribute = 'role';
+
+    role_search_obj.get_attributes = ['*'];
+    search.searchByValue(role_search_obj, function (err, roles) {
+
+
         if (err) {
             return callback(err);
         }
 
-        return callback(null, users);
+
+        if(roles){
+            let roleMapObj = {}
+            for(r in roles){
+                roleMapObj[roles[r].id] = roles[r];
+            }
+
+            let user_search_obj = {};
+            user_search_obj.schema = 'system';
+            user_search_obj.table = 'hdb_user';
+            user_search_obj.hash_attribute = 'username';
+            user_search_obj.search_value = '*';
+            user_search_obj.search_attribute = 'username';
+            user_search_obj.get_attributes = ['*'];
+            search.searchByValue(user_search_obj, function (err, users) {
+                if (err) {
+                    return callback(err);
+                }
+
+                for(u in users){
+                    users[u].role = roleMapObj[u.role];
+                }
+
+                return callback(null, users);
 
 
+
+            });
+
+        }else{
+            return callback(null, null);
+
+        }
 
     });
+
+
 
 }
