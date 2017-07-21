@@ -1,13 +1,15 @@
 const insert = require('../data_layer/insert'),
       delete_ = require('../data_layer/delete'),
       password = require('../utility/password'),
-      validation = require('../validation/user_validation');
+      validation = require('../validation/user_validation'),
+      search = require('../data_layer/search');
 
 module.exports = {
     addUser: addUser,
     alterUser:alterUser,
     dropUser: dropUser,
     userInfo: user_info,
+    listUsers: list_users
 
 };
 
@@ -115,6 +117,26 @@ function user_info(body, callback){
         delete user.password;
 
         return callback(null, user);
+
+
+
+    });
+
+}
+
+function list_users(body, callback){
+    let search_obj = {};
+    search_obj.schema = 'system';
+    search_obj.table = 'hdb_user';
+    search_obj.hash_attribute = 'username';
+    search_obj.hash_values = ['admin'];
+    search_obj.get_attributes = ['*'];
+    search.searchByHash(search_obj, function (err, users) {
+        if (err) {
+            return callback(err);
+        }
+
+        return callback(null, users);
 
 
 
