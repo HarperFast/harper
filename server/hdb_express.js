@@ -74,6 +74,8 @@ if (cluster.isMaster && !DEBUG) {
                     operation_function(req.body, (error, data) => {
                         if (error) {
                             winston.info(error);
+                            if(!isJson(error))
+                                error = {"error": error};
                             res.status(400).json(error);
                             return;
                         }
@@ -205,4 +207,14 @@ if (cluster.isMaster && !DEBUG) {
     }catch(e){
         winston.error(e);
     }
+}
+
+
+function isJson(string) {
+    try {
+        JSON.parse(string);
+    } catch (e) {
+        return false;
+    }
+    return true;
 }

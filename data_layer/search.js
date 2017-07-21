@@ -82,37 +82,37 @@ function searchByValue (search_object, callback) {
             return;
         }
 
-        let condition = {'like': [search_object.search_attribute, search_object.search_value]};
+        let condition = {'=': [search_object.search_attribute, search_object.search_value]};
         let patterns = condition_patterns.createPatterns(condition, {
             name: search_object.table,
             schema: search_object.schema,
             hash_attribute: search_object.hash_attribute
         }, base_path);
 
-        async.waterfall([
-            (callback) => {
-                evaluateTableAttributes(search_object.get_attributes, search_object, (err, attributes) => {
-                    if (err) {
-                        callback(err);
-                        return;
-                    }
-
-                    search_object.get_attributes = attributes;
-                    callback();
-                });
-            },
-
-            file_search.findIDsByRegex.bind(null, patterns.folder_search_path, patterns.folder_search),
-            getAttributeFiles.bind(null, search_object.get_attributes, patterns.table_path),
-            consolidateData.bind(null, search_object.hash_attribute)
-        ], (error, data) => {
-            if (error) {
-                callback(error);
+        evaluateTableAttributes(search_object.get_attributes, search_object, (err, attributes) => {
+            if (err) {
+                callback(err);
                 return;
             }
 
-            callback(null, data);
+            search_object.get_attributes = attributes;
+
+            async.waterfall([
+                file_search.findIDsByRegex.bind(null, patterns.folder_search_path, patterns.folder_search),
+                getAttributeFiles.bind(null, search_object.get_attributes, patterns.table_path),
+                consolidateData.bind(null, search_object.hash_attribute)
+            ], (error, data) => {
+                if (error) {
+                    callback(error);
+                    return;
+                }
+
+                callback(null, data);
+            });
+
         });
+
+
     } catch(e){
         callback(e);
     }
