@@ -155,6 +155,9 @@ if (cluster.isMaster && !DEBUG) {
             case 'drop_user':
                 operation_function = user.dropUser;
                 break;
+            case 'list_users':
+                operation_function = user.listUsers;
+                break;
             case 'add_role':
                 operation_function = role.addRole;
                 break;
