@@ -118,7 +118,7 @@ function descTable(describe_table_object, callback) {
             table_search_obj.get_attributes = ['hash_attribute', 'id', 'name', 'schema'];
             let table_result = {};
             search.searchByValue(table_search_obj, function (err, tables) {
-                if (err) {
+                if (err) {ha
                     winston.error(err);
                     //initialize();
                     return;

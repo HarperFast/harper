@@ -7,13 +7,21 @@ module.exports = {
 };
 
 function signalSchemaChange(message){
-    if (process.send === undefined) {
-        global_schema.schemaSignal((err)=>{
-            if(err){
+    try {
+        if (process.send === undefined) {
+            global_schema.schemaSignal((err) => {
+                if (err) {
+                    winston.error(err);
+                }
+            });
+        } else {
+            process.send(message);
+        }
+    }catch(e){
+        global_schema.schemaSignal((err) => {
+            if (err) {
                 winston.error(err);
             }
         });
-    } else {
-        process.send(message);
     }
 }

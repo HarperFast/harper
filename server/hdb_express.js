@@ -1,6 +1,6 @@
 const cluster = require('cluster');
-const numCPUs = 4;
-const DEBUG = false;
+const numCPUs = 1;
+const DEBUG = true;
 const winston = require('../utility/logging/winston_logger');
 
 
@@ -79,12 +79,14 @@ if (cluster.isMaster && !DEBUG) {
                             res.status(400).json(error);
                             return;
                         }
+                        if(!isJson(data))
+                            data = {"message": data};
 
-                        res.status(200).json(data);
+                        return res.status(200).json(data);
                     });
                 } catch (e) {
                     winston.info(e);
-                    res.status(500).json(e);
+                    return res.status(500).json(e);
                 }
             });
         });
