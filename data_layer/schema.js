@@ -3,7 +3,7 @@ const fs = require('fs.extra')
     , async = require('async')
     , validation = require('../validation/schema_validator.js')
     , search = require('./search.js')
-    ,winston = require('../utility/logging/winston_logger')
+    , winston = require('../utility/logging/winston_logger')
     , uuidV4 = require('uuid/v4')
     , delete_ = require('../data_layer/delete')
     //this is to avoid a circular dependency with insert.
@@ -15,9 +15,6 @@ const fs = require('fs.extra')
     signalling = require('../utility/signalling');
 let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
 hdb_properties.append(hdb_properties.get('settings_path'));
-
-
-
 
 
 module.exports = {
@@ -40,7 +37,7 @@ module.exports = {
 
 /** schema methods **/
 
-function createSchema  (schema_create_object, callback) {
+function createSchema(schema_create_object, callback) {
     try {
         createSchemaStructure(schema_create_object, function (err, success) {
             if (err) {
@@ -48,33 +45,33 @@ function createSchema  (schema_create_object, callback) {
                 return;
             }
 
-            signalling.signalSchemaChange({type:'schema'});
+            signalling.signalSchemaChange({type: 'schema'});
 
             addAndRemoveFromQueue(schema_create_object, success, callback);
         });
-    } catch(e){
+    } catch (e) {
         callback(e);
     }
 }
 
-function dropSchema (drop_schema_object, callback) {
+function dropSchema(drop_schema_object, callback) {
     try {
         deleteSchemaStructure(drop_schema_object, function (err, success) {
             if (err) {
                 callback(err);
                 return;
             }
-            signalling.signalSchemaChange({type:'schema'});
+            signalling.signalSchemaChange({type: 'schema'});
 
             delete global.hdb_schema[drop_schema_object.schema];
             addAndRemoveFromQueue(drop_schema_object, success, callback);
         });
-    } catch(e){
+    } catch (e) {
         callback(e);
     }
 }
 
-function describeSchema (describe_schema_object, callback) {
+function describeSchema(describe_schema_object, callback) {
     try {
         let validation_msg = validation.schema_object(describe_schema_object);
         if (validation_msg) {
@@ -97,12 +94,12 @@ function describeSchema (describe_schema_object, callback) {
                 callback(err);
                 return;
             }
-            if(tables && tables.length < 1 ){
+            if (tables && tables.length < 1) {
                 return callback('schema not found');
             }
             return callback(null, tables);
         });
-    }catch(e){
+    } catch (e) {
         callback(e);
     }
 }
@@ -116,8 +113,8 @@ function createSchemaStructure(schema_create_object, callback) {
             return;
         }
 
-        searchForSchema(schema_create_object.schema, (err, schema)=>{
-            if(schema && schema.length > 0){
+        searchForSchema(schema_create_object.schema, (err, schema) => {
+            if (schema && schema.length > 0) {
                 return callback(`Schema ${schema_create_object.schema} already exists`);
             }
 
@@ -160,12 +157,12 @@ function createSchemaStructure(schema_create_object, callback) {
         });
 
 
-    } catch(e){
+    } catch (e) {
         callback(e);
     }
 }
 
-function deleteSchemaStructure (drop_schema_object, callback) {
+function deleteSchemaStructure(drop_schema_object, callback) {
     try {
 
 
@@ -206,24 +203,25 @@ function deleteSchemaStructure (drop_schema_object, callback) {
                     return;
 
                 }
-                if (tables && tables.length > 0) {
-                    let delete_table_object = {
-                        table: "hdb_table",
-                        schema: "system",
-                        hash_values: []
-                    };
-
-                    for (t in tables) {
-                        delete_table_object.hash_values.push(tables[t].id);
+                fs.rmrf(`${hdb_properties.get('HDB_ROOT')}/schema/${schema}`, function (err) {
+                    if (err) {
+                        callback(err);
+                        return;
                     }
 
-                    delete_.delete(delete_table_object, function (err, data) {
-                        if (err) {
-                            callback(err);
-                            return;
+
+                    if (tables && tables.length > 0) {
+                        let delete_table_object = {
+                            table: "hdb_table",
+                            schema: "system",
+                            hash_values: []
+                        };
+
+                        for (t in tables) {
+                            delete_table_object.hash_values.push(tables[t].id);
                         }
 
-                        fs.rmrf(`${hdb_properties.get('HDB_ROOT')}/schema/${schema}/`, function (err) {
+                        delete_.delete(delete_table_object, function (err, data) {
                             if (err) {
                                 callback(err);
                                 return;
@@ -239,22 +237,20 @@ function deleteSchemaStructure (drop_schema_object, callback) {
                                 callback(null, `successfully delete ${schema}`);
                             });
                         });
+                    }
+                });
 
-                    });
 
-                } else {
-                    callback(null, `Schema ${drop_schema_object.schema} successfully deleted.`)
-                }
             });
         });
-    } catch(e){
+    } catch (e) {
         callback(e);
     }
 }
 
 /** table methods **/
 
-function createTableStructure (create_table_object, callback) {
+function createTableStructure(create_table_object, callback) {
 
     let validator = validation.table_object(create_table_object);
     if (validator) {
@@ -264,23 +260,23 @@ function createTableStructure (create_table_object, callback) {
 
     async.waterfall([
         searchForSchema.bind(null, create_table_object.schema),
-        (schema, caller)=>{
-            if(!schema || schema.length === 0){
+        (schema, caller) => {
+            if (!schema || schema.length === 0) {
                 return caller(`schema ${create_table_object.schema} does not exist`);
             }
 
             caller();
         },
         searchForTable.bind(null, create_table_object.schema, create_table_object.table),
-        (table, caller)=>{
-            if(table && table.length > 0){
+        (table, caller) => {
+            if (table && table.length > 0) {
                 return caller(`table ${create_table_object.table} already exists in schema ${create_table_object.schema}`);
             }
 
             caller();
         }
-    ], (err)=>{
-        if(err){
+    ], (err) => {
+        if (err) {
             return callback(err);
         }
 
@@ -331,18 +327,18 @@ function createTableStructure (create_table_object, callback) {
 
 }
 
-function searchForSchema(schema_name, callback){
+function searchForSchema(schema_name, callback) {
     let search_obj = {
-        schema:'system',
-        table:'hdb_schema',
-        get_attributes:['name'],
+        schema: 'system',
+        table: 'hdb_schema',
+        get_attributes: ['name'],
         conditions: [{
-            'and': {'=':['name', schema_name]}
+            'and': {'=': ['name', schema_name]}
         }]
     };
 
-    search.searchByConditions(search_obj, (err, data)=> {
-        if(err){
+    search.searchByConditions(search_obj, (err, data) => {
+        if (err) {
             return callback(err);
         }
 
@@ -350,21 +346,21 @@ function searchForSchema(schema_name, callback){
     });
 }
 
-function searchForTable(schema_name, table_name, callback){
+function searchForTable(schema_name, table_name, callback) {
     let search_obj = {
-        schema:'system',
-        table:'hdb_table',
-        get_attributes:['name'],
+        schema: 'system',
+        table: 'hdb_table',
+        get_attributes: ['name'],
         conditions: [{
-                'and': {'=':['name', table_name]}
-            },
+            'and': {'=': ['name', table_name]}
+        },
             {
-                'and': {'=':['schema', schema_name]}
+                'and': {'=': ['schema', schema_name]}
             }]
     };
 
-    search.searchByConditions(search_obj, (err, data)=> {
-        if(err){
+    search.searchByConditions(search_obj, (err, data) => {
+        if (err) {
             return callback(err);
         }
 
@@ -372,7 +368,7 @@ function searchForTable(schema_name, table_name, callback){
     });
 }
 
-function deleteTableStrucutre (drop_table_object, callback) {
+function deleteTableStrucutre(drop_table_object, callback) {
     try {
         let validation_error = validation.table_object(drop_table_object);
         if (validation_error) {
@@ -447,13 +443,13 @@ function deleteTableStrucutre (drop_table_object, callback) {
 
         });
 
-    } catch(e){
+    } catch (e) {
         callback(e);
     }
 
 }
 
-function createTable (create_table_object, callback) {
+function createTable(create_table_object, callback) {
     try {
         createTableStructure(create_table_object, function (err, success) {
             if (err) {
@@ -461,17 +457,17 @@ function createTable (create_table_object, callback) {
                 return;
             }
 
-            signalling.signalSchemaChange({type:'schema'});
+            signalling.signalSchemaChange({type: 'schema'});
 
             addAndRemoveFromQueue(create_table_object, success, callback);
 
         });
-    } catch(e){
+    } catch (e) {
         callback(e);
     }
 }
 
-function dropTable (drop_table_object, callback) {
+function dropTable(drop_table_object, callback) {
     try {
         deleteTableStrucutre(drop_table_object, function (err, sucess) {
             if (err) {
@@ -479,19 +475,19 @@ function dropTable (drop_table_object, callback) {
                 return;
             }
 
-            signalling.signalSchemaChange({type:'schema'});
+            signalling.signalSchemaChange({type: 'schema'});
 
             addAndRemoveFromQueue(drop_table_object, sucess, callback);
 
         });
-    } catch(e){
+    } catch (e) {
         callback(e);
     }
 }
 
 /*** attribute methods **/
 
-function createAttributeStructure(create_attribute_object, callback){
+function createAttributeStructure(create_attribute_object, callback) {
     try {
         let validation_error = validation.attribute_object(create_attribute_object);
         if (validation_error) {
@@ -520,12 +516,12 @@ function createAttributeStructure(create_attribute_object, callback){
             winston.info(result);
             callback(err, result);
         });
-    } catch(e){
+    } catch (e) {
         callback(e);
     }
 }
 
-function deleteAttributeStructure(attribute_drop_object, callback){
+function deleteAttributeStructure(attribute_drop_object, callback) {
 
 
     let search_obj = {};
@@ -534,28 +530,28 @@ function deleteAttributeStructure(attribute_drop_object, callback){
     search_obj.hash_attribute = 'id';
     search_obj.get_attributes = ['id', 'attribute'];
 
-    if(attribute_drop_object.table && attribute_drop_object.schema){
+    if (attribute_drop_object.table && attribute_drop_object.schema) {
         search_obj.search_attribute = 'schema_table';
         search_obj.search_value = `${attribute_drop_object.schema}.${attribute_drop_object.table}`;
-    }else if(attribute_drop_object.schema){
+    } else if (attribute_drop_object.schema) {
         search_obj.search_attribute = 'schema';
         search_obj.search_value = `${attribute_drop_object.schema}`;
-    }else{
+    } else {
         callback('attribute drop requires table and or schema.');
         return;
     }
 
-    search.searchByValue(search_obj, function(err, attributes){
-        if(err){
+    search.searchByValue(search_obj, function (err, attributes) {
+        if (err) {
             callback(err);
             return;
         }
 
-        if(attributes && attributes.length > 0){
+        if (attributes && attributes.length > 0) {
             let delete_table_object = {"table": "hdb_attribute", "schema": "system", "hash_values": []};
-            for(att in attributes){
-                if((attribute_drop_object.attribute && attribute_drop_object.attribute == attributes[att].attribute)
-                    || !attribute_drop_object.attribute ){
+            for (att in attributes) {
+                if ((attribute_drop_object.attribute && attribute_drop_object.attribute == attributes[att].attribute)
+                    || !attribute_drop_object.attribute) {
 
                     delete_table_object.hash_values.push(attributes[att].id);
                 }
@@ -563,8 +559,8 @@ function deleteAttributeStructure(attribute_drop_object, callback){
 
             }
 
-            delete_.delete(delete_table_object, function(err, success){
-                if(err){
+            delete_.delete(delete_table_object, function (err, success) {
+                if (err) {
                     callback(err);
                     return;
                 }
@@ -574,7 +570,7 @@ function deleteAttributeStructure(attribute_drop_object, callback){
             });
 
 
-        }else{
+        } else {
             callback(null, null);
         }
 
@@ -582,11 +578,9 @@ function deleteAttributeStructure(attribute_drop_object, callback){
     });
 
 
-
-
 }
 
-function createAttribute (create_attribute_object, callback) {
+function createAttribute(create_attribute_object, callback) {
     try {
         createAttributeStructure(create_attribute_object, function (err, sucess) {
             if (err) {
@@ -596,12 +590,12 @@ function createAttribute (create_attribute_object, callback) {
             addAndRemoveFromQueue(create_attribute_object, success, callback);
 
         });
-    }catch(e){
+    } catch (e) {
         callback(e);
     }
 }
 
-function dropAttribute (drop_attribute_object, callback){
+function dropAttribute(drop_attribute_object, callback) {
     try {
         let validation_error = validation.attribute_object(create_attribute_object);
         if (validation_error) {
@@ -615,7 +609,7 @@ function dropAttribute (drop_attribute_object, callback){
             }
             addAndRemoveFromQueue(drop_attribute_object, sucess, callback);
         });
-    }catch(e){
+    } catch (e) {
         callback(e);
     }
 }
@@ -623,21 +617,20 @@ function dropAttribute (drop_attribute_object, callback){
 
 /**** utility methods **/
 
-function addAndRemoveFromQueue(ops_object, success_message, callback){
-    schema_ops.addToQueue(ops_object, function(err, id){
-        if(err){
+function addAndRemoveFromQueue(ops_object, success_message, callback) {
+    schema_ops.addToQueue(ops_object, function (err, id) {
+        if (err) {
             callback(err);
             return;
         }
-        schema_ops.addToQueue(id, function(err){
-            if(err){
+        schema_ops.addToQueue(id, function (err) {
+            if (err) {
                 callback(err);
                 return;
             }
 
             callback(null, success_message);
         });
-
 
 
     });
