@@ -1,6 +1,4 @@
-const search = require('../data_layer/search'),
-    searchByConditions = search.searchByConditions,
-    searchByJoinConditions = search.searchByJoinConditions,
+const search = require('../data_layer/search').search,
     global_schema = require('../utility/globalSchema'),
     async = require('async'),
     condition_parser = require('./conditionParser'),
@@ -22,18 +20,15 @@ function convertSelect(statement, callback) {
             }
 
             let converter_function;
-            let search_function;
             if (statement.from.type === 'identifier') {
                 converter_function = generateBasicSearchObject;
-                search_function = searchByConditions;
             } else {
                 converter_function = generateAdvancedSearchObject;
-                search_function = searchByJoinConditions;
             }
 
             async.waterfall([
                 converter_function.bind(null, statement),
-                search_function
+                search
             ], (err, results) => {
                 if (err) {
                     callback(err);
@@ -63,7 +58,13 @@ function generateBasicSearchObject(statement, callback){
         };
 
         search_object.get_attributes = statement.result.map((column) => {
-            return column.name;
+            let column_info = column.name.split('.');
+            let column_name = column_info.length === 1 ? column_info[0] : column_info[1];
+
+            return {
+                attribute: column_name,
+                alias: column.alias ? column.alias : search_object.table + '.' + column_name
+            };
         });
 
         search_object.conditions = condition_parser.parseConditions(statement.where, table_info);

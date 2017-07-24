@@ -1,6 +1,4 @@
-const hdb_license = require('./hdb_license'),
-    colors = require("colors/safe"),
-    winston = require('../utility/logging/winston_logger');
+
 
 
 module.exports ={
@@ -9,6 +7,9 @@ module.exports ={
 }
 
 function register(prompt, callback) {
+    const hdb_license = require('./hdb_license'),
+        colors = require("colors/safe"),
+        winston = require('../utility/logging/winston_logger');
 
 
     hdb_license.generateFingerPrint(function (err, fingerprint) {

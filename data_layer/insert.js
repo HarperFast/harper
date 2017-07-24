@@ -40,13 +40,40 @@ function validation(write_object, callback){
         let hash_attribute = table_schema.hash_attribute;
 
         //validate that every record has hash_attribute populated
-        let bad_records = _.filter(write_object.records, (record) => {
-            return !record[hash_attribute];
+        let no_hash = false;
+        let long_hash = false;
+        let long_attribute = false;
+        write_object.records.forEach((record)=>{
+            if(record[hash_attribute] === null || record[hash_attribute] === undefined){
+                no_hash = true;
+                return;
+            } else if(record[hash_attribute].length > 250){
+                long_hash = true;
+                return;
+            }
+
+            //evaluate that there are no attributes who have a name longer than 250 characters
+            Object.keys(record).forEach((attribute)=>{
+                if(attribute.length > 250){
+                    long_attribute = true;
+                    return;
+                }
+            });
+            if(long_attribute){
+                return;
+            }
         });
 
-        if (bad_records && bad_records.length > 0) {
-            callback(`hash attribute not populated: ${JSON.stringify(bad_records)}`);
-            return;
+        if (no_hash) {
+            return callback(`transaction aborted due to record(s) with no hash value.`);
+        }
+
+        if (long_hash) {
+            return callback(`transaction aborted due to record(s) with a hash value that exceeds 250 characters.`);
+        }
+
+        if (long_hash) {
+            return callback(`transaction aborted due to record(s) with an attribute that exceeds 250 characters.`);
         }
 
         callback(null, table_schema);
@@ -116,7 +143,7 @@ function updateData(update_object, callback){
 
                 caller(null, search_obj);
             },
-            search.searchByHashes,
+            search.searchByHash,
             (existing_records, caller) => {
                 let hash_attribute = global.hdb_schema[update_object.schema][update_object.table].hash_attribute;
                 caller(null, update_object, hash_attribute, existing_records);
@@ -253,7 +280,7 @@ function checkAttributeSchema(insert_object, callerback) {
             } else {
                 hash_folders[attribute_path] = "";
                 attribute_objects.push({
-                    file_name: `${attribute_path}/${record[hash_attribute]}-${epoch}.hdb`,
+                    file_name: `${attribute_path}/${epoch}.hdb`,
                     value: JSON.stringify(record)
                 });
             }

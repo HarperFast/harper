@@ -1,12 +1,15 @@
 const insert = require('../data_layer/insert'),
       delete_ = require('../data_layer/delete'),
       password = require('../utility/password'),
-      validation = require('../validation/user_validation');
+      validation = require('../validation/user_validation'),
+      search = require('../data_layer/search');
 
 module.exports = {
     addUser: addUser,
     alterUser:alterUser,
-    dropUser: dropUser
+    dropUser: dropUser,
+    userInfo: user_info,
+    listUsers: list_users
 
 };
 
@@ -96,3 +99,84 @@ function dropUser(user, callback){
 
 }
 
+
+function user_info(body, callback){
+    let user = body.hdb_user;
+    let search_obj = {};
+    search_obj.schema = 'system';
+    search_obj.table = 'hdb_role';
+    search_obj.hash_attribute = 'id';
+    search_obj.hash_values = [user.role];
+    search_obj.get_attributes = ['*'];
+    search.searchByHash(search_obj, function (err, role_data) {
+        if (err) {
+            return callback(err);
+        }
+
+        user.role = role_data[0];
+        delete user.password;
+
+        return callback(null, user);
+
+
+
+    });
+
+}
+
+function list_users(body, callback){
+
+    let role_search_obj = {};
+    role_search_obj.schema = 'system';
+    role_search_obj.table = 'hdb_role';
+    role_search_obj.hash_attribute = 'id';
+    role_search_obj.search_value = '*';
+    role_search_obj.search_attribute = 'role';
+
+    role_search_obj.get_attributes = ['*'];
+    search.searchByValue(role_search_obj, function (err, roles) {
+
+
+        if (err) {
+            return callback(err);
+        }
+
+
+        if(roles){
+            let roleMapObj = {}
+            for(r in roles){
+                roleMapObj[roles[r].id] = roles[r];
+            }
+
+            let user_search_obj = {};
+            user_search_obj.schema = 'system';
+            user_search_obj.table = 'hdb_user';
+            user_search_obj.hash_attribute = 'username';
+            user_search_obj.search_value = '*';
+            user_search_obj.search_attribute = 'username';
+            user_search_obj.get_attributes = ['*'];
+            search.searchByValue(user_search_obj, function (err, users) {
+                if (err) {
+                    return callback(err);
+                }
+
+                for(u in users){
+                    users[u].role = roleMapObj[u.role];
+                }
+
+                return callback(null, users);
+
+
+
+            });
+
+        }else{
+            return callback(null, null);
+
+        }
+
+    });
+
+
+
+}

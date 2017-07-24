@@ -3,63 +3,87 @@
 const async = require('async'),
     search = require('./search'),
     winston = require('../utility/logging/winston_logger'),
-    describe_table_validation = require('../validation/describeTableValidator.js');
+    validator = require('../validation/schema_validator');
 
 
 module.exports = {
     describeAll:function (op_obj, callback) {
         try {
-            let table_search_obj = {};
-            table_search_obj.schema = 'system';
-            table_search_obj.table = 'hdb_table';
-            table_search_obj.hash_attribute = 'id';
-            table_search_obj.search_attribute = 'id';
-            table_search_obj.search_value = '*';
-            table_search_obj.hash_values = [];
-            table_search_obj.get_attributes = ['hash_attribute', 'id', 'name', 'schema'];
-            search.searchByValue(table_search_obj, function (err, tables) {
-                if (err) {
-                    winston.error(err);
-                    //initialize();
-                    return;
+            let schema_search = {};
+            schema_search.schema = 'system';
+            schema_search.table = 'hdb_schema';
+            schema_search.hash_attribute = 'name';
+            schema_search.search_attribute = 'name';
+            schema_search.search_value = '*';
+            schema_search.hash_values = [];
+            schema_search.get_attributes = ['name'];
+            search.searchByValue(schema_search, function(err, schemas){
+
+                let schema_list = {};
+                for(s in schemas){
+                    schema_list[schemas[s].name] = true;
                 }
 
 
-                let t_results = [];
-                async.map(tables, function (table, caller) {
-                    descTable({"schema": table.schema, "table": table.name}, function (err, desc) {
-                        if (err) {
-                            caller(err);
-                            return;
-                        }
-                        t_results.push(desc);
-                        caller();
-
-                    })
-
-                }, function (err, data) {
+                let table_search_obj = {};
+                table_search_obj.schema = 'system';
+                table_search_obj.table = 'hdb_table';
+                table_search_obj.hash_attribute = 'id';
+                table_search_obj.search_attribute = 'id';
+                table_search_obj.search_value = '*';
+                table_search_obj.hash_values = [];
+                table_search_obj.get_attributes = ['hash_attribute', 'id', 'name', 'schema'];
+                search.searchByValue(table_search_obj, function (err, tables) {
                     if (err) {
-                        callback(err);
+                        winston.error(err);
+                        //initialize();
                         return;
                     }
 
-                    let hdb_description = {};
-                    for (t in t_results) {
-                        if (hdb_description[t_results[t].schema] == null) {
-                            hdb_description[t_results[t].schema] = {};
+
+                    let t_results = [];
+                    async.map(tables, function (table, caller) {
+                        descTable({"schema": table.schema, "table": table.name}, function (err, desc) {
+                            if (err) {
+
+                                caller(err);
+                                return;
+                            }
+                            t_results.push(desc);
+                            caller();
+
+                        })
+
+                    }, function (err, data) {
+                        if (err) {
+                            callback(err);
+                            return;
+                        }
+
+                        let hdb_description = {};
+                        for (t in t_results) {
+                            if (hdb_description[t_results[t].schema] == null) {
+                                hdb_description[t_results[t].schema] = {};
+
+                            }
+
+                            hdb_description[t_results[t].schema][t_results[t].name] = t_results[t];
+                            if(schema_list[t_results[t].schema]){
+                                delete schema_list[t_results[t].schema];
+                            }
 
                         }
 
-                        hdb_description[t_results[t].schema][t_results[t].name] = t_results[t];
+                        for(schema in schema_list){
+                            hdb_description[schema] = {};
+                        }
+                        callback(null, hdb_description);
 
-
-                    }
-                    callback(null, hdb_description);
+                    });
 
                 });
-
-
             });
+
 
         }catch(e){
             callback(e);
@@ -70,7 +94,7 @@ module.exports = {
 
 function descTable(describe_table_object, callback) {
     try {
-        let validation = describe_table_validation(describe_table_object);
+        let validation = validator.describe_table(describe_table_object);
         if (validation) {
             callback(validation);
             return;

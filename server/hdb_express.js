@@ -1,6 +1,6 @@
 const cluster = require('cluster');
 const numCPUs = 4;
-const DEBUG = true;
+const DEBUG = false;
 const winston = require('../utility/logging/winston_logger');
 
 
@@ -8,13 +8,23 @@ if (cluster.isMaster && !DEBUG) {
     winston.info(`Master ${process.pid} is running`);
 
     // Fork workers.
+    let forks = [];
     for (let i = 0; i < numCPUs; i++) {
-        cluster.fork();
+        let forked = cluster.fork();
+        forked.on('message', messageHandler);
+        forks.push(forked);
     }
 
     cluster.on('exit', (worker, code, signal) => {
         winston.info(`worker ${worker.process.pid} died`);
     });
+
+    function messageHandler(msg) {
+        forks.forEach((fork)=>{
+            fork.send(msg);
+        });
+    }
+
 } else {
     winston.info('In express' + process.cwd());
     const express = require('express'),
@@ -31,10 +41,10 @@ if (cluster.isMaster && !DEBUG) {
         auth = require('../security/auth'),
         session = require('express-session'),
         passport = require('passport'),
-        global_schema = require('../utility/globalSchema'),
         user = require('../security/user'),
         role = require('../security/role'),
-        read_log = require('../utility/logging/read_logs');
+        read_log = require('../utility/logging/read_logs'),
+        global_schema = require('../utility/globalSchema');
 
     hdb_properties.append(hdb_properties.get('settings_path'));
 
@@ -52,7 +62,7 @@ if (cluster.isMaster && !DEBUG) {
                 res.status(401).send(err);
                 return;
             }
-
+            req.body.hdb_user = user;
             chooseOperation(req.body, (err, operation_function) => {
                 if (err) {
                     winston.info(err);
@@ -64,6 +74,8 @@ if (cluster.isMaster && !DEBUG) {
                     operation_function(req.body, (error, data) => {
                         if (error) {
                             winston.info(error);
+                            if(!isJson(error))
+                                error = {"error": error};
                             res.status(400).json(error);
                             return;
                         }
@@ -92,14 +104,11 @@ if (cluster.isMaster && !DEBUG) {
             case 'search_by_hash':
                 operation_function = search.searchByHash;
                 break;
-            case 'search_by_hashes':
-                operation_function = search.searchByHashes;
-                break;
             case 'search_by_value':
                 operation_function = search.searchByValue;
                 break;
-            case 'search_by_join':
-                operation_function = search.searchByJoin;
+            case 'search':
+                operation_function = search.search;
                 break;
             case 'sql':
                 operation_function = sql;
@@ -136,6 +145,7 @@ if (cluster.isMaster && !DEBUG) {
                 break;
             case 'delete':
                 operation_function = delete_.delete;
+                break;
             case 'add_user':
                 operation_function = user.addUser;
                 break;
@@ -145,6 +155,9 @@ if (cluster.isMaster && !DEBUG) {
             case 'drop_user':
                 operation_function = user.dropUser;
                 break;
+            case 'list_users':
+                operation_function = user.listUsers;
+                break;
             case 'add_role':
                 operation_function = role.addRole;
                 break;
@@ -153,6 +166,9 @@ if (cluster.isMaster && !DEBUG) {
                 break;
             case 'drop_role':
                 operation_function = role.dropRole;
+                break;
+            case 'user_info':
+                operation_function = user.userInfo
                 break;
             case 'read_log':
                 operation_function = read_log.read_log;
@@ -167,6 +183,14 @@ if (cluster.isMaster && !DEBUG) {
     function nullOperation(json, callback) {
         callback('Invalid operation');
     }
+
+    process.on('message', (msg)=>{
+        global_schema.schemaSignal((err)=>{
+            if(err){
+                winston.error(err);
+            }
+        });
+    });
 
     try{
 
@@ -183,4 +207,14 @@ if (cluster.isMaster && !DEBUG) {
     }catch(e){
         winston.error(e);
     }
+}
+
+
+function isJson(string) {
+    try {
+        JSON.parse(string);
+    } catch (e) {
+        return false;
+    }
+    return true;
 }

@@ -23,53 +23,14 @@ const slash_regex =  /\//g;
 // condition criteria
 
 module.exports = {
-    searchByHash: searchByHash,
     searchByValue:searchByValue,
-    searchByHashes:searchByHashes,
+    searchByHash:searchByHash,
     searchByConditions: searchByConditions,
-    searchByJoin:searchByJoin,
-    searchByJoinConditions: searchByJoinConditions,
+    search: search,
     multiConditionSearch: multiConditionSearch
 };
 
 function searchByHash(search_object, callback){
-    try {
-        if (!search_object.get_attributes || search_object.get_attributes.length < 1) {
-            callback("missing get_attributes... whats the point of searching if you don't want to find anything?");
-            return;
-        }
-
-        let hash_stripped = String(search_object.hash_value).replace(slash_regex, '').substring(0, 4000);
-        let table_path = `${base_path}${search_object.schema}/${search_object.table}/`;
-
-        evaluateTableAttributes(search_object.get_attributes, search_object, (error, attributes) => {
-            if (error) {
-                callback(error);
-                return;
-            }
-
-            let table_info = global.hdb_schema[search_object.schema][search_object.table];
-
-            attributes = removeTableFromAttributeAlias(attributes, search_object.table);
-
-            async.waterfall([
-                getAttributeFiles.bind(null, attributes, table_path, [hash_stripped]),
-                consolidateData.bind(null, table_info.hash_attribute)
-            ], (error, data) => {
-                if (error) {
-                    callback(error);
-                    return;
-                }
-
-                callback(null, data[0]);
-            });
-        });
-    } catch(e) {
-        callback(e);
-    }
-}
-
-function searchByHashes(search_object, callback){
     try {
         let validation_error = search_validator(search_object, 'hashes');
         if (validation_error) {
@@ -121,37 +82,37 @@ function searchByValue (search_object, callback) {
             return;
         }
 
-        let condition = {'like': [search_object.search_attribute, search_object.search_value]};
+        let condition = {'=': [search_object.search_attribute, search_object.search_value]};
         let patterns = condition_patterns.createPatterns(condition, {
             name: search_object.table,
             schema: search_object.schema,
             hash_attribute: search_object.hash_attribute
         }, base_path);
 
-        async.waterfall([
-            (callback) => {
-                evaluateTableAttributes(search_object.get_attributes, search_object, (err, attributes) => {
-                    if (err) {
-                        callback(err);
-                        return;
-                    }
-
-                    search_object.get_attributes = attributes;
-                    callback();
-                });
-            },
-
-            file_search.findIDsByRegex.bind(null, patterns.folder_search_path, patterns.folder_search),
-            getAttributeFiles.bind(null, search_object.get_attributes, patterns.table_path),
-            consolidateData.bind(null, search_object.hash_attribute)
-        ], (error, data) => {
-            if (error) {
-                callback(error);
+        evaluateTableAttributes(search_object.get_attributes, search_object, (err, attributes) => {
+            if (err) {
+                callback(err);
                 return;
             }
 
-            callback(null, data);
+            search_object.get_attributes = attributes;
+
+            async.waterfall([
+                file_search.findIDsByRegex.bind(null, patterns.folder_search_path, patterns.folder_search),
+                getAttributeFiles.bind(null, search_object.get_attributes, patterns.table_path),
+                consolidateData.bind(null, search_object.hash_attribute)
+            ], (error, data) => {
+                if (error) {
+                    callback(error);
+                    return;
+                }
+
+                callback(null, data);
+            });
+
         });
+
+
     } catch(e){
         callback(e);
     }
@@ -247,69 +208,139 @@ function multiConditionSearch(conditions, table_schema, callback){
     }
 }
 
-function searchByJoin(search_wrapper, callback){
+function search(search_wrapper, callback){
     try {
-        searchByJoinConditions(search_wrapper.search, (err, data) => {
-            if (err) {
-                callback(err);
-                return;
-            }
+        //TODO add validation on search object
 
-            callback(null, data);
+        getAsteriskFieldsForTables(search_wrapper, (error, search_wrapper) => {
+            if(error){
+                return callback(error);
+            }
+            search_wrapper = addSupplementalFields(search_wrapper);
+            search_wrapper = setAdditionalAttributeData(search_wrapper);
+
+            let get_attributes = [];
+
+            search_wrapper.tables.forEach((table) => {
+                table.get_attributes.forEach((attribute) => {
+                    get_attributes.push(attribute.alias);
+                });
+            });
+
+            async.waterfall([
+                tableSearch.bind(null, search_wrapper),
+                processDataJoins.bind(null, search_wrapper),
+                (data, caller)=>{
+                    let results = [];
+                    data.forEach((record) => {
+                        results.push(_.pick(record, get_attributes));
+                    });
+
+                    results = sortData(results, search_wrapper);
+
+                    caller(null, results);
+                }
+            ], (exception, results)=>{
+                if(exception){
+                    return callback(exception);
+                }
+
+                callback(null, results);
+            });
         });
     } catch(e){
         callback(e);
     }
 }
 
-function searchByJoinConditions(search_wrapper, callback){
+function processDataJoins(search_wrapper, search_data, callback){
     try {
-        getAsteriskFieldsForTables(search_wrapper, (error, search_wrapper) => {
-            search_wrapper = addSupplementalFields(search_wrapper);
-            search_wrapper = setAdditionalAttributeData(search_wrapper);
-            searchByConditions(search_wrapper.tables[0], (err, data) => {
-                if (err) {
-                    callback(err);
-                    return;
-                }
+        if (!search_data || search_data.length === 0) {
+            return callback(null, []);
+        }
 
-                let next_table = search_wrapper.tables[1];
-                let join = search_wrapper.joins[0];
+        let results = search_data[0].data;
+        //because we have processed the data in the order of the joins all we need to do is iterate thru the search_data array and tie the sets together according to the join
+        for (let x = 1; x < search_data.length; x++) {
+            let join = search_data[x].join;
 
-                next_table.conditions.push(convertJoinToCondition(search_wrapper.tables[0], search_wrapper.tables[1], join, data));
+            results = joinData(join, search_wrapper.all_get_attributes, results, search_data[x].data);
+        }
 
-
-            searchByConditions(next_table, (err, data2) => {
-                if (err) {
-                    callback(err);
-                    return;
-                }
-
-                    let joined = joinData(join, search_wrapper.all_get_attributes, data, data2);
-
-//TODO only do this part if there are supplemental fields
-                    let get_attributes = [];
-
-                    search_wrapper.tables.forEach((table) => {
-                        table.get_attributes.forEach((attribute) => {
-                            get_attributes.push(attribute.alias);
-                        });
-                    });
-
-                    let results = [];
-                    joined.forEach((record) => {
-                        results.push(_.pick(record, get_attributes));
-                    });
-
-                    results = sortData(results, search_wrapper);
-
-                    callback(null, results);
-                });
-            });
-        });
-    } catch(e){
+        callback(null, results);
+    } catch(e) {
         callback(e);
     }
+}
+
+function tableSearch(search_wrapper, callback){
+    let search_data = [];
+
+    async.waterfall([
+        searchByConditions.bind(null, search_wrapper.tables[0]),
+        (results, caller)=>{
+            search_data.push({table: search_wrapper.tables[0], data: results, join: null});
+            caller(null, search_data);
+        },
+        fetchJoinData.bind(null, search_wrapper)
+    ], (err, results)=>{
+        if(err){
+            return callback(err);
+        }
+
+        callback(null, results);
+    });
+}
+
+function fetchJoinData(search_wrapper, search_data, callback){
+    if(!search_wrapper.joins || search_wrapper.joins.length === 0) {
+        return callback(null, search_data);
+    }
+    async.eachOfLimit(search_wrapper.joins, 1, (join, index, call) => {
+        //evaluate join to find linked tables
+        let comparators = Object.values(join)[0];
+        let first_attribute = findAttribute(search_wrapper.all_get_attributes, comparators[0]);
+        let second_attribute = findAttribute(search_wrapper.all_get_attributes, comparators[1]);
+
+        //find primary table to get data from & create condition
+        let primary_table_data = {};
+        search_data.forEach((the_data) => {
+            if (the_data.table.table === first_attribute.table || the_data.table.alias === first_attribute.table_alias ||
+                the_data.table.table === second_attribute.table || the_data.table.alias === second_attribute.table_alias) {
+                primary_table_data = the_data;
+                return;
+            }
+        });
+
+        //find table to select from
+        let secondary_table = {};
+        search_wrapper.tables.forEach((table) => {
+            if (table.table === first_attribute.table || table.alias === first_attribute.table_alias ||
+                table.table === second_attribute.table || table.alias === second_attribute.table_alias) {
+                secondary_table = table;
+                return;
+            }
+        });
+
+        //convert the join to a condition and add to the secondary table
+        secondary_table.conditions.push(convertJoinToCondition(primary_table_data.table, secondary_table, join, primary_table_data.data));
+
+        //fetch the data
+        searchByConditions(secondary_table, (error, results) => {
+            if (error) {
+                return call(error);
+            }
+
+            search_data.push({table: secondary_table, data: results, join: join});
+            call();
+        });
+    }, (err) => {
+        if(err){
+            return callback(err);
+        }
+
+        return callback(null, search_data);
+    });
 }
 
 function joinData(join, all_get_attributes, data, data2){
@@ -369,7 +400,9 @@ function setAdditionalAttributeData(search_wrapper){
     search_wrapper.all_get_attributes = [];
 
     search_wrapper.tables.forEach((table)=>{
-        search_wrapper.all_get_attributes = search_wrapper.all_get_attributes.concat(table.supplemental_fields);
+        if(table.supplemental_fields) {
+            search_wrapper.all_get_attributes = search_wrapper.all_get_attributes.concat(table.supplemental_fields);
+        }
         table.get_attributes.forEach((attribute)=>{
             attribute.table = table.table;
             attribute.table_alias = table.alias;
@@ -487,7 +520,21 @@ RegExp.escape= function(s) {
 function consolidateData(hash_attribute, attributes_data, callback){
     let data_array = [];
     let data_keys = Object.keys(attributes_data);
-    let ids = Object.keys(attributes_data[hash_attribute] ? attributes_data[hash_attribute] : attributes_data[Object.keys(attributes_data)[0]]);
+    let ids;
+    if(attributes_data[hash_attribute]){
+        ids = Object.keys(attributes_data[hash_attribute]);
+    } else {
+        Object.keys(attributes_data).forEach((key)=>{
+            let split_key = key.split('.');
+            if(split_key.length > 1 && split_key[1] === hash_attribute){
+                ids = Object.keys(attributes_data[key]);
+            }
+        });
+    }
+
+    if(!ids) {
+        ids = Object.keys(attributes_data[Object.keys(attributes_data)[0]]);
+    }
 
     ids.forEach(function(key){
         let data_object = {};

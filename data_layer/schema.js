@@ -1,10 +1,7 @@
 const fs = require('fs.extra')
-    , validate = require('validate.js')
     , insert = require('./insert.js')
     , async = require('async')
-    , table_validation = require('../validation/tableValidator.js')
-    , attribute_validation = require('../validation/attributeInsertValidator')
-    , describe_schema_validation = require('../validation/describeSchemaValidation.js')
+    , validation = require('../validation/schema_validator.js')
     , search = require('./search.js')
     ,winston = require('../utility/logging/winston_logger')
     , uuidV4 = require('uuid/v4')
@@ -14,37 +11,14 @@ const fs = require('fs.extra')
     // as such the functions have been broken out into a seperate module.
     , schema_describe = require('./schemaDescribe')
     , schema_ops = require('../utility/schema_ops')
-    , PropertiesReader = require('properties-reader');
+    , PropertiesReader = require('properties-reader'),
+    signalling = require('../utility/signalling');
 let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
 hdb_properties.append(hdb_properties.get('settings_path'));
 
 
-let schema_constraints = {
-    schema: {
-        presence: true,
-        format: "[\\w\\-\\_]+"
-
-    }
-};
 
 
-let drop_table_constraints = {
-    schema: {
-        presence: true,
-        format: "[\\w\\-\\_]+",
-        exclusion: {
-            within: ["system"],
-            message: "You cannot alter the system schema!"
-        }
-
-    },
-
-    table: {
-        presence: true,
-        format: "[\\w\\-\\_]+",
-
-    }
-};
 
 module.exports = {
     createSchema: createSchema,
@@ -74,6 +48,8 @@ function createSchema  (schema_create_object, callback) {
                 return;
             }
 
+            signalling.signalSchemaChange({type:'schema'});
+
             addAndRemoveFromQueue(schema_create_object, success, callback);
         });
     } catch(e){
@@ -88,6 +64,8 @@ function dropSchema (drop_schema_object, callback) {
                 callback(err);
                 return;
             }
+            signalling.signalSchemaChange({type:'schema'});
+
             delete global.hdb_schema[drop_schema_object.schema];
             addAndRemoveFromQueue(drop_schema_object, success, callback);
         });
@@ -98,9 +76,9 @@ function dropSchema (drop_schema_object, callback) {
 
 function describeSchema (describe_schema_object, callback) {
     try {
-        let validation = describe_schema_validation(describe_schema_object);
-        if (validation) {
-            callback(validation);
+        let validation_msg = validation.schema_object(describe_schema_object);
+        if (validation_msg) {
+            callback(validation_msg);
             return;
         }
 
@@ -119,7 +97,10 @@ function describeSchema (describe_schema_object, callback) {
                 callback(err);
                 return;
             }
-            callback(null, tables);
+            if(tables && tables.length < 1 ){
+                return callback('schema not found');
+            }
+            return callback(null, tables);
         });
     }catch(e){
         callback(e);
@@ -129,53 +110,56 @@ function describeSchema (describe_schema_object, callback) {
 function createSchemaStructure(schema_create_object, callback) {
     try {
 
-        let validation_error = validate(schema_create_object, schema_constraints);
+        let validation_error = validation.schema_object(schema_create_object);
         if (validation_error) {
             callback(validation_error, null);
             return;
         }
 
-        if (global.hdb_schema[schema_create_object.schema]) {
-            callback(`Schema ${schema_create_object.schema} already exists`);
-            return;
-        }
-
-        let insertObject = {
-            operation: 'insert',
-            schema: 'system',
-            table: 'hdb_schema',
-            records: [
-                {
-                    name: schema_create_object.schema,
-                    createddate: '' + Date.now()
-                }
-            ]
-        };
-
-        insert.insert(insertObject, function (err, result) {
-            if (err) {
-                callback(err);
-                return;
+        searchForSchema(schema_create_object.schema, (err, schema)=>{
+            if(schema && schema.length > 0){
+                return callback(`Schema ${schema_create_object.schema} already exists`);
             }
 
-
-            let schema = schema_create_object.schema;
-            fs.mkdir(hdb_properties.get('HDB_ROOT') + '/schema/' + schema, function (err, data) {
-                if (err) {
-                    if (err.errno === -17) {
-                        callback("schema already exists", null);
-                        return;
-
-                    } else {
-                        callback(err.message, null);
-                        return;
+            let insertObject = {
+                operation: 'insert',
+                schema: 'system',
+                table: 'hdb_schema',
+                records: [
+                    {
+                        name: schema_create_object.schema,
+                        createddate: '' + Date.now()
                     }
+                ]
+            };
+
+            insert.insert(insertObject, function (err, result) {
+                if (err) {
+                    callback(err);
+                    return;
                 }
-                callback(err, `schema ${schema_create_object.schema} successfully created`);
+
+
+                let schema = schema_create_object.schema;
+                fs.mkdir(hdb_properties.get('HDB_ROOT') + '/schema/' + schema, function (err, data) {
+                    if (err) {
+                        if (err.errno === -17) {
+                            callback("schema already exists", null);
+                            return;
+
+                        } else {
+                            callback(err.message, null);
+                            return;
+                        }
+                    }
+                    callback(err, `schema ${schema_create_object.schema} successfully created`);
+                });
+
+
             });
-
-
         });
+
+
     } catch(e){
         callback(e);
     }
@@ -185,7 +169,7 @@ function deleteSchemaStructure (drop_schema_object, callback) {
     try {
 
 
-        let validation_error = validate(drop_schema_object, schema_constraints);
+        let validation_error = validation.schema_object(drop_schema_object);
         if (validation_error) {
             callback(validation_error, null);
             return;
@@ -259,7 +243,7 @@ function deleteSchemaStructure (drop_schema_object, callback) {
                     });
 
                 } else {
-                    callback(null, `Schema ${delete_schema_object.schea} successfully deleted.`)
+                    callback(null, `Schema ${drop_schema_object.schema} successfully deleted.`)
                 }
             });
         });
@@ -272,27 +256,32 @@ function deleteSchemaStructure (drop_schema_object, callback) {
 
 function createTableStructure (create_table_object, callback) {
 
-    let validator = table_validation(create_table_object);
+    let validator = validation.table_object(create_table_object);
     if (validator) {
         callback(validator);
         return;
     }
 
-    let search_obj = {};
-    search_obj.schema = 'system';
-    search_obj.table = 'hdb_table';
-    search_obj.hash_attribute = 'id';
-    search_obj.search_attribute = 'name';
-    search_obj.search_value = create_table_object.table;
-    search_obj.get_attributes = ['name', 'schema'];
-    search.searchByValue(search_obj, function (err, data) {
-        if (data) {
-            for (item in data) {
-                if (data[item].schema == create_table_object.schema) {
-                    callback('Table already exists');
-                    return;
-                }
+    async.waterfall([
+        searchForSchema.bind(null, create_table_object.schema),
+        (schema, caller)=>{
+            if(!schema || schema.length === 0){
+                return caller(`schema ${create_table_object.schema} does not exist`);
             }
+
+            caller();
+        },
+        searchForTable.bind(null, create_table_object.schema, create_table_object.table),
+        (table, caller)=>{
+            if(table && table.length > 0){
+                return caller(`table ${create_table_object.table} already exists in schema ${create_table_object.schema}`);
+            }
+
+            caller();
+        }
+    ], (err)=>{
+        if(err){
+            return callback(err);
         }
 
         let table = {
@@ -338,17 +327,54 @@ function createTableStructure (create_table_object, callback) {
 
 
         });
-
-
     });
 
+}
 
+function searchForSchema(schema_name, callback){
+    let search_obj = {
+        schema:'system',
+        table:'hdb_schema',
+        get_attributes:['name'],
+        conditions: [{
+            'and': {'=':['name', schema_name]}
+        }]
+    };
 
+    search.searchByConditions(search_obj, (err, data)=> {
+        if(err){
+            return callback(err);
+        }
+
+        callback(null, data);
+    });
+}
+
+function searchForTable(schema_name, table_name, callback){
+    let search_obj = {
+        schema:'system',
+        table:'hdb_table',
+        get_attributes:['name'],
+        conditions: [{
+                'and': {'=':['name', table_name]}
+            },
+            {
+                'and': {'=':['schema', schema_name]}
+            }]
+    };
+
+    search.searchByConditions(search_obj, (err, data)=> {
+        if(err){
+            return callback(err);
+        }
+
+        callback(null, data);
+    });
 }
 
 function deleteTableStrucutre (drop_table_object, callback) {
     try {
-        let validation_error = validate(drop_table_object, drop_table_constraints);
+        let validation_error = validation.table_object(drop_table_object);
         if (validation_error) {
             callback(validation_error, null);
             return;
@@ -434,6 +460,9 @@ function createTable (create_table_object, callback) {
                 callback(err);
                 return;
             }
+
+            signalling.signalSchemaChange({type:'schema'});
+
             addAndRemoveFromQueue(create_table_object, success, callback);
 
         });
@@ -449,6 +478,9 @@ function dropTable (drop_table_object, callback) {
                 callback(err);
                 return;
             }
+
+            signalling.signalSchemaChange({type:'schema'});
+
             addAndRemoveFromQueue(drop_table_object, sucess, callback);
 
         });
@@ -461,7 +493,7 @@ function dropTable (drop_table_object, callback) {
 
 function createAttributeStructure(create_attribute_object, callback){
     try {
-        let validation_error = attribute_validation(create_attribute_object);
+        let validation_error = validation.attribute_object(create_attribute_object);
         if (validation_error) {
             callback(validation_error, null);
             return;
@@ -571,7 +603,7 @@ function createAttribute (create_attribute_object, callback) {
 
 function dropAttribute (drop_attribute_object, callback){
     try {
-        let validation_error = attribute_validation(create_attribute_object);
+        let validation_error = validation.attribute_object(create_attribute_object);
         if (validation_error) {
             callback(validation_error, null);
             return;

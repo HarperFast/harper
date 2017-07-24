@@ -3,13 +3,13 @@ const validate = require('validate.js');
 
 let search_by_hash_constraints = {
     schema: {
-        presence: true,
-        format: "[\\w\\-\\_]+"
+        presence: true
+
 
     },
     table: {
-        presence: true,
-        format: "[\\w\\-\\_]+"
+        presence: true
+
 
     },
     hash_attribute: {

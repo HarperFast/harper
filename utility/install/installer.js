@@ -3,7 +3,7 @@ const prompt = require('prompt'),
     path = require('path'),
     password = require('./../password'),
     mount = require('./../mount_hdb'),
-    fs = require('fs'),
+    fs = require('fs.extra'),
     colors = require("colors/safe"),
     winston = require('winston'),
     isRoot = require('is-root'),
@@ -100,7 +100,23 @@ function checkInstall(callback) {
                         callback(err);
                     }
                     if(result.REINSTALL){
-                        callback(null, true);
+                        fs.rmrf(hdb_properties.get('HDB_ROOT'), function(err){
+                            if(err){
+                                winston.error(err);
+                               return callback(err);
+                            }
+                            fs.unlink(`${process.cwd()}/../hdb_boot_properties.file`, function(err){
+                                if(err){
+                                    winston.error(err);
+                                    return callback(err);
+                                }
+                               return callback(null, true);
+
+                            });
+
+
+
+                        });
 
                     }
 
@@ -143,7 +159,7 @@ function checkRegister(callback) {
 
     } else {
         callback(null, 'Successful installation!');
-        console.log('info', 'HarperDB successfully installed!');
+        console.log('HarperDB successfully installed!');
     }
 }
 
@@ -202,7 +218,7 @@ function wizard(callback) {
 
     prompt.get(install_schema, function (err, result) {
         wizard_result = result;
-        winston.info('info', 'wizard result : ' + JSON.stringify(wizard_result));
+        winston.info('wizard result : ' + JSON.stringify(wizard_result));
         //prompt.stop();
         if (err) {
             callback(err);
@@ -227,7 +243,7 @@ function createAdminUser(callback){
 
     role_ops.addRole(role, function(err, result){
        if(err){
-           winston.info('info', 'role failed to create ' + err);
+           winston.error('role failed to create ' + err);
            callback(err);
            return;
        }
@@ -241,8 +257,8 @@ function createAdminUser(callback){
 
         user_ops.addUser(admin_user, function(err, result){
            if(err){
-               winston.info('info', 'user creation error' + err);
-               callback(err);
+               winston.error('user creation error' + err);
+              return callback(err);
            }
            callback(null);
            return;
