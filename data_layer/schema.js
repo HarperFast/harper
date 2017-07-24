@@ -95,9 +95,35 @@ function describeSchema(describe_schema_object, callback) {
                 return;
             }
             if (tables && tables.length < 1) {
-                return callback('schema not found');
+
+                let schema_search_obj = {};
+                schema_search_obj.schema = 'system';
+                schema_search_obj.table = 'hdb_schema';
+                schema_search_obj.hash_attribute = 'name';
+                schema_search_obj.hash_values = [describe_schema_object.schema];
+                schema_search_obj.get_attributes = ['name'];
+
+                search.searchByHash(schema_search_obj, function (err, schema) {
+                    if (err) {
+                        winston.error(err);
+                        callback(err);
+                        return;
+                    }
+                    if(schema && schema.length < 1){
+                        return callback('schema not found');
+
+                    }else{
+                        return callback(null, {});
+
+                    }
+                });
+
+
+
+            }else{
+                return callback(null, tables);
+
             }
-            return callback(null, tables);
         });
     } catch (e) {
         callback(e);
