@@ -278,7 +278,7 @@ function deleteSchemaStructure(drop_schema_object, callback) {
 
 function createTableStructure(create_table_object, callback) {
 
-    let validator = validation.table_object(create_table_object);
+    let validator = validation.create_table_object(create_table_object);
     if (validator) {
         callback(validator);
         return;
