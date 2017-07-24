@@ -77,6 +77,15 @@ function table_object(object){
     return validate(object, constraints);
 }
 
+function create_table_object(object){
+    object = makeAttributesStrings(object);
+    constraints.schema.presence = {"message":" is required"};
+    constraints.table.presence = {"message":" is required"};
+    constraints.attribute.presence = false;
+    constraints.hash_attribute.presence = {"message":" is required"};
+    return validate(object, constraints);
+}
+
 function attribute_object(object){
     object = makeAttributesStrings(object);
     constraints.schema.presence = {"message":" is required"};
@@ -100,6 +109,7 @@ function describe_table(object){
 
 module.exports =  {
     schema_object: schema_object,
+    create_table_object: create_table_object,
     table_object: table_object,
     attribute_object: attribute_object,
     describe_table: describe_table
