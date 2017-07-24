@@ -1,6 +1,6 @@
 const cluster = require('cluster');
-const numCPUs = 1;
-const DEBUG = true;
+const numCPUs = 4;
+const DEBUG = false;
 const winston = require('../utility/logging/winston_logger');
 
 
@@ -74,12 +74,12 @@ if (cluster.isMaster && !DEBUG) {
                     operation_function(req.body, (error, data) => {
                         if (error) {
                             winston.info(error);
-                            if(!isJson(error))
+                            if(typeof error != 'object')
                                 error = {"error": error};
                             res.status(400).json(error);
                             return;
                         }
-                        if(!isJson(data))
+                        if(typeof data != 'object')
                             data = {"message": data};
 
                         return res.status(200).json(data);
@@ -211,12 +211,3 @@ if (cluster.isMaster && !DEBUG) {
     }
 }
 
-
-function isJson(string) {
-    try {
-        JSON.parse(string);
-    } catch (e) {
-        return false;
-    }
-    return true;
-}

@@ -120,7 +120,6 @@ function descTable(describe_table_object, callback) {
             search.searchByValue(table_search_obj, function (err, tables) {
                 if (err) {
                     winston.error(err);
-                    //initialize();
                     return;
                 }
 
