@@ -1,9 +1,10 @@
-const delete_ = require('../data_layer/delete');
+const delete_ = require('../data_layer/delete'),
+    winston = require('../utility/logging/winston_logger');
 
 let delete_table_object = {
-    table:"dog",
+    table:"genome",
     schema:"dev",
-    hash_values: [1]
+    hash_values: [4508]
 };
 
 console.time('delete table test');
