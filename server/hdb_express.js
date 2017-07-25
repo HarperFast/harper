@@ -59,6 +59,7 @@ if (cluster.isMaster && !DEBUG) {
         winston.info(JSON.stringify(req.body));
         auth.authorize(req, res, function(err, user) {
             if(err){
+                winston.warn(`{"ip":"${req.connection.remoteAddress}", "error":"${err}"`);
                 res.status(401).send(err);
                 return;
             }
