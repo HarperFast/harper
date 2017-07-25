@@ -98,7 +98,7 @@ function searchByValue (search_object, callback) {
             search_object.get_attributes = attributes;
 
             async.waterfall([
-                file_search.findIDsByRegex.bind(null, patterns.folder_search_path, patterns.folder_search),
+                file_search.findIDsByRegex.bind(null, patterns.folder_search_path, patterns.folder_search, patterns.blob_search),
                 getAttributeFiles.bind(null, search_object.get_attributes, patterns.table_path),
                 consolidateData.bind(null, search_object.hash_attribute)
             ], (error, data) => {
@@ -173,7 +173,7 @@ function multiConditionSearch(conditions, table_schema, callback){
 
             let pattern = condition_patterns.createPatterns(condition, table_schema, base_path);
 
-            file_search.findIDsByRegex(pattern.folder_search_path, pattern.folder_search, (err, results) => {
+            file_search.findIDsByRegex(pattern.folder_search_path, pattern.folder_search, pattern.blob_search, (err, results) => {
                 if (err) {
                     winston.error(err);
                 } else {

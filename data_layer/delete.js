@@ -126,6 +126,7 @@ function deleteFiles(delete_object, record, callback){
     Object.keys(record).forEach((attribute)=>{
         paths.push(`${table_path}/__hdb_hash/${attribute}/${delete_object.hash_value}.hdb`);
         let stripped_value = String(record[attribute]).replace(slash_regex, '');
+        stripped_value = stripped_value.length > 255 ? stripped_value.substring(0, 255) + '/blob' : stripped_value;
         paths.push(`${table_path}/${attribute}/${stripped_value}/${delete_object.hash_value}.hdb`);
     });
 

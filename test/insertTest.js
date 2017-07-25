@@ -1,38 +1,38 @@
-'use strict'
+'use strict';
 
-var insert = require('../data_layer/insert.js'),
+const insert = require('../data_layer/insert.js'),
     first_names = require('./data/firstNames'),
-    last_names = require('./data/lastNames');
+    last_names = require('./data/lastNames'),
+    randomstring = require('randomstring'),
+    winston = require('../utility/logging/winston_logger');
+
 
 const record_size  = 10000;
 const schema = 'dev';
 
-var objects = [];
-for(var x = 0; x < record_size; x++){
+let objects = [];
+for(let x = 0; x < record_size; x++){
     objects.push(
         {
             id : x + 1,
-            first_name: first_names[Math.floor(Math.random() * first_names.length)],
-            last_name: first_names[Math.floor(Math.random() * first_names.length)],
-            num_children: Math.floor(Math.random() * (10 - 0)) + 1
+            sequence: randomstring.generate(Math.floor(Math.random() * (2000 - 100)))
         }
     );
 }
 
-var insert_object = {
+let insert_object = {
     operation:'insert',
     schema :  'dev',
-    table:'person',
-    hash_attribute: 'id',
+    table:'genome',
     records: objects
 };
 
 console.time('insertTest');
 insert.insert(insert_object, function(err, data){
     if(err) {
-        winston.error(err);
+        console.error(err);
     } else {
-        winston.info(data);
+        console.log(data);
     }
     console.timeEnd('insertTest');
     process.exit(0);

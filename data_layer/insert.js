@@ -57,7 +57,6 @@ function validation(write_object, callback){
             Object.keys(record).forEach((attribute)=>{
                 if(attribute.length > 250){
                     long_attribute = true;
-                    return;
                 }
             });
             if(long_attribute){
@@ -104,12 +103,10 @@ function insertData(insert_object, callback){
             processData
         ], (err) => {
             if (err) {
-                callback(err);
-                return;
+                return callback(err);
             }
 
             callback(null, `successfully wrote ${insert_object.records.length} records`);
-            return;
         });
     } catch(e){
         callback(e);
@@ -191,10 +188,13 @@ function compareUpdatesToExistingRecords(update_object, hash_attribute, existing
             let update = {};
 
             for (let attr in update_record) {
-                if (existing_record[attr] != update_record[attr]) {
+                if (existing_record[attr] !== update_record[attr]) {
                     update[attr] = update_record[attr];
 
-                    let value_stripped = String(existing_record[attr]).replace(regex, '').substring(0, 4000);
+                    let value = typeof existing_record[attr] === 'object' ? JSON.stringify(existing_record[attr]) : existing_record[attr];
+                    let value_stripped = String(value).replace(regex, '');
+                    value_stripped = value_stripped.length > 255 ? value_stripped.substring(0, 255) + '/blob' : value_stripped;
+
                     if (existing_record[attr] !== null && existing_record[attr] !== undefined) {
                         unlink_paths.push(`${base_path}${attr}/${value_stripped}/${existing_record[hash_attribute]}.hdb`);
                     }
@@ -221,6 +221,10 @@ function unlinkFiles(unlink_paths, update_objects, callback){
     async.each(unlink_paths, (path, caller)=>{
         fs.unlink(path, (err)=>{
             if(err){
+                if(err.code === 'ENOENT'){
+                    return caller();
+                }
+
                 winston.error(err);
             }
 
@@ -257,8 +261,8 @@ function checkAttributeSchema(insert_object, callerback) {
         let link_objects = [];
         hash_paths[`${base_path}__hdb_hash/${hash_attribute}/${record[hash_attribute]}.hdb`] = '';
         for (let property in record) {
-            if(record[property] === null || record[property] === undefined){
-                return;
+            if(record[property] === null || record[property] === undefined || record[property] === ''){
+                continue;
             }
 
             let value = typeof record[property] === 'object' ? JSON.stringify(record[property]) : record[property];
