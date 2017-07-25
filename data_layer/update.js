@@ -21,8 +21,10 @@ function update(update_wrapper, callback){
             updateRecords.bind(null, update_wrapper)
         ], (err, results)=>{
             if(err){
-                callback(err);
-                return;
+                if(err.hdb_code){
+                    return callback(null, err.message);
+                }
+                return callback(err);
             }
 
             callback(null, results);
@@ -33,6 +35,10 @@ function update(update_wrapper, callback){
 
 function buildUpdateRecords(update_record, table_info, ids, callback){
     let records = [];
+    if(!ids || ids.length === 0){
+        return callback({hdb_code:1, message: "update statement found no records to update"});
+    }
+
     ids.forEach((id)=>{
         let record = update_record;
         record[table_info.hash_attribute] = id;
