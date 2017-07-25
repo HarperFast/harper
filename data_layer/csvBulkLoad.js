@@ -3,7 +3,8 @@ const csv=require('csvtojson'),
     _ = require('lodash'),
     request=require('request'),
     record_batch_size = 1000,
-    async = require('async');
+    async = require('async'),
+    validator = require('../validation/csvLoadValidator');
 
 module.exports = {
     csvDataLoad: csvDataLoad,
@@ -13,6 +14,11 @@ module.exports = {
 
 function csvDataLoad(csv_object, callback){
     try {
+        let validation_msg = validator.dataObject(csv_object);
+        if (validation_msg) {
+            return callback(validation_msg);
+        }
+
         csv_records = [];
 
         csv()
@@ -42,6 +48,11 @@ function csvDataLoad(csv_object, callback){
 
 function csvURLLoad(csv_object, callback){
     try {
+        let validation_msg = validator.urlObject(csv_object);
+        if (validation_msg) {
+            return callback(validation_msg);
+        }
+
         csv_records = [];
 
         csv()
@@ -71,6 +82,10 @@ function csvURLLoad(csv_object, callback){
 
 function csvFileLoad(csv_object, callback){
     try {
+        let validation_msg = validator.fileObject(csv_object);
+        if (validation_msg) {
+            return callback(validation_msg);
+        }
         csv_records = [];
 
         csv()
@@ -80,20 +95,21 @@ function csvFileLoad(csv_object, callback){
             })
             .on('done', (error) => {
                 if (error) {
-                    callback(error);
-                    return;
+                    return callback(error);
                 }
 
                 bulkLoad(csv_records, csv_object.schema, csv_object.table, (err, data) => {
                     if (err) {
-                        callback(err);
-                        return;
+                        return callback(err);
                     }
 
-                    callback(null, `successfully loaded ${csv_records.length} records`);
+                    return callback(null, `successfully loaded ${csv_records.length} records`);
                 });
             }).on('error', (err) => {
-            callback(err);
+                if(err.message && err.message === 'File not exists'){
+                    return callback(`file ${csv_object.file_path} not found`);
+                }
+            return callback(err);
         });
     } catch(e){
         callback(e);
