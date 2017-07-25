@@ -1,4 +1,4 @@
 #!/bin/bash
 rm -rf /opt/HarperDB/*
-rm ../hdb_* ../install_hdb.log
+rm ../hdb_* ../install_*
 

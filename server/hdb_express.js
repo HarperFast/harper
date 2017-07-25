@@ -74,17 +74,19 @@ if (cluster.isMaster && !DEBUG) {
                     operation_function(req.body, (error, data) => {
                         if (error) {
                             winston.info(error);
-                            if(!isJson(error))
+                            if(typeof error != 'object')
                                 error = {"error": error};
                             res.status(400).json(error);
                             return;
                         }
+                        if(typeof data != 'object')
+                            data = {"message": data};
 
-                        res.status(200).json(data);
+                        return res.status(200).json(data);
                     });
                 } catch (e) {
                     winston.info(e);
-                    res.status(500).json(e);
+                    return res.status(500).json(e);
                 }
             });
         });
@@ -155,6 +157,9 @@ if (cluster.isMaster && !DEBUG) {
             case 'drop_user':
                 operation_function = user.dropUser;
                 break;
+            case 'list_users':
+                operation_function = user.listUsers;
+                break;
             case 'add_role':
                 operation_function = role.addRole;
                 break;
@@ -206,12 +211,3 @@ if (cluster.isMaster && !DEBUG) {
     }
 }
 
-
-function isJson(string) {
-    try {
-        JSON.parse(string);
-    } catch (e) {
-        return false;
-    }
-    return true;
-}
