@@ -18,7 +18,6 @@ function csvDataLoad(csv_object, callback){
         csv()
             .fromString(csv_object.data)
             .on('json', (jsonObj, rowIndex) => {
-                jsonObj.id = parseInt(rowIndex) + 1;
                 csv_records.push(jsonObj);
             })
             .on('done', (error) => {
@@ -48,7 +47,6 @@ function csvURLLoad(csv_object, callback){
         csv()
             .fromStream(request.get(csv_object.csv_url))
             .on('json', (jsonObj, rowIndex) => {
-                jsonObj.id = parseInt(rowIndex) + 1;
                 csv_records.push(jsonObj);
             })
             .on('done', (error) => {
@@ -78,7 +76,6 @@ function csvFileLoad(csv_object, callback){
         csv()
             .fromFile(csv_object.file_path)
             .on('json', (jsonObj, rowIndex) => {
-                jsonObj.id = parseInt(rowIndex) + 1;
                 csv_records.push(jsonObj);
             })
             .on('done', (error) => {
