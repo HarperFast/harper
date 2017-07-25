@@ -1,4 +1,5 @@
-const validate = require('validate.js');
+const validate = require('validate.js'),
+    clone = require('clone');
 
 const constraints = {
     schema : {
@@ -29,39 +30,40 @@ const constraints = {
             tooLong: 'cannot exceed 250 characters'
         }
     },
-    file_path :{
-        presence : false
-    },
+    file_path :{},
     csv_url :{
-        presence : false,
         url: {
             allowLocal: true
         }
     },
-    data :{
-        presence : false
-    }
+    data :{}
+};
+
+const data_contraints = clone(constraints);
+data_contraints.data.presence = {
+    message : " is required"
+};
+
+const file_contraints = clone(constraints);
+file_contraints.file_path.presence = {
+    message : " is required"
+};
+
+const url_contraints = clone(constraints);
+url_contraints.csv_url.presence = {
+    message : " is required"
 };
 
 function dataObject(object){
-    constraints.data.presence = {
-        message : " is required"
-    };
-    return validate(object, constraints);
+    return validate(object, data_contraints);
 }
 
 function urlObject(object){
-    constraints.csv_url.presence = {
-        message : " is required"
-    };
-    return validate(object, constraints);
+    return validate(object, url_contraints);
 }
 
 function fileObject(object){
-    constraints.file_path.presence = {
-        message : " is required"
-    };
-    return validate(object, constraints);
+    return validate(object, file_contraints);
 }
 
 module.exports =  {
