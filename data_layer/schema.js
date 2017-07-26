@@ -67,7 +67,8 @@ function dropSchema(drop_schema_object, callback) {
             addAndRemoveFromQueue(drop_schema_object, success, callback);
         });
     } catch (e) {
-        callback(e);
+        winston.error(e);
+        return callback(e);
     }
 }
 
@@ -260,9 +261,11 @@ function deleteSchemaStructure(drop_schema_object, callback) {
                                     return;
                                 }
 
-                                callback(null, `successfully delete ${schema}`);
+                               return callback(null, `successfully delete ${schema}`);
                             });
                         });
+                    }else{
+                        return callback(null, `successfully delete ${schema}`);
                     }
                 });
 
@@ -270,7 +273,8 @@ function deleteSchemaStructure(drop_schema_object, callback) {
             });
         });
     } catch (e) {
-        callback(e);
+        winston.error(e);
+        return callback(e);
     }
 }
 
