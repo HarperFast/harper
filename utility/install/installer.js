@@ -9,6 +9,7 @@ const prompt = require('prompt'),
     isRoot = require('is-root'),
     async = require('async'),
     optimist = require('optimist'),
+    forge = require('node-forge'),
     PropertiesReader = require('properties-reader');
 var hdb_boot_properties = null,
     hdb_properties = null;
@@ -61,6 +62,7 @@ function run_install(callback) {
                mount,
                createSettingsFile,
                createAdminUser,
+               generateKeys,
                checkRegister
 
            ], function (err, result) {
@@ -190,6 +192,13 @@ function wizard(callback) {
                 default: 5299,
                 required: false
             },
+            HTTPS_PORT: {
+                pattern: /^([0-9]{1,4}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$/,
+                description: colors.magenta(`[HTTPS_PORT] Please enter an HTTPS listening port for HarperDB`),
+                message: 'Invalid port.',
+                default: 31283,
+                required: false
+            },
             HDB_ADMIN_USERNAME: {
                 description: colors.magenta('[HDB_ADMIN_USERNAME] Please enter a username for the HDB_ADMIN'),
                 default: 'HDB_ADMIN',
@@ -295,7 +304,12 @@ function createSettingsFile(mount_status, callback) {
         let hdb_props_value = `PROJECT_DIR = ${path.resolve(process.cwd(),'../')}
         HDB_ROOT= ${wizard_result.HDB_ROOT}
         TCP_PORT = ${wizard_result.TCP_PORT}
-        HTTP_PORT = ${wizard_result.HTTP_PORT}`;
+        HTTP_PORT = ${wizard_result.HTTP_PORT}
+        HTTPS_PORT = ${wizard_result.HTTPS_PORT}
+        CERTIFICATE = ${wizard_result.HDB_ROOT}/keys/certificate.pem
+        PRIVATE_KEY = ${wizard_result.HDB_ROOT}/keys/privateKey.pem
+        HTTPS_ON = TRUE
+        HTTP_ON = FALSE`;
 
 
         winston.info('info', `hdb_props_value ${JSON.stringify(hdb_props_value)}`);
@@ -303,7 +317,7 @@ function createSettingsFile(mount_status, callback) {
         try {
             fs.writeFile(hdb_boot_properties.get('settings_path'), hdb_props_value, function (err, data) {
                 if (err) {
-                    winston.info('info', err);
+                    winston.error(err);
                 }
                 hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
                 callback(null);
@@ -318,6 +332,104 @@ function createSettingsFile(mount_status, callback) {
 
 
     });
+}
+
+
+
+function generateKeys(callback){
+    let pki = forge.pki;
+    let keys = pki.rsa.generateKeyPair(2048);
+    let cert = pki.createCertificate();
+    cert.publicKey = keys.publicKey;
+// alternatively set public key from a csr
+//cert.publicKey = csr.publicKey;
+    cert.serialNumber = '01';
+    cert.validity.notBefore = new Date();
+    cert.validity.notAfter = new Date();
+    cert.validity.notAfter.setFullYear(cert.validity.notBefore.getFullYear() + 1);
+    let attrs = [{
+        name: 'commonName',
+        value: 'harperdb.io'
+    }, {
+        name: 'countryName',
+        value: 'US'
+    }, {
+        shortName: 'ST',
+        value: 'Colorado'
+    }, {
+        name: 'localityName',
+        value: 'Denver'
+    }, {
+        name: 'organizationName',
+        value: 'HarperDB, Inc'
+    }, {
+        shortName: 'OU',
+        value: 'HDB'
+    }];
+    cert.setSubject(attrs);
+    cert.setIssuer(attrs);
+    cert.setExtensions([{
+        name: 'basicConstraints',
+        cA: true,
+        id: 'hdb_1.0'
+    }, {
+        name: 'keyUsage',
+        keyCertSign: true,
+        digitalSignature: true,
+        nonRepudiation: true,
+        keyEncipherment: true,
+        dataEncipherment: true
+    }, {
+        name: 'extKeyUsage',
+        serverAuth: true,
+        clientAuth: true,
+        codeSigning: true,
+        emailProtection: true,
+        timeStamping: true
+    }, {
+        name: 'nsCertType',
+        client: true,
+        server: true,
+        email: true,
+        objsign: true,
+        sslCA: true,
+        emailCA: true,
+        objCA: true
+    }, {
+        name: 'subjectAltName',
+        altNames: [{
+            type: 6, // URI
+            value: 'http://example.org/webid#me'
+        }, {
+            type: 7, // IP
+            ip: '127.0.0.1'
+        }]
+    }, {
+        name: 'subjectKeyIdentifier'
+    }]);
+
+    cert.sign(keys.privateKey);
+
+// convert a Forge certificate to PEM
+
+    fs.writeFile(hdb_properties.get('CERTIFICATE'), pki.certificateToPem(cert), function (err, data) {
+        if (err) {
+            winston.error(err);
+            return callback(err);
+        }
+        fs.writeFile(hdb_properties.get('PRIVATE_KEY'), forge.pki.privateKeyToPem(keys.privateKey), function (err, data) {
+            if (err) {
+                winston.error(err);
+                return callback(err);
+            }
+            return callback();
+
+        });
+
+
+    });
+
+
 }
 
 

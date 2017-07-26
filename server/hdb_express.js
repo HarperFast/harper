@@ -196,17 +196,52 @@ if (cluster.isMaster && !DEBUG) {
     });
 
     try{
+        var http = require('http');
+        var https = require('https');
+        var privateKey  = fs.readFileSync(hdb_properties.get('PRIVATE_KEY'), 'utf8');
+        var certificate = fs.readFileSync(hdb_properties.get('CERTIFICATE'), 'utf8');
+        var credentials = {key: privateKey, cert: certificate};
 
-        app.listen(hdb_properties.get('HTTP_PORT'), function () {
-            winston.info(`HarperDB Server running on ${hdb_properties.get('HTTP_PORT')}`);
+// your express configuration here
 
-            global_schema.setSchemaDataToGlobal((err, data) => {
-                if (err) {
-                    winston.info('error', err);
-                }
+        var httpServer = http.createServer(app);
+        var httpsServer = https.createServer(credentials, app);
+
+        //httpServer.listen(8080);
+
+        if(hdb_properties.get('HTTPS_ON') && hdb_properties.get('HTTPS_ON').toUpperCase() === 'TRUE'){
+            httpsServer.listen(hdb_properties.get('HTTPS_PORT'), function(){
+                winston.info(`HarperDB HTTPS Server running on ${hdb_properties.get('HTTPS_PORT')}`);
+
+                global_schema.setSchemaDataToGlobal((err, data) => {
+                    if (err) {
+                        winston.info('error', err);
+                    }
+
+                });
+
+
 
             });
-        });
+
+        }
+
+        if(hdb_properties.get('HTTP_ON') && hdb_properties.get('HTTP_ON').toUpperCase()  === 'TRUE'){
+            httpServer.listen(hdb_properties.get('HTTP_PORT'), function(){
+                winston.info(`HarperDB HTTP Server running on ${hdb_properties.get('HTTP_PORT')}`);
+
+                global_schema.setSchemaDataToGlobal((err, data) => {
+                    if (err) {
+                        winston.info('error', err);
+                    }
+
+                });
+
+            });
+        }
+
+
+
     }catch(e){
         winston.error(e);
     }
