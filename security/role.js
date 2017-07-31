@@ -23,7 +23,7 @@ function addRole(role, callback){
         return;
     }
 
-
+    delete role.hdb_user;
     delete role.operation;
 
     let search_obj = {
@@ -78,6 +78,9 @@ function alterRole(role, callback){
         callback(validation_resp);
         return;
     }
+
+    delete role.hdb_user;
+    delete role.operation;
 
     let update_object = {
         operation:'update',
