@@ -63,7 +63,7 @@ function generateBasicSearchObject(statement, callback){
 
             return {
                 attribute: column_name,
-                alias: column.alias ? column.alias : search_object.table + '.' + column_name
+                alias: column.alias ? column.alias : column_name
             };
         });
 
@@ -141,7 +141,7 @@ function generateObject(statement, from_level, callback){
         if(column_info.length > 1 && (column_info[0] === from_info.table || column_info[0] === from_info.alias)){
             return {
                 attribute: column_info[1],
-                alias: column.alias ? column.alias : from_info.table + '.' + column_info[1]
+                alias: column.alias ? column.alias : column_info[1]
             };
         }
     });

@@ -454,14 +454,14 @@ function addSupplementalFields(search_wrapper){
                 if ((table.table === left_side[0] || table.alias === left_side[0])) {
                     table.supplemental_fields.push({
                         attribute: left_side[1],
-                        alias: table.table + '.' + left_side[1],
+                        alias: left_side[1],
                         table: table.table,
                         table_alias: table.alias
                     });
                 } else if ((table.table === right_side[0] || table.alias === right_side[0])) {
                     table.supplemental_fields.push({
                         attribute: right_side[1],
-                        alias: table.table + '.' + right_side[1],
+                        alias: right_side[1],
                         table: table.table,
                         table_alias: table.alias
                     });
@@ -633,7 +633,7 @@ function getAllAttributeNames(table_info, callback){
         folders.forEach((folder)=>{
             attributes.push({
                 attribute:folder,
-                alias:`${table_info.table}.${folder}`,
+                alias: folder,
                 table:table_info.table,
                 table_alias:table_info.alias
             });
