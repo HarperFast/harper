@@ -22,9 +22,11 @@ function addUser(user, callback){
         callback(validation_resp);
         return;
     }
+    delete user.hdb_user;
+    delete user.operation;
+
 
     user.password = password.hash(user.password);
-    delete user.operation;
 
     let insert_object = {
         operation:'insert',
@@ -53,6 +55,8 @@ function alterUser(user, callback){
         return;
     }
 
+    delete user.hdb_user;
+    delete user.operation;
 
     let update_object = {
         operation:'update',
@@ -161,7 +165,7 @@ function list_users(body, callback){
                 }
 
                 for(u in users){
-                    users[u].role = roleMapObj[u.role];
+                    users[u].role = roleMapObj[users[u].role];
                 }
 
                 return callback(null, users);
