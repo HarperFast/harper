@@ -56,7 +56,6 @@ if (cluster.isMaster && !DEBUG) {
     app.use(passport.initialize());
     app.use(passport.session());
     app.post('/', function (req, res) {
-        winston.info(JSON.stringify(req.body));
         auth.authorize(req, res, function(err, user) {
             if(err){
                 winston.warn(`{"ip":"${req.connection.remoteAddress}", "error":"${err}"`);
@@ -66,12 +65,15 @@ if (cluster.isMaster && !DEBUG) {
             req.body.hdb_user = user;
             chooseOperation(req.body, (err, operation_function) => {
                 if (err) {
-                    winston.info(err);
+                    winston.error(err);
                     res.status(500).send(err);
                     return;
                 }
 
                 try {
+                    if(req.body.operation != 'read_log')
+                        winston.info(JSON.stringify(req.body));
+
                     operation_function(req.body, (error, data) => {
                         if (error) {
                             winston.info(error);
