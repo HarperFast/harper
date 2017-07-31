@@ -79,7 +79,7 @@ if (cluster.isMaster && !DEBUG) {
                             winston.info(error);
                             if(typeof error != 'object')
                                 error = {"error": error};
-                            res.status(400).json(error);
+                            res.status(200).json(error);
                             return;
                         }
                         if(typeof data != 'object')
