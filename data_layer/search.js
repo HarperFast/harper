@@ -520,6 +520,11 @@ RegExp.escape= function(s) {
 function consolidateData(hash_attribute, attributes_data, callback){
     let data_array = [];
     let data_keys = Object.keys(attributes_data);
+
+    if(!attributes_data || data_keys.length === 0) {
+        return callback(null, data_array);
+    }
+
     let ids;
     if(attributes_data[hash_attribute]){
         ids = Object.keys(attributes_data[hash_attribute]);
