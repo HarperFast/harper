@@ -19,12 +19,15 @@ function haperDBService(){
             install.install();
             break;
         case "register":
-
             register.register();
             break;
         case "stop":
-
             stop.stop();
+            break;
+        case "restart":
+            stop.stop(function(){
+                run.run();
+            });
             break;
         default:
 
