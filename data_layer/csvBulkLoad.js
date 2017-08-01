@@ -53,31 +53,57 @@ function csvURLLoad(csv_object, callback){
             return callback(validation_msg);
         }
 
-        csv_records = [];
+        createReadStream(csv_object.csv_url, (err, response)=>{
+            if(err){
+                return callback(err);
+            }
 
-        csv()
-            .fromStream(request.get(csv_object.csv_url))
-            .on('json', (jsonObj, rowIndex) => {
-                csv_records.push(jsonObj);
-            })
-            .on('done', (error) => {
-                if (error) {
-                    callback(error);
-                    return;
-                }
+            csv_records = [];
 
-                bulkLoad(csv_records, csv_object.schema, csv_object.table, (err, data) => {
-                    if (err) {
-                        callback(err);
+            csv()
+                .fromStream(response)
+                .on('json', (jsonObj, rowIndex) => {
+                    csv_records.push(jsonObj);
+                })
+                .on('done', (error) => {
+                    if (error) {
+                        callback(error);
                         return;
                     }
 
-                    callback(null, `successfully loaded ${csv_records.length} records`);
+                    bulkLoad(csv_records, csv_object.schema, csv_object.table, (err, data) => {
+                        if (err) {
+                            callback(err);
+                            return;
+                        }
+
+                        callback(null, `successfully loaded ${csv_records.length} records`);
+                    });
+                })
+                .on('error', (err) => {
+                    return callback(err);
                 });
-            });
+        });
     } catch(e){
         callback(e);
     }
+}
+
+function createReadStream(url, callback){
+    request.get(url)
+        .on('response', (response)=>{
+            if (response.statusCode !== 200 || response.headers['content-type'].indexOf('text/csv') < 0) {
+                let return_object = {
+                    message: `CSV Load failed from URL: ${url}`,
+                    status_code: response.statusCode,
+                    status_message: response.statusMessage,
+                    content_type: response.headers['content-type']
+                };
+                return callback(return_object);
+            }
+
+            return callback(null, response);
+        });
 }
 
 function csvFileLoad(csv_object, callback){
