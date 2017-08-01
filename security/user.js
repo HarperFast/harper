@@ -25,27 +25,41 @@ function addUser(user, callback){
     delete user.hdb_user;
     delete user.operation;
 
+    let search_obj = {
+        schema: 'system',
+        table : 'hdb_role',
+        hash_values: [user.role],
+        hash_attribute : 'id',
+        get_attributes: ['id']
 
-    user.password = password.hash(user.password);
 
-    let insert_object = {
-        operation:'insert',
-        schema :  'system',
-        table:'hdb_user',
-        hash_attribute: 'username',
-        records: [user]
     };
 
-    insert.insert(insert_object, function(err, success){
-        if(err){
-            callback(err);
-            return;
+    search.searchByHash(search_obj, function (err, search_role) {
+        if(!search_role || search_role.length < 1){
+            return callback("Role not found!");
         }
 
-        callback(null, `${user.username} successfully added`);
+        user.password = password.hash(user.password);
 
+        let insert_object = {
+            operation: 'insert',
+            schema: 'system',
+            table: 'hdb_user',
+            hash_attribute: 'username',
+            records: [user]
+        };
+
+        insert.insert(insert_object, function (err, success) {
+            if (err) {
+                callback(err);
+                return;
+            }
+
+            callback(null, `${user.username} successfully added`);
+
+        });
     });
-
 }
 
 function alterUser(user, callback){
