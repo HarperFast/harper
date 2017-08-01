@@ -1,6 +1,6 @@
 {
   "name": "harperdb",
-  "version": "0.0.247",
+  "version": "0.0.248",
   "description": "",
   "main": "run.js",
   "bin": "./bin/run.js",
