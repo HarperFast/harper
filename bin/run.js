@@ -7,7 +7,8 @@ const fs = require('fs'),
     colors = require("colors/safe"),
     basic_winston  = require('winston'),
     PropertiesReader = require('properties-reader'),
-    async = require('async');
+    async = require('async'),
+    pjson = require('../package.json');
 
 var hdb_boot_properties = null,
     hdb_properties = null;
@@ -27,6 +28,7 @@ function run() {
                 prettyPrint:true })
         ],exitOnError:false
     });
+
 
     fs.stat(`${process.cwd()}/../hdb_boot_properties.file`, function(err, stats){
         if(err){
@@ -67,7 +69,7 @@ function run() {
 
                         });
                     } else {
-                        basic_winston.error(`start fail: ${err}`);
+                        basic_winston.error(`HarperDB ${pjson.version} start fail: ${err}`);
                         return;
                     }
 
@@ -75,7 +77,7 @@ function run() {
                     const winston = require("../utility/logging/winston_logger");
                     hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
                     completeRun();
-                    winston.info('HarperDB Run complete');
+                    winston.info(`HarperDB ${pjson.version} run complete`);
                     return;
                 }
             });
@@ -107,7 +109,7 @@ function kickOffExpress(callback){
 
     child.unref();
     console.log(colors.magenta('' + fs.readFileSync(path.join(__dirname,'../utility/install/ascii_logo.txt'))));
-    console.log(colors.magenta('|------------- HarperDB successfully started ------------|'));
+    console.log(colors.magenta(`|------------- HarperDB ${pjson.version} successfully started ------------|`));
     callback();
 }
 

@@ -44,7 +44,9 @@ if (cluster.isMaster && !DEBUG) {
         user = require('../security/user'),
         role = require('../security/role'),
         read_log = require('../utility/logging/read_logs'),
-        global_schema = require('../utility/globalSchema');
+        global_schema = require('../utility/globalSchema'),
+        pjson = require('../package.json');
+
 
     hdb_properties.append(hdb_properties.get('settings_path'));
 
@@ -88,7 +90,7 @@ if (cluster.isMaster && !DEBUG) {
                         return res.status(200).json(data);
                     });
                 } catch (e) {
-                    winston.info(e);
+                    winston.error(e);
                     return res.status(500).json(e);
                 }
             });
@@ -213,7 +215,7 @@ if (cluster.isMaster && !DEBUG) {
 
         if(hdb_properties.get('HTTPS_ON') && hdb_properties.get('HTTPS_ON').toUpperCase() === 'TRUE'){
             httpsServer.listen(hdb_properties.get('HTTPS_PORT'), function(){
-                winston.info(`HarperDB HTTPS Server running on ${hdb_properties.get('HTTPS_PORT')}`);
+                winston.info(`HarperDB ${pjson.version} HTTPS Server running on ${hdb_properties.get('HTTPS_PORT')}`);
 
                 global_schema.setSchemaDataToGlobal((err, data) => {
                     if (err) {
@@ -230,7 +232,7 @@ if (cluster.isMaster && !DEBUG) {
 
         if(hdb_properties.get('HTTP_ON') && hdb_properties.get('HTTP_ON').toUpperCase()  === 'TRUE'){
             httpServer.listen(hdb_properties.get('HTTP_PORT'), function(){
-                winston.info(`HarperDB HTTP Server running on ${hdb_properties.get('HTTP_PORT')}`);
+                winston.info(`HarperDB ${pjson.version} HTTP Server running on ${hdb_properties.get('HTTP_PORT')}`);
 
                 global_schema.setSchemaDataToGlobal((err, data) => {
                     if (err) {

@@ -1,7 +1,8 @@
 const run = require('./run'),
       install = require('./install'),
       stop = require('./stop'),
-     register = require('./register');
+     register = require('./register'),
+     version = require('./version');
 
 haperDBService();
 function haperDBService(){
@@ -28,6 +29,9 @@ function haperDBService(){
             stop.stop(function(){
                 run.run();
             });
+            break;
+        case "version":
+            version.version();
             break;
         default:
 
