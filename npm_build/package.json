@@ -1,6 +1,6 @@
 {
   "name": "harperdb",
-  "version": "0.0.244",
+  "version": "0.0.245",
   "description": "HarperDB no-SQL SQL database written in node.js",
   "main": "./bin/harperdb",
   "bin": {
