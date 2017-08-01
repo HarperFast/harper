@@ -91,6 +91,29 @@ cd HDB_HOME/bin
 ./harperdb stop
 
 ```
+
+## Restarting HarperDB
+
+To restart HarperDB once it is running from the HarperDB home (HDB_HOME) directory run the following commands:
+
+```
+cd HDB_HOME/bin
+./harperdb restart
+
+```
+
+
+## Check HarperDB version
+
+To check the version you are running of HarperDB from the HarperDB home (HDB_HOME) directory run the following commands:
+
+```
+cd HDB_HOME/bin
+./harperdb version
+
+```
+
+
 ## Need Help?
 
 -contact us via email: support@harperdb.io
