@@ -1,3 +1,6 @@
+const fill = require('fill-range'),
+    daterange = require('daterange');
+
 const slash_regex =  /\//g;
 
 module.exports = {
@@ -31,6 +34,20 @@ function createPatterns(condition, table_schema, base_path){
         case '=':
             stripped_search_string = comparators[1] === '*' ? '*' :String(comparators[1]).replace(slash_regex, '');
             pattern.folder_search = comparators[1] === '*' ? new RegExp('.*') : new RegExp(`^${RegExp.escape(stripped_search_string)+hdb_extension}$`);
+            break;
+        case '>':
+            pattern.folder_search = new RegExp(fill(Number(comparators[1]) + 1, Number.MAX_SAFE_INTEGER, {toRegex:true}));
+            break;
+        case '>=':
+            pattern.folder_search = new RegExp(fill(Number(comparators[1]), Number.MAX_SAFE_INTEGER, {toRegex:true}));
+            break;
+        case '<':
+            pattern.folder_search = new RegExp(fill(Number(comparators[1]) - 1, Number.MIN_SAFE_INTEGER, -1, {toRegex:true}));
+            break;
+        case '<=':
+            pattern.folder_search = new RegExp(fill(Number(comparators[1]), Number.MIN_SAFE_INTEGER, -1, {toRegex:true}));
+            break;
+        case 'between':
             break;
         case 'in':
             let folder_searches = [];
