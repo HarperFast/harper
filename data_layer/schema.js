@@ -542,7 +542,7 @@ function createAttributeStructure(create_attribute_object, callback) {
         };
 
         insert.insert(insertObject, function (err, result) {
-            winston.info('attribute:' + err);
+            winston.info('attribute:' + record.attribute);
             winston.info(result);
             callback(err, result);
         });
@@ -612,11 +612,14 @@ function deleteAttributeStructure(attribute_drop_object, callback) {
 
 function createAttribute(create_attribute_object, callback) {
     try {
-        createAttributeStructure(create_attribute_object, function (err, sucess) {
+        createAttributeStructure(create_attribute_object, function (err, success) {
             if (err) {
                 callback(err);
                 return;
             }
+
+            signalling.signalSchemaChange({type: 'schema'});
+
             addAndRemoveFromQueue(create_attribute_object, success, callback);
 
         });
