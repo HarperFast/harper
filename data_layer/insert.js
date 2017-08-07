@@ -434,13 +434,20 @@ function writeLinkFiles(links, callback) {
 
 function createFolders(folders, callback) {
     async.each(folders, (folder, caller) => {
-        mkdirp(folder, (err) => {
+        mkdirp(folder, (err, created_folder) => {
             if (err) {
                 caller(err);
                 return;
             }
 
-            caller();
+            if(folder.indexOf('/__hdb_hash/') >= 0 && created_folder){
+                createNewAttribute(folder, (error)=>{
+                    caller();
+                });
+            } else {
+                caller();
+            }
+
         });
     }, function (err) {
         if (err) {
@@ -451,3 +458,24 @@ function createFolders(folders, callback) {
         callback();
     });
 }
+
+function createNewAttribute(base_folder, callback){
+    let base_parts = base_folder.replace(hdb_path, '').split('/');
+    let attribute_object = {
+        schema:base_parts[1],
+        table:base_parts[2],
+        attribute:base_parts[base_parts.length - 1]
+    };
+
+    schema.createAttribute(attribute_object, (err, data)=>{
+        if(err){
+            console.error(err);
+        }
+
+        callback();
+    });
+
+
+}
+
+const schema = require('../data_layer/schema');
