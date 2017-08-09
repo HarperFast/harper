@@ -118,6 +118,11 @@ function updateData(update_object, callback){
         if (update_object.operation !== 'update') {
             callback('invalid operation, must be update');
         }
+        let tracker = {
+            all_ids:[],
+            update_ids:[]
+        };
+        let hash_attribute;
 
         async.waterfall([
             validation.bind(null, update_object),
@@ -131,6 +136,8 @@ function updateData(update_object, callback){
                     });
                 });
 
+                tracker.all_ids = hashes;
+
                 let search_obj = {
                     schema: update_object.schema,
                     table: update_object.table,
@@ -143,13 +150,18 @@ function updateData(update_object, callback){
             },
             search.searchByHash,
             (existing_records, caller) => {
-                let hash_attribute = global.hdb_schema[update_object.schema][update_object.table].hash_attribute;
+                hash_attribute = global.hdb_schema[update_object.schema][update_object.table].hash_attribute;
                 caller(null, update_object, hash_attribute, existing_records);
             },
             compareUpdatesToExistingRecords,
             unlinkFiles,
             (update_objects, caller) => {
                 update_object.records = update_objects;
+
+                update_objects.forEach((record)=>{
+                    tracker.update_ids.push(record[hash_attribute]);
+                });
+
                 caller(null, update_object);
             },
             checkAttributeSchema,
@@ -160,7 +172,15 @@ function updateData(update_object, callback){
                 return;
             }
 
-            callback(null, `successfully wrote ${update_object.records.length} records`);
+            let skipped_hashes = _.difference(tracker.all_ids, tracker.update_ids);
+
+            let return_object = {
+                message: `updated ${tracker.update_ids.length} of ${tracker.all_ids.length} records`,
+                update_hashes: tracker.update_ids,
+                skipped_hashes: skipped_hashes
+            };
+
+            callback(null, return_object);
             return;
         });
     } catch(e){
@@ -318,7 +338,9 @@ function checkRecordsExist(hash_paths, callback) {
             if (err && err.code === 'ENOENT') {
                 inner_callback();
             } else {
-                inner_callback('record exists');
+                let hash_array = hash_path.split('/');
+                let hash = hash_array[hash_array.length - 1].replace('.hdb', '');
+                inner_callback(`record with hash ${hash} already exists`);
             }
         });
     }, function(err){
@@ -412,13 +434,20 @@ function writeLinkFiles(links, callback) {
 
 function createFolders(folders, callback) {
     async.each(folders, (folder, caller) => {
-        mkdirp(folder, (err) => {
+        mkdirp(folder, (err, created_folder) => {
             if (err) {
                 caller(err);
                 return;
             }
 
-            caller();
+            if(folder.indexOf('/__hdb_hash/') >= 0 && created_folder){
+                createNewAttribute(folder, (error)=>{
+                    caller();
+                });
+            } else {
+                caller();
+            }
+
         });
     }, function (err) {
         if (err) {
@@ -429,3 +458,24 @@ function createFolders(folders, callback) {
         callback();
     });
 }
+
+function createNewAttribute(base_folder, callback){
+    let base_parts = base_folder.replace(hdb_path, '').split('/');
+    let attribute_object = {
+        schema:base_parts[1],
+        table:base_parts[2],
+        attribute:base_parts[base_parts.length - 1]
+    };
+
+    schema.createAttribute(attribute_object, (err, data)=>{
+        if(err){
+            console.error(err);
+        }
+
+        callback();
+    });
+
+
+}
+
+const schema = require('../data_layer/schema');

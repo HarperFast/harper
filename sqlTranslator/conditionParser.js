@@ -55,6 +55,10 @@ function parseWhereClause(where) {
 
     switch(operation){
         case '=':
+        case '>':
+        case '>=':
+        case '<':
+        case '<=':
         case 'like':
             if(where.right.value) {
                 condition_object[operation].push(where.right.value);

@@ -1,15 +1,13 @@
 {
   "name": "harperdb",
-  "version": "1.0.0",
+  "version": "0.0.4",
   "description": "HarperDB no-SQL SQL database written in node.js",
   "main": "./bin/harperdb",
-  "bin" : { "harperdb" : "./bin/harperdb" },
+  "bin": {
+    "harperdb": "./bin/harperdb"
+  },
   "scripts": {
     "test": "./bin/functionalTest.js"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/n/A.git"
   },
   "keywords": [
     "database",
@@ -22,9 +20,9 @@
     "documentstore"
   ],
   "author": "team@harperdb.io",
-  "license": "ISC",
+  "license": "All Rights Reserved",
   "bugs": {
-    "url": "https://github.com/n/A/issues"
+    "url": "http://help.harperdb.io"
   },
-  "homepage": "https://github.com/n/A#readme"
+  "homepage": "http://harperdb.io"
 }
