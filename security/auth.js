@@ -33,7 +33,7 @@ function findAndValidateUser(username, password, done){
         if (!password_function.validate(user.password, password)) {
             return done('Cannot complete request:  Invalid password', false);
         }
-
+        delete user.password;
         return done(null, user);
 
 
