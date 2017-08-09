@@ -89,7 +89,79 @@ module.exports = {
             callback(e);
         }
     },
-    describeTable: descTable
+    describeTable: descTable,
+    describeSchema(describe_schema_object, callback) {
+    try {
+        let validation_msg = validator.schema_object(describe_schema_object);
+        if (validation_msg) {
+            callback(validation_msg);
+            return;
+        }
+
+        let table_search_obj = {};
+        table_search_obj.schema = 'system';
+        table_search_obj.table = 'hdb_table';
+        table_search_obj.hash_attribute = 'id';
+        table_search_obj.search_attribute = 'schema';
+        table_search_obj.search_value = describe_schema_object.schema;
+        table_search_obj.hash_values = [];
+        table_search_obj.get_attributes = ['hash_attribute', 'id', 'name', 'schema'];
+        let table_result = {};
+        search.searchByValue(table_search_obj, function (err, tables) {
+            if (err) {
+                winston.error(err);
+                callback(err);
+                return;
+            }
+            if (tables && tables.length < 1) {
+
+                let schema_search_obj = {};
+                schema_search_obj.schema = 'system';
+                schema_search_obj.table = 'hdb_schema';
+                schema_search_obj.hash_attribute = 'name';
+                schema_search_obj.hash_values = [describe_schema_object.schema];
+                schema_search_obj.get_attributes = ['name'];
+
+                search.searchByHash(schema_search_obj, function (err, schema) {
+                    if (err) {
+                        winston.error(err);
+                        callback(err);
+                        return;
+                    }
+                    if(schema && schema.length < 1){
+                        return callback('schema not found');
+
+                    }else{
+                        return callback(null, {});
+
+                    }
+                });
+
+
+
+            }else{
+                let results = [];
+                async.map(tables, function (table, caller) {
+                    descTable({"schema": describe_schema_object.schema, "table":table.name}, function(err, data){
+                       if(err){
+                            caller(err);
+                       }
+
+                        results.push(data);
+                       caller();
+                    });
+
+                },function(err, data){
+                    return callback(null, results);
+
+                });
+
+            }
+        });
+    } catch (e) {
+        callback(e);
+    }
+}
 };
 
 function descTable(describe_table_object, callback) {
