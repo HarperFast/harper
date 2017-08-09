@@ -80,7 +80,7 @@ cd HDB_HOME/bin
 ./harperdb run
 
 ```
-* You may need to update your firewall if you are not running locally, by default HarperDB runs on port 5299.  If you are unsure see your properties file at HDB_ROOT/config/settings.js.
+* You may need to update your firewall if you are not running locally, by default HarperDB runs on port 9925.  If you are unsure see your properties file at HDB_ROOT/config/settings.js.
 
 ## Stopping HarperDB
 

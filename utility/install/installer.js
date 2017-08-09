@@ -178,18 +178,11 @@ function wizard(callback) {
                 default: process.env['HOME'] + '/hdb',
                 required: false
             },
-            TCP_PORT: {
-                pattern: /^([0-9]{1,4}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$/,
-                description: colors.magenta(`[TCP_PORT] Please enter a TCP listening port for HarperDB `),
-                message: 'Invalid port.',
-                default: 9925,
-                required: false
-            },
             HTTP_PORT: {
                 pattern: /^([0-9]{1,4}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$/,
                 description: colors.magenta(`[HTTP_PORT] Please enter an HTTP listening port for HarperDB`),
                 message: 'Invalid port.',
-                default: 5299,
+                default: 9925,
                 required: false
             },
             HTTPS_PORT: {
@@ -303,7 +296,6 @@ function createSettingsFile(mount_status, callback) {
         const path = require('path');
         let hdb_props_value = `PROJECT_DIR = ${path.resolve(process.cwd(),'../')}
         HDB_ROOT= ${wizard_result.HDB_ROOT}
-        TCP_PORT = ${wizard_result.TCP_PORT}
         HTTP_PORT = ${wizard_result.HTTP_PORT}
         HTTPS_PORT = ${wizard_result.HTTPS_PORT}
         CERTIFICATE = ${wizard_result.HDB_ROOT}/keys/certificate.pem
