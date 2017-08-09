@@ -23,7 +23,7 @@ module.exports = {
     dropSchema: dropSchema,
     deleteSchemaStructure: deleteSchemaStructure,
     describeTable: schema_describe.describeTable,
-    describeSchema: describeSchema,
+    describeSchema: schema_describe.describeSchema,
     createTable: createTable,
     createTableStructure: createTableStructure,
     dropTable: dropTable,
@@ -72,64 +72,6 @@ function dropSchema(drop_schema_object, callback) {
     }
 }
 
-function describeSchema(describe_schema_object, callback) {
-    try {
-        let validation_msg = validation.schema_object(describe_schema_object);
-        if (validation_msg) {
-            callback(validation_msg);
-            return;
-        }
-
-        let table_search_obj = {};
-        table_search_obj.schema = 'system';
-        table_search_obj.table = 'hdb_table';
-        table_search_obj.hash_attribute = 'id';
-        table_search_obj.search_attribute = 'schema';
-        table_search_obj.search_value = describe_schema_object.schema;
-        table_search_obj.hash_values = [];
-        table_search_obj.get_attributes = ['hash_attribute', 'id', 'name', 'schema'];
-        let table_result = {};
-        search.searchByValue(table_search_obj, function (err, tables) {
-            if (err) {
-                winston.error(err);
-                callback(err);
-                return;
-            }
-            if (tables && tables.length < 1) {
-
-                let schema_search_obj = {};
-                schema_search_obj.schema = 'system';
-                schema_search_obj.table = 'hdb_schema';
-                schema_search_obj.hash_attribute = 'name';
-                schema_search_obj.hash_values = [describe_schema_object.schema];
-                schema_search_obj.get_attributes = ['name'];
-
-                search.searchByHash(schema_search_obj, function (err, schema) {
-                    if (err) {
-                        winston.error(err);
-                        callback(err);
-                        return;
-                    }
-                    if(schema && schema.length < 1){
-                        return callback('schema not found');
-
-                    }else{
-                        return callback(null, {});
-
-                    }
-                });
-
-
-
-            }else{
-                return callback(null, tables);
-
-            }
-        });
-    } catch (e) {
-        callback(e);
-    }
-}
 
 function createSchemaStructure(schema_create_object, callback) {
     try {
