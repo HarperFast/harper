@@ -1,4 +1,4 @@
-const fs = require('fs'),
+const fs = require('graceful-fs'),
       uuidV4 = require('uuid/v4');
       PropertiesReader = require('properties-reader'),
       hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);

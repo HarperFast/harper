@@ -12,7 +12,8 @@ const base_path = hdb_properties.get('HDB_ROOT') + "/schema/"
     _ = require('lodash'),
     joins = require('lodash-joins'),
     condition_patterns = require('../sqlTranslator/conditionPatterns'),
-    autocast = require('autocast');
+    autocast = require('autocast'),
+    group = require('group-array');
 
 const slash_regex =  /\//g;
 
@@ -248,6 +249,8 @@ function search(search_wrapper, callback){
                         results.push(_.pick(record, get_attributes));
                     });
 
+                    results = groupData(results, search_wrapper);
+
                     results = sortData(results, search_wrapper);
 
                     caller(null, results);
@@ -432,7 +435,7 @@ function sortData(data, search_wrapper){
         let columns = [];
         let orders = [];
         search_wrapper.order.forEach((order_by) => {
-            let order_attribute = findAttribute(search_wrapper.all_get_attributes, order_by.attribute);
+            let order_attribute = findAttribute(search_wrapper.all_get_attributes, order_by.table + '.' + order_by.attribute);
             if(order_attribute) {
                 let order_column = order_attribute.alias;
                 columns.push(order_column);
@@ -450,6 +453,57 @@ function sortData(data, search_wrapper){
     return data;
 }
 
+function groupData(data, search_wrapper){
+    if(search_wrapper.group && search_wrapper.group.length > 0) {
+
+        let columns = [];
+        //let orders = [];
+        search_wrapper.group.forEach((group_by) => {
+            let group_attribute = findAttribute(search_wrapper.all_get_attributes, group_by.attribute);
+            if(group_attribute) {
+                let order_column = group_attribute.alias;
+                columns.push(order_column);
+            }
+        });
+
+        if(columns) {
+            //create grouping
+            let groups = group(data, columns);
+
+            //get the nested array results inside each group
+            let results = walkGroupTree(groups);
+
+            //get distinct values
+            results = _.uniqBy(results, (item)=>{
+                let item_array = [];
+                columns.forEach((column)=>{
+                    item_array.push(item[column]);
+                });
+                return item_array.join();
+            } );
+
+            return results;
+        }
+
+        return data;
+    }
+
+    return data;
+}
+
+function walkGroupTree(the_object){
+    var result = [];
+
+    if(the_object instanceof Array){
+        return the_object;
+    }
+
+    for(let prop in the_object){
+        result =  result.concat(walkGroupTree(the_object[prop]));
+    }
+
+    return result;
+}
 function addSupplementalFields(search_wrapper){
     if(search_wrapper.joins && search_wrapper.joins.length > 0) {
         search_wrapper.tables.forEach((table) => {
@@ -478,8 +532,20 @@ function addSupplementalFields(search_wrapper){
                         table_alias: table.alias
                     });
                 }
+
+                search_wrapper.group.forEach((group_by)=>{
+                    if(table.table === group_by.table || table.alias === group_by.table){
+                        table.supplemental_fields.push({
+                            attribute: group_by.attribute,
+                            alias: group_by.attribute,
+                            table: table.table,
+                            table_alias: table.alias
+                        });
+                    }
+                });
             });
         });
+
     }
 
     return search_wrapper;

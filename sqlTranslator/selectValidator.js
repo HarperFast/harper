@@ -15,9 +15,6 @@ function validator(statement, callback){
         if(!statement){
             return callback('invalid sql statement');
         }
-        if (statement.group) {
-            throw 'GROUP BY clauses are not supported at this time';
-        }
 
         if (statement.having) {
             throw 'HAVING clauses are not supported at this time';

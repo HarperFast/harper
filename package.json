@@ -27,6 +27,7 @@
     "getos": "^3.0.1",
     "globby": "^6.1.0",
     "graceful-fs": "^4.1.11",
+    "group-array": "^0.3.3",
     "is-root": "^1.0.0",
     "jinq": "^1.6.1",
     "json-2-csv": "^2.1.1",
