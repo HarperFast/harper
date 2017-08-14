@@ -2,7 +2,8 @@ const search = require('../data_layer/search').search,
     global_schema = require('../utility/globalSchema'),
     async = require('async'),
     condition_parser = require('./conditionParser'),
-    select_validator = require('./selectValidator').validator;
+    select_validator = require('./selectValidator').validator,
+    _=require('lodash');
 
 
 module.exports = {
@@ -68,14 +69,16 @@ function generateBasicSearchObject(statement, callback){
         });
 
         search_object.conditions = condition_parser.parseConditions(statement.where, table_info);
-
-        callback(null, {tables: [search_object]});
+        let order = parseOrderby([search_object], statement.order);
+        let group = parseGroupby([search_object], statement.group);
+        callback(null, {tables: [search_object], order: order, group:group});
     });
 }
 
 function generateAdvancedSearchObject(statement, callback){
     try {
         let search_wrapper = {tables: [], joins: []};
+
         let times = statement.from.map ? statement.from.map.length + 1 : 1;
         async.times(times, (x, callback)=>{
             generateObject(statement, x, (error, search)=>{
@@ -96,7 +99,8 @@ function generateAdvancedSearchObject(statement, callback){
                 callback(err);
                 return;
             }
-            search_wrapper.order = parseOrderby(statement.order);
+            search_wrapper.order = parseOrderby(search_wrapper.tables, statement.order);
+            search_wrapper.group = parseGroupby(search_wrapper.tables, statement.group);
             callback(null, search_wrapper);
         });
     } catch(e) {
@@ -104,18 +108,48 @@ function generateAdvancedSearchObject(statement, callback){
     }
 }
 
-function parseOrderby(order_by_clause){
+function parseOrderby(tables, order_by_clause){
     let order = [];
     if(order_by_clause) {
         order_by_clause.forEach((order_by) => {
-            order.push({
-                attribute: order_by.expression ? order_by.expression.name : order_by.name,
-                direction: order_by.direction ? order_by.direction : 'asc'
-            });
+            let order_object = createGroupOrderObject(tables, order_by);
+            order_object.direction = order_by.direction ? order_by.direction : 'asc';
+
+            order.push(order_object);
         });
     }
     
-    return order;
+    return _.uniq(order);
+}
+
+function parseGroupby(tables, group_by_clause){
+    let group = [];
+    if(group_by_clause) {
+        group_by_clause.expression.forEach((group_by) => {
+            group.push(createGroupOrderObject(tables, group_by));
+        });
+    }
+
+    return _.uniq(group);
+}
+
+function createGroupOrderObject(tables, clause){
+    let table_name = null;
+
+    let group_by_split = (clause.expression ? clause.expression.name : clause.name).split('.');
+
+    if(tables.length === 1){
+        table_name = tables[0].table;
+    } else if(group_by_split.length > 1){
+        table_name = _.filter(tables, (table)=>{
+            return table.table === group_by_split[0] || table.alias === group_by_split[0];
+        })[0];
+    }
+
+    return {
+        table:table_name,
+        attribute: group_by_split.length === 1 ? group_by_split[0] : group_by_split[1]
+    };
 }
 
 function generateObject(statement, from_level, callback){
