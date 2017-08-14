@@ -28,7 +28,7 @@ hdb_license.generateFingerPrint(function(err, fingerprint){
 
 
 var licenseKeyObject = {};
-licenseKeyObject.fingerprint = 'NLOEUNNyNadd1a3c84d4d07c4a27e7b883aad5105';
+licenseKeyObject.fingerprint = 'uA4CiX6Fnb34a89c081efcf095085a8c9d9147448';
 licenseKeyObject.exp_date = '2018-07-30';
 licenseKeyObject.company = 'hdb';
 hdb_license.generateLicense(licenseKeyObject, function(err, license){

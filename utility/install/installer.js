@@ -63,7 +63,7 @@ function run_install(callback) {
                createSettingsFile,
                createAdminUser,
                generateKeys,
-               checkRegister
+               //checkRegister
 
            ], function (err, result) {
                callback(err, result);
@@ -201,12 +201,7 @@ function wizard(callback) {
                 description: colors.magenta('[HDB_ADMIN_PASSWORD] Please enter a password for the HDB_ADMIN'),
                 hidden: true,
                 required: true
-            },
-            HDB_REGISTER: {
-                description: colors.magenta('[REGISTER] Would you like to register now?'),       
-                default: 'true',
-                required: true
-            },
+            }
 
 
         }
