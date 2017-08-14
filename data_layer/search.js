@@ -12,8 +12,7 @@ const base_path = hdb_properties.get('HDB_ROOT') + "/schema/"
     _ = require('lodash'),
     joins = require('lodash-joins'),
     condition_patterns = require('../sqlTranslator/conditionPatterns'),
-    autocast = require('autocast'),
-    group = require('group-array');
+    autocast = require('autocast');
 
 const slash_regex =  /\//g;
 
@@ -491,6 +490,17 @@ function groupData(data, search_wrapper){
     return data;
 }
 
+function group(collection, keys) {
+    if (!keys.length) {
+        return collection;
+    }
+    else {
+        return _(collection).groupBy(keys[0]).mapValues(function(values) {
+            return group(values, keys.slice(1));
+        }).value();
+    }
+}
+
 function walkGroupTree(the_object){
     var result = [];
 
@@ -498,9 +508,9 @@ function walkGroupTree(the_object){
         return the_object;
     }
 
-    for(let prop in the_object){
+    Object.keys(the_object).sort().forEach((prop)=>{
         result =  result.concat(walkGroupTree(the_object[prop]));
-    }
+    });
 
     return result;
 }
