@@ -10,10 +10,12 @@ const fs = require('fs'),
     async = require('async'),
     pjson = require('../package.json');
 
+var winston = null;
+
+
 var hdb_boot_properties = null,
     hdb_properties = null;
 var fork = require('child_process').fork;
-
 
 
 
@@ -74,7 +76,7 @@ function run() {
                     }
 
                 } else {
-                    const winston = require("../utility/logging/winston_logger");
+                    winston = require("../utility/logging/winston_logger");
                     hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
                     completeRun();
                     winston.info(`HarperDB ${pjson.version} run complete`);
@@ -94,7 +96,8 @@ function run() {
 
 function completeRun() {
     async.waterfall([
-       kickOffExpress
+        kickOffExpress,
+        //increaseMemory
     ], (error, data) => {
         exitInstall();
     });
@@ -102,10 +105,22 @@ function completeRun() {
 
 function kickOffExpress(callback){
 
-    var child = fork(path.join(__dirname,'../server/hdb_express.js'),{
-      detached: true,
-      stdio: 'ignore'
-    });
+
+    if (hdb_properties && hdb_properties.get('MAX_MEMORY')) {
+
+
+        var child = fork(path.join(__dirname,'../server/hdb_express.js'),[`--max-old-space-size=${hdb_properties.get('MAX_MEMORY')}`, `${hdb_properties.get('PROJECT_DIR')}/server/hdb_express.js`],{
+            detached: true,
+            stdio: 'ignore'
+        });
+
+    }else{
+        var child = fork(path.join(__dirname,'../server/hdb_express.js'),{
+            detached: true,
+            stdio: 'ignore'
+        });
+    }
+
 
     child.unref();
     console.log(colors.magenta('' + fs.readFileSync(path.join(__dirname,'../utility/install/ascii_logo.txt'))));
@@ -113,6 +128,31 @@ function kickOffExpress(callback){
     callback();
 }
 
+
+function increaseMemory(callback){
+    try {
+        if (hdb_properties && hdb_properties.get('MAX_MEMORY')) {
+            const {spawn} = require('child_process');
+            const node = spawn('node', [`--max-old-space-size=${hdb_properties.get('MAX_MEMORY')}`, `${hdb_properties.get('PROJECT_DIR')}/server/hdb_express.js`]);
+
+            node.stdout.on('data', (data) => {
+                winston.info(`stdout: ${data}`);
+            });
+
+            node.stderr.on('data', (data) => {
+                winston.error(`stderr: ${data}`);
+            });
+
+            node.on('close', (code) => {
+                winston.log(`child process exited with code ${code}`);
+            });
+        } else {
+            callback();
+        }
+    }catch(e){
+        winston.error(e);
+    }
+}
 
 function exitInstall(){
     process.exit(0);
