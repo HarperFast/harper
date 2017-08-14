@@ -16,7 +16,6 @@ var fork = require('child_process').fork;
 
 
 
-
 // TODO need to check if hdb is already running and stop it first before running again.
 
 
@@ -94,7 +93,8 @@ function run() {
 
 function completeRun() {
     async.waterfall([
-       kickOffExpress
+        kickOffExpress,
+        increaseMemory
     ], (error, data) => {
         exitInstall();
     });
@@ -113,6 +113,31 @@ function kickOffExpress(callback){
     callback();
 }
 
+
+function increaseMemory(callback){
+    try {
+        if (hdb_properties && hdb_properties.get('MAX_MEMORY')) {
+            const {spawn} = require('child_process');
+            const node = spawn('node  ', [`--max-old-space-size=${hdb_properties.get('MAX_MEMORY')}`, 'hdb_express.js']);
+
+            node.stdout.on('data', (data) => {
+                winston.info(`stdout: ${data}`);
+            });
+
+            node.stderr.on('data', (data) => {
+                winston.error(`stderr: ${data}`);
+            });
+
+            node.on('close', (code) => {
+                winston.log(`child process exited with code ${code}`);
+            });
+        } else {
+            callback();
+        }
+    }catch(e){
+        winston.error(e);
+    }
+}
 
 function exitInstall(){
     process.exit(0);
