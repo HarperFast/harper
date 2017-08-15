@@ -15,8 +15,8 @@ After downloading the compressed file, unpack to your desired location.
 This location is referred to as HDB_HOME further in the documentation.
 
 HarperDB can be installed in one of two ways
-* hdb_install
-* hdb_run
+* ./harperdb install
+* ./harperdb run
 
 The process is the same; however, HDB_HOME/bin/hdb_run will also start HarperDB.
 
