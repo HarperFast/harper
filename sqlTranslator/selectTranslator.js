@@ -3,7 +3,8 @@ const search = require('../data_layer/search').search,
     async = require('async'),
     condition_parser = require('./conditionParser'),
     select_validator = require('./selectValidator').validator,
-    _=require('lodash');
+    _=require('lodash'),
+    AttributeParser = require('./AttributeParser');
 
 
 module.exports = {
@@ -54,24 +55,24 @@ function generateBasicSearchObject(statement, callback){
 
 
         let search_object = {
-            schema: schema_table[0],
-            table: schema_table[1]
+            selects:[],
+            tables:[{
+                schema: schema_table[0],
+                table: schema_table[1],
+                joins:[]
+            }],
+            conditions:[],
+            group:[],
+            order:[],
         };
 
-        search_object.get_attributes = statement.result.map((column) => {
-            let column_info = column.name.split('.');
-            let column_name = column_info.length === 1 ? column_info[0] : column_info[1];
-
-            return {
-                attribute: column_name,
-                alias: column.alias ? column.alias : column_name
-            };
-        });
+        let attribute_parser = new AttributeParser(statement.result, search_object);
+        search_object = attribute_parser.parseGetAttributes();
 
         search_object.conditions = condition_parser.parseConditions(statement.where, table_info);
-        let order = parseOrderby([search_object], statement.order);
-        let group = parseGroupby([search_object], statement.group);
-        callback(null, {tables: [search_object], order: order, group:group});
+        search_object.order = parseOrderby([search_object], statement.order);
+        search_object.group = parseGroupby([search_object], statement.group);
+        callback(null, search_object);
     });
 }
 
@@ -81,7 +82,13 @@ function generateAdvancedSearchObject(statement, callback){
 
         let times = statement.from.map ? statement.from.map.length + 1 : 1;
         async.times(times, (x, callback)=>{
-            generateObject(statement, x, (error, search)=>{
+
+            let table = parseFromClause(statement.from, x);
+            search_wrapper.tables.push(table.table);
+            if(table.join){
+                search_wrapper.joins.push(table.join);
+            }
+            /*generateObject(statement, x, (error, search)=>{
                 if(error){
                     callback(error);
                     return;
@@ -93,7 +100,7 @@ function generateAdvancedSearchObject(statement, callback){
                 }
 
                 callback();
-            });
+            });*/
         }, (err)=>{
             if(err){
                 callback(err);
@@ -152,7 +159,32 @@ function createGroupOrderObject(tables, clause){
     };
 }
 
-function generateObject(statement, from_level, callback){
+function parseFromClause(from, from_level){
+    let from_info = {};
+    let join = {};
+    if(from_level === 0){
+        from_info = parseFromSource(from.source ? from.source : from);
+    } else {
+        let from_clause = from.map[from_level - 1];
+        from_info = parseFromSource(from_clause.source);
+        join = condition_parser.parseWhereClause(from_clause.constraint.on);
+        join.type = from_clause.variant;
+    }
+    let table = {
+        schema:from_info.schema,
+        table:from_info.table,
+        alias:from_info.alias,
+        supplemental_fields: [],
+        get_attributes: []
+    };
+
+    return {
+        table: table,
+        join: join
+    };
+}
+
+/*function generateObject(statement, from_level, callback){
     let from_info = {};
     let join = {};
     if(from_level === 0){
@@ -196,7 +228,7 @@ function generateObject(statement, from_level, callback){
             join: join
         });
     });
-}
+}*/
 
 function parseFromSource(source){
     let schema_table = source.name.split('.');

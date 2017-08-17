@@ -410,8 +410,37 @@ function getAsteriskFieldsForTables(search_wrapper, callback){
     });
 }
 
+function findTable(table_name, tables){
+    if(tables.length === 1){
+        return tables[0];
+    }
+
+    return tables.filter((table)=>{
+        return table.table === table_name || table.alias === table_name;
+    })[0];
+}
+
 function setAdditionalAttributeData(search_wrapper){
-    search_wrapper.all_get_attributes = [];
+    //create a map of tables and their attribuytes to select
+    let columns = search_wrapper.selects.filter((column)=>{
+        return column.attribute;
+    });
+    let attribute_map = group(columns, 'table');
+
+    //get a list of calculations
+    let calculations = search_wrapper.selects.filter((column)=>{
+        return column.calculation;
+    });
+
+    search_wrapper.tables.forEach((table)=>{
+        table.get_attributes = attribute_map[table.table];
+
+        calculations.forEach((calc)=>{
+
+        });
+    });
+
+    /*search_wrapper.all_get_attributes = [];
 
     search_wrapper.tables.forEach((table)=>{
         if(table.supplemental_fields) {
@@ -423,9 +452,13 @@ function setAdditionalAttributeData(search_wrapper){
 
             search_wrapper.all_get_attributes.push(attribute);
         });
-    });
+    });*/
 
     return search_wrapper;
+}
+
+function getCalculationAttributes(calculation){
+    calculation
 }
 
 function sortData(data, search_wrapper){
@@ -515,48 +548,43 @@ function walkGroupTree(the_object){
     return result;
 }
 function addSupplementalFields(search_wrapper){
-    if(search_wrapper.joins && search_wrapper.joins.length > 0) {
-        search_wrapper.tables.forEach((table) => {
-            table.supplemental_fields = [];
-        });
+    search_wrapper.tables.forEach((table)=>{
+        table.supplemental_fields = [];
 
-        search_wrapper.joins.forEach((join) => {
+        table.joins.forEach((join)=>{
             let comparators = Object.values(join)[0];
 
             let left_side = comparators[0].split('.');
             let right_side = comparators[1].split('.');
 
-            search_wrapper.tables.forEach((table) => {
-                if ((table.table === left_side[0] || table.alias === left_side[0])) {
+            if ((table.table === left_side[0] || table.alias === left_side[0])) {
+                table.supplemental_fields.push({
+                    attribute: left_side[1],
+                    alias: left_side[1],
+                    table: table.table,
+                    table_alias: table.alias
+                });
+            } else if ((table.table === right_side[0] || table.alias === right_side[0])) {
+                table.supplemental_fields.push({
+                    attribute: right_side[1],
+                    alias: right_side[1],
+                    table: table.table,
+                    table_alias: table.alias
+                });
+            }
+
+            search_wrapper.group.forEach((group_by)=>{
+                if(table.table === group_by.table || table.alias === group_by.table){
                     table.supplemental_fields.push({
-                        attribute: left_side[1],
-                        alias: left_side[1],
-                        table: table.table,
-                        table_alias: table.alias
-                    });
-                } else if ((table.table === right_side[0] || table.alias === right_side[0])) {
-                    table.supplemental_fields.push({
-                        attribute: right_side[1],
-                        alias: right_side[1],
+                        attribute: group_by.attribute,
+                        alias: group_by.attribute,
                         table: table.table,
                         table_alias: table.alias
                     });
                 }
-
-                search_wrapper.group.forEach((group_by)=>{
-                    if(table.table === group_by.table || table.alias === group_by.table){
-                        table.supplemental_fields.push({
-                            attribute: group_by.attribute,
-                            alias: group_by.attribute,
-                            table: table.table,
-                            table_alias: table.alias
-                        });
-                    }
-                });
             });
         });
-
-    }
+    });
 
     return search_wrapper;
 }
