@@ -4,12 +4,12 @@ const validate = require('validate.js'),
 const constraints = {
     schema : {
         presence : {
-            message : " is required"
+            message : "is required"
         },
         format: {
 
             pattern: "^[a-zA-Z0-9_]*$",
-            message: "schema must be alpha numeric"
+            message: "must be alpha numeric"
         },
         length: {
             maximum:250,
@@ -18,12 +18,12 @@ const constraints = {
     },
     table: {
         presence : {
-            message : " is required"
+            message : "is required"
         },
         format: {
 
             pattern: "^[a-zA-Z0-9_]*$",
-            message: "table must be alpha numeric"
+            message: "must be alpha numeric"
         },
         length: {
             maximum:250,
