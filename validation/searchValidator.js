@@ -3,7 +3,7 @@ const validate = require('validate.js');
 
 let search_by_hash_constraints = {
     schema: {
-        presence: true
+        presence: true,
         format: {
             pattern: "^[a-zA-Z0-9_]*$",
             message: "schema must be alpha numeric"
@@ -15,7 +15,7 @@ let search_by_hash_constraints = {
 
     },
     table: {
-        presence: true
+        presence: true,
         format: {
             pattern: "^[a-zA-Z0-9_]*$",
             message: "schema must be alpha numeric"
