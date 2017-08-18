@@ -53,6 +53,15 @@ if (cluster.isMaster && !DEBUG) {
 
     app.use(bodyParser.json()); // support json encoded bodies
     app.use(bodyParser.urlencoded({extended: true}));
+
+    app.use(function (error, req, res, next) {
+        if (error instanceof SyntaxError) {
+            res.status(400).send({error: 'invalid JSON: ' + error.message.replace('\n', '')});
+        } else {
+            next();
+        }
+    });
+
     app.use(session({ secret: 'keyboard cat',     resave: true,
         saveUninitialized: true }));
     app.use(passport.initialize());
