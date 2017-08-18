@@ -11,19 +11,26 @@ const system_schema = {
             [ { attribute: 'id' },
                 { attribute: 'name' },
                 { attribute: 'hash_attribute' },
-                { attribute: 'schema' }
-            ]
+                { attribute: 'schema' },
+                { attribute: 'residence'}
+            ],
+        residence:['*']
+
 
     },
     hdb_drop_schema:{
         hash_attribute:'id',
         name:'hdb_drop_schema',
-        schema:'system'
+        schema:'system',
+        residence:['*']
+
     },
     hdb_attribute:{
         hash_attribute:'id',
         name:'hdb_attribute',
-        schema:'system'
+        schema:'system',
+        residence:['*']
+
     },
     hdb_schema:{
         hash_attribute:'name',
@@ -33,23 +40,35 @@ const system_schema = {
             [
                 { attribute: 'name' },
                 { attribute: 'createddate' }
-            ]
+            ],
+        residence:['*']
+
     },
     hdb_user:{
         hash_attribute:'username',
         name:'hdb_user',
-        schema:'system'
+        schema:'system',
+        residence:['*']
     },
     hdb_role:{
         hash_attribute:'id',
         name:'hdb_user',
-        schema:'system'
+        schema:'system',
+        residence:['*']
+
     },
     hdb_license:{
         hash_attribute:'license_key',
         name:'hdb_license',
         schema:'system'
+    },
+    hdb_nodes:{
+        hash_attribute: 'name',
+        residence:['*']
+
+
     }
+
 };
 
 module.exports = {

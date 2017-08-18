@@ -256,8 +256,13 @@ function createTableStructure(create_table_object, callback) {
             name: create_table_object.table,
             schema: create_table_object.schema,
             id: uuidV4(),
-            hash_attribute: create_table_object.hash_attribute
+            hash_attribute: create_table_object.hash_attribute,
+
         };
+
+        if(create_table_object.residence){
+            table.residence = create_table_object.residence;
+        }
 
         let insertObject = {
             operation: 'insert',

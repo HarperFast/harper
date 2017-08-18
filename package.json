@@ -47,6 +47,7 @@
     "properties-reader": "0.0.15",
     "randomstring": "^1.1.5",
     "request": "^2.81.0",
+    "socket.io": "^2.0.3",
     "sqlite-parser": "^1.0.1",
     "sudo-prompt": "^7.0.0",
     "uuid": "^3.0.1",

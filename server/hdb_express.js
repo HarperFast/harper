@@ -1,5 +1,5 @@
 const cluster = require('cluster');
-const numCPUs = 4;
+const numCPUs = 1;
 const DEBUG = false;
 const winston = require('../utility/logging/winston_logger');
 
@@ -32,20 +32,14 @@ if (cluster.isMaster && !DEBUG) {
         hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`),
         app = express(),
         bodyParser = require('body-parser'),
-        write = require('../data_layer/insert'),
-        search = require('../data_layer/search'),
-        sql = require('../sqlTranslator/index').evaluateSQL,
-        csv = require('../data_layer/csvBulkLoad'),
-        schema = require('../data_layer/schema'),
-        delete_ = require('../data_layer/delete'),
+
         auth = require('../security/auth'),
         session = require('express-session'),
         passport = require('passport'),
-        user = require('../security/user'),
-        role = require('../security/role'),
-        read_log = require('../utility/logging/read_logs'),
         global_schema = require('../utility/globalSchema'),
-        pjson = require('../package.json');
+        pjson = require('../package.json'),
+        server_utilities = require('./server_utilities'),
+        cluster_server = require('./cluster_server')
 
 
     hdb_properties.append(hdb_properties.get('settings_path'));
@@ -65,131 +59,62 @@ if (cluster.isMaster && !DEBUG) {
                 return;
             }
             req.body.hdb_user = user;
-            chooseOperation(req.body, (err, operation_function) => {
+
+
+            server_utilities.chooseOperation(req.body, (err, operation_function, delegate_operation) => {
                 if (err) {
                     winston.error(err);
                     res.status(500).send(err);
                     return;
                 }
+                if(hdb_properties.get("CLUSTERING") && delegate_operation && hdb_properties.get("CLUSTERING_PORT") && hdb_properties.get("NODE_NAME")) {
+                    global_schema.getTableSchema(req.body.schema, req.body.table, function(err, table){
+                        if(err){
+                            winston.error(err);
+                            return res.status(500).send(err);
 
-                try {
-                    if(req.body.operation != 'read_log')
-                        winston.info(JSON.stringify(req.body));
-
-                    operation_function(req.body, (error, data) => {
-                        if (error) {
-                            winston.info(error);
-                            if(typeof error != 'object')
-                                error = {"error": error};
-                            res.status(200).json(error);
-                            return;
                         }
-                        if(typeof data != 'object')
-                            data = {"message": data};
 
-                        return res.status(200).json(data);
+                        if(table.residence
+                                && (table.residence.indexOf(hdb_properties.get('NODE_NAME')) > -1
+                                || table.residence.indexOf('*') > -1)){
+
+                            server_utilities.processLocalTransaction(req,res, operation_function, function(err){
+                              if(!err && table.residence.length > 1){
+
+                              }
+
+                           });
+                        }else if(table.residence){
+                            cluster_server.proccess(req, table.residence);
+                        }else{
+                            server_utilities.processLocalTransaction(req, res, operation_function, function(){
+
+                            });
+                        }
+
+
                     });
-                } catch (e) {
-                    winston.error(e);
-                    return res.status(500).json(e);
+
+
+                }else{
+                    server_utilities.processLocalTransaction(req, res, operation_function, function(){
+
+                    });
                 }
+
+
+
+
+
+
             });
         });
 
     });
 
 
-    function chooseOperation(json, callback) {
-        let operation_function = nullOperation;
-        switch (json.operation) {
-            case 'insert':
-                operation_function = write.insert;
-                break;
-            case 'update':
-                operation_function = write.update;
-                break;
-            case 'search_by_hash':
-                operation_function = search.searchByHash;
-                break;
-            case 'search_by_value':
-                operation_function = search.searchByValue;
-                break;
-            case 'search':
-                operation_function = search.search;
-                break;
-            case 'sql':
-                operation_function = sql;
-                break;
-            case 'csv_data_load':
-                operation_function = csv.csvDataLoad;
-                break;
-            case 'csv_file_load':
-                operation_function = csv.csvFileLoad;
-                break;
-            case 'csv_url_load':
-                operation_function = csv.csvURLLoad;
-                break;
-            case 'create_schema':
-                operation_function = schema.createSchema;
-                break;
-            case 'create_table':
-                operation_function = schema.createTable;
-                break;
-            case 'drop_schema':
-                operation_function = schema.dropSchema;
-                break;
-            case 'drop_table':
-                operation_function = schema.dropTable;
-                break;
-            case 'describe_schema':
-                operation_function = schema.describeSchema;
-                break;
-            case 'describe_table':
-                operation_function = schema.describeTable;
-                break;
-            case 'describe_all':
-                operation_function = schema.describeAll;
-                break;
-            case 'delete':
-                operation_function = delete_.delete;
-                break;
-            case 'add_user':
-                operation_function = user.addUser;
-                break;
-            case 'alter_user':
-                operation_function = user.alterUser;
-                break;
-            case 'drop_user':
-                operation_function = user.dropUser;
-                break;
-            case 'list_users':
-                operation_function = user.listUsers;
-                break;
-            case 'add_role':
-                operation_function = role.addRole;
-                break;
-            case 'alter_role':
-                operation_function = role.alterRole;
-                break;
-            case 'drop_role':
-                operation_function = role.dropRole;
-                break;
-            case 'user_info':
-                operation_function = user.userInfo
-                break;
-            case 'read_log':
-                operation_function = read_log.read_log;
-                break;
-            default:
-                break;
-        }
 
-        callback(null, operation_function);
-    }
-
-    function nullOperation(json, callback) {
-        callback('Invalid operation');
-    }
 
     process.on('message', (msg)=>{
         global_schema.schemaSignal((err)=>{

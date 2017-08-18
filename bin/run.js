@@ -10,6 +10,7 @@ const fs = require('fs'),
     async = require('async'),
     pjson = require('../package.json');
 
+
 var winston = null;
 
 
@@ -97,7 +98,7 @@ function run() {
 function completeRun() {
     async.waterfall([
         kickOffExpress,
-        //increaseMemory
+        kickOffClustering
     ], (error, data) => {
         exitInstall();
     });
@@ -128,31 +129,12 @@ function kickOffExpress(callback){
     callback();
 }
 
-
-function increaseMemory(callback){
-    try {
-        if (hdb_properties && hdb_properties.get('MAX_MEMORY')) {
-            const {spawn} = require('child_process');
-            const node = spawn('node', [`--max-old-space-size=${hdb_properties.get('MAX_MEMORY')}`, `${hdb_properties.get('PROJECT_DIR')}/server/hdb_express.js`]);
-
-            node.stdout.on('data', (data) => {
-                winston.info(`stdout: ${data}`);
-            });
-
-            node.stderr.on('data', (data) => {
-                winston.error(`stderr: ${data}`);
-            });
-
-            node.on('close', (code) => {
-                winston.log(`child process exited with code ${code}`);
-            });
-        } else {
-            callback();
-        }
-    }catch(e){
-        winston.error(e);
-    }
+function kickOffClustering(callback){
+    const cluster_server = require('../server/cluster_server');
+    cluster_server.initialze();
+    callback();
 }
+
 
 function exitInstall(){
     process.exit(0);
