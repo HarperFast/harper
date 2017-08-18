@@ -23,7 +23,7 @@ function haperDBService(){
        }
 
        for(f in files){
-           if(files[f] == 'harperdb.js'){
+           if(files[f] === 'harperdb.js' || files[f] === 'harperdb_macOS' || files[f] === 'harperdb'){
                inBin = true;
            }
        }
