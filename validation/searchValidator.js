@@ -3,13 +3,27 @@ const validate = require('validate.js');
 
 let search_by_hash_constraints = {
     schema: {
-        presence: true
-
+        presence: true,
+        format: {
+            pattern: "^[a-zA-Z0-9_]*$",
+            message: "schema must be alpha numeric"
+        },
+        length: {
+            maximum:250,
+            tooLong: 'cannot exceed 250 characters'
+        }
 
     },
     table: {
-        presence: true
-
+        presence: true,
+        format: {
+            pattern: "^[a-zA-Z0-9_]*$",
+            message: "schema must be alpha numeric"
+        },
+        length: {
+            maximum:250,
+            tooLong: 'cannot exceed 250 characters'
+        }
 
     },
     hash_attribute: {
@@ -29,13 +43,25 @@ let search_by_hash_constraints = {
 let search_by_hashes_constraints = {
     schema: {
         presence: true,
-        format: "[\\w\\-\\_]+"
-
+        format: {
+            pattern: "^[a-zA-Z0-9_]*$",
+            message: "schema must be alpha numeric"
+        },
+        length: {
+            maximum:250,
+            tooLong: 'cannot exceed 250 characters'
+        }
     },
     table: {
         presence: true,
-        format: "[\\w\\-\\_]+"
-
+        format: {
+            pattern: "^[a-zA-Z0-9_]*$",
+            message: "schema must be alpha numeric"
+        },
+        length: {
+            maximum:250,
+            tooLong: 'cannot exceed 250 characters'
+        }
     },
     hash_values: {
         presence: true
@@ -48,13 +74,25 @@ let search_by_hashes_constraints = {
 let search_by_value_constraints = {
     schema: {
         presence: true,
-        format: "[\\w\\-\\_]+"
-
+        format: {
+            pattern: "^[a-zA-Z0-9_]*$",
+            message: "schema must be alpha numeric"
+        },
+        length: {
+            maximum:250,
+            tooLong: 'cannot exceed 250 characters'
+        }
     },
     table: {
         presence: true,
-        format: "[\\w\\-\\_]+"
-
+        format: {
+            pattern: "^[a-zA-Z0-9_]*$",
+            message: "schema must be alpha numeric"
+        },
+        length: {
+            maximum:250,
+            tooLong: 'cannot exceed 250 characters'
+        }
     },hash_attribute: {
         presence: true,
         format: "[\\w\\-\\_]+"
@@ -76,13 +114,25 @@ let search_by_value_constraints = {
 let search_by_conditions = {
     schema: {
         presence: true,
-        format: "[\\w\\-\\_]+"
-
+        format: {
+            pattern: "^[a-zA-Z0-9_]*$",
+            message: "schema must be alpha numeric"
+        },
+        length: {
+            maximum:250,
+            tooLong: 'cannot exceed 250 characters'
+        }
     },
     table: {
         presence: true,
-        format: "[\\w\\-\\_]+"
-
+        format: {
+            pattern: "^[a-zA-Z0-9_]*$",
+            message: "schema must be alpha numeric"
+        },
+        length: {
+            maximum:250,
+            tooLong: 'cannot exceed 250 characters'
+        }
     },
     conditions: {
         presence: true
