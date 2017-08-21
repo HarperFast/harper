@@ -176,6 +176,9 @@ if (cluster.isMaster && !DEBUG) {
             case 'list_users':
                 operation_function = user.listUsers;
                 break;
+            case 'list_roles':
+                operation_function = role.listRoles;
+                break;
             case 'add_role':
                 operation_function = role.addRole;
                 break;
@@ -190,7 +193,7 @@ if (cluster.isMaster && !DEBUG) {
                 break;
             case 'read_log':
                 operation_function = read_log.read_log;
-                break;
+
             default:
                 break;
         }
