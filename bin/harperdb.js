@@ -23,7 +23,6 @@ function haperDBService(){
     fs.readdir(process.cwd(), (err, files) => {
        if(err){
            return winston.error(err);
-           return winston.error(err);
 
        }
 
