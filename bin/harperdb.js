@@ -22,7 +22,8 @@ function haperDBService(){
     inBin = false;
     fs.readdir(process.cwd(), (err, files) => {
        if(err){
-           return console.error(err);
+           return winston.error(err);
+           return winston.error(err);
 
        }
 

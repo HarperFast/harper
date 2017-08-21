@@ -8,7 +8,6 @@ const fs = require('fs'),
     basic_winston  = require('winston'),
     PropertiesReader = require('properties-reader'),
     async = require('async'),
-    exec = require('child_process'),
     pjson = require('../package.json');
 
 var winston = null;
@@ -95,27 +94,33 @@ function run() {
 function completeRun() {
     hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
     winston = require("../utility/logging/winston_logger");
+
     async.waterfall([
-        checkPermissions,
+        checkPermission,
         kickOffExpress,
         //increaseMemory
     ], (error, data) => {
-        console.error(error);
+        if(error)
+            console.error(error);
         exitInstall();
     });
 }
 
+function checkPermission(callback){
 
-
-function checkPermissions(callback){
-        if(require("os").userInfo().username != hdb_boot_properties.get('install_user')){
-            return callback(`Error: Must run as ${hdb_boot_properties.get('install_user')}`)
-
+    let checkPermissions = require('../utility/check_permissions');
+    checkPermissions.checkPermission(function(err){
+        if(err){
+            console.error(err);
+            return callback(err, null);
         }else{
-            return callback();
-
+            return callback(null, 'success');
         }
+
+    });
+
 }
+
 
 
 function kickOffExpress(err, callback){
@@ -138,7 +143,7 @@ function kickOffExpress(err, callback){
     child.unref();
     console.log(colors.magenta('' + fs.readFileSync(path.join(__dirname,'../utility/install/ascii_logo.txt'))));
     console.log(colors.magenta(`|------------- HarperDB ${pjson.version} successfully started ------------|`));
-    callback();
+    return callback();
 }
 
 

@@ -1,16 +1,14 @@
 const prompt = require('prompt'),
     spawn = require('child_process').spawn,
     path = require('path'),
-    password = require('./../password'),
     mount = require('./../mount_hdb'),
     fs = require('fs.extra'),
     colors = require("colors/safe"),
     winston = require('winston'),
-    isRoot = require('is-root'),
     async = require('async'),
     optimist = require('optimist'),
-    forge = require('node-forge'),
-    exec  = require('child_process');
+    forge = require('node-forge');
+
 
 
 PropertiesReader = require('properties-reader');
