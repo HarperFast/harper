@@ -7,12 +7,16 @@ const run = require('./run'),
 
 haperDBService();
 function haperDBService(){
+
+
     let service;
 
     let currentDir_tokens = process.cwd().split('/');
     if(currentDir_tokens[currentDir_tokens.length -1] != 'bin'){
         return console.error('You must run harperdb from HDB_HOME/bin');
     }
+
+
 
 
     inBin = false;
@@ -58,7 +62,6 @@ function haperDBService(){
                     version.version();
                     break;
                 default:
-
                     run.run();
                     break
             }

@@ -10,7 +10,10 @@ const prompt = require('prompt'),
     async = require('async'),
     optimist = require('optimist'),
     forge = require('node-forge'),
-    PropertiesReader = require('properties-reader');
+    exec  = require('child_process');
+
+
+PropertiesReader = require('properties-reader');
 var hdb_boot_properties = null,
     hdb_properties = null;
 //var settings = null;
@@ -459,23 +462,30 @@ function createBootPropertiesFile(settings_path, callback) {
         return;
     }
 
-    fs.writeFile(`${process.cwd()}/../hdb_boot_properties.file`, `settings_path = ${settings_path}`, function (err) {
 
-        if (err) {
-            winston.info('info', `Bootloader error ${err}`);
-            winston.info(err);
-            callback(err);
+        let boot_props_value = `settings_path = ${settings_path}
+        install_user = ${require("os").userInfo().username}`;
+
+        fs.writeFile(`${process.cwd()}/../hdb_boot_properties.file`,boot_props_value , function (err) {
+
+            if (err) {
+                winston.info('info', `Bootloader error ${err}`);
+                winston.info(err);
+                callback(err);
+                return;
+            }
+            winston.info('info', `props path ${process.cwd()}/../hdb_boot_properties.file`)
+            hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
+            winston.info('hdb_boot_properties' + hdb_boot_properties);
+
+
+            callback(null, 'success');
             return;
-        }
-        winston.info('info', `props path ${process.cwd()}/../hdb_boot_properties.file`)
-        hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
-        winston.info('hdb_boot_properties' + hdb_boot_properties);
 
 
-        callback(null, 'success');
-        return;
+        });
 
 
-    });
+
 
 }
