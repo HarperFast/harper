@@ -42,7 +42,6 @@ function run() {
                         return;
                     }
                     hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
-                    hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
                     completeRun();
                     return;
 
@@ -64,7 +63,8 @@ function run() {
                                 return;
                             }
                             hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
-                            hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
+
+
                             completeRun();
                             return;
 
@@ -76,10 +76,7 @@ function run() {
                     }
 
                 } else {
-                    winston = require("../utility/logging/winston_logger");
-                    hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
                     completeRun();
-                    winston.info(`HarperDB ${pjson.version} run complete`);
                     return;
                 }
             });
@@ -95,17 +92,38 @@ function run() {
 }
 
 function completeRun() {
+    hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
+    winston = require("../utility/logging/winston_logger");
+
     async.waterfall([
+        checkPermission,
         kickOffExpress,
         //increaseMemory
     ], (error, data) => {
+        if(error)
+            console.error(error);
         exitInstall();
     });
 }
 
-function kickOffExpress(callback){
+function checkPermission(callback){
+
+    let checkPermissions = require('../utility/check_permissions');
+    checkPermissions.checkPermission(function(err){
+        if(err){
+            console.error(err);
+            return callback(err, null);
+        }else{
+            return callback(null, 'success');
+        }
+
+    });
+
+}
 
 
+
+function kickOffExpress(err, callback){
     if (hdb_properties && hdb_properties.get('MAX_MEMORY')) {
 
 
@@ -125,7 +143,7 @@ function kickOffExpress(callback){
     child.unref();
     console.log(colors.magenta('' + fs.readFileSync(path.join(__dirname,'../utility/install/ascii_logo.txt'))));
     console.log(colors.magenta(`|------------- HarperDB ${pjson.version} successfully started ------------|`));
-    callback();
+    return callback();
 }
 
 

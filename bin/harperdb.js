@@ -7,6 +7,8 @@ const run = require('./run'),
 
 haperDBService();
 function haperDBService(){
+
+
     let service;
 
     let currentDir_tokens = process.cwd().split('/');
@@ -15,10 +17,12 @@ function haperDBService(){
     }
 
 
+
+
     inBin = false;
     fs.readdir(process.cwd(), (err, files) => {
        if(err){
-           return console.error(err);
+           return winston.error(err);
 
        }
 
@@ -58,7 +62,6 @@ function haperDBService(){
                     version.version();
                     break;
                 default:
-
                     run.run();
                     break
             }

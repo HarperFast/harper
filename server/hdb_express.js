@@ -258,6 +258,7 @@ if (cluster.isMaster && !DEBUG) {
 
 
     }catch(e){
+
         winston.error(e);
     }
 }
