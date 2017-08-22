@@ -18,9 +18,9 @@ HarperDB can be installed in one of two ways
 * ./harperdb install
 * ./harperdb run
 
-##**All HarperDB commands must be run in the bin directory from within HDB_HOME.
+**All HarperDB commands must be run in the bin directory from within HDB_HOME.**
 
-##**Due to OS file permissions the user who installed HarperDB is the only OS user allowed to run commands.
+**Due to OS file permissions the user who installed HarperDB is the only OS user allowed to run commands.**
 
 The process is the same; however, ./harperdb run will also start HarperDB.
 
