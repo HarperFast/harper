@@ -55,10 +55,6 @@ let search_by_value_constraints = {
         presence: true,
         format: "[\\w\\-\\_]+"
 
-    },hash_attribute: {
-        presence: true,
-        format: "[\\w\\-\\_]+"
-
     },
     search_attribute: {
         presence: true

@@ -15,12 +15,7 @@ const base_path = hdb_properties.get('HDB_ROOT') + "/schema/"
     autocast = require('autocast');
 
 const slash_regex =  /\//g;
-
-// search by hash only
-// what attributes are you selecting
-// table selecting from
-// table selecting from
-// condition criteria
+const calculation_regex = /\${(.*?)}/g;
 
 module.exports = {
     searchByValue:searchByValue,
@@ -143,7 +138,7 @@ function searchByConditions(search_object, callback){
         //let patterns = condition_patterns.createPatterns(search_object.condition, table_schema, base_path);
         let get_attributes = search_object.get_attributes;
         if (search_object.supplemental_fields && search_object.supplemental_fields.length > 0) {
-            get_attributes = _.uniq(search_object.get_attributes.concat(search_object.supplemental_fields));
+            get_attributes = _.uniqBy(search_object.get_attributes.concat(search_object.supplemental_fields), 'attribute');
         }
         evaluateTableAttributes(get_attributes, search_object, (err, attributes) => {
             if (err) {
@@ -234,13 +229,26 @@ function search(search_wrapper, callback){
             let get_attributes = [];
 
             search_wrapper.tables.forEach((table) => {
+                table.conditions = [];
                 table.get_attributes.forEach((attribute) => {
                     get_attributes.push(attribute.alias);
                 });
+
+                if(search_wrapper.conditions && search_wrapper.tables.length === 1){
+                    table.conditions = search_wrapper.conditions;
+                } else if(search_wrapper.conditions) {
+                    search_wrapper.conditions.forEach((condition) => {
+                        let comparators = Object.values(condition)[0];
+                        let column = comparators[0].split('.');
+                        if (search_wrapper.tables.length === 1 || table.table === column[0] || table.alias === column[0]) {
+                            table.conditions.push(condition);
+                        }
+                    });
+                }
             });
 
             async.waterfall([
-                tableSearch.bind(null, search_wrapper),
+                fetchJoinData.bind(null, search_wrapper),
                 processDataJoins.bind(null, search_wrapper),
                 (data, caller)=>{
                     let results = [];
@@ -287,65 +295,39 @@ function processDataJoins(search_wrapper, search_data, callback){
     }
 }
 
-function tableSearch(search_wrapper, callback){
+function fetchJoinData(search_wrapper, callback){
     let search_data = [];
 
-    async.waterfall([
-        searchByConditions.bind(null, search_wrapper.tables[0]),
-        (results, caller)=>{
-            search_data.push({table: search_wrapper.tables[0], data: results, join: null});
-            caller(null, search_data);
-        },
-        fetchJoinData.bind(null, search_wrapper)
-    ], (err, results)=>{
-        if(err){
-            return callback(err);
+    async.eachOfLimit(search_wrapper.tables, 1, (table, index, call) => {
+        let join = {};
+        if(search_data.length > 0) {
+            //evaluate join to find linked tables
+            let join = table.join;
+                let comparators = Object.values(join)[0];
+                let first_attribute = findAttribute(search_wrapper.all_get_attributes, comparators[0]);
+                let second_attribute = findAttribute(search_wrapper.all_get_attributes, comparators[1]);
+
+                //find primary table to get data from & create condition
+                let primary_table_data = {};
+                search_data.forEach((the_data) => {
+                    if (the_data.table.table === first_attribute.table || the_data.table.alias === first_attribute.table_alias ||
+                        the_data.table.table === second_attribute.table || the_data.table.alias === second_attribute.table_alias) {
+                        primary_table_data = the_data;
+                        return;
+                    }
+                });
+
+                //convert the join to a condition and add to the secondary table
+                table.conditions.push(convertJoinToCondition(primary_table_data.table, table, join, primary_table_data.data));
+
         }
-
-        callback(null, results);
-    });
-}
-
-function fetchJoinData(search_wrapper, search_data, callback){
-    if(!search_wrapper.joins || search_wrapper.joins.length === 0) {
-        return callback(null, search_data);
-    }
-    async.eachOfLimit(search_wrapper.joins, 1, (join, index, call) => {
-        //evaluate join to find linked tables
-        let comparators = Object.values(join)[0];
-        let first_attribute = findAttribute(search_wrapper.all_get_attributes, comparators[0]);
-        let second_attribute = findAttribute(search_wrapper.all_get_attributes, comparators[1]);
-
-        //find primary table to get data from & create condition
-        let primary_table_data = {};
-        search_data.forEach((the_data) => {
-            if (the_data.table.table === first_attribute.table || the_data.table.alias === first_attribute.table_alias ||
-                the_data.table.table === second_attribute.table || the_data.table.alias === second_attribute.table_alias) {
-                primary_table_data = the_data;
-                return;
-            }
-        });
-
-        //find table to select from
-        let secondary_table = {};
-        search_wrapper.tables.forEach((table) => {
-            if (table.table === first_attribute.table || table.alias === first_attribute.table_alias ||
-                table.table === second_attribute.table || table.alias === second_attribute.table_alias) {
-                secondary_table = table;
-                return;
-            }
-        });
-
-        //convert the join to a condition and add to the secondary table
-        secondary_table.conditions.push(convertJoinToCondition(primary_table_data.table, secondary_table, join, primary_table_data.data));
-
         //fetch the data
-        searchByConditions(secondary_table, (error, results) => {
+        searchByConditions(table, (error, results) => {
             if (error) {
                 return call(error);
             }
 
-            search_data.push({table: secondary_table, data: results, join: join});
+            search_data.push({table: table, data: results, join: join});
             call();
         });
     }, (err) => {
@@ -388,59 +370,44 @@ function joinData(join, all_get_attributes, data, data2){
 
 function getAsteriskFieldsForTables(search_wrapper, callback){
     let tables = [];
-    async.eachLimit(search_wrapper.tables, 1, (table, caller)=>{
-        evaluateTableAttributes(table.get_attributes, table, (err, attributes)=> {
-            if (err) {
-                caller(err);
-                return;
-            }
+    let asterisk_columns = search_wrapper.selects.filter((column)=>{
+        return column.attribute === '*';
+    });
 
-            table.get_attributes = attributes;
-            tables.push(table);
+    let asterisk_map = group(asterisk_columns, ['table']);
+
+    async.eachLimit(search_wrapper.tables, 1, (table, caller)=>{
+        if(asterisk_map[table.table]) {
+            getAllAttributeNames(table, (err, attributes)=>{
+                if(err){
+                    callback(err);
+                    return;
+                }
+
+                search_wrapper.selects = search_wrapper.selects.concat(attributes);
+
+                caller();
+            });
+
+        }else {
             caller();
-        });
+        }
     }, (err)=>{
         if(err){
             callback(err);
             return;
         }
 
-        search_wrapper.tables = tables;
+        search_wrapper.selects = search_wrapper.selects.filter((column)=>{
+            return column.attribute !== '*';
+        });
+
         callback(null, search_wrapper);
     });
 }
 
-function findTable(table_name, tables){
-    if(tables.length === 1){
-        return tables[0];
-    }
-
-    return tables.filter((table)=>{
-        return table.table === table_name || table.alias === table_name;
-    })[0];
-}
-
 function setAdditionalAttributeData(search_wrapper){
-    //create a map of tables and their attribuytes to select
-    let columns = search_wrapper.selects.filter((column)=>{
-        return column.attribute;
-    });
-    let attribute_map = group(columns, 'table');
-
-    //get a list of calculations
-    let calculations = search_wrapper.selects.filter((column)=>{
-        return column.calculation;
-    });
-
-    search_wrapper.tables.forEach((table)=>{
-        table.get_attributes = attribute_map[table.table];
-
-        calculations.forEach((calc)=>{
-
-        });
-    });
-
-    /*search_wrapper.all_get_attributes = [];
+    search_wrapper.all_get_attributes = [];
 
     search_wrapper.tables.forEach((table)=>{
         if(table.supplemental_fields) {
@@ -452,13 +419,14 @@ function setAdditionalAttributeData(search_wrapper){
 
             search_wrapper.all_get_attributes.push(attribute);
         });
-    });*/
+    });
+
+    search_wrapper.all_get_attributes = _.uniqBy(search_wrapper.all_get_attributes, (item)=>{
+        return[item.table, item.attribute].join();
+    });
+
 
     return search_wrapper;
-}
-
-function getCalculationAttributes(calculation){
-    calculation
 }
 
 function sortData(data, search_wrapper){
@@ -548,33 +516,67 @@ function walkGroupTree(the_object){
     return result;
 }
 function addSupplementalFields(search_wrapper){
-    search_wrapper.tables.forEach((table)=>{
-        table.supplemental_fields = [];
-
-        table.joins.forEach((join)=>{
-            let comparators = Object.values(join)[0];
-
-            let left_side = comparators[0].split('.');
-            let right_side = comparators[1].split('.');
-
-            if ((table.table === left_side[0] || table.alias === left_side[0])) {
-                table.supplemental_fields.push({
-                    attribute: left_side[1],
-                    alias: left_side[1],
-                    table: table.table,
-                    table_alias: table.alias
-                });
-            } else if ((table.table === right_side[0] || table.alias === right_side[0])) {
-                table.supplemental_fields.push({
-                    attribute: right_side[1],
-                    alias: right_side[1],
-                    table: table.table,
-                    table_alias: table.alias
+    let calculation_columns = search_wrapper.selects.forEach((select)=>{
+        if(select.calculation){
+            let calc_columns = calc.calculation.match(calculation_regex);
+            if(calc_columns){
+                calc_columns.forEach((calc)=>{
+                    return calc.replace('${').replace('}');
                 });
             }
+        }
+    });
 
-            search_wrapper.group.forEach((group_by)=>{
-                if(table.table === group_by.table || table.alias === group_by.table){
+    let columns = search_wrapper.selects.filter((column)=>{
+        return column.attribute;
+    });
+    let attribute_map = group(columns, ['table']);
+
+    search_wrapper.tables.forEach((table)=>{
+        table.supplemental_fields = [];
+        table.get_attributes = attribute_map[table.table];
+        if(calculation_columns) {
+            calculation_columns.forEach((calc_column) => {
+                let column_split = calc_column.split('.');
+                if (search_wrapper.tables.length === 1 || table.table === column_split[0] || table.alias === column_split[0]) {
+                    table.supplemental_fields.push({
+                        attribute: column_split.length === 1 ? column_split[0] : column_split[1],
+                        alias: column_split.length === 1 ? column_split[0] : column_split[1],
+                        table: table.table,
+                        table_alias: table.alias
+                    });
+                }
+            });
+        }
+
+        let join = table.join;
+        if(join) {
+            let comparators = Object.values(join)[0];
+            if(comparators) {
+                let left_side = comparators[0].split('.');
+                let right_side = comparators[1].split('.');
+
+                if ((table.table === left_side[0] || table.alias === left_side[0])) {
+                    table.supplemental_fields.push({
+                        attribute: left_side[1],
+                        alias: left_side[1],
+                        table: table.table,
+                        table_alias: table.alias
+                    });
+                } else if ((table.table === right_side[0] || table.alias === right_side[0])) {
+                    table.supplemental_fields.push({
+                        attribute: right_side[1],
+                        alias: right_side[1],
+                        table: table.table,
+                        table_alias: table.alias
+                    });
+                }
+            }
+        }
+
+        if(search_wrapper.group) {
+            search_wrapper.group.forEach((group_by) => {
+                if (table.table === group_by.table || table.alias === group_by.table) {
                     table.supplemental_fields.push({
                         attribute: group_by.attribute,
                         alias: group_by.attribute,
@@ -583,7 +585,10 @@ function addSupplementalFields(search_wrapper){
                     });
                 }
             });
-        });
+        }
+
+        table.get_attributes = _.uniqBy(table.get_attributes, 'attribute');
+        table.supplemental_fields = _.uniqBy(table.supplemental_fields, 'attribute');
     });
 
     return search_wrapper;
@@ -734,7 +739,12 @@ function evaluateTableAttributes(get_attributes, table_info, callback){
             get_attributes = _.filter(get_attributes, (attribute)=>{
                 return attribute !== '*' && attribute.attribute !== '*';
             });
-            callback(null, _.uniq(get_attributes.concat(attributes)));
+
+            attributes.forEach((attribute)=>{
+                get_attributes.push(attribute);
+            });
+
+            callback(null, _.uniqBy(get_attributes, 'alias'));
         });
     }else {
         callback(null, get_attributes);
@@ -756,7 +766,7 @@ function getAllAttributeNames(table_info, callback){
                 attribute:folder,
                 alias: folder,
                 table:table_info.table,
-                table_alias:table_info.alias
+                table_alias:table_info.alias ? table_info.alias : table_info.table
             });
         });
 

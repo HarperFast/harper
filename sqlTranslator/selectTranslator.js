@@ -59,7 +59,7 @@ function generateBasicSearchObject(statement, callback){
             tables:[{
                 schema: schema_table[0],
                 table: schema_table[1],
-                joins:[]
+                join:{}
             }],
             conditions:[],
             group:[],
@@ -78,34 +78,31 @@ function generateBasicSearchObject(statement, callback){
 
 function generateAdvancedSearchObject(statement, callback){
     try {
-        let search_wrapper = {tables: [], joins: []};
+        let search_wrapper = {
+            selects:[],
+            tables: [],
+            conditions:[],
+            group:[],
+            order:[]
+        };
+
+
 
         let times = statement.from.map ? statement.from.map.length + 1 : 1;
-        async.times(times, (x, callback)=>{
-
+        async.times(times, (x, caller)=>{
             let table = parseFromClause(statement.from, x);
-            search_wrapper.tables.push(table.table);
-            if(table.join){
-                search_wrapper.joins.push(table.join);
-            }
-            /*generateObject(statement, x, (error, search)=>{
-                if(error){
-                    callback(error);
-                    return;
-                }
-
-                search_wrapper.tables[x] = search.table;
-                if (Object.keys(search.join).length > 0) {
-                    search_wrapper.joins.push(search.join);
-                }
-
-                callback();
-            });*/
+            search_wrapper.tables.push(table);
+            caller();
         }, (err)=>{
             if(err){
                 callback(err);
                 return;
             }
+
+            let attribute_parser = new AttributeParser(statement.result, search_wrapper);
+            search_wrapper = attribute_parser.parseGetAttributes();
+
+            search_wrapper.conditions = condition_parser.parseConditions(statement.where);
             search_wrapper.order = parseOrderby(search_wrapper.tables, statement.order);
             search_wrapper.group = parseGroupby(search_wrapper.tables, statement.group);
             callback(null, search_wrapper);
@@ -175,60 +172,12 @@ function parseFromClause(from, from_level){
         table:from_info.table,
         alias:from_info.alias,
         supplemental_fields: [],
-        get_attributes: []
+        get_attributes: [],
+        join:join
     };
 
-    return {
-        table: table,
-        join: join
-    };
+    return table;
 }
-
-/*function generateObject(statement, from_level, callback){
-    let from_info = {};
-    let join = {};
-    if(from_level === 0){
-        from_info = parseFromSource(statement.from.source ? statement.from.source : statement.from);
-    } else {
-        let from_clause = statement.from.map[from_level - 1];
-        from_info = parseFromSource(from_clause.source);
-        join = condition_parser.parseWhereClause(from_clause.constraint.on);
-        join.type = from_clause.variant;
-    }
-    let search_object = {
-        schema:from_info.schema,
-        table:from_info.table,
-        alias:from_info.alias,
-        supplemental_fields: []
-    };
-
-    search_object.get_attributes = statement.result.map((column) => {
-        let column_info = column.name.split('.');
-        if(column_info.length > 1 && (column_info[0] === from_info.table || column_info[0] === from_info.alias)){
-            return {
-                attribute: column_info[1],
-                alias: column.alias ? column.alias : column_info[1]
-            };
-        }
-    });
-
-    search_object.get_attributes = search_object.get_attributes.filter( Boolean );
-
-    global_schema.getTableSchema(from_info.schema, from_info.table, (err, table_info)=>{
-        if(err){
-            callback(err);
-            return;
-        }
-
-        table_info.alias = from_info.alias;
-        search_object.conditions = condition_parser.parseConditions(statement.where, table_info);
-
-        callback(null, {
-            table: search_object,
-            join: join
-        });
-    });
-}*/
 
 function parseFromSource(source){
     let schema_table = source.name.split('.');
