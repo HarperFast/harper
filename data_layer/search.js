@@ -238,8 +238,9 @@ function search(search_wrapper, callback){
                     table.conditions = search_wrapper.conditions;
                 } else if(search_wrapper.conditions) {
                     search_wrapper.conditions.forEach((condition) => {
-                        let comparators = Object.values(condition)[0];
-                        let column = comparators[0].split('.');
+                        let condition_key = Object.keys(condition)[0];
+                        let comparators = Object.values(condition[condition_key])[0];
+                        let column = Object.values(comparators)[0].split('.');
                         if (search_wrapper.tables.length === 1 || table.table === column[0] || table.alias === column[0]) {
                             table.conditions.push(condition);
                         }
@@ -327,7 +328,7 @@ function fetchJoinData(search_wrapper, callback){
                 return call(error);
             }
 
-            search_data.push({table: table, data: results, join: join});
+            search_data.push({table: table, data: results, join: table.join});
             call();
         });
     }, (err) => {
@@ -515,6 +516,39 @@ function walkGroupTree(the_object){
 
     return result;
 }
+
+function createJoinMap(tables){
+    let joins = {};
+    tables.forEach((table)=>{
+        if(table.join && Object.values(table.join).length > 0){
+            let comparators = Object.values(table.join)[0];
+            let left_side = comparators[0].split('.');
+            let right_side = comparators[1].split('.');
+            if(!joins[left_side[0]])
+            {
+                joins[left_side[0]] = [];
+            }
+
+            if(!joins[right_side[0]])
+            {
+                joins[right_side[0]] = [];
+            }
+
+            joins[right_side[0]].push({
+                attribute: right_side[1],
+                alias: right_side[1]
+            });
+
+            joins[left_side[0]].push({
+                attribute: left_side[1],
+                alias: left_side[1]
+            });
+        }
+    });
+
+    return joins;
+}
+
 function addSupplementalFields(search_wrapper){
     let calculation_columns = search_wrapper.selects.forEach((select)=>{
         if(select.calculation){
@@ -532,9 +566,31 @@ function addSupplementalFields(search_wrapper){
     });
     let attribute_map = group(columns, ['table']);
 
+    let group_map = group(search_wrapper.group, ['table']);
+
+    let joins = createJoinMap(search_wrapper.tables);
+
     search_wrapper.tables.forEach((table)=>{
         table.supplemental_fields = [];
-        table.get_attributes = attribute_map[table.table];
+        if(attribute_map[table.table]){
+            table.get_attributes = attribute_map[table.table];
+        }
+
+        if(table.alias && attribute_map[table.alias]){
+            table.get_attributes = table.get_attributes.concat(attribute_map[table.alias]);
+        }
+
+        if(group_map && group_map[table.table]){
+            group_map[table.table].forEach((group_column)=>{
+                table.supplemental_fields.push({
+                    attribute: group_column.attribute,
+                    alias: group_column.attribute,
+                    table: table.table,
+                    table_alias: table.alias
+                });
+            });
+        }
+
         if(calculation_columns) {
             calculation_columns.forEach((calc_column) => {
                 let column_split = calc_column.split('.');
@@ -549,41 +605,13 @@ function addSupplementalFields(search_wrapper){
             });
         }
 
-        let join = table.join;
-        if(join) {
-            let comparators = Object.values(join)[0];
-            if(comparators) {
-                let left_side = comparators[0].split('.');
-                let right_side = comparators[1].split('.');
 
-                if ((table.table === left_side[0] || table.alias === left_side[0])) {
-                    table.supplemental_fields.push({
-                        attribute: left_side[1],
-                        alias: left_side[1],
-                        table: table.table,
-                        table_alias: table.alias
-                    });
-                } else if ((table.table === right_side[0] || table.alias === right_side[0])) {
-                    table.supplemental_fields.push({
-                        attribute: right_side[1],
-                        alias: right_side[1],
-                        table: table.table,
-                        table_alias: table.alias
-                    });
-                }
-            }
-        }
-
-        if(search_wrapper.group) {
-            search_wrapper.group.forEach((group_by) => {
-                if (table.table === group_by.table || table.alias === group_by.table) {
-                    table.supplemental_fields.push({
-                        attribute: group_by.attribute,
-                        alias: group_by.attribute,
-                        table: table.table,
-                        table_alias: table.alias
-                    });
-                }
+        let join_list = joins[table.table] ? joins[table.table] : joins[table.alias];
+        if(join_list){
+            join_list.forEach((join)=>{
+                join.table = table.table;
+                join.table_alias = table.alias;
+                table.supplemental_fields.push(join);
             });
         }
 

@@ -69,7 +69,7 @@ function generateBasicSearchObject(statement, callback){
         let attribute_parser = new AttributeParser(statement.result, search_object);
         search_object = attribute_parser.parseGetAttributes();
 
-        search_object.conditions = condition_parser.parseConditions(statement.where, table_info);
+        search_object.conditions = condition_parser.parseConditions(statement.where);
         search_object.order = parseOrderby([search_object], statement.order);
         search_object.group = parseGroupby([search_object], statement.group);
         callback(null, search_object);
