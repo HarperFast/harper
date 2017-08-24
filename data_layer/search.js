@@ -246,6 +246,18 @@ function search(search_wrapper, callback){
                         }
                     });
                 }
+                if(!table.conditions || table.conditions.length === 0){
+                    table.conditions = [
+                        {
+                            'and':{
+                                '=':[
+                                    `${global.hdb_schema[table.schema][table.table].hash_attribute}`,
+                                    '*'
+                                ]
+                            }
+                        }
+                    ];
+                }
             });
 
             async.waterfall([

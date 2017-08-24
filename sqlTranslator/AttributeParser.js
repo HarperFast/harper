@@ -4,13 +4,15 @@
 const findTable = Symbol('findTable'),
     parseColumn = Symbol('parseColumn'),
     parseExpression = Symbol('parseExpression'),
-    createExpressionPart = Symbol('createExpressionPart');
+    createExpressionPart = Symbol('createExpressionPart'),
+    evaluateExpression = Symbol('evaluateExpression');
 
 class AttributeParser{
 
-    constructor(select_clause, search_object){
+    constructor(select_clause, tables){
         this.select_clause = select_clause;
-        this.search_object = search_object;
+        this.tables = tables;
+        this.selects = [];
     }
 
     parseGetAttributes(){
@@ -24,42 +26,51 @@ class AttributeParser{
                 case 'identifier':
                     let attribute = this[parseColumn](column);
                     if(attribute){
-                        this.search_object.selects.push(attribute);
+                        this.selects.push(attribute);
                     }
                     break;
             }
         });
 
-        return this.search_object;
+        return this.selects;
     }
 
     [findTable](table_name){
-        if(this.search_object.tables.length === 1){
-            return this.search_object.tables[0];
+        if(this.tables.length === 1){
+            return this.tables[0];
         }
 
-        return this.search_object.tables.filter((table)=>{
+        return this.tables.filter((table)=>{
             return table.table === table_name || table.alias === table_name;
         })[0];
     }
 
     [parseColumn](column){
         let column_info = column.name.split('.');
+
+        if (this.tables.length > 1 && column_info.length === 1) {
+            throw `column '${column.name}' ambiguously defined`;
+        }
+
         let table_info = this[findTable](column_info[0]);
         if(table_info) {
             if (column_info.length > 1 && (column_info[0] === table_info.table || column_info[0] === table_info.alias)) {
                 return {
-                    table: column_info[0],
+                    table: table_info.table,
+                    table_alias: table_info.alias,
                     attribute: column_info[1],
                     alias: column.alias ? column.alias : column_info[1]
                 };
             } else {
                 return {
                     table: table_info.table,
+                    table_alias: table_info.alias,
                     attribute: column_info[0],
                     alias: column.alias ? column.alias : column_info[0]
                 };
             }
+        } else {
+            throw `unknown table for column ${column.name}`
         }
 
         return null;
@@ -69,7 +80,7 @@ class AttributeParser{
         let expression_parts = [];
         if(expression) {
 
-            while (expression.left) {
+            while (expression.left && expression.right.expression) {
                 expression_parts.push(this[createExpressionPart](expression.operation, expression.right.operator, expression.right.expression.value, expression.right.expression.name));
 
                 expression = expression.left;
@@ -81,10 +92,20 @@ class AttributeParser{
         //the parts of the expression natively come in backwards, so we reverse
         expression_parts.reverse();
 
-        this.search_object.selects.push({
+        this.selects.push({
             calculation: expression_parts.join(' '),
             alias: null
         });
+    }
+
+    [evaluateExpression](expression){
+        if(expression.left.type === 'expression'){
+            this[createExpressionPart](expression.operation, expression.operator, expression.right.value, expression.right.name);
+            this[createExpressionPart](expression.left.operation, expression.operator, expression.right.value, expression.right.name);
+            // done
+        } else if(expression.left){
+
+        }
     }
 
     [createExpressionPart](operation, operator, value, column){
@@ -102,6 +123,7 @@ class AttributeParser{
         }
 
         if(column){
+            this[parseColumn](column);
             part += '${' + column + '}';
         }
 

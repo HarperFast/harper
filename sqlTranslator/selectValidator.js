@@ -1,4 +1,5 @@
-const _ = require('lodash');
+const _ = require('lodash'),
+    AttributeParser = require('./AttributeParser');
 
 module.exports = {
     validator: validator
@@ -71,39 +72,8 @@ function validateTables(statement){
 }
 
 function validateSelectColumns(statement, tables){
-    let select_columns = [];
-    statement.result.forEach((column) => {
-        if (column.type !== 'identifier' && column.variant !== 'column') {
-            throw 'invalid column in SELECT, only columns are supported, no functions or literals can be defined';
-        }
-
-        validateColumn(tables, column.name);
-
-        let table_column = column.name.split('.');
-        let column_object = {
-            alias: column.alias
-        };
-
-        if(table_column.length > 1){
-            let found_table = _.filter(tables, (table)=>{
-                return table.alias === table_column[0];
-            });
-
-            if(found_table.length === 0){
-                throw `unknown table for column '${column.name}'`;
-            }
-
-            column_object.table = found_table[0].name;
-            column_object.table_alias = found_table[0].alias;
-            column_object.name = table_column[1];
-        } else {
-            column_object.table = tables[0].name;
-            column_object.table_alias = tables[0].alias;
-            column_object.name = table_column[0];
-        }
-
-        select_columns.push(column_object);
-    });
+    let attribute_parser = new AttributeParser(statement.result, tables);
+    let select_columns = attribute_parser.parseGetAttributes();
 
     return select_columns;
 }

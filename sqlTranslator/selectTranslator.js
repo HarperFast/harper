@@ -66,12 +66,12 @@ function generateBasicSearchObject(statement, callback){
             order:[],
         };
 
-        let attribute_parser = new AttributeParser(statement.result, search_object);
-        search_object = attribute_parser.parseGetAttributes();
+        let attribute_parser = new AttributeParser(statement.result, search_object.tables);
+        search_object.selects = attribute_parser.parseGetAttributes();
 
         search_object.conditions = condition_parser.parseConditions(statement.where);
-        search_object.order = parseOrderby([search_object], statement.order);
-        search_object.group = parseGroupby([search_object], statement.group);
+        search_object.order = parseOrderby(search_object.tables, statement.order);
+        search_object.group = parseGroupby(search_object.tables, statement.group);
         callback(null, search_object);
     });
 }
@@ -99,8 +99,8 @@ function generateAdvancedSearchObject(statement, callback){
                 return;
             }
 
-            let attribute_parser = new AttributeParser(statement.result, search_wrapper);
-            search_wrapper = attribute_parser.parseGetAttributes();
+            let attribute_parser = new AttributeParser(statement.result, search_wrapper.tables);
+            search_wrapper.selects = attribute_parser.parseGetAttributes();
 
             search_wrapper.conditions = condition_parser.parseConditions(statement.where);
             search_wrapper.order = parseOrderby(search_wrapper.tables, statement.order);
