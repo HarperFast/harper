@@ -77,17 +77,7 @@ class AttributeParser{
     }
 
     [parseExpression](expression){
-        let expression_parts = [];
-        if(expression) {
-
-            while (expression.left && expression.right.expression) {
-                expression_parts.push(this[createExpressionPart](expression.operation, expression.right.operator, expression.right.expression.value, expression.right.expression.name));
-
-                expression = expression.left;
-            }
-
-            expression_parts.push(this[createExpressionPart](expression.operation, expression.operator, expression.expression.value, expression.expression.name));
-        }
+        let expression_parts = this[evaluateExpression](expression);
 
         //the parts of the expression natively come in backwards, so we reverse
         expression_parts.reverse();
@@ -98,17 +88,38 @@ class AttributeParser{
         });
     }
 
-    [evaluateExpression](expression){
-        if(expression.left.type === 'expression'){
-            this[createExpressionPart](expression.operation, expression.operator, expression.right.value, expression.right.name);
-            this[createExpressionPart](expression.left.operation, expression.operator, expression.right.value, expression.right.name);
-            // done
-        } else if(expression.left){
+    [evaluateExpression](expression, final_operation){
+        try {
+            let expression_parts = [];
+            if (expression) {
 
+                while (expression.left) {
+                    if (expression.right.left) {
+                        expression_parts = expression_parts.concat(this[evaluateExpression](expression.right, expression.operation));
+                    } else {
+                        expression_parts.push(this[createExpressionPart](expression.operation, expression.right));
+                    }
+
+                    expression = expression.left;
+
+                }
+
+                expression_parts.push(this[createExpressionPart](final_operation, expression));
+            }
+
+            return expression_parts
+        } catch(e){
+            console.error(e);
         }
     }
 
-    [createExpressionPart](operation, operator, value, column){
+    [createExpressionPart](operation, expression){
+        let operator = expression.operator;
+
+        if(expression.expression){
+            expression = expression.expression;
+        }
+
         let part = '';
         if(operation){
             part += operation + ' ';
@@ -118,14 +129,18 @@ class AttributeParser{
             part += operator;
         }
 
-        if(value){
-            part += value;
+        if(expression.value){
+            part += expression.value;
         }
 
-        if(column){
-            this[parseColumn](column);
-            part += '${' + column + '}';
+        if(expression.variant === 'column'){
+            this[parseColumn](expression);
+            part += '${' + expression.name + '}';
         }
+/*
+        if(final_operation){
+            part += ' ' + final_operation;
+        }*/
 
         return part;
     }
