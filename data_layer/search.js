@@ -85,8 +85,13 @@ function searchByValue (search_object, callback) {
             callback(validation_error);
             return;
         }
+        let operation = '=';
+        if(search_object.search_value !== '*' && search_object.search_value !== '%' && (search_object.search_value.includes('*') || search_object.search_value.includes('%'))){
+            operation = 'like';
+        }
+        let condition = {};
+        condition[operation] = [search_object.search_attribute, search_object.search_value];
 
-        let condition = {'=': [search_object.search_attribute, search_object.search_value]};
         let patterns = condition_patterns.createPatterns(condition, {
             name: search_object.table,
             schema: search_object.schema,
