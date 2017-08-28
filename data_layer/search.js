@@ -12,7 +12,8 @@ const base_path = hdb_properties.get('HDB_ROOT') + "/schema/"
     _ = require('lodash'),
     joins = require('lodash-joins'),
     condition_patterns = require('../sqlTranslator/conditionPatterns'),
-    autocast = require('autocast');
+    autocast = require('autocast'),
+    math = require('mathjs');
 
 const slash_regex =  /\//g;
 const calculation_regex = /\${(.*?)}/g;
@@ -286,6 +287,28 @@ function search(search_wrapper, callback){
     } catch(e){
         callback(e);
     }
+}
+
+function processMath(selects, data){
+    let calculations = [];
+    let calulation_columns = [];
+
+    selects.forEach((column)=>{
+        if(column.calculation){
+            let columns = column.calculation.match(calculation_regex);
+            if(columns){
+
+            }
+        }
+    });
+
+
+    calculations.forEach((calculation)=>{
+        select.calculation.match(calculation_regex);
+    });
+
+    //math.compile
+
 }
 
 function processDataJoins(search_wrapper, search_data, callback){
@@ -562,12 +585,13 @@ function createJoinMap(tables){
 }
 
 function addSupplementalFields(search_wrapper){
-    let calculation_columns = search_wrapper.selects.forEach((select)=>{
+    let calculation_columns = [];
+    search_wrapper.selects.forEach((select)=>{
         if(select.calculation){
-            let calc_columns = calc.calculation.match(calculation_regex);
+            let calc_columns = select.calculation.match(calculation_regex);
             if(calc_columns){
                 calc_columns.forEach((calc)=>{
-                    return calc.replace('${').replace('}');
+                    calculation_columns.push(calc.replace(/\${|}/g, ''));
                 });
             }
         }
