@@ -227,13 +227,12 @@ function search(search_wrapper, callback){
             search_wrapper = addSupplementalFields(search_wrapper);
             search_wrapper = setAdditionalAttributeData(search_wrapper);
 
-            let get_attributes = [];
+            let get_attributes = search_wrapper.selects.map((select)=>{
+                return select.alias;
+            });
 
             search_wrapper.tables.forEach((table) => {
                 table.conditions = [];
-                table.get_attributes.forEach((attribute) => {
-                    get_attributes.push(attribute.alias);
-                });
 
                 if(search_wrapper.conditions && search_wrapper.tables.length === 1){
                     table.conditions = search_wrapper.conditions;
@@ -264,6 +263,7 @@ function search(search_wrapper, callback){
             async.waterfall([
                 fetchJoinData.bind(null, search_wrapper),
                 processDataJoins.bind(null, search_wrapper),
+                processMath.bind(null, search_wrapper.selects),
                 (data, caller)=>{
                     let results = [];
                     data.forEach((record) => {
@@ -289,26 +289,44 @@ function search(search_wrapper, callback){
     }
 }
 
-function processMath(selects, data){
+function processMath(selects, data, callback){
     let calculations = [];
-    let calulation_columns = [];
 
-    selects.forEach((column)=>{
-        if(column.calculation){
-            let columns = column.calculation.match(calculation_regex);
-            if(columns){
-
-            }
+    calculations = selects.filter((column)=>{
+        if(column.calculation) {
+            column.calculation = column.calculation.replace(/\${|}/g, '');
+            return column.calculation.replace(/\${|}/g, '');
         }
     });
 
+    if(!calculations || calculations.length === 0) {
+        return callback(data);
+    }
 
-    calculations.forEach((calculation)=>{
-        select.calculation.match(calculation_regex);
+    let compiled_calculations = math.compile(calculations.map((calc)=>{return calc.calculation}));
+
+    async.eachOfLimit(data, 1000, (record, index, caller) => {
+        try {
+            compiled_calculations.forEach((calculation, i) => {
+                let scope_object = {};
+                if (calculations[i].calculation_columns && calculations[i].calculation_columns.length > 0) {
+                    calculations[i].calculation_columns.forEach((calc_column) => {
+                        scope_object[calc_column] = record[calc_column];
+                    });
+                }
+                let result = calculation.eval(scope_object);
+                let calculation_name = calculations[i].alias ? calculations[i].alias : `Calculation${i}`;
+                data[index][calculation_name] = result;
+            });
+
+            caller();
+        } catch (e) {
+            winston.error(e);
+            caller();
+        }
+    }, (err)=>{
+        return callback(null, data);
     });
-
-    //math.compile
-
 }
 
 function processDataJoins(search_wrapper, search_data, callback){
@@ -593,6 +611,12 @@ function addSupplementalFields(search_wrapper){
                 calc_columns.forEach((calc)=>{
                     calculation_columns.push(calc.replace(/\${|}/g, ''));
                 });
+
+                select.calculation_columns = calculation_columns;
+            }
+
+            if(!select.alias){
+                select.alias = select.calculation;
             }
         }
     });

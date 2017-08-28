@@ -84,7 +84,7 @@ class AttributeParser{
 
         this.selects.push({
             calculation: expression_parts.join(' '),
-            alias: null
+            alias: expression.alias
         });
     }
 
