@@ -1,11 +1,17 @@
 "use strict";
 
+const mathjs = require('mathjs');
+
 //defines "private" functions
 const findTable = Symbol('findTable'),
     parseColumn = Symbol('parseColumn'),
     parseExpression = Symbol('parseExpression'),
     createExpressionPart = Symbol('createExpressionPart'),
-    evaluateExpression = Symbol('evaluateExpression');
+    evaluateExpression = Symbol('evaluateExpression'),
+    parseFunction = Symbol('parseFunction'),
+    evaluateFunction = Symbol('evaluateFunction'),
+    validateFunction = Symbol('validateFunction');
+
 
 class AttributeParser{
 
@@ -22,6 +28,7 @@ class AttributeParser{
                     this[parseExpression](column);
                     break;
                 case 'function':
+                    this[parseFunction](column);
                     break;
                 case 'identifier':
                     let attribute = this[parseColumn](column);
@@ -75,6 +82,54 @@ class AttributeParser{
 
         return null;
     }
+
+    [parseFunction](expression){
+        let calculation = this[evaluateFunction](expression);
+
+        this.selects.push({
+            calculation: calculation,
+            alias: expression.alias
+        });
+    }
+
+    [evaluateFunction](expression){
+        let function_name = expression.name.name;
+        let args = [];
+        expression.args.expression.forEach((exp)=>{
+            switch(exp.type){
+                case 'expression':
+                    args.push(this[evaluateExpression](exp).reverse().join(' '));
+                    break;
+                case 'function':
+                    args.push(this[evaluateFunction](exp));
+                    break;
+                case 'literal':
+                    args.push(exp.value);
+                    break;
+                case 'identifier':
+                    this[parseColumn](exp);
+                    args.push('${' + exp.name +'}');
+            }
+        });
+
+        this[validateFunction](function_name, args.length);
+
+        return `${function_name}(${args.join(',')})`;
+    }
+
+    [validateFunction](function_name, number_args){
+        try {
+            let arg_values = [];
+            for (let x = 0; x < number_args; x++) {
+                arg_values.push(String(Math.floor(Math.random() * 100)));
+            }
+
+            mathjs.eval(`${function_name}(${arg_values.join(',')})`);
+        } catch(e){
+            throw `error with function '${function_name}': ${e.message}`;
+        }
+    }
+
 
     [parseExpression](expression){
         let expression_parts = this[evaluateExpression](expression);
