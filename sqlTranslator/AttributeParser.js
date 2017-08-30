@@ -94,6 +94,11 @@ class AttributeParser{
 
     [evaluateFunction](expression){
         let function_name = expression.name.name;
+
+        //in mathjs pi is not a function but rather a variable so we just return the name
+        if(function_name === 'pi'){
+            return function_name;
+        }
         let args = [];
         expression.args.expression.forEach((exp)=>{
             switch(exp.type){
@@ -104,7 +109,11 @@ class AttributeParser{
                     args.push(this[evaluateFunction](exp));
                     break;
                 case 'literal':
-                    args.push(exp.value);
+                    if(exp.variant === 'text'){
+                        args.push(`"${exp.value}"`);
+                    } else {
+                        args.push(exp.value);
+                    }
                     break;
                 case 'identifier':
                     this[parseColumn](exp);
@@ -112,13 +121,21 @@ class AttributeParser{
             }
         });
 
-        this[validateFunction](function_name, args.length);
+        //this[validateFunction](function_name, args.length);
+
+        if(function_name === 'concat'){
+            return `concat(string(${args.join(',string(')})`;
+        }
 
         return `${function_name}(${args.join(',')})`;
     }
 
     [validateFunction](function_name, number_args){
         try {
+            if(function_name === 'pi'){
+                return;
+            }
+
             let arg_values = [];
             for (let x = 0; x < number_args; x++) {
                 arg_values.push(String(Math.floor(Math.random() * 100)));
