@@ -294,8 +294,8 @@ function processMath(selects, data, callback){
 
     calculations = selects.filter((column)=>{
         if(column.calculation) {
-            column.calculation = column.calculation.replace(/\${|}/g, '');
-            return column.calculation.replace(/\${|}/g, '');
+            column.calculation = column.calculation.replace(/\./g,'_');
+            return column.calculation;
         }
     });
 
@@ -606,14 +606,17 @@ function addSupplementalFields(search_wrapper){
     let calculation_columns = [];
     search_wrapper.selects.forEach((select)=>{
         if(select.calculation){
-            let calc_columns = select.calculation.match(calculation_regex);
-            if(calc_columns){
-                calc_columns.forEach((calc)=>{
-                    calculation_columns.push(calc.replace(/\${|}/g, ''));
-                });
+            select.calculation_columns = [];
+            //we use math.parse to return the elements that are the columns
+            let calc_nodes = math.parse(select.calculation).filter((node)=>{
+                return node.isSymbolNode;
+            });
 
-                select.calculation_columns = calculation_columns;
-            }
+            calc_nodes.forEach((node)=>{
+                let calc_column = node.name.replace(/\./g,'_');
+                select.calculation_columns.push(calc_column);
+                calculation_columns.push(calc_column);
+            });
 
             if(!select.alias){
                 select.alias = select.calculation;
@@ -654,10 +657,11 @@ function addSupplementalFields(search_wrapper){
         if(calculation_columns) {
             calculation_columns.forEach((calc_column) => {
                 let column_split = calc_column.split('.');
+                let attribute_name = column_split.length === 1 ? column_split[0] : column_split[2];
                 if (search_wrapper.tables.length === 1 || table.table === column_split[0] || table.alias === column_split[0]) {
                     table.supplemental_fields.push({
                         attribute: column_split.length === 1 ? column_split[0] : column_split[1],
-                        alias: column_split.length === 1 ? column_split[0] : column_split[1],
+                        alias: calc_column.replace('.', '_'),
                         table: table.table,
                         table_alias: table.alias
                     });

@@ -117,7 +117,7 @@ class AttributeParser{
                     break;
                 case 'identifier':
                     this[parseColumn](exp);
-                    args.push('${' + exp.name +'}');
+                    args.push(exp.name);
             }
         });
 
@@ -207,7 +207,7 @@ class AttributeParser{
 
         if(expression.variant === 'column'){
             this[parseColumn](expression);
-            part += '${' + expression.name + '}';
+            part += expression.name;
         }
 /*
         if(final_operation){
