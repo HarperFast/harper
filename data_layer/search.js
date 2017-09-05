@@ -311,7 +311,7 @@ function processMath(selects, data, callback){
                 let scope_object = {};
                 if (calculations[i].calculation_columns && calculations[i].calculation_columns.length > 0) {
                     calculations[i].calculation_columns.forEach((calc_column) => {
-                        scope_object[calc_column] = record[calc_column];
+                        scope_object[calc_column.alias] = record[calc_column.alias];
                     });
                 }
                 let result = calculation.eval(scope_object);
@@ -602,22 +602,41 @@ function createJoinMap(tables){
     return joins;
 }
 
+function parseCalculationColumns(calculation){
+    let skip_node = false;
+    let columns = [];
+    let nodes = math.parse(calculation);
+    nodes.filter((node)=>{
+        if(!node.isIndexNode && node.object && node.index && node.index.dotNotation){
+            let table = node.object.name;
+            let attribute = node.index.dimensions[0].value;
+            columns.push({
+                table : table,
+                attribute: attribute,
+                alias: `${table}_${attribute}`
+            });
+            skip_node = true;
+            return node;
+        } else if(node.isSymbolNode && skip_node){
+            skip_node = false;
+        } else if(node.isSymbolNode){
+            columns.push({
+                attribute: node.name
+            });
+            return node;
+        }
+    });
+
+    return columns;
+}
+
 function addSupplementalFields(search_wrapper){
     let calculation_columns = [];
     search_wrapper.selects.forEach((select)=>{
         if(select.calculation){
-            select.calculation_columns = [];
             //we use math.parse to return the elements that are the columns
-            let calc_nodes = math.parse(select.calculation).filter((node)=>{
-                return node.isSymbolNode;
-            });
-
-            calc_nodes.forEach((node)=>{
-                let calc_column = node.name.replace(/\./g,'_');
-                select.calculation_columns.push(calc_column);
-                calculation_columns.push(calc_column);
-            });
-
+            select.calculation_columns = parseCalculationColumns(select.calculation);
+            calculation_columns = calculation_columns.concat(select.calculation_columns);
             if(!select.alias){
                 select.alias = select.calculation;
             }
@@ -656,15 +675,14 @@ function addSupplementalFields(search_wrapper){
 
         if(calculation_columns) {
             calculation_columns.forEach((calc_column) => {
-                let column_split = calc_column.split('.');
-                let attribute_name = column_split.length === 1 ? column_split[0] : column_split[2];
-                if (search_wrapper.tables.length === 1 || table.table === column_split[0] || table.alias === column_split[0]) {
+                if (search_wrapper.tables.length === 1 || table.table === calc_column.table || table.alias === calc_column.table) {
                     table.supplemental_fields.push({
-                        attribute: column_split.length === 1 ? column_split[0] : column_split[1],
-                        alias: calc_column.replace('.', '_'),
+                        attribute: calc_column.attribute,
+                        alias: `${table.table}_${calc_column.attribute}`,
                         table: table.table,
                         table_alias: table.alias
                     });
+                    calc_column.alias = `${table.table}_${calc_column.attribute}`;
                 }
             });
         }
