@@ -14,13 +14,17 @@
 After downloading the compressed file, unpack to your desired location.
 This location is referred to as HDB_HOME further in the documentation.
 
+**All HarperDB commands must be run in the bin directory from within HDB_HOME.**
+
+**The operating system user who installed HarperDB is the only user that can start and run the HarperDB service.**
+
 HarperDB can be installed in one of two ways
 * ./harperdb install
 * ./harperdb run
 
-The process is the same; however, HDB_HOME/bin/hdb_run will also start HarperDB.
+The process is the same; however, ./harperdb run will also start HarperDB.
 
-From the HarperDB root directory execute either of the following:
+From the HarperDB root directory execute the following:
 
 ```
 cd HDB_HOME/bin

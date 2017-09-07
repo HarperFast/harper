@@ -1,5 +1,5 @@
 const cluster = require('cluster');
-const numCPUs = 4;
+const numCPUs = 16;
 const DEBUG = false;
 const winston = require('../utility/logging/winston_logger');
 
@@ -53,12 +53,23 @@ if (cluster.isMaster && !DEBUG) {
 
     app.use(bodyParser.json()); // support json encoded bodies
     app.use(bodyParser.urlencoded({extended: true}));
+
+    app.use(function (error, req, res, next) {
+        if (error instanceof SyntaxError) {
+            res.status(400).send({error: 'invalid JSON: ' + error.message.replace('\n', '')});
+        } else {
+            next();
+        }
+    });
+
     app.use(session({ secret: 'keyboard cat',     resave: true,
         saveUninitialized: true }));
     app.use(passport.initialize());
     app.use(passport.session());
     app.post('/', function (req, res) {
         auth.authorize(req, res, function(err, user) {
+            res.set('x-powered-by', 'HarperDB');
+
             if(err){
                 winston.warn(`{"ip":"${req.connection.remoteAddress}", "error":"${err}"`);
                 res.status(401).send(err);
@@ -78,7 +89,7 @@ if (cluster.isMaster && !DEBUG) {
 
                     operation_function(req.body, (error, data) => {
                         if (error) {
-                            winston.info(error);
+                            winston.error(error);
                             if(typeof error != 'object')
                                 error = {"error": error};
                             res.status(200).json(error);
@@ -165,6 +176,9 @@ if (cluster.isMaster && !DEBUG) {
             case 'list_users':
                 operation_function = user.listUsers;
                 break;
+            case 'list_roles':
+                operation_function = role.listRoles;
+                break;
             case 'add_role':
                 operation_function = role.addRole;
                 break;
@@ -179,7 +193,7 @@ if (cluster.isMaster && !DEBUG) {
                 break;
             case 'read_log':
                 operation_function = read_log.read_log;
-                break;
+
             default:
                 break;
         }
@@ -247,6 +261,7 @@ if (cluster.isMaster && !DEBUG) {
 
 
     }catch(e){
+
         winston.error(e);
     }
 }
