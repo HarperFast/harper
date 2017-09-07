@@ -13,7 +13,13 @@ const base_path = hdb_properties.get('HDB_ROOT') + "/schema/"
     joins = require('lodash-joins'),
     condition_patterns = require('../sqlTranslator/conditionPatterns'),
     autocast = require('autocast'),
-    math = require('mathjs');
+    math = require('mathjs'),
+    aggregate_functions = require('../utility/functions/aggregateFunctions.json');
+
+math.import([
+    require('../utility/functions/math/count'),
+    require('../utility/functions/math/avg')
+]);
 
 const slash_regex =  /\//g;
 const calculation_regex = /\${(.*?)}/g;
@@ -139,7 +145,7 @@ function searchByConditions(search_object, callback){
         //let patterns = condition_patterns.createPatterns(search_object.condition, table_schema, base_path);
         let get_attributes = search_object.get_attributes;
         if (search_object.supplemental_fields && search_object.supplemental_fields.length > 0) {
-            get_attributes = _.uniqBy(search_object.get_attributes.concat(search_object.supplemental_fields), 'attribute');
+            get_attributes = _.uniqBy(search_object.get_attributes.concat(search_object.supplemental_fields), 'alias');
         }
         evaluateTableAttributes(get_attributes, search_object, (err, attributes) => {
             if (err) {
@@ -265,16 +271,16 @@ function search(search_wrapper, callback){
                 processDataJoins.bind(null, search_wrapper),
                 processMath.bind(null, search_wrapper.selects),
                 (data, caller)=>{
-                    let results = [];
-                    data.forEach((record) => {
-                        results.push(_.pick(record, get_attributes));
-                    });
-
-                    results = groupData(results, search_wrapper);
+                    let results = groupData(data, search_wrapper);
 
                     results = sortData(results, search_wrapper);
 
-                    caller(null, results);
+                    let final_results = [];
+                    results.forEach((record) => {
+                        final_results.push(_.pick(record, get_attributes));
+                    });
+
+                    caller(null, final_results);
                 }
             ], (exception, results)=>{
                 if(exception){
@@ -293,14 +299,14 @@ function processMath(selects, data, callback){
     let calculations = [];
 
     calculations = selects.filter((column)=>{
-        if(column.calculation) {
+        if(column.calculation && !column.is_aggregate) {
             column.calculation = column.calculation.replace(/\./g,'_');
             return column.calculation;
         }
     });
 
     if(!calculations || calculations.length === 0) {
-        return callback(data);
+        return callback(null, data);
     }
 
     let compiled_calculations = math.compile(calculations.map((calc)=>{return calc.calculation}));
@@ -508,6 +514,10 @@ function sortData(data, search_wrapper){
 }
 
 function groupData(data, search_wrapper){
+    let aggregate_calculations = search_wrapper.selects.filter((select)=>{
+        return select.is_aggregate;
+    });
+
     if(search_wrapper.group && search_wrapper.group.length > 0) {
 
         let columns = [];
@@ -515,8 +525,7 @@ function groupData(data, search_wrapper){
         search_wrapper.group.forEach((group_by) => {
             let group_attribute = findAttribute(search_wrapper.all_get_attributes, group_by.attribute);
             if(group_attribute) {
-                let order_column = group_attribute.alias;
-                columns.push(order_column);
+                columns.push(group_attribute.alias);
             }
         });
 
@@ -525,16 +534,7 @@ function groupData(data, search_wrapper){
             let groups = group(data, columns);
 
             //get the nested array results inside each group
-            let results = walkGroupTree(groups);
-
-            //get distinct values
-            results = _.uniqBy(results, (item)=>{
-                let item_array = [];
-                columns.forEach((column)=>{
-                    item_array.push(item[column]);
-                });
-                return item_array.join();
-            } );
+            let results = walkGroupTree(groups, aggregate_calculations, columns);
 
             return results;
         }
@@ -542,7 +542,46 @@ function groupData(data, search_wrapper){
         return data;
     }
 
-    return data;
+    let results = walkGroupTree(data, aggregate_calculations, []);
+
+    return results;
+}
+
+function aggregateData(data, calculations){
+
+    if(calculations && calculations.length > 0) {
+        let aggregate_object = {};
+        let expressions = [];
+        let result_object = {};
+        calculations.forEach((calculation) => {
+            expressions.push(calculation.calculation.replace(/\./g,'_'));
+            calculation.calculation_columns.forEach((column) => {
+                aggregate_object[column.alias] = [];
+            });
+        });
+
+        let aggregate_columns = Object.keys(aggregate_object);
+        data.forEach((record) => {
+            aggregate_columns.forEach((column) => {
+                if(record[column] !== null && record[column] !== undefined) {
+                    aggregate_object[column].push(record[column]);
+                }
+            });
+        });
+
+        let compiled_expressions = math.compile(expressions);
+        compiled_expressions.forEach((expression, x) => {
+            let scope = {};
+            calculations[x].calculation_columns.forEach((column) => {
+                scope[column.alias] = aggregate_object[column.alias];
+
+            });
+
+            result_object[calculations[x].alias] = expression.eval(scope);
+        });
+        return result_object;
+    }
+    return null;
 }
 
 function group(collection, keys) {
@@ -556,15 +595,40 @@ function group(collection, keys) {
     }
 }
 
-function walkGroupTree(the_object){
+
+//take the data set and reduce the set to unique by the defined group columns or just the aggregate results
+function uniqueGroupResults(data, aggregate_results, group_columns){
+    if(!aggregate_results && group_columns){
+        return data;
+    }
+
+    if(!group_columns || group_columns.length === 0){
+        return [aggregate_results];
+    }
+    let results = _.uniqBy(data, (item) => {
+        item = _.merge(item, aggregate_results);
+        let item_array = [];
+        group_columns.forEach((column) => {
+            item_array.push(item[column]);
+        });
+        return item_array.join();
+    });
+
+    return results;
+}
+
+//recursively walks the group tree and performs aggregate calcs (if needed) and returns the unique set
+function walkGroupTree(the_object, calculations, group_columns){
     var result = [];
 
     if(the_object instanceof Array){
-        return the_object;
+        let aggregate_results = aggregateData(the_object, calculations);
+        let results = uniqueGroupResults(the_object, aggregate_results, group_columns);
+        return results;
     }
 
     Object.keys(the_object).sort().forEach((prop)=>{
-        result =  result.concat(walkGroupTree(the_object[prop]));
+        result =  result.concat(walkGroupTree(the_object[prop], calculations, group_columns));
     });
 
     return result;
@@ -602,12 +666,19 @@ function createJoinMap(tables){
     return joins;
 }
 
-function parseCalculationColumns(calculation){
+function parseCalculation(calculation){
     let skip_node = false;
     let columns = [];
+    let is_aggregate = false;
+
     let nodes = math.parse(calculation);
     nodes.filter((node)=>{
-        if(!node.isIndexNode && node.object && node.index && node.index.dotNotation){
+        //if the calculation contains an aggregate function mark is as an aggregate for appropriate processing
+        if(node.isFunctionNode){
+            if(aggregate_functions.indexOf(node.fn.name) >= 0) {
+                is_aggregate = true;
+            }
+        } else if(!node.isIndexNode && node.object && node.index && node.index.dotNotation){
             let table = node.object.name;
             let attribute = node.index.dimensions[0].value;
             columns.push({
@@ -621,21 +692,26 @@ function parseCalculationColumns(calculation){
             skip_node = false;
         } else if(node.isSymbolNode){
             columns.push({
-                attribute: node.name
+                attribute: node.name,
+                alias: node.name
             });
             return node;
         }
     });
 
-    return columns;
+    return {columns: columns, is_aggregate: is_aggregate};
 }
+
+
 
 function addSupplementalFields(search_wrapper){
     let calculation_columns = [];
     search_wrapper.selects.forEach((select)=>{
         if(select.calculation){
             //we use math.parse to return the elements that are the columns
-            select.calculation_columns = parseCalculationColumns(select.calculation);
+            let parse_results = parseCalculation(select.calculation);
+            select.calculation_columns = parse_results.columns;
+            select.is_aggregate = parse_results.is_aggregate;
             calculation_columns = calculation_columns.concat(select.calculation_columns);
             if(!select.alias){
                 select.alias = select.calculation;
@@ -678,11 +754,10 @@ function addSupplementalFields(search_wrapper){
                 if (search_wrapper.tables.length === 1 || table.table === calc_column.table || table.alias === calc_column.table) {
                     table.supplemental_fields.push({
                         attribute: calc_column.attribute,
-                        alias: `${table.table}_${calc_column.attribute}`,
+                        alias: calc_column.alias,
                         table: table.table,
                         table_alias: table.alias
                     });
-                    calc_column.alias = `${table.table}_${calc_column.attribute}`;
                 }
             });
         }
@@ -698,7 +773,7 @@ function addSupplementalFields(search_wrapper){
         }
 
         table.get_attributes = _.uniqBy(table.get_attributes, 'attribute');
-        table.supplemental_fields = _.uniqBy(table.supplemental_fields, 'attribute');
+        table.supplemental_fields = _.uniqBy(table.supplemental_fields, 'alias');
     });
 
     return search_wrapper;

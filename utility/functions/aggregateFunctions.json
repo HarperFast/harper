@@ -8,5 +8,7 @@
   "mode",
   "prod",
   "std",
-  "var"
+  "var",
+  "sum",
+  "avg"
 ]

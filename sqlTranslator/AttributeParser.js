@@ -100,26 +100,30 @@ class AttributeParser{
             return function_name;
         }
         let args = [];
-        expression.args.expression.forEach((exp)=>{
-            switch(exp.type){
-                case 'expression':
-                    args.push(this[evaluateExpression](exp).reverse().join(' '));
-                    break;
-                case 'function':
-                    args.push(this[evaluateFunction](exp));
-                    break;
-                case 'literal':
-                    if(exp.variant === 'text'){
-                        args.push(`"${exp.value}"`);
-                    } else {
-                        args.push(exp.value);
-                    }
-                    break;
-                case 'identifier':
-                    this[parseColumn](exp);
-                    args.push(exp.name);
-            }
-        });
+        if(expression.args.expression) {
+            expression.args.expression.forEach((exp) => {
+                switch (exp.type) {
+                    case 'expression':
+                        args.push(this[evaluateExpression](exp).reverse().join(' '));
+                        break;
+                    case 'function':
+                        args.push(this[evaluateFunction](exp));
+                        break;
+                    case 'literal':
+                        if (exp.variant === 'text') {
+                            args.push(`"${exp.value}"`);
+                        } else {
+                            args.push(exp.value);
+                        }
+                        break;
+                    case 'identifier':
+                        this[parseColumn](exp);
+                        args.push(exp.name);
+                }
+            });
+        } else {
+            args.push(expression.args.name);
+        }
 
         //this[validateFunction](function_name, args.length);
 
