@@ -88,7 +88,7 @@ function createTableObject(table){
     return {
         alias: table.alias ? table.alias : schema_table,
         schema: schema_table[0],
-        name: schema_table[1]
+        table: schema_table[1]
     };
 }
 
@@ -116,7 +116,7 @@ function validateOrderByColumn(select_columns, column_name){
 
     if(table_column.length > 1){
         let found_table = _.filter(select_columns, (column)=>{
-            return (column.table === table_column[0] || column.table_alias === table_column[0]) && (column.name === table_column[1] || column.name === '*');
+            return (column.table === table_column[0] || column.table_alias === table_column[0]) && (column.attribute === table_column[1] || column.name === '*');
         });
 
         if(found_table.length === 0){
