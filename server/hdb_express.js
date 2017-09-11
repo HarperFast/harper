@@ -45,7 +45,8 @@ if (cluster.isMaster && !DEBUG) {
         role = require('../security/role'),
         read_log = require('../utility/logging/read_logs'),
         global_schema = require('../utility/globalSchema'),
-        pjson = require('../package.json');
+        pjson = require('../package.json'),
+        async = require('async');
 
 
     hdb_properties.append(hdb_properties.get('settings_path'));
@@ -248,12 +249,16 @@ if (cluster.isMaster && !DEBUG) {
             httpServer.listen(hdb_properties.get('HTTP_PORT'), function(){
                 winston.info(`HarperDB ${pjson.version} HTTP Server running on ${hdb_properties.get('HTTP_PORT')}`);
 
-                global_schema.setSchemaDataToGlobal((err, data) => {
-                    if (err) {
-                        winston.info('error', err);
-                    }
+                async.parallel(
+                    [
+                        global_schema.setSchemaDataToGlobal,
+                        global_schema.setUsersToGlobal
+                    ], (error, data)=>{
+                        if(error){
+                            winston.error(error);
+                        }
+                    });
 
-                });
 
             });
         }
