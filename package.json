@@ -33,6 +33,7 @@
     "licensekey": "^2.0.11",
     "lodash": "^4.17.4",
     "lodash-joins": "^2.0.2",
+    "mathjs": "^3.16.1",
     "mkdirp": "^0.5.1",
     "moment": "^2.17.1",
     "node-forge": "^0.7.1",

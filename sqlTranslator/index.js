@@ -30,8 +30,8 @@ function evaluateSQL(sql, callback) {
 
 function processSQL(sql, callback){
     try {
-        //the LIKE operator causes the format of the where ast to go bonkers so we replace with something palatable and replace again on the otherside
-        sql = sql.replace(/ like /gi, ' || ');
+        //the LIKE operator causes the format of the where ast to go bonkers so we replace with something palatable and replace again on the other side
+        //sql = sql.replace(/ like /gi, ' || ');
         let ast = sqliteParser(sql);
         let sql_function = nullFunction;
         switch (ast.statement[0].variant) {
