@@ -13,6 +13,7 @@ const insert_validator = require('../validation/insertValidator.js'),
     winston = require('../utility/logging/winston_logger'),
     _ = require('lodash'),
     text_chunk = require("node-text-chunk"),
+    truncate = require('truncate-utf8-bytes'),
     PropertiesReader = require('properties-reader'),
     hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
     hdb_properties.append(hdb_properties.get('settings_path'));
@@ -213,7 +214,7 @@ function compareUpdatesToExistingRecords(update_object, hash_attribute, existing
 
                     let value = typeof existing_record[attr] === 'object' ? JSON.stringify(existing_record[attr]) : existing_record[attr];
                     let value_stripped = String(value).replace(regex, '');
-                    value_stripped = value_stripped.length > 255 ? value_stripped.substring(0, 255) + '/blob' : value_stripped;
+                    value_stripped = Buffer.byteLength(value_stripped) > 255  ? truncate(value_stripped, 255) + '/blob' : value_stripped;
 
                     if (existing_record[attr] !== null && existing_record[attr] !== undefined) {
                         unlink_paths.push(`${base_path}${attr}/${value_stripped}/${existing_record[hash_attribute]}.hdb`);
@@ -287,7 +288,7 @@ function checkAttributeSchema(insert_object, callerback) {
 
             let value = typeof record[property] === 'object' ? JSON.stringify(record[property]) : record[property];
             let value_stripped = String(value).replace(regex, '');
-            let value_path = value_stripped.length > 255 ? value_stripped.substring(0, 255) + '/blob' : value_stripped;
+            let value_path = Buffer.byteLength(value_stripped) > 255 ? truncate(value_stripped, 255) + '/blob' : value_stripped;
             let attribute_file_name = record[hash_attribute] + '.hdb';
             let attribute_path = base_path + property + '/' + value_path;
 
