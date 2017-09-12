@@ -19,7 +19,9 @@ const insert_validator = require('../validation/insertValidator.js'),
 
 
 const hdb_path = path.join(hdb_properties.get('HDB_ROOT'), '/schema');
-const regex = /\//g;
+const regex = /\//g,
+    hash_regex = /^[a-zA-Z0-9-_]+$/;
+
 
 module.exports = {
     insert: insertData,
@@ -44,18 +46,22 @@ function validation(write_object, callback){
         let no_hash = false;
         let long_hash = false;
         let long_attribute = false;
+        let bad_hash_value = false;
         write_object.records.forEach((record)=>{
             if(record[hash_attribute] === null || record[hash_attribute] === undefined){
                 no_hash = true;
                 return;
-            } else if(record[hash_attribute].length > 250){
+            } else if(!hash_regex.test(record[hash_attribute])) {
+                bad_hash_value = true;
+                return;
+            } else if(Buffer.byteLength(String(record[hash_attribute])) > 250){
                 long_hash = true;
                 return;
             }
 
             //evaluate that there are no attributes who have a name longer than 250 characters
             Object.keys(record).forEach((attribute)=>{
-                if(attribute.length > 250){
+                if(Buffer.byteLength(String(attribute)) > 250){
                     long_attribute = true;
                 }
             });
@@ -69,11 +75,15 @@ function validation(write_object, callback){
         }
 
         if (long_hash) {
-            return callback(`transaction aborted due to record(s) with a hash value that exceeds 250 characters.`);
+            return callback(`transaction aborted due to record(s) with a hash value that exceeds 250 bytes.`);
+        }
+
+        if (bad_hash_value) {
+            return callback(`transaction aborted due to record(s) with a hash value that has characters which are not alpha-numeric dashes or underscores.`);
         }
 
         if (long_hash) {
-            return callback(`transaction aborted due to record(s) with an attribute that exceeds 250 characters.`);
+            return callback(`transaction aborted due to record(s) with an attribute that exceeds 250 bytes.`);
         }
 
         callback(null, table_schema);
