@@ -14,7 +14,8 @@ const base_path = hdb_properties.get('HDB_ROOT') + "/schema/"
     condition_patterns = require('../sqlTranslator/conditionPatterns'),
     autocast = require('autocast'),
     math = require('mathjs'),
-    aggregate_functions = require('../utility/functions/aggregateFunctions.json');
+    aggregate_functions = require('../utility/functions/aggregateFunctions.json'),
+    jinqjs = require('jinq');
 
 math.import([
     require('../utility/functions/math/count'),
@@ -238,10 +239,6 @@ function search(search_wrapper, callback){
             search_wrapper = addSupplementalFields(search_wrapper);
             search_wrapper = setAdditionalAttributeData(search_wrapper);
 
-            let get_attributes = search_wrapper.selects.map((select)=>{
-                return select.alias;
-            });
-
             search_wrapper.tables.forEach((table) => {
                 table.conditions = [];
 
@@ -274,16 +271,22 @@ function search(search_wrapper, callback){
             async.waterfall([
                 fetchJoinData.bind(null, search_wrapper),
                 processDataJoins.bind(null, search_wrapper),
-                processMath.bind(null, search_wrapper.selects),
                 (data, caller)=>{
                     let results = groupData(data, search_wrapper);
 
-                    results = sortData(results, search_wrapper);
+                    let fields = procesSelects(search_wrapper.selects);
 
-                    let final_results = [];
-                    results.forEach((record) => {
-                        final_results.push(_.pick(record, get_attributes));
-                    });
+                    let final_results = new jinqjs()
+                        .from(results)
+                        .select(fields);
+
+                    let order_fields = processOrderBy(search_wrapper);
+                    if(order_fields && order_fields.length > 0){
+                        final_results = new jinqjs()
+                            .from(final_results)
+                            .orderBy(order_fields)
+                            .select();
+                    }
 
                     caller(null, final_results);
                 }
@@ -300,44 +303,35 @@ function search(search_wrapper, callback){
     }
 }
 
-function processMath(selects, data, callback){
-    let calculations = [];
-
-    calculations = selects.filter((column)=>{
-        if(column.calculation && !column.is_aggregate) {
-            column.calculation = column.calculation.replace(/\./g,'_');
-            return column.calculation;
+function procesSelects(selects){
+    let fields = [];
+    selects.forEach((select)=>{
+        if(select.calculation && !select.is_aggregate){
+            let calc_field = {
+                text: select.alias,
+                value:createMathPredicate(select)
+            };
+            fields.push(calc_field);
+        } else {
+            fields.push({field: select.alias});
         }
     });
 
-    if(!calculations || calculations.length === 0) {
-        return callback(null, data);
-    }
+    return fields;
+}
 
-    let compiled_calculations = math.compile(calculations.map((calc)=>{return calc.calculation}));
-
-    async.eachOfLimit(data, 1000, (record, index, caller) => {
-        try {
-            compiled_calculations.forEach((calculation, i) => {
-                let scope_object = {};
-                if (calculations[i].calculation_columns && calculations[i].calculation_columns.length > 0) {
-                    calculations[i].calculation_columns.forEach((calc_column) => {
-                        scope_object[calc_column.alias] = record[calc_column.alias];
-                    });
-                }
-                let result = calculation.eval(scope_object);
-                let calculation_name = calculations[i].alias ? calculations[i].alias : `Calculation${i}`;
-                data[index][calculation_name] = result;
+function createMathPredicate(calculation){
+    return (row)=>{
+        let code = math.compile(calculation.calculation);
+        let scope ={};
+        if(calculation.calculation_columns) {
+            calculation.calculation_columns.forEach((column) => {
+                scope[column.alias] = row[column.alias]
             });
-
-            caller();
-        } catch (e) {
-            winston.error(e);
-            caller();
         }
-    }, (err)=>{
-        return callback(null, data);
-    });
+
+        return code.eval(scope);
+    }
 }
 
 function processDataJoins(search_wrapper, search_data, callback){
@@ -494,28 +488,30 @@ function setAdditionalAttributeData(search_wrapper){
     return search_wrapper;
 }
 
-function sortData(data, search_wrapper){
+function processOrderBy(search_wrapper){
+    let orders = [];
     if(search_wrapper.order && search_wrapper.order.length > 0) {
-
-        let columns = [];
-        let orders = [];
         search_wrapper.order.forEach((order_by) => {
             let order_attribute = findAttribute(search_wrapper.all_get_attributes, order_by.table + '.' + order_by.attribute);
+            if(!order_attribute){
+                order_attribute = search_wrapper.selects.filter((select)=>{
+                    return select.alias = order_by.attribute;
+                })[0];
+            }
+
             if(order_attribute) {
                 let order_column = order_attribute.alias;
-                columns.push(order_column);
-                orders.push(order_by.direction ? order_by.direction : 'asc');
+                orders.push({
+                    field: order_column,
+                    sort: order_by.direction ? order_by.direction : 'asc'
+                });
             }
         });
 
-        if(orders) {
-            return _.orderBy(data, columns, orders);
-        }
-
-        return data;
+        return orders;
     }
 
-    return data;
+    return orders;
 }
 
 function groupData(data, search_wrapper){
