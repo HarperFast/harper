@@ -52,7 +52,7 @@ function validation(write_object, callback){
             if(record[hash_attribute] === null || record[hash_attribute] === undefined){
                 no_hash = true;
                 return;
-            } else if(!hash_regex.test(record[hash_attribute])) {
+            } else if(regex.test(record[hash_attribute])) {
                 bad_hash_value = true;
                 return;
             } else if(Buffer.byteLength(String(record[hash_attribute])) > 250){
@@ -80,7 +80,7 @@ function validation(write_object, callback){
         }
 
         if (bad_hash_value) {
-            return callback(`transaction aborted due to record(s) with a hash value that has characters which are not alpha-numeric dashes or underscores.`);
+            return callback(`transaction aborted due to record(s) with a hash value that contains a forward slash.`);
         }
 
         if (long_hash) {
