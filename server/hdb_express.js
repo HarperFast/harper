@@ -51,7 +51,7 @@ if (cluster.isMaster && !DEBUG) {
     hdb_properties.append(hdb_properties.get('settings_path'));
 
 
-    app.use(bodyParser.json()); // support json encoded bodies
+    app.use(bodyParser.json({limit:'1gb'})); // support json encoded bodies
     app.use(bodyParser.urlencoded({extended: true}));
 
     app.use(function (error, req, res, next) {

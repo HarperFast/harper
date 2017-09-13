@@ -24,14 +24,7 @@ const constraints = {
         }
     },
     records: {
-        presence : true,
-        format: function(value) {
-            if(!validate.isArray(value)){
-                return {message: 'must be an array'};
-            }
-
-            return null;
-        }
+        presence : true
     }
 };
 

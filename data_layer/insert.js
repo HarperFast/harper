@@ -39,6 +39,11 @@ function validation(write_object, callback){
             callback(validator);
             return;
         }
+
+        if(!Array.isArray(write_object.records)){
+            return callback('records must be an array');
+        }
+
         let hash_attribute = table_schema.hash_attribute;
 
         //validate that every record has hash_attribute populated
