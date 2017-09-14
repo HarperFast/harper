@@ -9,7 +9,13 @@ var passport = require('passport')
 
 
 function findAndValidateUser(username, password, done){
-    let search_obj = {};
+    /*let user_data = global.hdb_users.filter((user)=>{
+        return user.username === username;
+    })[0];
+
+    if()*/
+
+
     search_obj.schema = 'system';
     search_obj.table = 'hdb_user';
     search_obj.hash_attribute = 'username';
