@@ -710,6 +710,13 @@ function addSupplementalFields(search_wrapper){
     search_wrapper.selects.forEach((select)=>{
         if(select.calculation){
             //we use math.parse to return the elements that are the columns
+            if(select.calculation.indexOf('*') > -1){
+                select.alias = select.calculation;
+                let first_table = search_wrapper.tables[0];
+                let hash_attribute = global.hdb_schema[first_table.schema][first_table.table].hash_attribute;
+                select.calculation = select.calculation.replace(/\*/g, `${first_table.table}.${hash_attribute}`);
+            }
+
             let parse_results = parseCalculation(select.calculation);
             select.calculation_columns = parse_results.columns;
             select.is_aggregate = parse_results.is_aggregate;
