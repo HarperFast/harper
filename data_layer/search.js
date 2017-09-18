@@ -710,8 +710,11 @@ function addSupplementalFields(search_wrapper){
     search_wrapper.selects.forEach((select)=>{
         if(select.calculation){
             //we use math.parse to return the elements that are the columns
-            if(select.calculation.indexOf('*') > -1){
+            if(!select.alias){
                 select.alias = select.calculation;
+            }
+
+            if(select.calculation.indexOf('*') > -1){
                 let first_table = search_wrapper.tables[0];
                 let hash_attribute = global.hdb_schema[first_table.schema][first_table.table].hash_attribute;
                 select.calculation = select.calculation.replace(/\*/g, `${first_table.table}.${hash_attribute}`);
@@ -721,9 +724,7 @@ function addSupplementalFields(search_wrapper){
             select.calculation_columns = parse_results.columns;
             select.is_aggregate = parse_results.is_aggregate;
             calculation_columns = calculation_columns.concat(select.calculation_columns);
-            if(!select.alias){
-                select.alias = select.calculation;
-            }
+
         }
     });
 
