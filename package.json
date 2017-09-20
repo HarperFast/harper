@@ -43,6 +43,7 @@
     "passport": "^0.3.2",
     "passport-http": "^0.3.0",
     "passport-local": "^1.0.0",
+    "portscanner": "^2.1.1",
     "prompt": "^1.0.0",
     "properties-reader": "0.0.15",
     "randomstring": "^1.1.5",
@@ -50,6 +51,7 @@
     "socket.io": "^2.0.3",
     "sqlite-parser": "^1.0.1",
     "sudo-prompt": "^7.0.0",
+    "underscore": "^1.8.3",
     "uuid": "^3.0.1",
     "validate.js": "^0.11.1",
     "winston": "^2.3.1"

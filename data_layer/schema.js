@@ -11,8 +11,10 @@ const fs = require('fs.extra')
     // as such the functions have been broken out into a seperate module.
     , schema_describe = require('./schemaDescribe')
     , schema_ops = require('../utility/schema_ops')
-    , PropertiesReader = require('properties-reader'),
-    signalling = require('../utility/signalling');
+    , PropertiesReader = require('properties-reader')
+    ,clone = require('clone')
+    , _ = require('underscore')
+    ,signalling = require('../utility/signalling');
 let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
 hdb_properties.append(hdb_properties.get('settings_path'));
 
@@ -223,8 +225,9 @@ function deleteSchemaStructure(drop_schema_object, callback) {
 /** table methods **/
 
 function createTableStructure(create_table_object, callback) {
+    let validation_obj = clone(create_table_object);
 
-    let validator = validation.create_table_object(create_table_object);
+    let validator = validation.create_table_object(validation_obj);
     if (validator) {
         callback(validator);
         return;
@@ -261,7 +264,22 @@ function createTableStructure(create_table_object, callback) {
         };
 
         if(create_table_object.residence){
-            table.residence = create_table_object.residence;
+            if(global.cluster_server
+                && global.cluster_server.socket_server
+                && global.cluster_server.socket_server.other_nodes){
+                let node_names = global.cluster_server.socket_server.other_nodes.map(function(n) {return n.name;});
+                node_names.push(hdb_properties.get('NODE_NAME'));
+                var missing_nodes =  _.difference(create_table_object.residence, node_names)
+                if(missing_nodes && missing_nodes.length > 0){
+                    return callback(`Clustering error unable to find ${JSON.stringify(missing_nodes)}`);
+                }
+
+                table.residence = create_table_object.residence;
+
+            }else{
+                return callback(`Clustering does not appear to be enabled.  Cannot insert table with proerty residence.`);
+            }
+
         }
 
         let insertObject = {
@@ -564,6 +582,24 @@ function createAttribute(create_attribute_object, callback) {
                 callback(err);
                 return;
             }
+            if(global.cluster_server
+                && global.cluster_server.socket_server.name
+                && !create_attribute_object.delegated    ){
+
+
+                    create_attribute_object.delegated = true;
+                    create_attribute_object.operation = 'create_attribute';
+
+                    for(let o_node in global.cluster_server.socket_server.other_nodes){
+                        let payload = {};
+                        payload.msg = create_attribute_object;
+                        payload.node = global.cluster_server.socket_server.other_nodes[o_node];
+                        global.cluster_server.send(payload, null);
+                    }
+
+
+            }
+
 
             signalling.signalSchemaChange({type: 'schema'});
 

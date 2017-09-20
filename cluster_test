@@ -1,0 +1,28 @@
+#!/bin/bash
+working_dir=/home/stephen/WebstormProjects/harperdb
+target_dir=/home/stephen/cluster_testing
+node_count=$2
+port_offset=3
+http_port=9925
+cluster_port=1111
+build(){
+
+rm -rf $target_dir/*
+while [ $node_count -gt 0 ]
+do
+mkdir -p $target_dir/node_$node_count/harperdb
+mkdir -p $target_dir/node_$node_count/data
+cp -R $working_dir/* $target_dir/node_$node_count/harperdb/
+cd $target_dir/node_$node_count/harperdb/bin
+node harperdb.js run --HDB_ROOT $target_dir/node_$node_count/data/hdb --HTTP_PORT $http_port  --HTTPS_PORT 31283 --HDB_ADMIN_USERNAME HDB_ADMIN --HDB_ADMIN_PASSWORD password
+printf  "\nCLUSTERING=TRUE\nCLUSTERING_PORT = %s\nNODE_NAME = node_%s" "$cluster_port" "$node_count" >> $target_dir/node_$node_count/data/hdb/config/settings.js
+node_count=$(($node_count -1));
+http_port=$(($http_port + $port_offset));
+cluster_port=$(($cluster_port + $port_offset));
+done
+echo "DONE"
+}
+destroy(){
+kill $(ps -ef | grep [h]db_ | awk '{print $2}')
+}
+$@

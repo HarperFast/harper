@@ -39,11 +39,12 @@ if (cluster.isMaster && !DEBUG) {
         global_schema = require('../utility/globalSchema'),
         pjson = require('../package.json'),
         server_utilities = require('./server_utilities'),
-        cluster_server = require('./cluster_server')
+        ClusterServer = require('./clustering/cluster_server')
+        clone = require('clone');
 
 
     hdb_properties.append(hdb_properties.get('settings_path'));
-
+    global.cluster_server = null;
 
     app.use(bodyParser.json()); // support json encoded bodies
     app.use(bodyParser.urlencoded({extended: true}));
@@ -61,40 +62,125 @@ if (cluster.isMaster && !DEBUG) {
             req.body.hdb_user = user;
 
 
-            server_utilities.chooseOperation(req.body, (err, operation_function, delegate_operation) => {
+            server_utilities.chooseOperation(req.body, (err, operation_function) => {
+
                 if (err) {
                     winston.error(err);
                     res.status(500).send(err);
                     return;
                 }
-                if(hdb_properties.get("CLUSTERING") && delegate_operation && hdb_properties.get("CLUSTERING_PORT") && hdb_properties.get("NODE_NAME")) {
-                    global_schema.getTableSchema(req.body.schema, req.body.table, function(err, table){
-                        if(err){
-                            winston.error(err);
-                            return res.status(500).send(err);
 
-                        }
+                function broadCast(){
 
-                        if(table.residence
-                                && (table.residence.indexOf(hdb_properties.get('NODE_NAME')) > -1
-                                || table.residence.indexOf('*') > -1)){
+                    var operation = clone(req.body.operation);
+                    server_utilities.processLocalTransaction(req,res, operation_function, function(err, data){
+                          if(!err){
+                              for(let o_node in global.cluster_server.socket_server.other_nodes){
+                                  let payload = {};
+                                  payload.msg = req.body
+                                  if(data.id){
+                                      payload.msg.id = data.id;
 
-                            server_utilities.processLocalTransaction(req,res, operation_function, function(err){
-                              if(!err && table.residence.length > 1){
+                                  }
 
+                                  if(!req.body.operation){
+                                      payload.msg.operation = operation;
+                                  }
+
+
+
+                                  payload.node = global.cluster_server.socket_server.other_nodes[o_node];
+                                  global.cluster_server.send(payload, res);
                               }
 
-                           });
-                        }else if(table.residence){
-                            cluster_server.proccess(req, table.residence);
-                        }else{
-                            server_utilities.processLocalTransaction(req, res, operation_function, function(){
-
-                            });
-                        }
-
+                          }
 
                     });
+
+
+                }
+
+
+                //TODO read log? describe_all etc...
+
+                if(global.cluster_server && global.cluster_server.socket_server.name && req.body.operation != 'sql ') {
+                    if(!req.body.schema
+                        || !req.body.table
+                        || req.body.operation === 'create_table'
+                        || req.body.operation ==='drop_table'
+
+                    ){
+                        var localOnlyOperations = ['describe_all', 'describe_table', 'describe_schema', 'read_log']
+                        if(localOnlyOperations.includes(req.body.operation)){
+                            server_utilities.processLocalTransaction(req,res,operation_function, function(err){
+                                winston.error(err);
+                            })
+                        }else{
+                            return broadCast();
+                        }
+
+                    }else{
+                        global_schema.getTableSchema(req.body.schema, req.body.table, function(err, table){
+                            if(err){
+                                winston.error(err);
+                                return res.status(500).send(err);
+
+                            }
+
+
+                            if(table.residence){
+                                let residence = table.residence;
+                                if(typeof table.residence === 'string'){
+                                    residence = JSON.parse(table.residence);
+                                }
+
+                                if(residence.indexOf('*') > -1){
+                                    return broadCast();
+                                }
+
+                                if(residence.indexOf(hdb_properties.get('NODE_NAME')) > -1){
+                                    server_utilities.processLocalTransaction(req, res, operation_function, function(){
+                                        if(residence.length > 1){
+                                            for(node in residence){
+                                                if(residence[node] != hdb_properties.get('NODE_NAME')){
+                                                    let payload = {};
+                                                    payload.msg = req.body;
+                                                    payload.node = payload.node = {"name":residence[node]};
+                                                    global.cluster_server.send(payload, res);
+                                                }
+                                            }
+                                        }
+
+                                        for(let o_node in global.cluster_server.socket_server.other_nodes){
+
+                                        }
+                                    });
+                                }else{
+                                    for(node in residence){
+                                        if(residence[node] != hdb_properties.get('NODE_NAME')){
+                                            let payload = {};
+                                            payload.msg = req.body;
+                                            payload.node = payload.node = {"name":residence[node]};
+                                            global.cluster_server.send(payload, res);
+                                        }
+                                    }
+                                }
+
+
+                            }else{
+                                server_utilities.processLocalTransaction(req, res, operation_function, function(){
+
+                                });
+                            }
+
+
+
+
+
+                        });
+
+
+                    }
 
 
                 }else{
@@ -102,6 +188,7 @@ if (cluster.isMaster && !DEBUG) {
 
                     });
                 }
+
 
 
 
@@ -155,6 +242,8 @@ if (cluster.isMaster && !DEBUG) {
 
         }
 
+        // TODO move to run and drop CS into global
+
         if(hdb_properties.get('HTTP_ON') && hdb_properties.get('HTTP_ON').toUpperCase()  === 'TRUE'){
             httpServer.listen(hdb_properties.get('HTTP_PORT'), function(){
                 winston.info(`HarperDB ${pjson.version} HTTP Server running on ${hdb_properties.get('HTTP_PORT')}`);
@@ -167,6 +256,57 @@ if (cluster.isMaster && !DEBUG) {
                 });
 
             });
+        }
+
+        if(hdb_properties.get('CLUSTERING')){
+            var node = {
+                "name": hdb_properties.get('NODE_NAME'),
+                "port": hdb_properties.get('CLUSTERING_PORT'),
+
+            }
+
+            const search = require('../data_layer/search');
+            let search_obj = {
+                "table":"hdb_nodes",
+                "schema":"system",
+                "search_attribute":"host",
+                "hash_attribute" : "name",
+                "search_value":"*",
+                "get_attributes":["*"]
+            }
+            search.searchByValue(search_obj, function(err, nodes){
+                if(err){
+                    winston.error(err);
+                }
+
+                if(nodes){
+                    node.other_nodes = nodes;
+                    global.cluster_server = new ClusterServer(node);
+                    global.cluster_server.init(function(err){
+                        if(err){
+                            return winston.error(err);
+                        }
+                        global.cluster_server.establishConnections(function(err){
+                            if(err){
+                                return winston.error(err);
+                            }
+
+                            winston.info('clustering established');
+
+                        })
+
+                    });
+
+                }
+
+            });
+
+
+
+
+
+
+
         }
 
 

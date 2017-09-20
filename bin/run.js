@@ -91,14 +91,13 @@ function run() {
 
     });
 
-
+cd
 
 }
 
 function completeRun() {
     async.waterfall([
-        kickOffExpress,
-        kickOffClustering
+        kickOffExpress
     ], (error, data) => {
         exitInstall();
     });
@@ -129,11 +128,6 @@ function kickOffExpress(callback){
     callback();
 }
 
-function kickOffClustering(callback){
-    const cluster_server = require('../server/cluster_server');
-    cluster_server.initialze();
-    callback();
-}
 
 
 function exitInstall(){

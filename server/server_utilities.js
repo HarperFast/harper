@@ -1,6 +1,7 @@
 module.exports = {
     chooseOperation: chooseOperation,
-    processLocalTransaction: processLocalTransaction
+    processLocalTransaction: processLocalTransaction,
+    proccessDelegatedTransaction: proccessDelegatedTransaction
 
 }
 
@@ -26,67 +27,86 @@ function processLocalTransaction(req, res, operation_function, callback){
                 winston.info(error);
                 if(typeof error != 'object')
                     error = {"error": error};
+                callback(error);
                 res.status(200).json(error);
                 return;
             }
             if(typeof data != 'object')
                 data = {"message": data};
-
+            callback(null, data);
             return res.status(200).json(data);
         });
     } catch (e) {
         winston.error(e);
+        callback(e);
         return res.status(500).json(e);
     }
 }
 
+
+function proccessDelegatedTransaction(operation, operation_function, callback){
+    try {
+        if(operation.operation != 'read_log')
+            winston.info(JSON.stringify(operation));
+
+        operation_function(operation, (error, data) => {
+            if (error) {
+                winston.info(error);
+                if(typeof error != 'object')
+                    error = {"error": error};
+
+               return callback(null, error);
+            }
+            if(typeof data != 'object')
+                data = {"message": data};
+            return callback(null, data);
+        });
+    } catch (e) {
+        winston.error(e);
+        return callback(e);
+    }
+
+}
+
 function chooseOperation(json, callback) {
     let operation_function = nullOperation;
-    let delegate_operation = '';
 
     switch (json.operation) {
         case 'insert':
             operation_function = write.insert;
-            delegate_operation = 'true';
             break;
         case 'update':
             operation_function = write.update;
-            delegate_operation = 'true';
             break;
         case 'search_by_hash':
             operation_function = search.searchByHash;
-            delegate_operation = 'true';
             break;
         case 'search_by_value':
             operation_function = search.searchByValue;
-            delegate_operation = 'true';
             break;
         case 'search':
             operation_function = search.search;
-            delegate_operation = 'true';
             break;
         case 'sql':
             operation_function = sql;
-            delegate_operation = 'true';
             break;
         case 'csv_data_load':
             operation_function = csv.csvDataLoad;
-            delegate_operation = 'true';
             break;
         case 'csv_file_load':
             operation_function = csv.csvFileLoad;
-            delegate_operation = 'true';
             break;
         case 'csv_url_load':
             operation_function = csv.csvURLLoad;
-            delegate_operation = 'true';
             break;
         case 'create_schema':
             operation_function = schema.createSchema;
             break;
         case 'create_table':
             operation_function = schema.createTable;
-
+            break;
+        case 'create_attribute':
+            operation_function = schema.createAttribute;
             break;
         case 'drop_schema':
             operation_function = schema.dropSchema;
@@ -133,11 +153,12 @@ function chooseOperation(json, callback) {
         case 'read_log':
             operation_function = read_log.read_log;
             break;
+
         default:
             break;
     }
 
-    callback(null, operation_function, delegate_operation);
+    callback(null, operation_function);
 }
 
 function nullOperation(json, callback) {
