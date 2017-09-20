@@ -38,7 +38,6 @@
     "moment": "^2.17.1",
     "node-forge": "^0.7.1",
     "node-schedule": "^1.2.4",
-    "node-text-chunk": "^0.1.1",
     "nodejs-license-file": "^1.1.0",
     "optimist": "^0.6.1",
     "passport": "^0.3.2",
