@@ -1,5 +1,5 @@
 const cluster = require('cluster');
-const numCPUs = 16;
+const numCPUs = 4;
 const DEBUG = false;
 const winston = require('../utility/logging/winston_logger');
 
@@ -45,13 +45,14 @@ if (cluster.isMaster && !DEBUG) {
         role = require('../security/role'),
         read_log = require('../utility/logging/read_logs'),
         global_schema = require('../utility/globalSchema'),
-        pjson = require('../package.json');
+        pjson = require('../package.json'),
+        async = require('async');
 
 
     hdb_properties.append(hdb_properties.get('settings_path'));
 
 
-    app.use(bodyParser.json()); // support json encoded bodies
+    app.use(bodyParser.json({limit:'1gb'})); // support json encoded bodies
     app.use(bodyParser.urlencoded({extended: true}));
 
     app.use(function (error, req, res, next) {
@@ -206,11 +207,23 @@ if (cluster.isMaster && !DEBUG) {
     }
 
     process.on('message', (msg)=>{
-        global_schema.schemaSignal((err)=>{
-            if(err){
-                winston.error(err);
-            }
-        });
+        switch(msg.type){
+            case 'schema':
+                global_schema.schemaSignal((err)=>{
+                    if(err){
+                        winston.error(err);
+                    }
+                });
+                break;
+            case 'user':
+                global_schema.setUsersToGlobal((err)=>{
+                    if(err){
+                        winston.error(err);
+                    }
+                });
+                break;
+        }
+
     });
 
     try{
@@ -248,12 +261,16 @@ if (cluster.isMaster && !DEBUG) {
             httpServer.listen(hdb_properties.get('HTTP_PORT'), function(){
                 winston.info(`HarperDB ${pjson.version} HTTP Server running on ${hdb_properties.get('HTTP_PORT')}`);
 
-                global_schema.setSchemaDataToGlobal((err, data) => {
-                    if (err) {
-                        winston.info('error', err);
-                    }
+                async.parallel(
+                    [
+                        global_schema.setSchemaDataToGlobal,
+                        global_schema.setUsersToGlobal
+                    ], (error, data)=>{
+                        if(error){
+                            winston.error(error);
+                        }
+                    });
 
-                });
 
             });
         }

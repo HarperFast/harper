@@ -4,27 +4,27 @@ const insert_validator = require('../validation/insertValidator.js'),
     fs = require('graceful-fs'),
     async = require('async'),
     path = require('path'),
-    child_process = require('child_process'),
-    util = require('util'),
-    moment = require('moment'),
     mkdirp = require('mkdirp'),
-    global_schema = require('../utility/globalSchema'),
     search = require('./search'),
     winston = require('../utility/logging/winston_logger'),
     _ = require('lodash'),
-    text_chunk = require("node-text-chunk"),
+    truncate = require('truncate-utf8-bytes'),
     PropertiesReader = require('properties-reader'),
     hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
     hdb_properties.append(hdb_properties.get('settings_path'));
 
 
 const hdb_path = path.join(hdb_properties.get('HDB_ROOT'), '/schema');
-const regex = /\//g;
+const regex = /\//g,
+    hash_regex = /^[a-zA-Z0-9-_]+$/;
+
 
 module.exports = {
     insert: insertData,
     update:updateData
 };
+//this must stay after the export to correct a circular dependency issue
+const global_schema = require('../utility/globalSchema');
 
 function validation(write_object, callback){
     global_schema.getTableSchema(write_object.schema, write_object.table, (err, table_schema) => {
@@ -38,24 +38,33 @@ function validation(write_object, callback){
             callback(validator);
             return;
         }
+
+        if(!Array.isArray(write_object.records)){
+            return callback('records must be an array');
+        }
+
         let hash_attribute = table_schema.hash_attribute;
 
         //validate that every record has hash_attribute populated
         let no_hash = false;
         let long_hash = false;
         let long_attribute = false;
+        let bad_hash_value = false;
         write_object.records.forEach((record)=>{
             if(record[hash_attribute] === null || record[hash_attribute] === undefined){
                 no_hash = true;
                 return;
-            } else if(record[hash_attribute].length > 250){
+            } else if(regex.test(record[hash_attribute])) {
+                bad_hash_value = true;
+                return;
+            } else if(Buffer.byteLength(String(record[hash_attribute])) > 250){
                 long_hash = true;
                 return;
             }
 
             //evaluate that there are no attributes who have a name longer than 250 characters
             Object.keys(record).forEach((attribute)=>{
-                if(attribute.length > 250){
+                if(Buffer.byteLength(String(attribute)) > 250){
                     long_attribute = true;
                 }
             });
@@ -69,11 +78,15 @@ function validation(write_object, callback){
         }
 
         if (long_hash) {
-            return callback(`transaction aborted due to record(s) with a hash value that exceeds 250 characters.`);
+            return callback(`transaction aborted due to record(s) with a hash value that exceeds 250 bytes.`);
+        }
+
+        if (bad_hash_value) {
+            return callback(`transaction aborted due to record(s) with a hash value that contains a forward slash.`);
         }
 
         if (long_hash) {
-            return callback(`transaction aborted due to record(s) with an attribute that exceeds 250 characters.`);
+            return callback(`transaction aborted due to record(s) with an attribute that exceeds 250 bytes.`);
         }
 
         callback(null, table_schema);
@@ -213,7 +226,7 @@ function compareUpdatesToExistingRecords(update_object, hash_attribute, existing
 
                     let value = typeof existing_record[attr] === 'object' ? JSON.stringify(existing_record[attr]) : existing_record[attr];
                     let value_stripped = String(value).replace(regex, '');
-                    value_stripped = value_stripped.length > 255 ? value_stripped.substring(0, 255) + '/blob' : value_stripped;
+                    value_stripped = Buffer.byteLength(value_stripped) > 255  ? truncate(value_stripped, 255) + '/blob' : value_stripped;
 
                     if (existing_record[attr] !== null && existing_record[attr] !== undefined) {
                         unlink_paths.push(`${base_path}${attr}/${value_stripped}/${existing_record[hash_attribute]}.hdb`);
@@ -287,7 +300,7 @@ function checkAttributeSchema(insert_object, callerback) {
 
             let value = typeof record[property] === 'object' ? JSON.stringify(record[property]) : record[property];
             let value_stripped = String(value).replace(regex, '');
-            let value_path = value_stripped.length > 255 ? value_stripped.substring(0, 255) + '/blob' : value_stripped;
+            let value_path = Buffer.byteLength(value_stripped) > 255 ? truncate(value_stripped, 255) + '/blob' : value_stripped;
             let attribute_file_name = record[hash_attribute] + '.hdb';
             let attribute_path = base_path + property + '/' + value_path;
 
