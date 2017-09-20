@@ -28,7 +28,7 @@ do
 echo "**Cleaning Mirrored dir $mirrored_dir/$i/"
    rm -rf $mirrored_dir/$i/*.js
 echo "**Cleaned**  $(ls $mirrored_dir/$i)"
-   cd ./$i/
+   cd $working_dir/$i/
 
 echo "Directory now in Array: $(pwd)"
 
