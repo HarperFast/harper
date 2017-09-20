@@ -1,0 +1,52 @@
+#!/bin/bash
+
+obfuscript()
+{
+#Change into each Directory generate an array of the Javascript; js_files
+#Itterate through js_files, Obfuscate each file send output to file mirrored HarperDB directory; mirrored_dir
+#Change directory back to this scripts working directory to prepare for next directory; working_dir
+#
+#The mirrored File structure is recreated and cleaned
+#Then add newly obfuscated files through the --output option in javascript-obfuscator command.
+
+#Files to search for javascript to obfuscate as of 9/1/2017.. Please keep this updated!!
+# "data_layer" "sqlTranslator" "validation" "security" "utility" "utility/logging"
+
+files=( "data_layer" "sqlTranslator" "validation" "security" "utility" "utility/logging" )
+working_dir=$(pwd);
+mirrored_dir="/tmp/harperdb"
+
+mkdir -p /tmp/harperdb;
+rm -rf $mirrored_dir/*
+
+echo "Working directory: $working_dir"
+echo "**Create mirrored dir $mirrored_dir"
+cp -R $working_dir/* $mirrored_dir
+echo "**Copy complete to mirrored dir**  $(ls $mirrored_dir)"
+for i in "${files[@]}"
+do
+echo "**Cleaning Mirrored dir $mirrored_dir/$i/"
+   rm -rf $mirrored_dir/$i/*.js
+echo "**Cleaned**  $(ls $mirrored_dir/$i)"
+   cd ./$i/
+
+echo "Directory now in Array: $(pwd)"
+
+   js_files=( $( ls ./ | grep -E \.js$ ) )
+echo "js array files: ${js_files[@]}"
+
+   for z in "${js_files[@]}"
+   do
+echo "The javascript file to obfuscate: $z"
+      javascript-obfuscator $z --compact true --controlFlowFlattening false --deadCodeInjection false --debugProtection false --debugProtectionInterval false \
+           --disableConsoleOutput false --log false --mangle true --renameGlobals false --rotateStringArray false --selfDefending true --stringArray false --stringArrayEncoding false \
+           --stringArrayThreshold 0.75 --unicodeEscapeSequence false --output $mirrored_dir/$i/$z
+echo "done obfuscating $z"
+   done
+
+   cd $working_dir
+done
+
+}
+
+$@
