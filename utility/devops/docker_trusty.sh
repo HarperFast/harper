@@ -50,6 +50,8 @@ done
 }
 harperdb_run()
 {
+#this function is being run on a docker container as root.  Be advised of the paths.
+   hdb_data="/root/hdb/"
      cd ../../bin/
     ./linux-harperdb run --HDB_ROOT $hdb_data --HTTP_PORT 9925 --HTTPS_PORT 31283 --HDB_ADMIN_USERNAME admin --HDB_ADMIN_PASSWORD Abc1234!
     sleep 5s    
@@ -57,7 +59,6 @@ harperdb_run()
 
         if [ "$theProc" ];
            then
-#IN the Team City deployment server this script is run from within the working directory: /tmp/harperdb/packaged_binary/bin
     apiKey=fe1dfb2c3647474f8f3e9d836783e694
     collection_id=b21ee620-6c69-7566-9a11-e2ce6ece23cd
     environment_id=d4f6eefe-b922-9888-043f-43a374a1ef1a
@@ -78,7 +79,7 @@ harperdb_run()
 ./linux_harperdb stop
 #clean Up install artifacts.
 		rm -f ../hdb_* ../install_*
-		rm -rf /opt/HarperDB_TC/*
+		rm -rf $hdb_data/*
 
 		
               exit 0;
@@ -86,7 +87,8 @@ harperdb_run()
            echo "Process hdb_express did not start?"
            #clean Up install artifacts.
                 rm -f ../hdb_* ../install_*
-                rm -rf $hdb_data/*
+                rm -r $hdb_data/*
+                echo "WTF am I: $hdb_data"
            exit 1;
         fi
 }
