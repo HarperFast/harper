@@ -4,15 +4,10 @@ const insert_validator = require('../validation/insertValidator.js'),
     fs = require('graceful-fs'),
     async = require('async'),
     path = require('path'),
-    child_process = require('child_process'),
-    util = require('util'),
-    moment = require('moment'),
     mkdirp = require('mkdirp'),
-    global_schema = require('../utility/globalSchema'),
     search = require('./search'),
     winston = require('../utility/logging/winston_logger'),
     _ = require('lodash'),
-    text_chunk = require("node-text-chunk"),
     truncate = require('truncate-utf8-bytes'),
     PropertiesReader = require('properties-reader'),
     hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
@@ -28,6 +23,8 @@ module.exports = {
     insert: insertData,
     update:updateData
 };
+//this must stay after the export to correct a circular dependency issue
+const global_schema = require('../utility/globalSchema');
 
 function validation(write_object, callback){
     global_schema.getTableSchema(write_object.schema, write_object.table, (err, table_schema) => {

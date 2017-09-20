@@ -1,7 +1,6 @@
 const schema = require('../data_layer/schemaDescribe'),
     async = require('async'),
-    winston = require('../utility/logging/winston_logger'),
-    user = require('../security/user');
+    winston = require('../utility/logging/winston_logger');
 
 const system_schema = {
     hdb_table:{
@@ -157,7 +156,12 @@ function schemaSignal(callback){
 
 function setUsersToGlobal(callback){
     user.listUsers(null, (err, users)=>{
+        if(err){
+            return winston.error(err);
+        }
         global.hdb_users = users;
         callback();
     });
 }
+
+const user = require('../security/user')

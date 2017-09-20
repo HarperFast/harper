@@ -7,22 +7,23 @@ const express = require('express'),
     validation = require('../validation/check_permissions'),
     passport = require('passport'),
     LocalStrategy = require('passport-local').Strategy,
-    BasicStrategy = require('passport-http').BasicStrategy;
+    BasicStrategy = require('passport-http').BasicStrategy,
+    clone = require('clone');
 
 
 function findAndValidateUser(username, password, done){
-    let user = global.hdb_users.filter((user)=>{
+    let user_tmp = global.hdb_users.filter((user)=>{
         return user.username === username;
     })[0];
 
-    if(!user){
+    if(!user_tmp){
         return done(`Cannot complete request: User '${username}' not found`, null);
     }
 
-    if(user && !user.active){
+    if(user_tmp && !user_tmp.active){
         return done('Cannot complete request: User is inactive', null);
     }
-
+    let user = clone(user_tmp);
     if (!password_function.validate(user.password, password)) {
         return done('Cannot complete request:  Invalid password', false);
     }

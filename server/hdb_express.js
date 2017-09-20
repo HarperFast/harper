@@ -207,11 +207,23 @@ if (cluster.isMaster && !DEBUG) {
     }
 
     process.on('message', (msg)=>{
-        global_schema.schemaSignal((err)=>{
-            if(err){
-                winston.error(err);
-            }
-        });
+        switch(msg.type){
+            case 'schema':
+                global_schema.schemaSignal((err)=>{
+                    if(err){
+                        winston.error(err);
+                    }
+                });
+                break;
+            case 'user':
+                global_schema.setUsersToGlobal((err)=>{
+                    if(err){
+                        winston.error(err);
+                    }
+                });
+                break;
+        }
+
     });
 
     try{
