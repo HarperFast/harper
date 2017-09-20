@@ -48,5 +48,46 @@ echo "done obfuscating $z"
 done
 
 }
+harperdb_run()
+{
+     cd ../../bin/
+    ./linux_harperdb run --HDB_ROOT $hdb_data --HTTP_PORT 9925 --HTTPS_PORT 31283 --HDB_ADMIN_USERNAME admin --HDB_ADMIN_PASSWORD Abc1234!
+        theProc=$(ps -ef | grep [h]db_express);
+
+        if [ "$theProc" ];
+           then
+#IN the Team City deployment server this script is run from within the working directory: /tmp/harperdb/packaged_binary/bin
+    apiKey=fe1dfb2c3647474f8f3e9d836783e694
+    collection_id=b21ee620-6c69-7566-9a11-e2ce6ece23cd
+    environment_id=d4f6eefe-b922-9888-043f-43a374a1ef1a
+
+    newman run https://api.getpostman.com/collections/$collection_id?apikey=$apiKey \
+    --environment https://api.getpostman.com/environments/$environment_id?apikey=$apiKey -r cli > newman_output.log
+   
+#Grabbing the Newman cli output and grep the stream of the failures, if any occurred.
+    cat newman_output.log
+    theFailed=$(cat newman_output.log | grep -A 10 "#  failure")
+
+    if [ "$theFailed" ];
+     then
+        echo "Failed NewMan Tests"
+        echo $theFailed
+        exit 1;
+    fi
+./linux_harperdb stop
+#clean Up install artifacts.
+		rm -f ../hdb_* ../install_*
+		rm -rf /opt/HarperDB_TC/*
+
+		
+              exit 0;
+        else
+           echo "Process hdb_express did not start?"
+           #clean Up install artifacts.
+                rm -f ../hdb_* ../install_*
+                rm -rf $hdb_data/*
+           exit 1;
+        fi
+}
 
 $@
