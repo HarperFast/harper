@@ -52,7 +52,8 @@ harperdb_run()
 {
      cd ../../bin/
     ./linux_harperdb run --HDB_ROOT $hdb_data --HTTP_PORT 9925 --HTTPS_PORT 31283 --HDB_ADMIN_USERNAME admin --HDB_ADMIN_PASSWORD Abc1234!
-        theProc=$(ps -ef | grep [h]db_express);
+    sleep 5s    
+    theProc=$(ps -ef | grep [h]db_express);
 
         if [ "$theProc" ];
            then
