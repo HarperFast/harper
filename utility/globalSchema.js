@@ -55,7 +55,8 @@ const system_schema = {
 module.exports = {
     setSchemaDataToGlobal: setSchemaDataToGlobal,
     getTableSchema: getTableSchema,
-    schemaSignal
+    schemaSignal,
+    setUsersToGlobal
 };
 
 function setSchemaDataToGlobal(callback){
@@ -152,3 +153,15 @@ function schemaSignal(callback){
         callback();
     });
 }
+
+function setUsersToGlobal(callback){
+    user.listUsers(null, (err, users)=>{
+        if(err){
+            return winston.error(err);
+        }
+        global.hdb_users = users;
+        callback();
+    });
+}
+
+const user = require('../security/user')

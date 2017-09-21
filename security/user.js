@@ -1,8 +1,4 @@
-const insert = require('../data_layer/insert'),
-      delete_ = require('../data_layer/delete'),
-      password = require('../utility/password'),
-      validation = require('../validation/user_validation'),
-      search = require('../data_layer/search');
+'use strict';
 
 module.exports = {
     addUser: addUser,
@@ -13,7 +9,13 @@ module.exports = {
 
 };
 
-
+//requires must be declared after module.exports to avoid cyclical dependency
+const insert = require('../data_layer/insert'),
+    delete_ = require('../data_layer/delete'),
+    password = require('../utility/password'),
+    validation = require('../validation/user_validation'),
+    search = require('../data_layer/search'),
+    signalling  = require('../utility/signalling');
 
 
 function addUser(user, callback){
@@ -55,7 +57,7 @@ function addUser(user, callback){
                 callback(err);
                 return;
             }
-
+            signalling.signalUserChange({type: 'user'});
             callback(null, `${user.username} successfully added`);
 
         });
@@ -85,7 +87,7 @@ function alterUser(user, callback){
             callback(err);
             return;
         }
-
+        signalling.signalUserChange({type: 'user'});
         callback(null, `${user.username} successfully altered`);
 
     });
@@ -110,7 +112,7 @@ function dropUser(user, callback){
            callback(err);
            return;
        }
-
+        signalling.signalUserChange({type: 'user'});
        callback(null, `${user.username} successfully deleted`);
 
     });
@@ -162,7 +164,7 @@ function list_users(body, callback){
 
         if(roles){
             let roleMapObj = {}
-            for(r in roles){
+            for(let r in roles){
                 roleMapObj[roles[r].id] = roles[r];
             }
 
@@ -178,7 +180,7 @@ function list_users(body, callback){
                     return callback(err);
                 }
 
-                for(u in users){
+                for(let u in users){
                     users[u].role = roleMapObj[users[u].role];
                 }
 
