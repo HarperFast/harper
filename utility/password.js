@@ -5,10 +5,10 @@ var SaltLength = 9;
 
 function createHash(password) {
     var salt = generateSalt(SaltLength);
- winston.info("THE SALT %s", salt);
- winston.info("the PASSWD: %s", password);
+ winston.error("THE SALT %s", salt);
+ winston.error("the PASSWD: %s", password);
     var hash = md5(password + salt);
-  winston.info("the HASH: %s", hash);
+  winston.error("the HASH: %s", hash);
     return salt + hash;
 }
 

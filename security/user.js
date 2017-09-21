@@ -41,9 +41,9 @@ function addUser(user, callback){
         if(!search_role || search_role.length < 1){
             return callback("Role not found!");
         }
-      winston.info("IN sec/user.js user PASSWORD: %s", user.password)
+      winston.error("IN sec/user.js user PASSWORD: %s", user.password)
         user.password = password.hash(user.password);
-     winston.info("IN sec/user.js HASHED PASSWORD: %s", user.password)
+     winston.error("IN sec/user.js HASHED PASSWORD: %s", user.password)
 
         let insert_object = {
             operation: 'insert',

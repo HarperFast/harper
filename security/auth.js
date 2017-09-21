@@ -12,12 +12,12 @@ const express = require('express'),
 const winston = require('../utility/logging/winston_logger');
 
 function findAndValidateUser(username, password, done){
-winston.info("IN sec/user.js HELPING: %s", password)    
+winston.error("IN sec/user.js HELPING: %s", password)    
 let user_tmp = global.hdb_users.filter((user)=>{
-winston.info("IN SEC/Auth.js user_tmp: %s", password)
+winston.error("IN SEC/Auth.js user_tmp: %s", password)
         return user.username === username;
     })[0];
-winston.info("IN SEC/Auth.js HELPER TMP: %s", user_tmp.password)
+winston.error"IN SEC/Auth.js HELPER TMP: %s", user_tmp.password)
 
     if(!user_tmp){
         return done(`Cannot complete request: User '${username}' not found`, null);
