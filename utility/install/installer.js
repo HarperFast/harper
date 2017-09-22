@@ -297,7 +297,9 @@ function createSettingsFile(mount_status, callback) {
         CERTIFICATE = ${wizard_result.HDB_ROOT}/keys/certificate.pem
         PRIVATE_KEY = ${wizard_result.HDB_ROOT}/keys/privateKey.pem
         HTTPS_ON = FALSE
-        HTTP_ON = TRUE`;
+        HTTP_ON = TRUE
+        CORS_ON=TRUE
+        CORS_WHITELIST=`;
 
 
         winston.info('info', `hdb_props_value ${JSON.stringify(hdb_props_value)}`);

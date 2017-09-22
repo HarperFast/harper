@@ -46,11 +46,32 @@ if (cluster.isMaster && !DEBUG) {
         read_log = require('../utility/logging/read_logs'),
         global_schema = require('../utility/globalSchema'),
         pjson = require('../package.json'),
-        async = require('async');
+        async = require('async'),
+        cors = require('cors');
 
 
     hdb_properties.append(hdb_properties.get('settings_path'));
 
+
+    if(hdb_properties.get('CORS_ON') && (hdb_properties.get('CORS_ON') === true || hdb_properties.get('CORS_ON').toUpperCase() === 'TRUE')){
+        if(hdb_properties.get('CORS_WHITELIST') && hdb_properties.get('CORS_WHITELIST').length > 0){
+            let whitelist = hdb_properties.get('CORS_WHITELIST').split(',');
+            let cors_options = {
+                origin: function (origin, callback) {
+                    if (whitelist.indexOf(origin) !== -1) {
+                        callback(null, true);
+                    } else {
+                        callback(new Error(`domain ${origin} is not whitelisted`));
+                    }
+                }
+            };
+
+            app.use(cors(cors_options));
+        } else {
+            app.use(cors());
+        }
+
+    }
 
     app.use(bodyParser.json({limit:'1gb'})); // support json encoded bodies
     app.use(bodyParser.urlencoded({extended: true}));
@@ -58,7 +79,9 @@ if (cluster.isMaster && !DEBUG) {
     app.use(function (error, req, res, next) {
         if (error instanceof SyntaxError) {
             res.status(400).send({error: 'invalid JSON: ' + error.message.replace('\n', '')});
-        } else {
+        } else if(error){
+            res.status(400).send({error: error.message});
+        }  else {
             next();
         }
     });
@@ -240,7 +263,7 @@ if (cluster.isMaster && !DEBUG) {
 
         //httpServer.listen(8080);
 
-        if(hdb_properties.get('HTTPS_ON') && hdb_properties.get('HTTPS_ON').toUpperCase() === 'TRUE'){
+        if(hdb_properties.get('HTTPS_ON') && (hdb_properties.get('HTTPS_ON') === true || hdb_properties.get('HTTPS_ON').toUpperCase() === 'TRUE')){
             httpsServer.listen(hdb_properties.get('HTTPS_PORT'), function(){
                 winston.info(`HarperDB ${pjson.version} HTTPS Server running on ${hdb_properties.get('HTTPS_PORT')}`);
 
@@ -257,7 +280,7 @@ if (cluster.isMaster && !DEBUG) {
 
         }
 
-        if(hdb_properties.get('HTTP_ON') && hdb_properties.get('HTTP_ON').toUpperCase()  === 'TRUE'){
+        if(hdb_properties.get('HTTP_ON') && (hdb_properties.get('HTTP_ON') === true || hdb_properties.get('HTTP_ON').toUpperCase()  === 'TRUE')){
             httpServer.listen(hdb_properties.get('HTTP_PORT'), function(){
                 winston.info(`HarperDB ${pjson.version} HTTP Server running on ${hdb_properties.get('HTTP_PORT')}`);
 
