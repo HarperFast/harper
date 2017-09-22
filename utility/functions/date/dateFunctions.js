@@ -1,6 +1,8 @@
+'use strict';
+
 const moment = require('moment');
 
-module.exports = {
+let self = module.exports = {
     current_date: () => {
         return moment().format('YYYY-MM-DD');
     },
@@ -8,7 +10,10 @@ module.exports = {
         return moment().format('HH:mm:ss');
     },
     current_timestamp: () => {
-        return moment().format('YYYY-MM-DD HH:mm:ss');
+        return moment().format('YYYY-MM-DD HH:mm:ss.SSS');
+    },
+    now: ()=>{
+        return self.current_timestamp();
     },
     extract: (date_part, date)=>{
         switch(date_part.toLowerCase()){
@@ -36,5 +41,21 @@ module.exports = {
             default:
                 break;
         }
+    },
+    'date_format':(date, format)=>{
+        return moment(date).format(format);
+    },
+    'date_add':(date, value, interval)=>{
+        return moment(date).add(value, interval);
+    },
+    'date_diff':(date_1, date_2, interval)=>{
+        let first_date = moment(date_1);
+        let second_date = moment(date_2);
+        if(interval){
+            return first_date.diff(second_date, interval, true);
+        } else {
+            return first_date.diff(second_date);
+        }
+
     }
 };
