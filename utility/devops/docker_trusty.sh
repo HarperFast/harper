@@ -13,9 +13,10 @@ obfuscript()
 # "data_layer" "sqlTranslator" "validation" "security" "utility" "utility/logging"
 
 files=( "data_layer" "sqlTranslator" "validation" "security" "utility" "utility/logging" )
-working_dir="$(pwd)/../../";
+working_dir=$(pwd);
 mirrored_dir="/tmp/harperdb"
-
+echo "here i am $working_dir"
+echo "stuff: $(ls $working_dir)"
 mkdir -p /tmp/harperdb;
 rm -rf $mirrored_dir/*
 
