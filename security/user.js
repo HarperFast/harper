@@ -16,7 +16,7 @@ const insert = require('../data_layer/insert'),
     validation = require('../validation/user_validation'),
     search = require('../data_layer/search'),
     signalling  = require('../utility/signalling');
-const winston = require('../utility/logging/winston_logger');
+
 
 function addUser(user, callback){
     let validation_resp = validation.addUserValidation(user);
@@ -41,9 +41,8 @@ function addUser(user, callback){
         if(!search_role || search_role.length < 1){
             return callback("Role not found!");
         }
-      winston.error("IN sec/user.js user PASSWORD: %s", user.password)
+
         user.password = password.hash(user.password);
-     winston.error("IN sec/user.js HASHED PASSWORD: %s", user.password)
 
         let insert_object = {
             operation: 'insert',

@@ -1,14 +1,10 @@
 var crypto = require('crypto');
-const winston = require('./logging/winston_logger');
 
 var SaltLength = 9;
 
 function createHash(password) {
     var salt = generateSalt(SaltLength);
- winston.error("THE SALT %s", salt);
- winston.error("the PASSWD: %s", password);
     var hash = md5(password + salt);
-  winston.error("the HASH: %s", hash);
     return salt + hash;
 }
 

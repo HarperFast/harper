@@ -9,15 +9,12 @@ const express = require('express'),
     LocalStrategy = require('passport-local').Strategy,
     BasicStrategy = require('passport-http').BasicStrategy,
     clone = require('clone');
-const winston = require('../utility/logging/winston_logger');
+
 
 function findAndValidateUser(username, password, done){
-winston.error("IN sec/user.js HELPING: %s", password)    
-let user_tmp = global.hdb_users.filter((user)=>{
-winston.error("IN SEC/Auth.js user_tmp: %s", password)
+    let user_tmp = global.hdb_users.filter((user)=>{
         return user.username === username;
     })[0];
-winston.error("IN SEC/Auth.js HELPER TMP: %s", user_tmp.password)
 
     if(!user_tmp){
         return done(`Cannot complete request: User '${username}' not found`, null);
