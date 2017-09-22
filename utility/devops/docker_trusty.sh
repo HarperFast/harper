@@ -67,6 +67,7 @@ harperdb_run()
     newman run https://api.getpostman.com/collections/$collection_id?apikey=$apiKey \
     --environment https://api.getpostman.com/environments/$environment_id?apikey=$apiKey -r cli > newman_output.log
    
+./linux-harperdb stop
        else
            echo "Process hdb_express did not start?"
            #clean Up install artifacts.
