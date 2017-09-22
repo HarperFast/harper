@@ -1,5 +1,5 @@
 #!/bin/bash
-
+hdb_data="/root/hdb"
 obfuscript()
 {
 #Change into each Directory generate an array of the Javascript; js_files
@@ -52,7 +52,6 @@ done
 harperdb_run()
 {
 #this function is being run on a docker container as root.  Be advised of the paths.
-   hdb_data="/root/hdb"
      cd ./bin/
      echo "I am in this directory now: $(pwd)"
      ./linux-harperdb run --HDB_ROOT $hdb_data --HTTP_PORT 9925 --HTTPS_PORT 31283 --HDB_ADMIN_USERNAME admin --HDB_ADMIN_PASSWORD "Abc1234!"
@@ -68,6 +67,18 @@ harperdb_run()
     newman run https://api.getpostman.com/collections/$collection_id?apikey=$apiKey \
     --environment https://api.getpostman.com/environments/$environment_id?apikey=$apiKey -r cli > newman_output.log
    
+       else
+           echo "Process hdb_express did not start?"
+           #clean Up install artifacts.
+                rm -f ../hdb_* ../install_*
+                rm -r $hdb_data/*
+                echo "WTF am I: $hdb_data"
+           exit 1;
+        fi
+exit 1
+}
+
+newman_output(){
 #Grabbing the Newman cli output and grep the stream of the failures, if any occurred.
     cat newman_output.log
     theFailed=$(cat newman_output.log | grep -A 10 "#  failure")
@@ -78,22 +89,22 @@ harperdb_run()
         echo $theFailed
         exit 1;
     fi
-    
-    ./linux-harperdb stop
-#clean Up install artifacts.
-		rm -f ../hdb_* ../install_*
-		rm -rf $hdb_data/*
 
-		
-              exit 0;
-        else
-           echo "Process hdb_express did not start?"
-           #clean Up install artifacts.
+exit 0
+}
+
+cleanup(){
+cd ./bin/
+
+./linux-harperdb stop
+#clean Up install artifacts.
                 rm -f ../hdb_* ../install_*
-                rm -r $hdb_data/*
-                echo "WTF am I: $hdb_data"
-           exit 1;
-        fi
+                rm -rf $hdb_data/*
+
+
+              exit 0;
+
+
 }
 
 $@
