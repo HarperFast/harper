@@ -17,7 +17,7 @@ let user_tmp = global.hdb_users.filter((user)=>{
 winston.error("IN SEC/Auth.js user_tmp: %s", password)
         return user.username === username;
     })[0];
-winston.error"IN SEC/Auth.js HELPER TMP: %s", user_tmp.password)
+winston.error("IN SEC/Auth.js HELPER TMP: %s", user_tmp.password)
 
     if(!user_tmp){
         return done(`Cannot complete request: User '${username}' not found`, null);
