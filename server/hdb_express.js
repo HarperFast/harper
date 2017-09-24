@@ -54,23 +54,23 @@ if (cluster.isMaster && !DEBUG) {
 
 
     if(hdb_properties.get('CORS_ON') && (hdb_properties.get('CORS_ON') === true || hdb_properties.get('CORS_ON').toUpperCase() === 'TRUE')){
+        let cors_options = {
+            origin: true,
+            allowedHeaders: ['Content-Type', 'Authorization']
+        };
         if(hdb_properties.get('CORS_WHITELIST') && hdb_properties.get('CORS_WHITELIST').length > 0){
             let whitelist = hdb_properties.get('CORS_WHITELIST').split(',');
-            let cors_options = {
-                origin: function (origin, callback) {
+            cors_options.origin =  (origin, callback) => {
                     if (whitelist.indexOf(origin) !== -1) {
                         callback(null, true);
                     } else {
                         callback(new Error(`domain ${origin} is not whitelisted`));
                     }
-                }
-            };
+                };
 
-            app.use(cors(cors_options));
-        } else {
-            app.use(cors());
         }
 
+        app.use(cors(cors_options));
     }
 
     app.use(bodyParser.json({limit:'1gb'})); // support json encoded bodies
