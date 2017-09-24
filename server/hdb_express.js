@@ -56,7 +56,8 @@ if (cluster.isMaster && !DEBUG) {
     if(hdb_properties.get('CORS_ON') && (hdb_properties.get('CORS_ON') === true || hdb_properties.get('CORS_ON').toUpperCase() === 'TRUE')){
         let cors_options = {
             origin: true,
-            allowedHeaders: ['Content-Type', 'Authorization']
+            allowedHeaders: ['Content-Type', 'Authorization'],
+            credentials: false
         };
         if(hdb_properties.get('CORS_WHITELIST') && hdb_properties.get('CORS_WHITELIST').length > 0){
             let whitelist = hdb_properties.get('CORS_WHITELIST').split(',');
