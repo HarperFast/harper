@@ -1,4 +1,4 @@
-'use strict';
+"use strict";
 
 const moment = require('moment');
 
@@ -10,7 +10,7 @@ let self = module.exports = {
         return moment().format('HH:mm:ss');
     },
     current_timestamp: () => {
-        return moment().format('YYYY-MM-DD HH:mm:ss.SSS');
+        return moment().format();
     },
     now: ()=>{
         return self.current_timestamp();
@@ -46,7 +46,7 @@ let self = module.exports = {
         return moment(date).format(format);
     },
     'date_add':(date, value, interval)=>{
-        return moment(date).add(value, interval);
+        return moment(date).add(value, interval).format();
     },
     'date_diff':(date_1, date_2, interval)=>{
         let first_date = moment(date_1);
