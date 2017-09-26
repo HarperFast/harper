@@ -56,6 +56,7 @@ function generateBasicSearchObject(statement, callback){
 
         let search_object = {
             selects:[],
+            limit:null,
             tables:[{
                 schema: schema_table[0],
                 table: schema_table[1],
@@ -69,6 +70,8 @@ function generateBasicSearchObject(statement, callback){
         let attribute_parser = new AttributeParser(statement.result, search_object.tables);
         search_object.selects = attribute_parser.parseGetAttributes();
 
+        search_object.limit = parseLimit(statement.limit);
+
         search_object.conditions = condition_parser.parseConditions(statement.where);
         search_object.order = parseOrderby(search_object.tables, statement.order);
         search_object.group = parseGroupby(search_object.tables, statement.group);
@@ -80,6 +83,7 @@ function generateAdvancedSearchObject(statement, callback){
     try {
         let search_wrapper = {
             selects:[],
+            limit:null,
             tables: [],
             conditions:[],
             group:[],
@@ -102,6 +106,8 @@ function generateAdvancedSearchObject(statement, callback){
             let attribute_parser = new AttributeParser(statement.result, search_wrapper.tables);
             search_wrapper.selects = attribute_parser.parseGetAttributes();
 
+            search_wrapper.limit = parseLimit(statement.limit);
+
             search_wrapper.conditions = condition_parser.parseConditions(statement.where);
             search_wrapper.order = parseOrderby(search_wrapper.tables, statement.order);
             search_wrapper.group = parseGroupby(search_wrapper.tables, statement.group);
@@ -110,6 +116,17 @@ function generateAdvancedSearchObject(statement, callback){
     } catch(e) {
         throw e;
     }
+}
+
+function parseLimit(limit){
+    let limit_object = null;
+    if(limit){
+        limit_object = {
+            count: limit.start.value,
+            skip: limit.offset ? limit.offset.value : 0
+        };
+    }
+    return limit_object;
 }
 
 function parseOrderby(tables, order_by_clause){
