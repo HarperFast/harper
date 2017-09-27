@@ -276,9 +276,20 @@ function search(search_wrapper, callback){
 
                     let fields = procesSelects(search_wrapper.selects);
 
-                    let final_results = new jinqjs()
-                        .from(results)
-                        .select(fields);
+                    let query = new jinqjs()
+                        .from(results);
+
+                    if(search_wrapper.limit){
+                        if(search_wrapper.limit.skip) {
+                            query = query.skip(search_wrapper.limit.skip);
+                        }
+
+                        query = query.top(search_wrapper.limit.count);
+                    }
+
+
+
+                    let final_results = query.select(fields);
 
                     let order_fields = processOrderBy(search_wrapper);
                     if(order_fields && order_fields.length > 0){
