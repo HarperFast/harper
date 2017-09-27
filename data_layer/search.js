@@ -907,7 +907,7 @@ function getAttributeFiles(get_attributes, table_path, hash_files, callback){
 function readAttributeFiles(table_path, attribute, hash_files, callback){
     let attribute_data = {};
     async.eachLimit(hash_files, 1000, (file, caller)=>{
-        fs.readFile(`${table_path}__hdb_hash/${attribute}/${file}.hdb`, (error, data)=>{
+        fs.readFile(`${table_path}__hdb_hash/${attribute}/${file}.hdb`, 'utf-8', (error, data)=>{
             if(error){
                 if(error.code === 'ENOENT'){
                     caller(null, null);
@@ -917,7 +917,18 @@ function readAttributeFiles(table_path, attribute, hash_files, callback){
                 return;
             }
 
-            attribute_data[file]=autocast(data.toString());
+            let value = autocast(data.toString());
+            //autocast is unable to convert string to object/array so we need to figure it out
+            if(typeof value === 'string'){
+                if((value.startsWith('{') && value.endsWith('}')) || (value.startsWith('[') && value.endsWith(']'))){
+                    try{
+                        value = JSON.parse(value);
+                    }catch(e){
+                    }
+                }
+            }
+
+            attribute_data[file]=value;
             caller();
         });
     }, (err)=>{
