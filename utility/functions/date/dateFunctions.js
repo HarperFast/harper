@@ -15,7 +15,7 @@ let self = module.exports = {
     now: ()=>{
         return self.current_timestamp();
     },
-    extract: (date_part, date)=>{
+    extract: (date, date_part)=>{
         switch(date_part.toLowerCase()){
             case 'year':
                 return moment(date).format('YYYY');

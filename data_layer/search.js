@@ -19,7 +19,8 @@ const base_path = hdb_properties.get('HDB_ROOT') + "/schema/"
 
 math.import([
     require('../utility/functions/math/count'),
-    require('../utility/functions/math/avg')
+    require('../utility/functions/math/avg'),
+    require('../utility/functions/date/dateFunctions')
 ]);
 
 const slash_regex =  /\//g;
