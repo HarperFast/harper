@@ -1,5 +1,5 @@
 const cluster = require('cluster');
-const numCPUs = 4;
+let numCPUs = 4;
 const DEBUG = false;
 const winston = require('../utility/logging/winston_logger');
 
@@ -9,6 +9,8 @@ if (cluster.isMaster && !DEBUG) {
 
     // Fork workers.
     let forks = [];
+    let num_workers = require('os').cpus().length;
+    numCPUs = num_workers < numCPUs ? num_workers : numCPUs;
     for (let i = 0; i < numCPUs; i++) {
         let forked = cluster.fork();
         forked.on('message', messageHandler);
