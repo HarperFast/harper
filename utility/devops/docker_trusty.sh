@@ -68,7 +68,7 @@ harperdb_run()
 #environment_id=d4f6eefe-b922-9888-043f-43a374a1ef1a
 
     newman run https://api.getpostman.com/collections/$collection_id?apikey=$apiKey \
-    --environment https://api.getpostman.com/environments/$environment_id?apikey=$apiKey -r cli > newman_output.log
+    --environment https://api.getpostman.com/environments/$environment_id?apikey=$apiKey -r cli > newman_output.log 2> error.out
    
 ./linux-harperdb stop
        else
@@ -93,6 +93,14 @@ echo "I am in this directory now looking for newman_output.log: $(pwd)"
         echo "Failed NewMan Tests"
         echo $theFailed
         exit 1;
+    fi
+    
+    if [ "error.out" ]
+       then
+          echo "Some error in newman process!"
+          newman_err=$(cat error.out)
+          echo "New man errors: $newman_err"
+          exit 1
     fi
 
 exit 0
