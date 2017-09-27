@@ -287,9 +287,12 @@ function search(search_wrapper, callback){
                         query = query.top(search_wrapper.limit.count);
                     }
 
-
-
-                    let final_results = query.select(fields);
+                    let final_results;
+                    try {
+                        final_results = query.select(fields);
+                    } catch(e){
+                        return caller(e);
+                    }
 
                     let order_fields = processOrderBy(search_wrapper);
                     if(order_fields && order_fields.length > 0){
@@ -341,7 +344,12 @@ function createMathPredicate(calculation){
             });
         }
 
-        return code.eval(scope);
+        try {
+            return code.eval(scope);
+        } catch(e){
+            throw new Error(`Error in calculation: '${calculation.calculation}'. From row: ${JSON.stringify(row)}. error: ${e.message}`);
+        }
+
     }
 }
 
