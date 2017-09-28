@@ -17,7 +17,7 @@ working_dir="$(pwd)/../../";
 mirrored_dir="/tmp/harperdb"
 echo "here i am $working_dir"
 echo "stuff: $(ls $working_dir)"
-mkdir -p /tmp/harperdb;
+mkdir -p $mirrored_dir;
 rm -rf $mirrored_dir/*
 
 echo "Working directory: $working_dir"
