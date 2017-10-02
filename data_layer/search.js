@@ -328,7 +328,14 @@ function procesSelects(selects){
             };
             fields.push(calc_field);
         } else {
-            fields.push({field: select.alias});
+            fields.push({text: select.alias, value:(row)=>{
+                if(row[select.alias] === null || row[select.alias] === undefined){
+                    return null;
+                } else {
+                    return row[select.alias];
+                }
+
+            }});
         }
     });
 
