@@ -100,7 +100,11 @@ function createDataObjects(columns, expressions) {
     expressions.forEach((values) => {
         let record = {};
         for (let x = 0; x < values.expression.length; x++) {
-            record[columns[x]] = values.expression[x].value;
+            if(values.expression[x].type === 'identifier' && (values.expression[x].name === 'true' || values.expression[x].name === 'false')){
+                record[columns[x]] = (values.expression[x].name === 'true');
+            } else if(values.expression[x].type === 'literal'){
+                record[columns[x]] = values.expression[x].value;
+            }
         }
         records.push(record);
     });
