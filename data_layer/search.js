@@ -542,6 +542,10 @@ function processOrderBy(search_wrapper){
 }
 
 function groupData(data, search_wrapper){
+    if(!data || data.length === 0){
+        return [];
+    }
+
     let aggregate_calculations = search_wrapper.selects.filter((select)=>{
         return select.is_aggregate;
     });
