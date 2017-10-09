@@ -102,7 +102,7 @@ function validateColumn(tables, column_name){
 
     if(table_column.length > 1) {
         let found_table = _.filter(tables, (table) => {
-            return table.name === table_column[0] || table.alias === table_column[0];
+            return table.table === table_column[0] || table.alias === table_column[0];
         });
 
         if (found_table.length === 0) {
