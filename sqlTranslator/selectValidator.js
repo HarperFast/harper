@@ -6,9 +6,6 @@ module.exports = {
 };
 
 function validator(statement, callback){
-
-    let select_columns = [];
-
     let condition_columns = [];
     let order_by_columns = [];
 
@@ -82,6 +79,10 @@ function createTableObject(table){
     let schema_table = table.name.split('.');
 
     if(schema_table.length !== 2){
+        throw `invalid table ${table.name}`;
+    }
+
+    if(!global.hdb_schema[schema_table[0]] || !global.hdb_schema[schema_table[0]][schema_table[1]]){
         throw `invalid table ${table.name}`;
     }
 
