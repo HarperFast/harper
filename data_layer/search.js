@@ -630,15 +630,13 @@ function group(collection, keys) {
 
 //take the data set and reduce the set to unique by the defined group columns or just the aggregate results
 function uniqueGroupResults(data, aggregate_results, group_columns){
-    if(!aggregate_results && group_columns){
-        return data;
-    }
-
     if(!group_columns || group_columns.length === 0){
         return [aggregate_results];
     }
     let results = _.uniqBy(data, (item) => {
-        item = _.merge(item, aggregate_results);
+        if(aggregate_results) {
+            item = _.merge(item, aggregate_results);
+        }
         let item_array = [];
         group_columns.forEach((column) => {
             item_array.push(item[column]);
