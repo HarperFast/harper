@@ -3,11 +3,9 @@
 ## Contents
 
 1. [Getting Started](#getting-started)
-2. [Register HarperDB](#register-harperdb)
-3. [Running HarperDB](#running-harperdb)
-4. [Stopping HarperDB](#stopping-harperdb)
-5. [Need Help?](#need-help)
-
+2. [Running HarperDB](#running-harperdb)
+3. [Stopping HarperDB](#stopping-harperdb)
+4. [Need Help?](#need-help)
 
 
 ## Getting Started
