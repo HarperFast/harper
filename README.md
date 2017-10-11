@@ -48,33 +48,6 @@ cd HDB_HOME/bin
 
 *    Logs for installation are found in the HarperDB home directory (HDB_HOME). Other logs are located at HDB_ROOT/log/.
 
-## Register HarperDB
-
-During the installation process you will be asked to register, this is optional.
-
-If you do choose to register at a later time execute the following commands from the HarperDB home (HDB_HOME) directory:
-
-```
-cd HDB_HOME/bin
-./harperdb register
-
-```
-
-Enter your company name when prompted **IMPORTANT: you must remember your entry exactly**
-
-You will then be supplied a fingerprint like so **JmLiR4xj60042e9ee22a91956ab630b490b48c083.**
-Then navigate to [HarperDB] (http://harperdb.io/register. in your web browser.)
-
-You will be asked to enter your company name and fingerprint.
-
-You will be returned a license key like so **c6a8d0685220d216b8fd77d87cdf3b5bmofi25U7GkrYHmQ1d718f878c31a2e88178c2c76646e8ee**
-
-Copy and paste license key to the command line where requested.
-
-You should then be successfully registered.
-
-    *Each fingerprint is unique to a device.  Each license is unique to a fingerprint.*
-
 ## Running HarperDB
 
 To run HarperDB after it is installed from the HarperDB home (HDB_HOME) directory; run the following commands:
