@@ -8,12 +8,17 @@ class Socket_Server{
         this.port = node.port;
         this.other_nodes = node.other_nodes;
         global.msg_queue = [];
+        global.o_nodes = [];
+        global.cluster_queue = [];
+
 
     }
 
 
     init(next) {
         try {
+
+
             // TODO probably need to make this https
             var server = require('http').createServer().listen(this.port, function () {
             });
@@ -28,7 +33,19 @@ class Socket_Server{
                     socket.join(msg, () => {
 
                         winston.info(node.name + ' joined room ' + msg);
+                        // retrive the queue and send to this node.
+
                         socket.emit('confirm_identity');
+
+                        if(global.cluster_queue
+                            && global.cluster_queue[msg]){
+                            winston.info('sent msg');
+                            winston.info(global.cluster_queue[msg]);
+                            let catchup_payload = JSON.stringify(global.cluster_queue[msg]);
+                            socket.emit('catchup', catchup_payload);
+                        }
+
+
                     });
 
 
@@ -45,6 +62,9 @@ class Socket_Server{
                             global.msg_queue[msg.id].status(200).json(msg.data);
 
                         }
+
+                        delete global.cluster_queue[msg.node.name][msg.id];
+
                     }
 
                     //this.queue[msg].recieved = true;
@@ -61,6 +81,11 @@ class Socket_Server{
                     winston.error(error);
                 });
 
+                socket.on('disconnect', function(error){
+                   winston.error(err);
+
+                });
+
 
             });
 
@@ -73,13 +98,19 @@ class Socket_Server{
 
     send(msg, res){
         try {
-            winston.info('attempting to send msg');
             let payload = {"msg": msg.msg, "id": uuidv1()};
 
+
+            if(!global.cluster_queue[msg.node.name]){
+                global.cluster_queue[msg.node.name] = {};
+            }
             global.msg_queue[payload.id] = res;
-            // i need a way to hold the req and respond from here.
+            global.cluster_queue[msg.node.name][payload.id] = payload;
+            // do I save these to disk now?
+            // should I wait until I have several of them?
             this.io.to(msg.node.name).emit('msg', payload);
         }catch(e){
+            //save the queue to disk for all nodes.
             winston.error(e);
         }
     }

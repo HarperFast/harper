@@ -490,27 +490,56 @@ function createAttributeStructure(create_attribute_object, callback) {
             return;
         }
 
-        let record = {
-            schema: create_attribute_object.schema,
-            table: create_attribute_object.table,
-            attribute: create_attribute_object.attribute,
-            id: uuidV4(),
-            schema_table: create_attribute_object.schema + '.' + create_attribute_object.table
-        };
+        let search_obj = {};
+        search_obj.schema = 'system';
+        search_obj.table = 'hdb_attribute';
+        search_obj.hash_attribute = 'id';
+        search_obj.get_attributes = ['*'];
+        search_obj.search_attribute = 'attribute';
+        search_obj.search_value = create_attribute_object.attribute;
 
-        let insertObject = {
-            operation: 'insert',
-            schema: 'system',
-            table: 'hdb_attribute',
-            hash_attribute: 'id',
-            records: [record]
-        };
+        search.searchByValue(search_obj, function(err, attributes){
+            if(attributes && attributes.length > 0){
+                for(att in attributes){
+                    if(attributes[att].schema === create_attribute_object.schema
+                        && attributes[att].table === create_attribute_object.table){
+                        return callback(`attribute already exists with id ${ JSON.stringify(attributes[att])}`);
+                    }
+                }
+            }
 
-        insert.insert(insertObject, function (err, result) {
-            winston.info('attribute:' + record.attribute);
-            winston.info(result);
-            callback(err, result);
+
+            let record = {
+                schema: create_attribute_object.schema,
+                table: create_attribute_object.table,
+                attribute: create_attribute_object.attribute,
+                id: uuidV4(),
+                schema_table: create_attribute_object.schema + '.' + create_attribute_object.table
+            };
+
+            if(create_attribute_object.id){
+                record.id = create_attribute_object.id;
+            }
+
+            let insertObject = {
+                operation: 'insert',
+                schema: 'system',
+                table: 'hdb_attribute',
+                hash_attribute: 'id',
+                records: [record]
+            };
+
+            insert.insert(insertObject, function (err, result) {
+                winston.info('attribute:' + record.attribute);
+                winston.info(result);
+                callback(err, result);
+            });
+
+
         });
+
+
+
     } catch (e) {
         callback(e);
     }
@@ -577,35 +606,55 @@ function deleteAttributeStructure(attribute_drop_object, callback) {
 
 function createAttribute(create_attribute_object, callback) {
     try {
-        createAttributeStructure(create_attribute_object, function (err, success) {
-            if (err) {
-                callback(err);
-                return;
-            }
-            if(global.cluster_server
-                && global.cluster_server.socket_server.name
-                && !create_attribute_object.delegated    ){
+
+        if(global.cluster_server
+            && global.cluster_server.socket_server.name
+            && !create_attribute_object.delegated && create_attribute_object.schema != 'system'   ){
 
 
-                    create_attribute_object.delegated = true;
-                    create_attribute_object.operation = 'create_attribute';
-
-                    for(let o_node in global.cluster_server.socket_server.other_nodes){
-                        let payload = {};
-                        payload.msg = create_attribute_object;
-                        payload.node = global.cluster_server.socket_server.other_nodes[o_node];
-                        global.cluster_server.send(payload, null);
-                    }
 
 
-            }
+            createAttributeStructure(create_attribute_object, function (err, success) {
+                if (err) {
+                    callback(err);
+                    return;
+                }
+
+                create_attribute_object.delegated = true;
+                create_attribute_object.operation = 'create_attribute';
+                create_attribute_object.id = success.id;
+
+                for(let o_node in global.cluster_server.socket_server.other_nodes){
+                    let payload = {};
+                    payload.msg = create_attribute_object;
+                    payload.node = global.cluster_server.socket_server.other_nodes[o_node];
+                    global.cluster_server.send(payload, null);
+                }
+
+                signalling.signalSchemaChange({type: 'schema'});
+
+                addAndRemoveFromQueue(create_attribute_object, success, callback);
+
+            });
 
 
-            signalling.signalSchemaChange({type: 'schema'});
+        }else{
+            createAttributeStructure(create_attribute_object, function (err, success) {
+                if (err) {
+                    callback(err);
+                    return;
+                }
 
-            addAndRemoveFromQueue(create_attribute_object, success, callback);
 
-        });
+                signalling.signalSchemaChange({type: 'schema'});
+
+                addAndRemoveFromQueue(create_attribute_object, success, callback);
+
+            });
+        }
+
+
+
     } catch (e) {
         callback(e);
     }

@@ -258,6 +258,8 @@ if (cluster.isMaster && !DEBUG) {
             });
         }
 
+
+
         if(hdb_properties.get('CLUSTERING')){
             var node = {
                 "name": hdb_properties.get('NODE_NAME'),

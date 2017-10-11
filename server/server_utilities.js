@@ -153,6 +153,10 @@ function chooseOperation(json, callback) {
         case 'read_log':
             operation_function = read_log.read_log;
             break;
+        case 'add_node':
+            operation_function = global.cluster_server.addNode;
+            break;
+
 
         default:
             break;

@@ -1,5 +1,7 @@
 const Socket_Server = require('./Socket_Server'),
-    Socket_Client = require('./Socket_Client');
+    Socket_Client = require('./Socket_Client'),
+    insert = require('../../data_layer/insert'),
+    node_Validator = require('../../validation/nodeValidator');
 
 
 class ClusterServer {
@@ -23,6 +25,44 @@ class ClusterServer {
     send(msg, res){
         this.socket_server.send(msg, res);
     }
+
+    connectToNode(node, o_node, callback){
+        this.socket_client.connectToNode(node, o_node, callback);
+    }
+
+    addNode(new_node, callback){
+        let validation = node_Validator(new_node);
+        if(validation){
+            return callback(validation);
+        }
+
+        let new_node_insert = {
+            "operation":"insert",
+            "schema":"system",
+            "table":"hdb_nodes",
+            "records": [new_node]
+        }
+
+        insert.insert(new_node_insert, function(err, result){
+           if(err){
+               return callback(err);
+           }
+
+           global.cluster_server.socket_server.other_nodes.push(new_node);
+           global.cluster_server.socket_client.connectToNode(
+               global.cluster_server.socket_server.node, new_node, function(err, result){
+                   if(err){
+                       return callback(err);
+                   }
+
+                   return callback(null, `successfully added ${new_node.name} to manifest`);
+
+               });
+
+        });
+
+    }
+
 
 
 

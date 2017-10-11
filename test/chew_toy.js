@@ -1,4 +1,5 @@
+let payload = {}
+payload.msg = {"operation": "read_log"};
+payload.node = {"name":"node_2"}
+global.cluster_server.send(payload, res);
 
-    const cluster_server = require('../server/clustering/cluster_server');
-    cluster_server.initialze();
-    callback();
