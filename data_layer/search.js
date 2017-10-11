@@ -572,11 +572,14 @@ function groupData(data, search_wrapper){
         }
 
         return data;
+    } else if(aggregate_calculations && aggregate_calculations.length > 0) {
+
+        let results = walkGroupTree(data, aggregate_calculations, []);
+
+        return results;
+    } else {
+        return data;
     }
-
-    let results = walkGroupTree(data, aggregate_calculations, []);
-
-    return results;
 }
 
 function aggregateData(data, calculations){
