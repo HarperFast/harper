@@ -2,7 +2,7 @@ const search = require('../data_layer/search').search,
     global_schema = require('../utility/globalSchema'),
     async = require('async'),
     condition_parser = require('./conditionParser'),
-    select_validator = require('./selectValidator').validator,
+    SelectValidator = require('./SelectValidator'),
     _=require('lodash'),
     AttributeParser = require('./AttributeParser');
 
@@ -14,8 +14,9 @@ module.exports = {
 function convertSelect(statement, callback) {
     try {
 
+        let validator = new SelectValidator(statement);
 
-        select_validator(statement, (err)=> {
+        validator.validator((err)=> {
             if(err){
                 callback(err);
                 return;
@@ -60,6 +61,7 @@ function generateBasicSearchObject(statement, callback){
             tables:[{
                 schema: schema_table[0],
                 table: schema_table[1],
+                alias: statement.from.alias ? statement.from.alias : schema_table[1],
                 join:{}
             }],
             conditions:[],

@@ -10,8 +10,7 @@ const findTable = Symbol('findTable'),
     evaluateExpression = Symbol('evaluateExpression'),
     parseFunction = Symbol('parseFunction'),
     evaluateFunction = Symbol('evaluateFunction'),
-    validateFunction = Symbol('validateFunction'),
-    checkColumnExists = Symbol('checkColumnExists');
+    validateFunction = Symbol('validateFunction');
 
 
 class AttributeParser{
@@ -62,6 +61,23 @@ class AttributeParser{
         return this.selects;
     }
 
+    //used to make sure column exists in the schema
+    checkColumnExists(attribute){
+        if(attribute.attribute === '*'){
+            return attribute;
+        }
+
+        let found_attribute = this.table_metadata[attribute.schema][attribute.table].attributes.filter((column)=>{
+            return column.attribute === attribute.attribute;
+        });
+
+        if(!found_attribute || found_attribute.length === 0){
+            throw `unknown column ${attribute.raw_name}`
+        } else {
+            return attribute;
+        }
+    }
+
     [findTable](table_name){
         if(this.tables.length === 1){
             return this.tables[0];
@@ -88,20 +104,22 @@ class AttributeParser{
                     table: table_info.table,
                     table_alias: table_info.alias,
                     attribute: column_info[1],
-                    alias: column.alias ? column.alias : column_info[1]
+                    alias: column.alias ? column.alias : column_info[1],
+                    raw_name: column.name
                 };
 
-                return this[checkColumnExists](attribute);
+                return this.checkColumnExists(attribute);
             } else {
                 let attribute = {
                     schema: table_info.schema,
                     table: table_info.table,
                     table_alias: table_info.alias,
                     attribute: column_info[0],
-                    alias: column.alias ? column.alias : column_info[0]
+                    alias: column.alias ? column.alias : column_info[0],
+                    raw_name: column.name
                 };
 
-                return this[checkColumnExists](attribute);
+                return this.checkColumnExists(attribute, 'select');
             }
         } else {
             throw `unknown table for column ${column.name}`
@@ -110,38 +128,7 @@ class AttributeParser{
         return null;
     }
 
-    //used to make sure column exists in the schema
-    [checkColumnExists](attribute){
-        if(attribute.attribute === '*'){
-            return attribute;
-        }
 
-        //since our database is case sensitive we will give some leeway regarding casing.
-        // if there is just one column with lowercase matching we will accomadate
-        let found_attribute = this.table_metadata[attribute.schema][attribute.table].attributes.filter((column)=>{
-            return column.attribute.toLowerCase() === attribute.attribute.toLowerCase();
-        });
-
-        if(!found_attribute || found_attribute.length === 0){
-            throw `unknown column ${attribute.table}.${attribute.attribute} found in select`
-        } else if(found_attribute.length > 1) {
-            //if there are more than 2 columns we need to do an exact match on attribute names to see if the casing is correct
-            let exact_column = found_attribute.filter((column)=>{
-                return column.attribute === attribute.attribute;
-            });
-
-            //get here because the casing matches no attribute
-            if(!exact_column || exact_column.length === 0){
-                throw `unknown column ${attribute.table}.${attribute.attribute} found in select, perhaps invalid casing was used`
-            } else {
-                return attribute;
-            }
-        } else {
-            //to make sure we select the correct column assign from the found_attribute
-            attribute.attribute = found_attribute[0].attribute
-            return attribute;
-        }
-    }
 
     [parseFunction](expression){
         let calculation = this[evaluateFunction](expression);
@@ -164,7 +151,10 @@ class AttributeParser{
             expression.args.expression.forEach((exp) => {
                 switch (exp.type) {
                     case 'expression':
-                        args.push(this[evaluateExpression](exp).reverse().join(' '));
+                        let evaluated_expression = this[evaluateExpression](exp);
+                        if(evaluated_expression !== null && evaluated_expression !== undefined) {
+                            args.push(evaluated_expression.reverse().join(' '));
+                        }
                         break;
                     case 'function':
                         args.push(this[evaluateFunction](exp));
@@ -225,7 +215,7 @@ class AttributeParser{
     }
 
     [evaluateExpression](expression, final_operation){
-        try {
+
             let expression_parts = [];
             if (expression) {
 
@@ -244,9 +234,7 @@ class AttributeParser{
             }
 
             return expression_parts
-        } catch(e){
-            console.error(e);
-        }
+
     }
 
     [createExpressionPart](operation, expression){

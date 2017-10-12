@@ -10,12 +10,16 @@ const validateTables = Symbol('validateTables'),
     validateColumn = Symbol('validateColumn'),
     validateOrderByColumn = Symbol('validateOrderByColumn'),
     validateConditions = Symbol('validateConditions'),
-    checkConditionColumns = Symbol('checkConditionColumns');
+    checkConditionColumns = Symbol('checkConditionColumns'),
+    createAttributeFromSplitString = Symbol('createAttributeFromSplitString'),
+    validateTableJoins = Symbol('validateTableJoins');
 
 class SelectValidator {
     constructor(statement){
         this.statement = statement;
-        this.table_metadata = {};
+        //get all of the tables
+        this.tables = [];
+        this.attribute_parser;
     }
 
     validator(callback){
@@ -32,17 +36,27 @@ class SelectValidator {
             }
 
             //get all of the tables
-            let tables = this[validateTables]();
+            this.tables = this[validateTables]();
+            this.attribute_parser = new AttributeParser(this.statement.result, this.tables);
 
-            let select_columns = this[validateSelectColumns](tables);
+            let select_columns = this[validateSelectColumns]();
 
-            this[validateConditions](statement.where ? statement.where[0] : null, tables);
+            this[validateTableJoins]();
 
-            if(statement.order) {
-                statement.order.forEach((order_by) => {
+            this[validateConditions](this.statement.where ? this.statement.where[0] : null);
+
+            if(this.statement.order) {
+                this.statement.order.forEach((order_by) => {
                     let order = order_by.expression ? order_by.expression : order_by;
                     this[validateOrderByColumn](select_columns, order.name);
                     order_by_columns.push(order.name);
+                });
+            }
+
+            if(this.statement.group) {
+                this.statement.group.expression.forEach((group_by) => {
+                    let group = group_by.expression ? group_by.expression : group_by;
+                    this[validateOrderByColumn](select_columns, group.name);
                 });
             }
 
@@ -70,19 +84,20 @@ class SelectValidator {
             throw 'table name/aliases are not distinct';
         }
 
-        //evaluate table joins
-        if (this.statement.from.type === 'map') {
-            this.statement.from.map.forEach((table) => {
-                this[validateConditions](table.constraint.on, tables);
-            });
-        }
-
         return tables;
     }
 
-    [validateSelectColumns](tables){
-        let attribute_parser = new AttributeParser(this.statement.result, tables);
-        let select_columns = attribute_parser.parseGetAttributes();
+    [validateTableJoins](){
+        //evaluate table joins
+        if (this.statement.from.type === 'map') {
+            this.statement.from.map.forEach((table) => {
+                this[validateConditions](table.constraint.on);
+            });
+        }
+    }
+
+    [validateSelectColumns](){
+        let select_columns = this.attribute_parser.parseGetAttributes();
 
         return select_columns;
     }
@@ -99,22 +114,25 @@ class SelectValidator {
         }
 
         return {
-            alias: table.alias ? table.alias : schema_table,
+            alias: table.alias ? table.alias : schema_table[1],
             schema: schema_table[0],
             table: schema_table[1]
         };
     }
 
-    [validateColumn](tables, column_name){
+    [validateColumn](column_name){
 
         let table_column = column_name.split('.');
 
-        if (tables.length > 1 && table_column.length === 1) {
+        if (this.tables.length > 1 && table_column.length === 1) {
             throw `column '${column_name}' ambiguously defined`;
         }
 
-        if(table_column.length > 1) {
-            let found_table = _.filter(tables, (table) => {
+        if(table_column.length === 1){
+            //add the only table name to the array so we can validate properly
+            table_column.unshift(this.tables[0].table);
+        } else {
+            let found_table = _.filter(this.tables, (table) => {
                 return table.table === table_column[0] || table.alias === table_column[0];
             });
 
@@ -122,20 +140,47 @@ class SelectValidator {
                 throw `unknown table for column '${column_name}'`;
             }
         }
+
+        let attribute = this[createAttributeFromSplitString](table_column, column_name);
+        this.attribute_parser.checkColumnExists(attribute);
+    }
+
+    //receive an array based on a string split by '.' convert it to an attribute object,
+    // mainly used to verify the column exists in the schema
+    [createAttributeFromSplitString](table_column, raw_name){
+        let table_info = this.tables.filter((table)=>{
+            return table.alias === table_column[0] || table.table === table_column[0];
+        })[0];
+
+        if(!table_info){
+            throw `unknown column ${raw_name}`;
+        }
+
+        let attribute = {
+            schema:table_info.schema,
+            table:table_info.table,
+            table_alias:table_info.alias,
+            attribute:table_column[1],
+            raw_name: raw_name
+        };
+
+        return attribute;
     }
 
     [validateOrderByColumn](select_columns, column_name){
         let table_column = column_name.split('.');
 
-        if(table_column.length > 1){
-            let found_table = _.filter(select_columns, (column)=>{
-                return (column.table === table_column[0] || column.table_alias === table_column[0]) && (column.attribute === table_column[1] || column.name === '*');
-            });
-
-            if(found_table.length === 0){
-                throw `unknown table for order by column '${column_name}'`;
-            }
+        if (this.tables.length > 1 && table_column.length === 1) {
+            throw `column '${column_name}' ambiguously defined`;
         }
+
+        if(table_column.length === 1){
+            //add the only table name to the array so we can validate properly
+            table_column.unshift(this.tables[0].table);
+        }
+
+        let attribute = this[createAttributeFromSplitString](table_column, column_name);
+        this.attribute_parser.checkColumnExists(attribute);
 
         let col = table_column.length === 1 ? column_name : table_column[1];
         let found_column = _.filter(select_columns, (column)=>{
@@ -146,29 +191,30 @@ class SelectValidator {
             throw `column '${column_name}' must be in select`;
         }
 
+
     }
 
-    [validateConditions](where_clause, tables){
+    [validateConditions](where_clause){
         if(where_clause) {
             let left = where_clause;
 
             while (left.left.type === 'expression') {
                 let condition = left.right;
-                this[checkConditionColumns](condition, tables);
+                this[checkConditionColumns](condition);
 
                 left = left.left;
             }
-            this[checkConditionColumns](left, tables);
+            this[checkConditionColumns](left);
         }
     }
 
-    [checkConditionColumns](condition, tables){
+    [checkConditionColumns](condition){
         if(condition.left.variant === 'column') {
-            this[validateColumn]( tables, condition.left.name);
+            this[validateColumn](condition.left.name);
         }
 
         if(condition.right.variant === 'column') {
-            this[validateColumn](tables, condition.right.name);
+            this[validateColumn](condition.right.name);
         }
     }
 }
