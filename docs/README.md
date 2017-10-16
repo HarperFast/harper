@@ -98,12 +98,14 @@ Our Postman 'Getting Started' samples can be found on our collections page: http
 from top to bottom to learn how to create, populate, and query our sample 'dog' database.
 
 Sample code is also available in many common languages in the sample code pane.  Select the language you want from the drop down and 
-paste the code.
+paste the code. See the Postman documentation on supported languages here: https://www.getpostman.com/docs/postman/sending_api_requests/generate_code_snippets
 
 ## Need Help
 
 -contact us via email: support@harperdb.io
 
 -[Support Portal](https://harperdbhelp.zendesk.com)
+-[Documentation](https://docs.harperdb.io/)
+-[Getting Started Examples](https://blue-rocket-8751.postman.co/collections/1893441-1927d979-5a96-0dab-26db-6648778a1c94)
 
 
