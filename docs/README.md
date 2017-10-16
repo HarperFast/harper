@@ -5,7 +5,8 @@
 1. [Getting Started](#getting-started)
 2. [Running HarperDB](#running-harperdb)
 3. [Stopping HarperDB](#stopping-harperdb)
-4. [Need Help?](#need-help)
+4. [CRUD Samples](#crud-samples)
+5. [Need Help?](#need-help)
 
 
 ## Getting Started
@@ -42,7 +43,8 @@ cd HDB_HOME/bin
 
 *    You will be prompted for a database username and password during the install.
 
-*    If HarperDB is already installed hdb_run will **NOT** run the installer.
+*    If HarperDB is already installed, the command './harperdb' run will **NOT** run the installer.  Instead it will run 
+     HarperDB.
 
 *    Logs for installation are found in the HarperDB home directory (HDB_HOME). Other logs are located at HDB_ROOT/log/.
 
@@ -87,9 +89,18 @@ cd HDB_HOME/bin
 ./harperdb version
 
 ```
+## CRUD samples
+We really like postman.  We like it so much, we have created a series of examples that can be run to create 
+and access sample data in HarperDB.  
 
+Get Postman here! https://www.getpostman.com/
+Our Postman 'Getting Started' samples can be found on our collections page: https://blue-rocket-8751.postman.co/collections/1893441-1927d979-5a96-0dab-26db-6648778a1c94.  Click the "Run in Postman" button then run the samples 
+from top to bottom to learn how to create, populate, and query our sample 'dog' database.
 
-## Need Help?
+Sample code is also available in many common languages in the sample code pane.  Select the language you want from the drop down and 
+paste the code.
+
+## Need Help
 
 -contact us via email: support@harperdb.io
 
