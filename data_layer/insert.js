@@ -163,6 +163,9 @@ function updateData(update_object, callback){
             },
             search.searchByHash,
             (existing_records, caller) => {
+                if( existing_records.length === 0) {
+                    return callback('doesn\'t exist');
+                }
                 hash_attribute = global.hdb_schema[update_object.schema][update_object.table].hash_attribute;
                 caller(null, update_object, hash_attribute, existing_records);
             },
@@ -203,6 +206,7 @@ function updateData(update_object, callback){
 
 function compareUpdatesToExistingRecords(update_object, hash_attribute, existing_records, callback){
 
+    if(!existing_records || existing_records.length === 0) { return callback('No Records Found', [], []); }
     let base_path = hdb_path + '/' + update_object.schema + '/' + update_object.table + '/';
 
     let unlink_paths = [];
@@ -274,18 +278,16 @@ function unlinkFiles(unlink_paths, update_objects, callback){
 }
 
 function checkAttributeSchema(insert_object, callerback) {
+    if(!insert_object) { return callback("Empty Object", null); }
     let table_schema = global.hdb_schema[insert_object.schema][insert_object.table];
     let hash_attribute = table_schema.hash_attribute;
     let epoch = new Date().valueOf();
-    //let date = new moment().format(`YYYY-MM-DD HH:mm:ss.${process.hrtime()[1]} ZZ`);
 
     let insert_objects = [];
     let symbolic_links = [];
-    //let touch_links = [];
 
     let folders = {};
     let hash_folders = {};
-    //let delete_folders = {};
     let hash_paths = {};
     let base_path = hdb_path + '/' + insert_object.schema + '/' + insert_object.table + '/';
 
@@ -376,7 +378,6 @@ function processData(data_wrapper, callback) {
         }
         callback();
     });
-    //});
 }
 
 function writeRawData(folders, data, callback) {
