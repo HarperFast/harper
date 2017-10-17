@@ -94,8 +94,8 @@ We really like postman.  We like it so much, we have created a series of example
 and access sample data in HarperDB.  
 
 Get Postman here! https://www.getpostman.com/
-Our Postman 'Getting Started' samples can be found on our collections page: https://blue-rocket-8751.postman.co/collections/1893441-1927d979-5a96-0dab-26db-6648778a1c94.  Click the "Run in Postman" button then run the samples 
-from top to bottom to learn how to create, populate, and query our sample 'dog' database.
+Our Postman 'Getting Started' samples can be found on our examples page: http://examples.harperdb.io/.  Click the "Run in Postman" button then run the samples 
+from top to bottom to learn how to create, populate, and query our sample 'dog' database.  Woof.
 
 Sample code is also available in many common languages in the sample code pane.  Select the language you want from the drop down and 
 paste the code. See the Postman documentation on supported languages here: https://www.getpostman.com/docs/postman/sending_api_requests/generate_code_snippets
@@ -106,6 +106,6 @@ paste the code. See the Postman documentation on supported languages here: https
 
 -[Support Portal](https://harperdbhelp.zendesk.com)
 -[Documentation](https://docs.harperdb.io/)
--[Getting Started Examples](https://blue-rocket-8751.postman.co/collections/1893441-1927d979-5a96-0dab-26db-6648778a1c94)
+-[Getting Started Examples](http://examples.harperdb.io/)
 
 
