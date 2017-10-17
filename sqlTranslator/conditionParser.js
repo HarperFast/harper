@@ -14,55 +14,64 @@ function parseConditions(where_clause){
             left = left.left;
         }
 
-        conditions.push(createConditionObject('and', left));
+        conditions.push(createConditionObject(null, left));
     }
 
     conditions.reverse();
 
-    return conditions;
+    return conditions.join(' ');
 }
 
 function createConditionObject(operation, condition){
-    //operation = '||' ? 'like' : operation;
-    let condition_object = {};
-    if(operation) {
-        condition_object[operation] = parseWhereClause(condition);
-    } else{
-        condition_object = parseWhereClause(condition);
-    }
-    return condition_object;
+    let condition_string = (operation ? operation + ' ' : '') + parseWhereClause(condition);
+    return condition_string;
 }
 
 function parseWhereClause(where) {
-    //we had replaced LIKE with || before generating the AST, now we need to switch it back.
+    let condition = '';
     let operation = where.operation;
-    let condition_object = {};
-    condition_object[operation] = [];
-    condition_object[operation].push(`${where.left.name}`);
 
     switch(operation){
         case '=':
+            condition = `${where.left.name} == `;
+            if(where.right.value) {
+                condition += where.right.value;
+            } else {
+                condition += where.right.name;
+            }
+            break;
         case '>':
         case '>=':
         case '<':
         case '<=':
-        case 'like':
+            condition = `${where.left.name} ${where.operation} `;
             if(where.right.value) {
-                condition_object[operation].push(where.right.value);
+                condition += where.right.value;
             } else {
-                condition_object[operation].push(`${where.right.name}`);
+                condition += where.right.name;
             }
             break;
+        case 'like':
+            let value = where.right.value;
+            if(typeof value === 'string'){
+                value = `'${value}'`
+            }
+            condition = `like(${where.left.name}, ${value})`;
+            break;
         case 'in':
-            let compare_value = [];
-            where.right.expression.forEach((value_object)=>{
-                compare_value.push(value_object.value);
+            let compare_value = where.right.expression.filter((value_object)=>{
+                let value = value_object.value;
+                if(typeof value === 'string'){
+                    value = `'${value}'`
+                }
+                compare_value.push(value);
             });
-            condition_object[operation].push(compare_value);
+            condition = `in(${where.left.name}, ${compare_value})`;
             break;
         default:
+            throw `unsupported operation ${operation}`;
             break;
     }
 
-    return condition_object;
+    return condition;
 }
