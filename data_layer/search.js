@@ -12,6 +12,7 @@ const base_path = hdb_properties.get('HDB_ROOT') + "/schema/"
     _ = require('lodash'),
     joins = require('lodash-joins'),
     condition_patterns = require('../sqlTranslator/conditionPatterns'),
+    ConditionPatterns = require('../sqlTranslator/ConditionPatterns'),
     autocast = require('autocast'),
     math = require('mathjs'),
     aggregate_functions = require('../utility/functions/aggregateFunctions.json'),
@@ -184,6 +185,11 @@ function multiConditionSearch(conditions, table_schema, callback){
     try {
         let all_ids = [];
 
+        let patterns = new ConditionPatterns(conditions);
+        patterns.parseConditions();
+
+        async.forEachOf(patterns.column_conditions, (condition))
+
         async.forEachOf(conditions, (condition, key, caller) => {
             all_ids[key] = {};
             let condition_key = Object.keys(condition)[0];
@@ -191,6 +197,7 @@ function multiConditionSearch(conditions, table_schema, callback){
                 all_ids[key].operation = condition_key;
                 condition = condition[condition_key];
             }
+
 
             let pattern = condition_patterns.createPatterns(condition, table_schema, base_path);
 
