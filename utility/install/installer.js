@@ -24,8 +24,7 @@ var hdb_boot_properties = null,
 
 //
 // Get two properties from the user: username and email
-//
-//TODO figure out SSL for express.
+
 
 
 module.exports = {

@@ -11,7 +11,17 @@ module.exports = {
     csvURLLoad: csvURLLoad,
     csvFileLoad: csvFileLoad
 };
-
+/**
+ * Load a csv file.
+ *
+ * @param csv_object - An object representing the CSV file.
+ * @param callback
+ * @returns {
+ * validation_msg - Contains any validation errors found
+ * error - any errors found reading the csv file
+ * err - any errors found during the bulk load
+ * }
+ */
 function csvDataLoad(csv_object, callback){
     try {
         let validation_msg = validator.dataObject(csv_object);
@@ -45,6 +55,17 @@ function csvDataLoad(csv_object, callback){
     }
 }
 
+/**
+ * Load a csv file from a URL.
+ *
+ * @param csv_object - An object representing the CSV file via URL.
+ * @param callback
+ * @returns {
+ * validation_msg - Contains any validation errors found
+ * error - any errors found reading the csv file
+ * err - any errors found during the bulk load
+ * }
+ */
 function csvURLLoad(csv_object, callback){
     try {
         let validation_msg = validator.urlObject(csv_object);
@@ -104,6 +125,16 @@ function createReadStream(url, callback){
         });
 }
 
+/**
+ *
+ * @param csv_object - An object representing the CSV file.
+ * @param callback
+ * @returns {
+ * validation_msg - Contains any validation errors found
+ * error - any errors found reading the csv file
+ * err - any errors found during the bulk load
+ * }
+ */
 function csvFileLoad(csv_object, callback){
     try {
         let validation_msg = validator.fileObject(csv_object);
@@ -140,6 +171,14 @@ function csvFileLoad(csv_object, callback){
     }
 }
 
+/**
+ * Performs either a bulk insert or update depending on the action passed to the function.
+ * @param records - The records to be inserted/updated
+ * @param schema - The schema containing the specified table
+ * @param table - The table to perform the insert/update
+ * @param action - Specify either insert or update the specified records
+ * @param callback - The caller
+ */
 function bulkLoad(records, schema, table, action, callback){
     let chunks = _.chunk(records, record_batch_size);
 

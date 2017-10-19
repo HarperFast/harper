@@ -8,6 +8,13 @@ module.exports = {
     update: update
 };
 
+/**
+ * Description
+ * @method update
+ * @param {} update_wrapper
+ * @param {} callback
+ * @return 
+ */
 function update(update_wrapper, callback){
     global_schema.getTableSchema(update_wrapper.schema, update_wrapper.table, (err, table_info)=>{
         if(err){
@@ -33,6 +40,15 @@ function update(update_wrapper, callback){
 
 }
 
+/**
+ * Description
+ * @method buildUpdateRecords
+ * @param {} update_record
+ * @param {} table_info
+ * @param {} ids
+ * @param {} callback
+ * @return 
+ */
 function buildUpdateRecords(update_record, table_info, ids, callback){
     let records = [];
     if(!ids || ids.length === 0){
@@ -48,6 +64,14 @@ function buildUpdateRecords(update_record, table_info, ids, callback){
     callback(null, records);
 }
 
+/**
+ * Description
+ * @method updateRecords
+ * @param {} update_wrapper
+ * @param {} records
+ * @param {} callback
+ * @return 
+ */
 function updateRecords(update_wrapper, records, callback){
     let update_object = {
         operation:'update',
