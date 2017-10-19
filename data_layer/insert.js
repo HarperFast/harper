@@ -160,7 +160,8 @@ function updateData(update_object, callback){
             update_ids:[]
         };
         let hash_attribute;
-
+        //TODO: This is ugly and string compare is slow.  Refactor this when we bring in promises.
+        var NO_RESULTS = 'NR';
         async.waterfall([
             validation.bind(null, update_object),
             (table_schema, caller) => {
@@ -187,6 +188,9 @@ function updateData(update_object, callback){
             },
             search.searchByHash,
             (existing_records, caller) => {
+                if( existing_records.length === 0) {
+                    return caller(NO_RESULTS);
+                }
                 hash_attribute = global.hdb_schema[update_object.schema][update_object.table].hash_attribute;
                 caller(null, update_object, hash_attribute, existing_records);
             },
@@ -204,7 +208,8 @@ function updateData(update_object, callback){
             checkAttributeSchema,
             processData
         ], (err) => {
-            if (err) {
+            //TODO: This is ugly and string compare is slow.  Refactor this when we bring in promises.
+            if (err && NO_RESULTS !== err) {
                 callback(err);
                 return;
             }
@@ -226,6 +231,7 @@ function updateData(update_object, callback){
 
 function compareUpdatesToExistingRecords(update_object, hash_attribute, existing_records, callback){
 
+    if(!existing_records || existing_records.length === 0) { return callback('No Records Found', [], []); }
     let base_path = hdb_path + '/' + update_object.schema + '/' + update_object.table + '/';
 
     let unlink_paths = [];
@@ -305,6 +311,7 @@ function unlinkFiles(unlink_paths, update_objects, callback){
  * @param callerback
  */
 function checkAttributeSchema(insert_object, callerback) {
+    if(!insert_object) { return callback("Empty Object", null); }
     let table_schema = global.hdb_schema[insert_object.schema][insert_object.table];
     let hash_attribute = table_schema.hash_attribute;
     let epoch = new Date().valueOf();

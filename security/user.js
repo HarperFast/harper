@@ -83,16 +83,13 @@ function alterUser(user, callback){
     };
 
     insert.update(update_object, function(err, success){
-        if(err){
+        if(err) {
             callback(err);
             return;
         }
         signalling.signalUserChange({type: 'user'});
-        callback(null, `${user.username} successfully altered`);
-
+        callback(null, success);
     });
-
-
 }
 
 function dropUser(user, callback){

@@ -92,13 +92,11 @@ function alterRole(role, callback){
     };
 
     insert.update(update_object, function(err, success){
-        if(err){
+        if(err) {
             callback(err);
             return;
         }
-
-        callback(null, `${role.role} successfully altered`);
-
+        callback(null, success);
     });
 
 
