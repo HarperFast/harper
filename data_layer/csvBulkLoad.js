@@ -32,12 +32,11 @@ function csvDataLoad(csv_object, callback){
                     return;
                 }
 
-                bulkLoad(csv_records, csv_object.schema, csv_object.table, (err, data) => {
+                bulkLoad(csv_records, csv_object.schema, csv_object.table, csv_object.action, (err, data) => {
                     if (err) {
                         callback(err);
                         return;
                     }
-
                     callback(null, `successfully loaded ${csv_records.length} records`);
                 });
             });
@@ -71,12 +70,11 @@ function csvURLLoad(csv_object, callback){
                         return;
                     }
 
-                    bulkLoad(csv_records, csv_object.schema, csv_object.table, (err, data) => {
+                    bulkLoad(csv_records, csv_object.schema, csv_object.table, csv_object.action, (err, data) => {
                         if (err) {
                             callback(err);
                             return;
                         }
-
                         callback(null, `successfully loaded ${csv_records.length} records`);
                     });
                 })
@@ -124,7 +122,7 @@ function csvFileLoad(csv_object, callback){
                     return callback(error);
                 }
 
-                bulkLoad(csv_records, csv_object.schema, csv_object.table, (err, data) => {
+                bulkLoad(csv_records, csv_object.schema, csv_object.table, csv_object.action, (err, data) => {
                     if (err) {
                         return callback(err);
                     }
@@ -142,32 +140,47 @@ function csvFileLoad(csv_object, callback){
     }
 }
 
-function bulkLoad(records, schema, table, callback){
+function bulkLoad(records, schema, table, action, callback){
     let chunks = _.chunk(records, record_batch_size);
 
+    //TODO: Noone remember why we have this here.  We should refactor this when
+    // we have more benchmarks for comparison.  Might be able to leverage cores once
+    // the process pool is ready.
     async.eachLimit(chunks, 4, (record_chunk, caller)=>{
-        let insert_object = {
-            operation: 'insert',
+        let target_object = {
             schema: schema,
             table: table,
             records: record_chunk
         };
 
-        insert.insert(insert_object, (err, data)=>{
-            if(err){
-                caller(err);
-                return;
-            }
-
-            caller(null, data);
-        });
+        switch (action) {
+            case 'insert':
+                target_object.operation = 'insert';
+                insert.insert(target_object, (err, data)=>{
+                    if(err){
+                        caller(err);
+                        return;
+                    }
+                    caller(null, data);
+                });
+                break;
+            case 'update':
+                target_object.operation = 'update';
+                insert.update(target_object, (err, data)=>{
+                    if(err){
+                        caller(err);
+                        return;
+                    }
+                    caller(null, data);
+                });
+                break;
+        }
 
     }, (err)=>{
         if(err){
             callback(err);
             return;
         }
-
         callback();
     });
 }

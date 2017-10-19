@@ -51,9 +51,7 @@ if (cluster.isMaster && !DEBUG) {
         async = require('async'),
         cors = require('cors');
 
-
     hdb_properties.append(hdb_properties.get('settings_path'));
-
 
     if(hdb_properties.get('CORS_ON') && (hdb_properties.get('CORS_ON') === true || hdb_properties.get('CORS_ON').toUpperCase() === 'TRUE')){
         let cors_options = {
@@ -72,13 +70,11 @@ if (cluster.isMaster && !DEBUG) {
                 };
 
         }
-
         app.use(cors(cors_options));
     }
 
     app.use(bodyParser.json({limit:'1gb'})); // support json encoded bodies
     app.use(bodyParser.urlencoded({extended: true}));
-
     app.use(function (error, req, res, next) {
         if (error instanceof SyntaxError) {
             res.status(400).send({error: 'invalid JSON: ' + error.message.replace('\n', '')});
@@ -135,7 +131,6 @@ if (cluster.isMaster && !DEBUG) {
         });
 
     });
-
 
     function chooseOperation(json, callback) {
         let operation_function = nullOperation;
@@ -224,14 +219,12 @@ if (cluster.isMaster && !DEBUG) {
             default:
                 break;
         }
-
         callback(null, operation_function);
     }
 
     function nullOperation(json, callback) {
         callback('Invalid operation');
     }
-
     process.on('message', (msg)=>{
         switch(msg.type){
             case 'schema':
@@ -249,7 +242,6 @@ if (cluster.isMaster && !DEBUG) {
                 });
                 break;
         }
-
     });
 
     try{
@@ -259,12 +251,8 @@ if (cluster.isMaster && !DEBUG) {
         var certificate = fs.readFileSync(hdb_properties.get('CERTIFICATE'), 'utf8');
         var credentials = {key: privateKey, cert: certificate};
 
-// your express configuration here
-
         var httpServer = http.createServer(app);
         var httpsServer = https.createServer(credentials, app);
-
-        //httpServer.listen(8080);
 
         if(hdb_properties.get('HTTPS_ON') && (hdb_properties.get('HTTPS_ON') === true || hdb_properties.get('HTTPS_ON').toUpperCase() === 'TRUE')){
             httpsServer.listen(hdb_properties.get('HTTPS_PORT'), function(){
@@ -276,11 +264,7 @@ if (cluster.isMaster && !DEBUG) {
                     }
 
                 });
-
-
-
             });
-
         }
 
         if(hdb_properties.get('HTTP_ON') && (hdb_properties.get('HTTP_ON') === true || hdb_properties.get('HTTP_ON').toUpperCase()  === 'TRUE')){
@@ -296,15 +280,9 @@ if (cluster.isMaster && !DEBUG) {
                             winston.error(error);
                         }
                     });
-
-
             });
         }
-
-
-
     }catch(e){
-
         winston.error(e);
     }
 }

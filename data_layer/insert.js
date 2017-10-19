@@ -186,7 +186,6 @@ function updateData(update_object, callback){
             }
 
             let skipped_hashes = _.difference(tracker.all_ids, tracker.update_ids);
-
             let return_object = {
                 message: `updated ${tracker.update_ids.length} of ${tracker.all_ids.length} records`,
                 update_hashes: tracker.update_ids,
@@ -257,10 +256,8 @@ function unlinkFiles(unlink_paths, update_objects, callback){
                 if(err.code === 'ENOENT'){
                     return caller();
                 }
-
                 winston.error(err);
             }
-
             caller();
         });
     }, (error)=>{
@@ -268,7 +265,6 @@ function unlinkFiles(unlink_paths, update_objects, callback){
             callback(error);
             return;
         }
-
         callback(null, update_objects);
     });
 }
@@ -277,15 +273,12 @@ function checkAttributeSchema(insert_object, callerback) {
     let table_schema = global.hdb_schema[insert_object.schema][insert_object.table];
     let hash_attribute = table_schema.hash_attribute;
     let epoch = new Date().valueOf();
-    //let date = new moment().format(`YYYY-MM-DD HH:mm:ss.${process.hrtime()[1]} ZZ`);
 
     let insert_objects = [];
     let symbolic_links = [];
-    //let touch_links = [];
 
     let folders = {};
     let hash_folders = {};
-    //let delete_folders = {};
     let hash_paths = {};
     let base_path = hdb_path + '/' + insert_object.schema + '/' + insert_object.table + '/';
 
@@ -376,7 +369,6 @@ function processData(data_wrapper, callback) {
         }
         callback();
     });
-    //});
 }
 
 function writeRawData(folders, data, callback) {
@@ -399,7 +391,6 @@ function writeRawDataFiles(data, callback) {
                 caller(err);
                 return;
             }
-
             caller();
         });
     }, function (err) {
@@ -407,7 +398,6 @@ function writeRawDataFiles(data, callback) {
             callback(err);
             return;
         }
-
         callback();
     });
 }
@@ -432,7 +422,6 @@ function writeLinkFiles(links, callback) {
                 caller(err);
                 return;
             }
-
             caller();
         });
     }, function (err) {
@@ -440,7 +429,6 @@ function writeLinkFiles(links, callback) {
             callback(err);
             return;
         }
-
         callback();
     });
 }
@@ -467,7 +455,6 @@ function createFolders(folders, callback) {
             callback(err);
             return;
         }
-
         callback();
     });
 }
@@ -487,8 +474,6 @@ function createNewAttribute(base_folder, callback){
 
         callback();
     });
-
-
 }
 
 const schema = require('../data_layer/schema');
