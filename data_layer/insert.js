@@ -136,7 +136,8 @@ function updateData(update_object, callback){
             update_ids:[]
         };
         let hash_attribute;
-
+        //TODO: This is ugly and string compare is slow.  Refactor this when we bring in promises.
+        var NO_RESULTS = 'NR';
         async.waterfall([
             validation.bind(null, update_object),
             (table_schema, caller) => {
@@ -164,7 +165,7 @@ function updateData(update_object, callback){
             search.searchByHash,
             (existing_records, caller) => {
                 if( existing_records.length === 0) {
-                    return callback('doesn\'t exist');
+                    return caller(NO_RESULTS);
                 }
                 hash_attribute = global.hdb_schema[update_object.schema][update_object.table].hash_attribute;
                 caller(null, update_object, hash_attribute, existing_records);
@@ -183,7 +184,8 @@ function updateData(update_object, callback){
             checkAttributeSchema,
             processData
         ], (err) => {
-            if (err) {
+            //TODO: This is ugly and string compare is slow.  Refactor this when we bring in promises.
+            if (err && NO_RESULTS !== err) {
                 callback(err);
                 return;
             }
