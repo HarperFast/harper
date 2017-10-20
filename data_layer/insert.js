@@ -138,7 +138,7 @@ function insertData(insert_object, callback){
                 return callback(err);
             }
 
-            callback(null, `successfully wrote ${insert_object.records.length} records`);
+            callback(null, `inserted ${insert_object.records.length} records`);
         });
     } catch(e){
         callback(e);

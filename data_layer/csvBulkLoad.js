@@ -157,8 +157,7 @@ function csvFileLoad(csv_object, callback){
                     if (err) {
                         return callback(err);
                     }
-
-                    return callback(null, `successfully loaded ${csv_records.length} records`);
+                    return callback(null, data);
                 });
             }).on('error', (err) => {
                 if(err.message && err.message === 'File not exists'){
@@ -181,7 +180,7 @@ function csvFileLoad(csv_object, callback){
  */
 function bulkLoad(records, schema, table, action, callback){
     let chunks = _.chunk(records, record_batch_size);
-
+    let update_status = '';
     //TODO: Noone remember why we have this here.  We should refactor this when
     // we have more benchmarks for comparison.  Might be able to leverage cores once
     // the process pool is ready.
@@ -200,6 +199,7 @@ function bulkLoad(records, schema, table, action, callback){
                         caller(err);
                         return;
                     }
+                    update_status = data;
                     caller(null, data);
                 });
                 break;
@@ -210,6 +210,7 @@ function bulkLoad(records, schema, table, action, callback){
                         caller(err);
                         return;
                     }
+                    update_status = data;
                     caller(null, data);
                 });
                 break;
@@ -220,6 +221,9 @@ function bulkLoad(records, schema, table, action, callback){
             callback(err);
             return;
         }
-        callback();
+        if( update_status.length === 0) {
+            callback('There was a problem with this operation.  Please check the input file.')
+        }
+        callback(null,update_status);
     });
 }
