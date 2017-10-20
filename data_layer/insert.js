@@ -17,6 +17,8 @@ const insert_validator = require('../validation/insertValidator.js'),
 const hdb_path = path.join(hdb_properties.get('HDB_ROOT'), '/schema');
 const regex = /\//g,
     hash_regex = /^[a-zA-Z0-9-_]+$/;
+//TODO: This is ugly and string compare is slow.  Refactor this when we bring in promises.
+const NO_RESULTS = 'NR';
 
 
 module.exports = {
@@ -136,8 +138,7 @@ function updateData(update_object, callback){
             update_ids:[]
         };
         let hash_attribute;
-        //TODO: This is ugly and string compare is slow.  Refactor this when we bring in promises.
-        var NO_RESULTS = 'NR';
+
         async.waterfall([
             validation.bind(null, update_object),
             (table_schema, caller) => {
@@ -208,7 +209,7 @@ function updateData(update_object, callback){
 
 function compareUpdatesToExistingRecords(update_object, hash_attribute, existing_records, callback){
 
-    if(!existing_records || existing_records.length === 0) { return callback('No Records Found', [], []); }
+    if(!existing_records || existing_records.length === 0) { return callback('No Records Found'); }
     let base_path = hdb_path + '/' + update_object.schema + '/' + update_object.table + '/';
 
     let unlink_paths = [];
