@@ -65,7 +65,7 @@ class ConditionPatterns{
                         found_node[0].attributes.push(attribute_object);
                     } else {
                         conditions.push({
-                            node:node,
+                            node:node.toString().replace(/\./g,'_'),
                             attributes:[attribute_object]
                         });
                     }
