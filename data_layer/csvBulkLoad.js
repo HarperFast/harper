@@ -16,11 +16,10 @@ module.exports = {
  *
  * @param csv_object - An object representing the CSV file.
  * @param callback
- * @returns {
- * validation_msg - Contains any validation errors found
- * error - any errors found reading the csv file
- * err - any errors found during the bulk load
- * }
+ * @returns validation_msg - Contains any validation errors found
+ * @returns error - any errors found reading the csv file
+ * @returns err - any errors found during the bulk load
+ *
  */
 function csvDataLoad(csv_object, callback){
     try {
@@ -60,11 +59,10 @@ function csvDataLoad(csv_object, callback){
  *
  * @param csv_object - An object representing the CSV file via URL.
  * @param callback
- * @returns {
- * validation_msg - Contains any validation errors found
- * error - any errors found reading the csv file
- * err - any errors found during the bulk load
- * }
+ * @returns validation_msg - Contains any validation errors found
+ * @returns error - any errors found reading the csv file
+ * @returns err - any errors found during the bulk load
+ *
  */
 function csvURLLoad(csv_object, callback){
     try {
@@ -129,11 +127,10 @@ function createReadStream(url, callback){
  *
  * @param csv_object - An object representing the CSV file.
  * @param callback
- * @returns {
- * validation_msg - Contains any validation errors found
- * error - any errors found reading the csv file
- * err - any errors found during the bulk load
- * }
+ * @returns validation_msg - Contains any validation errors found
+ * @returns error - any errors found reading the csv file
+ * @return err - any errors found during the bulk load
+ *
  */
 function csvFileLoad(csv_object, callback){
     try {
