@@ -1,13 +1,12 @@
 const validate = require('validate.js'),
     clone = require('clone');
-
+const actions = ["update", "insert"];
 const constraints = {
     schema : {
         presence : {
             message : "is required"
         },
         format: {
-
             pattern: "^[a-zA-Z0-9_]*$",
             message: "must be alpha numeric"
         },
@@ -21,7 +20,6 @@ const constraints = {
             message : "is required"
         },
         format: {
-
             pattern: "^[a-zA-Z0-9_]*$",
             message: "must be alpha numeric"
         },
@@ -29,6 +27,16 @@ const constraints = {
             maximum:250,
             tooLong: 'cannot exceed 250 characters'
         }
+    },
+    action: {
+        presence : {
+            message : 'is required and must be either insert or update'
+        },
+        inclusion : {
+            within: actions,
+            message: 'is required and must be either insert or update'
+        }
+
     },
     file_path :{},
     csv_url :{
