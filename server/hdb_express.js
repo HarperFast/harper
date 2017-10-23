@@ -132,6 +132,14 @@ if (cluster.isMaster && !DEBUG) {
 
     });
 
+    app.get('/', function (req, res) {
+        auth.authorize(req, res, function(err, user) {
+            var guidePath = require('path');
+            res.sendFile(guidePath.resolve('../docs/user_guide.html'));
+        });
+    });
+
+
     function chooseOperation(json, callback) {
         let operation_function = nullOperation;
         switch (json.operation) {
