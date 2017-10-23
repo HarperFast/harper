@@ -132,6 +132,14 @@ if (cluster.isMaster && !DEBUG) {
 
     });
 
+    app.get('/', function (req, res) {
+        auth.authorize(req, res, function(err, user) {
+            var guidePath = require('path');
+            res.sendFile(guidePath.resolve('../docs/user_guide.html'));
+        });
+    });
+
+
     function chooseOperation(json, callback) {
         let operation_function = nullOperation;
         switch (json.operation) {
@@ -245,14 +253,14 @@ if (cluster.isMaster && !DEBUG) {
     });
 
     try{
-        let http = require('http');
-        let https = require('https');
-        let privateKey  = fs.readFileSync(hdb_properties.get('PRIVATE_KEY'), 'utf8');
-        let certificate = fs.readFileSync(hdb_properties.get('CERTIFICATE'), 'utf8');
-        let credentials = {key: privateKey, cert: certificate};
+        var http = require('http');
+        var https = require('https');
+        var privateKey  = fs.readFileSync(hdb_properties.get('PRIVATE_KEY'), 'utf8');
+        var certificate = fs.readFileSync(hdb_properties.get('CERTIFICATE'), 'utf8');
+        var credentials = {key: privateKey, cert: certificate};
 
-        let httpServer = http.createServer(app);
-        let httpsServer = https.createServer(credentials, app);
+        var httpServer = http.createServer(app);
+        var httpsServer = https.createServer(credentials, app);
 
         if(hdb_properties.get('HTTPS_ON') && (hdb_properties.get('HTTPS_ON') === true || hdb_properties.get('HTTPS_ON').toUpperCase() === 'TRUE')){
             httpsServer.listen(hdb_properties.get('HTTPS_PORT'), function(){
@@ -267,23 +275,20 @@ if (cluster.isMaster && !DEBUG) {
             });
         }
 
-        else {
-            (hdb_properties.get('HTTP_ON') && (hdb_properties.get('HTTP_ON') === true || hdb_properties.get('HTTP_ON').toUpperCase() === 'TRUE'))
-            {
-                httpServer.listen(hdb_properties.get('HTTP_PORT'), function () {
-                    winston.info(`HarperDB ${pjson.version} HTTP Server running on ${hdb_properties.get('HTTP_PORT')}`);
+        if(hdb_properties.get('HTTP_ON') && (hdb_properties.get('HTTP_ON') === true || hdb_properties.get('HTTP_ON').toUpperCase()  === 'TRUE')){
+            httpServer.listen(hdb_properties.get('HTTP_PORT'), function(){
+                winston.info(`HarperDB ${pjson.version} HTTP Server running on ${hdb_properties.get('HTTP_PORT')}`);
 
-                    async.parallel(
-                        [
-                            global_schema.setSchemaDataToGlobal,
-                            global_schema.setUsersToGlobal
-                        ], (error, data) => {
-                            if (error) {
-                                winston.error(error);
-                            }
-                        });
-                });
-            }
+                async.parallel(
+                    [
+                        global_schema.setSchemaDataToGlobal,
+                        global_schema.setUsersToGlobal
+                    ], (error, data)=>{
+                        if(error){
+                            winston.error(error);
+                        }
+                    });
+            });
         }
     }catch(e){
         winston.error(e);
