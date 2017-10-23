@@ -11,7 +11,16 @@ module.exports = {
     csvURLLoad: csvURLLoad,
     csvFileLoad: csvFileLoad
 };
-
+/**
+ * Load a csv file.
+ *
+ * @param csv_object - An object representing the CSV file.
+ * @param callback
+ * @returns validation_msg - Contains any validation errors found
+ * @returns error - any errors found reading the csv file
+ * @returns err - any errors found during the bulk load
+ *
+ */
 function csvDataLoad(csv_object, callback){
     try {
         let validation_msg = validator.dataObject(csv_object);
@@ -32,12 +41,11 @@ function csvDataLoad(csv_object, callback){
                     return;
                 }
 
-                bulkLoad(csv_records, csv_object.schema, csv_object.table, (err, data) => {
+                bulkLoad(csv_records, csv_object.schema, csv_object.table, csv_object.action, (err, data) => {
                     if (err) {
                         callback(err);
                         return;
                     }
-
                     callback(null, `successfully loaded ${csv_records.length} records`);
                 });
             });
@@ -46,6 +54,16 @@ function csvDataLoad(csv_object, callback){
     }
 }
 
+/**
+ * Load a csv file from a URL.
+ *
+ * @param csv_object - An object representing the CSV file via URL.
+ * @param callback
+ * @returns validation_msg - Contains any validation errors found
+ * @returns error - any errors found reading the csv file
+ * @returns err - any errors found during the bulk load
+ *
+ */
 function csvURLLoad(csv_object, callback){
     try {
         let validation_msg = validator.urlObject(csv_object);
@@ -71,12 +89,11 @@ function csvURLLoad(csv_object, callback){
                         return;
                     }
 
-                    bulkLoad(csv_records, csv_object.schema, csv_object.table, (err, data) => {
+                    bulkLoad(csv_records, csv_object.schema, csv_object.table, csv_object.action, (err, data) => {
                         if (err) {
                             callback(err);
                             return;
                         }
-
                         callback(null, `successfully loaded ${csv_records.length} records`);
                     });
                 })
@@ -106,6 +123,15 @@ function createReadStream(url, callback){
         });
 }
 
+/**
+ *
+ * @param csv_object - An object representing the CSV file.
+ * @param callback
+ * @returns validation_msg - Contains any validation errors found
+ * @returns error - any errors found reading the csv file
+ * @return err - any errors found during the bulk load
+ *
+ */
 function csvFileLoad(csv_object, callback){
     try {
         let validation_msg = validator.fileObject(csv_object);
@@ -124,12 +150,11 @@ function csvFileLoad(csv_object, callback){
                     return callback(error);
                 }
 
-                bulkLoad(csv_records, csv_object.schema, csv_object.table, (err, data) => {
+                bulkLoad(csv_records, csv_object.schema, csv_object.table, csv_object.action, (err, data) => {
                     if (err) {
                         return callback(err);
                     }
-
-                    return callback(null, `successfully loaded ${csv_records.length} records`);
+                    return callback(null, data);
                 });
             }).on('error', (err) => {
                 if(err.message && err.message === 'File not exists'){
@@ -142,32 +167,60 @@ function csvFileLoad(csv_object, callback){
     }
 }
 
-function bulkLoad(records, schema, table, callback){
+/**
+ * Performs either a bulk insert or update depending on the action passed to the function.
+ * @param records - The records to be inserted/updated
+ * @param schema - The schema containing the specified table
+ * @param table - The table to perform the insert/update
+ * @param action - Specify either insert or update the specified records
+ * @param callback - The caller
+ */
+function bulkLoad(records, schema, table, action, callback){
     let chunks = _.chunk(records, record_batch_size);
-
+    let update_status = '';
+    //TODO: Noone remember why we have this here.  We should refactor this when
+    // we have more benchmarks for comparison.  Might be able to leverage cores once
+    // the process pool is ready.
     async.eachLimit(chunks, 4, (record_chunk, caller)=>{
-        let insert_object = {
-            operation: 'insert',
+        let target_object = {
             schema: schema,
             table: table,
             records: record_chunk
         };
 
-        insert.insert(insert_object, (err, data)=>{
-            if(err){
-                caller(err);
-                return;
-            }
-
-            caller(null, data);
-        });
+        switch (action) {
+            case 'insert':
+                target_object.operation = 'insert';
+                insert.insert(target_object, (err, data)=>{
+                    if(err){
+                        caller(err);
+                        return;
+                    }
+                    update_status = data;
+                    caller(null, data);
+                });
+                break;
+            case 'update':
+                target_object.operation = 'update';
+                insert.update(target_object, (err, data)=>{
+                    if(err){
+                        caller(err);
+                        return;
+                    }
+                    update_status = data;
+                    caller(null, data);
+                });
+                break;
+        }
 
     }, (err)=>{
         if(err){
             callback(err);
             return;
         }
-
-        callback();
+        if( update_status.length === 0) {
+            callback('There was a problem with this operation.  Please check the input file.')
+        }
+        callback(null,update_status);
     });
 }

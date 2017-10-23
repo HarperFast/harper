@@ -1,5 +1,12 @@
 'use strict';
 
+/***
+ * INSERT.JS
+ *
+ * This module is used to validate and insert or update data.  Note insert.update should be used over the update module,
+ * as the update module is meant to be used in more specific circumstances.
+ */
+
 const insert_validator = require('../validation/insertValidator.js'),
     fs = require('graceful-fs'),
     async = require('async'),
@@ -28,6 +35,12 @@ module.exports = {
 //this must stay after the export to correct a circular dependency issue
 const global_schema = require('../utility/globalSchema');
 
+/**
+ * This validation is called before an insert or update is performed with the write_object.
+ *
+ * @param write_object - the object that will be written post-validation
+ * @param callback - The caller
+ */
 function validation(write_object, callback){
     global_schema.getTableSchema(write_object.schema, write_object.table, (err, table_schema) => {
         if (err) {
@@ -95,6 +108,12 @@ function validation(write_object, callback){
     });
 }
 
+/**
+ * Inserts data specified in the insert_object parameter.  Currently if even a single entity in insert_object already exists,
+ * the function will return and no other inserts will be performed.
+ * @param insert_object
+ * @param callback
+ */
 function insertData(insert_object, callback){
     try {
         if (insert_object.operation !== 'insert') {
@@ -121,13 +140,18 @@ function insertData(insert_object, callback){
                 return callback(err);
             }
 
-            callback(null, `successfully wrote ${insert_object.records.length} records`);
+            callback(null, `inserted ${insert_object.records.length} records`);
         });
     } catch(e){
         callback(e);
     }
 }
 
+/**
+ * Updates the data in the update_object paramter.
+ * @param update_object - The data that will be updated in the database
+ * @param callback - The caller
+ */
 function updateData(update_object, callback){
     try {
         if (update_object.operation !== 'update') {
@@ -192,7 +216,6 @@ function updateData(update_object, callback){
             }
 
             let skipped_hashes = _.difference(tracker.all_ids, tracker.update_ids);
-
             let return_object = {
                 message: `updated ${tracker.update_ids.length} of ${tracker.all_ids.length} records`,
                 update_hashes: tracker.update_ids,
@@ -257,6 +280,12 @@ function compareUpdatesToExistingRecords(update_object, hash_attribute, existing
     }
 }
 
+/**
+ *
+ * @param unlink_paths
+ * @param update_objects
+ * @param callback
+ */
 function unlinkFiles(unlink_paths, update_objects, callback){
     async.each(unlink_paths, (path, caller)=>{
         fs.unlink(path, (err)=>{
@@ -264,10 +293,8 @@ function unlinkFiles(unlink_paths, update_objects, callback){
                 if(err.code === 'ENOENT'){
                     return caller();
                 }
-
                 winston.error(err);
             }
-
             caller();
         });
     }, (error)=>{
@@ -275,11 +302,15 @@ function unlinkFiles(unlink_paths, update_objects, callback){
             callback(error);
             return;
         }
-
         callback(null, update_objects);
     });
 }
 
+/**
+ *
+ * @param insert_object
+ * @param callerback
+ */
 function checkAttributeSchema(insert_object, callerback) {
     if(!insert_object) { return callback("Empty Object", null); }
     let table_schema = global.hdb_schema[insert_object.schema][insert_object.table];
@@ -350,6 +381,11 @@ function checkAttributeSchema(insert_object, callerback) {
     });
 }
 
+/**
+ *
+ * @param hash_paths
+ * @param callback
+ */
 function checkRecordsExist(hash_paths, callback) {
     async.map(hash_paths, function(hash_path, inner_callback) {
         fs.access(hash_path, (err) => {
@@ -370,6 +406,11 @@ function checkRecordsExist(hash_paths, callback) {
     });
 }
 
+/**
+ *
+ * @param data_wrapper
+ * @param callback
+ */
 function processData(data_wrapper, callback) {
     async.parallel([
         writeRawData.bind(null, data_wrapper.data_folders, data_wrapper.data),
@@ -383,6 +424,12 @@ function processData(data_wrapper, callback) {
     });
 }
 
+/**
+ *
+ * @param folders
+ * @param data
+ * @param callback
+ */
 function writeRawData(folders, data, callback) {
     async.waterfall([
         createFolders.bind(null, folders),
@@ -396,6 +443,11 @@ function writeRawData(folders, data, callback) {
     });
 }
 
+/**
+ *
+ * @param data
+ * @param callback
+ */
 function writeRawDataFiles(data, callback) {
     async.each(data, (attribute, caller) => {
         fs.writeFile(attribute.file_name, attribute.value, (err) => {
@@ -403,7 +455,6 @@ function writeRawDataFiles(data, callback) {
                 caller(err);
                 return;
             }
-
             caller();
         });
     }, function (err) {
@@ -411,11 +462,16 @@ function writeRawDataFiles(data, callback) {
             callback(err);
             return;
         }
-
         callback();
     });
 }
 
+/**
+ *
+ * @param folders
+ * @param links
+ * @param callback
+ */
 function writeLinks(folders, links, callback) {
     async.waterfall([
         createFolders.bind(null, folders),
@@ -429,6 +485,11 @@ function writeLinks(folders, links, callback) {
     });
 }
 
+/**
+ *
+ * @param links
+ * @param callback
+ */
 function writeLinkFiles(links, callback) {
     async.each(links, (link, caller) => {
         fs.symlink(link.link, link.file_name, (err) => {
@@ -436,7 +497,6 @@ function writeLinkFiles(links, callback) {
                 caller(err);
                 return;
             }
-
             caller();
         });
     }, function (err) {
@@ -444,11 +504,15 @@ function writeLinkFiles(links, callback) {
             callback(err);
             return;
         }
-
         callback();
     });
 }
 
+/**
+ *
+ * @param folders
+ * @param callback
+ */
 function createFolders(folders, callback) {
     async.each(folders, (folder, caller) => {
         mkdirp(folder, (err, created_folder) => {
@@ -471,11 +535,15 @@ function createFolders(folders, callback) {
             callback(err);
             return;
         }
-
         callback();
     });
 }
 
+/**
+ *
+ * @param base_folder
+ * @param callback
+ */
 function createNewAttribute(base_folder, callback){
     let base_parts = base_folder.replace(hdb_path, '').split('/');
     let attribute_object = {
@@ -491,8 +559,6 @@ function createNewAttribute(base_folder, callback){
 
         callback();
     });
-
-
 }
 
 const schema = require('../data_layer/schema');
