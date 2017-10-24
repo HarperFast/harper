@@ -55,9 +55,11 @@ function run_install(callback) {
                 winston.info("Installation Successful");
                }
            ], function (err, result) {
-               callback(err, result);
+               if(err) {
+                   callback(err, result);
+               }
            });
-        }
+       }
     });
 }
 
@@ -184,7 +186,16 @@ function wizard(callback) {
         wizard_result = result;
         //Support the tilde command for HOME.
         if(wizard_result.HDB_ROOT.indexOf('~') > -1) {
-            wizard_result.HDB_ROOT = wizard_result.HDB_ROOT.replace('~', process.env['HOME']);
+            let home = process.env['HOME'];
+            if( home != undefined) {
+                let replacement = wizard_result.HDB_ROOT.replace('~', process.env['HOME']);
+                if( replacement && replacement.length > 0) {
+                    wizard_result.HDB_ROOT = replacement;
+                }
+            }
+            else {
+                callback('~ was specified in the path, but the HOME environment variable is not defined.');
+            }
         }
         winston.info('wizard result : ' + JSON.stringify(wizard_result));
         if (err) {
