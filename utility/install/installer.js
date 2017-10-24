@@ -132,9 +132,6 @@ function checkRegister(callback) {
                 callback(null, "Successful installation!");
                 return;
             });
-    } else {
-        callback(null, 'Successful installation!');
-        console.log('HarperDB successfully installed!');
     }
 }
 
