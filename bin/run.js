@@ -82,16 +82,16 @@ function arePortsInUse(callback) {
         return callback(flag_err)
     }
 
-    if((http_port === 0 && httpsecure_port === 0) || (http_port === null && httpsecure_port === null)) {
+    if(!http_port && !httpsecure_port) {
         let port_err = 'http and https ports are both undefined.  Please check your settings file.';
         basic_winston.error(port_err);
         return callback(port_err);
     }
 
-    if( http_port !== 0 && http_on === 'TRUE') {
+    if( http_port && http_on === 'TRUE') {
         tasks.push(function(cb) { return isPortTaken(http_port, cb);});
     }
-    if( httpsecure_port !== 0 && httpsecure_on === 'TRUE') {
+    if( httpsecure_port && httpsecure_on === 'TRUE') {
         tasks.push(function(cb) { return isPortTaken(httpsecure_port, cb);});
     }
 
