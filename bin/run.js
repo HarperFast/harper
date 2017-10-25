@@ -3,6 +3,7 @@
 const fs = require('fs'),
     util = require('util'),
     path = require('path'),
+    net = require('net'),
     ps = require('find-process'),
     install = require('../utility/install/installer.js'),
     colors = require("colors/safe"),
@@ -106,7 +107,6 @@ function arePortsInUse(callback) {
  * @param callback - Callback, returns (err, true/false)
  */
 function isPortTaken(port, callback) {
-    var net = require('net');
     if(!port){
         return callback();
     }
