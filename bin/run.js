@@ -82,23 +82,20 @@ function arePortsInUse(callback) {
         return callback(flag_err)
     }
 
-    if(http_port === 0 && httpsecure_port === 0) {
+    if((http_port === 0 && httpsecure_port === 0) || (http_port === null && httpsecure_port === null)) {
         let port_err = 'http and https ports are both undefined.  Please check your settings file.';
         basic_winston.error(port_err);
         return callback(port_err);
     }
 
     if( http_port !== 0 && http_on === 'TRUE') {
-        tasks.push(function(cb) { return isPortTaken.bind(null, http_port); });
+        tasks.push(function(cb) { return isPortTaken(http_port, cb);});
     }
     if( httpsecure_port !== 0 && httpsecure_on === 'TRUE') {
-        tasks.push(function(cb) { return isPortTaken.bind(null, httpsecure_port); });
+        tasks.push(function(cb) { return isPortTaken(httpsecure_port, cb);});
     }
 
-    async.parallel([
-        isPortTaken.bind(null, http_port),
-        isPortTaken.bind(null, httpsecure_port)
-    ], function(err, results) {
+    async.parallel( tasks, function(err, results) {
         callback(err);
     });
 }
@@ -109,11 +106,11 @@ function arePortsInUse(callback) {
  * @param callback - Callback, returns (err, true/false)
  */
 function isPortTaken(port, callback) {
+    var net = require('net');
     if(!port){
         return callback();
     }
 
-    var net = require('net');
     var tester = net.createServer()
         .once('error', function (err) {
             if (err.code != 'EADDRINUSE') {

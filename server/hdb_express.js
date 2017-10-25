@@ -62,12 +62,12 @@ if (cluster.isMaster && !DEBUG) {
         if(hdb_properties.get('CORS_WHITELIST') && hdb_properties.get('CORS_WHITELIST').length > 0){
             let whitelist = hdb_properties.get('CORS_WHITELIST').split(',');
             cors_options.origin =  (origin, callback) => {
-                    if (whitelist.indexOf(origin) !== -1) {
-                        callback(null, true);
-                    } else {
-                        callback(new Error(`domain ${origin} is not whitelisted`));
-                    }
-                };
+                if (whitelist.indexOf(origin) !== -1) {
+                    callback(null, true);
+                } else {
+                    callback(new Error(`domain ${origin} is not whitelisted`));
+                }
+            };
 
         }
         app.use(cors(cors_options));
@@ -130,6 +130,13 @@ if (cluster.isMaster && !DEBUG) {
             });
         });
 
+    });
+
+    app.get('/', function (req, res) {
+        auth.authorize(req, res, function(err, user) {
+            var guidePath = require('path');
+            res.sendFile(guidePath.resolve('../docs/user_guide.html'));
+        });
     });
 
     function chooseOperation(json, callback) {
@@ -211,7 +218,7 @@ if (cluster.isMaster && !DEBUG) {
                 operation_function = role.dropRole;
                 break;
             case 'user_info':
-                operation_function = user.userInfo
+                operation_function = user.userInfo;
                 break;
             case 'read_log':
                 operation_function = read_log.read_log;
