@@ -62,12 +62,12 @@ if (cluster.isMaster && !DEBUG) {
         if(hdb_properties.get('CORS_WHITELIST') && hdb_properties.get('CORS_WHITELIST').length > 0){
             let whitelist = hdb_properties.get('CORS_WHITELIST').split(',');
             cors_options.origin =  (origin, callback) => {
-                    if (whitelist.indexOf(origin) !== -1) {
-                        callback(null, true);
-                    } else {
-                        callback(new Error(`domain ${origin} is not whitelisted`));
-                    }
-                };
+                if (whitelist.indexOf(origin) !== -1) {
+                    callback(null, true);
+                } else {
+                    callback(new Error(`domain ${origin} is not whitelisted`));
+                }
+            };
 
         }
         app.use(cors(cors_options));
@@ -138,7 +138,6 @@ if (cluster.isMaster && !DEBUG) {
             res.sendFile(guidePath.resolve('../docs/user_guide.html'));
         });
     });
-
 
     function chooseOperation(json, callback) {
         let operation_function = nullOperation;
@@ -219,7 +218,7 @@ if (cluster.isMaster && !DEBUG) {
                 operation_function = role.dropRole;
                 break;
             case 'user_info':
-                operation_function = user.userInfo
+                operation_function = user.userInfo;
                 break;
             case 'read_log':
                 operation_function = read_log.read_log;
@@ -253,17 +252,18 @@ if (cluster.isMaster && !DEBUG) {
     });
 
     try{
-        var http = require('http');
-        var https = require('https');
-        var privateKey  = fs.readFileSync(hdb_properties.get('PRIVATE_KEY'), 'utf8');
-        var certificate = fs.readFileSync(hdb_properties.get('CERTIFICATE'), 'utf8');
-        var credentials = {key: privateKey, cert: certificate};
+        let http = require('http');
+        let httpsecure = require('https');
+        let privateKey  = fs.readFileSync(hdb_properties.get('PRIVATE_KEY'), 'utf8');
+        let certificate = fs.readFileSync(hdb_properties.get('CERTIFICATE'), 'utf8');
+        let credentials = {key: privateKey, cert: certificate};
 
-        var httpServer = http.createServer(app);
-        var httpsServer = https.createServer(credentials, app);
+        let httpServer = undefined;
+        let secureServer = undefined;
 
-        if(hdb_properties.get('HTTPS_ON') && (hdb_properties.get('HTTPS_ON') === true || hdb_properties.get('HTTPS_ON').toUpperCase() === 'TRUE')){
-            httpsServer.listen(hdb_properties.get('HTTPS_PORT'), function(){
+        if(hdb_properties.get('HTTPS_ON') && (hdb_properties.get('HTTPS_ON') === true || hdb_properties.get('HTTPS_ON').toUpperCase() === 'TRUE')) {
+            secureServer = httpsecure.createServer(credentials, app);
+            secureServer.listen(hdb_properties.get('HTTPS_PORT'), function(){
                 winston.info(`HarperDB ${pjson.version} HTTPS Server running on ${hdb_properties.get('HTTPS_PORT')}`);
 
                 global_schema.setSchemaDataToGlobal((err, data) => {
@@ -275,16 +275,17 @@ if (cluster.isMaster && !DEBUG) {
             });
         }
 
-        if(hdb_properties.get('HTTP_ON') && (hdb_properties.get('HTTP_ON') === true || hdb_properties.get('HTTP_ON').toUpperCase()  === 'TRUE')){
-            httpServer.listen(hdb_properties.get('HTTP_PORT'), function(){
+        if (hdb_properties.get('HTTP_ON') && (hdb_properties.get('HTTP_ON') === true || hdb_properties.get('HTTP_ON').toUpperCase() === 'TRUE')) {
+            httpServer = http.createServer(app);
+            httpServer.listen(hdb_properties.get('HTTP_PORT'), function () {
                 winston.info(`HarperDB ${pjson.version} HTTP Server running on ${hdb_properties.get('HTTP_PORT')}`);
 
                 async.parallel(
                     [
                         global_schema.setSchemaDataToGlobal,
                         global_schema.setUsersToGlobal
-                    ], (error, data)=>{
-                        if(error){
+                    ], (error, data) => {
+                        if (error) {
                             winston.error(error);
                         }
                     });
