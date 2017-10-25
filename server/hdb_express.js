@@ -246,17 +246,17 @@ if (cluster.isMaster && !DEBUG) {
 
     try{
         let http = require('http');
-        let https = require('https');
+        let httpsecure = require('https');
         let privateKey  = fs.readFileSync(hdb_properties.get('PRIVATE_KEY'), 'utf8');
         let certificate = fs.readFileSync(hdb_properties.get('CERTIFICATE'), 'utf8');
         let credentials = {key: privateKey, cert: certificate};
 
         let httpServer = undefined;
-        let httpsServer = undefined;
+        let secureServer = undefined;
 
         if(hdb_properties.get('HTTPS_ON') && (hdb_properties.get('HTTPS_ON') === true || hdb_properties.get('HTTPS_ON').toUpperCase() === 'TRUE')) {
-            httpServer = https.createServer(credentials, app);
-            httpsServer.listen(hdb_properties.get('HTTPS_PORT'), function(){
+            secureServer = httpsecure.createServer(credentials, app);
+            secureServer.listen(hdb_properties.get('HTTPS_PORT'), function(){
                 winston.info(`HarperDB ${pjson.version} HTTPS Server running on ${hdb_properties.get('HTTPS_PORT')}`);
 
                 global_schema.setSchemaDataToGlobal((err, data) => {

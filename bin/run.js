@@ -10,16 +10,16 @@ const fs = require('fs'),
     PropertiesReader = require('properties-reader'),
     async = require('async'),
     pjson = require('../package.json'),
-    HTTPS_PORT_KEY = 'HTTPS_PORT',
+    HTTPSECURE_PORT_KEY = 'HTTPS_PORT',
     HTTP_PORT_KEY = 'HTTP_PORT',
-    HTTPS_ON_KEY = 'HTTPS_ON',
+    HTTPSECURE_ON_KEY = 'HTTPS_ON',
+    HTTP_ON_KEY = 'HTTP_ON',
     HDB_PROC_NAME = 'hdb_express.js';
 
 let winston = null;
 let hdb_boot_properties = null;
 let hdb_properties = null;
 let fork = require('child_process').fork;
-
 
 /***
  * Starts Harper DB.  If Harper is already running, or the port is in use, and error will be thrown and Harper will not
@@ -32,36 +32,22 @@ function run() {
                 prettyPrint:true })
         ],exitOnError:false
     });
-    let http_port = undefined;
-    // If this fails to find the boot props file, this must be a new install.  This will fall through,
-    // pass the process and port check, and then hit the install portion of startHarper().
-    try {
-        hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
-        hdb_properties.append(hdb_properties.get('settings_path'));
-        let https_on = hdb_properties.get(HTTPS_ON_KEY);
-        if ( https_on === true ) {
-            http_port = hdb_properties.get(HTTP_PORT_KEY);
-        } else {
-            http_port = hdb_properties.get(HTTPS_PORT_KEY);
-        }
-    } catch (e) {
-        basic_winston.info('Could not find hdb_boot properties file, assuming this is a new install.');
-    }
 
     ps('name', HDB_PROC_NAME).then(function (list) {
         if( list.length === 0 ) {
-            isPortTaken(http_port, (err, found)=> {
-                if( !found ) {
-                    startHarper();
-                } else {
-                  console.log(`Port ${http_port} is in use`);
-                  basic_winston.info(`Port ${http_port} is in use`);
-                }
+            arePortsInUse( (err) => {
+              if(err) {
+                  console.log(err);
+                  basic_winston.info(err);
+                  return;
+              }
+              startHarper();
             });
         }
         else {
-            console.log("HarperDB is already running.");
-            basic_winston.info(`HarperDB is already running`);
+            let run_err = 'HarperDB is already running.';
+            console.log(run_err);
+            basic_winston.info(run_err);
         }
     }, function (err) {
         console.log(err.stack || err);
@@ -69,21 +55,76 @@ function run() {
     })
 }
 
+function arePortsInUse(callback) {
+    let httpsecure_port;
+    let http_port;
+    let httpsecure_on;
+    let http_on;
+    let tasks = [];
+    // If this fails to find the boot props file, this must be a new install.  This will fall through,
+    // pass the process and port check, and then hit the install portion of startHarper().
+    try {
+        hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
+        hdb_properties.append(hdb_properties.get('settings_path'));
+        httpsecure_on = hdb_properties.get(HTTPSECURE_ON_KEY);
+        http_on = hdb_properties.get(HTTP_ON_KEY);
+        http_port = hdb_properties.get(HTTP_PORT_KEY);
+        httpsecure_port = hdb_properties.get(HTTPSECURE_PORT_KEY);
+    } catch (e) {
+        let read_err = 'There was an error getting boot properties.';
+        basic_winston.error(read_err);
+        return callback(read_err);
+    }
+
+    if(http_on === 'FALSE' && httpsecure_on === 'FALSE') {
+        let flag_err = 'http and https flags are both disabled.  Please check your settings file.';
+        basic_winston.error(flag_err);
+        return callback(flag_err)
+    }
+
+    if(http_port === 0 && httpsecure_port === 0) {
+        let port_err = 'http and https ports are both undefined.  Please check your settings file.';
+        basic_winston.error(port_err);
+        return callback(port_err);
+    }
+
+    if( http_port !== 0 && http_on === 'TRUE') {
+        tasks.push(function(cb) { return isPortTaken.bind(null, http_port); });
+    }
+    if( httpsecure_port !== 0 && httpsecure_on === 'TRUE') {
+        tasks.push(function(cb) { return isPortTaken.bind(null, httpsecure_port); });
+    }
+
+    async.parallel([
+        isPortTaken.bind(null, http_port),
+        isPortTaken.bind(null, httpsecure_port)
+    ], function(err, results) {
+        callback(err);
+    });
+}
+
 /**
  * Checks to see if the port specified in the settings file is in use.
  * @param port - The port to check for running processes against
- * @param fn - Callback, returns (err, true/false)
+ * @param callback - Callback, returns (err, true/false)
  */
-function isPortTaken(port, fn) {
-    var net = require('net')
+function isPortTaken(port, callback) {
+    if(!port){
+        return callback();
+    }
+
+    var net = require('net');
     var tester = net.createServer()
         .once('error', function (err) {
-            if (err.code != 'EADDRINUSE') return fn(err)
-            fn(null, true)
+            if (err.code != 'EADDRINUSE') {
+                return callback(err);
+            }
+            callback(`Port ${port} is already in use.`);
         })
         .once('listening', function() {
-            tester.once('close', function() { fn(null, false) })
-                .close()
+            tester.once('close', function() {
+                callback(null)
+            }).close()
         })
         .listen(port)
 }
@@ -92,9 +133,9 @@ function isPortTaken(port, fn) {
  * Helper function to start HarperDB.  If the hdb_boot properties file is not found, an install is started.
  */
 function startHarper() {
-    fs.stat(`${process.cwd()}/../hdb_boot_properties.file`, function(err, stats){
-        if(err){
-            if(err.errno === -2){
+    fs.stat(`${process.cwd()}/../hdb_boot_properties.file`, function(err, stats) {
+        if(err) {
+            if(err.errno === -2) {
                 install.install(function (err, result) {
                     if (err) {
                         basic_winston.error(err);
@@ -104,11 +145,11 @@ function startHarper() {
                     completeRun();
                     return;
                 });
-            }else{
+            } else {
                 basic_winston.error(`start fail: ${err}`);
                 return;
             }
-        }else{
+        } else {
             hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
             try {
                 fs.stat(hdb_boot_properties.get('settings_path'), function (err, stats) {
@@ -132,7 +173,7 @@ function startHarper() {
                         return;
                     }
                 });
-            }catch (e) {
+            } catch (e) {
                 console.error('There was a problem reading the boot properties file.  Please check the install logs.');
                 basic_winston.error('There was a problem reading the boot properties file. ' + e);
             }
@@ -154,7 +195,6 @@ function completeRun() {
 }
 
 function checkPermission(callback){
-
     let checkPermissions = require('../utility/check_permissions');
     checkPermissions.checkPermission(function(err){
         if(err){
