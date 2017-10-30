@@ -241,6 +241,7 @@ function createAdminUser(callback) {
 
 
 function createSettingsFile(mount_status, callback) {
+    console.log('Starting HarperDB Install...');
     if (mount_status != 'complete') {
         callback('mount failed');
         return;
