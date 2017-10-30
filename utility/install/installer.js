@@ -210,7 +210,7 @@ function createAdminUser(callback) {
     var user_ops = require('../../security/user');
     var role_ops = require('../../security/role');
 
-           let role = {};
+    let role = {};
     role.role = 'super_user';
     role.permission = {};
     role.permission.super_user = true;
