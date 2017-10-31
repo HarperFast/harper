@@ -72,55 +72,48 @@ function run_install(callback) {
  */
 function checkInstall(callback) {
     try {
-        if (!hdb_boot_properties) {
-            hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
-            hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
-            if (hdb_properties.get('HDB_ROOT')) {
-                let schema = {
-                    properties: {
-                        REINSTALL: {
-                            message: colors.red('It appears HarperDB is already installed.  Enter \'y/yes\'to reinstall. Data loss may occur! (yes/no)'),
-                            validator: /y[es]*|n[o]?/,
-                            warning: 'Must respond yes or no',
-                            default: 'no'
-                        }
-                    }
-                };
-                prompt.get(schema, function (err, result) {
-                    if (err) {
-                        callback(err);
-                    }
-                    if (result.REINSTALL === 'yes' || result.REINSTALL === 'y') {
-                        fs.rmrf(hdb_properties.get('HDB_ROOT'), function (err) {
-                            if (err) {
-                                winston.error(err);
-                                return callback(err);
-                            }
-                            fs.unlink(`${process.cwd()}/../hdb_boot_properties.file`, function (err) {
-                                if (err) {
-                                    winston.error(err);
-                                    return callback(err);
-                                }
-                                return callback(null, true);
+        if( hdb_boot_properties ) { callback(null, false); }
 
-                            });
-                        });
-                    }
-                    callback(null, false);
+        hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
+        hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
+        if( !hdb_boot_properties.get('HDB_ROOT') ) { callback(null, true); }
 
-                });
-            } else {
-                callback(null, true);
-
+        let schema = {
+            properties: {
+                REINSTALL: {
+                    message: colors.red('It appears HarperDB is already installed.  Enter \'y/yes\'to reinstall. Data loss may occur! (yes/no)'),
+                    validator: /y[es]*|n[o]?/,
+                    warning: 'Must respond yes or no',
+                    default: 'no'
+                }
             }
-        } else {
-            callback(null, false);
+        };
 
-        }
+        prompt.get(schema, function (err, result) {
+            if( err ) { callback(err); }
+
+            if(result.REINSTALL === 'yes' || result.REINSTALL === 'y') {
+                fs.rmrf(hdb_properties.get('HDB_ROOT'), function (err) {
+                    if (err) {
+                        winston.error(err);
+                        console.log('There was a problem removing the existing installation.  Please check the install log for details.');
+                        return callback(err);
+                    }
+                    fs.unlink(`${process.cwd()}/../hdb_boot_properties.file`, function (err) {
+                        if (err) {
+                            winston.error(err);
+                            console.log('There was a problem removing the existing installation.  Please check the install log for details.');
+                            return callback(err);
+                        }
+                        return callback(null, true);
+                    });
+                });
+            }
+            callback(null, false);
+        });
     }
     catch (e) {
         callback(null, true);
-
     }
 }
 
@@ -132,9 +125,7 @@ function checkRegister(callback) {
                     callback(err);
                     return;
                 }
-
                 callback(null, "Successful installation!");
-
             });
     }
 }
@@ -220,6 +211,7 @@ function createAdminUser(callback) {
     role_ops.addRole(role, function (err, result) {
         if (err) {
             winston.error('role failed to create ' + err);
+            console.log('There was a problem creating the default role.  Please check the install log for details.');
             callback(err);
             return;
         }
@@ -233,10 +225,10 @@ function createAdminUser(callback) {
         user_ops.addUser(admin_user, function (err, result) {
             if (err) {
                 winston.error('user creation error' + err);
+                console.error('There was a problem creating the admin user.  Please check the install log for details.');
                 return callback(err);
             }
             callback(null);
-
         });
     });
 }
@@ -254,6 +246,7 @@ function createSettingsFile(mount_status, callback) {
 
         if (err) {
             winston.info('info', 'boot properties error' + err);
+            console.error('There was a problem creating the boot file.  Please check the install log for details.');
             callback(err);
             return;
         }
@@ -275,6 +268,7 @@ function createSettingsFile(mount_status, callback) {
         try {
             fs.writeFile(hdb_boot_properties.get('settings_path'), hdb_props_value, function (err, data) {
                 if (err) {
+                    console.error('There was a problem writing the settings file.  Please check the install log for details.');
                     winston.error(err);
                 }
                 hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
@@ -364,11 +358,13 @@ function generateKeys(callback) {
     fs.writeFile(hdb_properties.get('CERTIFICATE'), pki.certificateToPem(cert), function (err, data) {
         if (err) {
             winston.error(err);
+            console.error('There was a problem creating the PEM file.  Please check the install log for details.');
             return callback(err);
         }
         fs.writeFile(hdb_properties.get('PRIVATE_KEY'), forge.pki.privateKeyToPem(keys.privateKey), function (err, data) {
             if (err) {
                 winston.error(err);
+                console.error('There was a problem creating the private key file.  Please check the install log for details.');
                 return callback(err);
             }
             return callback();
@@ -385,6 +381,7 @@ function setupService(callback) {
 
             if (err) {
                 winston.info('error', `Service Setup Error ${err}`);
+                console.error('There was a problem setting up the service.  Please check the install log for details.');
                 callback(err);
                 return;
             }
@@ -417,7 +414,7 @@ function createBootPropertiesFile(settings_path, callback) {
 
         if (err) {
             winston.info('info', `Bootloader error ${err}`);
-            winston.info(err);
+            console.error('There was a problem creating the boot file.  Please check the install log for details.');
             callback(err);
             return;
         }
@@ -425,6 +422,5 @@ function createBootPropertiesFile(settings_path, callback) {
         hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
         winston.info('hdb_boot_properties' + hdb_boot_properties);
         callback(null, 'success');
-
     });
 }
