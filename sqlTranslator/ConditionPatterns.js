@@ -33,6 +33,7 @@ class ConditionPatterns{
     //take the condition and look for attributes that we need to retrieve
     [parseNodes](nodes){
         let conditions = [];
+        let condition_string = this.conditions;
         nodes.forEach((node)=>{
             node.filter(function (sub_node, path, parent) {
                 let attribute_object;
@@ -64,6 +65,8 @@ class ConditionPatterns{
                     if (found_node && found_node.length > 0) {
                         found_node[0].attributes.push(attribute_object);
                     } else {
+                        let stripped_column = node.toString().replace(/\./g,'_');
+                        condition_string = condition_string.replace(new RegExp(node.toString(), 'g'), stripped_column);
                         conditions.push({
                             node:node.toString().replace(/\./g,'_'),
                             attributes:[attribute_object]
@@ -73,6 +76,8 @@ class ConditionPatterns{
             });
         });
 
+        this.conditions = condition_string;
+
         //clean up the attributes by assigning their proper table name and schema
         conditions.forEach((condition)=>{
             condition.attributes.forEach((attribute)=>{
@@ -80,7 +85,6 @@ class ConditionPatterns{
                 attribute.schema = table.schema;
                 attribute.table = table.table;
             });
-
         });
 
         this.column_conditions = conditions;
