@@ -8,7 +8,7 @@ const fs = require('fs.extra')
     , delete_ = require('../data_layer/delete')
     //this is to avoid a circular dependency with insert.
     // insert needs the describe all function but so does this module.
-    // as such the functions have been broken out into a seperate module.
+    // as such the functions have been broken out into a separate module.
     , schema_describe = require('./schemaDescribe')
     , schema_ops = require('../utility/schema_ops')
     , PropertiesReader = require('properties-reader'),
@@ -27,7 +27,7 @@ module.exports = {
     createTable: createTable,
     createTableStructure: createTableStructure,
     dropTable: dropTable,
-    deleteTableStructure: deleteTableStrucutre,
+    deleteTableStructure: deleteTableStructure,
     createAttribute: createAttribute,
     createAttributeStructure: createAttributeStructure,
     dropAttribute: dropAttribute,
@@ -46,7 +46,6 @@ function createSchema(schema_create_object, callback) {
             }
 
             signalling.signalSchemaChange({type: 'schema'});
-
             addAndRemoveFromQueue(schema_create_object, success, callback);
         });
     } catch (e) {
@@ -75,7 +74,6 @@ function dropSchema(drop_schema_object, callback) {
 
 function createSchemaStructure(schema_create_object, callback) {
     try {
-
         let validation_error = validation.schema_object(schema_create_object);
         if (validation_error) {
             callback(validation_error, null);
@@ -104,8 +102,6 @@ function createSchemaStructure(schema_create_object, callback) {
                     callback(err);
                     return;
                 }
-
-
                 let schema = schema_create_object.schema;
                 fs.mkdir(hdb_properties.get('HDB_ROOT') + '/schema/' + schema, function (err, data) {
                     if (err) {
@@ -120,12 +116,8 @@ function createSchemaStructure(schema_create_object, callback) {
                     }
                     callback(err, `schema ${schema_create_object.schema} successfully created`);
                 });
-
-
             });
         });
-
-
     } catch (e) {
         callback(e);
     }
@@ -133,18 +125,13 @@ function createSchemaStructure(schema_create_object, callback) {
 
 function deleteSchemaStructure(drop_schema_object, callback) {
     try {
-
-
         let validation_error = validation.schema_object(drop_schema_object);
         if (validation_error) {
             callback(validation_error, null);
             return;
         }
 
-
         let schema = drop_schema_object.schema;
-
-
         let delete_schema_object = {
             table: "hdb_schema",
             schema: "system",
@@ -170,14 +157,12 @@ function deleteSchemaStructure(drop_schema_object, callback) {
                 if (err) {
                     callback(err);
                     return;
-
                 }
                 fs.rmrf(`${hdb_properties.get('HDB_ROOT')}/schema/${schema}`, function (err) {
                     if (err) {
                         callback(err);
                         return;
                     }
-
 
                     if (tables && tables.length > 0) {
                         let delete_table_object = {
@@ -202,7 +187,6 @@ function deleteSchemaStructure(drop_schema_object, callback) {
                                     callback(err);
                                     return;
                                 }
-
                                return callback(null, `successfully delete ${schema}`);
                             });
                         });
@@ -210,8 +194,6 @@ function deleteSchemaStructure(drop_schema_object, callback) {
                         return callback(null, `successfully delete ${schema}`);
                     }
                 });
-
-
             });
         });
     } catch (e) {
@@ -285,18 +267,15 @@ function createTableStructure(create_table_object, callback) {
                         return;
 
                     } else {
-                        callback('createTableStrucuture:' + err.message);
+                        callback('createTableStructure:' + err.message);
                         return
                     }
                 }
 
                 callback(null, `table ${create_table_object.schema}.${create_table_object.table} successfully created.`);
             });
-
-
         });
     });
-
 }
 
 function searchForSchema(schema_name, callback) {
@@ -340,7 +319,7 @@ function searchForTable(schema_name, table_name, callback) {
     });
 }
 
-function deleteTableStrucutre(drop_table_object, callback) {
+function deleteTableStructure(drop_table_object, callback) {
     try {
         let validation_error = validation.table_object(drop_table_object);
         if (validation_error) {
@@ -357,7 +336,6 @@ function deleteTableStrucutre(drop_table_object, callback) {
         search_obj.search_value = drop_table_object.table;
         search_obj.get_attributes = ['name', 'schema', 'id'];
         search.searchByValue(search_obj, function (err, data) {
-
             if (err) {
                 callback(err);
                 return;
@@ -365,7 +343,7 @@ function deleteTableStrucutre(drop_table_object, callback) {
 
             let delete_tb = null;
             for (let item in data) {
-                if (data[item].name == drop_table_object.table && data[item].schema == drop_table_object.schema) {
+                if (data[item].name === drop_table_object.table && data[item].schema === drop_table_object.schema) {
                     delete_tb = data[item];
                 }
             }
@@ -383,42 +361,32 @@ function deleteTableStrucutre(drop_table_object, callback) {
                         callback(err);
                         return;
                     }
-
-
                     let path = `hdb_properties.get('HDB_ROOT')/schema/${schema}/${table}`;
-
-                    fs.rmrf(`${hdb_properties.get('HDB_ROOT')}/schema/${schema}/${table}`, function (err) {
+                    let currDate = new Date().toISOString().substr(0,19);
+                    let destination_name = `${table}-${currDate}`;
+                    fs.move(`${hdb_properties.get('HDB_ROOT')}/schema/${schema}/${table}`,
+                        `${hdb_properties.get('HDB_ROOT')}/trash/${destination_name}`, function (err) {
                         if (err) {
                             callback(err);
                             return;
                         }
 
                         deleteAttributeStructure(drop_table_object, function (err, data) {
-
                             if (err) {
                                 callback(err);
                                 return;
                             }
-
                             callback(null, `successfully deleted ${table}`);
                         });
-
-
                     });
-
-
                 });
             } else {
                 callback("Table not found!");
             }
-
-
         });
-
     } catch (e) {
         callback(e);
     }
-
 }
 
 function createTable(create_table_object, callback) {
@@ -430,7 +398,6 @@ function createTable(create_table_object, callback) {
             }
 
             signalling.signalSchemaChange({type: 'schema'});
-
             addAndRemoveFromQueue(create_table_object, success, callback);
 
         });
@@ -441,15 +408,14 @@ function createTable(create_table_object, callback) {
 
 function dropTable(drop_table_object, callback) {
     try {
-        deleteTableStrucutre(drop_table_object, function (err, sucess) {
+        deleteTableStructure(drop_table_object, function (err, success) {
             if (err) {
                 callback(err);
                 return;
             }
 
             signalling.signalSchemaChange({type: 'schema'});
-
-            addAndRemoveFromQueue(drop_table_object, sucess, callback);
+            addAndRemoveFromQueue(drop_table_object, success, callback);
 
         });
     } catch (e) {
@@ -494,8 +460,6 @@ function createAttributeStructure(create_attribute_object, callback) {
 }
 
 function deleteAttributeStructure(attribute_drop_object, callback) {
-
-
     let search_obj = {};
     search_obj.schema = 'system';
     search_obj.table = 'hdb_attribute';
@@ -522,13 +486,11 @@ function deleteAttributeStructure(attribute_drop_object, callback) {
         if (attributes && attributes.length > 0) {
             let delete_table_object = {"table": "hdb_attribute", "schema": "system", "hash_values": []};
             for (att in attributes) {
-                if ((attribute_drop_object.attribute && attribute_drop_object.attribute == attributes[att].attribute)
+                if ((attribute_drop_object.attribute && attribute_drop_object.attribute === attributes[att].attribute)
                     || !attribute_drop_object.attribute) {
 
                     delete_table_object.hash_values.push(attributes[att].id);
                 }
-
-
             }
 
             delete_.delete(delete_table_object, function (err, success) {
@@ -537,19 +499,12 @@ function deleteAttributeStructure(attribute_drop_object, callback) {
                     return;
                 }
 
-                callback(null, `succesfully deleted ${delete_table_object.hash_values.length} attributes`);
-
+                callback(null, `successfully deleted ${delete_table_object.hash_values.length} attributes`);
             });
-
-
         } else {
             callback(null, null);
         }
-
-
     });
-
-
 }
 
 function createAttribute(create_attribute_object, callback) {
@@ -561,7 +516,6 @@ function createAttribute(create_attribute_object, callback) {
             }
 
             signalling.signalSchemaChange({type: 'schema'});
-
             addAndRemoveFromQueue(create_attribute_object, success, callback);
 
         });
@@ -577,12 +531,12 @@ function dropAttribute(drop_attribute_object, callback) {
             callback(validation_error, null);
             return;
         }
-        deleteAttributeStructure(drop_attribute_object, function (err, sucess) {
+        deleteAttributeStructure(drop_attribute_object, function (err, success) {
             if (err) {
                 callback(err);
                 return;
             }
-            addAndRemoveFromQueue(drop_attribute_object, sucess, callback);
+            addAndRemoveFromQueue(drop_attribute_object, success, callback);
         });
     } catch (e) {
         callback(e);
@@ -603,10 +557,7 @@ function addAndRemoveFromQueue(ops_object, success_message, callback) {
                 callback(err);
                 return;
             }
-
             callback(null, success_message);
         });
-
-
     });
 }
