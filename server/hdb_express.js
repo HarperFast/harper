@@ -95,6 +95,9 @@ if (cluster.isMaster && !DEBUG) {
 
             if(err){
                 winston.warn(`{"ip":"${req.connection.remoteAddress}", "error":"${err}"`);
+                if(typeof err === 'string'){
+                    return res.status(401).send({error: err});
+                }
                 res.status(401).send(err);
                 return;
             }
@@ -107,18 +110,18 @@ if (cluster.isMaster && !DEBUG) {
                 }
 
                 try {
-                    if(req.body.operation != 'read_log')
+                    if(req.body.operation !== 'read_log')
                         winston.info(JSON.stringify(req.body));
 
                     operation_function(req.body, (error, data) => {
                         if (error) {
                             winston.error(error);
-                            if(typeof error != 'object')
+                            if(typeof error !== 'object')
                                 error = {"error": error};
                             res.status(500).json(error.message ? error.message : error);
                             return;
                         }
-                        if(typeof data != 'object')
+                        if(typeof data !== 'object')
                             data = {"message": data};
 
                         return res.status(200).json(data);
