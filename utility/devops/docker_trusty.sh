@@ -54,8 +54,10 @@ harperdb_run()
 #this function is being run on a docker container as root.  Be advised of the paths.
      cd ./bin/
      echo "I am in this directory now: $(pwd)"
-     ./linux-harperdb run --HDB_ROOT $hdb_data --HTTP_PORT 9925 --HTTPS_PORT 31283 --HDB_ADMIN_USERNAME admin --HDB_ADMIN_PASSWORD "Abc1234!"
-    sleep 7s    
+     ./linux-harperdb install --HDB_ROOT $hdb_data --HTTP_PORT 9925 --HTTPS_PORT 31283 --HDB_ADMIN_USERNAME admin --HDB_ADMIN_PASSWORD "Abc1234!"
+     sleep 7s
+     ./linux-harperdb run
+     sleep 3s    
     theProc=$(ps -ef | grep [h]db_express);
 
         if [ "$theProc" ];

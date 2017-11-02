@@ -61,6 +61,7 @@
       "./server/hdb_express.js",
       "./data_layer/*.js",
       "./triggers/**",
+      "./security/*.js",
       "./utility/*.js",
       "./utility/**/*.js",
       "./sqlTranslator/*.js",
