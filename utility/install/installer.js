@@ -72,11 +72,11 @@ function run_install(callback) {
  */
 function checkInstall(callback) {
     try {
-        if( hdb_boot_properties ) { callback(null, false); }
+        if( hdb_boot_properties ) { return callback(null, false); }
 
         hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
         hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
-        if( !hdb_boot_properties.get('HDB_ROOT') ) { callback(null, true); }
+        if( !hdb_boot_properties.get('HDB_ROOT') ) { return callback(null, true); }
 
         let schema = {
             properties: {
@@ -270,6 +270,7 @@ function createSettingsFile(mount_status, callback) {
                 if (err) {
                     console.error('There was a problem writing the settings file.  Please check the install log for details.');
                     winston.error(err);
+                    return callback(err);
                 }
                 hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
                 callback(null);
@@ -413,10 +414,9 @@ function createBootPropertiesFile(settings_path, callback) {
     fs.writeFile(`${process.cwd()}/../hdb_boot_properties.file`, boot_props_value, function (err) {
 
         if (err) {
-            winston.info('info', `Bootloader error ${err}`);
+            winston.error('info', `Bootloader error ${err}`);
             console.error('There was a problem creating the boot file.  Please check the install log for details.');
-            callback(err);
-            return;
+            return callback(err);
         }
         winston.info('info', `props path ${process.cwd()}/../hdb_boot_properties.file`);
         hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
