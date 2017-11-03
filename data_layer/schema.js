@@ -12,6 +12,7 @@ const fs = require('fs.extra')
     , schema_describe = require('./schemaDescribe')
     , schema_ops = require('../utility/schema_ops')
     , PropertiesReader = require('properties-reader'),
+    mkdirp = require('mkdirp'),
     signalling = require('../utility/signalling');
 let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
 hdb_properties.append(hdb_properties.get('settings_path'));
@@ -364,19 +365,24 @@ function deleteTableStructure(drop_table_object, callback) {
                     let path = `hdb_properties.get('HDB_ROOT')/schema/${schema}/${table}`;
                     let currDate = new Date().toISOString().substr(0,19);
                     let destination_name = `${table}-${currDate}`;
-                    fs.move(`${hdb_properties.get('HDB_ROOT')}/schema/${schema}/${table}`,
-                        `${hdb_properties.get('HDB_ROOT')}/trash/${destination_name}`, function (err) {
-                        if (err) {
-                            callback(err);
-                            return;
+                    let trash_path = `${hdb_properties.get('HDB_ROOT')}/trash`;
+                    //TODO: mkdirp defaults to 0777, we need to discuss what the best perms should be.
+                    //mkdirp does nothing if the directory exists.
+                    mkdirp(trash_path, function(err, data) {
+                        if(err) {
+                            return callback(err);
                         }
-
-                        deleteAttributeStructure(drop_table_object, function (err, data) {
+                        fs.move(`${hdb_properties.get('HDB_ROOT')}/schema/${schema}/${table}`,
+                            `${hdb_properties.get('HDB_ROOT')}/trash/${destination_name}`, function (err) {
                             if (err) {
-                                callback(err);
-                                return;
+                                return callback(err);
                             }
-                            callback(null, `successfully deleted ${table}`);
+                            deleteAttributeStructure(drop_table_object, function (err, data) {
+                                if (err) {
+                                    return callback(err);
+                                }
+                                callback(null, `successfully deleted ${table}`);
+                            });
                         });
                     });
                 });
