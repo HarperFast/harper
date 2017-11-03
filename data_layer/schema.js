@@ -320,13 +320,61 @@ function searchForTable(schema_name, table_name, callback) {
     });
 }
 
-function deleteTableStructure(drop_table_object, callback) {
-    try {
-        let validation_error = validation.table_object(drop_table_object);
-        if (validation_error) {
-            callback(validation_error, null);
-            return;
+function buildTableObject (drop_table_object, data, callback) {
+    let delete_tb = null;
+    for (let item in data) {
+        if (data[item].name === drop_table_object.table && data[item].schema === drop_table_object.schema) {
+            delete_tb = data[item];
         }
+    }
+
+    if(!delete_tb) {
+        return callback(`${drop_table_object.schema}.${drop_table_object.table} was not found`);
+    }
+    let delete_table_object = {
+        table: "hdb_table",
+        schema: "system",
+        hash_attribute: "id",
+        hash_values: [delete_tb.id]
+    };
+    callback(null, delete_table_object);
+}
+
+function deleteTableObject (drop_table_object, msg, callback) {
+    let path = `hdb_properties.get('HDB_ROOT')/schema/${drop_table_object.schema}/${drop_table_object.table}`;
+    let currDate = new Date().toISOString().substr(0, 19);
+    let destination_name = `${drop_table_object.table}-${currDate}`;
+    let trash_path = `${hdb_properties.get('HDB_ROOT')}/trash`;
+    mkdirp(trash_path, function checkTrashDir(err) {
+        if (err) {
+            return callback(err);
+        }
+        fs.move(`${hdb_properties.get('HDB_ROOT')}/schema/${drop_table_object.schema}/${drop_table_object.table}`,
+            `${hdb_properties.get('HDB_ROOT')}/trash/${destination_name}`, function moveToTrash(err) {
+                if (err) {
+                    return callback(err);
+                }
+            });
+    });
+    callback(null, drop_table_object);
+}
+
+function deleteAttributes(err, drop_table_object, callback) {
+    deleteAttributeStructure(drop_table_object, function completedDrop(err, success) {
+        if (err) {
+            return callback(err);
+        }
+        callback(null, `successfully deleted ${drop_table_object.schema}.${drop_table_object.table}`);
+    });
+}
+
+function deleteTableStructure(drop_table_object, callback) {
+    let validation_error = validation.table_object(drop_table_object);
+    if (validation_error) {
+        callback(validation_error, null);
+        return;
+    }
+    try {
         let schema = drop_table_object.schema;
         let table = drop_table_object.table;
         let search_obj = {};
@@ -336,58 +384,17 @@ function deleteTableStructure(drop_table_object, callback) {
         search_obj.search_attribute = 'name';
         search_obj.search_value = drop_table_object.table;
         search_obj.get_attributes = ['name', 'schema', 'id'];
-        search.searchByValue(search_obj, function (err, data) {
-            if (err) {
-                callback(err);
-                return;
-            }
-
-            let delete_tb = null;
-            for (let item in data) {
-                if (data[item].name === drop_table_object.table && data[item].schema === drop_table_object.schema) {
-                    delete_tb = data[item];
-                }
-            }
-
-            if (delete_tb) {
-                let delete_table_object = {
-                    table: "hdb_table",
-                    schema: "system",
-                    hash_attribute: "id",
-                    hash_values: [delete_tb.id]
-                };
-
-                delete_.delete(delete_table_object, function (err, data) {
-                    if (err) {
-                        callback(err);
-                        return;
-                    }
-                    let path = `hdb_properties.get('HDB_ROOT')/schema/${schema}/${table}`;
-                    let currDate = new Date().toISOString().substr(0,19);
-                    let destination_name = `${table}-${currDate}`;
-                    let trash_path = `${hdb_properties.get('HDB_ROOT')}/trash`;
-                    //TODO: mkdirp defaults to 0777, we need to discuss what the best perms should be.
-                    //mkdirp does nothing if the directory exists.
-                    mkdirp(trash_path, function(err, data) {
-                        if(err) {
-                            return callback(err);
-                        }
-                        fs.move(`${hdb_properties.get('HDB_ROOT')}/schema/${schema}/${table}`,
-                            `${hdb_properties.get('HDB_ROOT')}/trash/${destination_name}`, function (err) {
-                            if (err) {
-                                return callback(err);
-                            }
-                            deleteAttributeStructure(drop_table_object, function (err, data) {
-                                if (err) {
-                                    return callback(err);
-                                }
-                                callback(null, `successfully deleted ${table}`);
-                            });
-                        });
-                    });
-                });
-            } else {
-                callback("Table not found!");
+        async.waterfall([
+            search.searchByValue.bind(null, search_obj),
+            buildTableObject.bind(null, drop_table_object),
+            delete_.delete,
+            deleteTableObject.bind(null, drop_table_object),
+            deleteAttributes.bind(null, drop_table_object)
+        ], function(err, data) {
+            if( err) {
+                console.error(`There was a problem deleting ${schema}.  Please check the logs for more info`);
+                winston.error(err);
+                return callback(err);
             }
         });
     } catch (e) {
