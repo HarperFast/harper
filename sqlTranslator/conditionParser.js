@@ -59,7 +59,8 @@ function parseWhereClause(where) {
             condition = `like(${where.left.name}, ${value})`;
             break;
         case 'in':
-            let compare_value = where.right.expression.filter((value_object)=>{
+            let compare_value = [];
+            where.right.expression.filter((value_object)=>{
                 let value = value_object.value;
                 if(typeof value === 'string'){
                     value = `'${value}'`
