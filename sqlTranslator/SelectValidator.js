@@ -14,6 +14,9 @@ const validateTables = Symbol('validateTables'),
     createAttributeFromSplitString = Symbol('createAttributeFromSplitString'),
     validateTableJoins = Symbol('validateTableJoins');
 
+const TABLE_INDEX = 0,
+    COLUMN_INDEX = 1;
+
 class SelectValidator {
     constructor(statement){
         this.statement = statement;
@@ -179,19 +182,23 @@ class SelectValidator {
         }
 
         let table_info = this.tables.filter((table)=>{
-            return table.alias === table_column[0] || table.table === table_column[0];
+            return table.alias === table_column[TABLE_INDEX] || table.table === table_column[TABLE_INDEX];
         })[0];
 
         if(!table_info){
             throw `unknown table for column ${column_name}`;
         }
 
-        let col = table_column.length === 1 ? column_name : table_column[1];
+
+        let col = table_column.length === 1 ? column_name : table_column[COLUMN_INDEX];
         let found_column = _.filter(select_columns, (column)=>{
+            //if the column is a calculation i.e. sum(age) we need to see if the calculation value equals the col value
+            //or if col == alias. NOTE a calculation will never have a name attribute
             if(column.calculation){
                 return column.calculation === col || column.alias === col;
             }
 
+            // check if the column name or alias matches with it's table and schema
             return (column.table === table_info.table || column.table_alias === table_info.alias) && (column.name === '*' || column.alias === col || column.name === col);
         });
 
