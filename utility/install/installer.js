@@ -58,10 +58,11 @@ function run_install(callback) {
                 }
             ], function (err, result) {
                 if (err) {
-                    callback(err, result);
+                    return callback(err, result);
                 }
             });
         }
+        return callback(null, result);
     });
 }
 
