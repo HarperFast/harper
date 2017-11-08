@@ -13,12 +13,21 @@ class ConditionPatterns{
         this.column_conditions = [];
     }
 
-    parseConditions(){
+    parser(){
+        this.parseConditions(this.conditions);
+        this.tables.forEach((table)=>{
+            if(table.join && Object.keys(table.join).length > 0){
+                this.parseConditions(table.join);
+            }
+        });
+    }
+
+    parseConditions(conditions){
         //parse takes the conditions and breaks them into an expression tree, this allows us to get individual conditions and the attribute(s) in them
-        let nodes = mathjs.parse(this.conditions);
+        let nodes = mathjs.parse(conditions);
 
         //evaluate if this node is a single condition
-        let condition_nodes = []
+        let condition_nodes = [];
         nodes.filter(function (node) {
             if(node.isOperatorNode && condition_operators.indexOf(node.op) >= 0) {
                 condition_nodes.push(node);
@@ -87,7 +96,7 @@ class ConditionPatterns{
             });
         });
 
-        this.column_conditions = conditions;
+        this.column_conditions = this.column_conditions.concat(conditions);
     }
 
     [findTable](condition){
