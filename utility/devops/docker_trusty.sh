@@ -1,5 +1,5 @@
 #!/bin/bash
-hdb_data="/root/hdb"
+hdb_data="/home/harperdb/hdb"
 obfuscript()
 {
 #Change into each Directory generate an array of the Javascript; js_files
