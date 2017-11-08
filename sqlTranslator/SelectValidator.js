@@ -14,6 +14,9 @@ const validateTables = Symbol('validateTables'),
     createAttributeFromSplitString = Symbol('createAttributeFromSplitString'),
     validateTableJoins = Symbol('validateTableJoins');
 
+const TABLE_INDEX = 0,
+    COLUMN_INDEX = 1;
+
 class SelectValidator {
     constructor(statement){
         this.statement = statement;
@@ -48,7 +51,10 @@ class SelectValidator {
             if(this.statement.order) {
                 this.statement.order.forEach((order_by) => {
                     let order = order_by.expression ? order_by.expression : order_by;
-                    this[validateOrderByColumn](select_columns, order.name);
+                    let found_column = this[validateOrderByColumn](select_columns, order.name, false);
+                    if(!found_column){
+                        throw `column '${order.name}' must be in select`;
+                    }
                     order_by_columns.push(order.name);
                 });
             }
@@ -56,7 +62,7 @@ class SelectValidator {
             if(this.statement.group) {
                 this.statement.group.expression.forEach((group_by) => {
                     let group = group_by.expression ? group_by.expression : group_by;
-                    this[validateOrderByColumn](select_columns, group.name);
+                    this[validateOrderByColumn](select_columns, group.name, true);
                 });
             }
 
@@ -153,7 +159,7 @@ class SelectValidator {
         })[0];
 
         if(!table_info){
-            throw `unknown column ${raw_name}`;
+            throw `unknown table for column ${raw_name}`;
         }
 
         let attribute = {
@@ -167,31 +173,54 @@ class SelectValidator {
         return attribute;
     }
 
-    [validateOrderByColumn](select_columns, column_name){
+    [validateOrderByColumn](select_columns, column_name, is_group_by){
         let table_column = column_name.split('.');
-
-        if (this.tables.length > 1 && table_column.length === 1) {
-            throw `column '${column_name}' ambiguously defined`;
-        }
 
         if(table_column.length === 1){
             //add the only table name to the array so we can validate properly
             table_column.unshift(this.tables[0].table);
         }
 
-        let attribute = this[createAttributeFromSplitString](table_column, column_name);
-        this.attribute_parser.checkColumnExists(attribute);
+        let table_info = this.tables.filter((table)=>{
+            return table.alias === table_column[TABLE_INDEX] || table.table === table_column[TABLE_INDEX];
+        })[0];
 
-        let col = table_column.length === 1 ? column_name : table_column[1];
-        let found_column = _.filter(select_columns, (column)=>{
-            return column.alias === col || column.name === col || column.name === '*';
-        });
-
-        if(found_column.length === 0){
-            throw `column '${column_name}' must be in select`;
+        if(!table_info){
+            throw `unknown table for column ${column_name}`;
         }
 
 
+        let col = table_column.length === 1 ? column_name : table_column[COLUMN_INDEX];
+        let found_column = _.filter(select_columns, (column)=>{
+            //if the column is a calculation i.e. sum(age) we need to see if the calculation value equals the col value
+            //or if col == alias. NOTE a calculation will never have a name attribute
+            if(column.calculation){
+                return column.calculation === col || column.alias === col;
+            }
+
+            // check if the column name or alias matches with it's table and schema
+            return (column.table === table_info.table || column.table_alias === table_info.alias) && (column.name === '*' || column.alias === col || column.name === col);
+        });
+
+        let attribute = found_column[0];
+        if(is_group_by && !attribute){
+            attribute = {
+                table:table_info.table,
+                table_alias:table_info.alias,
+                attribute:col,
+                alias:col
+            };
+        } else if(!attribute){
+            throw `unknown column ${column_name}`;
+        }
+
+        attribute.schema = table_info.schema;
+
+        if(!attribute.calculation) {
+            this.attribute_parser.checkColumnExists(attribute);
+        }
+
+        return attribute;
     }
 
     [validateConditions](where_clause){
