@@ -119,7 +119,7 @@ if (cluster.isMaster && !DEBUG) {
                             if(typeof error !== 'object')
                                 error = {"error": error};
                             res.setHeader('Content-Type', 'application/json');
-                            res.status(500).send(JSON.stringify(error, ['message']));
+                            res.status(500).send({Error: error.message});
                             return;
                         }
                         if(typeof data !== 'object')
