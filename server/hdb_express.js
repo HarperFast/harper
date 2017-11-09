@@ -118,7 +118,8 @@ if (cluster.isMaster && !DEBUG) {
                             winston.error(error);
                             if(typeof error !== 'object')
                                 error = {"error": error};
-                            res.status(500).json(error.message ? error.message : error);
+                            res.setHeader('Content-Type', 'application/json');
+                            res.status(500).send(JSON.stringify(error, ['message']));
                             return;
                         }
                         if(typeof data !== 'object')
