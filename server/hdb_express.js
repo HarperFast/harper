@@ -3,6 +3,17 @@ let numCPUs = 4;
 const DEBUG = false;
 const winston = require('../utility/logging/winston_logger');
 
+function replaceErrors(key, value) {
+    if (value instanceof Error) {
+        var error = {};
+
+        Object.getOwnPropertyNames(value).forEach(function (key) {
+            error[key] = value[key];
+        });
+        return error;
+    }
+    return value;
+}
 
 if (cluster.isMaster && !DEBUG) {
     winston.info(`Master ${process.pid} is running`);
@@ -115,7 +126,8 @@ if (cluster.isMaster && !DEBUG) {
                             winston.error(error);
                             if(typeof error != 'object')
                                 error = {"error": error};
-                            res.status(500).json(error.message ? error.message : error);
+                            res.setHeader('Content-Type', 'application/json');
+                            res.status(500).send({Error: error.message});
                             return;
                         }
                         if(typeof data != 'object')
