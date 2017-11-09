@@ -188,7 +188,8 @@ function wizard(callback) {
         if(wizard_result.HDB_ROOT.indexOf('~') > -1) {
             let home = process.env['HOME'];
             if( home != undefined) {
-                let replacement = wizard_result.HDB_ROOT.replace('~', process.env['HOME']);
+                // Replaces ~ with env home and removes any tabs created from user hoping to use autocomplete.
+                let replacement = wizard_result.HDB_ROOT.replace('~', process.env['HOME']).replace(new RegExp('\t', 'g'), '');
                 if( replacement && replacement.length > 0) {
                     wizard_result.HDB_ROOT = replacement;
                 }

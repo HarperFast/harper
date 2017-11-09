@@ -72,9 +72,8 @@ function arePortsInUse(callback) {
         http_port = hdb_properties.get(HTTP_PORT_KEY);
         httpsecure_port = hdb_properties.get(HTTPSECURE_PORT_KEY);
     } catch (e) {
-        let read_err = 'There was an error getting boot properties.';
-        basic_winston.error(read_err);
-        return callback(read_err);
+        winston.info('hdb_boot_props file not found, starting install.');
+        startHarper();
     }
 
     if(http_on === 'FALSE' && httpsecure_on === 'FALSE') {
