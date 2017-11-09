@@ -14,17 +14,17 @@ class ConditionPatterns{
     }
 
     parser(){
-        this.parseConditions(this.conditions);
+        this.conditions = this.parseConditions(this.conditions);
         this.tables.forEach((table)=>{
             if(table.join && Object.keys(table.join).length > 0){
-                this.parseConditions(table.join);
+                table.join = this.parseConditions(table.join);
             }
         });
     }
 
-    parseConditions(conditions){
+    parseConditions(condition_string){
         //parse takes the conditions and breaks them into an expression tree, this allows us to get individual conditions and the attribute(s) in them
-        let nodes = mathjs.parse(conditions);
+        let nodes = mathjs.parse(condition_string);
 
         //evaluate if this node is a single condition
         let condition_nodes = [];
@@ -36,13 +36,12 @@ class ConditionPatterns{
             }
         });
 
-        this[parseNodes](condition_nodes);
+        return this[parseNodes](condition_nodes, condition_string);
     }
 
     //take the condition and look for attributes that we need to retrieve
-    [parseNodes](nodes){
+    [parseNodes](nodes, condition_string){
         let conditions = [];
-        let condition_string = this.conditions;
         nodes.forEach((node)=>{
             node.filter(function (sub_node, path, parent) {
                 let attribute_object;
@@ -68,7 +67,7 @@ class ConditionPatterns{
                 if(attribute_object) {
 
                     let found_node = conditions.filter((condition) => {
-                        return condition.node.toString() === node.toString();
+                        return condition.node.toString() === node.toString().replace(/\./g,'_');
                     });
 
                     if (found_node && found_node.length > 0) {
@@ -85,7 +84,7 @@ class ConditionPatterns{
             });
         });
 
-        this.conditions = condition_string;
+        //this.conditions = condition;
 
         //clean up the attributes by assigning their proper table name and schema
         conditions.forEach((condition)=>{
@@ -97,6 +96,8 @@ class ConditionPatterns{
         });
 
         this.column_conditions = this.column_conditions.concat(conditions);
+
+        return condition_string;
     }
 
     [findTable](condition){
