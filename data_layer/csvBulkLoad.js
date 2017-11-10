@@ -181,6 +181,8 @@ function bulkLoad(records, schema, table, action, callback){
     //TODO: Noone remember why we have this here.  We should refactor this when
     // we have more benchmarks for comparison.  Might be able to leverage cores once
     // the process pool is ready.
+    if( !action )
+        action = 'insert';
     async.eachLimit(chunks, 4, (record_chunk, caller)=>{
         let target_object = {
             schema: schema,
