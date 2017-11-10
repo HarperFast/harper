@@ -182,7 +182,7 @@ function wizard(callback) {
         //Support the tilde command for HOME.
         if(wizard_result.HDB_ROOT.indexOf('~') > -1) {
             let home = process.env['HOME'];
-            if( home !== undefined) {
+            if( home !== undefined && home !== null) {
                 let replacement = wizard_result.HDB_ROOT.replace('~', process.env['HOME']);
                 if( replacement && replacement.length > 0) {
                     wizard_result.HDB_ROOT = replacement;
@@ -255,8 +255,8 @@ function createSettingsFile(mount_status, callback) {
             `HTTPS_ON = FALSE\n` +
             `HTTP_ON = TRUE \n` +
             `CORS_ON = TRUE\n` +
-            `SERVER_TIMEOUT_MS = 120000\n` +
-            `CORS_WHITELIST =\n`;
+            `CORS_WHITELIST =\n` +
+            `SERVER_TIMEOUT_MS = 120000\n`;
 
         winston.info('info', `hdb_props_value ${JSON.stringify(hdb_props_value)}`);
         winston.info('info', `settings path: ${hdb_boot_properties.get('settings_path')}`);
