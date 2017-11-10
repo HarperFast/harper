@@ -36,7 +36,7 @@ class ConditionPatterns{
             }
         });
 
-        return this[parseNodes](condition_nodes, condition_string);
+        return this[parseNodes](condition_nodes, condition_string)perfect;
     }
 
     //take the condition and look for attributes that we need to retrieve
