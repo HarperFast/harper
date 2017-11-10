@@ -26,6 +26,7 @@ module.exports = function (hdb_path, callback){
         makeDirectory(path.join(hdb_path, "staging/schema_op_queue"));
         makeDirectory(path.join(hdb_path, "staging/schema_op_log"));
         makeDirectory(path.join(hdb_path, "backup"));
+        makeDirectory(path.join(hdb_path, "trash"));
         makeDirectory(path.join(hdb_path, "keys"));
         makeDirectory(path.join(hdb_path, "log"));
         makeDirectory(path.join(hdb_path, "config"));

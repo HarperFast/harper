@@ -4,7 +4,7 @@ const validate = require('validate.js'),
     bulk_delete_validator = require('../validation/bulkDeleteValidator'),
     conditional_delete_validator = require('../validation/conditionalDeleteValidator'),
     search = require('./search');
-    hdb_properties.append(hdb_properties.get('settings_path')),
+hdb_properties.append(hdb_properties.get('settings_path')),
     async = require('async'),
     fs = require('graceful-fs'),
     global_schema = require('../utility/globalSchema');
@@ -14,10 +14,15 @@ const base_path = hdb_properties.get('HDB_ROOT') + "/schema/";
 
 
 module.exports ={
-  delete: deleteRecord,
+    delete: deleteRecord,
     conditionalDelete:conditionalDelete
 };
 
+/**
+ * Delete a record and unlink all attributes associated with that record.
+ * @param delete_object
+ * @param callback
+ */
 function deleteRecord(delete_object, callback){
     try {
         let validation = bulk_delete_validator(delete_object);
@@ -86,7 +91,7 @@ function conditionalDelete(delete_object, callback){
 
             callback(null, 'records successfully deleted');
         });
-    }catch(e){
+    } catch(e) {
         callback(e);
     }
 }
@@ -120,6 +125,12 @@ function deleteRecords(delete_object, records, callback){
     );
 }
 
+/**
+ * Removes the sym link for each attribute.  Important to note that this function
+ * @param delete_object - The descriptor for the object to be deleted.
+ * @param record - The records found that may be deleted
+ * @param callback
+ */
 function deleteFiles(delete_object, record, callback){
     let paths = [];
     let table_path = `${base_path}${delete_object.schema}/${delete_object.table}`;
@@ -154,5 +165,5 @@ function deleteFiles(delete_object, record, callback){
             }
 
             callback();
-    });
+        });
 }
