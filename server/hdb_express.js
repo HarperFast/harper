@@ -2,30 +2,87 @@ const cluster = require('cluster');
 let numCPUs = 4;
 const DEBUG = false;
 const winston = require('../utility/logging/winston_logger');
+const async = require('async');
+var enterprise = false;
 
 
 if (cluster.isMaster && !DEBUG) {
-    winston.info(`Master ${process.pid} is running`);
 
-    // Fork workers.
-    let forks = [];
-    let num_workers = require('os').cpus().length;
-    numCPUs = num_workers < numCPUs ? num_workers : numCPUs;
-    for (let i = 0; i < numCPUs; i++) {
-        let forked = cluster.fork();
-        forked.on('message', messageHandler);
-        forks.push(forked);
+    const search = require('../data_layer/search');
+    let licenseKeySearch = {
+        operation: 'search_by_value',
+        schema: 'system',
+        table: 'hdb_license',
+        hash_attribute: 'license_key',
+        search_attribute: "license_key",
+        search_value: "*",
+        get_attributes:["*"]
+
+
+    };
+
+    function spinUpServer(){
+
+
     }
 
-    cluster.on('exit', (worker, code, signal) => {
-        winston.info(`worker ${worker.process.pid} died`);
+    search.searchByValue(licenseKeySearch, function (err, licenses) {
+        const hdb_license = require('../utility/hdb_license');
+        if (err) {
+            return winston.error(err);
+        }
+
+            async.each(licenses, function(license, callback){
+                hdb_license.validateLicense(license.license_key, license.company, function (err, license_validation) {
+                    if (license_validation.valid_machine && license_validation.valid_date  && license_validation.valid_license){
+                        if(numCPUs === 4){
+                             numCPUs = 16;
+                        }else{
+                            numCPUs +=16;
+
+                        }
+                        enterprise = true;
+                    }
+                    callback();
+
+                });
+            }, function(err){
+                if(err)
+                    return winston.error(err);
+
+                winston.info(`Master ${process.pid} is running`);
+
+                // Fork workers.
+                let forks = [];
+                let num_workers = require('os').cpus().length;
+                numCPUs = num_workers < numCPUs ? num_workers : numCPUs;
+                for (let i = 0; i < numCPUs; i++) {
+                    let forked = cluster.fork();
+                    forked.on('message', messageHandler);
+                    forks.push(forked);
+                }
+
+                cluster.on('exit', (worker, code, signal) => {
+                    winston.info(`worker ${worker.process.pid} died`);
+                });
+
+                function messageHandler(msg) {
+                    forks.forEach((fork) => {
+                        fork.send(msg);
+                    });
+                }
+
+            });
+
+
+
+
+
+
+
     });
 
-    function messageHandler(msg) {
-        forks.forEach((fork)=>{
-            fork.send(msg);
-        });
-    }
+
 
 } else {
     winston.info('In express' + process.cwd());
@@ -42,22 +99,22 @@ if (cluster.isMaster && !DEBUG) {
         pjson = require('../package.json'),
         server_utilities = require('./server_utilities'),
         ClusterServer = require('./clustering/cluster_server')
-        clone = require('clone');
-        async = require('async'),
-        cors = require('cors');
+    clone = require('clone');
+
+    cors = require('cors');
 
     hdb_properties.append(hdb_properties.get('settings_path'));
     global.cluster_server = null;
 
-    if(hdb_properties.get('CORS_ON') && (hdb_properties.get('CORS_ON') === true || hdb_properties.get('CORS_ON').toUpperCase() === 'TRUE')){
+    if (hdb_properties.get('CORS_ON') && (hdb_properties.get('CORS_ON') === true || hdb_properties.get('CORS_ON').toUpperCase() === 'TRUE')) {
         let cors_options = {
             origin: true,
             allowedHeaders: ['Content-Type', 'Authorization'],
             credentials: false
         };
-        if(hdb_properties.get('CORS_WHITELIST') && hdb_properties.get('CORS_WHITELIST').length > 0){
+        if (hdb_properties.get('CORS_WHITELIST') && hdb_properties.get('CORS_WHITELIST').length > 0) {
             let whitelist = hdb_properties.get('CORS_WHITELIST').split(',');
-            cors_options.origin =  (origin, callback) => {
+            cors_options.origin = (origin, callback) => {
                 if (whitelist.indexOf(origin) !== -1) {
                     callback(null, true);
                 } else {
@@ -69,29 +126,31 @@ if (cluster.isMaster && !DEBUG) {
         app.use(cors(cors_options));
     }
 
-    app.use(bodyParser.json({limit:'1gb'})); // support json encoded bodies
+    app.use(bodyParser.json({limit: '1gb'})); // support json encoded bodies
     app.use(bodyParser.urlencoded({extended: true}));
     app.use(function (error, req, res, next) {
         if (error instanceof SyntaxError) {
             res.status(400).send({error: 'invalid JSON: ' + error.message.replace('\n', '')});
-        } else if(error){
+        } else if (error) {
             res.status(400).send({error: error.message});
-        }  else {
+        } else {
             next();
         }
     });
 
-    app.use(session({ secret: 'keyboard cat',     resave: true,
-        saveUninitialized: true }));
+    app.use(session({
+        secret: 'keyboard cat', resave: true,
+        saveUninitialized: true
+    }));
     app.use(passport.initialize());
     app.use(passport.session());
     app.post('/', function (req, res) {
-        auth.authorize(req, res, function(err, user) {
+        auth.authorize(req, res, function (err, user) {
             res.set('x-powered-by', 'HarperDB');
 
-            if(err){
+            if (err) {
                 winston.warn(`{"ip":"${req.connection.remoteAddress}", "error":"${err}"`);
-                if(typeof err === 'string'){
+                if (typeof err === 'string') {
                     return res.status(401).send({error: err});
                 }
                 res.status(401).send(err);
@@ -108,30 +167,29 @@ if (cluster.isMaster && !DEBUG) {
                     return;
                 }
 
-                function broadCast(){
+                function broadCast() {
 
                     var operation = clone(req.body.operation);
-                    server_utilities.processLocalTransaction(req,res, operation_function, function(err, data){
-                          if(!err){
-                              for(let o_node in global.cluster_server.socket_server.other_nodes){
-                                  let payload = {};
-                                  payload.msg = req.body
-                                  if(data.id){
-                                      payload.msg.id = data.id;
+                    server_utilities.processLocalTransaction(req, res, operation_function, function (err, data) {
+                        if (!err) {
+                            for (let o_node in global.cluster_server.socket_server.other_nodes) {
+                                let payload = {};
+                                payload.msg = req.body
+                                if (data.id) {
+                                    payload.msg.id = data.id;
 
-                                  }
+                                }
 
-                                  if(!req.body.operation){
-                                      payload.msg.operation = operation;
-                                  }
+                                if (!req.body.operation) {
+                                    payload.msg.operation = operation;
+                                }
 
 
+                                payload.node = global.cluster_server.socket_server.other_nodes[o_node];
+                                global.cluster_server.send(payload, res);
+                            }
 
-                                  payload.node = global.cluster_server.socket_server.other_nodes[o_node];
-                                  global.cluster_server.send(payload, res);
-                              }
-
-                          }
+                        }
 
                     });
 
@@ -141,102 +199,94 @@ if (cluster.isMaster && !DEBUG) {
 
                 //TODO read log? describe_all etc...
 
-                if(global.cluster_server && global.cluster_server.socket_server.name && req.body.operation != 'sql ') {
-                    if(!req.body.schema
+                if (global.cluster_server && global.cluster_server.socket_server.name && req.body.operation != 'sql ') {
+                    if (!req.body.schema
                         || !req.body.table
                         || req.body.operation === 'create_table'
-                        || req.body.operation ==='drop_table'
+                        || req.body.operation === 'drop_table'
 
-                    ){
+                    ) {
                         var localOnlyOperations = ['describe_all', 'describe_table', 'describe_schema', 'read_log']
-                        if(localOnlyOperations.includes(req.body.operation)){
-                            server_utilities.processLocalTransaction(req,res,operation_function, function(err){
+                        if (localOnlyOperations.includes(req.body.operation)) {
+                            server_utilities.processLocalTransaction(req, res, operation_function, function (err) {
                                 winston.error(err);
                             })
-                        }else{
+                        } else {
                             return broadCast();
                         }
 
-                    }else{
-                        global_schema.getTableSchema(req.body.schema, req.body.table, function(err, table){
-                            if(err){
+                    } else {
+                        global_schema.getTableSchema(req.body.schema, req.body.table, function (err, table) {
+                            if (err) {
                                 winston.error(err);
                                 return res.status(500).send(err);
 
                             }
 
 
-                            if(table.residence){
+                            if (table.residence) {
                                 let residence = table.residence;
-                                if(typeof table.residence === 'string'){
+                                if (typeof table.residence === 'string') {
                                     residence = JSON.parse(table.residence);
                                 }
 
-                                if(residence.indexOf('*') > -1){
+                                if (residence.indexOf('*') > -1) {
                                     return broadCast();
                                 }
 
-                                if(residence.indexOf(hdb_properties.get('NODE_NAME')) > -1){
-                                    server_utilities.processLocalTransaction(req, res, operation_function, function(){
-                                        if(residence.length > 1){
-                                            for(node in residence){
-                                                if(residence[node] != hdb_properties.get('NODE_NAME')){
+                                if (residence.indexOf(hdb_properties.get('NODE_NAME')) > -1) {
+                                    server_utilities.processLocalTransaction(req, res, operation_function, function () {
+                                        if (residence.length > 1) {
+                                            for (node in residence) {
+                                                if (residence[node] != hdb_properties.get('NODE_NAME')) {
                                                     let payload = {};
                                                     payload.msg = req.body;
-                                                    payload.node = payload.node = {"name":residence[node]};
+                                                    payload.node = payload.node = {"name": residence[node]};
                                                     global.cluster_server.send(payload, res);
                                                 }
                                             }
                                         }
 
-                                        for(let o_node in global.cluster_server.socket_server.other_nodes){
+                                        for (let o_node in global.cluster_server.socket_server.other_nodes) {
 
                                         }
                                     });
-                                }else{
-                                    for(node in residence){
-                                        if(residence[node] != hdb_properties.get('NODE_NAME')){
+                                } else {
+                                    for (node in residence) {
+                                        if (residence[node] != hdb_properties.get('NODE_NAME')) {
                                             let payload = {};
                                             payload.msg = req.body;
-                                            payload.node = payload.node = {"name":residence[node]};
+                                            payload.node = payload.node = {"name": residence[node]};
                                             global.cluster_server.send(payload, res);
                                         }
                                     }
                                 }
 
 
-                            }else{
-                                server_utilities.processLocalTransaction(req, res, operation_function, function(){
+                            } else {
+                                server_utilities.processLocalTransaction(req, res, operation_function, function () {
 
                                 });
                             }
 
 
-
-
-
                         });
 
-    app.get('/', function (req, res) {
-        auth.authorize(req, res, function(err, user) {
-            var guidePath = require('path');
-            res.sendFile(guidePath.resolve('../docs/user_guide.html'));
-        });
-    });
+                        app.get('/', function (req, res) {
+                            auth.authorize(req, res, function (err, user) {
+                                var guidePath = require('path');
+                                res.sendFile(guidePath.resolve('../docs/user_guide.html'));
+                            });
+                        });
 
                     }
 
 
-                }else{
-                    server_utilities.processLocalTransaction(req, res, operation_function, function(){
+                } else {
+                    server_utilities.processLocalTransaction(req, res, operation_function, function () {
 
                     });
                 }
-
-
-
-
-
 
 
             });
@@ -245,20 +295,18 @@ if (cluster.isMaster && !DEBUG) {
     });
 
 
-
-
-    process.on('message', (msg)=>{
-        switch(msg.type){
+    process.on('message', (msg) => {
+        switch (msg.type) {
             case 'schema':
-                global_schema.schemaSignal((err)=>{
-                    if(err){
+                global_schema.schemaSignal((err) => {
+                    if (err) {
                         winston.error(err);
                     }
                 });
                 break;
             case 'user':
-                global_schema.setUsersToGlobal((err)=>{
-                    if(err){
+                global_schema.setUsersToGlobal((err) => {
+                    if (err) {
                         winston.error(err);
                     }
                 });
@@ -266,19 +314,19 @@ if (cluster.isMaster && !DEBUG) {
         }
     });
 
-    try{
+    try {
         let http = require('http');
         let httpsecure = require('https');
-        let privateKey  = fs.readFileSync(hdb_properties.get('PRIVATE_KEY'), 'utf8');
+        let privateKey = fs.readFileSync(hdb_properties.get('PRIVATE_KEY'), 'utf8');
         let certificate = fs.readFileSync(hdb_properties.get('CERTIFICATE'), 'utf8');
         let credentials = {key: privateKey, cert: certificate};
 
         let httpServer = undefined;
         let secureServer = undefined;
 
-        if(hdb_properties.get('HTTPS_ON') && (hdb_properties.get('HTTPS_ON') === true || hdb_properties.get('HTTPS_ON').toUpperCase() === 'TRUE')) {
+        if (hdb_properties.get('HTTPS_ON') && (hdb_properties.get('HTTPS_ON') === true || hdb_properties.get('HTTPS_ON').toUpperCase() === 'TRUE')) {
             secureServer = httpsecure.createServer(credentials, app);
-            secureServer.listen(hdb_properties.get('HTTPS_PORT'), function(){
+            secureServer.listen(hdb_properties.get('HTTPS_PORT'), function () {
                 winston.info(`HarperDB ${pjson.version} HTTPS Server running on ${hdb_properties.get('HTTPS_PORT')}`);
 
                 global_schema.setSchemaDataToGlobal((err, data) => {
@@ -308,37 +356,36 @@ if (cluster.isMaster && !DEBUG) {
         }
 
 
-
-        if(hdb_properties.get('CLUSTERING')){
+        if (hdb_properties.get('CLUSTERING') && enterprise) {
             var node = {
                 "name": hdb_properties.get('NODE_NAME'),
                 "port": hdb_properties.get('CLUSTERING_PORT'),
 
             }
 
-            const search = require('../data_layer/search');
+
             let search_obj = {
-                "table":"hdb_nodes",
-                "schema":"system",
-                "search_attribute":"host",
-                "hash_attribute" : "name",
-                "search_value":"*",
-                "get_attributes":["*"]
+                "table": "hdb_nodes",
+                "schema": "system",
+                "search_attribute": "host",
+                "hash_attribute": "name",
+                "search_value": "*",
+                "get_attributes": ["*"]
             }
-            search.searchByValue(search_obj, function(err, nodes){
-                if(err){
+            search.searchByValue(search_obj, function (err, nodes) {
+                if (err) {
                     winston.error(err);
                 }
 
-                if(nodes){
+                if (nodes) {
                     node.other_nodes = nodes;
                     global.cluster_server = new ClusterServer(node);
-                    global.cluster_server.init(function(err){
-                        if(err){
+                    global.cluster_server.init(function (err) {
+                        if (err) {
                             return winston.error(err);
                         }
-                        global.cluster_server.establishConnections(function(err){
-                            if(err){
+                        global.cluster_server.establishConnections(function (err) {
+                            if (err) {
                                 return winston.error(err);
                             }
 
@@ -353,16 +400,10 @@ if (cluster.isMaster && !DEBUG) {
             });
 
 
-
-
-
-
-
         }
 
 
-
-    }catch(e){
+    } catch (e) {
         winston.error(e);
     }
 }

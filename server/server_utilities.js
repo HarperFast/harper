@@ -138,6 +138,9 @@ function chooseOperation(json, callback) {
         case 'list_users':
             operation_function = user.listUsers;
             break;
+        case 'list_roles':
+            operation_function = role.listRoles;
+            break;
         case 'add_role':
             operation_function = role.addRole;
             break;

@@ -12,10 +12,11 @@ const fs = require('fs.extra')
     , schema_describe = require('./schemaDescribe')
     , schema_ops = require('../utility/schema_ops')
     , PropertiesReader = require('properties-reader')
-    ,clone = require('clone'
+    ,clone = require('clone')
     ,mkdirp = require('mkdirp')
     , _ = require('underscore')
     ,signalling = require('../utility/signalling');
+
 let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
 hdb_properties.append(hdb_properties.get('settings_path'));
 

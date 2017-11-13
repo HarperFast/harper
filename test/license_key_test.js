@@ -28,18 +28,24 @@ hdb_license.generateFingerPrint(function(err, fingerprint){
 
 
 var licenseKeyObject = {};
-licenseKeyObject.fingerprint = 'RcmbfWBQZac5bead8fd5ef8849cf349acd0690af9';
 licenseKeyObject.exp_date = '2018-07-30';
 licenseKeyObject.company = 'hdb';
-hdb_license.generateLicense(licenseKeyObject, function(err, license){
-    console.log(JSON.stringify(license))
-    winston.error(err);
-    hdb_license.validateLicense(license, 'HarperDB', function(data){
-        console.log(JSON.stringify(data));
+hdb_license.generateFingerPrint(function(err, fingerprint){
+   if(err){return console.error(err)}
+    licenseKeyObject.fingerprint = fingerprint;
+    hdb_license.generateLicense(licenseKeyObject, function(err, license){
+        console.log(JSON.stringify(license))
+        winston.error(err);
+        hdb_license.validateLicense(license, 'hdb', function(err, validation){
+            console.log(JSON.stringify(validation));
+
+        });
 
     });
 
+
 });
+
 
 
 

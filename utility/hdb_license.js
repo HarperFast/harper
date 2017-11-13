@@ -2,7 +2,7 @@ const fs = require('fs'),
     password = require('./password'),
     crypto = require('crypto'),
     cipher = crypto.createCipher('aes192', 'a password'),
-    decipher = crypto.createDecipher('aes192', 'a password'),
+
     validation = require('../validation/license_key_object.js'),
     moment = require('moment'),
     PropertiesReader = require('properties-reader'),
@@ -77,6 +77,7 @@ function generateFingerPrint(callback) {
 
 
 function validateLicense(license_key, company, callback) {
+    var  decipher = crypto.createDecipher('aes192', 'a password');
     var license_validation_object = {};
     var license_tokens = license_key.split('mofi25');
     license_validation_object.valid_date = true;
@@ -96,7 +97,7 @@ function validateLicense(license_key, company, callback) {
 
         fs.readFile(`${hdb_properties.get('PROJECT_DIR')}/utility/keys/060493.ks`, function (err, data) {
             let fingerPrint = '' + data;
-         //   var newHash = hashLicense(fingerPrint, company);
+         //   var newHash = hashLicense(fingerPrint, company);337ff20ede0e3fce0ce842bf69e2d48fmofi25cu5zLuhyC47102d32d124087bdc502c7e02509c9a
            // winston.info(`new hash: ${newHash}`)
             if (!password.validate(license_tokens[1], `061183${data}${company}`)) {
                 license_validation_object.valid_license = false;
