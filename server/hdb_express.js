@@ -54,6 +54,7 @@ if (cluster.isMaster && !DEBUG) {
     app.use(passport.session());
     app.post('/', function (req, res) {
         auth.authorize(req, res, function(err, user) {
+
             if(err){
                 winston.warn(`{"ip":"${req.connection.remoteAddress}", "error":"${err}"`);
                 res.status(401).send(err);

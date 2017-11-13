@@ -53,10 +53,10 @@ class Socket_Client{
         });
 
         client.on('connect_error', (error) => {
-            winston.error(error);
+          /**  winston.error(error);
             o_node.status = 'disconnected';
             global.o_nodes[o_node.name] = o_node;
-            winston.warn(`failed to connect to ${o_node.name}`);
+            winston.warn(`failed to connect to ${o_node.name}`); **/
 
         });
 

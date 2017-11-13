@@ -1,7 +1,8 @@
 const uuidv1 = require('uuid/v1'),
-      winston = require('../../utility/logging/winston_logger');
+    winston = require('../../utility/logging/winston_logger'),
+    insert = require('../../data_layer/insert');
 
-class Socket_Server{
+class Socket_Server {
     constructor(node) {
         this.node = node;
         this.name = node.name;
@@ -17,6 +18,8 @@ class Socket_Server{
 
     init(next) {
         try {
+
+
 
 
             // TODO probably need to make this https
@@ -35,30 +38,49 @@ class Socket_Server{
                         winston.info(node.name + ' joined room ' + msg);
                         // retrive the queue and send to this node.
 
-                        socket.emit('confirm_identity');
+                        getFromDisk({"name": msg}, function (err, disk_catch_up) {
+                            if (disk_catch_up && disk_catch_up.length > 0) {
+                                if (!global.cluster_queue[msg]) {
+                                    global.cluster_queue[msg] = {};
+                                }
 
-                        if(global.cluster_queue
-                            && global.cluster_queue[msg]){
-                            winston.info('sent msg');
-                            winston.info(global.cluster_queue[msg]);
-                            let catchup_payload = JSON.stringify(global.cluster_queue[msg]);
-                            socket.emit('catchup', catchup_payload);
-                        }
+                                for (let item in disk_catch_up) {
+                                    if (!global.cluster_queue[msg][disk_catch_up[item].id]) {
+                                        global.cluster_queue[msg][disk_catch_up[item].id] = disk_catch_up[item].payload;
+                                    }
+
+                                }
+                            }
 
 
+                            socket.emit('confirm_identity');
+
+                            if (global.cluster_queue
+                                && global.cluster_queue[msg]) {
+                                winston.info('sent msg');
+                                winston.info(global.cluster_queue[msg]);
+
+                                let catchup_payload = JSON.stringify(global.cluster_queue[msg]);
+                                socket.emit('catchup', catchup_payload);
+
+
+                            }
+
+                        });
                     });
 
 
                     // callback( msg );
                 });
 
+
                 socket.on('confirm_msg', function (msg) {
                     winston.info(msg);
-                    if(global.msg_queue[msg.id]){
-                        if(msg.error){
+                    if (global.msg_queue[msg.id]) {
+                        if (msg.error) {
                             global.msg_queue[msg.id].status(200).json(msg.error);
 
-                        }else if(msg.data){
+                        } else if (msg.data) {
                             global.msg_queue[msg.id].status(200).json(msg.data);
 
                         }
@@ -81,8 +103,8 @@ class Socket_Server{
                     winston.error(error);
                 });
 
-                socket.on('disconnect', function(error){
-                   winston.error(err);
+                socket.on('disconnect', function (error) {
+                    winston.error(err);
 
                 });
 
@@ -90,31 +112,81 @@ class Socket_Server{
             });
 
             next();
-        }catch(e){
+
+        } catch (e) {
             winston.error(e);
             next(e);
         }
     }
 
-    send(msg, res){
+    send(msg, res) {
         try {
             let payload = {"msg": msg.msg, "id": uuidv1()};
 
 
-            if(!global.cluster_queue[msg.node.name]){
+            if (!global.cluster_queue[msg.node.name]) {
                 global.cluster_queue[msg.node.name] = {};
             }
             global.msg_queue[payload.id] = res;
             global.cluster_queue[msg.node.name][payload.id] = payload;
-            // do I save these to disk now?
-            // should I wait until I have several of them?
-            this.io.to(msg.node.name).emit('msg', payload);
-        }catch(e){
+
+            this.io.to(msg.node.name).emit('msg', payload)
+
+
+            if (!global.o_nodes[msg.node.name] ||
+                !global.o_nodes[msg.node.name].status ||
+                !global.o_nodes[msg.node.name].status != 'connected') {
+                saveToDisk({"payload": payload, "id": payload.id, "node": msg.node, "node_name": msg.node.name});
+
+            }
+
+
+        } catch (e) {
             //save the queue to disk for all nodes.
             winston.error(e);
         }
     }
 
 }
+
+function saveToDisk(item) {
+
+    let insert_object = {
+        operation: 'insert',
+        schema: 'system',
+        table: 'hdb_queue',
+        records: [item]
+    };
+
+    insert.insert(insert_object, function (err) {
+        if (err) {
+            return winston.error(err);
+        }
+    });
+
+}
+
+function getFromDisk(node, callback) {
+    var search_obj = {};
+    search_obj.schema = 'system';
+    search_obj.table = 'hdb_queue';
+    search_obj.hash_attribute = 'id';
+    search_obj.search_attribute = 'node_name';
+    if (node)
+        search_obj.search_value = node.name;
+    else
+        search_obj.search_value = "*";
+
+    search_obj.get_attributes = ['*'];
+
+    search.searchByValue(search_obj, function (err, data) {
+        if (err) {
+            return callback(err);
+        }
+        return callback(null, data);
+
+    });
+};
+
 
 module.exports = Socket_Server;

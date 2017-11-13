@@ -50,6 +50,12 @@ const system_schema = {
         schema:'system',
         residence:['*']
     },
+    hdb_queue:{
+        hash_attribute:'id',
+        name:'hdb_queue',
+        schema:'system',
+        residence:['*']
+    },
     hdb_role:{
         hash_attribute:'id',
         name:'hdb_user',
