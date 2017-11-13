@@ -18,6 +18,8 @@ mkdir -p $target_dir/node_$node_count/harperdb
 mkdir -p $target_dir/node_$node_count/data
 cp -R $working_dir/* $target_dir/node_$node_count/harperdb/
 
+sed -i "/HDB_PROC_NAME/ s/ =.*/ = 'no_oneis_here';/" $target_dir/node_$node_count/harperdb/bin/run.js
+
 cd $target_dir/node_$node_count/harperdb/bin
 node harperdb.js install --HDB_ROOT $target_dir/node_$node_count/data/hdb --HTTP_PORT $http_port  --HTTPS_PORT 31283 --HDB_ADMIN_USERNAME admin --HDB_ADMIN_PASSWORD Abc1234! --HDB_REGISTER false
 node harperdb.js run
