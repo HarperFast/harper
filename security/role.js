@@ -9,7 +9,8 @@ const insert = require('../data_layer/insert'),
     module.exports = {
     addRole: addRole,
     alterRole:alterRole,
-    dropRole: dropRole
+    dropRole: dropRole,
+    listRoles: listRoles
 
 };
 
@@ -91,13 +92,11 @@ function alterRole(role, callback){
     };
 
     insert.update(update_object, function(err, success){
-        if(err){
+        if(err) {
             callback(err);
             return;
         }
-
-        callback(null, `${role.role} successfully altered`);
-
+        callback(null, success);
     });
 
 
@@ -158,6 +157,28 @@ function dropRole(role, callback){
 
 }
 
+function listRoles(req_body, callback){
+    var search_obj = {
+        table: "hdb_role",
+        schema: "system",
+        hash_attribute:"id",
+        search_attribute:"id",
+        search_value:"*",
+        get_attributes: ["*"]
+
+    }
+
+    search.searchByValue(search_obj, function(err, roles){
+       if(err){
+           return callback(err);
+       }
+
+       return callback(null, roles);
+
+
+    });
+
+}
 
 function validatePermission(table_obj){
     if(!table_obj){

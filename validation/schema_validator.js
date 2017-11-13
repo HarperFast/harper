@@ -6,7 +6,7 @@ const constraints = {
         format: {
 
             pattern: "^[a-zA-Z0-9_]*$",
-            message: "schema must be alpha numeric"
+            message: "must be alpha numeric"
         },
         length: {
             maximum:250,
@@ -18,7 +18,7 @@ const constraints = {
         format: {
 
             pattern: "^[a-zA-Z0-9_]*$",
-            message: "table must be alpha numeric"
+            message: "must be alpha numeric"
         },
         length: {
             maximum:250,
@@ -30,7 +30,7 @@ const constraints = {
         format: {
 
             pattern: "^[a-zA-Z0-9_]*$",
-            message: "attribute must be alpha numeric"
+            message: "must be alpha numeric"
         }
 
     },
@@ -39,7 +39,7 @@ const constraints = {
         format: {
 
             pattern: "^[a-zA-Z0-9_]*$",
-            message: "hash_attribute must be alpha numeric"
+            message: "must be alpha numeric"
         },
         length: {
             maximum:250,

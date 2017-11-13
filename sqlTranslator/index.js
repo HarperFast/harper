@@ -30,8 +30,8 @@ function evaluateSQL(sql, callback) {
 
 function processSQL(sql, callback){
     try {
-        //the LIKE operator causes the format of the where ast to go bonkers so we replace with something palatable and replace again on the otherside
-        sql = sql.replace(/ like /gi, ' || ');
+        //the LIKE operator causes the format of the where ast to go bonkers so we replace with something palatable and replace again on the other side
+        //sql = sql.replace(/ like /gi, ' || ');
         let ast = sqliteParser(sql);
         let sql_function = nullFunction;
         switch (ast.statement[0].variant) {
@@ -100,7 +100,11 @@ function createDataObjects(columns, expressions) {
     expressions.forEach((values) => {
         let record = {};
         for (let x = 0; x < values.expression.length; x++) {
-            record[columns[x]] = values.expression[x].value;
+            if(values.expression[x].type === 'identifier' && (values.expression[x].name === 'true' || values.expression[x].name === 'false')){
+                record[columns[x]] = (values.expression[x].name === 'true');
+            } else if(values.expression[x].type === 'literal'){
+                record[columns[x]] = values.expression[x].value;
+            }
         }
         records.push(record);
     });

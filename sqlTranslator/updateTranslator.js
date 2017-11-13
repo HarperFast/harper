@@ -39,7 +39,11 @@ function convertUpdate(statement, callback){
 function createUpdateRecord(set_list){
     let record = {};
     set_list.forEach((assignment)=>{
-        record[assignment.target.name] = assignment.value.value;
+        if(assignment.value.type === 'identifier' && (assignment.value.name === 'true' || assignment.value.name === 'false')){
+            record[assignment.target.name] = (assignment.value.name === 'true');
+        } else if(assignment.value.type === 'literal'){
+            record[assignment.target.name] = assignment.value.value;
+        }
     });
 
     return record;

@@ -3,24 +3,27 @@
 ## Contents
 
 1. [Getting Started](#getting-started)
-2. [Register HarperDB](#register-harperdb)
-3. [Running HarperDB](#running-harperdb)
-4. [Stopping HarperDB](#stopping-harperdb)
+2. [Running HarperDB](#running-harperdb)
+3. [Stopping HarperDB](#stopping-harperdb)
+4. [CRUD Samples](#crud-samples)
 5. [Need Help?](#need-help)
-
 
 
 ## Getting Started
 After downloading the compressed file, unpack to your desired location.
 This location is referred to as HDB_HOME further in the documentation.
 
+**All HarperDB commands must be run in the bin directory from within HDB_HOME.**
+
+**The operating system user who installed HarperDB is the only user that can start and run the HarperDB service.**
+
 HarperDB can be installed in one of two ways
-* hdb_install
-* hdb_run
+* ./harperdb install
+* ./harperdb run
 
-The process is the same; however, HDB_HOME/bin/hdb_run will also start HarperDB.
+The process is the same; however, ./harperdb run will also start HarperDB.
 
-From the HarperDB root directory execute either of the following:
+From the HarperDB root directory execute the following:
 
 ```
 cd HDB_HOME/bin
@@ -40,36 +43,10 @@ cd HDB_HOME/bin
 
 *    You will be prompted for a database username and password during the install.
 
-*    If HarperDB is already installed hdb_run will **NOT** run the installer.
+*    If HarperDB is already installed, the command './harperdb' run will **NOT** run the installer.  Instead it will run 
+     HarperDB.
 
 *    Logs for installation are found in the HarperDB home directory (HDB_HOME). Other logs are located at HDB_ROOT/log/.
-
-## Register HarperDB
-
-During the installation process you will be asked to register, this is optional.
-
-If you do choose to register at a later time execute the following commands from the HarperDB home (HDB_HOME) directory:
-
-```
-cd HDB_HOME/bin
-./harperdb register
-
-```
-
-Enter your company name when prompted **IMPORTANT: you must remember your entry exactly**
-
-You will then be supplied a fingerprint like so **JmLiR4xj60042e9ee22a91956ab630b490b48c083.**
-Then navigate to [HarperDB] (http://harperdb.io/register. in your web browser.)
-
-You will be asked to enter your company name and fingerprint.
-
-You will be returned a license key like so **c6a8d0685220d216b8fd77d87cdf3b5bmofi25U7GkrYHmQ1d718f878c31a2e88178c2c76646e8ee**
-
-Copy and paste license key to the command line where requested.
-
-You should then be successfully registered.
-
-    *Each fingerprint is unique to a device.  Each license is unique to a fingerprint.*
 
 ## Running HarperDB
 
@@ -112,12 +89,23 @@ cd HDB_HOME/bin
 ./harperdb version
 
 ```
+## CRUD samples
+We really like postman.  We like it so much, we have created a series of examples that can be run to create 
+and access sample data in HarperDB.  
 
+Get Postman here! https://www.getpostman.com/
+Our Postman 'Getting Started' samples can be found on our examples page: http://examples.harperdb.io/.  Click the "Run in Postman" button then run the samples 
+from top to bottom to learn how to create, populate, and query our sample 'dog' database.  Woof.
 
-## Need Help?
+Sample code is also available in many common languages in the sample code pane.  Select the language you want from the drop down and 
+paste the code. See the Postman documentation on supported languages here: https://www.getpostman.com/docs/postman/sending_api_requests/generate_code_snippets
+
+## Need Help
 
 -contact us via email: support@harperdb.io
 
 -[Support Portal](https://harperdbhelp.zendesk.com)
+-[Documentation](https://docs.harperdb.io/)
+-[Getting Started Examples](http://examples.harperdb.io/)
 
 

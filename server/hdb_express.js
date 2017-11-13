@@ -1,5 +1,5 @@
 const cluster = require('cluster');
-const numCPUs = 1;
+let numCPUs = 4;
 const DEBUG = false;
 const winston = require('../utility/logging/winston_logger');
 
@@ -9,6 +9,8 @@ if (cluster.isMaster && !DEBUG) {
 
     // Fork workers.
     let forks = [];
+    let num_workers = require('os').cpus().length;
+    numCPUs = num_workers < numCPUs ? num_workers : numCPUs;
     for (let i = 0; i < numCPUs; i++) {
         let forked = cluster.fork();
         forked.on('message', messageHandler);
@@ -41,22 +43,57 @@ if (cluster.isMaster && !DEBUG) {
         server_utilities = require('./server_utilities'),
         ClusterServer = require('./clustering/cluster_server')
         clone = require('clone');
-
+        async = require('async'),
+        cors = require('cors');
 
     hdb_properties.append(hdb_properties.get('settings_path'));
     global.cluster_server = null;
 
-    app.use(bodyParser.json()); // support json encoded bodies
+    if(hdb_properties.get('CORS_ON') && (hdb_properties.get('CORS_ON') === true || hdb_properties.get('CORS_ON').toUpperCase() === 'TRUE')){
+        let cors_options = {
+            origin: true,
+            allowedHeaders: ['Content-Type', 'Authorization'],
+            credentials: false
+        };
+        if(hdb_properties.get('CORS_WHITELIST') && hdb_properties.get('CORS_WHITELIST').length > 0){
+            let whitelist = hdb_properties.get('CORS_WHITELIST').split(',');
+            cors_options.origin =  (origin, callback) => {
+                if (whitelist.indexOf(origin) !== -1) {
+                    callback(null, true);
+                } else {
+                    callback(new Error(`domain ${origin} is not whitelisted`));
+                }
+            };
+
+        }
+        app.use(cors(cors_options));
+    }
+
+    app.use(bodyParser.json({limit:'1gb'})); // support json encoded bodies
     app.use(bodyParser.urlencoded({extended: true}));
+    app.use(function (error, req, res, next) {
+        if (error instanceof SyntaxError) {
+            res.status(400).send({error: 'invalid JSON: ' + error.message.replace('\n', '')});
+        } else if(error){
+            res.status(400).send({error: error.message});
+        }  else {
+            next();
+        }
+    });
+
     app.use(session({ secret: 'keyboard cat',     resave: true,
         saveUninitialized: true }));
     app.use(passport.initialize());
     app.use(passport.session());
     app.post('/', function (req, res) {
         auth.authorize(req, res, function(err, user) {
+            res.set('x-powered-by', 'HarperDB');
 
             if(err){
                 winston.warn(`{"ip":"${req.connection.remoteAddress}", "error":"${err}"`);
+                if(typeof err === 'string'){
+                    return res.status(401).send({error: err});
+                }
                 res.status(401).send(err);
                 return;
             }
@@ -180,6 +217,12 @@ if (cluster.isMaster && !DEBUG) {
 
                         });
 
+    app.get('/', function (req, res) {
+        auth.authorize(req, res, function(err, user) {
+            var guidePath = require('path');
+            res.sendFile(guidePath.resolve('../docs/user_guide.html'));
+        });
+    });
 
                     }
 
@@ -205,29 +248,37 @@ if (cluster.isMaster && !DEBUG) {
 
 
     process.on('message', (msg)=>{
-        global_schema.schemaSignal((err)=>{
-            if(err){
-                winston.error(err);
-            }
-        });
+        switch(msg.type){
+            case 'schema':
+                global_schema.schemaSignal((err)=>{
+                    if(err){
+                        winston.error(err);
+                    }
+                });
+                break;
+            case 'user':
+                global_schema.setUsersToGlobal((err)=>{
+                    if(err){
+                        winston.error(err);
+                    }
+                });
+                break;
+        }
     });
 
     try{
-        var http = require('http');
-        var https = require('https');
-        var privateKey  = fs.readFileSync(hdb_properties.get('PRIVATE_KEY'), 'utf8');
-        var certificate = fs.readFileSync(hdb_properties.get('CERTIFICATE'), 'utf8');
-        var credentials = {key: privateKey, cert: certificate};
+        let http = require('http');
+        let httpsecure = require('https');
+        let privateKey  = fs.readFileSync(hdb_properties.get('PRIVATE_KEY'), 'utf8');
+        let certificate = fs.readFileSync(hdb_properties.get('CERTIFICATE'), 'utf8');
+        let credentials = {key: privateKey, cert: certificate};
 
-// your express configuration here
+        let httpServer = undefined;
+        let secureServer = undefined;
 
-        var httpServer = http.createServer(app);
-        var httpsServer = https.createServer(credentials, app);
-
-        //httpServer.listen(8080);
-
-        if(hdb_properties.get('HTTPS_ON') && hdb_properties.get('HTTPS_ON').toUpperCase() === 'TRUE'){
-            httpsServer.listen(hdb_properties.get('HTTPS_PORT'), function(){
+        if(hdb_properties.get('HTTPS_ON') && (hdb_properties.get('HTTPS_ON') === true || hdb_properties.get('HTTPS_ON').toUpperCase() === 'TRUE')) {
+            secureServer = httpsecure.createServer(credentials, app);
+            secureServer.listen(hdb_properties.get('HTTPS_PORT'), function(){
                 winston.info(`HarperDB ${pjson.version} HTTPS Server running on ${hdb_properties.get('HTTPS_PORT')}`);
 
                 global_schema.setSchemaDataToGlobal((err, data) => {
@@ -236,26 +287,23 @@ if (cluster.isMaster && !DEBUG) {
                     }
 
                 });
-
-
-
             });
-
         }
 
-        // TODO move to run and drop CS into global
-
-        if(hdb_properties.get('HTTP_ON') && hdb_properties.get('HTTP_ON').toUpperCase()  === 'TRUE'){
-            httpServer.listen(hdb_properties.get('HTTP_PORT'), function(){
+        if (hdb_properties.get('HTTP_ON') && (hdb_properties.get('HTTP_ON') === true || hdb_properties.get('HTTP_ON').toUpperCase() === 'TRUE')) {
+            httpServer = http.createServer(app);
+            httpServer.listen(hdb_properties.get('HTTP_PORT'), function () {
                 winston.info(`HarperDB ${pjson.version} HTTP Server running on ${hdb_properties.get('HTTP_PORT')}`);
 
-                global_schema.setSchemaDataToGlobal((err, data) => {
-                    if (err) {
-                        winston.info('error', err);
-                    }
-
-                });
-
+                async.parallel(
+                    [
+                        global_schema.setSchemaDataToGlobal,
+                        global_schema.setUsersToGlobal
+                    ], (error, data) => {
+                        if (error) {
+                            winston.error(error);
+                        }
+                    });
             });
         }
 

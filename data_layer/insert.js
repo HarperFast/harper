@@ -1,31 +1,46 @@
 'use strict';
 
+/***
+ * INSERT.JS
+ *
+ * This module is used to validate and insert or update data.  Note insert.update should be used over the update module,
+ * as the update module is meant to be used in more specific circumstances.
+ */
+
 const insert_validator = require('../validation/insertValidator.js'),
     fs = require('graceful-fs'),
     async = require('async'),
     path = require('path'),
-    child_process = require('child_process'),
-    util = require('util'),
-    moment = require('moment'),
     mkdirp = require('mkdirp'),
-    global_schema = require('../utility/globalSchema'),
     search = require('./search'),
     winston = require('../utility/logging/winston_logger'),
     _ = require('lodash'),
-    text_chunk = require("node-text-chunk"),
+    truncate = require('truncate-utf8-bytes'),
     PropertiesReader = require('properties-reader'),
     hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
     hdb_properties.append(hdb_properties.get('settings_path'));
 
 
 const hdb_path = path.join(hdb_properties.get('HDB_ROOT'), '/schema');
-const regex = /\//g;
+const regex = /\//g,
+    hash_regex = /^[a-zA-Z0-9-_]+$/;
+//TODO: This is ugly and string compare is slow.  Refactor this when we bring in promises.
+const NO_RESULTS = 'NR';
+
 
 module.exports = {
     insert: insertData,
     update:updateData
 };
+//this must stay after the export to correct a circular dependency issue
+const global_schema = require('../utility/globalSchema');
 
+/**
+ * This validation is called before an insert or update is performed with the write_object.
+ *
+ * @param write_object - the object that will be written post-validation
+ * @param callback - The caller
+ */
 function validation(write_object, callback){
     global_schema.getTableSchema(write_object.schema, write_object.table, (err, table_schema) => {
         if (err) {
@@ -38,24 +53,33 @@ function validation(write_object, callback){
             callback(validator);
             return;
         }
+
+        if(!Array.isArray(write_object.records)){
+            return callback('records must be an array');
+        }
+
         let hash_attribute = table_schema.hash_attribute;
 
         //validate that every record has hash_attribute populated
         let no_hash = false;
         let long_hash = false;
         let long_attribute = false;
+        let bad_hash_value = false;
         write_object.records.forEach((record)=>{
             if(record[hash_attribute] === null || record[hash_attribute] === undefined){
                 no_hash = true;
                 return;
-            } else if(record[hash_attribute].length > 250){
+            } else if(regex.test(record[hash_attribute])) {
+                bad_hash_value = true;
+                return;
+            } else if(Buffer.byteLength(String(record[hash_attribute])) > 250){
                 long_hash = true;
                 return;
             }
 
             //evaluate that there are no attributes who have a name longer than 250 characters
             Object.keys(record).forEach((attribute)=>{
-                if(attribute.length > 250){
+                if(Buffer.byteLength(String(attribute)) > 250){
                     long_attribute = true;
                 }
             });
@@ -69,17 +93,27 @@ function validation(write_object, callback){
         }
 
         if (long_hash) {
-            return callback(`transaction aborted due to record(s) with a hash value that exceeds 250 characters.`);
+            return callback(`transaction aborted due to record(s) with a hash value that exceeds 250 bytes.`);
+        }
+
+        if (bad_hash_value) {
+            return callback(`transaction aborted due to record(s) with a hash value that contains a forward slash.`);
         }
 
         if (long_hash) {
-            return callback(`transaction aborted due to record(s) with an attribute that exceeds 250 characters.`);
+            return callback(`transaction aborted due to record(s) with an attribute that exceeds 250 bytes.`);
         }
 
         callback(null, table_schema);
     });
 }
 
+/**
+ * Inserts data specified in the insert_object parameter.  Currently if even a single entity in insert_object already exists,
+ * the function will return and no other inserts will be performed.
+ * @param insert_object
+ * @param callback
+ */
 function insertData(insert_object, callback){
     try {
         if (insert_object.operation !== 'insert') {
@@ -106,13 +140,18 @@ function insertData(insert_object, callback){
                 return callback(err);
             }
 
-            callback(null, `successfully wrote ${insert_object.records.length} records`);
+            callback(null, `inserted ${insert_object.records.length} records`);
         });
     } catch(e){
         callback(e);
     }
 }
 
+/**
+ * Updates the data in the update_object paramter.
+ * @param update_object - The data that will be updated in the database
+ * @param callback - The caller
+ */
 function updateData(update_object, callback){
     try {
         if (update_object.operation !== 'update') {
@@ -150,6 +189,9 @@ function updateData(update_object, callback){
             },
             search.searchByHash,
             (existing_records, caller) => {
+                if( existing_records.length === 0) {
+                    return caller(NO_RESULTS);
+                }
                 hash_attribute = global.hdb_schema[update_object.schema][update_object.table].hash_attribute;
                 caller(null, update_object, hash_attribute, existing_records);
             },
@@ -167,13 +209,13 @@ function updateData(update_object, callback){
             checkAttributeSchema,
             processData
         ], (err) => {
-            if (err) {
+            //TODO: This is ugly and string compare is slow.  Refactor this when we bring in promises.
+            if (err && NO_RESULTS !== err) {
                 callback(err);
                 return;
             }
 
             let skipped_hashes = _.difference(tracker.all_ids, tracker.update_ids);
-
             let return_object = {
                 message: `updated ${tracker.update_ids.length} of ${tracker.all_ids.length} records`,
                 update_hashes: tracker.update_ids,
@@ -190,6 +232,7 @@ function updateData(update_object, callback){
 
 function compareUpdatesToExistingRecords(update_object, hash_attribute, existing_records, callback){
 
+    if(!existing_records || existing_records.length === 0) { return callback('No Records Found'); }
     let base_path = hdb_path + '/' + update_object.schema + '/' + update_object.table + '/';
 
     let unlink_paths = [];
@@ -213,7 +256,7 @@ function compareUpdatesToExistingRecords(update_object, hash_attribute, existing
 
                     let value = typeof existing_record[attr] === 'object' ? JSON.stringify(existing_record[attr]) : existing_record[attr];
                     let value_stripped = String(value).replace(regex, '');
-                    value_stripped = value_stripped.length > 255 ? value_stripped.substring(0, 255) + '/blob' : value_stripped;
+                    value_stripped = Buffer.byteLength(value_stripped) > 255  ? truncate(value_stripped, 255) + '/blob' : value_stripped;
 
                     if (existing_record[attr] !== null && existing_record[attr] !== undefined) {
                         unlink_paths.push(`${base_path}${attr}/${value_stripped}/${existing_record[hash_attribute]}.hdb`);
@@ -237,6 +280,12 @@ function compareUpdatesToExistingRecords(update_object, hash_attribute, existing
     }
 }
 
+/**
+ *
+ * @param unlink_paths
+ * @param update_objects
+ * @param callback
+ */
 function unlinkFiles(unlink_paths, update_objects, callback){
     async.each(unlink_paths, (path, caller)=>{
         fs.unlink(path, (err)=>{
@@ -244,10 +293,8 @@ function unlinkFiles(unlink_paths, update_objects, callback){
                 if(err.code === 'ENOENT'){
                     return caller();
                 }
-
                 winston.error(err);
             }
-
             caller();
         });
     }, (error)=>{
@@ -255,24 +302,26 @@ function unlinkFiles(unlink_paths, update_objects, callback){
             callback(error);
             return;
         }
-
         callback(null, update_objects);
     });
 }
 
+/**
+ *
+ * @param insert_object
+ * @param callerback
+ */
 function checkAttributeSchema(insert_object, callerback) {
+    if(!insert_object) { return callback("Empty Object", null); }
     let table_schema = global.hdb_schema[insert_object.schema][insert_object.table];
     let hash_attribute = table_schema.hash_attribute;
     let epoch = new Date().valueOf();
-    //let date = new moment().format(`YYYY-MM-DD HH:mm:ss.${process.hrtime()[1]} ZZ`);
 
     let insert_objects = [];
     let symbolic_links = [];
-    //let touch_links = [];
 
     let folders = {};
     let hash_folders = {};
-    //let delete_folders = {};
     let hash_paths = {};
     let base_path = hdb_path + '/' + insert_object.schema + '/' + insert_object.table + '/';
 
@@ -287,7 +336,7 @@ function checkAttributeSchema(insert_object, callerback) {
 
             let value = typeof record[property] === 'object' ? JSON.stringify(record[property]) : record[property];
             let value_stripped = String(value).replace(regex, '');
-            let value_path = value_stripped.length > 255 ? value_stripped.substring(0, 255) + '/blob' : value_stripped;
+            let value_path = Buffer.byteLength(value_stripped) > 255 ? truncate(value_stripped, 255) + '/blob' : value_stripped;
             let attribute_file_name = record[hash_attribute] + '.hdb';
             let attribute_path = base_path + property + '/' + value_path;
 
@@ -332,6 +381,11 @@ function checkAttributeSchema(insert_object, callerback) {
     });
 }
 
+/**
+ *
+ * @param hash_paths
+ * @param callback
+ */
 function checkRecordsExist(hash_paths, callback) {
     async.map(hash_paths, function(hash_path, inner_callback) {
         fs.access(hash_path, (err) => {
@@ -352,6 +406,11 @@ function checkRecordsExist(hash_paths, callback) {
     });
 }
 
+/**
+ *
+ * @param data_wrapper
+ * @param callback
+ */
 function processData(data_wrapper, callback) {
     async.parallel([
         writeRawData.bind(null, data_wrapper.data_folders, data_wrapper.data),
@@ -363,9 +422,14 @@ function processData(data_wrapper, callback) {
         }
         callback();
     });
-    //});
 }
 
+/**
+ *
+ * @param folders
+ * @param data
+ * @param callback
+ */
 function writeRawData(folders, data, callback) {
     async.waterfall([
         createFolders.bind(null, folders),
@@ -379,6 +443,11 @@ function writeRawData(folders, data, callback) {
     });
 }
 
+/**
+ *
+ * @param data
+ * @param callback
+ */
 function writeRawDataFiles(data, callback) {
     async.each(data, (attribute, caller) => {
         fs.writeFile(attribute.file_name, attribute.value, (err) => {
@@ -386,7 +455,6 @@ function writeRawDataFiles(data, callback) {
                 caller(err);
                 return;
             }
-
             caller();
         });
     }, function (err) {
@@ -394,11 +462,16 @@ function writeRawDataFiles(data, callback) {
             callback(err);
             return;
         }
-
         callback();
     });
 }
 
+/**
+ *
+ * @param folders
+ * @param links
+ * @param callback
+ */
 function writeLinks(folders, links, callback) {
     async.waterfall([
         createFolders.bind(null, folders),
@@ -412,6 +485,11 @@ function writeLinks(folders, links, callback) {
     });
 }
 
+/**
+ *
+ * @param links
+ * @param callback
+ */
 function writeLinkFiles(links, callback) {
     async.each(links, (link, caller) => {
         fs.symlink(link.link, link.file_name, (err) => {
@@ -419,7 +497,6 @@ function writeLinkFiles(links, callback) {
                 caller(err);
                 return;
             }
-
             caller();
         });
     }, function (err) {
@@ -427,11 +504,15 @@ function writeLinkFiles(links, callback) {
             callback(err);
             return;
         }
-
         callback();
     });
 }
 
+/**
+ *
+ * @param folders
+ * @param callback
+ */
 function createFolders(folders, callback) {
     async.each(folders, (folder, caller) => {
         mkdirp(folder, (err, created_folder) => {
@@ -454,11 +535,15 @@ function createFolders(folders, callback) {
             callback(err);
             return;
         }
-
         callback();
     });
 }
 
+/**
+ *
+ * @param base_folder
+ * @param callback
+ */
 function createNewAttribute(base_folder, callback){
     let base_parts = base_folder.replace(hdb_path, '').split('/');
     let attribute_object = {
@@ -474,8 +559,6 @@ function createNewAttribute(base_folder, callback){
 
         callback();
     });
-
-
 }
 
 const schema = require('../data_layer/schema');
