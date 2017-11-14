@@ -2,7 +2,17 @@ const cluster = require('cluster');
 let numCPUs = 4;
 const DEBUG = false;
 const winston = require('../utility/logging/winston_logger');
-
+const DEFAULT_SERVER_TIMEOUT = 120000;
+const PROPS_SERVER_TIMEOUT_KEY = 'SERVER_TIMEOUT_MS',
+    PROPS_PRIVATE_KEY = 'PRIVATE_KEY',
+    PROPS_CERT_KEY = 'CERTIFICATE',
+    PROPS_HTTP_ON_KEY = 'HTTP_ON',
+    PROPS_HTTP_SECURE_ON_KEY = 'HTTPS_ON',
+    PROPS_HTTP_PORT_KEY = 'HTTP_PORT',
+    PROPS_HTTP_SECURE_PORT_KEY = 'HTTPS_PORT',
+    PROPS_CORS_KEY = 'CORS_ON',
+    PROPS_CORS_WHITELIST_KEY = 'CORS_WHITELIST'
+    TRUE_COMPARE_VAL = 'TRUE';
 
 if (cluster.isMaster && !DEBUG) {
     winston.info(`Master ${process.pid} is running`);
@@ -52,15 +62,16 @@ if (cluster.isMaster && !DEBUG) {
         cors = require('cors');
 
     hdb_properties.append(hdb_properties.get('settings_path'));
-
-    if(hdb_properties.get('CORS_ON') && (hdb_properties.get('CORS_ON') === true || hdb_properties.get('CORS_ON').toUpperCase() === 'TRUE')){
+    let props_cors = hdb_properties.get(PROPS_CORS_KEY);
+    let props_cors_whitelist = hdb_properties.get(PROPS_CORS_WHITELIST_KEY);
+    if(props_cors && (props_cors === true || props_cors.toUpperCase() === TRUE_COMPARE_VAL)){
         let cors_options = {
             origin: true,
             allowedHeaders: ['Content-Type', 'Authorization'],
             credentials: false
         };
-        if(hdb_properties.get('CORS_WHITELIST') && hdb_properties.get('CORS_WHITELIST').length > 0){
-            let whitelist = hdb_properties.get('CORS_WHITELIST').split(',');
+        if(props_cors_whitelist && props_cors_whitelist.length > 0){
+            let whitelist = props_cors_whitelist.split(',');
             cors_options.origin =  (origin, callback) => {
                 if (whitelist.indexOf(origin) !== -1) {
                     callback(null, true);
@@ -68,7 +79,6 @@ if (cluster.isMaster && !DEBUG) {
                     callback(new Error(`domain ${origin} is not whitelisted`));
                 }
             };
-
         }
         app.use(cors(cors_options));
     }
@@ -137,7 +147,7 @@ if (cluster.isMaster && !DEBUG) {
 
     app.get('/', function (req, res) {
         auth.authorize(req, res, function(err, user) {
-            var guidePath = require('path');
+            let guidePath = require('path');
             res.sendFile(guidePath.resolve('../docs/user_guide.html'));
         });
     });
@@ -257,31 +267,36 @@ if (cluster.isMaster && !DEBUG) {
     try{
         let http = require('http');
         let httpsecure = require('https');
-        let privateKey  = fs.readFileSync(hdb_properties.get('PRIVATE_KEY'), 'utf8');
-        let certificate = fs.readFileSync(hdb_properties.get('CERTIFICATE'), 'utf8');
+        let privateKey  = hdb_properties.get(PROPS_PRIVATE_KEY);
+        let certificate = hdb_properties.get(PROPS_CERT_KEY);
         let credentials = {key: privateKey, cert: certificate};
-
+        let server_timeout  = hdb_properties.get(PROPS_SERVER_TIMEOUT_KEY);
+        let props_http_secure_on = hdb_properties.get(PROPS_HTTP_SECURE_ON_KEY);
+        let props_http_on = hdb_properties.get(PROPS_HTTP_ON_KEY);
         let httpServer = undefined;
         let secureServer = undefined;
 
-        if(hdb_properties.get('HTTPS_ON') && (hdb_properties.get('HTTPS_ON') === true || hdb_properties.get('HTTPS_ON').toUpperCase() === 'TRUE')) {
+        if(props_http_secure_on &&
+            (props_http_secure_on === true || props_http_secure_on.toUpperCase() === TRUE_COMPARE_VAL)) {
             secureServer = httpsecure.createServer(credentials, app);
-            secureServer.listen(hdb_properties.get('HTTPS_PORT'), function(){
-                winston.info(`HarperDB ${pjson.version} HTTPS Server running on ${hdb_properties.get('HTTPS_PORT')}`);
+            secureServer.setTimeout(server_timeout ? server_timeout : DEFAULT_SERVER_TIMEOUT);
+            secureServer.listen(hdb_properties.get(PROPS_HTTP_SECURE_PORT_KEY), function(){
+                winston.info(`HarperDB ${pjson.version} HTTPS Server running on ${hdb_properties.get(PROPS_HTTP_SECURE_PORT_KEY)}`);
 
                 global_schema.setSchemaDataToGlobal((err, data) => {
                     if (err) {
                         winston.info('error', err);
                     }
-
                 });
             });
         }
 
-        if (hdb_properties.get('HTTP_ON') && (hdb_properties.get('HTTP_ON') === true || hdb_properties.get('HTTP_ON').toUpperCase() === 'TRUE')) {
+        if (props_http_on &&
+            (props_http_on === true || props_http_on.toUpperCase() === TRUE_COMPARE_VAL)) {
             httpServer = http.createServer(app);
-            httpServer.listen(hdb_properties.get('HTTP_PORT'), function () {
-                winston.info(`HarperDB ${pjson.version} HTTP Server running on ${hdb_properties.get('HTTP_PORT')}`);
+            httpServer.setTimeout(server_timeout ? server_timeout : DEFAULT_SERVER_TIMEOUT);
+            httpServer.listen(hdb_properties.get(PROPS_HTTP_PORT_KEY), function () {
+                winston.info(`HarperDB ${pjson.version} HTTP Server running on ${hdb_properties.get(PROPS_HTTP_PORT_KEY)}`);
 
                 async.parallel(
                     [
