@@ -397,7 +397,7 @@ function moveSchemaToTrash(drop_schema_object, tables, callback) {
                         callback(null, delete_table_object);
                     });
                 }
-                callback(null, delete_table_object);
+                callback(null, drop_schema_object);
             });
     });
 }
