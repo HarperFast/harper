@@ -1,5 +1,5 @@
 #!/bin/bash
-hdb_data="/home/harperdb/hdb"
+hdb_data="/root/hdb"
 obfuscript()
 {
 #Change into each Directory generate an array of the Javascript; js_files
@@ -57,7 +57,7 @@ harperdb_run()
      ./linux-harperdb install --HDB_ROOT $hdb_data --HTTP_PORT 9925 --HTTPS_PORT 31283 --HDB_ADMIN_USERNAME admin --HDB_ADMIN_PASSWORD "Abc1234!"
      sleep 7s
      ./linux-harperdb run
-     sleep 3s    
+     sleep 3s
     theProc=$(ps -ef | grep [h]db_express);
 
         if [ "$theProc" ];
