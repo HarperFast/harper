@@ -3,11 +3,9 @@ let numCPUs = 4;
 const DEBUG = false;
 const winston = require('../utility/logging/winston_logger');
 const async = require('async');
-var enterprise = false;
-
 
 if (cluster.isMaster && !DEBUG) {
-
+    let enterprise = false;
     const search = require('../data_layer/search');
     let licenseKeySearch = {
         operation: 'search_by_value',
@@ -21,10 +19,7 @@ if (cluster.isMaster && !DEBUG) {
 
     };
 
-    function spinUpServer(){
 
-
-    }
 
     search.searchByValue(licenseKeySearch, function (err, licenses) {
         const hdb_license = require('../utility/hdb_license');
@@ -35,18 +30,19 @@ if (cluster.isMaster && !DEBUG) {
             async.each(licenses, function(license, callback){
                 hdb_license.validateLicense(license.license_key, license.company, function (err, license_validation) {
                     if (license_validation.valid_machine && license_validation.valid_date  && license_validation.valid_license){
+                        enterprise = true;
                         if(numCPUs === 4){
                              numCPUs = 16;
                         }else{
                             numCPUs +=16;
 
                         }
-                        enterprise = true;
                     }
                     callback();
 
                 });
             }, function(err){
+
                 if(err)
                     return winston.error(err);
 
@@ -61,6 +57,7 @@ if (cluster.isMaster && !DEBUG) {
                     forked.on('message', messageHandler);
                     forks.push(forked);
                 }
+                messageHandler({"type":"enterprise", "enterprise": enterprise});
 
                 cluster.on('exit', (worker, code, signal) => {
                     winston.info(`worker ${worker.process.pid} died`);
@@ -105,7 +102,7 @@ if (cluster.isMaster && !DEBUG) {
 
     hdb_properties.append(hdb_properties.get('settings_path'));
     global.cluster_server = null;
-
+    let enterprise = false;
     if (hdb_properties.get('CORS_ON') && (hdb_properties.get('CORS_ON') === true || hdb_properties.get('CORS_ON').toUpperCase() === 'TRUE')) {
         let cors_options = {
             origin: true,
@@ -145,6 +142,10 @@ if (cluster.isMaster && !DEBUG) {
     app.use(passport.initialize());
     app.use(passport.session());
     app.post('/', function (req, res) {
+        if(req.headers.harperdb_connection && !enterprise){
+            return res.status(401).json({"error":"This feature requires an enterprise license.  Please contact us at hello@harperdb.io for more info."});
+        }
+
         auth.authorize(req, res, function (err, user) {
             res.set('x-powered-by', 'HarperDB');
 
@@ -311,6 +312,8 @@ if (cluster.isMaster && !DEBUG) {
                     }
                 });
                 break;
+            case 'enterprise':
+                enterprise = msg.enterprise;
         }
     });
 
