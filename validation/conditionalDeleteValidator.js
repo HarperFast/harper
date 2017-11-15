@@ -1,4 +1,4 @@
-const validate = require('./validationWrapper.js');
+const validator = require('./validationWrapper.js');
 
 const constraints = {
     schema: {
@@ -22,8 +22,7 @@ const constraints = {
             maximum: 250,
             tooLong: 'cannot exceed 250 characters'
         }
-    }
-    ,
+    },
     conditions: {
         presence: true,
     },
