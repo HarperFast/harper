@@ -1,60 +1,52 @@
-const validate = require('validate.js');
+const validator = require('./validationWrapper.js');
 
 const constraints = {
-    username : {
-        presence : true,
+    username: {
+        presence: true,
         format: "[\\w\\-\\_]+",
         exclusion: {
             within: ["system"],
             message: "You cannot create tables within the system schema"
         }
-
     },
     password: {
-        presence : true
-
-
+        presence: true
     },
-    role :{
-        presence : true,
+    role: {
+        presence: true,
         format: "[\\w\\-\\_]+"
-
     },
-    active :{
+    active: {
         presence: true
     }
 };
 
-function addUserValidation(object){
+function addUserValidation(object) {
     constraints.password.presence = true;
     constraints.username.presence = true;
     constraints.role.presence = true;
     constraints.active.presence = true;
-   return validate(object, constraints);
+    return validator.validateObject(object, constraints);
 }
 
-function alterUserValidation(object){
+function alterUserValidation(object) {
     constraints.password.presence = false;
     constraints.username.presence = true;
     constraints.role.presence = false;
     constraints.active.presence = false;
-    return validate(object, constraints);
+    return validator.validateObject(object, constraints);
 }
 
-
-function dropUserValidation(object){
+function dropUserValidation(object) {
     constraints.password.presence = false;
     constraints.username.presence = true;
     constraints.role.presence = false;
     constraints.active.presence = false;
-    return validate(object, constraints);
+    return validator.validateObject(object, constraints);
 }
 
-
-
-module.exports =  {
+module.exports = {
     addUserValidation: addUserValidation,
     alterUserValidation: alterUserValidation,
     dropUserValidation: dropUserValidation
-
 };

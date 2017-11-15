@@ -1,15 +1,14 @@
-const validate = require('validate.js');
+const validate = require('validate.js'),
+    validator = require('./validationWrapper.js');
 
 const constraints = {
     role: {
         presence: true,
         format: "[\\w\\-\\_]+"
-
     },
     id: {
         presence: true,
         format: "[\\w\\-\\_]+"
-
     },
     permission: {
         presence: true
@@ -30,25 +29,24 @@ function alterRoleValidation(object) {
     return customValidate(object);
 }
 
-
 function dropRoleValidation(object) {
     constraints.role.presence = false;
     constraints.id.presence = true;
     constraints.permission.presence = false;
-    return validate(object, constraints);
+    return validator.validateObject(object, constraints);
 }
 
 function customValidate(object) {
     let validationErrors = [];
 
-    if(validate(object, constraints)){
-        validationErrors.push(validate(object, constraints));
+    let validate_result = validator.validateObject(object, constraints);
+    if(validate_result) {
+        validationErrors.push(validate_result);
     }
 
     if (object.permission.super_admin) {
         if (!validate.isBoolean(object.permission.super_admin))
             validationErrors.push(validate.isBoolean(object.permission.super_admin));
-
     }
 
     for (item in  object.permission) {
@@ -81,7 +79,6 @@ function customValidate(object) {
                         validationErrors.push(`${t}.update must be a boolean`)
                     }
 
-
                     if(!validate.isDefined(table.delete)){
                         validationErrors.push(`Missing delete permission on ${t}`)
                     }
@@ -111,29 +108,16 @@ function customValidate(object) {
                                 validationErrors.push('attribute_restriction.update must be boolean');
                             if(!validate.isBoolean(restriction.delete))
                                 validationErrors.push('attribute_restriction.delete must be boolean');
-
-
-
-
-
                         }
                     }
-
-
                 }
             }
-
         }
     }
     if(validationErrors.length > 0)
         return validationErrors;
-
     return null;
-
 }
-
-
-
 
 module.exports = {
     addRoleValidation: addRoleValidation,
