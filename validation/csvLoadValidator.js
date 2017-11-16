@@ -30,9 +30,6 @@ const constraints = {
         }
     },
     action: {
-        presence: {
-            message: 'is required and must be either insert or update'
-        },
         inclusion: {
             within: actions,
             message: 'is required and must be either insert or update'

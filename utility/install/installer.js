@@ -22,9 +22,9 @@ let hdb_boot_properties = null,
 
 module.exports = {
     "install": run_install
-}
+};
 
-var wizard_result;
+let wizard_result;
 
 /**
  * Stars the install process by first checking for an existing installation, then firing the steps to complete the install.
@@ -34,32 +34,35 @@ var wizard_result;
 function run_install(callback) {
     winston.configure({
         transports: [
-            new (winston.transports.File)({ filename: LOG_LOCATION,  level: 'verbose', handleExceptions: true,
-                prettyPrint:true })
-        ],exitOnError:false
+            new (winston.transports.File)({
+                filename: LOG_LOCATION, level: 'verbose', handleExceptions: true,
+                prettyPrint: true
+            })
+        ], exitOnError: false
     });
 
     prompt.override = optimist.argv;
     prompt.start();
     winston.info('info', 'starting install');
-    checkInstall(function(err, keepGoing) {
-       if(keepGoing) {
-           async.waterfall([
-               wizard,
-               mount,
-               createSettingsFile,
-               createAdminUser,
-               generateKeys,
-               () => {
-                console.log("HarperDB Installation was successful");
-                winston.info("Installation Successful");
-               }
-           ], function (err, result) {
-               if(err) {
-                   callback(err, result);
-               }
-           });
-       }
+    checkInstall(function (err, keepGoing) {
+        if (keepGoing) {
+            async.waterfall([
+                wizard,
+                mount,
+                createSettingsFile,
+                createAdminUser,
+                generateKeys,
+                () => {
+                    console.log("HarperDB Installation was successful");
+                    winston.info("Installation Successful");
+                }
+            ], function (err, result) {
+                if (err) {
+                    return callback(err, result);
+                }
+            });
+        }
+        return callback(null, result);
     });
 }
 
@@ -69,70 +72,61 @@ function run_install(callback) {
  * @param callback
  */
 function checkInstall(callback) {
-    try{
-        if (!hdb_boot_properties) {
-            hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
-            hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
-            if (hdb_properties.get('HDB_ROOT')) {
-                let schema = {
-                    properties: {
-                        REINSTALL: {
-                            message: colors.red('It appears HarperDB is already installed.  Enter \'y/yes\'to reinstall. Data loss may occur! (yes/no)'),
-                            validator: /y[es]*|n[o]?/,
-                            warning: 'Must respond yes or no',
-                            default: 'no'
-                        }
-                    }
-                };
-                prompt.get(schema, function (err, result) {
-                    if(err){
-                        callback(err);
-                    }
-                    if(result.REINSTALL === 'yes' || result.REINSTALL === 'y') {
-                        fs.rmrf(hdb_properties.get('HDB_ROOT'), function(err){
-                            if(err){
-                                winston.error(err);
-                               return callback(err);
-                            }
-                            fs.unlink(`${process.cwd()}/../hdb_boot_properties.file`, function(err) {
-                                if(err){
-                                    winston.error(err);
-                                    return callback(err);
-                                }
-                               return callback(null, true);
+    try {
+        if( hdb_boot_properties ) { return callback(null, false); }
 
-                            });
-                        });
-                    }
-                    callback(null, false);
-                    return;
-                });
-            } else {
-                callback(null, true);
-                return;
+        hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
+        hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
+        if( !hdb_boot_properties.get('HDB_ROOT') ) { return callback(null, true); }
+
+        let schema = {
+            properties: {
+                REINSTALL: {
+                    message: colors.red('It appears HarperDB is already installed.  Enter \'y/yes\'to reinstall. Data loss may occur! (yes/no)'),
+                    validator: /y[es]*|n[o]?/,
+                    warning: 'Must respond yes or no',
+                    default: 'no'
+                }
             }
-        } else {
+        };
+
+        prompt.get(schema, function (err, result) {
+            if( err ) { callback(err); }
+
+            if(result.REINSTALL === 'yes' || result.REINSTALL === 'y') {
+                fs.rmrf(hdb_properties.get('HDB_ROOT'), function (err) {
+                    if (err) {
+                        winston.error(err);
+                        console.log('There was a problem removing the existing installation.  Please check the install log for details.');
+                        return callback(err);
+                    }
+                    fs.unlink(`${process.cwd()}/../hdb_boot_properties.file`, function (err) {
+                        if (err) {
+                            winston.error(err);
+                            console.log('There was a problem removing the existing installation.  Please check the install log for details.');
+                            return callback(err);
+                        }
+                        return callback(null, true);
+                    });
+                });
+            }
             callback(null, false);
-            return;
-        }
+        });
     }
-    catch(e){
+    catch (e) {
         callback(null, true);
-        return;
     }
 }
 
 function checkRegister(callback) {
-    if (wizard_result.HDB_REGISTER == 'true') {
+    if (wizard_result.HDB_REGISTER === 'true') {
         register = require('../registrationHandler'),
             register.register(prompt, function (err, result) {
                 if (err) {
                     callback(err);
                     return;
                 }
-
                 callback(null, "Successful installation!");
-                return;
             });
     }
 }
@@ -142,7 +136,7 @@ function checkRegister(callback) {
  * @param callback
  */
 function wizard(callback) {
-   prompt.message = 'Install HarperDB ' + __dirname;
+    prompt.message = 'Install HarperDB ' + __dirname;
 
     let install_schema = {
         properties: {
@@ -179,17 +173,17 @@ function wizard(callback) {
         }
     };
 
-    console.log(colors.magenta('' + fs.readFileSync(path.join(__dirname,'./ascii_logo.txt'))));
+    console.log(colors.magenta('' + fs.readFileSync(path.join(__dirname, './ascii_logo.txt'))));
     console.log(colors.magenta('                    Installer'));
 
     prompt.get(install_schema, function (err, result) {
         wizard_result = result;
         //Support the tilde command for HOME.
-        if(wizard_result.HDB_ROOT.indexOf('~') > -1) {
+        if (wizard_result.HDB_ROOT.indexOf('~') > -1) {
             let home = process.env['HOME'];
-            if( home != undefined) {
+            if (home !== undefined) {
                 let replacement = wizard_result.HDB_ROOT.replace('~', process.env['HOME']);
-                if( replacement && replacement.length > 0) {
+                if (replacement && replacement.length > 0) {
                     wizard_result.HDB_ROOT = replacement;
                 }
             }
@@ -207,34 +201,35 @@ function wizard(callback) {
 }
 
 function createAdminUser(callback) {
-    var user_ops = require('../../security/user');
-    var role_ops = require('../../security/role');
+    const user_ops = require('../../security/user');
+    const role_ops = require('../../security/role');
 
     let role = {};
     role.role = 'super_user';
     role.permission = {};
     role.permission.super_user = true;
 
-    role_ops.addRole(role, function(err, result){
-       if(err) {
-           winston.error('role failed to create ' + err);
-           callback(err);
-           return;
-       }
+    role_ops.addRole(role, function (err, result) {
+        if (err) {
+            winston.error('role failed to create ' + err);
+            console.log('There was a problem creating the default role.  Please check the install log for details.');
+            callback(err);
+            return;
+        }
 
         let admin_user = {};
         admin_user.username = wizard_result.HDB_ADMIN_USERNAME;
-        admin_user.password =wizard_result.HDB_ADMIN_PASSWORD;
-        admin_user.role = result.id
+        admin_user.password = wizard_result.HDB_ADMIN_PASSWORD;
+        admin_user.role = result.id;
         admin_user.active = true;
 
-        user_ops.addUser(admin_user, function(err, result) {
-           if(err) {
-               winston.error('user creation error' + err);
-              return callback(err);
-           }
-           callback(null);
-           return;
+        user_ops.addUser(admin_user, function (err, result) {
+            if (err) {
+                winston.error('user creation error' + err);
+                console.error('There was a problem creating the admin user.  Please check the install log for details.');
+                return callback(err);
+            }
+            callback(null);
         });
     });
 }
@@ -242,7 +237,7 @@ function createAdminUser(callback) {
 
 function createSettingsFile(mount_status, callback) {
     console.log('Starting HarperDB Install...');
-    if (mount_status != 'complete') {
+    if (mount_status !== 'complete') {
         callback('mount failed');
         return;
     }
@@ -252,12 +247,13 @@ function createSettingsFile(mount_status, callback) {
 
         if (err) {
             winston.info('info', 'boot properties error' + err);
+            console.error('There was a problem creating the boot file.  Please check the install log for details.');
             callback(err);
             return;
         }
 
         const path = require('path');
-        let hdb_props_value = `PROJECT_DIR = ${path.resolve(process.cwd(),'../')}
+        let hdb_props_value = `PROJECT_DIR = ${path.resolve(process.cwd(), '../')}
         HDB_ROOT= ${wizard_result.HDB_ROOT}
         HTTP_PORT = ${wizard_result.HTTP_PORT}
         HTTPS_PORT = ${wizard_result.HTTPS_PORT}
@@ -273,14 +269,15 @@ function createSettingsFile(mount_status, callback) {
         try {
             fs.writeFile(hdb_boot_properties.get('settings_path'), hdb_props_value, function (err, data) {
                 if (err) {
+                    console.error('There was a problem writing the settings file.  Please check the install log for details.');
                     winston.error(err);
+                    return callback(err);
                 }
                 hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
                 callback(null);
-                return;
+
             });
-        }catch(e)
-        {
+        } catch (e) {
             winston.info(e);
             winston.info('info', e);
         }
@@ -363,11 +360,13 @@ function generateKeys(callback) {
     fs.writeFile(hdb_properties.get('CERTIFICATE'), pki.certificateToPem(cert), function (err, data) {
         if (err) {
             winston.error(err);
+            console.error('There was a problem creating the PEM file.  Please check the install log for details.');
             return callback(err);
         }
         fs.writeFile(hdb_properties.get('PRIVATE_KEY'), forge.pki.privateKeyToPem(keys.privateKey), function (err, data) {
             if (err) {
                 winston.error(err);
+                console.error('There was a problem creating the private key file.  Please check the install log for details.');
                 return callback(err);
             }
             return callback();
@@ -378,17 +377,18 @@ function generateKeys(callback) {
 
 function setupService(callback) {
     fs.readFile(`./utility/install/harperdb.service`, 'utf8', function (err, data) {
-        var fileData = data.replace('{{project_dir}}', `${hdb_properties.get('PROJECT_DIR')}`).replace('{{hdb_directory}}',
+        const fileData = data.replace('{{project_dir}}', `${hdb_properties.get('PROJECT_DIR')}`).replace('{{hdb_directory}}',
             hdb_properties.get('HDB_ROOT'));
         fs.writeFile('/etc/systemd/system/harperdb.service', fileData, function (err, result) {
 
             if (err) {
                 winston.info('error', `Service Setup Error ${err}`);
+                console.error('There was a problem setting up the service.  Please check the install log for details.');
                 callback(err);
                 return;
             }
 
-            var terminal = spawn('bash');
+            const terminal = spawn('bash');
             terminal.stderr.on('data', function (data) {
             });
 
@@ -396,7 +396,7 @@ function setupService(callback) {
             terminal.stdin.end();
 
             callback(null, 'success');
-            return;
+
         });
     });
 }
@@ -412,18 +412,16 @@ function createBootPropertiesFile(settings_path, callback) {
     let boot_props_value = `settings_path = ${settings_path}
     install_user = ${require("os").userInfo().username}`;
 
-    fs.writeFile(`${process.cwd()}/../hdb_boot_properties.file`,boot_props_value , function (err) {
+    fs.writeFile(`${process.cwd()}/../hdb_boot_properties.file`, boot_props_value, function (err) {
 
         if (err) {
-            winston.info('info', `Bootloader error ${err}`);
-            winston.info(err);
-            callback(err);
-            return;
+            winston.error('info', `Bootloader error ${err}`);
+            console.error('There was a problem creating the boot file.  Please check the install log for details.');
+            return callback(err);
         }
-        winston.info('info', `props path ${process.cwd()}/../hdb_boot_properties.file`)
+        winston.info('info', `props path ${process.cwd()}/../hdb_boot_properties.file`);
         hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
         winston.info('hdb_boot_properties' + hdb_boot_properties);
         callback(null, 'success');
-        return;
     });
 }
