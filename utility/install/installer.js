@@ -67,6 +67,10 @@ function run_install(callback) {
     });
 }
 
+/**
+ * Prompts the user to accept the linked Terms & Conditions.  If the user does not agree, install process is killed.
+ * @param {*} callback 
+ */
 function termsAgreement(callback) {
     let terms_schema = {
         properties: {
@@ -157,9 +161,10 @@ function checkRegister(callback) {
 
 /**
  * The install wizard will guide the user through the required data needed for the install.
+ * @param err - Errors from the previous (Terms and Conditions) waterfall function.
  * @param callback
  */
-function wizard(callback) {
+function wizard(err, callback) {
     prompt.message = 'Install HarperDB ' + __dirname;
 
     let install_schema = {
