@@ -15,7 +15,7 @@ const prompt = require('prompt'),
     optimist = require('optimist'),
     LOG_LOCATION = ('../install_log.log'),
     forge = require('node-forge');
-
+const terms_address = 'http://legal.harperdb.io/Software+License+Subscription+Agreement+110317.pdf';
 PropertiesReader = require('properties-reader');
 let hdb_boot_properties = null,
     hdb_properties = null;
@@ -76,7 +76,7 @@ function termsAgreement(callback) {
         properties: {
             TC_AGREEMENT: {
                 message: colors.magenta(`I Agree to the HarperDB Terms and Conditions. (yes/no).  The Terms and Conditions can 
-                be found at http://legal.harperdb.io/Software+License+Subscription+Agreement+110317.pdf`),
+                be found at ${terms_address}`),
                 validator: /y[es]*|n[o]?/,
                 warning: 'Must respond yes or no',
                 default: 'yes'
@@ -89,7 +89,7 @@ function termsAgreement(callback) {
             callback(null, true);
         } else {
             winston.error('Terms and Conditions agreement was refused.');
-            return callback('Terms and Conditions agreement was refused.', false);
+            return callback('REFUSED', false);
         }
     });
 }
@@ -165,6 +165,7 @@ function checkRegister(callback) {
  * @param callback
  */
 function wizard(err, callback) {
+
     prompt.message = 'Install HarperDB ' + __dirname;
 
     let install_schema = {
