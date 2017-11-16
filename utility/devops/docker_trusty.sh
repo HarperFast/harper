@@ -14,7 +14,7 @@ obfuscript()
 
 files=( "data_layer" "sqlTranslator" "validation" "security" "utility" "utility/install" "utility/logging" "utility/functions/date" "utility/functions/math" "lib/fileSystem" "lib/server" "lib/streams" "server")
 working_dir="$(pwd)/../../";
-mirrored_dir="/tmp/harperdb"
+mirrored_dir="/tmp/harperdb_dev"
 echo "here i am $working_dir"
 echo "stuff: $(ls $working_dir)"
 mkdir -p $mirrored_dir;
