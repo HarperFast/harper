@@ -17,7 +17,6 @@ const fs = require('fs'),
     HTTP_ON_KEY = 'HTTP_ON',
     HDB_PROC_NAME = 'hdb_express.js';
 
-let winston = null;
 let hdb_boot_properties = null;
 let hdb_properties = null;
 let fork = require('child_process').fork;
@@ -72,7 +71,7 @@ function arePortsInUse(callback) {
         http_port = hdb_properties.get(HTTP_PORT_KEY);
         httpsecure_port = hdb_properties.get(HTTPSECURE_PORT_KEY);
     } catch (e) {
-        winston.info('hdb_boot_props file not found, starting install.');
+        basic_winston.info('hdb_boot_props file not found, starting install.');
         startHarper();
     }
 
@@ -178,8 +177,6 @@ function startHarper() {
 }
 
 function completeRun() {
-    winston = require("../utility/logging/winston_logger");
-
     async.waterfall([
         checkPermission,
         kickOffExpress,
@@ -228,21 +225,21 @@ function increaseMemory(callback){
             const node = spawn('node', [`--max-old-space-size=${hdb_properties.get('MAX_MEMORY')}`, `${hdb_properties.get('PROJECT_DIR')}/server/hdb_express.js`]);
 
             node.stdout.on('data', (data) => {
-                winston.info(`stdout: ${data}`);
+                basic_winston.info(`stdout: ${data}`);
             });
 
             node.stderr.on('data', (data) => {
-                winston.error(`stderr: ${data}`);
+                basic_winston.error(`stderr: ${data}`);
             });
 
             node.on('close', (code) => {
-                winston.log(`child process exited with code ${code}`);
+                basic_winston.log(`child process exited with code ${code}`);
             });
         } else {
             callback();
         }
     }catch(e){
-        winston.error(e);
+        basic_winston.error(e);
     }
 }
 
