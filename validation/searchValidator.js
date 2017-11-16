@@ -89,9 +89,6 @@ let search_by_value_constraints = {
             maximum: 250,
             tooLong: 'cannot exceed 250 characters'
         }
-    }, hash_attribute: {
-        presence: true,
-        format: "[\\w\\-\\_]+"
     },
     search_attribute: {
         presence: true
