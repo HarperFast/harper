@@ -13,13 +13,16 @@ class ConditionPatterns{
         this.column_conditions = [];
     }
 
-    parser(){
-        this.conditions = this.parseConditions(this.conditions);
+    parseJoins(){
         this.tables.forEach((table)=>{
             if(table.join && Object.keys(table.join).length > 0){
                 table.join = this.parseConditions(table.join);
             }
         });
+    }
+
+    parseWhereClause(){
+        this.conditions = this.parseConditions(this.conditions);
     }
 
     parseConditions(condition_string){
