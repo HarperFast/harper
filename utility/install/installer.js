@@ -15,7 +15,7 @@ const prompt = require('prompt'),
     optimist = require('optimist'),
     LOG_LOCATION = ('../install_log.log'),
     forge = require('node-forge');
-
+const terms_address = 'http://legal.harperdb.io/Software+License+Subscription+Agreement+110317.pdf';
 PropertiesReader = require('properties-reader');
 let hdb_boot_properties = null,
     hdb_properties = null;
@@ -47,6 +47,7 @@ function run_install(callback) {
     checkInstall(function (err, keepGoing) {
         if (keepGoing) {
             async.waterfall([
+                termsAgreement,
                 wizard,
                 mount,
                 createSettingsFile,
@@ -63,6 +64,33 @@ function run_install(callback) {
             });
         }
         return callback(null, result);
+    });
+}
+
+/**
+ * Prompts the user to accept the linked Terms & Conditions.  If the user does not agree, install process is killed.
+ * @param {*} callback 
+ */
+function termsAgreement(callback) {
+    let terms_schema = {
+        properties: {
+            TC_AGREEMENT: {
+                message: colors.magenta(`I Agree to the HarperDB Terms and Conditions. (yes/no).  The Terms and Conditions can 
+                be found at ${terms_address}`),
+                validator: /y[es]*|n[o]?/,
+                warning: 'Must respond yes or no',
+                default: 'yes'
+            }
+        }
+    };
+    prompt.get(terms_schema, function (err, result) {
+        if( err ) { return callback(err); }
+        if(result.TC_AGREEMENT === 'yes' || result.TC_AGREEMENT === 'y') {
+            callback(null, true);
+        } else {
+            winston.error('Terms and Conditions agreement was refused.');
+            return callback('REFUSED', false);
+        }
     });
 }
 
@@ -133,9 +161,11 @@ function checkRegister(callback) {
 
 /**
  * The install wizard will guide the user through the required data needed for the install.
+ * @param err - Errors from the previous (Terms and Conditions) waterfall function.
  * @param callback
  */
-function wizard(callback) {
+function wizard(err, callback) {
+
     prompt.message = 'Install HarperDB ' + __dirname;
 
     let install_schema = {
