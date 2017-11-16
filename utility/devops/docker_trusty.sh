@@ -9,8 +9,8 @@ obfuscript()
 #The mirrored File structure is recreated and cleaned
 #Then add newly obfuscated files through the --output option in javascript-obfuscator command.
 
-#Files to search for javascript to obfuscate as of 9/1/2017.. Please keep this updated!! updated 9-29-2017 added utility/* lib/ server/
-# "data_layer" "sqlTranslator" "validation" "security" "utility" "utility/logging"
+#Files to search for javascript to obfuscate as of 11/16/2017.. Please keep this updated!! 
+# =( "data_layer" "sqlTranslator" "validation" "security" "utility" "utility/install" "utility/logging" "utility/functions/date" "utility/functions/math" "lib/fileSystem" "lib/server" "lib/streams" "server" "server/clustering")
 
 files=( "data_layer" "sqlTranslator" "validation" "security" "utility" "utility/install" "utility/logging" "utility/functions/date" "utility/functions/math" "lib/fileSystem" "lib/server" "lib/streams" "server")
 working_dir="$(pwd)/../../";
@@ -76,8 +76,9 @@ harperdb_run()
 #environment_id=d4f6eefe-b922-9888-043f-43a374a1ef1a
 
     newman run https://api.getpostman.com/collections/$collection_id?apikey=$apiKey \
-    --environment https://api.getpostman.com/environments/$environment_id?apikey=$apiKey -r cli > ../newman_output.log 2> ../error.out
-   
+    --environment https://api.getpostman.com/environments/$environment_id?apikey=$apiKey -r cli > ../newman_output.log
+ sleep 7s
+  
 ./linux-harperdb stop
        else
            echo "Process hdb_express did not start?"
@@ -93,7 +94,7 @@ exit 0
 newman_output(){
 echo "I am in this directory now looking for newman_output.log: $(pwd)"
 #Grabbing the Newman cli output and grep the stream of the failures, if any occurred.
-    cat newman_output.log
+    cat ./newman_output.log
     theFailed=$(cat newman_output.log | grep -A 10 "#  failure")
 
     if [ "$theFailed" ];
@@ -101,14 +102,6 @@ echo "I am in this directory now looking for newman_output.log: $(pwd)"
         echo "Failed NewMan Tests"
         echo $theFailed
         exit 1;
-    fi
-    
-    if [ -s error.out ]
-       then
-          echo "Some error in newman process!"
-          newman_err=$(cat error.out)
-          echo "New man errors: $newman_err"
-          exit 1
     fi
 
 exit 0
