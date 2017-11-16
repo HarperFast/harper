@@ -1,62 +1,14 @@
 const schema = require('../data_layer/schemaDescribe'),
     async = require('async'),
-    winston = require('../utility/logging/winston_logger');
-
-const system_schema = {
-    hdb_table:{
-        hash_attribute:'id',
-        name:'hdb_table',
-        schema:'system',
-        attributes:
-            [ { attribute: 'id' },
-                { attribute: 'name' },
-                { attribute: 'hash_attribute' },
-                { attribute: 'schema' }
-            ]
-
-    },
-    hdb_drop_schema:{
-        hash_attribute:'id',
-        name:'hdb_drop_schema',
-        schema:'system'
-    },
-    hdb_attribute:{
-        hash_attribute:'id',
-        name:'hdb_attribute',
-        schema:'system'
-    },
-    hdb_schema:{
-        hash_attribute:'name',
-        name:'hdb_schema',
-        schema:'system',
-        attributes:
-            [
-                { attribute: 'name' },
-                { attribute: 'createddate' }
-            ]
-    },
-    hdb_user:{
-        hash_attribute:'username',
-        name:'hdb_user',
-        schema:'system'
-    },
-    hdb_role:{
-        hash_attribute:'id',
-        name:'hdb_user',
-        schema:'system'
-    },
-    hdb_license:{
-        hash_attribute:'license_key',
-        name:'hdb_license',
-        schema:'system'
-    }
-};
+    winston = require('../utility/logging/winston_logger'),
+    system_schema = require('../json/systemSchema.json');
 
 module.exports = {
     setSchemaDataToGlobal: setSchemaDataToGlobal,
     getTableSchema: getTableSchema,
-    schemaSignal,
-    setUsersToGlobal
+    schemaSignal: schemaSignal,
+    setUsersToGlobal: setUsersToGlobal,
+    getSystemSchema: getSystemSchema
 };
 
 function setSchemaDataToGlobal(callback){
@@ -162,6 +114,10 @@ function setUsersToGlobal(callback){
         global.hdb_users = users;
         callback();
     });
+}
+
+function getSystemSchema(){
+    return system_schema;
 }
 
 const user = require('../security/user')
