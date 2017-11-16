@@ -47,6 +47,7 @@ function run_install(callback) {
     checkInstall(function (err, keepGoing) {
         if (keepGoing) {
             async.waterfall([
+                termsAgreement,
                 wizard,
                 mount,
                 createSettingsFile,
@@ -63,6 +64,28 @@ function run_install(callback) {
             });
         }
         return callback(null, result);
+    });
+}
+
+function termsAgreement(callback) {
+    let terms_schema = {
+        properties: {
+            TC_AGREEMENT: {
+                message: colors.magenta(`I Agree to the HarperDB Terms and Conditions. (yes/no).  The Terms and Conditions can 
+                be found at http://legal.harperdb.io/Software+License+Subscription+Agreement+110317.pdf`),
+                validator: /y[es]*|n[o]?/,
+                warning: 'Must respond yes or no',
+                default: 'yes'
+            }
+        }
+    };
+    prompt.get(terms_schema, function (err, result) {
+        if( err ) { return callback(err); }
+        if(result.TC_AGREEMENT === 'yes' || result.TC_AGREEMENT === 'y') {
+            callback(null, true);
+        } else {
+            return callback(null, false);
+        }
     });
 }
 
