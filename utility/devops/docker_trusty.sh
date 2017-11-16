@@ -12,7 +12,7 @@ obfuscript()
 #Files to search for javascript to obfuscate as of 9/1/2017.. Please keep this updated!! updated 9-29-2017 added utility/* lib/ server/
 # "data_layer" "sqlTranslator" "validation" "security" "utility" "utility/logging"
 
-files=( "data_layer" "sqlTranslator" "validation" "security" "utility" "utility/install" "utility/logging" "utility/functions/date" "utility/functions/math" "lib/fileSystem" "lib/server" "lib/streams" "server")
+files=( "data_layer" "sqlTranslator" "validation" "security" "utility" "utility/install" "utility/logging" "utility/functions/date" "utility/functions/math" "lib/fileSystem" "lib/server" "lib/streams" "server" "server/clustering")
 working_dir="$(pwd)/../../";
 mirrored_dir="/tmp/harperdb_dev"
 echo "here i am $working_dir"
