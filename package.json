@@ -64,7 +64,8 @@
   },
   "pkg": {
     "scripts": [
-      "./server/hdb_express.js",
+      "./server/*.js",
+      "./server/**/*.js",
       "./data_layer/*.js",
       "./triggers/**",
       "./utility/*.js",
