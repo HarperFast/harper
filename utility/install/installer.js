@@ -84,7 +84,8 @@ function termsAgreement(callback) {
         if(result.TC_AGREEMENT === 'yes' || result.TC_AGREEMENT === 'y') {
             callback(null, true);
         } else {
-            return callback(null, false);
+            winston.error('Terms and Conditions agreement was refused.');
+            return callback('Terms and Conditions agreement was refused.', false);
         }
     });
 }
