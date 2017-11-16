@@ -6,9 +6,9 @@ const schema = require('../data_layer/schemaDescribe'),
 module.exports = {
     setSchemaDataToGlobal: setSchemaDataToGlobal,
     getTableSchema: getTableSchema,
-    schemaSignal,
-    setUsersToGlobal,
-    getSystemSchema
+    schemaSignal: schemaSignal,
+    setUsersToGlobal: setUsersToGlobal,
+    getSystemSchema: getSystemSchema
 };
 
 function setSchemaDataToGlobal(callback){
