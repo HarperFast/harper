@@ -9,8 +9,9 @@ obfuscript()
 #The mirrored File structure is recreated and cleaned
 #Then add newly obfuscated files through the --output option in javascript-obfuscator command.
 
-#Files to search for javascript to obfuscate as of 9/1/2017.. Please keep this updated!! updated 9-29-2017 added utility/* lib/ server/
-# "data_layer" "sqlTranslator" "validation" "security" "utility" "utility/logging"
+#Files to search for javascript to obfuscate as of 11/17/2017.. Please keep this updated!!
+#"data_layer" "sqlTranslator" "validation" "security" "utility" "utility/install" "utility/logging" 
+#"utility/functions/date" "utility/functions/math" "lib/fileSystem" "lib/server" "lib/streams" "server" "server/clustering"
 
 files=( "data_layer" "sqlTranslator" "validation" "security" "utility" "utility/install" "utility/logging" "utility/functions/date" "utility/functions/math" "lib/fileSystem" "lib/server" "lib/streams" "server")
 working_dir="$(pwd)/../../";
