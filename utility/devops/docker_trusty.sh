@@ -9,8 +9,9 @@ obfuscript()
 #The mirrored File structure is recreated and cleaned
 #Then add newly obfuscated files through the --output option in javascript-obfuscator command.
 
-#Files to search for javascript to obfuscate as of 11/16/2017.. Please keep this updated!! 
-# =( "data_layer" "sqlTranslator" "validation" "security" "utility" "utility/install" "utility/logging" "utility/functions/date" "utility/functions/math" "lib/fileSystem" "lib/server" "lib/streams" "server" "server/clustering")
+#Files to search for javascript to obfuscate as of 11/17/2017.. Please keep this updated!!
+#"data_layer" "sqlTranslator" "validation" "security" "utility" "utility/install" "utility/logging" 
+#"utility/functions/date" "utility/functions/math" "lib/fileSystem" "lib/server" "lib/streams" "server" "server/clustering"
 
 files=( "data_layer" "sqlTranslator" "validation" "security" "utility" "utility/install" "utility/logging" "utility/functions/date" "utility/functions/math" "lib/fileSystem" "lib/server" "lib/streams" "server")
 working_dir="$(pwd)/../../";
@@ -54,10 +55,10 @@ harperdb_run()
 #this function is being run on a docker container as root.  Be advised of the paths.
      cd ./bin/
      echo "I am in this directory now: $(pwd)"
-     ./linux-harperdb install --HDB_ROOT $hdb_data --HTTP_PORT 9925 --HTTPS_PORT 31283 --HDB_ADMIN_USERNAME admin --HDB_ADMIN_PASSWORD "Abc1234!"
-     sleep 7s
-     ./linux-harperdb run
-     sleep 3s
+     ./linux-harperdb install --TC_AGREEMENT yes --HDB_ROOT $hdb_data --HTTP_PORT 9925 --HTTPS_PORT 31283 --HDB_ADMIN_USERNAME admin --HDB_ADMIN_PASSWORD "Abc1234!"
+    sleep 7s    
+    ./linux-harperdb run
+    sleep 3s
     theProc=$(ps -ef | grep [h]db_express);
 
         if [ "$theProc" ];
@@ -77,7 +78,6 @@ harperdb_run()
 
     newman run https://api.getpostman.com/collections/$collection_id?apikey=$apiKey \
     --environment https://api.getpostman.com/environments/$environment_id?apikey=$apiKey -r cli > ../newman_output.log
- sleep 7s
   
 ./linux-harperdb stop
        else
