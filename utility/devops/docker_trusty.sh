@@ -54,7 +54,7 @@ harperdb_run()
 #this function is being run on a docker container as root.  Be advised of the paths.
      cd ./bin/
      echo "I am in this directory now: $(pwd)"
-     ./linux-harperdb install --HDB_ROOT $hdb_data --HTTP_PORT 9925 --HTTPS_PORT 31283 --HDB_ADMIN_USERNAME admin --HDB_ADMIN_PASSWORD "Abc1234!"
+     ./linux-harperdb install --TC_AGREEMENT yes --HDB_ROOT $hdb_data --HTTP_PORT 9925 --HTTPS_PORT 31283 --HDB_ADMIN_USERNAME admin --HDB_ADMIN_PASSWORD "Abc1234!"
     sleep 7s    
     ./linux-harperdb run
     sleep 3s
@@ -76,7 +76,7 @@ harperdb_run()
 #environment_id=d4f6eefe-b922-9888-043f-43a374a1ef1a
 
     newman run https://api.getpostman.com/collections/$collection_id?apikey=$apiKey \
-    --environment https://api.getpostman.com/environments/$environment_id?apikey=$apiKey -r cli > ../newman_output.log 2> ../error.out
+    --environment https://api.getpostman.com/environments/$environment_id?apikey=$apiKey -r cli > ../newman_output.log
    
 ./linux-harperdb stop
        else
@@ -101,14 +101,6 @@ echo "I am in this directory now looking for newman_output.log: $(pwd)"
         echo "Failed NewMan Tests"
         echo $theFailed
         exit 1;
-    fi
-    
-    if [ -s error.out ]
-       then
-          echo "Some error in newman process!"
-          newman_err=$(cat error.out)
-          echo "New man errors: $newman_err"
-          exit 1
     fi
 
 exit 0
