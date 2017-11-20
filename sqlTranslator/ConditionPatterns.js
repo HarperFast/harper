@@ -13,16 +13,22 @@ class ConditionPatterns{
         this.column_conditions = [];
     }
 
-    parseJoins(){
+    parser(){
+        this.parseWhereClause();
+
         this.tables.forEach((table)=>{
             if(table.join && Object.keys(table.join).length > 0){
-                table.join = this.parseConditions(table.join);
+                let result = this.parseConditions(table.join);
+                table.column_conditions = result.conditions[0].attributes;
             }
         });
     }
 
     parseWhereClause(){
-        this.conditions = this.parseConditions(this.conditions);
+        let results = this.parseConditions(this.conditions);
+
+        this.conditions = results.condition_string;
+        this.column_conditions = results.conditions;
     }
 
     parseConditions(condition_string){
@@ -98,9 +104,9 @@ class ConditionPatterns{
             });
         });
 
-        this.column_conditions = this.column_conditions.concat(conditions);
+        //this.column_conditions = this.column_conditions.concat(conditions);
 
-        return condition_string;
+        return {condition_string: condition_string, conditions: conditions};
     }
 
     [findTable](condition){
