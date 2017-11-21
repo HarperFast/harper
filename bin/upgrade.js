@@ -43,7 +43,7 @@ function upgrade() {
                 winston.error(err);
                 return console.error(err);
             }
-
+he
             if (JSON.parse(package_json).version >= build[0].product_version) {
                 return console.warn('HarperDB already up to date on ' + JSON.parse(package_json).version);
             }
