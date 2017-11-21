@@ -3,12 +3,12 @@ const os = require('os'),
     fs = require('fs'),
     http = require('http'),
     tar = require('tar-fs'),
+    CLI = require('clui'),
     request = require("request");
 PropertiesReader = require('properties-reader'),
     winston = require('winston'),
     hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
 hdb_properties.append(hdb_properties.get('settings_path'));
-
 
 winston.configure({
     transports: [
@@ -19,6 +19,11 @@ winston.configure({
 module.exports = {
     upgrade: upgrade
 };
+
+const versions_url = 'http://products.harperdb.io:9925/',
+      versions_auth ='Basic dXBncmFkZV91c2VyOl43Snk3JCgmIW45TWpsIV4oSDAzMCUhU3ZFOFU2c1RY';
+
+
 
 function upgrade() {
 
@@ -59,11 +64,11 @@ function getBuild(os, callback) {
 
     let options = {
         method: 'POST',
-        url: 'http://products.harperdb.io:9925/',
+        url: versions_url,
         headers:
             {
                 'cache-control': 'no-cache',
-                authorization: 'Basic aGRiX2xtczpWQFRHVTN3TUxBSEFFNiluVmJCcWdLb25CYnd5S05eOQ==',
+                authorization: versions_auth,
                 'content-type': 'application/json'
             },
         body:
@@ -116,21 +121,20 @@ function findOs() {
 }
 
 function executeUpgrade(build) {
-    var CLI = require('clui'),
-        Spinner = CLI.Spinner;
+    let  Spinner = CLI.Spinner;
 
-    var countdown = new Spinner('Upgrading HarperDB ', ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷']);
+    let countdown = new Spinner('Upgrading HarperDB ', ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷']);
 
     countdown.start();
 
     let upgradeFolder = hdb_properties.get('HDB_ROOT') + '/upgrade/' + Date.now() + '/';
 
     mkdirp(upgradeFolder);
-    var path_tokens = build.public_path.split(':');
-    var host = path_tokens[0];
-    var port = path_tokens[1].split('/')[0];
-    var path = path_tokens[1].split('/')[1];
-    var options = {
+    let path_tokens = build.public_path.split(':');
+    let host = path_tokens[0];
+    let port = path_tokens[1].split('/')[0];
+    let path = path_tokens[1].split('/')[1];
+    let options = {
         "method": "GET",
         "hostname": host,
         "port": port,
@@ -139,11 +143,11 @@ function executeUpgrade(build) {
 
     };
 
-    var file = fs.createWriteStream(upgradeFolder + '' + path);
+    let file = fs.createWriteStream(upgradeFolder + '' + path);
     http.get(options).on('response', function (response) {
         response.pipe(file);
         response.on('end', function () {
-            var stream = fs.createReadStream(upgradeFolder + '' + path);
+            let stream = fs.createReadStream(upgradeFolder + '' + path);
             stream.pipe(tar.extract(upgradeFolder));
             stream.on('error', function (err) {
                 winston.error(err);
