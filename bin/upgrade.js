@@ -3,7 +3,7 @@ const os = require('os'),
     fs = require('fs'),
     http = require('http'),
     tar = require('tar-fs'),
-    request = require("request")
+    request = require("request");
 PropertiesReader = require('properties-reader'),
     winston = require('winston'),
     hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
@@ -16,6 +16,9 @@ winston.configure({
     ]
 });
 
+module.exports = {
+    upgrade: upgrade
+};
 
 function upgrade() {
 
@@ -52,11 +55,7 @@ function upgrade() {
 }
 
 
-
-
-
 function getBuild(os, callback) {
-
 
     let options = {
         method: 'POST',
@@ -81,8 +80,6 @@ function getBuild(os, callback) {
             winston.error(error);
             return callback(error);
         }
-        ;
-
         return callback(null, body);
     });
 
@@ -92,10 +89,18 @@ function findOs() {
     if (os.arch() === 'arm' || os.arch() === 'arm64') {
         //armv7l
         //armv6l
-        if (os.release() === 'armv7l') {
-            return 'ARM 7';
+        switch (os.release()) {
+            case "armv7l":
+                return 'ARM 7'
+                break;
+            case "armv6l":
+                return 'ARM 6';
+                break;
+            default:
+                return null;
+                break;
         }
-        return 'ARM 6';
+
     }
 
     switch (os.platform()) {
@@ -114,13 +119,13 @@ function executeUpgrade(build) {
     var CLI = require('clui'),
         Spinner = CLI.Spinner;
 
-    var countdown = new Spinner('Upgrading HarperDB ', ['⣾','⣽','⣻','⢿','⡿','⣟','⣯','⣷']);
+    var countdown = new Spinner('Upgrading HarperDB ', ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷']);
 
     countdown.start();
 
     let upgradeFolder = hdb_properties.get('HDB_ROOT') + '/upgrade/' + Date.now() + '/';
 
-    mkdirp(upgradeFolder)
+    mkdirp(upgradeFolder);
     var path_tokens = build.public_path.split(':');
     var host = path_tokens[0];
     var port = path_tokens[1].split('/')[0];
@@ -135,7 +140,6 @@ function executeUpgrade(build) {
     };
 
     var file = fs.createWriteStream(upgradeFolder + '' + path);
-
     http.get(options).on('response', function (response) {
         response.pipe(file);
         response.on('end', function () {
@@ -151,7 +155,6 @@ function executeUpgrade(build) {
                         winston.error(err);
                         return console.error(err);
                     }
-
                     fs.rename(upgradeFolder + 'HarperDB/bin/harperdb', hdb_properties.get('PROJECT_DIR') + '/bin/harperdb', function (err) {
                         if (err) {
                             winston.error(err);
@@ -168,9 +171,7 @@ function executeUpgrade(build) {
                                     return console.error(err);
                                 }
                                 countdown.stop();
-
                                 console.log('HarperDB has been upgraded to ' + build.product_version);
-
 
                             });
                         });
@@ -183,13 +184,6 @@ function executeUpgrade(build) {
 
         });
     });
-
-
 }
 
 
-module.exports = {
-    upgrade: upgrade
-}
-
-upgrade();
