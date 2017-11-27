@@ -12,27 +12,33 @@ module.exports = {
 };
 
 function setSchemaDataToGlobal(callback){
+    schema.describeAll(null, (err, data)=> {
+        if (err) {
+            callback(err);
+            return;
+        }
 
-    //if(!global.hdb_schema){
-        schema.describeAll(null, (err, data)=> {
-            if (err) {
-                callback(err);
-                return;
-            }
+        if(!data.system){
+            data['system'] = system_schema;
+        }
 
-            if(!data.system){
-                data['system'] = system_schema;
-            }
-
-            global.hdb_schema = data;
-            callback(null, null);
-        });
-    /*} else {
+        global.hdb_schema = data;
         callback(null, null);
-    }*/
+    });
 }
 
-function getTableSchema(schema_name, table_name, callback){
+function getTableSchema(schema_name, table_name, callback) {
+    if(!global.hdb_schema) {
+        setSchemaDataToGlobal(callback);
+    }
+    if(schema_name === 'system'){
+        callback(null, system_schema[table_name]);
+        //hash_attribute = system_schema[search_object.table].hash_attribute;
+    } else {
+        callback(null, global.hdb_schema[schema_name][table_name]);
+        //hash_attribute = global.hdb_schema[search_object.schema][search_object.table].hash_attribute;
+    }
+    /*
     async.during(
         (caller)=>{
             return caller(null, !global.hdb_schema);
@@ -57,7 +63,7 @@ function getTableSchema(schema_name, table_name, callback){
             }
         }
     );
-
+    */
 
 }
 
