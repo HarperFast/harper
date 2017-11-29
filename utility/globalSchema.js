@@ -11,8 +11,8 @@ module.exports = {
     getSystemSchema: getSystemSchema
 };
 
-function setSchemaDataToGlobal(callback){
-    schema.describeAll(null, (err, data)=> {
+function setSchemaDataToGlobal(callback) {
+    schema.describeAll(null, (err, data) => {
         if (err) {
             callback(err);
             return;
@@ -27,44 +27,28 @@ function setSchemaDataToGlobal(callback){
     });
 }
 
-function getTableSchema(schema_name, table_name, callback) {
-    if(!global.hdb_schema) {
-        setSchemaDataToGlobal(callback);
-    }
-    if(schema_name === 'system'){
-        callback(null, system_schema[table_name]);
-        //hash_attribute = system_schema[search_object.table].hash_attribute;
+function returnSchema(schema_name, table_name) {
+    if (schema_name === 'system') {
+        return system_schema[table_name];
     } else {
-        callback(null, global.hdb_schema[schema_name][table_name]);
-        //hash_attribute = global.hdb_schema[search_object.schema][search_object.table].hash_attribute;
+        return global.hdb_schema[schema_name][table_name];
     }
-    /*
-    async.during(
-        (caller)=>{
-            return caller(null, !global.hdb_schema);
-        },
-        setSchemaDataToGlobal,
-        (err)=>{
-            if(!global.hdb_schema || !global.hdb_schema[schema_name] || !global.hdb_schema[schema_name][table_name]){
-                setTableDataToGlobal(schema_name, table_name, (err)=> {
-                    if (err) {
-                        callback(err);
-                        return;
-                    }
+}
 
-                    if(!global.hdb_schema[schema_name] || !global.hdb_schema[schema_name][table_name]){
-                        callback(`table ${schema_name}.${table_name} does not exist`);
-                    } else {
-                        callback(null, global.hdb_schema[schema_name][table_name]);
-                    }
-                });
-            } else {
-                callback(null, global.hdb_schema[schema_name][table_name]);
+function getTableSchema(schema_name, table_name, callback) {
+    if (!global.hdb_schema || !global.hdb_schema[schema_name] || !global.hdb_schema[schema_name][table_name]) {
+        setTableDataToGlobal(schema_name, table_name, (err) => {
+            if (err) {
+                return callback(err);
             }
-        }
-    );
-    */
-
+            if (!global.hdb_schema[schema_name] || !global.hdb_schema[schema_name][table_name]) {
+                return callback(`table ${schema_name}.${table_name} does not exist`);
+            }
+            callback(null, returnSchema(schema_name, table_name));
+        });
+    } else {
+        callback(null, returnSchema(schema_name, table_name));
+    }
 }
 
 function setTableDataToGlobal(schema_name, table, callback){
@@ -97,7 +81,6 @@ function setTableDataToGlobal(schema_name, table, callback){
         }
 
         global.hdb_schema[schema_name][table] = table_info;
-
         callback();
     });
 }
@@ -107,7 +90,6 @@ function schemaSignal(callback){
         if(err){
            return winston.error(err);
         }
-
         callback();
     });
 }
