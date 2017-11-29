@@ -120,5 +120,48 @@ cd ./bin/
 
 
 }
+armrunner(){
+cd ./packaging/harperdb_dev/bin
+
+hdb_data=/home/harperdb/packaging/harperdb_dev/hdb
+echo "I am in this directory now: $(pwd)"
+
+./armv7-harperdb install --TC_AGREEMENT yes --HDB_ROOT $hdb_data --HTTP_PORT 9925 --HTTPS_PORT 31283 --HDB_ADMIN_USERNAME admin --HDB_ADMIN_PASSWORD "Abc1234!"
+
+sleep 10s
+
+./armv7-harperdb run
+
+sleep 7s
+theProc=$(ps -ef | grep [h]db_express);
+
+if [ "$theProc" ];
+  then
+    apiKey=fe1dfb2c3647474f8f3e9d836783e694
+#mycos Collection
+    collection_id=45f26d10-5af1-3f5d-b00b-a39a52c9aa45
+
+#zach's dummy tests
+#collection_id=b21ee620-6c69-7566-9a11-e2ce6ece23cd
+
+#mycos Environment PI 3 env
+    environment_id=f02e9c0e-4dd5-891c-8c32-9ac1efb022fa
+
+#zach's dummmy environment
+#environment_id=d4f6eefe-b922-9888-043f-43a374a1ef1a
+    newman run https://api.getpostman.com/collections/$collection_id?apikey=$apiKey --environment https://api.getpostman.com/environments/$environment_id?apikey=$apiKey -r cli > ../newman_output.log
+
+./armv7-harperdb stop
+   else
+      echo "Process hdb_express did not start?"
+         #clean Up install artifacts.
+         rm -f ../hdb_* ../install_*
+         rm -r $hdb_data/*
+         echo "WTF am I: $hdb_data"
+         exit 1;
+fi
+
+exit 0
+}
 
 $@
