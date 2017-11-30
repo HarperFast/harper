@@ -18,7 +18,7 @@ class ConditionPatterns{
 
         this.tables.forEach((table)=>{
             if(table.join && Object.keys(table.join).length > 0){
-                let result = this.parseConditions(table.join);
+                let result = this.parseConditions(table.join.join);
                 table.column_conditions = result.conditions[0].attributes;
             }
         });
@@ -61,7 +61,7 @@ class ConditionPatterns{
                     attribute_object = {
                         table: table,
                         attribute: attribute,
-                        alias: `${table}_${attribute}`
+                        alias: `${table}___${attribute}`
                     };
                 } else if (sub_node.isSymbolNode && !parent.isAccessorNode) {
                     attribute_object = {
@@ -76,16 +76,16 @@ class ConditionPatterns{
                 if(attribute_object) {
 
                     let found_node = conditions.filter((condition) => {
-                        return condition.node.toString() === node.toString().replace(/\./g,'_');
+                        return condition.node.toString() === node.toString().replace(/\./g,'___');
                     });
 
                     if (found_node && found_node.length > 0) {
                         found_node[0].attributes.push(attribute_object);
                     } else {
-                        let stripped_column = node.toString().replace(/\./g,'_');
+                        let stripped_column = node.toString().replace(/\./g,'___');
                         condition_string = condition_string.replace(new RegExp(node.toString(), 'g'), stripped_column);
                         conditions.push({
-                            node:node.toString().replace(/\./g,'_'),
+                            node:node.toString().replace(/\./g,'___'),
                             attributes:[attribute_object]
                         });
                     }

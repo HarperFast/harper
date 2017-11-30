@@ -181,7 +181,7 @@ function parseFromClause(from, from_level){
     } else {
         let from_clause = from.map[from_level - 1];
         from_info = parseFromSource(from_clause.source);
-        join = condition_parser.parseWhereClause(from_clause.constraint.on);
+        join.join = condition_parser.parseWhereClause(from_clause.constraint.on);
         join.type = from_clause.variant;
     }
     let table = {
