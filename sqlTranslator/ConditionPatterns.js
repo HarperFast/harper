@@ -1,7 +1,8 @@
 const mathjs = require('mathjs');
 
 const condition_operators = ['==', '>=', '>', '<', '<='],
-    condition_functions = ['in', 'like'];
+    condition_functions = ['in', 'like'],
+    delimiter = '_';
 
 const parseNodes = Symbol('parseNodes'),
     findTable = Symbol('findTable');
@@ -17,10 +18,17 @@ class ConditionPatterns{
         this.parseWhereClause();
 
         this.tables.forEach((table)=>{
+            table.column_conditions = [];
             if(table.join && Object.keys(table.join).length > 0){
                 let result = this.parseConditions(table.join.join);
                 table.column_conditions = result.conditions[0].attributes;
             }
+
+            //get the hash_attribute for the table and add it to the column_conditions
+            let hash_attribute = {
+                schema:
+            };
+            table.column_conditions.push()
         });
     }
 
@@ -61,7 +69,7 @@ class ConditionPatterns{
                     attribute_object = {
                         table: table,
                         attribute: attribute,
-                        alias: `${table}___${attribute}`
+                        alias: `${table}${delimiter}${attribute}`
                     };
                 } else if (sub_node.isSymbolNode && !parent.isAccessorNode) {
                     attribute_object = {
@@ -76,16 +84,16 @@ class ConditionPatterns{
                 if(attribute_object) {
 
                     let found_node = conditions.filter((condition) => {
-                        return condition.node.toString() === node.toString().replace(/\./g,'___');
+                        return condition.node.toString() === node.toString().replace(/\./g,delimiter);
                     });
 
                     if (found_node && found_node.length > 0) {
                         found_node[0].attributes.push(attribute_object);
                     } else {
-                        let stripped_column = node.toString().replace(/\./g,'___');
+                        let stripped_column = node.toString().replace(/\./g,delimiter);
                         condition_string = condition_string.replace(new RegExp(node.toString(), 'g'), stripped_column);
                         conditions.push({
-                            node:node.toString().replace(/\./g,'___'),
+                            node:node.toString().replace(/\./g,delimiter),
                             attributes:[attribute_object]
                         });
                     }
