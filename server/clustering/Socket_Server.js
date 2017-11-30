@@ -1,5 +1,6 @@
 const uuidv1 = require('uuid/v1'),
     winston = require('../../utility/logging/winston_logger'),
+    search = require('../../data_layer/search')
     insert = require('../../data_layer/insert');
 
 class Socket_Server {
@@ -104,7 +105,8 @@ class Socket_Server {
                 });
 
                 socket.on('disconnect', function (error) {
-                    winston.error(err);
+                    if(error != 'transport close')
+                        winston.error(error);
 
                 });
 

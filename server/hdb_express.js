@@ -2,11 +2,12 @@ const cluster = require('cluster');
 let numCPUs = 4;
 const DEBUG = false;
 const winston = require('../utility/logging/winston_logger');
+const search = require('../data_layer/search');
+
 const async = require('async');
 
 if (cluster.isMaster && !DEBUG) {
     let enterprise = false;
-    const search = require('../data_layer/search');
     let licenseKeySearch = {
         operation: 'search_by_value',
         schema: 'system',
@@ -314,6 +315,8 @@ if (cluster.isMaster && !DEBUG) {
                 break;
             case 'enterprise':
                 enterprise = msg.enterprise;
+                kickOffEnterprise();
+                break;
         }
     });
 
@@ -359,51 +362,56 @@ if (cluster.isMaster && !DEBUG) {
         }
 
 
-        if (hdb_properties.get('CLUSTERING') && enterprise) {
-            var node = {
-                "name": hdb_properties.get('NODE_NAME'),
-                "port": hdb_properties.get('CLUSTERING_PORT'),
+        function kickOffEnterprise(){
+            if (hdb_properties.get('CLUSTERING') && enterprise) {
+                var node = {
+                    "name": hdb_properties.get('NODE_NAME'),
+                    "port": hdb_properties.get('CLUSTERING_PORT'),
 
-            }
-
-
-            let search_obj = {
-                "table": "hdb_nodes",
-                "schema": "system",
-                "search_attribute": "host",
-                "hash_attribute": "name",
-                "search_value": "*",
-                "get_attributes": ["*"]
-            }
-            search.searchByValue(search_obj, function (err, nodes) {
-                if (err) {
-                    winston.error(err);
                 }
 
-                if (nodes) {
-                    node.other_nodes = nodes;
-                    global.cluster_server = new ClusterServer(node);
-                    global.cluster_server.init(function (err) {
-                        if (err) {
-                            return winston.error(err);
-                        }
-                        global.cluster_server.establishConnections(function (err) {
+                global.cluster_server = new ClusterServer(node);
+
+
+                let search_obj = {
+                    "table": "hdb_nodes",
+                    "schema": "system",
+                    "search_attribute": "host",
+                    "hash_attribute": "name",
+                    "search_value": "*",
+                    "get_attributes": ["*"]
+                }
+                search.searchByValue(search_obj, function (err, nodes) {
+                    if (err) {
+                        winston.error(err);
+                    }
+
+                    if (nodes) {
+                        node.other_nodes = nodes;
+                        global.cluster_server.init(function (err) {
                             if (err) {
                                 return winston.error(err);
                             }
+                            global.cluster_server.establishConnections(function (err) {
+                                if (err) {
+                                    return winston.error(err);
+                                }
 
-                            winston.info('clustering established');
+                                winston.info('clustering established');
 
-                        })
+                            })
 
-                    });
+                        });
 
-                }
+                    }
 
-            });
+                });
 
+
+            }
 
         }
+
 
 
     } catch (e) {
