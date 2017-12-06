@@ -4,7 +4,8 @@ const sqliteParser = require('sqlite-parser'),
     select_translator = require('./selectTranslator').convertSelect,
     update_translator = require('./updateTranslator').convertUpdate,
     delete_translator = require('./deleteTranslator').convertDelete,
-    winston = require('../utility/logging/winston_logger');
+    winston = require('../utility/logging/winston_logger'),
+    alasql = require('alasql');
 
 module.exports = {
     evaluateSQL: evaluateSQL
@@ -30,11 +31,13 @@ function evaluateSQL(sql, callback) {
 
 function processSQL(sql, callback){
     try {
-        //the LIKE operator causes the format of the where ast to go bonkers so we replace with something palatable and replace again on the other side
-        //sql = sql.replace(/ like /gi, ' || ');
-        let ast = sqliteParser(sql);
+        if(!sql){
+            throw new Error('invalid SQL: ' + sql);
+        }
+        let ast = alasql.parse(sql);
+        let variant = sql.split(" ")[0].toLowerCase();
         let sql_function = nullFunction;
-        switch (ast.statement[0].variant) {
+        switch (variant) {
             case 'select':
                 sql_function = select_translator;
                 break;
@@ -49,6 +52,7 @@ function processSQL(sql, callback){
                 sql_function = delete_translator;
                 break;
             default:
+                throw new Error(`unsupported SQL type ${variant} in SQL: ${sql}`);
                 break;
         }
 

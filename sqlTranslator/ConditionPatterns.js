@@ -22,13 +22,8 @@ class ConditionPatterns{
             if(table.join && Object.keys(table.join).length > 0){
                 let result = this.parseConditions(table.join.join);
                 table.column_conditions = result.conditions[0].attributes;
+                table.join.join = result.condition_string.replace('==', '=');
             }
-
-            //get the hash_attribute for the table and add it to the column_conditions
-            let hash_attribute = {
-                schema:
-            };
-            table.column_conditions.push()
         });
     }
 
@@ -91,7 +86,7 @@ class ConditionPatterns{
                         found_node[0].attributes.push(attribute_object);
                     } else {
                         let stripped_column = node.toString().replace(/\./g,delimiter);
-                        condition_string = condition_string.replace(new RegExp(node.toString(), 'g'), stripped_column);
+                        condition_string = condition_string.replace(new RegExp(RegExp.escape(node.toString()), 'g'), stripped_column);
                         conditions.push({
                             node:node.toString().replace(/\./g,delimiter),
                             attributes:[attribute_object]
@@ -109,6 +104,7 @@ class ConditionPatterns{
                 let table = this[findTable](attribute);
                 attribute.schema = table.schema;
                 attribute.table = table.table;
+                attribute.table_alias = table.alias;
             });
         });
 

@@ -33,7 +33,7 @@ function parseWhereClause(where) {
 
     switch(operation){
         case '=':
-            condition = `${where.left.name} == `;
+            condition = `${where.left.name} = `;
             if(where.right.value) {
                 condition += where.right.value;
             } else {
@@ -56,7 +56,8 @@ function parseWhereClause(where) {
             if(typeof value === 'string'){
                 value = `'${value}'`
             }
-            condition = `like(${where.left.name}, ${value})`;
+
+            condition = `${where.left.name} like ${value}`;
             break;
         case 'in':
             let compare_value = [];
@@ -67,7 +68,10 @@ function parseWhereClause(where) {
                 }
                 compare_value.push(value);
             });
-            condition = `in(${where.left.name}, ${compare_value})`;
+            condition = `${where.left.name} in(${compare_value})`;
+            break;
+        case 'between':
+            condition = `${where.left.name} ${operation} ${where.right.left.value} AND ${where.right.right.value}`;
             break;
         default:
             throw `unsupported operation ${operation}`;
