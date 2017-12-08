@@ -26,6 +26,8 @@ const regex = /\//g,
     hash_regex = /^[a-zA-Z0-9-_]+$/;
 //TODO: This is ugly and string compare is slow.  Refactor this when we bring in promises.
 const NO_RESULTS = 'NR';
+//This is an internal value that should not be written to the DB.
+const HDB_PATH_KEY = 'HDB_INTERNAL_PATH';
 
 
 module.exports = {
@@ -119,28 +121,34 @@ function insertData(insert_object, callback){
         if (insert_object.operation !== 'insert') {
             callback('invalid operation, must be insert');
         }
-
+        let inserted_records = [];
+        let skipped_records = [];
         async.waterfall([
             validation.bind(null, insert_object),
             (table_schema, caller) => {
                 let hash_attribute = table_schema.hash_attribute;
-                let hash_paths = [];
                 let base_path = hdb_path + '/' + insert_object.schema + '/' + insert_object.table + '/';
                 for (let r in insert_object.records) {
                     let record = insert_object.records[r];
-                    hash_paths.push(`${base_path}__hdb_hash/${hash_attribute}/${record[hash_attribute]}.hdb`);
+                    let path = `${base_path}__hdb_hash/${hash_attribute}/${record[hash_attribute]}.hdb`;
+                    //Internal record that is removed if the record exists.  Should not be written to the DB.
+                    insert_object.records[r][HDB_PATH_KEY] = path;
                 }
-                caller(null, hash_paths);
+                caller(null);
             },
-            checkRecordsExist,
+            checkRecordsExist.bind(null, insert_object, skipped_records, inserted_records),
             checkAttributeSchema.bind(null, insert_object),
             processData
         ], (err) => {
             if (err) {
                 return callback(err);
             }
-
-            callback(null, `inserted ${insert_object.records.length} records`);
+            let return_object = {
+                message: `inserted ${inserted_records.length} of ${insert_object.records.length} records`,
+                inserted_hashes: inserted_records,
+                skipped_hashes: skipped_records
+            };
+            callback(null, return_object);
         });
     } catch(e){
         callback(e);
@@ -326,11 +334,14 @@ function checkAttributeSchema(insert_object, callerback) {
     let base_path = hdb_path + '/' + insert_object.schema + '/' + insert_object.table + '/';
 
     async.each(insert_object.records, function (record, callback) {
+        if(record[HDB_PATH_KEY] === undefined) {
+            return callback();
+        }
         let attribute_objects = [];
         let link_objects = [];
         hash_paths[`${base_path}__hdb_hash/${hash_attribute}/${record[hash_attribute]}.hdb`] = '';
         for (let property in record) {
-            if(record[property] === null || record[property] === undefined || record[property] === ''){
+            if(record[property] === null || record[property] === undefined || record[property] === '' || property === HDB_PATH_KEY){
                 continue;
             }
 
@@ -386,15 +397,16 @@ function checkAttributeSchema(insert_object, callerback) {
  * @param hash_paths
  * @param callback
  */
-function checkRecordsExist(hash_paths, callback) {
-    async.map(hash_paths, function(hash_path, inner_callback) {
-        fs.access(hash_path, (err) => {
+function checkRecordsExist(insert_object, skipped_records, inserted_records, callback) {
+    async.map(insert_object.records, function(record, inner_callback) {
+        fs.access(record[HDB_PATH_KEY], (err) => {
             if (err && err.code === 'ENOENT') {
+                inserted_records.push(record.id);
                 inner_callback();
             } else {
-                let hash_array = hash_path.split('/');
-                let hash = hash_array[hash_array.length - 1].replace('.hdb', '');
-                inner_callback(`record with hash ${hash} already exists`);
+                record[HDB_PATH_KEY] = undefined;
+                skipped_records.push(record.id);
+                inner_callback();
             }
         });
     }, function(err){
