@@ -56,7 +56,7 @@ function processSQL(sql, callback){
                 break;
         }
 
-        sql_function(ast.statement[0], (err, data) => {
+        sql_function(ast.statements[0], (err, data) => {
             if (err) {
                 callback(err);
                 return;
