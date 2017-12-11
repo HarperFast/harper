@@ -56,7 +56,7 @@ function validation(write_object, callback){
             return;
         }
 
-        if(!Array.isArray(write_object.records)){
+        if(!Array.isArray(write_object.records)) {
             return callback('records must be an array');
         }
 
@@ -81,11 +81,11 @@ function validation(write_object, callback){
 
             //evaluate that there are no attributes who have a name longer than 250 characters
             Object.keys(record).forEach((attribute)=>{
-                if(Buffer.byteLength(String(attribute)) > 250){
+                if(Buffer.byteLength(String(attribute)) > 250) {
                     long_attribute = true;
                 }
             });
-            if(long_attribute){
+            if(long_attribute) {
                 return;
             }
         });
@@ -156,7 +156,7 @@ function insertData(insert_object, callback){
 }
 
 /**
- * Updates the data in the update_object paramter.
+ * Updates the data in the update_object parameter.
  * @param update_object - The data that will be updated in the database
  * @param callback - The caller
  */
@@ -209,7 +209,8 @@ function updateData(update_object, callback){
                 update_object.records = update_objects;
 
                 update_objects.forEach((record)=>{
-                    tracker.update_ids.push(record[hash_attribute]);
+                    // need to make sure the attribute is a string for the lodash comparison below.
+                    tracker.update_ids.push(record[hash_attribute].toString());
                 });
 
                 caller(null, update_object);
@@ -238,7 +239,7 @@ function updateData(update_object, callback){
     }
 }
 
-function compareUpdatesToExistingRecords(update_object, hash_attribute, existing_records, callback){
+function compareUpdatesToExistingRecords(update_object, hash_attribute, existing_records, callback) {
 
     if(!existing_records || existing_records.length === 0) { return callback('No Records Found'); }
     let base_path = hdb_path + '/' + update_object.schema + '/' + update_object.table + '/';
@@ -283,7 +284,7 @@ function compareUpdatesToExistingRecords(update_object, hash_attribute, existing
         });
 
         callback(null, unlink_paths, update_objects);
-    } catch(e){
+    } catch(e) {
         callback(e);
     }
 }
@@ -294,7 +295,7 @@ function compareUpdatesToExistingRecords(update_object, hash_attribute, existing
  * @param update_objects
  * @param callback
  */
-function unlinkFiles(unlink_paths, update_objects, callback){
+function unlinkFiles(unlink_paths, update_objects, callback) {
     async.each(unlink_paths, (path, caller)=>{
         fs.unlink(path, (err)=>{
             if(err){
@@ -398,14 +399,15 @@ function checkAttributeSchema(insert_object, callerback) {
  * @param callback
  */
 function checkRecordsExist(insert_object, skipped_records, inserted_records, callback) {
+    let table_schema = global.hdb_schema[insert_object.schema][insert_object.table];
     async.map(insert_object.records, function(record, inner_callback) {
         fs.access(record[HDB_PATH_KEY], (err) => {
             if (err && err.code === 'ENOENT') {
-                inserted_records.push(record.id);
+                inserted_records.push(record[table_schema.hash_attribute]);
                 inner_callback();
             } else {
                 record[HDB_PATH_KEY] = undefined;
-                skipped_records.push(record.id);
+                skipped_records.push(record[table_schema.hash_attribute]);
                 inner_callback();
             }
         });

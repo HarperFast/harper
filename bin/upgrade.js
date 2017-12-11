@@ -6,9 +6,16 @@ const os = require('os'),
     CLI = require('clui'),
     request = require("request");
 PropertiesReader = require('properties-reader'),
-    winston = require('winston'),
+    winston = require('winston');
+    let hdb_properties;
+
+try {
     hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
-hdb_properties.append(hdb_properties.get('settings_path'));
+    hdb_properties.append(hdb_properties.get('settings_path'));
+} catch (e) {
+    // Intentionally blank
+}
+
 
 winston.configure({
     transports: [
@@ -26,7 +33,11 @@ const versions_url = 'http://products.harperdb.io:9925/',
 
 
 function upgrade() {
-
+    if(hdb_properties === undefined) {
+        winston.error('the hdb_boot_properties file was not found.  Please install HDB.');
+        console.error('the hdb_boot_properties file was not found.  Please install HDB.');
+        return;
+    }
     let os = findOs();
     if (!os) {
         return console.error('You are attempting to upgrade HarperDB on an unsupported operating system');
