@@ -69,14 +69,16 @@ function setTableDataToGlobal(schema_name, table, callback){
             callback(err);
             return;
         }
-        if(!table_info.schema && !table_info.table){
+        if(!table_info.schema && !table_info.name){
             callback();
             return;
         }
 
         if(!global.hdb_schema){
             global.hdb_schema = {system: system_schema};
-        } else if(!global.hdb_schema[schema_name]) {
+        }
+
+        if(!global.hdb_schema[schema_name]) {
             global.hdb_schema[schema_name] = {};
         }
 
