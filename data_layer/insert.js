@@ -177,7 +177,7 @@ function updateData(update_object, callback){
                 let attributes = new Set();
                 let hashes = [];
                 update_object.records.forEach((record) => {
-                    hashes.push(record[table_schema.hash_attribute]);
+                    hashes.push(record[table_schema.hash_attribute].toString());
                     Object.keys(record).forEach((attribute) => {
                         attributes.add(attribute);
                     });
