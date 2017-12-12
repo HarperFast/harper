@@ -269,12 +269,15 @@ if (cluster.isMaster && !DEBUG) {
             secureServer.listen(hdb_properties.get('HTTPS_PORT'), function(){
                 winston.info(`HarperDB ${pjson.version} HTTPS Server running on ${hdb_properties.get('HTTPS_PORT')}`);
 
-                global_schema.setSchemaDataToGlobal((err, data) => {
-                    if (err) {
-                        winston.info('error', err);
-                    }
-
-                });
+                async.parallel(
+                    [
+                        global_schema.setSchemaDataToGlobal,
+                        global_schema.setUsersToGlobal
+                    ], (error, data) => {
+                        if (error) {
+                            winston.error(error);
+                        }
+                    });
             });
         }
 
