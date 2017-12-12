@@ -17,6 +17,7 @@ const insert_validator = require('../validation/insertValidator.js'),
     _ = require('lodash'),
     truncate = require('truncate-utf8-bytes'),
     PropertiesReader = require('properties-reader'),
+    autocast = require('autocast'),
     hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
     hdb_properties.append(hdb_properties.get('settings_path'));
 
@@ -177,7 +178,7 @@ function updateData(update_object, callback){
                 let attributes = new Set();
                 let hashes = [];
                 update_object.records.forEach((record) => {
-                    hashes.push(record[table_schema.hash_attribute].toString());
+                    hashes.push(autocast(record[table_schema.hash_attribute]));
                     Object.keys(record).forEach((attribute) => {
                         attributes.add(attribute);
                     });
@@ -210,7 +211,7 @@ function updateData(update_object, callback){
 
                 update_objects.forEach((record)=>{
                     // need to make sure the attribute is a string for the lodash comparison below.
-                    tracker.update_ids.push(record[hash_attribute].toString());
+                    tracker.update_ids.push(autocast(record[hash_attribute]));
                 });
 
                 caller(null, update_object);
@@ -403,11 +404,11 @@ function checkRecordsExist(insert_object, skipped_records, inserted_records, cal
     async.map(insert_object.records, function(record, inner_callback) {
         fs.access(record[HDB_PATH_KEY], (err) => {
             if (err && err.code === 'ENOENT') {
-                inserted_records.push(record[table_schema.hash_attribute]);
+                inserted_records.push(autocast(record[table_schema.hash_attribute]));
                 inner_callback();
             } else {
                 record[HDB_PATH_KEY] = undefined;
-                skipped_records.push(record[table_schema.hash_attribute]);
+                skipped_records.push(autocast(record[table_schema.hash_attribute]));
                 inner_callback();
             }
         });
