@@ -40,7 +40,8 @@ class Socket_Client{
         if(node.port == o_node.port && o_node.host == node.host ){
             callback("cannnot connect to thyself. ");
         }
-        winston.info(`${node.name} is attempting to connec to ${o_node.name} at ${o_node.host}:${o_node.port}`);
+        //TODO needs to be HTTPS
+        winston.info(`${node.name} is attempting to connect to ${o_node.name} at ${o_node.host}:${o_node.port}`);
         var client =  ioc.connect(`http://${o_node.host}:${o_node.port}`);
 
         client.on("connect", function () {
@@ -53,21 +54,13 @@ class Socket_Client{
         });
 
         client.on('connect_error', (error) => {
-          /**  winston.error(error);
+           /** winston.error(error);
             o_node.status = 'disconnected';
             global.o_nodes[o_node.name] = o_node;
-            winston.warn(`failed to connect to ${o_node.name}`); **/
+            winston.warn(`failed to connect to ${o_node.name}`);
+            callback(error); **/
 
         });
-
-
-
-
-
-
-
-
-
 
         client.on('catchup', function(queue_string){
             winston.info('catchup' + queue_string);

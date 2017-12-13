@@ -31,6 +31,7 @@ class ClusterServer {
     }
 
     addNode(new_node, callback){
+        // need to clean up new node as it hads operation and user on it
         let validation = node_Validator(new_node);
         if(validation){
             return callback(validation);
@@ -47,17 +48,8 @@ class ClusterServer {
            if(err){
                return callback(err);
            }
+           return callback(null, `successfully added ${new_node.name} to manifest`);
 
-           global.cluster_server.socket_server.other_nodes.push(new_node);
-           global.cluster_server.socket_client.connectToNode(
-               global.cluster_server.socket_server.node, new_node, function(err, result){
-                   if(err){
-                       return callback(err);
-                   }
-
-                   return callback(null, `successfully added ${new_node.name} to manifest`);
-
-               });
 
         });
 

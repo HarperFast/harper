@@ -20,8 +20,6 @@ if (cluster.isMaster && !DEBUG) {
 
     };
 
-
-
     search.searchByValue(licenseKeySearch, function (err, licenses) {
         const hdb_license = require('../utility/hdb_license');
         if (err) {
@@ -143,8 +141,10 @@ if (cluster.isMaster && !DEBUG) {
     app.use(passport.initialize());
     app.use(passport.session());
     app.post('/', function (req, res) {
-        if(req.headers.harperdb_connection && !enterprise){
-            return res.status(401).json({"error":"This feature requires an enterprise license.  Please contact us at hello@harperdb.io for more info."});
+
+        let enterprise_operations = ['add_node'];
+        if((req.headers.harperdb_connection || enterprise_operations.indexOf(req.body.operation) > -1) && !enterprise){
+            return res.status(401).json({"error":"This feature requires an enterprise license.  Please register or contact us at hello@harperdb.io for more info."});
         }
 
         auth.authorize(req, res, function (err, user) {
@@ -315,7 +315,8 @@ if (cluster.isMaster && !DEBUG) {
                 break;
             case 'enterprise':
                 enterprise = msg.enterprise;
-                kickOffEnterprise();
+                if(enterprise)
+                    kickOffEnterprise();
                 break;
         }
     });
@@ -370,7 +371,6 @@ if (cluster.isMaster && !DEBUG) {
 
                 }
 
-                global.cluster_server = new ClusterServer(node);
 
 
                 let search_obj = {
@@ -388,6 +388,8 @@ if (cluster.isMaster && !DEBUG) {
 
                     if (nodes) {
                         node.other_nodes = nodes;
+                        global.cluster_server = new ClusterServer(node);
+
                         global.cluster_server.init(function (err) {
                             if (err) {
                                 return winston.error(err);

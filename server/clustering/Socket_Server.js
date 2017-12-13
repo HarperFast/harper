@@ -9,9 +9,6 @@ class Socket_Server {
         this.name = node.name;
         this.port = node.port;
         this.other_nodes = node.other_nodes;
-        if(!this.other_nodes){
-            this.other_nodes = [];
-        }
         global.msg_queue = [];
         global.o_nodes = [];
         global.cluster_queue = [];

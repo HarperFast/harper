@@ -165,6 +165,9 @@ function createTableStructure(create_table_object, callback) {
             if(global.cluster_server
                 && global.cluster_server.socket_server
                 && global.cluster_server.socket_server.other_nodes){
+
+
+
                 let node_names = global.cluster_server.socket_server.other_nodes.map(function(n) {return n.name;});
                 node_names.push(hdb_properties.get('NODE_NAME'));
                 var missing_nodes =  _.difference(create_table_object.residence, node_names)
