@@ -261,7 +261,7 @@ function compareUpdatesToExistingRecords(update_object, hash_attribute, existing
             let update = {};
 
             for (let attr in update_record) {
-                if (existing_record[attr] !== update_record[attr]) {
+                if (autocast(existing_record[attr]) !== autocast(update_record[attr])) {
                     update[attr] = update_record[attr];
 
                     let value = typeof existing_record[attr] === 'object' ? JSON.stringify(existing_record[attr]) : existing_record[attr];
@@ -334,9 +334,11 @@ function checkAttributeSchema(insert_object, callerback) {
     let hash_folders = {};
     let hash_paths = {};
     let base_path = hdb_path + '/' + insert_object.schema + '/' + insert_object.table + '/';
+    let operation = insert_object.operation;
 
     async.each(insert_object.records, function (record, callback) {
-        if(record[HDB_PATH_KEY] === undefined) {
+        //Update function does not set base path, so we should not exit if this is an update and path is undefined.
+        if(record[HDB_PATH_KEY] === undefined && operation !== 'update') {
             return callback();
         }
         let attribute_objects = [];
