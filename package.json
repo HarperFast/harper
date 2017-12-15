@@ -1,6 +1,6 @@
 {
   "name": "harperdb",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "",
   "main": "run.js",
   "bin": "./bin/run.js",
@@ -15,6 +15,7 @@
     "body-parser": "^1.18.1",
     "chunk": "0.0.2",
     "clone": "^2.1.1",
+    "clui": "^0.3.6",
     "connect": "^3.6.3",
     "cors": "^2.8.4",
     "csvtojson": "^1.1.7",
@@ -51,6 +52,7 @@
     "request": "^2.82.0",
     "sqlite-parser": "^1.0.1",
     "sudo-prompt": "^7.1.1",
+    "tar-fs": "^1.16.0",
     "truncate-utf8-bytes": "^1.0.2",
     "uuid": "^3.1.0",
     "validate.js": "^0.11.1",

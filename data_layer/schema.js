@@ -17,7 +17,6 @@ const fs = require('fs.extra')
 let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
 hdb_properties.append(hdb_properties.get('settings_path'));
 
-
 module.exports = {
     createSchema: createSchema,
     createSchemaStructure: createSchemaStructure,
@@ -608,11 +607,8 @@ function createAttribute(create_attribute_object, callback) {
     try {
         createAttributeStructure(create_attribute_object, function (err, success) {
             if (err) {
-                callback(err);
-                return;
+                return callback(err);
             }
-
-            signalling.signalSchemaChange({type: 'schema'});
             addAndRemoveFromQueue(create_attribute_object, success, callback);
         });
     } catch (e) {

@@ -17,6 +17,7 @@ const insert_validator = require('../validation/insertValidator.js'),
     _ = require('lodash'),
     truncate = require('truncate-utf8-bytes'),
     PropertiesReader = require('properties-reader'),
+    signalling = require('../utility/signalling'),
     hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
     hdb_properties.append(hdb_properties.get('settings_path'));
 
@@ -514,6 +515,7 @@ function writeLinkFiles(links, callback) {
  * @param callback
  */
 function createFolders(folders, callback) {
+    let folder_created_flag = false;
     async.each(folders, (folder, caller) => {
         mkdirp(folder, (err, created_folder) => {
             if (err) {
@@ -521,19 +523,22 @@ function createFolders(folders, callback) {
                 return;
             }
 
-            if(folder.indexOf('/__hdb_hash/') >= 0 && created_folder){
+            if(folder.indexOf('/__hdb_hash/') >= 0 && created_folder) {
+                folder_created_flag = true;
                 createNewAttribute(folder, (error)=>{
                     caller();
                 });
             } else {
                 caller();
             }
-
         });
     }, function (err) {
         if (err) {
             callback(err);
             return;
+        }
+        if( folder_created_flag ) {
+            signalling.signalSchemaChange({type: 'schema'});
         }
         callback();
     });
