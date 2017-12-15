@@ -45,7 +45,7 @@ if {$force_conservative} {
 #exp_internal 1
 cd /opt/harperdb/bin
 set timeout -1
-spawn node harperdb.js register
+spawn ./linux-harperdb register
 match_max 100000
 expect "*"
 send -- "harperdb.io\r"
