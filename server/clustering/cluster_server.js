@@ -1,10 +1,12 @@
 const Socket_Server = require('./Socket_Server'),
     Socket_Client = require('./Socket_Client'),
     insert = require('../../data_layer/insert'),
-    node_Validator = require('../../validation/nodeValidator');
+    clone = require('clone'),
+    server_utilities = require('../server_utilities');
 
 
-class ClusterServer {
+
+    class ClusterServer {
     constructor(node) {
         this.socket_server = new Socket_Server(node);
         this.socket_client = new Socket_Client(node);
@@ -20,40 +22,43 @@ class ClusterServer {
         this.socket_client.establishConnections(next);
     }
 
-
-
     send(msg, res){
         this.socket_server.send(msg, res);
+    }
+
+    broadCast(req, res, operation_function){
+            var operation = clone(req.body.operation);
+            server_utilities.processLocalTransaction(req, res, operation_function, function (err, data) {
+                if (!err) {
+                    for (let o_node in global.cluster_server.socket_server.other_nodes) {
+                        let payload = {};
+                        payload.msg = req.body
+                        if (data.id) {
+                            payload.msg.id = data.id;
+
+                        }
+
+                        if (!req.body.operation) {
+                            payload.msg.operation = operation;
+                        }
+
+
+                        payload.node = global.cluster_server.socket_server.other_nodes[o_node];
+                        global.cluster_server.send(payload, res);
+                    }
+
+                }
+
+            });
+
+
+
     }
 
     connectToNode(node, o_node, callback){
         this.socket_client.connectToNode(node, o_node, callback);
     }
 
-    addNode(new_node, callback){
-        // need to clean up new node as it hads operation and user on it
-        let validation = node_Validator(new_node);
-        if(validation){
-            return callback(validation);
-        }
-
-        let new_node_insert = {
-            "operation":"insert",
-            "schema":"system",
-            "table":"hdb_nodes",
-            "records": [new_node]
-        }
-
-        insert.insert(new_node_insert, function(err, result){
-           if(err){
-               return callback(err);
-           }
-           return callback(null, `successfully added ${new_node.name} to manifest`);
-
-
-        });
-
-    }
 
 
 

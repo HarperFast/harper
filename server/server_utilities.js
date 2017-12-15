@@ -14,7 +14,8 @@ const  write = require('../data_layer/insert'),
     user = require('../security/user'),
     role = require('../security/role'),
     read_log = require('../utility/logging/read_logs'),
-    winston = require('../utility/logging/winston_logger');
+    winston = require('../utility/logging/winston_logger'),
+    clusert_utilities = require('./clustering/cluster_utilities');
 
 
 function processLocalTransaction(req, res, operation_function, callback){
@@ -157,7 +158,7 @@ function chooseOperation(json, callback) {
             operation_function = read_log.read_log;
             break;
         case 'add_node':
-            operation_function = global.cluster_server.addNode;
+            operation_function = clusert_utilities.addNode
             break;
 
 

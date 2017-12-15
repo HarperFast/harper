@@ -1,5 +1,5 @@
 const cluster = require('cluster');
-let numCPUs = 4;
+let numCPUs = 1;
 const DEBUG = false;
 const winston = require('../utility/logging/winston_logger');
 const search = require('../data_layer/search');
@@ -30,12 +30,12 @@ if (cluster.isMaster && !DEBUG) {
                 hdb_license.validateLicense(license.license_key, license.company, function (err, license_validation) {
                     if (license_validation.valid_machine && license_validation.valid_date  && license_validation.valid_license){
                         enterprise = true;
-                        if(numCPUs === 4){
+                       /** if(numCPUs === 4){
                              numCPUs = 16;
                         }else{
                             numCPUs +=16;
 
-                        }
+                        } **/
                     }
                     callback();
 
@@ -56,7 +56,12 @@ if (cluster.isMaster && !DEBUG) {
                     forked.on('message', messageHandler);
                     forks.push(forked);
                 }
-                messageHandler({"type":"enterprise", "enterprise": enterprise});
+
+
+                messageHandler({"type":"enterprise", "enterprise":enterprise});
+
+
+
 
                 cluster.on('exit', (worker, code, signal) => {
                     winston.info(`worker ${worker.process.pid} died`);
@@ -169,34 +174,7 @@ if (cluster.isMaster && !DEBUG) {
                     return;
                 }
 
-                function broadCast() {
 
-                    var operation = clone(req.body.operation);
-                    server_utilities.processLocalTransaction(req, res, operation_function, function (err, data) {
-                        if (!err) {
-                            for (let o_node in global.cluster_server.socket_server.other_nodes) {
-                                let payload = {};
-                                payload.msg = req.body
-                                if (data.id) {
-                                    payload.msg.id = data.id;
-
-                                }
-
-                                if (!req.body.operation) {
-                                    payload.msg.operation = operation;
-                                }
-
-
-                                payload.node = global.cluster_server.socket_server.other_nodes[o_node];
-                                global.cluster_server.send(payload, res);
-                            }
-
-                        }
-
-                    });
-
-
-                }
 
 
                 //TODO read log? describe_all etc...
@@ -214,7 +192,7 @@ if (cluster.isMaster && !DEBUG) {
                                 winston.error(err);
                             })
                         } else {
-                            return broadCast();
+                            return cluster_server.broadCast(req, res, operation_function);
                         }
 
                     } else {
@@ -233,7 +211,7 @@ if (cluster.isMaster && !DEBUG) {
                                 }
 
                                 if (residence.indexOf('*') > -1) {
-                                    return broadCast();
+                                    return cluster_server.broadCast(req, res, operation_function);
                                 }
 
                                 if (residence.indexOf(hdb_properties.get('NODE_NAME')) > -1) {
@@ -315,8 +293,12 @@ if (cluster.isMaster && !DEBUG) {
                 break;
             case 'enterprise':
                 enterprise = msg.enterprise;
-                if(enterprise)
-                    kickOffEnterprise();
+                if(enterprise){
+                    const enterprise_util = require('../utility/enterprise_initialization');
+                    enterprise_util.kickOffEnterprise();
+
+                }
+
                 break;
         }
     });
@@ -363,56 +345,6 @@ if (cluster.isMaster && !DEBUG) {
         }
 
 
-        function kickOffEnterprise(){
-            if (hdb_properties.get('CLUSTERING') && enterprise) {
-                var node = {
-                    "name": hdb_properties.get('NODE_NAME'),
-                    "port": hdb_properties.get('CLUSTERING_PORT'),
-
-                }
-
-
-
-                let search_obj = {
-                    "table": "hdb_nodes",
-                    "schema": "system",
-                    "search_attribute": "host",
-                    "hash_attribute": "name",
-                    "search_value": "*",
-                    "get_attributes": ["*"]
-                }
-                search.searchByValue(search_obj, function (err, nodes) {
-                    if (err) {
-                        winston.error(err);
-                    }
-
-                    if (nodes) {
-                        node.other_nodes = nodes;
-                        global.cluster_server = new ClusterServer(node);
-
-                        global.cluster_server.init(function (err) {
-                            if (err) {
-                                return winston.error(err);
-                            }
-                            global.cluster_server.establishConnections(function (err) {
-                                if (err) {
-                                    return winston.error(err);
-                                }
-
-                                winston.info('clustering established');
-
-                            })
-
-                        });
-
-                    }
-
-                });
-
-
-            }
-
-        }
 
 
 
