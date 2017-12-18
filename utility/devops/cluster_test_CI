@@ -27,6 +27,8 @@ printf  "\nCLUSTERING=TRUE\nCLUSTERING_PORT = %s\nNODE_NAME = node_%s" "$cluster
 
 /opt/harperdb/utility/devops/script_register.exp $target_dir/node_$node_count/harperdb
 
+./linux-harperdb run
+
 node_count=$(($node_count -1));
 http_port=$(($http_port + $port_offset));
 cluster_port=$(($cluster_port));
