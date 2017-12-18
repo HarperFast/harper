@@ -40,10 +40,21 @@ if {$force_conservative} {
 # Read the man page for more info.
 #
 # -Don
-
-
 #exp_internal 1
-cd /opt/harperdb/bin
+set rootdir [lindex $argv 0];
+
+
+if { $rootdir eq ""} {
+    puts "True";
+    cd /opt/harperdb/bin
+} else {
+    puts "False";
+    cd $rootdir/bin
+}
+
+
+puts ""
+
 set timeout -1
 spawn ./linux-harperdb register
 match_max 100000
