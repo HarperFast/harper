@@ -11,20 +11,12 @@ module.exports = {
 };
 
 function evaluateSQL(sql, callback) {
-    global_schema.setSchemaDataToGlobal((err, data)=>{
-        if(err){
-            callback(err);
-            return;
+    processSQL(sql.sql, (error, results)=>{
+        if(error){
+            return callback(error);
         }
 
-        processSQL(sql.sql, (error, results)=>{
-            if(error){
-                callback(error);
-                return;
-            }
-
-            callback(null, results);
-        });
+        callback(null, results);
     });
 }
 

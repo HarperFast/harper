@@ -282,12 +282,15 @@ if (cluster.isMaster && !DEBUG) {
             secureServer.setTimeout(server_timeout ? server_timeout : DEFAULT_SERVER_TIMEOUT);
             secureServer.listen(hdb_properties.get(PROPS_HTTP_SECURE_PORT_KEY), function(){
                 winston.info(`HarperDB ${pjson.version} HTTPS Server running on ${hdb_properties.get(PROPS_HTTP_SECURE_PORT_KEY)}`);
-
-                global_schema.setSchemaDataToGlobal((err, data) => {
-                    if (err) {
-                        winston.info('error', err);
-                    }
-                });
+                async.parallel(
+                    [
+                        global_schema.setSchemaDataToGlobal,
+                        global_schema.setUsersToGlobal
+                    ], (error, data) => {
+                        if (error) {
+                            winston.error(error);
+                        }
+                    });
             });
         }
 

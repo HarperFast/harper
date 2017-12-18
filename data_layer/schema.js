@@ -17,7 +17,6 @@ const fs = require('fs.extra')
 let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
 hdb_properties.append(hdb_properties.get('settings_path'));
 
-
 module.exports = {
     createSchema: createSchema,
     createSchemaStructure: createSchemaStructure,
@@ -227,7 +226,7 @@ function moveSchemaStructureToTrash(drop_schema_object, callback) {
                     winston.error(err);
                     return callback(err);
                 } else {
-                    callback(null, data);
+                    callback(null, `successfully deleted schema ${schema}`);
                 }
             });
     } catch (e) {
@@ -360,13 +359,13 @@ function buildDropSchemaSearchObject(schema, msg, callback) {
  * @param callback - callback function
  * @returns {*}
  */
-function moveSchemaToTrash(drop_table_object, tables, callback) {
-    if(!drop_table_object) { return callback("drop_table_object was not found.");}
+function moveSchemaToTrash(drop_schema_object, tables, callback) {
+    if(!drop_schema_object) { return callback("drop_table_object was not found.");}
     if(!tables) { return callback("tables parameter was null.")}
     let root_path = hdb_properties.get('HDB_ROOT');
-    let path = `${root_path}/schema/${drop_table_object.schema}`;
+    let path = `${root_path}/schema/${drop_schema_object.schema}`;
     let currDate = new Date().toISOString().substr(0, 19);
-    let destination_name = `${drop_table_object.schema}-${currDate}`;
+    let destination_name = `${drop_schema_object.schema}-${currDate}`;
     let trash_path = `${root_path}/trash`;
 
     //mkdirp will no-op if the 'trash' dir already exists.
@@ -389,7 +388,15 @@ function moveSchemaToTrash(drop_table_object, tables, callback) {
                         delete_table_object.hash_values.push(tables[t].id);
                     }
                 }
-                callback(null, delete_table_object);
+                if( delete_table_object.hash_values && delete_table_object.hash_values.length > 0 ) {
+                    delete_.delete(delete_table_object, function (err, data) {
+                        if (err) {
+                            return callback(err);
+                        }
+                        callback(null, delete_table_object);
+                    });
+                }
+                callback(null, drop_schema_object);
             });
     });
 }
@@ -402,7 +409,7 @@ function moveSchemaToTrash(drop_table_object, tables, callback) {
 function deleteSchemaAttributes(drop_schema_object, callback) {
     deleteAttributeStructure(drop_schema_object, function deleteSuccess(err, data) {
         if (err) { return callback(err); }
-        return callback(null, `successfully deleted schema ${schema}`);
+        return callback(null, `successfully deleted schema attributes ${data}`);
     });
 }
 
@@ -600,11 +607,8 @@ function createAttribute(create_attribute_object, callback) {
     try {
         createAttributeStructure(create_attribute_object, function (err, success) {
             if (err) {
-                callback(err);
-                return;
+                return callback(err);
             }
-
-            signalling.signalSchemaChange({type: 'schema'});
             addAndRemoveFromQueue(create_attribute_object, success, callback);
         });
     } catch (e) {

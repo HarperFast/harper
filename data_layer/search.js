@@ -15,7 +15,8 @@ const base_path = hdb_properties.get('HDB_ROOT') + "/schema/"
     autocast = require('autocast'),
     math = require('mathjs'),
     aggregate_functions = require('../utility/functions/aggregateFunctions.json'),
-    jinqjs = require('jinq');
+    jinqjs = require('jinq'),
+    system_schema = require('../json/systemSchema.json');
 
 math.import([
     require('../utility/functions/math/count'),
@@ -96,10 +97,17 @@ function searchByValue (search_object, callback) {
         let condition = {};
         condition[operation] = [search_object.search_attribute, search_object.search_value];
 
+        let hash_attribute = null;
+        if(search_object.schema === 'system'){
+            hash_attribute = system_schema[search_object.table].hash_attribute;
+        } else {
+            hash_attribute = global.hdb_schema[search_object.schema][search_object.table].hash_attribute;
+        }
+
         let patterns = condition_patterns.createPatterns(condition, {
             name: search_object.table,
             schema: search_object.schema,
-            hash_attribute: search_object.hash_attribute
+            hash_attribute: hash_attribute
         }, base_path);
 
         if(search_object.schema !== 'system' && (!global.hdb_schema[search_object.schema] || !global.hdb_schema[search_object.schema][search_object.table])){
@@ -117,7 +125,7 @@ function searchByValue (search_object, callback) {
             async.waterfall([
                 file_search.findIDsByRegex.bind(null, patterns.folder_search_path, patterns.folder_search, patterns.blob_search),
                 getAttributeFiles.bind(null, search_object.get_attributes, patterns.table_path),
-                consolidateData.bind(null, search_object.hash_attribute)
+                consolidateData.bind(null, hash_attribute)
             ], (error, data) => {
                 if (error) {
                     callback(error);
