@@ -21,13 +21,13 @@ cp -R $working_dir/* $target_dir/node_$node_count/harperdb/
 sed -i "/HDB_PROC_NAME/ s/ =.*/ = 'no_oneis_here';/" $target_dir/node_$node_count/harperdb/bin/run.js
 
 cd $target_dir/node_$node_count/harperdb/bin
-./linux-harperdb install --TC_AGREEMENT yes --HDB_ROOT $target_dir/node_$node_count/data/hdb --HTTP_PORT $http_port  --HTTPS_PORT 31283 --HDB_ADMIN_USERNAME admin --HDB_ADMIN_PASSWORD Abc1234! --HDB_REGISTER false
+node harperdb.js install --TC_AGREEMENT yes --HDB_ROOT $target_dir/node_$node_count/data/hdb --HTTP_PORT $http_port  --HTTPS_PORT 31283 --HDB_ADMIN_USERNAME admin --HDB_ADMIN_PASSWORD Abc1234! --HDB_REGISTER false
 
 printf  "\nCLUSTERING=TRUE\nCLUSTERING_PORT = %s\nNODE_NAME = node_%s" "$cluster_port" "$node_count" >> $target_dir/node_$node_count/data/hdb/config/settings.js
 
 /opt/harperdb/utility/devops/script_register.exp $target_dir/node_$node_count/harperdb
 
-./linux-harperdb run
+node harperdb.js run
 
 node_count=$(($node_count -1));
 http_port=$(($http_port + $port_offset));
