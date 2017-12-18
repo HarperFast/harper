@@ -11,12 +11,30 @@ const PROPS_SERVER_TIMEOUT_KEY = 'SERVER_TIMEOUT_MS',
     PROPS_HTTP_PORT_KEY = 'HTTP_PORT',
     PROPS_HTTP_SECURE_PORT_KEY = 'HTTPS_PORT',
     PROPS_CORS_KEY = 'CORS_ON',
-    PROPS_CORS_WHITELIST_KEY = 'CORS_WHITELIST'
+    PROPS_CORS_WHITELIST_KEY = 'CORS_WHITELIST',
+    PROPS_ENV_KEY = 'NODE_ENV',
+    ENV_PROD_VAL = 'production',
+    ENV_DEV_VAL = 'development',
     TRUE_COMPARE_VAL = 'TRUE';
+
+PropertiesReader = require('properties-reader');
+hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
+hdb_properties.append(hdb_properties.get('settings_path'));
+
+let node_env_value = hdb_properties.get(PROPS_ENV_KEY);
+
+// If NODE_ENV is empty, it will show up here as '0' rather than '' or length of 0.
+if( node_env_value === undefined || node_env_value === null || node_env_value === 0) {
+    node_env_value = ENV_PROD_VAL;
+} else if(node_env_value !== ENV_PROD_VAL || node_env_value !== ENV_DEV_VAL) {
+    node_env_value = ENV_PROD_VAL;
+}
+
+process.env['NODE_ENV'] = node_env_value;
 
 if (cluster.isMaster && !DEBUG) {
     winston.info(`Master ${process.pid} is running`);
-
+    winston.info(`Running with NODE_ENV as: ${process.env.NODE_ENV}`);
     // Fork workers.
     let forks = [];
     let num_workers = require('os').cpus().length;
@@ -39,9 +57,8 @@ if (cluster.isMaster && !DEBUG) {
 
 } else {
     winston.info('In express' + process.cwd());
+    winston.info(`Running with NODE_ENV as: ${process.env.NODE_ENV}`);
     const express = require('express'),
-        PropertiesReader = require('properties-reader'),
-        hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`),
         app = express(),
         bodyParser = require('body-parser'),
         write = require('../data_layer/insert'),
@@ -61,7 +78,7 @@ if (cluster.isMaster && !DEBUG) {
         async = require('async'),
         cors = require('cors');
 
-    hdb_properties.append(hdb_properties.get('settings_path'));
+
     let props_cors = hdb_properties.get(PROPS_CORS_KEY);
     let props_cors_whitelist = hdb_properties.get(PROPS_CORS_WHITELIST_KEY);
     if(props_cors && (props_cors === true || props_cors.toUpperCase() === TRUE_COMPARE_VAL)){

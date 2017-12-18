@@ -289,7 +289,8 @@ function createSettingsFile(mount_status, callback) {
             `HTTP_ON = TRUE \n` +
             `CORS_ON = TRUE\n` +
             `CORS_WHITELIST =\n` +
-            `SERVER_TIMEOUT_MS = 120000\n`;
+            `SERVER_TIMEOUT_MS = 120000\n` +
+            `NODE_ENV = production\n`;
 
         winston.info('info', `hdb_props_value ${JSON.stringify(hdb_props_value)}`);
         winston.info('info', `settings path: ${hdb_boot_properties.get('settings_path')}`);
