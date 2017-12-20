@@ -68,7 +68,6 @@ if (cluster.isMaster && !DEBUG) {
         schema = require('../data_layer/schema'),
         delete_ = require('../data_layer/delete'),
         auth = require('../security/auth'),
-        session = require('express-session'),
         passport = require('passport'),
         user = require('../security/user'),
         role = require('../security/role'),
@@ -77,7 +76,6 @@ if (cluster.isMaster && !DEBUG) {
         pjson = require('../package.json'),
         async = require('async'),
         cors = require('cors');
-
 
     let props_cors = hdb_properties.get(PROPS_CORS_KEY);
     let props_cors_whitelist = hdb_properties.get(PROPS_CORS_WHITELIST_KEY);
@@ -112,10 +110,7 @@ if (cluster.isMaster && !DEBUG) {
         }
     });
 
-    app.use(session({ secret: 'keyboard cat',     resave: true,
-        saveUninitialized: true }));
     app.use(passport.initialize());
-    app.use(passport.session());
     app.post('/', function (req, res) {
         auth.authorize(req, res, function(err, user) {
             res.set('x-powered-by', 'HarperDB');
