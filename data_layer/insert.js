@@ -318,6 +318,23 @@ function unlinkFiles(unlink_paths, update_objects, callback) {
 }
 
 /**
+ * This function is used to remove HDB internal values (such as HDB_INTERNAL_PATH) from the record when it
+ * is stringified.
+ * @param key - the key of the record
+ * @param value - the value of the record
+ * @returns {*}
+ */
+function filterHDBValues(key, value) {
+    if(key === HDB_PATH_KEY) {
+        return undefined;
+    }
+    else {
+        return value;
+    }
+}
+
+
+/**
  *
  * @param insert_object
  * @param callerback
@@ -372,7 +389,8 @@ function checkAttributeSchema(insert_object, callerback) {
                 hash_folders[attribute_path] = "";
                 attribute_objects.push({
                     file_name: `${attribute_path}/${epoch}.hdb`,
-                    value: JSON.stringify(record)
+                    // Need to use the filter to remove the HDB_INTERNAL_PATH from the record before it is added to a file.
+                    value: JSON.stringify(record, filterHDBValues)
                 });
             }
         }
