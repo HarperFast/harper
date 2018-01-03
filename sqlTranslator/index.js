@@ -1,7 +1,8 @@
 const sqliteParser = require('sqlite-parser'),
     insert = require('../data_layer/insert'),
     global_schema = require('../utility/globalSchema'),
-    select_translator = require('./selectTranslator').convertSelect,
+    //select_translator = require('./selectTranslator').convertSelect,
+    search = require('../data_layer/search2').search,
     update_translator = require('./updateTranslator').convertUpdate,
     delete_translator = require('./deleteTranslator').convertDelete,
     winston = require('../utility/logging/winston_logger'),
@@ -39,7 +40,7 @@ function processSQL(sql, callback){
         let sql_function = nullFunction;
         switch (variant) {
             case 'select':
-                sql_function = select_translator;
+                sql_function = search;
                 break;
             case 'insert':
                 //TODO add validator for insert, need to make sure columns are specified
