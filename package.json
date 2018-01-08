@@ -46,6 +46,7 @@
     "passport": "^0.3.2",
     "passport-http": "^0.3.0",
     "passport-local": "^1.0.0",
+    "pino": "^4.10.3",
     "prompt": "^1.0.0",
     "properties-reader": "0.0.15",
     "randomstring": "^1.1.5",
@@ -72,5 +73,10 @@
     "assets": [
       "./utility/install/*.txt"
     ]
+  },
+  "devDependencies": {
+    "assert": "^1.4.1",
+    "mocha": "^4.1.0",
+    "sinon": "^4.1.4"
   }
 }
