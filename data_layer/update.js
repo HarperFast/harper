@@ -2,23 +2,36 @@ const search = require('../data_layer/search'),
     async = require('async'),
     global_schema = require('../utility/globalSchema'),
     winston = require('../utility/logging/winston_logger'),
-    write = require('./insert');
+    write = require('./insert'),
+    clone = require('clone'),
+    alasql = require('alasql');
 
 module.exports = {
     update: update
 };
 
-function update(update_wrapper, callback){
-    global_schema.getTableSchema(update_wrapper.schema, update_wrapper.table, (err, table_info)=>{
+function update(statement, callback){
+    global_schema.getTableSchema(statement.table.databaseid, statement.table.tableid, (err, table_info)=>{
         if(err){
             callback(err);
             return;
         }
 
+        let update_record = createUpdateRecord(statement.columns);
+
+        //convert this update statement to a search capable statement
+        let {table: from, where} = statement;
+        let table_clone = clone(from);
+        let search_statement = new alasql.yy.Select();
+        let columns = [new alasql.yy.Column({columnid:table_info.hash_attribute, tableid: statement.table.tableid})];
+        search_statement.columns = columns;
+        search_statement.from = [from];
+        search_statement.where = where;
+
         async.waterfall([
-            search.multiConditionSearch.bind(null,update_wrapper.conditions, table_info),
-            buildUpdateRecords.bind(null, update_wrapper.record, table_info),
-            updateRecords.bind(null, update_wrapper)
+            search.search.bind(null, search_statement),
+            buildUpdateRecords.bind(null, update_record),
+            updateRecords.bind(null, table_clone)
         ], (err, results)=>{
             if(err){
                 if(err.hdb_code){
@@ -33,26 +46,33 @@ function update(update_wrapper, callback){
 
 }
 
-function buildUpdateRecords(update_record, table_info, ids, callback){
-    let records = [];
-    if(!ids || ids.length === 0){
+function createUpdateRecord(columns){
+    let record = {};
+
+    columns.forEach((column)=>{
+        record[column.column.columnid] = column.expression.value ? column.expression.value : column.expression.columnid;
+    });
+
+    return record;
+}
+
+function buildUpdateRecords(update_record, records, callback){
+    if(!records || records.length === 0){
         return callback({hdb_code:1, message: "update statement found no records to update"});
     }
 
-    ids.forEach((id)=>{
-        let record = update_record;
-        record[table_info.hash_attribute] = id;
-        records.push(record);
+    let new_records = records.map((record)=>{
+        return Object.assign(record, update_record);
     });
 
-    callback(null, records);
+    callback(null, new_records);
 }
 
-function updateRecords(update_wrapper, records, callback){
+function updateRecords(table, records, callback){
     let update_object = {
         operation:'update',
-        schema:update_wrapper.schema,
-        table:update_wrapper.table,
+        schema: table.databaseid,
+        table: table.tableid,
         records:records
     };
 

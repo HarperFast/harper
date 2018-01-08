@@ -2,8 +2,9 @@ const sqliteParser = require('sqlite-parser'),
     insert = require('../data_layer/insert'),
     global_schema = require('../utility/globalSchema'),
     //select_translator = require('./selectTranslator').convertSelect,
-    search = require('../data_layer/search2').search,
-    update_translator = require('./updateTranslator').convertUpdate,
+    search = require('../data_layer/search').search,
+    //update_translator = require('./updateTranslator').convertUpdate,
+    update = require('../data_layer/update').update,
     delete_translator = require('./deleteTranslator').convertDelete,
     winston = require('../utility/logging/winston_logger'),
     alasql = require('alasql');
@@ -47,7 +48,7 @@ function processSQL(sql, callback){
                 sql_function = convertInsert;
                 break;
             case 'update':
-                sql_function = update_translator;
+                sql_function = update;
                 break;
             case 'delete':
                 sql_function = delete_translator;
@@ -77,15 +78,15 @@ function nullFunction(sql, callback) {
 
 function convertInsert(statement, callback) {
 
-    let schema_table = statement.into.name.split('.');
+    let schema_table = statement.into;
     let insert_object = {
-        schema : schema_table[0],
-        table : schema_table[1],
+        schema : schema_table.databaseid,
+        table : schema_table.tableid,
         operation:'insert'
     };
 
-    let columns = statement.into.columns.map((column) => {
-        return column.name;
+    let columns = statement.columns.map((column) => {
+        return column.columnid;
     });
 
     insert_object.records = createDataObjects(columns, statement.result);

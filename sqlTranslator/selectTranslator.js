@@ -1,4 +1,4 @@
-const search = require('../data_layer/search2').search,
+const search = require('../data_layer/search').search,
     SelectValidator = require('./SelectValidator').validator;
 
 
