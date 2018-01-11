@@ -1,11 +1,6 @@
-module.exports = {
-    chooseOperation: chooseOperation,
-    processLocalTransaction: processLocalTransaction,
-    proccessDelegatedTransaction: proccessDelegatedTransaction
-
-}
 
 const  write = require('../data_layer/insert'),
+    uuidv1 = require('uuid/v1'),
     search = require('../data_layer/search'),
     sql = require('../sqlTranslator/index').evaluateSQL,
     csv = require('../data_layer/csvBulkLoad'),
@@ -16,6 +11,16 @@ const  write = require('../data_layer/insert'),
     read_log = require('../utility/logging/read_logs'),
     winston = require('../utility/logging/winston_logger'),
     clusert_utilities = require('./clustering/cluster_utilities');
+
+
+
+module.exports = {
+    chooseOperation: chooseOperation,
+    processLocalTransaction: processLocalTransaction,
+    proccessDelegatedTransaction: proccessDelegatedTransaction,
+    processInThread: processInThread
+
+}
 
 
 function processLocalTransaction(req, res, operation_function, callback){
@@ -34,8 +39,9 @@ function processLocalTransaction(req, res, operation_function, callback){
             }
             if(typeof data != 'object')
                 data = {"message": data};
-            callback(null, data);
-            return res.status(200).json(data);
+
+            res.status(200).json(data);
+            return callback(null, data);
         });
     } catch (e) {
         winston.error(e);
@@ -44,8 +50,8 @@ function processLocalTransaction(req, res, operation_function, callback){
     }
 }
 
+function processInThread(operation, operation_function, callback){
 
-function proccessDelegatedTransaction(operation, operation_function, callback){
     try {
         if(operation.operation != 'read_log')
             winston.info(JSON.stringify(operation));
@@ -55,8 +61,7 @@ function proccessDelegatedTransaction(operation, operation_function, callback){
                 winston.info(error);
                 if(typeof error != 'object')
                     error = {"error": error};
-
-               return callback(null, error);
+                return callback(null, error);
             }
             if(typeof data != 'object')
                 data = {"message": data};
@@ -66,8 +71,26 @@ function proccessDelegatedTransaction(operation, operation_function, callback){
         winston.error(e);
         return callback(e);
     }
+}
+
+
+
+function proccessDelegatedTransaction(operation, operation_function, callback){
+
+    let f = Math.floor(Math.random() * Math.floor(global.forks.length))
+    let payload = {
+        "id": uuidv1(),
+        "body":operation,
+        "type":"delegate_transaction"
+    }
+    global.delegate_callback_queue[payload.id] = callback;
+    global.forks[f].send(payload);
+
 
 }
+
+
+
 
 function chooseOperation(json, callback) {
     let operation_function = nullOperation;

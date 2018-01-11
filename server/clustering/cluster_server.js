@@ -5,8 +5,7 @@ const Socket_Server = require('./Socket_Server'),
     server_utilities = require('../server_utilities');
 
 
-
-    class ClusterServer {
+class ClusterServer {
     constructor(node) {
         this.socket_server = new Socket_Server(node);
         this.socket_client = new Socket_Client(node);
@@ -14,64 +13,50 @@ const Socket_Server = require('./Socket_Server'),
 
     }
 
-    init(next){
+    init(next) {
         this.socket_server.init(next);
     }
 
-    establishConnections(next){
+    establishConnections(next) {
         this.socket_client.establishConnections(next);
     }
 
-    send(msg, res){
-        this.socket_server.send(msg, res);
+    send(msg, res) {
+        let payload = {};
+        payload.body = msg.body;
+        payload.id = msg.id;
+        payload.node = msg.node;
+
+        this.socket_server.send(payload, res);
     }
 
-    broadCast(req, res, operation_function){
-            var operation = clone(req.body.operation);
-            server_utilities.processLocalTransaction(req, res, operation_function, function (err, data) {
-                if (!err) {
-                    for (let o_node in global.cluster_server.socket_server.other_nodes) {
-                        let payload = {};
-                        payload.msg = req.body
-                        if (data.id) {
-                            payload.msg.id = data.id;
+    broadCast(msg) {
 
-                        }
-
-                        if (!req.body.operation) {
-                            payload.msg.operation = operation;
-                        }
+        var operation = clone(msg.body.operation);
+        for (let o_node in global.cluster_server.socket_server.other_nodes) {
+            let payload = {};
+            payload.body = msg.body;
+            payload.id = msg.id;
 
 
-                        payload.node = global.cluster_server.socket_server.other_nodes[o_node];
-                        global.cluster_server.send(payload, res);
-                    }
 
-                }
 
-            });
+            if (!msg.body.operation) {
+                payload.body.operation = operation;
+            }
+            payload.node = global.cluster_server.socket_server.other_nodes[o_node];
+            // senb working here
 
+
+            global.cluster_server.send(payload);
+        }
 
 
     }
 
-    connectToNode(node, o_node, callback){
+    connectToNode(node, o_node, callback) {
         this.socket_client.connectToNode(node, o_node, callback);
     }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 }

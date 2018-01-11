@@ -162,61 +162,82 @@ function createTableStructure(create_table_object, callback) {
         };
 
         if(create_table_object.residence){
-            if(global.cluster_server
-                && global.cluster_server.socket_server
-                && global.cluster_server.socket_server.other_nodes){
+            if(global.clustering_on){
+                let search_obj = {};
+                search_obj.schema = 'system';
+                search_obj.table = 'hdb_nodes';
+                search_obj.hash_attribute = 'name';
+                search_obj.hash_values =create_table_object.residence;
+                search_obj.get_attributes = ['name'];
+
+                search.searchByHash(search_obj, function(err, data){
+                   if(err){
+                      winston.error(err);
+                      return callback(err)
+                   }
+                    let residence_nodes = [hdb_properties.get('NODE_NAME')];
+                    for(let item in data){
+                        residence_nodes.push(data[item].name);
+                    }
 
 
+                    var missing_nodes =  _.difference(create_table_object.residence, residence_nodes)
+                    if(missing_nodes && missing_nodes.length > 0){
+                        return callback(`Clustering error unable to find ${JSON.stringify(missing_nodes)}`);
+                    }
 
-                let node_names = global.cluster_server.socket_server.other_nodes.map(function(n) {return n.name;});
-                node_names.push(hdb_properties.get('NODE_NAME'));
-                var missing_nodes =  _.difference(create_table_object.residence, node_names)
-                if(missing_nodes && missing_nodes.length > 0){
-                    return callback(`Clustering error unable to find ${JSON.stringify(missing_nodes)}`);
-                }
+                    table.residence = create_table_object.residence;
+                    insertTable();
 
-                table.residence = create_table_object.residence;
+                });
 
             }else{
-                return callback(`Clustering does not appear to be enabled.  Cannot insert table with proerty residence.`);
+                return callback(`Clustering does not appear to be enabled.  Cannot insert table with property residence.`);
             }
 
+        }else{
+            insertTable();
         }
 
-        let insertObject = {
-            operation: 'insert',
-            schema: 'system',
-            table: 'hdb_table',
-            hash_attribute: 'id',
-            records: [table]
-        };
 
-        insert.insert(insertObject, function (err, result) {
-            if (err) {
-                callback(err);
-                return;
-            }
 
-            fs.mkdir(hdb_properties.get('HDB_ROOT') + '/schema/' + create_table_object.schema + '/' + create_table_object.table, function (err, data) {
+        function insertTable(){
+            let insertObject = {
+                operation: 'insert',
+                schema: 'system',
+                table: 'hdb_table',
+                hash_attribute: 'id',
+                records: [table]
+            };
+
+            insert.insert(insertObject, function (err, result) {
                 if (err) {
-                    if (err.errno === -2) {
-                        callback("schema does not exist", null);
-                        return;
-                    }
-
-                    if (err.errno === -17) {
-                        callback("table already exists", null);
-                        return;
-
-                    } else {
-                        callback('createTableStructure:' + err.message);
-                        return
-                    }
+                    callback(err);
+                    return;
                 }
 
-                callback(null, `table ${create_table_object.schema}.${create_table_object.table} successfully created.`);
+                fs.mkdir(hdb_properties.get('HDB_ROOT') + '/schema/' + create_table_object.schema + '/' + create_table_object.table, function (err, data) {
+                    if (err) {
+                        if (err.errno === -2) {
+                            callback("schema does not exist", null);
+                            return;
+                        }
+
+                        if (err.errno === -17) {
+                            callback("table already exists", null);
+                            return;
+
+                        } else {
+                            callback('createTableStructure:' + err.message);
+                            return
+                        }
+                    }
+
+                    callback(null, `table ${create_table_object.schema}.${create_table_object.table} successfully created.`);
+                });
             });
-        });
+        }
+
     });
 }
 

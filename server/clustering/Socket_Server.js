@@ -1,7 +1,7 @@
-const uuidv1 = require('uuid/v1'),
+const
     winston = require('../../utility/logging/winston_logger'),
     search = require('../../data_layer/search')
-    insert = require('../../data_layer/insert');
+insert = require('../../data_layer/insert');
 
 class Socket_Server {
     constructor(node) {
@@ -77,18 +77,18 @@ class Socket_Server {
 
                 socket.on('confirm_msg', function (msg) {
                     winston.info(msg);
-                    if (global.msg_queue[msg.id]) {
-                        if (msg.error) {
-                            global.msg_queue[msg.id].status(200).json(msg.error);
 
-                        } else if (msg.data) {
-                            global.msg_queue[msg.id].status(200).json(msg.data);
-
+                    msg.type = 'cluster_response';
+                    let queded_msg = global.forkClusterMsgQueue[msg.id];
+                    for (let f in global.forks) {
+                        if (global.forks[f].process.pid === queded_msg.pid) {
+                            global.forks[f].send(msg);
                         }
-
-                        delete global.cluster_queue[msg.node.name][msg.id];
-
                     }
+
+
+                    delete global.cluster_queue[msg.node.name][msg.id];
+
 
                     //this.queue[msg].recieved = true;
                 });
@@ -105,7 +105,7 @@ class Socket_Server {
                 });
 
                 socket.on('disconnect', function (error) {
-                    if(error != 'transport close')
+                    if (error != 'transport close')
                         winston.error(error);
 
                 });
@@ -121,15 +121,16 @@ class Socket_Server {
         }
     }
 
-    send(msg, res) {
+    send(msg) {
+        console.trace('msg in send:' + JSON.stringify(msg));
+
         try {
-            let payload = {"msg": msg.msg, "id": uuidv1()};
+            let payload = {"body": msg.body, "id": msg.id};
 
 
             if (!global.cluster_queue[msg.node.name]) {
                 global.cluster_queue[msg.node.name] = {};
             }
-            global.msg_queue[payload.id] = res;
             global.cluster_queue[msg.node.name][payload.id] = payload;
 
             this.io.to(msg.node.name).emit('msg', payload)

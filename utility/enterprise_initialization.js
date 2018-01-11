@@ -5,7 +5,7 @@ const search = require('../data_layer/search'),
       ClusterServer = require('../server/clustering/cluster_server');
    
 
-function kickOffEnterprise(){
+function kickOffEnterprise(callback){
     if (hdb_properties.get('CLUSTERING')) {
         var node = {
             "name": hdb_properties.get('NODE_NAME'),
@@ -41,7 +41,9 @@ function kickOffEnterprise(){
                             return winston.error(err);
                         }
 
+
                         winston.info('clustering established');
+                        return callback({"clustering":true});
 
                     })
 

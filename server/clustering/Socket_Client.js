@@ -20,14 +20,19 @@ class Socket_Client{
             async.each(node.other_nodes, function (o_node, caller) {
                 global.cluster_server.connectToNode(node, o_node, function(err){
                     if(err){
-                        next(err);
+                        caller(err);
                     }
+
+                    caller();
 
                 });
 
 
             }, function (err) {
-                next();
+                if(err)
+                   return  next(err);
+
+                return next();
             });
         }catch(e){
             winston.error(e);
@@ -38,7 +43,7 @@ class Socket_Client{
 
     connectToNode(node, o_node, callback){
         if(node.port == o_node.port && o_node.host == node.host ){
-            callback("cannnot connect to thyself. ");
+            callback("cannot connect to thyself. ");
         }
         //TODO needs to be HTTPS
         winston.info(`${node.name} is attempting to connect to ${o_node.name} at ${o_node.host}:${o_node.port}`);
@@ -66,12 +71,12 @@ class Socket_Client{
             winston.info('catchup' + queue_string);
             let queue = JSON.parse(queue_string);
             for(let item in queue){
-                server_utilities.chooseOperation(queue[item].msg, function(err, operation_function){
+                server_utilities.chooseOperation(queue[item].body, function(err, operation_function){
                     if(err){
                         return winston.error(err);
                     }
 
-                    server_utilities.proccessDelegatedTransaction(queue[item].msg,
+                    server_utilities.proccessDelegatedTransaction(queue[item].body,
                         operation_function, function(err, result){
                         if(err){
                             client.emit('error', err);
@@ -94,12 +99,13 @@ class Socket_Client{
         client.on('msg', (msg, fn) => {
 
             winston.info(`recieved by ${node.name} : msg = ${JSON.stringify(msg)}`);
-            server_utilities.chooseOperation(msg.msg, (err, operation_function) => {
-                server_utilities.proccessDelegatedTransaction(msg.msg, operation_function, function (err, data) {
+            server_utilities.chooseOperation(msg.body, (err, operation_function) => {
+                server_utilities.proccessDelegatedTransaction(msg.body, operation_function, function (err, data) {
                     let payload = {
                         "id": msg.id,
                         "error": err,
-                        "data": data
+                        "data": data,
+                        "node":node
                     };
 
 

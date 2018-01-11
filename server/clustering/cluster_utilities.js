@@ -2,7 +2,7 @@ const insert = require('../../data_layer/insert'),
     node_Validator = require('../../validation/nodeValidator');
 
 
-    function addNode(new_node, callback){
+function addNode(new_node, callback){
     // need to clean up new node as it hads operation and user on it
     let validation = node_Validator(new_node);
     if(validation){
@@ -27,6 +27,25 @@ const insert = require('../../data_layer/insert'),
 
 }
 
+
+function payloadHandler(msg){
+    switch(msg.clustering_type){
+        case "broadcast":
+            global.cluster_server.broadCast(msg);
+            break;
+        case "send":
+            global.cluster_server.send(msg, msg.res);
+
+
+    break;
+
+    }
+}
+
+
+
+
 module.exports = {
-        addNode: addNode
+        addNode: addNode,
+        payloadHandler: payloadHandler
 }

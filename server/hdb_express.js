@@ -3,11 +3,15 @@ let numCPUs = 1;
 const DEBUG = false;
 const winston = require('../utility/logging/winston_logger');
 const search = require('../data_layer/search');
+const cluster_utilities = require('./clustering/cluster_utilities');
+const enterprise_util = require('../utility/enterprise_initialization');
+const uuidv1 = require('uuid/v1');
 
 const async = require('async');
 
 if (cluster.isMaster && !DEBUG) {
-    let enterprise = false;
+    let enterprise = true;
+    global.delegate_callback_queue = [];
     let licenseKeySearch = {
         operation: 'search_by_value',
         schema: 'system',
@@ -30,7 +34,8 @@ if (cluster.isMaster && !DEBUG) {
                 hdb_license.validateLicense(license.license_key, license.company, function (err, license_validation) {
                     if (license_validation.valid_machine && license_validation.valid_date  && license_validation.valid_license){
                         enterprise = true;
-                       /** if(numCPUs === 4){
+
+                        /** if(numCPUs === 4){
                              numCPUs = 16;
                         }else{
                             numCPUs +=16;
@@ -57,8 +62,19 @@ if (cluster.isMaster && !DEBUG) {
                     forks.push(forked);
                 }
 
+                global.forks = forks;
 
-                messageHandler({"type":"enterprise", "enterprise":enterprise});
+
+                if(enterprise){
+                    messageHandler({"type":"enterprise", "enterprise":enterprise});
+                    enterprise_util.kickOffEnterprise(function(enterprise_msg){
+                        if(enterprise_msg.clustering){
+                            messageHandler({"type":"clustering"});
+
+                        }
+                    });
+
+                }
 
 
 
@@ -67,10 +83,22 @@ if (cluster.isMaster && !DEBUG) {
                     winston.info(`worker ${worker.process.pid} died`);
                 });
 
+                global.forkClusterMsgQueue = [];
                 function messageHandler(msg) {
-                    forks.forEach((fork) => {
-                        fork.send(msg);
-                    });
+                    if(msg.type === 'clustering_payload'){
+                        forkClusterMsgQueue[msg.id]  = msg;
+                        cluster_utilities.payloadHandler(msg);
+                    }else if(msg.type === 'delegate_thread_response'){
+                        global.delegate_callback_queue[msg.id](msg.err, msg.data);
+                    }else{
+                        forks.forEach((fork) => {
+                            fork.send(msg);
+                        });
+                    }
+
+
+
+
                 }
 
             });
@@ -99,14 +127,14 @@ if (cluster.isMaster && !DEBUG) {
         global_schema = require('../utility/globalSchema'),
         pjson = require('../package.json'),
         server_utilities = require('./server_utilities'),
-        ClusterServer = require('./clustering/cluster_server')
     clone = require('clone');
 
     cors = require('cors');
 
     hdb_properties.append(hdb_properties.get('settings_path'));
-    global.cluster_server = null;
+    global.clusterMsgQueue = [];
     let enterprise = false;
+    global.clustering_on = false;
     if (hdb_properties.get('CORS_ON') && (hdb_properties.get('CORS_ON') === true || hdb_properties.get('CORS_ON').toUpperCase() === 'TRUE')) {
         let cors_options = {
             origin: true,
@@ -156,7 +184,7 @@ if (cluster.isMaster && !DEBUG) {
             res.set('x-powered-by', 'HarperDB');
 
             if (err) {
-                winston.warn(`{"ip":"${req.connection.remoteAddress}", "error":"${err}"`);
+                winston.warn(`{"ip":"${req.connection.remoteAddress}", "error":"${err.stack}"`);
                 if (typeof err === 'string') {
                     return res.status(401).send({error: err});
                 }
@@ -175,11 +203,7 @@ if (cluster.isMaster && !DEBUG) {
                 }
 
 
-
-
-                //TODO read log? describe_all etc...
-
-                if (global.cluster_server && global.cluster_server.socket_server.name && req.body.operation != 'sql ') {
+                if (global.clustering_on && req.body.operation != 'sql') {
                     if (!req.body.schema
                         || !req.body.table
                         || req.body.operation === 'create_table'
@@ -190,9 +214,22 @@ if (cluster.isMaster && !DEBUG) {
                         if (localOnlyOperations.includes(req.body.operation)) {
                             server_utilities.processLocalTransaction(req, res, operation_function, function (err) {
                                 winston.error(err);
-                            })
+                            });
                         } else {
-                            return cluster_server.broadCast(req, res, operation_function);
+                            server_utilities.processLocalTransaction(req, res, operation_function,function(err){
+                                if(!err){
+                                    let id = uuidv1();
+                                  //  global.clusterMsgQueue[id] = res;
+                                    process.send({"type":"clustering_payload", "pid":process.pid,
+                                        "clustering_type":"broadcast",
+                                        "id": id,
+                                        "body":req.body
+                                    });
+                                }
+
+
+                            });
+
                         }
 
                     } else {
@@ -211,7 +248,20 @@ if (cluster.isMaster && !DEBUG) {
                                 }
 
                                 if (residence.indexOf('*') > -1) {
-                                    return cluster_server.broadCast(req, res, operation_function);
+
+                                    server_utilities.processLocalTransaction(req, res, operation_function,function(err){
+                                        if(!err){
+                                            let id = uuidv1();
+                                          //  global.clusterMsgQueue[id] = res;
+                                            process.send({"type":"clustering_payload", "pid":process.pid,
+                                                "clustering_type":"broadcast",
+                                                "id": id,
+                                                "body":req.body
+                                            });
+                                        }
+
+
+                                    });
                                 }
 
                                 if (residence.indexOf(hdb_properties.get('NODE_NAME')) > -1) {
@@ -219,25 +269,33 @@ if (cluster.isMaster && !DEBUG) {
                                         if (residence.length > 1) {
                                             for (node in residence) {
                                                 if (residence[node] != hdb_properties.get('NODE_NAME')) {
-                                                    let payload = {};
-                                                    payload.msg = req.body;
-                                                    payload.node = payload.node = {"name": residence[node]};
-                                                    global.cluster_server.send(payload, res);
+
+                                                    let id = uuidv1();
+                                                   // global.clusterMsgQueue[id] = res;
+                                                    process.send({"type":"clustering_payload", "pid":process.pid,
+                                                        "clustering_type":"send",
+                                                        "id": id,
+                                                        "body":req.body,
+                                                        "node":{"name":residence[node]}
+                                                    });
+
                                                 }
                                             }
                                         }
 
-                                        for (let o_node in global.cluster_server.socket_server.other_nodes) {
 
-                                        }
                                     });
                                 } else {
                                     for (node in residence) {
                                         if (residence[node] != hdb_properties.get('NODE_NAME')) {
-                                            let payload = {};
-                                            payload.msg = req.body;
-                                            payload.node = payload.node = {"name": residence[node]};
-                                            global.cluster_server.send(payload, res);
+                                            let id = uuidv1();
+                                            global.clusterMsgQueue[id] = res;
+                                            process.send({"type":"clustering_payload", "pid":process.pid,
+                                                "clustering_type":"send",
+                                                "id": id,
+                                                "body":req.body,
+                                                "node":{"name":residence[node]}
+                                            });
                                         }
                                     }
                                 }
@@ -293,12 +351,32 @@ if (cluster.isMaster && !DEBUG) {
                 break;
             case 'enterprise':
                 enterprise = msg.enterprise;
-                if(enterprise){
-                    const enterprise_util = require('../utility/enterprise_initialization');
-                    enterprise_util.kickOffEnterprise();
+                break;
+            case 'clustering':
+                global.clustering_on = true;
+                break;
+            case 'cluster_response':
+                if(global.clusterMsgQueue[msg.id]){
+                    if(msg.err){
+                        global.clusterMsgQueue[msg.id].status(401).json({"error":msg.err});
+                        delete global.clusterMsgQueue[msg.id];
+                        break;
+                    }
 
+                    global.clusterMsgQueue[msg.id].status(200).json(msg.data);
+                    delete global.clusterMsgQueue[msg.id];
                 }
 
+                break;
+
+
+
+            case 'delegate_transaction':
+                server_utilities.chooseOperation(msg.body, function(err, operation_function){
+                   server_utilities.processInThread(msg.body, operation_function,function(err, data){
+                      process.send({"type":"delegate_thread_response", "err":err, "data": data, "id":msg.id});
+                   });
+                });
                 break;
         }
     });
