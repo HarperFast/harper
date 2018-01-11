@@ -122,7 +122,7 @@ class Socket_Server {
     }
 
     send(msg) {
-        console.trace('msg in send:' + JSON.stringify(msg));
+        //console.trace('msg in send:' + JSON.stringify(msg));
 
         try {
             let payload = {"body": msg.body, "id": msg.id};
