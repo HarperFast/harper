@@ -20,7 +20,6 @@ const fs = require('fs.extra')
 let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
 hdb_properties.append(hdb_properties.get('settings_path'));
 
-
 module.exports = {
     createSchema: createSchema,
     createSchemaStructure: createSchemaStructure,
@@ -267,7 +266,7 @@ function moveSchemaStructureToTrash(drop_schema_object, callback) {
                 buildDropSchemaSearchObject.bind(null, schema),     // returns search_obj
                 search.searchByValue,                               // returns 'data'
                 moveSchemaToTrash.bind(null, drop_schema_object),   // takes 'data' as tables, returns 'delete_table_object'
-                deleteSchemaAttributes                              // takes 'drop_schema_object, returns text successfully deleted ${schema}`
+                deleteSchemaAttributes.bind(null, drop_schema_object) // takes 'drop_schema_object, returns text successfully deleted ${schema}`
             ],
             function(err, data) {
                 if( err) {
@@ -438,14 +437,16 @@ function moveSchemaToTrash(drop_schema_object, tables, callback) {
                     }
                 }
                 if( delete_table_object.hash_values && delete_table_object.hash_values.length > 0 ) {
-                    delete_.delete(delete_table_object, function (err, data) {
+                    delete_.delete(delete_table_object, function (err) {
                         if (err) {
                             return callback(err);
+                        } else {
+                            callback();
                         }
-                        callback(null, delete_table_object);
                     });
+                } else {
+                  callback();
                 }
-                callback(null, drop_schema_object);
             });
     });
 }
@@ -680,6 +681,12 @@ function deleteAttributeStructure(attribute_drop_object, callback) {
 
 function createAttribute(create_attribute_object, callback) {
     try {
+        createAttributeStructure(create_attribute_object, function (err, success) {
+            if (err) {
+                return callback(err);
+            }
+            addAndRemoveFromQueue(create_attribute_object, success, callback);
+        });
 
         if(global.cluster_server
             && global.cluster_server.socket_server.name
