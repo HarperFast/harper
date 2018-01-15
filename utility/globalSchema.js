@@ -1,9 +1,9 @@
 const schema = require('../data_layer/schemaDescribe'),
     async = require('async'),
-    winston = require('../utility/logging/winston_logger'),
+//   winston = require('../utility/logging/winston_logger'),
     system_schema = require('../json/systemSchema.json');
     winston = require('../utility/logging/winston_logger');
-
+/*
 const system_schema = {
     hdb_table:{
         hash_attribute:'id',
@@ -78,7 +78,7 @@ const system_schema = {
     }
 
 };
-
+*/
 module.exports = {
     setSchemaDataToGlobal: setSchemaDataToGlobal,
     getTableSchema: getTableSchema,
