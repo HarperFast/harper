@@ -1,7 +1,7 @@
 #!/bin/bash
 
-working_dir=/home/stephen/WebstormProjects/harperdb
-target_dir=/home/stephen/cluster_testing
+working_dir=/opt/harperdb
+target_dir=/cluster_testing
 node_count=$2
 port_offset=3
 http_port=9925
@@ -21,14 +21,14 @@ cp -R $working_dir/* $target_dir/node_$node_count/harperdb/
 sed -i "/HDB_PROC_NAME/ s/ =.*/ = 'no_oneis_here';/" $target_dir/node_$node_count/harperdb/bin/run.js
 
 cd $target_dir/node_$node_count/harperdb/bin
-node harperdb.js install --HDB_ROOT $target_dir/node_$node_count/data/hdb --HTTP_PORT $http_port  --HTTPS_PORT 31283 --HDB_ADMIN_USERNAME HDB_ADMIN --HDB_ADMIN_PASSWORD password --HDB_REGISTER false
+node harperdb.js install --TC_AGREEMENT yes --HDB_ROOT $target_dir/node_$node_count/data/hdb --HTTP_PORT $http_port  --HTTPS_PORT 31283 --HDB_ADMIN_USERNAME HDB_ADMIN --HDB_ADMIN_PASSWORD password --HDB_REGISTER false
 node harperdb.js run
 
-printf  "\nCLUSTERING=TRUE\nCLUSTERING_PORT = %s\nNODE_NAME = node_%s" "$cluster_port" "$node_count" >> $target_dir/node_$node_count/data/hdb/config/settings.js
+printf  "\nCLUSTERING = TRUE\nCLUSTERING_PORT = %s\nNODE_NAME = node_%s" "$cluster_port" "$node_count" >> $target_dir/node_$node_count/data/hdb/config/settings.js
 
 node_count=$(($node_count -1));
 http_port=$(($http_port + $port_offset));
-cluster_port=$(($cluster_port));
+cluster_port=$(($cluster_port + $port_offset));
 
 done
 
@@ -36,7 +36,10 @@ echo "DONE"
 }
 
 destroy(){
-kill $(ps -ef | grep [h]db_ | awk '{print $2}')
+kill $(ps -ef | grep [c]luster/node_ | awk '{print $2}')
+rm -rf $target_dir/*
+echo "Targe dir empty? $(ls -al $target_dir)"
+echo "cluster processess killed? $(ps -ef | grep [n]ode_)"
 }
 
 $@
