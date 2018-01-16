@@ -1,8 +1,84 @@
 const schema = require('../data_layer/schemaDescribe'),
     async = require('async'),
-    winston = require('../utility/logging/winston_logger'),
+//   winston = require('../utility/logging/winston_logger'),
     system_schema = require('../json/systemSchema.json');
+    winston = require('../utility/logging/winston_logger');
+/*
+const system_schema = {
+    hdb_table:{
+        hash_attribute:'id',
+        name:'hdb_table',
+        schema:'system',
+        attributes:
+            [ { attribute: 'id' },
+                { attribute: 'name' },
+                { attribute: 'hash_attribute' },
+                { attribute: 'schema' },
+                { attribute: 'residence'}
+            ],
+        residence:['*']
 
+
+    },
+    hdb_drop_schema:{
+        hash_attribute:'id',
+        name:'hdb_drop_schema',
+        schema:'system',
+        residence:['*']
+
+    },
+    hdb_attribute:{
+        hash_attribute:'id',
+        name:'hdb_attribute',
+        schema:'system',
+        residence:['*']
+
+    },
+    hdb_schema:{
+        hash_attribute:'name',
+        name:'hdb_schema',
+        schema:'system',
+        attributes:
+            [
+                { attribute: 'name' },
+                { attribute: 'createddate' }
+            ],
+        residence:['*']
+
+    },
+    hdb_user:{
+        hash_attribute:'username',
+        name:'hdb_user',
+        schema:'system',
+        residence:['*']
+    },
+    hdb_queue:{
+        hash_attribute:'id',
+        name:'hdb_queue',
+        schema:'system',
+        residence:['*']
+    },
+    hdb_role:{
+        hash_attribute:'id',
+        name:'hdb_user',
+        schema:'system',
+        residence:['*']
+
+    },
+    hdb_license:{
+        hash_attribute:'license_key',
+        name:'hdb_license',
+        schema:'system'
+    },
+    hdb_nodes:{
+        hash_attribute: 'name',
+        residence:['*']
+
+
+    }
+
+};
+*/
 module.exports = {
     setSchemaDataToGlobal: setSchemaDataToGlobal,
     getTableSchema: getTableSchema,

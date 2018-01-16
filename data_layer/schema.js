@@ -11,9 +11,12 @@ const fs = require('fs.extra')
     // as such the functions have been broken out into a separate module.
     , schema_describe = require('./schemaDescribe')
     , schema_ops = require('../utility/schema_ops')
-    , PropertiesReader = require('properties-reader'),
-    mkdirp = require('mkdirp'),
-    signalling = require('../utility/signalling');
+    , PropertiesReader = require('properties-reader')
+    ,clone = require('clone')
+    ,mkdirp = require('mkdirp')
+    , _ = require('underscore')
+    ,signalling = require('../utility/signalling');
+
 let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
 hdb_properties.append(hdb_properties.get('settings_path'));
 
@@ -120,7 +123,9 @@ function createTable(create_table_object, callback) {
 }
 
 function createTableStructure(create_table_object, callback) {
-    let validator = validation.create_table_object(create_table_object);
+    let validation_obj = clone(create_table_object);
+
+    let validator = validation.create_table_object(validation_obj);
     if (validator) {
         callback(validator);
         return;
@@ -155,40 +160,83 @@ function createTableStructure(create_table_object, callback) {
             hash_attribute: create_table_object.hash_attribute
         };
 
-        let insertObject = {
-            operation: 'insert',
-            schema: 'system',
-            table: 'hdb_table',
-            hash_attribute: 'id',
-            records: [table]
-        };
+        if(create_table_object.residence){
+            if(global.clustering_on){
+                let search_obj = {};
+                search_obj.schema = 'system';
+                search_obj.table = 'hdb_nodes';
+                search_obj.hash_attribute = 'name';
+                search_obj.hash_values =create_table_object.residence;
+                search_obj.get_attributes = ['name'];
 
-        insert.insert(insertObject, function (err, result) {
-            if (err) {
-                callback(err);
-                return;
+                search.searchByHash(search_obj, function(err, data){
+                   if(err){
+                      winston.error(err);
+                      return callback(err)
+                   }
+                    let residence_nodes = [hdb_properties.get('NODE_NAME')];
+                    for(let item in data){
+                        residence_nodes.push(data[item].name);
+                    }
+
+
+                    var missing_nodes =  _.difference(create_table_object.residence, residence_nodes)
+                    if(missing_nodes && missing_nodes.length > 0){
+                        return callback(`Clustering error unable to find ${JSON.stringify(missing_nodes)}`);
+                    }
+
+                    table.residence = create_table_object.residence;
+                    insertTable();
+
+                });
+
+            }else{
+                return callback(`Clustering does not appear to be enabled.  Cannot insert table with property residence.`);
             }
 
-            fs.mkdir(hdb_properties.get('HDB_ROOT') + '/schema/' + create_table_object.schema + '/' + create_table_object.table, function (err, data) {
+        }else{
+            insertTable();
+        }
+
+
+
+        function insertTable(){
+            let insertObject = {
+                operation: 'insert',
+                schema: 'system',
+                table: 'hdb_table',
+                hash_attribute: 'id',
+                records: [table]
+            };
+
+            insert.insert(insertObject, function (err, result) {
                 if (err) {
-                    if (err.errno === -2) {
-                        callback("schema does not exist", null);
-                        return;
-                    }
-
-                    if (err.errno === -17) {
-                        callback("table already exists", null);
-                        return;
-
-                    } else {
-                        callback('createTableStructure:' + err.message);
-                        return
-                    }
+                    callback(err);
+                    return;
                 }
 
-                callback(null, `table ${create_table_object.schema}.${create_table_object.table} successfully created.`);
+                fs.mkdir(hdb_properties.get('HDB_ROOT') + '/schema/' + create_table_object.schema + '/' + create_table_object.table, function (err, data) {
+                    if (err) {
+                        if (err.errno === -2) {
+                            callback("schema does not exist", null);
+                            return;
+                        }
+
+                        if (err.errno === -17) {
+                            callback("table already exists", null);
+                            return;
+
+                        } else {
+                            callback('createTableStructure:' + err.message);
+                            return
+                        }
+                    }
+
+                    callback(null, `table ${create_table_object.schema}.${create_table_object.table} successfully created.`);
+                });
             });
-        });
+        }
+
     });
 }
 
@@ -531,26 +579,52 @@ function createAttributeStructure(create_attribute_object, callback) {
             return;
         }
 
-        let record = {
-            schema: create_attribute_object.schema,
-            table: create_attribute_object.table,
-            attribute: create_attribute_object.attribute,
-            id: uuidV4(),
-            schema_table: create_attribute_object.schema + '.' + create_attribute_object.table
-        };
+        let search_obj = {};
+        search_obj.schema = 'system';
+        search_obj.table = 'hdb_attribute';
+        search_obj.hash_attribute = 'id';
+        search_obj.get_attributes = ['*'];
+        search_obj.search_attribute = 'attribute';
+        search_obj.search_value = create_attribute_object.attribute;
 
-        let insertObject = {
-            operation: 'insert',
-            schema: 'system',
-            table: 'hdb_attribute',
-            hash_attribute: 'id',
-            records: [record]
-        };
+        search.searchByValue(search_obj, function(err, attributes){
+            if(attributes && attributes.length > 0){
+                for(att in attributes){
+                    if(attributes[att].schema === create_attribute_object.schema
+                        && attributes[att].table === create_attribute_object.table){
+                        return callback(`attribute already exists with id ${ JSON.stringify(attributes[att])}`);
+                    }
+                }
+            }
 
-        insert.insert(insertObject, function (err, result) {
-            winston.info('attribute:' + record.attribute);
-            winston.info(result);
-            callback(err, result);
+
+            let record = {
+                schema: create_attribute_object.schema,
+                table: create_attribute_object.table,
+                attribute: create_attribute_object.attribute,
+                id: uuidV4(),
+                schema_table: create_attribute_object.schema + '.' + create_attribute_object.table
+            };
+
+            if(create_attribute_object.id){
+                record.id = create_attribute_object.id;
+            }
+
+            let insertObject = {
+                operation: 'insert',
+                schema: 'system',
+                table: 'hdb_attribute',
+                hash_attribute: 'id',
+                records: [record]
+            };
+
+            insert.insert(insertObject, function (err, result) {
+                winston.info('attribute:' + record.attribute);
+                winston.info(result);
+                callback(err, result);
+            });
+
+
         });
     } catch (e) {
         callback(e);
@@ -613,6 +687,52 @@ function createAttribute(create_attribute_object, callback) {
             }
             addAndRemoveFromQueue(create_attribute_object, success, callback);
         });
+
+        if(global.cluster_server
+            && global.cluster_server.socket_server.name
+            && !create_attribute_object.delegated && create_attribute_object.schema != 'system'   ){
+
+
+
+
+            createAttributeStructure(create_attribute_object, function (err, success) {
+                if (err) {
+                    callback(err);
+                    return;
+                }
+
+                create_attribute_object.delegated = true;
+                create_attribute_object.operation = 'create_attribute';
+                create_attribute_object.id = success.id;
+
+                for(let o_node in global.cluster_server.socket_server.other_nodes){
+                    let payload = {};
+                    payload.msg = create_attribute_object;
+                    payload.node = global.cluster_server.socket_server.other_nodes[o_node];
+                    global.cluster_server.send(payload, null);
+                }
+
+                signalling.signalSchemaChange({type: 'schema'});
+                addAndRemoveFromQueue(create_attribute_object, success, callback);
+
+            });
+
+
+        }else{
+            createAttributeStructure(create_attribute_object, function (err, success) {
+                if (err) {
+                    callback(err);
+                    return;
+                }
+
+                signalling.signalSchemaChange({type: 'schema'});
+                addAndRemoveFromQueue(create_attribute_object, success, callback);
+
+            });
+        }
+
+
+
     } catch (e) {
         callback(e);
     }
