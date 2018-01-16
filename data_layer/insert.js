@@ -594,7 +594,7 @@ function createNewAttribute(base_folder, callback){
 
     schema.createAttribute(attribute_object, (err, data)=>{
         if(err){
-            console.error(err);
+            winston.error(err);
         }
 
         callback();

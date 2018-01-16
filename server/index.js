@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 'use strict';
 const
     insert = require('../data_layer/insert.js'),
