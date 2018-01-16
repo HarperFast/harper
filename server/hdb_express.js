@@ -10,7 +10,7 @@ const uuidv1 = require('uuid/v1');
 const async = require('async');
 
 if (cluster.isMaster && !DEBUG) {
-    let enterprise = true;
+    let enterprise = false;
     global.delegate_callback_queue = [];
     let licenseKeySearch = {
         operation: 'search_by_value',
@@ -35,12 +35,12 @@ if (cluster.isMaster && !DEBUG) {
                     if (license_validation.valid_machine && license_validation.valid_date  && license_validation.valid_license){
                         enterprise = true;
 
-                        /** if(numCPUs === 4){
+                         if(numCPUs === 4){
                              numCPUs = 16;
                         }else{
                             numCPUs +=16;
 
-                        } **/
+                        }
                     }
                     callback();
 
