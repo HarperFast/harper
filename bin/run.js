@@ -15,7 +15,7 @@ const fs = require('fs'),
     HTTP_PORT_KEY = 'HTTP_PORT',
     HTTPSECURE_ON_KEY = 'HTTPS_ON',
     HTTP_ON_KEY = 'HTTP_ON',
-    HDB_PROC_NAME = 'hdb_express.js';
+    HDB_PROC_NAME = 'thetest';
 
 let hdb_boot_properties = null;
 let hdb_properties = null;
