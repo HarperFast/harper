@@ -1,5 +1,5 @@
 const cluster = require('cluster');
-let numCPUs = 1;
+let numCPUs = 4;
 const DEBUG = false;
 const winston = require('../utility/logging/winston_logger');
 const search = require('../data_layer/search');
