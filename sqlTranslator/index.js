@@ -89,7 +89,7 @@ function convertInsert(statement, callback) {
         return column.columnid;
     });
 
-    insert_object.records = createDataObjects(columns, statement.result);
+    insert_object.records = createDataObjects(columns, statement.values);
 
     insert.insert(insert_object, (err, data) => {
         if (err) {
@@ -101,18 +101,23 @@ function convertInsert(statement, callback) {
     });
 }
 
-function createDataObjects(columns, expressions) {
-    let records = [];
-    expressions.forEach((values) => {
-        let record = {};
-        for (let x = 0; x < values.expression.length; x++) {
-            if(values.expression[x].type === 'identifier' && (values.expression[x].name === 'true' || values.expression[x].name === 'false')){
-                record[columns[x]] = (values.expression[x].name === 'true');
-            } else if(values.expression[x].type === 'literal'){
-                record[columns[x]] = values.expression[x].value;
-            }
+function createDataObjects(columns, values) {
+    let records = values.map((value_objects)=>{
+        //compare number of values to number of columns, if no matchie throw error
+        if(columns.length !== value_objects.length){
+            throw "number of values do not match number of columns in insert";
         }
-        records.push(record);
+        let record = {};
+        //make sure none of the value entries have a columnid
+        value_objects.forEach((value, x)=>{
+            if(value.columnid){
+                throw "cannot use a column in insert value";
+            }
+
+            record[columns[x]] = value.value;
+        });
+
+        return record;
     });
 
     return records;
