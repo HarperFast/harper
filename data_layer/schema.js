@@ -218,7 +218,7 @@ function moveSchemaStructureToTrash(drop_schema_object, callback) {
                 buildDropSchemaSearchObject.bind(null, schema),     // returns search_obj
                 search.searchByValue,                               // returns 'data'
                 moveSchemaToTrash.bind(null, drop_schema_object),   // takes 'data' as tables, returns 'delete_table_object'
-                deleteSchemaAttributes                              // takes 'drop_schema_object, returns text successfully deleted ${schema}`
+                deleteSchemaAttributes.bind(null, drop_schema_object) // takes 'drop_schema_object, returns text successfully deleted ${schema}`
             ],
             function(err, data) {
                 if( err) {
@@ -389,14 +389,16 @@ function moveSchemaToTrash(drop_schema_object, tables, callback) {
                     }
                 }
                 if( delete_table_object.hash_values && delete_table_object.hash_values.length > 0 ) {
-                    delete_.delete(delete_table_object, function (err, data) {
+                    delete_.delete(delete_table_object, function (err) {
                         if (err) {
                             return callback(err);
+                        } else {
+                            callback();
                         }
-                        callback(null, delete_table_object);
                     });
+                } else {
+                  callback();
                 }
-                callback(null, drop_schema_object);
             });
     });
 }

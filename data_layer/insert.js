@@ -17,6 +17,7 @@ const insert_validator = require('../validation/insertValidator.js'),
     _ = require('lodash'),
     truncate = require('truncate-utf8-bytes'),
     PropertiesReader = require('properties-reader'),
+    autocast = require('autocast'),
     signalling = require('../utility/signalling'),
     hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
     hdb_properties.append(hdb_properties.get('settings_path'));
@@ -27,6 +28,8 @@ const regex = /\//g,
     hash_regex = /^[a-zA-Z0-9-_]+$/;
 //TODO: This is ugly and string compare is slow.  Refactor this when we bring in promises.
 const NO_RESULTS = 'NR';
+//This is an internal value that should not be written to the DB.
+const HDB_PATH_KEY = 'HDB_INTERNAL_PATH';
 
 
 module.exports = {
@@ -55,7 +58,7 @@ function validation(write_object, callback){
             return;
         }
 
-        if(!Array.isArray(write_object.records)){
+        if(!Array.isArray(write_object.records)) {
             return callback('records must be an array');
         }
 
@@ -80,11 +83,11 @@ function validation(write_object, callback){
 
             //evaluate that there are no attributes who have a name longer than 250 characters
             Object.keys(record).forEach((attribute)=>{
-                if(Buffer.byteLength(String(attribute)) > 250){
+                if(Buffer.byteLength(String(attribute)) > 250) {
                     long_attribute = true;
                 }
             });
-            if(long_attribute){
+            if(long_attribute) {
                 return;
             }
         });
@@ -120,28 +123,34 @@ function insertData(insert_object, callback){
         if (insert_object.operation !== 'insert') {
             callback('invalid operation, must be insert');
         }
-
+        let inserted_records = [];
+        let skipped_records = [];
         async.waterfall([
             validation.bind(null, insert_object),
             (table_schema, caller) => {
                 let hash_attribute = table_schema.hash_attribute;
-                let hash_paths = [];
                 let base_path = hdb_path + '/' + insert_object.schema + '/' + insert_object.table + '/';
                 for (let r in insert_object.records) {
                     let record = insert_object.records[r];
-                    hash_paths.push(`${base_path}__hdb_hash/${hash_attribute}/${record[hash_attribute]}.hdb`);
+                    let path = `${base_path}__hdb_hash/${hash_attribute}/${record[hash_attribute]}.hdb`;
+                    //Internal record that is removed if the record exists.  Should not be written to the DB.
+                    insert_object.records[r][HDB_PATH_KEY] = path;
                 }
-                caller(null, hash_paths);
+                caller(null);
             },
-            checkRecordsExist,
+            checkRecordsExist.bind(null, insert_object, skipped_records, inserted_records),
             checkAttributeSchema.bind(null, insert_object),
             processData
         ], (err) => {
             if (err) {
                 return callback(err);
             }
-
-            callback(null, `inserted ${insert_object.records.length} records`);
+            let return_object = {
+                message: `inserted ${inserted_records.length} of ${insert_object.records.length} records`,
+                inserted_hashes: inserted_records,
+                skipped_hashes: skipped_records
+            };
+            callback(null, return_object);
         });
     } catch(e){
         callback(e);
@@ -149,7 +158,7 @@ function insertData(insert_object, callback){
 }
 
 /**
- * Updates the data in the update_object paramter.
+ * Updates the data in the update_object parameter.
  * @param update_object - The data that will be updated in the database
  * @param callback - The caller
  */
@@ -170,7 +179,7 @@ function updateData(update_object, callback){
                 let attributes = new Set();
                 let hashes = [];
                 update_object.records.forEach((record) => {
-                    hashes.push(record[table_schema.hash_attribute]);
+                    hashes.push(autocast(record[table_schema.hash_attribute]));
                     Object.keys(record).forEach((attribute) => {
                         attributes.add(attribute);
                     });
@@ -202,7 +211,8 @@ function updateData(update_object, callback){
                 update_object.records = update_objects;
 
                 update_objects.forEach((record)=>{
-                    tracker.update_ids.push(record[hash_attribute]);
+                    // need to make sure the attribute is a string for the lodash comparison below.
+                    tracker.update_ids.push(autocast(record[hash_attribute]));
                 });
 
                 caller(null, update_object);
@@ -231,7 +241,7 @@ function updateData(update_object, callback){
     }
 }
 
-function compareUpdatesToExistingRecords(update_object, hash_attribute, existing_records, callback){
+function compareUpdatesToExistingRecords(update_object, hash_attribute, existing_records, callback) {
 
     if(!existing_records || existing_records.length === 0) { return callback('No Records Found'); }
     let base_path = hdb_path + '/' + update_object.schema + '/' + update_object.table + '/';
@@ -252,7 +262,7 @@ function compareUpdatesToExistingRecords(update_object, hash_attribute, existing
             let update = {};
 
             for (let attr in update_record) {
-                if (existing_record[attr] !== update_record[attr]) {
+                if (autocast(existing_record[attr]) !== autocast(update_record[attr])) {
                     update[attr] = update_record[attr];
 
                     let value = typeof existing_record[attr] === 'object' ? JSON.stringify(existing_record[attr]) : existing_record[attr];
@@ -276,7 +286,7 @@ function compareUpdatesToExistingRecords(update_object, hash_attribute, existing
         });
 
         callback(null, unlink_paths, update_objects);
-    } catch(e){
+    } catch(e) {
         callback(e);
     }
 }
@@ -287,7 +297,7 @@ function compareUpdatesToExistingRecords(update_object, hash_attribute, existing
  * @param update_objects
  * @param callback
  */
-function unlinkFiles(unlink_paths, update_objects, callback){
+function unlinkFiles(unlink_paths, update_objects, callback) {
     async.each(unlink_paths, (path, caller)=>{
         fs.unlink(path, (err)=>{
             if(err){
@@ -308,6 +318,23 @@ function unlinkFiles(unlink_paths, update_objects, callback){
 }
 
 /**
+ * This function is used to remove HDB internal values (such as HDB_INTERNAL_PATH) from the record when it
+ * is stringified.
+ * @param key - the key of the record
+ * @param value - the value of the record
+ * @returns {*}
+ */
+function filterHDBValues(key, value) {
+    if(key === HDB_PATH_KEY) {
+        return undefined;
+    }
+    else {
+        return value;
+    }
+}
+
+
+/**
  *
  * @param insert_object
  * @param callerback
@@ -325,13 +352,18 @@ function checkAttributeSchema(insert_object, callerback) {
     let hash_folders = {};
     let hash_paths = {};
     let base_path = hdb_path + '/' + insert_object.schema + '/' + insert_object.table + '/';
+    let operation = insert_object.operation;
 
     async.each(insert_object.records, function (record, callback) {
+        //Update function does not set base path, so we should not exit if this is an update and path is undefined.
+        if(record[HDB_PATH_KEY] === undefined && operation !== 'update') {
+            return callback();
+        }
         let attribute_objects = [];
         let link_objects = [];
         hash_paths[`${base_path}__hdb_hash/${hash_attribute}/${record[hash_attribute]}.hdb`] = '';
         for (let property in record) {
-            if(record[property] === null || record[property] === undefined || record[property] === ''){
+            if(record[property] === null || record[property] === undefined || record[property] === '' || property === HDB_PATH_KEY){
                 continue;
             }
 
@@ -357,7 +389,8 @@ function checkAttributeSchema(insert_object, callerback) {
                 hash_folders[attribute_path] = "";
                 attribute_objects.push({
                     file_name: `${attribute_path}/${epoch}.hdb`,
-                    value: JSON.stringify(record)
+                    // Need to use the filter to remove the HDB_INTERNAL_PATH from the record before it is added to a file.
+                    value: JSON.stringify(record, filterHDBValues)
                 });
             }
         }
@@ -387,15 +420,17 @@ function checkAttributeSchema(insert_object, callerback) {
  * @param hash_paths
  * @param callback
  */
-function checkRecordsExist(hash_paths, callback) {
-    async.map(hash_paths, function(hash_path, inner_callback) {
-        fs.access(hash_path, (err) => {
+function checkRecordsExist(insert_object, skipped_records, inserted_records, callback) {
+    let table_schema = global.hdb_schema[insert_object.schema][insert_object.table];
+    async.map(insert_object.records, function(record, inner_callback) {
+        fs.access(record[HDB_PATH_KEY], (err) => {
             if (err && err.code === 'ENOENT') {
+                inserted_records.push(autocast(record[table_schema.hash_attribute]));
                 inner_callback();
             } else {
-                let hash_array = hash_path.split('/');
-                let hash = hash_array[hash_array.length - 1].replace('.hdb', '');
-                inner_callback(`record with hash ${hash} already exists`);
+                record[HDB_PATH_KEY] = undefined;
+                skipped_records.push(autocast(record[table_schema.hash_attribute]));
+                inner_callback();
             }
         });
     }, function(err){

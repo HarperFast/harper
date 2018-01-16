@@ -2,6 +2,7 @@ const search = require('../data_layer/search'),
     async = require('async'),
     global_schema = require('../utility/globalSchema'),
     winston = require('../utility/logging/winston_logger'),
+    clone = require('clone'),
     write = require('./insert');
 
 module.exports = {
@@ -56,7 +57,7 @@ function buildUpdateRecords(update_record, table_info, ids, callback){
     }
 
     ids.forEach((id)=>{
-        let record = update_record;
+        let record = clone(update_record);
         record[table_info.hash_attribute] = id;
         records.push(record);
     });
