@@ -41,7 +41,7 @@ echo "js array files: ${js_files[@]}"
    do
 echo "The javascript file to obfuscate: $z"
       javascript-obfuscator $z --compact true --controlFlowFlattening false --deadCodeInjection false --debugProtection false --debugProtectionInterval false \
-           --disableConsoleOutput false --log false --mangle true --renameGlobals false --rotateStringArray false --selfDefending true --stringArray false --stringArrayEncoding false \
+           --disableConsoleOutput false --log false --renameGlobals false --rotateStringArray false --selfDefending true --stringArray true --stringArrayEncoding false \
            --stringArrayThreshold 0.75 --unicodeEscapeSequence false --output $mirrored_dir/$i/$z
 echo "done obfuscating $z"
    done
