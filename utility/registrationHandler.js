@@ -76,7 +76,7 @@ function register(prompt, callback) {
                             schema: 'system',
                             table: 'hdb_license',
                             hash_attribute: 'license_key',
-                            records: [{"license_key": data.HDB_LICENSE}]
+                            records: [{"license_key": data.HDB_LICENSE, "company":data.CUSTOMER_COMPANY }]
                         };
 
                         insert.insert(insert_object, function (err, data) {
