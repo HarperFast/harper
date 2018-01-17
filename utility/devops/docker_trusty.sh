@@ -9,12 +9,13 @@ obfuscript()
 #The mirrored File structure is recreated and cleaned
 #Then add newly obfuscated files through the --output option in javascript-obfuscator command.
 
-#Files to search for javascript to obfuscate as of 9/1/2017.. Please keep this updated!! updated 9-29-2017 added utility/* lib/ server/
-# "data_layer" "sqlTranslator" "validation" "security" "utility" "utility/logging"
+#Files to search for javascript to obfuscate as of 11/17/2017.. Please keep this updated!!
+#"data_layer" "sqlTranslator" "validation" "security" "utility" "utility/install" "utility/logging" 
+#"utility/functions/date" "utility/functions/math" "lib/fileSystem" "lib/server" "lib/streams" "server" "server/clustering"
 
-files=( "data_layer" "sqlTranslator" "validation" "security" "utility" "utility/install" "utility/logging" "utility/functions/date" "utility/functions/math" "lib/fileSystem" "lib/server" "lib/streams" "server")
+files=( "data_layer" "sqlTranslator" "validation" "security" "utility" "utility/install" "utility/logging" "utility/functions/date" "utility/functions/math" "lib/fileSystem" "lib/server" "lib/streams" "server" "server/clustering")
 working_dir="$(pwd)/../../";
-mirrored_dir="/tmp/harperdb"
+mirrored_dir="/tmp/harperdb_dev"
 echo "here i am $working_dir"
 echo "stuff: $(ls $working_dir)"
 mkdir -p $mirrored_dir;
@@ -54,7 +55,7 @@ harperdb_run()
 #this function is being run on a docker container as root.  Be advised of the paths.
      cd ./bin/
      echo "I am in this directory now: $(pwd)"
-     ./linux-harperdb install --HDB_ROOT $hdb_data --HTTP_PORT 9925 --HTTPS_PORT 31283 --HDB_ADMIN_USERNAME admin --HDB_ADMIN_PASSWORD "Abc1234!"
+     ./linux-harperdb install --TC_AGREEMENT yes --HDB_ROOT $hdb_data --HTTP_PORT 9925 --HTTPS_PORT 31283 --HDB_ADMIN_USERNAME admin --HDB_ADMIN_PASSWORD "Abc1234!"
     sleep 7s    
     ./linux-harperdb run
     sleep 3s
@@ -76,7 +77,7 @@ harperdb_run()
 #environment_id=d4f6eefe-b922-9888-043f-43a374a1ef1a
 
     newman run https://api.getpostman.com/collections/$collection_id?apikey=$apiKey \
-    --environment https://api.getpostman.com/environments/$environment_id?apikey=$apiKey -r cli > ../newman_output.log 2> ../error.out
+    --environment https://api.getpostman.com/environments/$environment_id?apikey=$apiKey -r cli > ../newman_output.log
    
 ./linux-harperdb stop
        else
@@ -101,14 +102,6 @@ echo "I am in this directory now looking for newman_output.log: $(pwd)"
         echo "Failed NewMan Tests"
         echo $theFailed
         exit 1;
-    fi
-    
-    if [ -s error.out ]
-       then
-          echo "Some error in newman process!"
-          newman_err=$(cat error.out)
-          echo "New man errors: $newman_err"
-          exit 1
     fi
 
 exit 0

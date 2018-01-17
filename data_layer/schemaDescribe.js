@@ -187,7 +187,7 @@ function descTable(describe_table_object, callback) {
             table_search_obj.search_attribute = 'name';
             table_search_obj.search_value = describe_table_object.table;
             table_search_obj.hash_values = [];
-            table_search_obj.get_attributes = ['hash_attribute', 'id', 'name', 'schema'];
+            table_search_obj.get_attributes = ['*'];
             let table_result = {};
             search.searchByValue(table_search_obj, function (err, tables) {
                 if (err) {

@@ -2,30 +2,116 @@ const cluster = require('cluster');
 let numCPUs = 4;
 const DEBUG = false;
 const winston = require('../utility/logging/winston_logger');
+const search = require('../data_layer/search');
+const cluster_utilities = require('./clustering/cluster_utilities');
+const enterprise_util = require('../utility/enterprise_initialization');
+const uuidv1 = require('uuid/v1');
 
+const async = require('async');
 
 if (cluster.isMaster && !DEBUG) {
-    winston.info(`Master ${process.pid} is running`);
+    let enterprise = false;
+    global.delegate_callback_queue = [];
+    let licenseKeySearch = {
+        operation: 'search_by_value',
+        schema: 'system',
+        table: 'hdb_license',
+        hash_attribute: 'license_key',
+        search_attribute: "license_key",
+        search_value: "*",
+        get_attributes:["*"]
 
-    // Fork workers.
-    let forks = [];
-    let num_workers = require('os').cpus().length;
-    numCPUs = num_workers < numCPUs ? num_workers : numCPUs;
-    for (let i = 0; i < numCPUs; i++) {
-        let forked = cluster.fork();
-        forked.on('message', messageHandler);
-        forks.push(forked);
-    }
 
-    cluster.on('exit', (worker, code, signal) => {
-        winston.info(`worker ${worker.process.pid} died`);
+    };
+
+    search.searchByValue(licenseKeySearch, function (err, licenses) {
+        const hdb_license = require('../utility/hdb_license');
+        if (err) {
+            return winston.error(err);
+        }
+
+            async.each(licenses, function(license, callback){
+                hdb_license.validateLicense(license.license_key, license.company, function (err, license_validation) {
+                    if (license_validation.valid_machine && license_validation.valid_date  && license_validation.valid_license){
+                        enterprise = true;
+
+                         if(numCPUs === 4){
+                             numCPUs = 16;
+                        }else{
+                            numCPUs +=16;
+
+                        }
+                    }
+                    callback();
+
+                });
+            }, function(err){
+
+                if(err)
+                    return winston.error(err);
+
+                winston.info(`Master ${process.pid} is running`);
+
+                // Fork workers.
+                let forks = [];
+                let num_workers = require('os').cpus().length;
+                numCPUs = num_workers < numCPUs ? num_workers : numCPUs;
+                for (let i = 0; i < numCPUs; i++) {
+                    let forked = cluster.fork();
+                    forked.on('message', messageHandler);
+                    forks.push(forked);
+                }
+
+                global.forks = forks;
+
+
+                if(enterprise){
+                    messageHandler({"type":"enterprise", "enterprise":enterprise});
+                    enterprise_util.kickOffEnterprise(function(enterprise_msg){
+                        if(enterprise_msg.clustering){
+                            messageHandler({"type":"clustering"});
+
+                        }
+                    });
+
+                }
+
+
+
+
+                cluster.on('exit', (worker, code, signal) => {
+                    winston.info(`worker ${worker.process.pid} died`);
+                });
+
+                global.forkClusterMsgQueue = [];
+                function messageHandler(msg) {
+                    if(msg.type === 'clustering_payload'){
+                        forkClusterMsgQueue[msg.id]  = msg;
+                        cluster_utilities.payloadHandler(msg);
+                    }else if(msg.type === 'delegate_thread_response'){
+                        global.delegate_callback_queue[msg.id](msg.err, msg.data);
+                    }else{
+                        forks.forEach((fork) => {
+                            fork.send(msg);
+                        });
+                    }
+
+
+
+
+                }
+
+            });
+
+
+
+
+
+
+
     });
 
-    function messageHandler(msg) {
-        forks.forEach((fork)=>{
-            fork.send(msg);
-        });
-    }
+
 
 } else {
     winston.info('In express' + process.cwd());
@@ -34,34 +120,30 @@ if (cluster.isMaster && !DEBUG) {
         hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`),
         app = express(),
         bodyParser = require('body-parser'),
-        write = require('../data_layer/insert'),
-        search = require('../data_layer/search'),
-        sql = require('../sqlTranslator/index').evaluateSQL,
-        csv = require('../data_layer/csvBulkLoad'),
-        schema = require('../data_layer/schema'),
-        delete_ = require('../data_layer/delete'),
+
         auth = require('../security/auth'),
         session = require('express-session'),
         passport = require('passport'),
-        user = require('../security/user'),
-        role = require('../security/role'),
-        read_log = require('../utility/logging/read_logs'),
         global_schema = require('../utility/globalSchema'),
         pjson = require('../package.json'),
-        async = require('async'),
-        cors = require('cors');
+        server_utilities = require('./server_utilities'),
+    clone = require('clone');
+
+    cors = require('cors');
 
     hdb_properties.append(hdb_properties.get('settings_path'));
-
-    if(hdb_properties.get('CORS_ON') && (hdb_properties.get('CORS_ON') === true || hdb_properties.get('CORS_ON').toUpperCase() === 'TRUE')){
+    global.clusterMsgQueue = [];
+    let enterprise = false;
+    global.clustering_on = false;
+    if (hdb_properties.get('CORS_ON') && (hdb_properties.get('CORS_ON') === true || hdb_properties.get('CORS_ON').toUpperCase() === 'TRUE')) {
         let cors_options = {
             origin: true,
             allowedHeaders: ['Content-Type', 'Authorization'],
             credentials: false
         };
-        if(hdb_properties.get('CORS_WHITELIST') && hdb_properties.get('CORS_WHITELIST').length > 0){
+        if (hdb_properties.get('CORS_WHITELIST') && hdb_properties.get('CORS_WHITELIST').length > 0) {
             let whitelist = hdb_properties.get('CORS_WHITELIST').split(',');
-            cors_options.origin =  (origin, callback) => {
+            cors_options.origin = (origin, callback) => {
                 if (whitelist.indexOf(origin) !== -1) {
                     callback(null, true);
                 } else {
@@ -73,208 +155,256 @@ if (cluster.isMaster && !DEBUG) {
         app.use(cors(cors_options));
     }
 
-    app.use(bodyParser.json({limit:'1gb'})); // support json encoded bodies
+    app.use(bodyParser.json({limit: '1gb'})); // support json encoded bodies
     app.use(bodyParser.urlencoded({extended: true}));
     app.use(function (error, req, res, next) {
         if (error instanceof SyntaxError) {
             res.status(400).send({error: 'invalid JSON: ' + error.message.replace('\n', '')});
-        } else if(error){
+        } else if (error) {
             res.status(400).send({error: error.message});
-        }  else {
+        } else {
             next();
         }
     });
 
-    app.use(session({ secret: 'keyboard cat',     resave: true,
-        saveUninitialized: true }));
+    app.use(session({
+        secret: 'keyboard cat', resave: true,
+        saveUninitialized: true
+    }));
     app.use(passport.initialize());
     app.use(passport.session());
     app.post('/', function (req, res) {
-        auth.authorize(req, res, function(err, user) {
+
+        let enterprise_operations = ['add_node'];
+        if((req.headers.harperdb_connection || enterprise_operations.indexOf(req.body.operation) > -1) && !enterprise){
+            return res.status(401).json({"error":"This feature requires an enterprise license.  Please register or contact us at hello@harperdb.io for more info."});
+        }
+
+        auth.authorize(req, res, function (err, user) {
             res.set('x-powered-by', 'HarperDB');
 
-            if(err){
-                winston.warn(`{"ip":"${req.connection.remoteAddress}", "error":"${err}"`);
-                if(typeof err === 'string'){
+            if (err) {
+                winston.warn(`{"ip":"${req.connection.remoteAddress}", "error":"${err.stack}"`);
+                if (typeof err === 'string') {
                     return res.status(401).send({error: err});
                 }
                 res.status(401).send(err);
                 return;
             }
             req.body.hdb_user = user;
-            chooseOperation(req.body, (err, operation_function) => {
+
+
+            server_utilities.chooseOperation(req.body, (err, operation_function) => {
+
                 if (err) {
                     winston.error(err);
                     res.status(500).send(err);
                     return;
                 }
 
-                try {
-                    if(req.body.operation !== 'read_log')
-                        winston.info(JSON.stringify(req.body));
 
-                    operation_function(req.body, (error, data) => {
-                        if (error) {
-                            winston.error(error);
-                            if(typeof error !== 'object')
-                                error = {"error": error};
-                            res.status(500).json({error: (error.message ? error.message : error.error)});
-                            return;
+                if (global.clustering_on && req.body.operation != 'sql') {
+                    if (!req.body.schema
+                        || !req.body.table
+                        || req.body.operation === 'create_table'
+                        || req.body.operation === 'drop_table'
+
+                    ) {
+                        var localOnlyOperations = ['describe_all', 'describe_table', 'describe_schema', 'read_log']
+                        if (localOnlyOperations.includes(req.body.operation)) {
+                            server_utilities.processLocalTransaction(req, res, operation_function, function (err) {
+                                winston.error(err);
+                            });
+                        } else {
+                            server_utilities.processLocalTransaction(req, res, operation_function,function(err){
+                                if(!err){
+                                    let id = uuidv1();
+                                  //  global.clusterMsgQueue[id] = res;
+                                    process.send({"type":"clustering_payload", "pid":process.pid,
+                                        "clustering_type":"broadcast",
+                                        "id": id,
+                                        "body":req.body
+                                    });
+                                }
+
+
+                            });
+
                         }
-                        if(typeof data !== 'object')
-                            data = {"message": data};
 
-                        return res.status(200).json(data);
+                    } else {
+                        global_schema.getTableSchema(req.body.schema, req.body.table, function (err, table) {
+                            if (err) {
+                                winston.error(err);
+                                return res.status(500).send(err);
+
+                            }
+
+
+                            if (table.residence) {
+                                let residence = table.residence;
+                                if (typeof table.residence === 'string') {
+                                    residence = JSON.parse(table.residence);
+                                }
+
+                                if (residence.indexOf('*') > -1) {
+
+                                    server_utilities.processLocalTransaction(req, res, operation_function,function(err){
+                                        if(!err){
+                                            let id = uuidv1();
+                                          //  global.clusterMsgQueue[id] = res;
+                                            process.send({"type":"clustering_payload", "pid":process.pid,
+                                                "clustering_type":"broadcast",
+                                                "id": id,
+                                                "body":req.body
+                                            });
+                                        }
+
+
+                                    });
+                                }
+
+                                if (residence.indexOf(hdb_properties.get('NODE_NAME')) > -1) {
+                                    server_utilities.processLocalTransaction(req, res, operation_function, function () {
+                                        if (residence.length > 1) {
+                                            for (node in residence) {
+                                                if (residence[node] != hdb_properties.get('NODE_NAME')) {
+
+                                                    let id = uuidv1();
+                                                   // global.clusterMsgQueue[id] = res;
+                                                    process.send({"type":"clustering_payload", "pid":process.pid,
+                                                        "clustering_type":"send",
+                                                        "id": id,
+                                                        "body":req.body,
+                                                        "node":{"name":residence[node]}
+                                                    });
+
+                                                }
+                                            }
+                                        }
+
+
+                                    });
+                                } else {
+                                    for (node in residence) {
+                                        if (residence[node] != hdb_properties.get('NODE_NAME')) {
+                                            let id = uuidv1();
+                                            global.clusterMsgQueue[id] = res;
+                                            process.send({"type":"clustering_payload", "pid":process.pid,
+                                                "clustering_type":"send",
+                                                "id": id,
+                                                "body":req.body,
+                                                "node":{"name":residence[node]}
+                                            });
+                                        }
+                                    }
+                                }
+
+
+                            } else {
+                                server_utilities.processLocalTransaction(req, res, operation_function, function () {
+
+                                });
+                            }
+
+
+                        });
+
+                        app.get('/', function (req, res) {
+                            auth.authorize(req, res, function (err, user) {
+                                var guidePath = require('path');
+                                res.sendFile(guidePath.resolve('../docs/user_guide.html'));
+                            });
+                        });
+
+                    }
+
+
+                } else {
+                    server_utilities.processLocalTransaction(req, res, operation_function, function () {
+
                     });
-                } catch (e) {
-                    winston.error(e);
-                    return res.status(500).json(e);
                 }
+
+
             });
         });
 
     });
 
-    app.get('/', function (req, res) {
-        auth.authorize(req, res, function(err, user) {
-            var guidePath = require('path');
-            res.sendFile(guidePath.resolve('../docs/user_guide.html'));
-        });
-    });
 
-    function chooseOperation(json, callback) {
-        let operation_function = nullOperation;
-        switch (json.operation) {
-            case 'insert':
-                operation_function = write.insert;
-                break;
-            case 'update':
-                operation_function = write.update;
-                break;
-            case 'search_by_hash':
-                operation_function = search.searchByHash;
-                break;
-            case 'search_by_value':
-                operation_function = search.searchByValue;
-                break;
-            case 'search':
-                operation_function = search.search;
-                break;
-            case 'sql':
-                operation_function = sql;
-                break;
-            case 'csv_data_load':
-                operation_function = csv.csvDataLoad;
-                break;
-            case 'csv_file_load':
-                operation_function = csv.csvFileLoad;
-                break;
-            case 'csv_url_load':
-                operation_function = csv.csvURLLoad;
-                break;
-            case 'create_schema':
-                operation_function = schema.createSchema;
-                break;
-            case 'create_table':
-                operation_function = schema.createTable;
-                break;
-            case 'drop_schema':
-                operation_function = schema.dropSchema;
-                break;
-            case 'drop_table':
-                operation_function = schema.dropTable;
-                break;
-            case 'describe_schema':
-                operation_function = schema.describeSchema;
-                break;
-            case 'describe_table':
-                operation_function = schema.describeTable;
-                break;
-            case 'describe_all':
-                operation_function = schema.describeAll;
-                break;
-            case 'delete':
-                operation_function = delete_.delete;
-                break;
-            case 'add_user':
-                operation_function = user.addUser;
-                break;
-            case 'alter_user':
-                operation_function = user.alterUser;
-                break;
-            case 'drop_user':
-                operation_function = user.dropUser;
-                break;
-            case 'list_users':
-                operation_function = user.listUsers;
-                break;
-            case 'list_roles':
-                operation_function = role.listRoles;
-                break;
-            case 'add_role':
-                operation_function = role.addRole;
-                break;
-            case 'alter_role':
-                operation_function = role.alterRole;
-                break;
-            case 'drop_role':
-                operation_function = role.dropRole;
-                break;
-            case 'user_info':
-                operation_function = user.userInfo;
-                break;
-            case 'read_log':
-                operation_function = read_log.read_log;
-
-            default:
-                break;
-        }
-        callback(null, operation_function);
-    }
-
-    function nullOperation(json, callback) {
-        callback('Invalid operation');
-    }
-    process.on('message', (msg)=>{
-        switch(msg.type){
+    process.on('message', (msg) => {
+        switch (msg.type) {
             case 'schema':
-                global_schema.schemaSignal((err)=>{
-                    if(err){
+                global_schema.schemaSignal((err) => {
+                    if (err) {
                         winston.error(err);
                     }
                 });
                 break;
             case 'user':
-                global_schema.setUsersToGlobal((err)=>{
-                    if(err){
+                global_schema.setUsersToGlobal((err) => {
+                    if (err) {
                         winston.error(err);
                     }
+                });
+                break;
+            case 'enterprise':
+                enterprise = msg.enterprise;
+                break;
+            case 'clustering':
+                global.clustering_on = true;
+                break;
+            case 'cluster_response':
+                if(global.clusterMsgQueue[msg.id]){
+                    if(msg.err){
+                        global.clusterMsgQueue[msg.id].status(401).json({"error":msg.err});
+                        delete global.clusterMsgQueue[msg.id];
+                        break;
+                    }
+
+                    global.clusterMsgQueue[msg.id].status(200).json(msg.data);
+                    delete global.clusterMsgQueue[msg.id];
+                }
+
+                break;
+
+
+
+            case 'delegate_transaction':
+                server_utilities.chooseOperation(msg.body, function(err, operation_function){
+                   server_utilities.processInThread(msg.body, operation_function,function(err, data){
+                      process.send({"type":"delegate_thread_response", "err":err, "data": data, "id":msg.id});
+                   });
                 });
                 break;
         }
     });
 
-    try{
+    try {
         let http = require('http');
         let httpsecure = require('https');
-        let privateKey  = fs.readFileSync(hdb_properties.get('PRIVATE_KEY'), 'utf8');
+        let privateKey = fs.readFileSync(hdb_properties.get('PRIVATE_KEY'), 'utf8');
         let certificate = fs.readFileSync(hdb_properties.get('CERTIFICATE'), 'utf8');
         let credentials = {key: privateKey, cert: certificate};
 
         let httpServer = undefined;
         let secureServer = undefined;
 
-        if(hdb_properties.get('HTTPS_ON') && (hdb_properties.get('HTTPS_ON') === true || hdb_properties.get('HTTPS_ON').toUpperCase() === 'TRUE')) {
+        if (hdb_properties.get('HTTPS_ON') && (hdb_properties.get('HTTPS_ON') === true || hdb_properties.get('HTTPS_ON').toUpperCase() === 'TRUE')) {
             secureServer = httpsecure.createServer(credentials, app);
-            secureServer.listen(hdb_properties.get('HTTPS_PORT'), function(){
+            secureServer.listen(hdb_properties.get('HTTPS_PORT'), function () {
                 winston.info(`HarperDB ${pjson.version} HTTPS Server running on ${hdb_properties.get('HTTPS_PORT')}`);
 
-                global_schema.setSchemaDataToGlobal((err, data) => {
-                    if (err) {
-                        winston.info('error', err);
-                    }
-
-                });
+                async.parallel(
+                    [
+                        global_schema.setSchemaDataToGlobal,
+                        global_schema.setUsersToGlobal
+                    ], (error, data) => {
+                        if (error) {
+                            winston.error(error);
+                        }
+                    });
             });
         }
 
@@ -294,7 +424,12 @@ if (cluster.isMaster && !DEBUG) {
                     });
             });
         }
-    }catch(e){
+
+
+
+
+
+    } catch (e) {
         winston.error(e);
     }
 }

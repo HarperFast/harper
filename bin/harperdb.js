@@ -3,6 +3,7 @@ const run = require('./run'),
     stop = require('./stop'),
     register = require('./register'),
     version = require('./version'),
+    upgrade = require('./upgrade'),
     fs = require('fs');
 
 harperDBService();
@@ -55,6 +56,9 @@ function harperDBService() {
                 break;
             case "version":
                 version.version();
+                break;
+            case "upgrade":
+                upgrade.upgrade();
                 break;
             default:
                 run.run();
