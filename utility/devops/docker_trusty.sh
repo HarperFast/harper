@@ -13,7 +13,7 @@ obfuscript()
 #"data_layer" "sqlTranslator" "validation" "security" "utility" "utility/install" "utility/logging" 
 #"utility/functions/date" "utility/functions/math" "lib/fileSystem" "lib/server" "lib/streams" "server" "server/clustering"
 
-files=( "data_layer" "sqlTranslator" "validation" "security" "utility" "utility/install" "utility/logging" "utility/functions/date" "utility/functions/math" "lib/fileSystem" "lib/server" "lib/streams" "server" "server/clustering")
+files=( "data_layer" "sqlTranslator" "validation" "security" "utility" "utility/install" "utility/logging" "utility/functions/date" "utility/functions/math" "lib/fileSystem" "lib/server" "lib/streams" "server" "server/clustering" "json" )
 working_dir="$(pwd)/../../";
 mirrored_dir="/tmp/harperdb_dev"
 echo "here i am $working_dir"
