@@ -56,7 +56,7 @@ if { $rootdir eq ""} {
 puts ""
 
 set timeout -1
-spawn node harperdb register
+spawn ./linux-harperdb register
 match_max 100000
 expect "*"
 send -- "harperdb.io\r"
