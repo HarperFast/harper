@@ -1,34 +1,33 @@
-const validate = require('validate.js');
+const validator = require('validationWrapper.js');
 
 const constraints = {
-    schema : {
-        presence : true,
+    schema: {
+        presence: true,
         format: {
             pattern: "^[a-zA-Z0-9_]*$",
             message: "schema must be alpha numeric"
         },
         length: {
-            maximum:250,
+            maximum: 250,
             tooLong: 'cannot exceed 250 characters'
         }
     },
     table: {
-        presence : true,
+        presence: true,
         format: {
             pattern: "^[a-zA-Z0-9_]*$",
             message: "schema must be alpha numeric"
         },
         length: {
-            maximum:250,
+            maximum: 250,
             tooLong: 'cannot exceed 250 characters'
         }
-    }
-    ,
-    hash_value :{
-        presence : true,
-
+    },
+    hash_value: {
+        presence: true,
     }
 };
-module.exports = function(delete_object) {
-    return validate(delete_object, constraints);
+
+module.exports = function (delete_object) {
+    return validator.validateObject(delete_object, constraints);
 };
