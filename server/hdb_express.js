@@ -161,6 +161,8 @@ if (cluster.isMaster && !DEBUG) {
     global.clusterMsgQueue = [];
     let enterprise = false;
     global.clustering_on = false;
+    let props_cors = hdb_properties.get(PROPS_CORS_KEY);
+    let props_cors_whitelist = hdb_properties.get(PROPS_CORS_WHITELIST_KEY);
 
     if(props_cors && (props_cors === true || props_cors.toUpperCase() === TRUE_COMPARE_VAL)){
         let cors_options = {
