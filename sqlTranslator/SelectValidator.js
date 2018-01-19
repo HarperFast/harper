@@ -144,7 +144,10 @@ class SelectValidator{
             if(!column.aggregatorid && !column.columnid){
                 columns.push(column);
             } else if(column.columnid){
-                columns.push(this[findColumn](column)[0]);
+                let found = this[findColumn](column)[0];
+                if(found){
+                    columns.push(found);
+                }
             }
         });
 
