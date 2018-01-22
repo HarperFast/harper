@@ -313,7 +313,7 @@ function checkAttributeSchema(insert_object, callerback) {
                 folders[attribute_path] = "";
 
                 link_objects.push({
-                    link: `${base_path}/__hdb_hash/${property}/${attribute_file_name}`,
+                    link: `${base_path}__hdb_hash/${property}/${attribute_file_name}`,
                     file_name: `${attribute_path}/${attribute_file_name}`
                 });
             } else {
@@ -366,7 +366,7 @@ function checkRecordsExist(hash_paths, callback) {
 }
 
 function processData(data_wrapper, callback) {
-    async.parallel([
+    async.waterfall([
         writeRawData.bind(null, data_wrapper.data_folders, data_wrapper.data),
         writeLinks.bind(null, data_wrapper.link_folders, data_wrapper.links),
     ], (err, results) => {
@@ -427,7 +427,7 @@ function writeLinks(folders, links, callback) {
 
 function writeLinkFiles(links, callback) {
     async.each(links, (link, caller) => {
-        fs.symlink(link.link, link.file_name, (err) => {
+        fs.link(link.link, link.file_name, (err) => {
             if (err && err.code !== 'EEXIST') {
                 caller(err);
                 return;
