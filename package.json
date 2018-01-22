@@ -80,6 +80,7 @@
     ],
     "assets": [
       "./utility/install/*.txt"
+      "./json/*.json"
     ]
   }
 }
