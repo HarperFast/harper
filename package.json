@@ -79,7 +79,7 @@
       "./validation/*.js"
     ],
     "assets": [
-      "./utility/install/*.txt"
+      "./utility/install/*.txt",
       "./json/*.json"
     ]
   }
