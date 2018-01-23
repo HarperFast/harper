@@ -25,10 +25,11 @@ node harperdb.js install --TC_AGREEMENT yes --HDB_ROOT $target_dir/node_$node_co
 
 printf  "\nCLUSTERING = TRUE\nCLUSTERING_PORT = %s\nNODE_NAME = node_%s" "$cluster_port" "$node_count" >> $target_dir/node_$node_count/data/hdb/config/settings.js
 
-./linux-harperdb run
+node harperdb run
 
 /opt/harperdb/utility/devops/script_register.exp $target_dir/node_$node_count/harperdb
 
+node harperdb.js run
 
 node_count=$(($node_count - 1));
 http_port=$(($http_port + $port_offset));
