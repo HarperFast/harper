@@ -561,10 +561,10 @@ function createFolders(folders, callback) {
             if(folder.indexOf('/__hdb_hash/') >= 0 && created_folder) {
                 folder_created_flag = true;
                 createNewAttribute(folder, (error)=>{
-                    caller();
+                    return caller();
                 });
             } else {
-                caller();
+                return caller();
             }
         });
     }, function (err) {
