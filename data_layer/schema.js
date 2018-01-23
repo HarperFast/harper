@@ -681,13 +681,6 @@ function deleteAttributeStructure(attribute_drop_object, callback) {
 
 function createAttribute(create_attribute_object, callback) {
     try {
-        createAttributeStructure(create_attribute_object, function (err, success) {
-            if (err) {
-                return callback(err);
-            }
-            addAndRemoveFromQueue(create_attribute_object, success, callback);
-        });
-
         if(global.cluster_server
             && global.cluster_server.socket_server.name
             && !create_attribute_object.delegated && create_attribute_object.schema != 'system'   ){
