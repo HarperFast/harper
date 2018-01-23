@@ -19,6 +19,14 @@ class AttributeParser{
         this.select_clause = select_clause;
         this.tables = tables;
         this.selects = [];
+
+        this.table_metadata = {};
+        this.tables.forEach((table)=>{
+            if(!this.table_metadata[table.schema]) {
+                this.table_metadata[table.schema] = {};
+            }
+            this.table_metadata[table.schema][table.table] = global.hdb_schema[table.schema][table.table];
+        });
     }
 
     parseGetAttributes(){
@@ -32,7 +40,18 @@ class AttributeParser{
                     break;
                 case 'identifier':
                     let attribute = this[parseColumn](column);
-                    if(attribute){
+                    //need to add every column when there is an attribute named *
+                    if(attribute && attribute.attribute === '*'){
+                        let all_attributes = this.selects.concat(this.table_metadata[attribute.schema][attribute.table].attributes);
+                        all_attributes.forEach((attr)=>{
+                            this.selects.push({
+                                table:attribute.table,
+                                table_alias:attribute.table_alias,
+                                attribute:attr.attribute,
+                                alias:attr.attribute
+                            });
+                        });
+                    } else if(attribute){
                         this.selects.push(attribute);
                     }
                     break;
@@ -40,6 +59,23 @@ class AttributeParser{
         });
 
         return this.selects;
+    }
+
+    //used to make sure column exists in the schema
+    checkColumnExists(attribute){
+        if(attribute.attribute === '*'){
+            return attribute;
+        }
+
+        let found_attribute = this.table_metadata[attribute.schema][attribute.table].attributes.filter((column)=>{
+            return column.attribute === attribute.attribute;
+        });
+
+        if(!found_attribute || found_attribute.length === 0){
+            throw `unknown column ${attribute.raw_name}`
+        } else {
+            return attribute;
+        }
     }
 
     [findTable](table_name){
@@ -62,19 +98,28 @@ class AttributeParser{
         let table_info = this[findTable](column_info[0]);
         if(table_info) {
             if (column_info.length > 1 && (column_info[0] === table_info.table || column_info[0] === table_info.alias)) {
-                return {
+
+                let attribute = {
+                    schema: table_info.schema,
                     table: table_info.table,
                     table_alias: table_info.alias,
                     attribute: column_info[1],
-                    alias: column.alias ? column.alias : column_info[1]
+                    alias: column.alias ? column.alias : column_info[1],
+                    raw_name: column.name
                 };
+
+                return this.checkColumnExists(attribute);
             } else {
-                return {
+                let attribute = {
+                    schema: table_info.schema,
                     table: table_info.table,
                     table_alias: table_info.alias,
                     attribute: column_info[0],
-                    alias: column.alias ? column.alias : column_info[0]
+                    alias: column.alias ? column.alias : column_info[0],
+                    raw_name: column.name
                 };
+
+                return this.checkColumnExists(attribute, 'select');
             }
         } else {
             throw `unknown table for column ${column.name}`
@@ -82,6 +127,8 @@ class AttributeParser{
 
         return null;
     }
+
+
 
     [parseFunction](expression){
         let calculation = this[evaluateFunction](expression);
@@ -104,7 +151,10 @@ class AttributeParser{
             expression.args.expression.forEach((exp) => {
                 switch (exp.type) {
                     case 'expression':
-                        args.push(this[evaluateExpression](exp).reverse().join(' '));
+                        let evaluated_expression = this[evaluateExpression](exp);
+                        if(evaluated_expression !== null && evaluated_expression !== undefined) {
+                            args.push(evaluated_expression.reverse().join(' '));
+                        }
                         break;
                     case 'function':
                         args.push(this[evaluateFunction](exp));
@@ -165,7 +215,7 @@ class AttributeParser{
     }
 
     [evaluateExpression](expression, final_operation){
-        try {
+
             let expression_parts = [];
             if (expression) {
 
@@ -184,9 +234,7 @@ class AttributeParser{
             }
 
             return expression_parts
-        } catch(e){
-            console.error(e);
-        }
+
     }
 
     [createExpressionPart](operation, expression){

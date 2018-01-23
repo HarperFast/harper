@@ -10,6 +10,13 @@ module.exports = {
     update: update
 };
 
+/**
+ * Description
+ * @method update
+ * @param {} statement
+ * @param {} callback
+ * @return
+ */
 function update(statement, callback){
     global_schema.getTableSchema(statement.table.databaseid, statement.table.tableid, (err, table_info)=>{
         if(err){
@@ -56,6 +63,14 @@ function createUpdateRecord(columns){
     return record;
 }
 
+/**
+ * Description
+ * @method buildUpdateRecords
+ * @param {} update_record
+ * @param {} records
+ * @param {} callback
+ * @return
+ */
 function buildUpdateRecords(update_record, records, callback){
     if(!records || records.length === 0){
         return callback({hdb_code:1, message: "update statement found no records to update"});
@@ -68,6 +83,14 @@ function buildUpdateRecords(update_record, records, callback){
     callback(null, new_records);
 }
 
+/**
+ * Description
+ * @method updateRecords
+ * @param {} table
+ * @param {} records
+ * @param {} callback
+ * @return
+ */
 function updateRecords(table, records, callback){
     let update_object = {
         operation:'update',

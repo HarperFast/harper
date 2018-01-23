@@ -46,8 +46,8 @@ function addRole(role, callback){
             return callback('Role already exists');
 
         }
-
-        role.id =  role.id = uuidV4();
+        if(!role.id)
+            role.id =  role.id = uuidV4();
 
         let insert_object = {
             operation:'insert',
@@ -92,13 +92,11 @@ function alterRole(role, callback){
     };
 
     insert.update(update_object, function(err, success){
-        if(err){
+        if(err) {
             callback(err);
             return;
         }
-
-        callback(null, `${role.role} successfully altered`);
-
+        callback(null, success);
     });
 
 
