@@ -196,6 +196,13 @@ if (cluster.isMaster && !DEBUG) {
     });
 
     app.use(passport.initialize());
+    app.get('/', function (req, res) {
+        auth.authorize(req, res, function(err, user) {
+            let guidePath = require('path');
+            res.sendFile(guidePath.resolve('../docs/user_guide.html'));
+        });
+    });
+
     app.post('/', function (req, res) {
 
         let enterprise_operations = ['add_node'];
@@ -333,12 +340,6 @@ if (cluster.isMaster && !DEBUG) {
 
                         });
 
-    app.get('/', function (req, res) {
-        auth.authorize(req, res, function(err, user) {
-            let guidePath = require('path');
-            res.sendFile(guidePath.resolve('../docs/user_guide.html'));
-        });
-    });
 
                     }
 
