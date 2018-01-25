@@ -27,9 +27,9 @@ hdb_properties.append(hdb_properties.get('settings_path'));
 let node_env_value = hdb_properties.get(PROPS_ENV_KEY);
 
 // If NODE_ENV is empty, it will show up here as '0' rather than '' or length of 0.
-if( node_env_value === undefined || node_env_value === null || node_env_value === 0) {
+if (node_env_value === undefined || node_env_value === null || node_env_value === 0) {
     node_env_value = ENV_PROD_VAL;
-} else if(node_env_value !== ENV_PROD_VAL || node_env_value !== ENV_DEV_VAL) {
+} else if (node_env_value !== ENV_PROD_VAL || node_env_value !== ENV_DEV_VAL) {
     node_env_value = ENV_PROD_VAL;
 }
 
@@ -53,7 +53,7 @@ if (cluster.isMaster && !DEBUG && numCPUs > 1) {
         hash_attribute: 'license_key',
         search_attribute: "license_key",
         search_value: "*",
-        get_attributes:["*"]
+        get_attributes: ["*"]
     };
 
     search.searchByValue(licenseKeySearch, function (err, licenses) {
@@ -62,43 +62,41 @@ if (cluster.isMaster && !DEBUG && numCPUs > 1) {
             return winston.error(err);
         }
 
-        async.each(licenses, function(license, callback){
+        async.each(licenses, function (license, callback) {
             hdb_license.validateLicense(license.license_key, license.company, function (err, license_validation) {
-                if (license_validation.valid_machine && license_validation.valid_date  && license_validation.valid_license){
+                if (license_validation.valid_machine && license_validation.valid_date && license_validation.valid_license) {
                     enterprise = true;
-                    if(num_workers > numCPUs){
-                        if(numCPUs === 4){
+                    if (num_workers > numCPUs) {
+                        if (numCPUs === 4) {
                             numCPUs = 16;
-                        }else{
-                            numCPUs +=16;
+                        } else {
+                            numCPUs += 16;
                         }
                     }
 
                 }
                 callback();
             });
-        }, function(err){
+        }, function (err) {
 
-            if(err)
+            if (err)
                 return winston.error(err);
-
-                winston.info(`Master ${process.pid} is running`);
-    winston.info(`Running with NODE_ENV as: ${process.env.NODE_ENV}`);
-                // Fork workers.
-                let forks = [];
-
-                for (let i = 0; i < numCPUs; i++) {
-                    let forked = cluster.fork();
-                    forked.on('message', messageHandler);
-                    forks.push(forked);
-                }
+            winston.info(`Master ${process.pid} is running`);
+            winston.info(`Running with NODE_ENV as: ${process.env.NODE_ENV}`);
+            // Fork workers.
+            let forks = [];
+            for (let i = 0; i < numCPUs; i++) {
+                let forked = cluster.fork();
+                forked.on('message', messageHandler);
+                forks.push(forked);
+            }
 
             global.forks = forks;
-            if(enterprise){
-                messageHandler({"type":"enterprise", "enterprise":enterprise});
-                enterprise_util.kickOffEnterprise(function(enterprise_msg){
-                    if(enterprise_msg.clustering){
-                        messageHandler({"type":"clustering"});
+            if (enterprise) {
+                messageHandler({"type": "enterprise", "enterprise": enterprise});
+                enterprise_util.kickOffEnterprise(function (enterprise_msg) {
+                    if (enterprise_msg.clustering) {
+                        messageHandler({"type": "clustering"});
                     }
                 });
             }
@@ -108,13 +106,14 @@ if (cluster.isMaster && !DEBUG && numCPUs > 1) {
             });
 
             global.forkClusterMsgQueue = [];
+
             function messageHandler(msg) {
-                if(msg.type === 'clustering_payload'){
-                    forkClusterMsgQueue[msg.id]  = msg;
+                if (msg.type === 'clustering_payload') {
+                    forkClusterMsgQueue[msg.id] = msg;
                     cluster_utilities.payloadHandler(msg);
-                }else if(msg.type === 'delegate_thread_response'){
+                } else if (msg.type === 'delegate_thread_response') {
                     global.delegate_callback_queue[msg.id](msg.err, msg.data);
-                }else{
+                } else {
                     forks.forEach((fork) => {
                         fork.send(msg);
                     });
@@ -145,7 +144,7 @@ if (cluster.isMaster && !DEBUG && numCPUs > 1) {
     let props_cors = hdb_properties.get(PROPS_CORS_KEY);
     let props_cors_whitelist = hdb_properties.get(PROPS_CORS_WHITELIST_KEY);
 
-    if(props_cors && (props_cors === true || props_cors.toUpperCase() === TRUE_COMPARE_VAL)){
+    if (props_cors && (props_cors === true || props_cors.toUpperCase() === TRUE_COMPARE_VAL)) {
         let cors_options = {
             origin: true,
             allowedHeaders: ['Content-Type', 'Authorization'],
@@ -178,7 +177,7 @@ if (cluster.isMaster && !DEBUG && numCPUs > 1) {
 
     app.use(passport.initialize());
     app.get('/', function (req, res) {
-        auth.authorize(req, res, function(err, user) {
+        auth.authorize(req, res, function (err, user) {
             let guidePath = require('path');
             res.sendFile(guidePath.resolve('../docs/user_guide.html'));
         });
@@ -187,8 +186,8 @@ if (cluster.isMaster && !DEBUG && numCPUs > 1) {
     app.post('/', function (req, res) {
 
         let enterprise_operations = ['add_node'];
-        if((req.headers.harperdb_connection || enterprise_operations.indexOf(req.body.operation) > -1) && !enterprise){
-            return res.status(401).json({"error":"This feature requires an enterprise license.  Please register or contact us at hello@harperdb.io for more info."});
+        if ((req.headers.harperdb_connection || enterprise_operations.indexOf(req.body.operation) > -1) && !enterprise) {
+            return res.status(401).json({"error": "This feature requires an enterprise license.  Please register or contact us at hello@harperdb.io for more info."});
         }
 
         auth.authorize(req, res, function (err, user) {
@@ -222,14 +221,15 @@ if (cluster.isMaster && !DEBUG && numCPUs > 1) {
                                 winston.error(err);
                             });
                         } else {
-                            server_utilities.processLocalTransaction(req, res, operation_function,function(err){
-                                if(!err){
+                            server_utilities.processLocalTransaction(req, res, operation_function, function (err) {
+                                if (!err) {
                                     let id = uuidv1();
                                     //  global.clusterMsgQueue[id] = res;
-                                    process.send({"type":"clustering_payload", "pid":process.pid,
-                                        "clustering_type":"broadcast",
+                                    process.send({
+                                        "type": "clustering_payload", "pid": process.pid,
+                                        "clustering_type": "broadcast",
                                         "id": id,
-                                        "body":req.body
+                                        "body": req.body
                                     });
                                 }
                             });
@@ -248,14 +248,15 @@ if (cluster.isMaster && !DEBUG && numCPUs > 1) {
 
                                 if (residence.indexOf('*') > -1) {
 
-                                    server_utilities.processLocalTransaction(req, res, operation_function,function(err){
-                                        if(!err){
+                                    server_utilities.processLocalTransaction(req, res, operation_function, function (err) {
+                                        if (!err) {
                                             let id = uuidv1();
                                             //  global.clusterMsgQueue[id] = res;
-                                            process.send({"type":"clustering_payload", "pid":process.pid,
-                                                "clustering_type":"broadcast",
+                                            process.send({
+                                                "type": "clustering_payload", "pid": process.pid,
+                                                "clustering_type": "broadcast",
                                                 "id": id,
-                                                "body":req.body
+                                                "body": req.body
                                             });
                                         }
                                     });
@@ -269,11 +270,12 @@ if (cluster.isMaster && !DEBUG && numCPUs > 1) {
 
                                                     let id = uuidv1();
                                                     // global.clusterMsgQueue[id] = res;
-                                                    process.send({"type":"clustering_payload", "pid":process.pid,
-                                                        "clustering_type":"send",
+                                                    process.send({
+                                                        "type": "clustering_payload", "pid": process.pid,
+                                                        "clustering_type": "send",
                                                         "id": id,
-                                                        "body":req.body,
-                                                        "node":{"name":residence[node]}
+                                                        "body": req.body,
+                                                        "node": {"name": residence[node]}
                                                     });
                                                 }
                                             }
@@ -284,25 +286,26 @@ if (cluster.isMaster && !DEBUG && numCPUs > 1) {
                                         if (residence[node] != hdb_properties.get('NODE_NAME')) {
                                             let id = uuidv1();
                                             global.clusterMsgQueue[id] = res;
-                                            process.send({"type":"clustering_payload", "pid":process.pid,
-                                                "clustering_type":"send",
+                                            process.send({
+                                                "type": "clustering_payload", "pid": process.pid,
+                                                "clustering_type": "send",
                                                 "id": id,
-                                                "body":req.body,
-                                                "node":{"name":residence[node]}
+                                                "body": req.body,
+                                                "node": {"name": residence[node]}
                                             });
                                         }
                                     }
                                 }
                             } else {
                                 server_utilities.processLocalTransaction(req, res, operation_function, function () {
-                                //no-op
+                                    //no-op
                                 });
                             }
                         });
                     }
                 } else {
                     server_utilities.processLocalTransaction(req, res, operation_function, function () {
-                     // no-op
+                        // no-op
                     });
                 }
             });
@@ -332,9 +335,9 @@ if (cluster.isMaster && !DEBUG && numCPUs > 1) {
                 global.clustering_on = true;
                 break;
             case 'cluster_response':
-                if(global.clusterMsgQueue[msg.id]){
-                    if(msg.err){
-                        global.clusterMsgQueue[msg.id].status(401).json({"error":msg.err});
+                if (global.clusterMsgQueue[msg.id]) {
+                    if (msg.err) {
+                        global.clusterMsgQueue[msg.id].status(401).json({"error": msg.err});
                         delete global.clusterMsgQueue[msg.id];
                         break;
                     }
@@ -344,9 +347,9 @@ if (cluster.isMaster && !DEBUG && numCPUs > 1) {
                 }
                 break;
             case 'delegate_transaction':
-                server_utilities.chooseOperation(msg.body, function(err, operation_function){
-                    server_utilities.processInThread(msg.body, operation_function,function(err, data){
-                        process.send({"type":"delegate_thread_response", "err":err, "data": data, "id":msg.id});
+                server_utilities.chooseOperation(msg.body, function (err, operation_function) {
+                    server_utilities.processInThread(msg.body, operation_function, function (err, data) {
+                        process.send({"type": "delegate_thread_response", "err": err, "data": data, "id": msg.id});
                     });
                 });
                 break;
@@ -359,7 +362,7 @@ if (cluster.isMaster && !DEBUG && numCPUs > 1) {
         let privateKey = hdb_properties.get(PROPS_PRIVATE_KEY);
         let certificate = hdb_properties.get(PROPS_CERT_KEY);
         let credentials = {key: privateKey, cert: certificate};
-        let server_timeout  = hdb_properties.get(PROPS_SERVER_TIMEOUT_KEY);
+        let server_timeout = hdb_properties.get(PROPS_SERVER_TIMEOUT_KEY);
         let props_http_secure_on = hdb_properties.get(PROPS_HTTP_SECURE_ON_KEY);
         let props_http_on = hdb_properties.get(PROPS_HTTP_ON_KEY);
         let httpServer = undefined;
