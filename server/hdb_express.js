@@ -44,7 +44,7 @@ if (cluster.isMaster && !DEBUG && numCPUs > 1) {
     const search = require('../data_layer/search');
     const cluster_utilities = require('./clustering/cluster_utilities');
     const enterprise_util = require('../utility/enterprise_initialization');
-    let enterprise = false;
+    let enterprise = true;
     global.delegate_callback_queue = [];
     let licenseKeySearch = {
         operation: 'search_by_value',

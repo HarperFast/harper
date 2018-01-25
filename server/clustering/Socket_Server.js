@@ -1,7 +1,8 @@
 const
     winston = require('../../utility/logging/winston_logger'),
-    search = require('../../data_layer/search')
-insert = require('../../data_layer/insert');
+    search = require('../../data_layer/search'),
+    insert = require('../../data_layer/insert'),
+    delete_ = require('../../data_layer/delete');
 
 class Socket_Server {
     constructor(node) {
@@ -86,11 +87,24 @@ class Socket_Server {
                         }
                     }
 
-
+                    // delete from memory
                     delete global.cluster_queue[msg.node.name][msg.id];
+                    // delete from disk
+                    delete_obj = {
+                        "table":"hdb_queue",
+                        "schema":"system",
+                        "hash_values":[msg.id]
+
+                    }
+
+                    delete_.delete(delete_obj, function(err, result){
+                       if(err){
+                           winston.error(err);
+                       }
+                    });
 
 
-                    //this.queue[msg].recieved = true;
+
                 });
 
                 socket.on("msg", function (msg, callback) {
