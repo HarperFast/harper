@@ -1,10 +1,6 @@
 const cluster = require('cluster');
-let numCPUs = 4;
 const DEBUG = false;
 const winston = require('../utility/logging/winston_logger');
-const search = require('../data_layer/search');
-const cluster_utilities = require('./clustering/cluster_utilities');
-const enterprise_util = require('../utility/enterprise_initialization');
 const uuidv1 = require('uuid/v1');
 const DEFAULT_SERVER_TIMEOUT = 120000;
 const PROPS_SERVER_TIMEOUT_KEY = 'SERVER_TIMEOUT_MS',
@@ -37,7 +33,15 @@ if( node_env_value === undefined || node_env_value === null || node_env_value ==
 
 process.env['NODE_ENV'] = node_env_value;
 
-if (cluster.isMaster && !DEBUG) {
+let numCPUs = 4;
+let num_workers = require('os').cpus().length;
+numCPUs = num_workers < numCPUs ? num_workers : numCPUs;
+
+
+if (cluster.isMaster && !DEBUG && numCPUs > 1) {
+    const search = require('../data_layer/search');
+    const cluster_utilities = require('./clustering/cluster_utilities');
+    const enterprise_util = require('../utility/enterprise_initialization');
     let enterprise = false;
     global.delegate_callback_queue = [];
     let licenseKeySearch = {
@@ -82,8 +86,7 @@ if (cluster.isMaster && !DEBUG) {
     winston.info(`Running with NODE_ENV as: ${process.env.NODE_ENV}`);
                 // Fork workers.
                 let forks = [];
-                let num_workers = require('os').cpus().length;
-                numCPUs = num_workers < numCPUs ? num_workers : numCPUs;
+
                 for (let i = 0; i < numCPUs; i++) {
                     let forked = cluster.fork();
                     forked.on('message', messageHandler);
