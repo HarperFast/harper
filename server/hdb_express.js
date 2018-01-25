@@ -66,12 +66,14 @@ if (cluster.isMaster && !DEBUG && numCPUs > 1) {
             hdb_license.validateLicense(license.license_key, license.company, function (err, license_validation) {
                 if (license_validation.valid_machine && license_validation.valid_date  && license_validation.valid_license){
                     enterprise = true;
-
-                    if(numCPUs === 4){
-                        numCPUs = 16;
-                    }else{
-                        numCPUs +=16;
+                    if(num_workers > numCPUs){
+                        if(numCPUs === 4){
+                            numCPUs = 16;
+                        }else{
+                            numCPUs +=16;
+                        }
                     }
+
                 }
                 callback();
             });
