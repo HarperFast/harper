@@ -6,7 +6,7 @@ module.exports = {
     setUsersToGlobal: setUsersToGlobal
 };
 
-function setUsersToGlobal(callback){
+function setUsersToGlobal(callback) {
     user.listUsers(null, (err, users)=>{
         if(err){
             return winston.error(err);
