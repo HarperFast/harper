@@ -29,19 +29,11 @@ function signalSchemaChange(message){
 function signalUserChange(message){
     try {
         if (process.send === undefined) {
-            global_schema.setUsersToGlobal((err) => {
-                if (err) {
-                    winston.error(err);
-                }
-            });
+            winston.error('process.send in Signal User Change is undefined.');
         } else {
             process.send(message);
         }
-    }catch(e){
-        global_schema.setUsersToGlobal((err) => {
-            if (err) {
-                winston.error(err);
-            }
-        });
+    } catch(e){
+        winston.error(e);
     }
 }

@@ -5,8 +5,8 @@ module.exports = {
     alterUser:alterUser,
     dropUser: dropUser,
     userInfo: user_info,
-    listUsers: list_users
-
+    listUsers: list_users,
+    setUsersToGlobal: setUsersToGlobal
 };
 
 //requires must be declared after module.exports to avoid cyclical dependency
@@ -16,7 +16,6 @@ const insert = require('../data_layer/insert'),
     validation = require('../validation/user_validation'),
     search = require('../data_layer/search'),
     signalling  = require('../utility/signalling');
-
 
 function addUser(user, callback){
     let validation_resp = validation.addUserValidation(user);
@@ -33,8 +32,6 @@ function addUser(user, callback){
         hash_values: [user.role],
         hash_attribute : 'id',
         get_attributes: ['id']
-
-
     };
 
     search.searchByHash(search_obj, function (err, search_role) {
@@ -57,9 +54,13 @@ function addUser(user, callback){
                 callback(err);
                 return;
             }
-            signalling.signalUserChange({type: 'user'});
-            callback(null, `${user.username} successfully added`);
-
+            setUsersToGlobal((err) => {
+                if (err) {
+                    winston.error(err);
+                }
+                signalling.signalUserChange({type: 'user'});
+                callback(null, `${user.username} successfully added`);
+            });
         });
     });
 }
@@ -87,8 +88,13 @@ function alterUser(user, callback){
             callback(err);
             return;
         }
-        signalling.signalUserChange({type: 'user'});
-        callback(null, success);
+        setUsersToGlobal((err) => {
+            if (err) {
+                winston.error(err);
+            }
+            signalling.signalUserChange({type: 'user'});
+            callback(null, success);
+        });
     });
 }
 
@@ -105,15 +111,18 @@ function dropUser(user, callback){
     };
 
     delete_.delete(delete_object, function(err, success){
-       if(err){
-           callback(err);
-           return;
-       }
-        signalling.signalUserChange({type: 'user'});
-       callback(null, `${user.username} successfully deleted`);
-
+        if(err){
+            callback(err);
+            return;
+        }
+        setUsersToGlobal((err) => {
+            if (err) {
+                winston.error(err);
+            }
+            signalling.signalUserChange({type: 'user'});
+            callback(null, `${user.username} successfully deleted`);
+        });
     });
-
 }
 
 
@@ -132,11 +141,7 @@ function user_info(body, callback){
 
         user.role = role_data[0];
         delete user.password;
-
         return callback(null, user);
-
-
-
     });
 
 }
@@ -153,12 +158,9 @@ function list_users(body, callback){
     role_search_obj.get_attributes = ['*'];
     search.searchByValue(role_search_obj, function (err, roles) {
 
-
         if (err) {
             return callback(err);
         }
-
-
         if(roles){
             let roleMapObj = {}
             for(let r in roles){
@@ -180,20 +182,20 @@ function list_users(body, callback){
                 for(let u in users){
                     users[u].role = roleMapObj[users[u].role];
                 }
-
                 return callback(null, users);
-
-
-
             });
-
         }else{
             return callback(null, null);
-
         }
-
     });
+}
 
-
-
+function setUsersToGlobal(callback){
+    list_users(null, (err, users)=>{
+        if(err){
+            return winston.error(err);
+        }
+        global.hdb_users = users;
+        callback();
+    });
 }

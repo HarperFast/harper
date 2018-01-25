@@ -2,6 +2,8 @@ const cluster = require('cluster');
 const DEBUG = false;
 const winston = require('../utility/logging/winston_logger');
 const uuidv1 = require('uuid/v1');
+const user_schema = require('../utility/user_schema');
+
 const DEFAULT_SERVER_TIMEOUT = 120000;
 const PROPS_SERVER_TIMEOUT_KEY = 'SERVER_TIMEOUT_MS',
     PROPS_PRIVATE_KEY = 'PRIVATE_KEY',
@@ -52,8 +54,6 @@ if (cluster.isMaster && !DEBUG && numCPUs > 1) {
         search_attribute: "license_key",
         search_value: "*",
         get_attributes:["*"]
-
-
     };
 
     search.searchByValue(licenseKeySearch, function (err, licenses) {
@@ -62,25 +62,23 @@ if (cluster.isMaster && !DEBUG && numCPUs > 1) {
             return winston.error(err);
         }
 
-            async.each(licenses, function(license, callback){
-                hdb_license.validateLicense(license.license_key, license.company, function (err, license_validation) {
-                    if (license_validation.valid_machine && license_validation.valid_date  && license_validation.valid_license){
-                        enterprise = true;
+        async.each(licenses, function(license, callback){
+            hdb_license.validateLicense(license.license_key, license.company, function (err, license_validation) {
+                if (license_validation.valid_machine && license_validation.valid_date  && license_validation.valid_license){
+                    enterprise = true;
 
-                         if(numCPUs === 4){
-                             numCPUs = 16;
-                        }else{
-                            numCPUs +=16;
-
-                        }
+                    if(numCPUs === 4){
+                        numCPUs = 16;
+                    }else{
+                        numCPUs +=16;
                     }
-                    callback();
+                }
+                callback();
+            });
+        }, function(err){
 
-                });
-            }, function(err){
-
-                if(err)
-                    return winston.error(err);
+            if(err)
+                return winston.error(err);
 
                 winston.info(`Master ${process.pid} is running`);
     winston.info(`Running with NODE_ENV as: ${process.env.NODE_ENV}`);
@@ -93,57 +91,35 @@ if (cluster.isMaster && !DEBUG && numCPUs > 1) {
                     forks.push(forked);
                 }
 
-                global.forks = forks;
-
-
-                if(enterprise){
-                    messageHandler({"type":"enterprise", "enterprise":enterprise});
-                    enterprise_util.kickOffEnterprise(function(enterprise_msg){
-                        if(enterprise_msg.clustering){
-                            messageHandler({"type":"clustering"});
-
-                        }
-                    });
-
-                }
-
-
-
-
-                cluster.on('exit', (worker, code, signal) => {
-                    winston.info(`worker ${worker.process.pid} died`);
-                });
-
-                global.forkClusterMsgQueue = [];
-                function messageHandler(msg) {
-                    if(msg.type === 'clustering_payload'){
-                        forkClusterMsgQueue[msg.id]  = msg;
-                        cluster_utilities.payloadHandler(msg);
-                    }else if(msg.type === 'delegate_thread_response'){
-                        global.delegate_callback_queue[msg.id](msg.err, msg.data);
-                    }else{
-                        forks.forEach((fork) => {
-                            fork.send(msg);
-                        });
+            global.forks = forks;
+            if(enterprise){
+                messageHandler({"type":"enterprise", "enterprise":enterprise});
+                enterprise_util.kickOffEnterprise(function(enterprise_msg){
+                    if(enterprise_msg.clustering){
+                        messageHandler({"type":"clustering"});
                     }
+                });
+            }
 
-
-
-
-                }
-
+            cluster.on('exit', (worker, code, signal) => {
+                winston.info(`worker ${worker.process.pid} died`);
             });
 
-
-
-
-
-
-
+            global.forkClusterMsgQueue = [];
+            function messageHandler(msg) {
+                if(msg.type === 'clustering_payload'){
+                    forkClusterMsgQueue[msg.id]  = msg;
+                    cluster_utilities.payloadHandler(msg);
+                }else if(msg.type === 'delegate_thread_response'){
+                    global.delegate_callback_queue[msg.id](msg.err, msg.data);
+                }else{
+                    forks.forEach((fork) => {
+                        fork.send(msg);
+                    });
+                }
+            }
+        });
     });
-
-
-
 } else {
     winston.info('In express' + process.cwd());
     winston.info(`Running with NODE_ENV as: ${process.env.NODE_ENV}`);
@@ -156,7 +132,7 @@ if (cluster.isMaster && !DEBUG && numCPUs > 1) {
         global_schema = require('../utility/globalSchema'),
         pjson = require('../package.json'),
         server_utilities = require('./server_utilities'),
-    clone = require('clone');
+        clone = require('clone');
 
     cors = require('cors');
 
@@ -225,17 +201,12 @@ if (cluster.isMaster && !DEBUG && numCPUs > 1) {
                 return;
             }
             req.body.hdb_user = user;
-
-
             server_utilities.chooseOperation(req.body, (err, operation_function) => {
-
                 if (err) {
                     winston.error(err);
                     res.status(500).send(err);
                     return;
                 }
-
-
                 if (global.clustering_on && req.body.operation != 'sql') {
                     if (!req.body.schema
                         || !req.body.table
@@ -252,28 +223,21 @@ if (cluster.isMaster && !DEBUG && numCPUs > 1) {
                             server_utilities.processLocalTransaction(req, res, operation_function,function(err){
                                 if(!err){
                                     let id = uuidv1();
-                                  //  global.clusterMsgQueue[id] = res;
+                                    //  global.clusterMsgQueue[id] = res;
                                     process.send({"type":"clustering_payload", "pid":process.pid,
                                         "clustering_type":"broadcast",
                                         "id": id,
                                         "body":req.body
                                     });
                                 }
-
-
                             });
-
                         }
-
                     } else {
                         global_schema.getTableSchema(req.body.schema, req.body.table, function (err, table) {
                             if (err) {
                                 winston.error(err);
                                 return res.status(500).send(err);
-
                             }
-
-
                             if (table.residence) {
                                 let residence = table.residence;
                                 if (typeof table.residence === 'string') {
@@ -285,15 +249,13 @@ if (cluster.isMaster && !DEBUG && numCPUs > 1) {
                                     server_utilities.processLocalTransaction(req, res, operation_function,function(err){
                                         if(!err){
                                             let id = uuidv1();
-                                          //  global.clusterMsgQueue[id] = res;
+                                            //  global.clusterMsgQueue[id] = res;
                                             process.send({"type":"clustering_payload", "pid":process.pid,
                                                 "clustering_type":"broadcast",
                                                 "id": id,
                                                 "body":req.body
                                             });
                                         }
-
-
                                     });
                                 }
 
@@ -304,19 +266,16 @@ if (cluster.isMaster && !DEBUG && numCPUs > 1) {
                                                 if (residence[node] != hdb_properties.get('NODE_NAME')) {
 
                                                     let id = uuidv1();
-                                                   // global.clusterMsgQueue[id] = res;
+                                                    // global.clusterMsgQueue[id] = res;
                                                     process.send({"type":"clustering_payload", "pid":process.pid,
                                                         "clustering_type":"send",
                                                         "id": id,
                                                         "body":req.body,
                                                         "node":{"name":residence[node]}
                                                     });
-
                                                 }
                                             }
                                         }
-
-
                                     });
                                 } else {
                                     for (node in residence) {
@@ -332,33 +291,21 @@ if (cluster.isMaster && !DEBUG && numCPUs > 1) {
                                         }
                                     }
                                 }
-
-
                             } else {
                                 server_utilities.processLocalTransaction(req, res, operation_function, function () {
-
+                                //no-op
                                 });
                             }
-
-
                         });
-
-
                     }
-
-
                 } else {
                     server_utilities.processLocalTransaction(req, res, operation_function, function () {
-
+                     // no-op
                     });
                 }
-
-
             });
         });
-
     });
-
 
     process.on('message', (msg) => {
         switch (msg.type) {
@@ -370,7 +317,7 @@ if (cluster.isMaster && !DEBUG && numCPUs > 1) {
                 });
                 break;
             case 'user':
-                global_schema.setUsersToGlobal((err) => {
+                user_schema.setUsersToGlobal((err) => {
                     if (err) {
                         winston.error(err);
                     }
@@ -393,16 +340,12 @@ if (cluster.isMaster && !DEBUG && numCPUs > 1) {
                     global.clusterMsgQueue[msg.id].status(200).json(msg.data);
                     delete global.clusterMsgQueue[msg.id];
                 }
-
                 break;
-
-
-
             case 'delegate_transaction':
                 server_utilities.chooseOperation(msg.body, function(err, operation_function){
-                   server_utilities.processInThread(msg.body, operation_function,function(err, data){
-                      process.send({"type":"delegate_thread_response", "err":err, "data": data, "id":msg.id});
-                   });
+                    server_utilities.processInThread(msg.body, operation_function,function(err, data){
+                        process.send({"type":"delegate_thread_response", "err":err, "data": data, "id":msg.id});
+                    });
                 });
                 break;
         }
@@ -429,7 +372,7 @@ if (cluster.isMaster && !DEBUG && numCPUs > 1) {
                 async.parallel(
                     [
                         global_schema.setSchemaDataToGlobal,
-                        global_schema.setUsersToGlobal
+                        user_schema.setUsersToGlobal
                     ], (error, data) => {
                         if (error) {
                             winston.error(error);
@@ -444,11 +387,10 @@ if (cluster.isMaster && !DEBUG && numCPUs > 1) {
             httpServer.setTimeout(server_timeout ? server_timeout : DEFAULT_SERVER_TIMEOUT);
             httpServer.listen(hdb_properties.get(PROPS_HTTP_PORT_KEY), function () {
                 winston.info(`HarperDB ${pjson.version} HTTP Server running on ${hdb_properties.get(PROPS_HTTP_PORT_KEY)}`);
-
                 async.parallel(
                     [
                         global_schema.setSchemaDataToGlobal,
-                        global_schema.setUsersToGlobal
+                        user_schema.setUsersToGlobal
                     ], (error, data) => {
                         if (error) {
                             winston.error(error);
@@ -456,11 +398,6 @@ if (cluster.isMaster && !DEBUG && numCPUs > 1) {
                     });
             });
         }
-
-
-
-
-
     } catch (e) {
         winston.error(e);
     }
