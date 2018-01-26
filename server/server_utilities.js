@@ -9,28 +9,63 @@ const  write = require('../data_layer/insert'),
     user = require('../security/user'),
     role = require('../security/role'),
     read_log = require('../utility/logging/read_logs'),
-    winston = require('../utility/logging/winston_logger'),
-    clusert_utilities = require('./clustering/cluster_utilities');
+    harper_logger = require('../utility/logging/harper_logger'),
+    cluser_utilities = require('./clustering/cluster_utilities');
 
+const error_message = 'You do not have the required permissions to perform this action.';
 
+const required_permissions = new Map();
+const DELETE_PERM = 'delete';
+const INSERT_PERM = 'insert';
+const READ_PERM = 'read';
+const UPDATE_PERM = 'update';
+
+required_permissions.set(write.insert, [INSERT_PERM]);
+required_permissions.set(write.update, [UPDATE_PERM]);
+required_permissions.set(search.searchByHash, [READ_PERM]);
+required_permissions.set(search.searchByValue, [READ_PERM]);
+required_permissions.set(search.search,[READ_PERM]);
+required_permissions.set(csv.csvDataLoad, [INSERT_PERM]);
+required_permissions.set(csv.csvFileLoad, [INSERT_PERM]);
+required_permissions.set(csv.csvURLLoad, [INSERT_PERM]);
+required_permissions.set(schema.createSchema, [INSERT_PERM]);
+required_permissions.set(schema.createTable, [INSERT_PERM]);
+required_permissions.set(schema.createAttribute, [INSERT_PERM]);
+required_permissions.set(schema.dropSchema, [UPDATE_PERM]);
+required_permissions.set(schema.dropTable, [UPDATE_PERM]);
+required_permissions.set(schema.describeSchema, [READ_PERM]);
+required_permissions.set(schema.describeTable, [READ_PERM]);
+required_permissions.set(schema.describeAll, [READ_PERM]);
+required_permissions.set(delete_.delete, [UPDATE_PERM]);
+required_permissions.set(user.addUser, [INSERT_PERM]);
+required_permissions.set(user.alterUser, [UPDATE_PERM]);
+required_permissions.set(user.dropUser, [UPDATE_PERM]);
+required_permissions.set(user.listUsers, [READ_PERM]);
+required_permissions.set(role.listRoles, [READ_PERM]);
+required_permissions.set(role.addRole, [INSERT_PERM]);
+required_permissions.set(role.alterRole, [UPDATE_PERM]);
+required_permissions.set(role.dropRole, [UPDATE_PERM]);
+required_permissions.set(user.userInfo, [READ_PERM]);
+required_permissions.set(read_log.read_log, [READ_PERM]);
+required_permissions.set(cluser_utilities.addNode, [INSERT_PERM]);
 
 module.exports = {
     chooseOperation: chooseOperation,
     processLocalTransaction: processLocalTransaction,
     proccessDelegatedTransaction: proccessDelegatedTransaction,
     processInThread: processInThread
-
 }
 
 
 function processLocalTransaction(req, res, operation_function, callback){
     try {
         if(req.body.operation != 'read_log')
-            winston.info(JSON.stringify(req.body));
+            //winston.info(JSON.stringify(req.body));
+            harper_logger.info(JSON.stringify(req.body));
 
         operation_function(req.body, (error, data) => {
             if (error) {
-                winston.info(error);
+                harper_logger.info(error);
                 if(typeof error != 'object')
                     error = {"error": error};
                 callback(error);
@@ -44,21 +79,20 @@ function processLocalTransaction(req, res, operation_function, callback){
             return callback(null, data);
         });
     } catch (e) {
-        winston.error(e);
+        harper_logger.error(e);
         callback(e);
         return res.status(500).json(e);
     }
 }
 
 function processInThread(operation, operation_function, callback){
-
     try {
         if(operation.operation != 'read_log')
-            winston.info(JSON.stringify(operation));
+            harper_logger.info(JSON.stringify(operation));
 
         operation_function(operation, (error, data) => {
             if (error) {
-                winston.info(error);
+                harper_logger.info(error);
                 if(typeof error != 'object')
                     error = {"error": error};
                 return callback(null, error);
@@ -68,7 +102,7 @@ function processInThread(operation, operation_function, callback){
             return callback(null, data);
         });
     } catch (e) {
-        winston.error(e);
+        harper_logger.error(e);
         return callback(e);
     }
 }
@@ -76,7 +110,6 @@ function processInThread(operation, operation_function, callback){
 
 
 function proccessDelegatedTransaction(operation, operation_function, callback){
-
     let f = Math.floor(Math.random() * Math.floor(global.forks.length))
     let payload = {
         "id": uuidv1(),
@@ -85,19 +118,19 @@ function proccessDelegatedTransaction(operation, operation_function, callback){
     }
     global.delegate_callback_queue[payload.id] = callback;
     global.forks[f].send(payload);
-
-
 }
-
-
-
 
 function chooseOperation(json, callback) {
     let operation_function = nullOperation;
 
     switch (json.operation) {
         case 'insert':
-            operation_function = write.insert;
+            if(verify_perms(json, write.insert) === true) {
+                operation_function = write.insert;
+            } else {
+                harper_logger.error(error_message);
+                return callback(error_message, null);
+            }
             break;
         case 'update':
             operation_function = write.update;
@@ -139,7 +172,12 @@ function chooseOperation(json, callback) {
             operation_function = schema.dropTable;
             break;
         case 'describe_schema':
-            operation_function = schema.describeSchema;
+            if(verify_perms(json, schema.describeSchema) === true) {
+                operation_function = schema.describeSchema;
+            } else {
+                harper_logger.error(error_message);
+                return callback(error_message, null);
+            }
             break;
         case 'describe_table':
             operation_function = schema.describeTable;
@@ -181,15 +219,76 @@ function chooseOperation(json, callback) {
             operation_function = read_log.read_log;
             break;
         case 'add_node':
-            operation_function = clusert_utilities.addNode
+            operation_function = cluser_utilities.addNode;
             break;
-
-
         default:
             break;
     }
 
     callback(null, operation_function);
+}
+
+function verify_perms(json, operation) {
+    if(json.hdb_user === undefined || json.hdb_user === null) {
+        return false;
+    }
+    if(json.hdb_user.super_user) {
+        return true;
+    }
+    let schema = json.schema;
+    let table = json.table;
+
+    //ASSUME ALL TABLES AND SCHEMAS ARE WIDE OPEN
+    // get user schemas
+    let schema_perms = json.hdb_user.role.permission;
+
+    // check for schema restrictions
+    let table_restrictions = [];
+    try {
+        table_restrictions = json.hdb_user.role.permission[schema];
+    } catch (e) {
+        // no-op, no restrictions is OK;
+    }
+
+    // if there are table_restrictions and table is specified
+    if(table_restrictions && table) {
+        try {
+            if (json.hdb_user.role.permission[schema].tables[table] === undefined) {
+                return false;
+            }
+            //TODO: These are for debugging, remove when released
+            let test2 = json.hdb_user.role.permission[schema].tables[table];
+            //Here we check all required permissions for the operation defined in the map with the values of the permissions in the role.
+            for(let i = 0; i<required_permissions.get(operation).length; i++) {
+                //TODO: These are for debugging, remove when released
+                let test_val = required_permissions.get(operation)[i];
+                let test3 = json.hdb_user.role.permission[schema].tables[table][required_permissions.get(operation)[i]];
+                if (json.hdb_user.role.permission[schema].tables[table][required_permissions.get(operation)[i]] === false) {
+                    harper_logger.info(`Required permission not found for operation ${operation.name} in role ${json.hdb_user.role.id}`);
+                    return false;
+                }
+            }
+        } catch(e) {
+            harper_logger.info(e);
+            return false;
+        }
+    }
+    //if user tables has permission
+    // check permission on operation
+    //
+    // if tables not specified
+    // go
+
+    return true;
+}
+
+function getTableRestrictions(schema) {
+    if(schema === undefined) {
+        return [];
+    }
+    else {
+        return json.hdb_user.role.permission[schema];
+    }
 }
 
 function nullOperation(json, callback) {

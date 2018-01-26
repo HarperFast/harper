@@ -198,15 +198,16 @@ if (cluster.isMaster && !DEBUG && numCPUs > 1) {
                 if (typeof err === 'string') {
                     return res.status(401).send({error: err});
                 }
-                res.status(401).send(err);
-                return;
+                return res.status(401).send(err);
             }
             req.body.hdb_user = user;
             server_utilities.chooseOperation(req.body, (err, operation_function) => {
                 if (err) {
                     winston.error(err);
-                    res.status(500).send(err);
-                    return;
+                    if (typeof err === 'string') {
+                        return res.status(500).send({error: err});
+                    }ß
+                    return res.status(500).send(err);
                 }
                 if (global.clustering_on && req.body.operation != 'sql') {
                     if (!req.body.schema

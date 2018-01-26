@@ -4,18 +4,12 @@ const insert = require('../data_layer/insert'),
     validation = require('../validation/role_validation'),
     uuidV4 = require('uuid/v4');
 
-
-
-    module.exports = {
+module.exports = {
     addRole: addRole,
     alterRole:alterRole,
     dropRole: dropRole,
     listRoles: listRoles
-
 };
-
-
-
 
 function addRole(role, callback){
     let validation_resp = validation.addRoleValidation(role);
@@ -34,8 +28,6 @@ function addRole(role, callback){
         search_value : role.role,
         hash_attribute : 'id',
         get_attributes: ['id']
-
-
     };
 
     search.searchByValue(search_obj, function (err, search_role) {
@@ -62,15 +54,9 @@ function addRole(role, callback){
                 callback(err);
                 return;
             }
-
             callback(null, role);
-
         });
-
-
     })
-
-
 }
 
 function alterRole(role, callback){
@@ -98,8 +84,6 @@ function alterRole(role, callback){
         }
         callback(null, success);
     });
-
-
 }
 
 function dropRole(role, callback){
@@ -119,17 +103,12 @@ function dropRole(role, callback){
         }
     ];
 
-
-
     let search_for_users = {
         schema:'system',
         table : 'hdb_user',
         conditions: conditions,
         get_attributes: ['username']
     };
-
-
-
 
     search.searchByConditions(search_for_users, function(err, users){
         if(users && users.length > 0){
@@ -146,15 +125,9 @@ function dropRole(role, callback){
                 callback(err);
                 return;
             }
-
             callback(null, `${role.rolename} successfully deleted`);
-
         });
     });
-
-
-
-
 }
 
 function listRoles(req_body, callback){
@@ -165,43 +138,28 @@ function listRoles(req_body, callback){
         search_attribute:"id",
         search_value:"*",
         get_attributes: ["*"]
-
     }
 
     search.searchByValue(search_obj, function(err, roles){
-       if(err){
-           return callback(err);
-       }
+        if(err){
+            return callback(err);
+        }
 
-       return callback(null, roles);
-
-
+        return callback(null, roles);
     });
-
 }
 
 function validatePermission(table_obj){
-    if(!table_obj){
+    if(!table_obj)
         return "Missing role";
-    }
 
-    if(!table_obj.role){
+    if(!table_obj.role)
         return "role.role must be defined";
-    }
 
-    if(!table_obj.permission){
+    if(!table_obj.permission)
         return "role.permission must be defined";
 
-    }
-
     if(table_obj.su)
-
-
-
-
-
-    return;
-
-
+        return;
 }
 
