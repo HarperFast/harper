@@ -284,16 +284,18 @@ function createSettingsFile(mount_status, callback) {
         }
 
         const path = require('path');
-        let hdb_props_value = `PROJECT_DIR = ${path.resolve(process.cwd(), '../')}
-        HDB_ROOT= ${wizard_result.HDB_ROOT}
-        HTTP_PORT = ${wizard_result.HTTP_PORT}
-        HTTPS_PORT = ${wizard_result.HTTPS_PORT}
-        CERTIFICATE = ${wizard_result.HDB_ROOT}/keys/certificate.pem
-        PRIVATE_KEY = ${wizard_result.HDB_ROOT}/keys/privateKey.pem
-        HTTPS_ON = FALSE
-        HTTP_ON = TRUE
-        CORS_ON=TRUE
-        CORS_WHITELIST=`;
+        let hdb_props_value = `PROJECT_DIR = ${path.resolve(process.cwd(),'../')}\n` +
+            `HDB_ROOT = ${wizard_result.HDB_ROOT}\n` +
+            `HTTP_PORT = ${wizard_result.HTTP_PORT}\n` +
+            `HTTPS_PORT = ${wizard_result.HTTPS_PORT}\n` +
+            `CERTIFICATE = ${wizard_result.HDB_ROOT}/keys/certificate.pem\n` +
+            `PRIVATE_KEY = ${wizard_result.HDB_ROOT}/keys/privateKey.pem\n` +
+            `HTTPS_ON = FALSE\n` +
+            `HTTP_ON = TRUE \n` +
+            `CORS_ON = TRUE\n` +
+            `CORS_WHITELIST =\n` +
+            `SERVER_TIMEOUT_MS = 120000\n` +
+            `NODE_ENV = production\n`;
 
         winston.info('info', `hdb_props_value ${JSON.stringify(hdb_props_value)}`);
         winston.info('info', `settings path: ${hdb_boot_properties.get('settings_path')}`);

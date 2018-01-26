@@ -34,7 +34,7 @@ function processLocalTransaction(req, res, operation_function, callback){
                 if(typeof error != 'object')
                     error = {"error": error};
                 callback(error);
-                res.status(200).json(error);
+                res.status(500).json({error: (error.message ? error.message : error.error)});
                 return;
             }
             if(typeof data != 'object')

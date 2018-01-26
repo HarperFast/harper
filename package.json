@@ -48,6 +48,7 @@
     "passport": "^0.3.2",
     "passport-http": "^0.3.0",
     "passport-local": "^1.0.0",
+    "pino": "^4.10.3",
     "portscanner": "^2.1.1",
     "prompt": "^1.0.0",
     "properties-reader": "0.0.15",
@@ -82,5 +83,10 @@
       "./utility/install/*.txt",
       "./json/*.json"
     ]
+  },
+  "devDependencies": {
+    "assert": "^1.4.1",
+    "mocha": "^4.1.0",
+    "sinon": "^4.1.4"
   }
 }

@@ -1,0 +1,13 @@
+PROJECT_DIR = /Users/elipalmer/harperdb
+HDB_ROOT= /Users/elipalmer/DevDB
+HTTP_PORT = 9925
+HTTPS_PORT = 31283
+CERTIFICATE = /Users/elipalmer/DevDB/keys/certificate.pem
+PRIVATE_KEY = /Users/elipalmer/DevDB/keys/privateKey.pem
+HTTPS_ON = FALSE
+HTTP_ON = TRUE
+CORS_ON=TRUE
+CORS_WHITELIST=
+LOG_LEVEL = trace
+LOGGER = 1
+LOG_PATH = /Users/elipalmer/harperdb/unitTests/testlog.log
