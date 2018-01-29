@@ -1,3 +1,4 @@
+"use strict";
 const write = require('../data_layer/insert'),
     search = require('../data_layer/search'),
     csv = require('../data_layer/csvBulkLoad'),
