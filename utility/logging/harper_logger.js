@@ -28,7 +28,9 @@ let log_level  = hdb_properties.get('LOG_LEVEL');
 let log_type  = hdb_properties.get('LOGGER');
 let log_location  = hdb_properties.get('LOG_PATH');
 
-let pino_write_stream = fs.createWriteStream(log_location,{'flags': 'a'});
+if(log_location !== undefined && log_location !== null) {
+    let pino_write_stream = fs.createWriteStream(log_location, {'flags': 'a'});
+}
 
 //  RFC5424: severity of all levels is assumed to be numerically ascending from most important to least important
 const winston_log_levels = {
