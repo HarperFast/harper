@@ -3,8 +3,10 @@ const DEBUG = false;
 const winston = require('../utility/logging/winston_logger');
 const uuidv1 = require('uuid/v1');
 const user_schema = require('../utility/user_schema');
+const async = require('async');
 
 const DEFAULT_SERVER_TIMEOUT = 120000;
+const UNAUTH_ERROR_MESSAGE = "You are not authorized to perform this action.";
 const PROPS_SERVER_TIMEOUT_KEY = 'SERVER_TIMEOUT_MS',
     PROPS_PRIVATE_KEY = 'PRIVATE_KEY',
     PROPS_CERT_KEY = 'CERTIFICATE',
@@ -19,7 +21,6 @@ const PROPS_SERVER_TIMEOUT_KEY = 'SERVER_TIMEOUT_MS',
     ENV_DEV_VAL = 'development',
     TRUE_COMPARE_VAL = 'TRUE';
 
-const async = require('async');
 PropertiesReader = require('properties-reader');
 hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
 hdb_properties.append(hdb_properties.get('settings_path'));
@@ -204,10 +205,14 @@ if (cluster.isMaster && !DEBUG && numCPUs > 1) {
             server_utilities.chooseOperation(req.body, (err, operation_function) => {
                 if (err) {
                     winston.error(err);
-                    if (typeof err === 'string') {
-                        return res.status(500).send({error: err});
+                    if(err === server_utilities.UNAUTH_RESPONSE) {
+                        return res.status(403).send({error: UNAUTH_ERROR_MESSAGE});
+                    } else {
+                        if (typeof err === 'string') {
+                            return res.status(500).send({error: err});
+                        }
+                        return res.status(500).send(err);
                     }
-                    return res.status(500).send(err);
                 }
                 if (global.clustering_on && req.body.operation != 'sql') {
                     if (!req.body.schema

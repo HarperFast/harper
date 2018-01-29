@@ -1,13 +1,12 @@
+"use strict"
 /**
  * Test the server_utilities module.
  */
 
 const assert = require('assert');
 const sinon = require('sinon');
-const fs = require('fs');
 const rewire = require('rewire');
 const server_utilities = rewire('../server/server_utilities');
-const write = require('../data_layer/insert');
 
 function test_func(test_valuse, callback) {
     return callback(null, true);
@@ -110,150 +109,9 @@ let TEST_JSON_SUPER_USER = {
     }
 }
 
-let EMPTY_PERMISSION = {
-    "super_admin": false
-};
-
 function clone(a) {
     return JSON.parse(JSON.stringify(a));
 }
-
-describe(`Test verify_perms`, function () {
-
-    it('Pass in bad values, expect false', function () {
-        let verifyParams = server_utilities.__get__('verify_perms');
-        assert.equal(verifyParams(null, null), false);
-    });
-    it('Pass in bad values, expect false', function () {
-        let verifyParams = server_utilities.__get__('verify_perms');
-        assert.equal(verifyParams(TEST_JSON_SUPER_USER, write.insert.name), true);
-    });
-    it('Pass in JSON with no schemas restrictions defined, expect true', function () {
-        let verifyParams = server_utilities.__get__('verify_perms');
-        let test_copy = clone(TEST_JSON);
-        test_copy.hdb_user.role.permission = EMPTY_PERMISSION;
-        assert.equal(verifyParams(test_copy, write.insert.name), true);
-    });
-    it('Pass in JSON with schemas but no tables defined, expect true', function () {
-        let verifyParams = server_utilities.__get__('verify_perms');
-        let test_copy = clone(TEST_JSON);
-        let perms = {
-            "super_admin": false,
-            "dev": {
-                "tables": {
-                }
-            },
-            "test": {
-                "tables": {
-                }
-            }
-        };
-        test_copy.hdb_user.role.permission = perms;
-        assert.equal(verifyParams(test_copy, write.insert.name), true);
-    });
-    it('Pass in JSON with schemas and table dog defined, insert not allowed, expect false', function () {
-        let verifyParams = server_utilities.__get__('verify_perms');
-        let test_copy = clone(TEST_JSON);
-        let perms = {
-            "super_admin": false,
-            "dev": {
-                "tables": {
-                    "dog": {
-                        "read": false,
-                        "insert": false,
-                        "update": false,
-                        "delete": false,
-                        "attribute_restrictions": []
-                    }
-                }
-            },
-        };
-        test_copy.hdb_user.role.permission = perms;
-        assert.equal(verifyParams(test_copy, write.insert.name), false);
-    });
-    it('(NOMINAL) - Pass in JSON with schemas and table dog defined, insert allowed, expect true', function () {
-        let verifyParams = server_utilities.__get__('verify_perms');
-        let test_copy = clone(TEST_JSON);
-        let perms = {
-            "super_admin": false,
-            "dev": {
-                "tables": {
-                    "dog": {
-                        "read": false,
-                        "insert": true,
-                        "update": false,
-                        "delete": false,
-                        "attribute_restrictions": []
-                    }
-                }
-            },
-        };
-        test_copy.hdb_user.role.permission = perms;
-        assert.equal(verifyParams(test_copy, write.insert.name), true);
-    });
-    it('Test operation with read & insert required, but user only has insert.  False expected', function () {
-        let verifyParams = server_utilities.__get__('verify_perms');
-        let required_permissions = server_utilities.__get__('required_permissions');
-        required_permissions.set('test method', ['insert', 'read']);
-        let test_copy = clone(TEST_JSON);
-        let perms = {
-            "super_admin": false,
-            "dev": {
-                "tables": {
-                    "dog": {
-                        "read": false,
-                        "insert": true,
-                        "update": false,
-                        "delete": false,
-                        "attribute_restrictions": []
-                    }
-                }
-            },
-        };
-        test_copy.hdb_user.role.permission = perms;
-        assert.equal(verifyParams(test_copy, 'test method'), false);
-    });
-    it('Test bad method.  False expected', function () {
-        let verifyParams = server_utilities.__get__('verify_perms');
-        let test_copy = clone(TEST_JSON);
-        let perms = {
-            "super_admin": false,
-            "dev": {
-                "tables": {
-                    "dog": {
-                        "read": false,
-                        "insert": true,
-                        "update": false,
-                        "delete": false,
-                        "attribute_restrictions": []
-                    }
-                }
-            },
-        };
-        test_copy.hdb_user.role.permission = perms;
-        assert.equal(verifyParams(test_copy, 'bad method'), false);
-    });
-    it('Test bad permission name.  False expected', function () {
-        let verifyParams = server_utilities.__get__('verify_perms');
-        let test_copy = clone(TEST_JSON);
-        let perms = {
-            "super_admin": false,
-            "dev": {
-                "tables": {
-                    "dog": {
-                        "read": false,
-                        "fart": true,
-                        "update": false,
-                        "delete": false,
-                        "attribute_restrictions": []
-                    }
-                }
-            },
-        };
-        test_copy.hdb_user.role.permission = perms;
-        assert.equal(verifyParams(test_copy, write.insert.name), false);
-    });
-});
 
 describe(`Test chooseOperation`, function () {
     it('Pass in bad json, expect err in callback', function (done) {
@@ -275,7 +133,7 @@ describe(`Test chooseOperation`, function () {
         let test_copy = clone(TEST_JSON);
         test_copy.operation = 'blah';
         chooseOperation(test_copy, function(err, found) {
-            assert.ok(err === null);
+            assert.ok(err === 403);
             done();
         })
     });
