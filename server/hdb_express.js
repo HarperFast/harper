@@ -206,7 +206,7 @@ if (cluster.isMaster && !DEBUG && numCPUs > 1) {
                     winston.error(err);
                     if (typeof err === 'string') {
                         return res.status(500).send({error: err});
-                    }ß
+                    }
                     return res.status(500).send(err);
                 }
                 if (global.clustering_on && req.body.operation != 'sql') {
