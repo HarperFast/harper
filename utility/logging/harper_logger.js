@@ -28,7 +28,12 @@ let log_level  = hdb_properties.get('LOG_LEVEL');
 let log_type  = hdb_properties.get('LOGGER');
 let log_location  = hdb_properties.get('LOG_PATH');
 
-let pino_write_stream = fs.createWriteStream(log_location,{'flags': 'a'});
+//if log location isn't defined, assume HDB_ROOT/log/hdb_log.log
+if(log_location === undefined || log_location === null) {
+    log_location = (hdb_properties.get('HDB_ROOT') + '/log/hdb_log.log');
+}
+
+let pino_write_stream = fs.createWriteStream(log_location, {'flags': 'a'});
 
 //  RFC5424: severity of all levels is assumed to be numerically ascending from most important to least important
 const winston_log_levels = {
@@ -38,7 +43,7 @@ const winston_log_levels = {
     info: 3,
     debug: 4,
     trace: 5
-}
+};
 
 const FATAL = 'fatal';
 const ERR = 'error';
@@ -57,11 +62,6 @@ if(log_type === undefined || log_type === 0) {
     log_type = WIN;
 }
 
-//TODO: All of this should be happening in an env variable module (yet to be written).
-if(log_location === undefined || log_location === 0) {
-    log_location = './hdb_log.log';
-}
-
 //TODO: not sure if this set to global is needed or useful.  This should be happening in a module.
 global.log_level = log_level;
 global.log_location = log_location;
@@ -75,7 +75,7 @@ module.exports = {
     fatal:fatal,
     setLogLevel:setLogLevel,
     setLogType:setLogType
-}
+};
 
 let pin_logger = undefined;
 let win_logger = undefined;

@@ -87,6 +87,8 @@
   "devDependencies": {
     "assert": "^1.4.1",
     "mocha": "^4.1.0",
-    "sinon": "^4.1.4"
+    "nyc": "^11.4.1",
+    "rewire": "^3.0.2",
+    "sinon": "^4.2.1"
   }
 }
