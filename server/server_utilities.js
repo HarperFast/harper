@@ -9,90 +9,102 @@ const  write = require('../data_layer/insert'),
     user = require('../security/user'),
     role = require('../security/role'),
     read_log = require('../utility/logging/read_logs'),
-    winston = require('../utility/logging/winston_logger'),
-    clusert_utilities = require('./clustering/cluster_utilities');
+    harper_logger = require('../utility/logging/harper_logger'),
+    op_auth = require('../utility/operation_authorization'),
+    cluser_utilities = require('./clustering/cluster_utilities');
 
-
+const UNAUTH_RESPONSE = 403;
+let OPERATION_PARAM_ERROR_MSG = `operation parameter is undefined`;
 
 module.exports = {
     chooseOperation: chooseOperation,
     processLocalTransaction: processLocalTransaction,
     proccessDelegatedTransaction: proccessDelegatedTransaction,
-    processInThread: processInThread
-
+    processInThread: processInThread,
+    UNAUTH_RESPONSE
 }
 
-
-function processLocalTransaction(req, res, operation_function, callback){
+function processLocalTransaction(req, res, operation_function, callback) {
     try {
-        if(req.body.operation != 'read_log')
-            winston.info(JSON.stringify(req.body));
-
-        operation_function(req.body, (error, data) => {
-            if (error) {
-                winston.info(error);
-                if(typeof error != 'object')
-                    error = {"error": error};
-                callback(error);
-                res.status(500).json({error: (error.message ? error.message : error.error)});
-                return;
-            }
-            if(typeof data != 'object')
-                data = {"message": data};
-
-            res.status(200).json(data);
-            return callback(null, data);
-        });
+        if (req.body.operation !== 'read_log')
+            harper_logger.info(JSON.stringify(req.body));
     } catch (e) {
-        winston.error(e);
+        harper_logger.error(e);
         callback(e);
         return res.status(500).json(e);
     }
+
+    operation_function(req.body, (error, data) => {
+        if (error) {
+            harper_logger.info(error);
+            if(typeof error !== 'object')
+                error = {"error": error};
+            res.status(500).json({error: (error.message ? error.message : error.error)});
+            return callback(error);;
+        }
+        if(typeof data !== 'object')
+            data = {"message": data};
+
+        res.status(200).json(data);
+        return callback(null, data);
+    });
 }
 
-function processInThread(operation, operation_function, callback){
-
+function processInThread(operation, operation_function, callback) {
+    if(!operationParameterValid(operation)) {
+        return callback(OPERATION_PARAM_ERROR_MSG, null);
+    }
+    if(operation_function === undefined || operation_function === null ) {
+        let msg = `operation_function parameter in processInThread is undefined`;
+        harper_logger.error(msg);
+        return callback(msg, null);
+    }
     try {
-        if(operation.operation != 'read_log')
-            winston.info(JSON.stringify(operation));
-
-        operation_function(operation, (error, data) => {
-            if (error) {
-                winston.info(error);
-                if(typeof error != 'object')
-                    error = {"error": error};
-                return callback(null, error);
-            }
-            if(typeof data != 'object')
-                data = {"message": data};
-            return callback(null, data);
-        });
+        if(operation.operation !== 'read_log')
+            harper_logger.info(JSON.stringify(operation));
     } catch (e) {
-        winston.error(e);
+        harper_logger.error(e);
         return callback(e);
     }
+    operation_function(operation, (error, data) => {
+        if (error) {
+            harper_logger.info(error);
+            if(typeof error !== 'object')
+                error = {"error": error};
+            return callback(error, null);
+        }
+        if(typeof data !== 'object')
+            data = {"message": data};
+        return callback(null, data);
+    });
 }
 
-
-
-function proccessDelegatedTransaction(operation, operation_function, callback){
-
-    let f = Math.floor(Math.random() * Math.floor(global.forks.length))
+//TODO: operation_function is not used, do we need it?
+function proccessDelegatedTransaction(operation, operation_function, callback) {
+    if(!operationParameterValid(operation)) {
+        return callback(OPERATION_PARAM_ERROR_MSG, null);
+    }
+    if(global.forks === undefined || global.forks === null ) {
+        let message = 'global forks is undefined';
+        harper_logger.error(message);
+        return callback(message, null);
+    }
+    let f = Math.floor(Math.random() * Math.floor(global.forks.length));
     let payload = {
         "id": uuidv1(),
         "body":operation,
         "type":"delegate_transaction"
-    }
+    };
     global.delegate_callback_queue[payload.id] = callback;
     global.forks[f].send(payload);
-
-
 }
 
-
-
-
+// TODO: This doesn't really need a callback, should simplify it to a return statement.
 function chooseOperation(json, callback) {
+    if(json === undefined || json === null) {
+        harper_logger.error(`invalid message body parameters found`);
+        return nullOperation(json, callback);
+    }
     let operation_function = nullOperation;
 
     switch (json.operation) {
@@ -181,17 +193,26 @@ function chooseOperation(json, callback) {
             operation_function = read_log.read_log;
             break;
         case 'add_node':
-            operation_function = clusert_utilities.addNode
+            operation_function = cluser_utilities.addNode;
             break;
-
-
         default:
             break;
     }
-
+    if(op_auth.verify_perms(json, schema.describeAll) === false) {
+        harper_logger.error(UNAUTH_RESPONSE);
+        return callback(UNAUTH_RESPONSE, null);
+    }
     callback(null, operation_function);
 }
 
 function nullOperation(json, callback) {
     callback('Invalid operation');
+}
+
+function operationParameterValid(operation) {
+    if(operation === undefined || operation === null ) {
+        harper_logger.error(OPERATION_PARAM_ERROR_MSG);
+        return false;
+    }
+    return true;
 }
