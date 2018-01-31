@@ -1,7 +1,8 @@
 /**
  * INSTALLER.JS
  *
- * This module is used to install HarperDB.
+ * This module is used to install HarperDB.  It is meant to be a self contained module which is why it configures
+ * it's own winston instance.
  */
 
 const prompt = require('prompt'),
@@ -142,7 +143,7 @@ function checkInstall(callback) {
         });
     }
     catch (e) {
-        callback(null, true);
+        return callback(null, true);
     }
 }
 
@@ -151,10 +152,9 @@ function checkRegister(callback) {
         register = require('../registrationHandler'),
             register.register(prompt, function (err, result) {
                 if (err) {
-                    callback(err);
-                    return;
+                    return callback(err);
                 }
-                callback(null, "Successful installation!");
+                return callback(null, "Successful installation!");
             });
     }
 }
@@ -224,8 +224,7 @@ function wizard(err, callback) {
         }
         winston.info('wizard result : ' + JSON.stringify(wizard_result));
         if (err) {
-            callback(err);
-            return;
+            return callback(err);
         }
         callback(null, wizard_result.HDB_ROOT);
     });
@@ -244,8 +243,7 @@ function createAdminUser(callback) {
         if (err) {
             winston.error('role failed to create ' + err);
             console.log('There was a problem creating the default role.  Please check the install log for details.');
-            callback(err);
-            return;
+            return callback(err);
         }
 
         let admin_user = {};
@@ -260,17 +258,15 @@ function createAdminUser(callback) {
                 console.error('There was a problem creating the admin user.  Please check the install log for details.');
                 return callback(err);
             }
-            callback(null);
+            return callback(null);
         });
     });
 }
 
-
 function createSettingsFile(mount_status, callback) {
     console.log('Starting HarperDB Install...');
     if (mount_status !== 'complete') {
-        callback('mount failed');
-        return;
+        return callback('mount failed');
     }
 
     createBootPropertiesFile(`${wizard_result.HDB_ROOT}/config/settings.js`, (err) => {
@@ -279,8 +275,7 @@ function createSettingsFile(mount_status, callback) {
         if (err) {
             winston.info('info', 'boot properties error' + err);
             console.error('There was a problem creating the boot file.  Please check the install log for details.');
-            callback(err);
-            return;
+            return callback(err);
         }
 
         const path = require('path');
@@ -307,8 +302,7 @@ function createSettingsFile(mount_status, callback) {
                     return callback(err);
                 }
                 hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
-                callback(null);
-
+                return callback(null);
             });
         } catch (e) {
             winston.info(e);
@@ -410,26 +404,23 @@ function generateKeys(callback) {
 
 function setupService(callback) {
     fs.readFile(`./utility/install/harperdb.service`, 'utf8', function (err, data) {
-        const fileData = data.replace('{{project_dir}}', `${hdb_properties.get('PROJECT_DIR')}`).replace('{{hdb_directory}}',
+        let fileData = data.replace('{{project_dir}}', `${hdb_properties.get('PROJECT_DIR')}`).replace('{{hdb_directory}}',
             hdb_properties.get('HDB_ROOT'));
         fs.writeFile('/etc/systemd/system/harperdb.service', fileData, function (err, result) {
 
             if (err) {
                 winston.info('error', `Service Setup Error ${err}`);
                 console.error('There was a problem setting up the service.  Please check the install log for details.');
-                callback(err);
-                return;
+                return callback(err);
             }
 
-            const terminal = spawn('bash');
+            let terminal = spawn('bash');
             terminal.stderr.on('data', function (data) {
             });
 
             terminal.stdin.write(`sudo systemctl daemon-reload &`);
             terminal.stdin.end();
-
-            callback(null, 'success');
-
+            return callback(null, 'success');
         });
     });
 }
@@ -438,8 +429,7 @@ function createBootPropertiesFile(settings_path, callback) {
     winston.info('info', 'creating boot file');
     if (!settings_path) {
         winston.info('info', 'missing settings path');
-        callback('missing setings');
-        return;
+        return callback('missing setings');
     }
 
     let boot_props_value = `settings_path = ${settings_path}
@@ -455,6 +445,6 @@ function createBootPropertiesFile(settings_path, callback) {
         winston.info('info', `props path ${process.cwd()}/../hdb_boot_properties.file`);
         hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
         winston.info('hdb_boot_properties' + hdb_boot_properties);
-        callback(null, 'success');
+        return callback(null, 'success');
     });
 }

@@ -15,7 +15,7 @@ const fs = require('fs'),
     HTTP_PORT_KEY = 'HTTP_PORT',
     HTTPSECURE_ON_KEY = 'HTTPS_ON',
     HTTP_ON_KEY = 'HTTP_ON',
-    HDB_PROC_NAME = 'thetest';
+    HDB_PROC_NAME = 'hdb_express.js';
 
 let hdb_boot_properties = null;
 let hdb_properties = null;
@@ -250,5 +250,3 @@ function exitInstall(){
 module.exports ={
     run:run
 }
-
-
