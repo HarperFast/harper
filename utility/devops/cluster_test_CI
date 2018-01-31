@@ -56,8 +56,13 @@ echo "CLUSTER BUILT NOTHING SHOULD BE RUNNING: $(ps -ef | grep $target_dir)"
 cd $target_dir/node_1/harperdb/bin/
 ./linux-harperdb run
 
+sleep 7s
+
 cd $target_dir/node_2/harperdb/bin/
 ./linux-harperdb run
+
+sleep 10s
+
 #Check Clustering by adding schema, table, data, select.
 newman run https://api.getpostman.com/collections/4f5d17b0-e923-e7c0-feb9-f80dbcf1764a?apikey=fe1dfb2c3647474f8f3e9d836783e694 --environment https://api.getpostman.com/environments/e8201aee-1a99-7de7-4910-62c0e0e6b755?apikey=fe1dfb2c3647474f8f3e9d836783e694 --folder clustered
 

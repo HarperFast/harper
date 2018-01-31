@@ -68,7 +68,11 @@
   },
   "pkg": {
     "scripts": [
-      "./server/*.js",
+    ],
+    "assets": [
+      "./utility/install/*.txt",
+      "./json/*.json",
+       "./server/*.js",
       "./server/**/*.js",
       "./data_layer/*.js",
       "./triggers/**",
@@ -78,10 +82,6 @@
       "./sqlTranslator/*.js",
       "./lib/**/*.js",
       "./validation/*.js"
-    ],
-    "assets": [
-      "./utility/install/*.txt",
-      "./json/*.json"
     ]
   },
   "devDependencies": {
