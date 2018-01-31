@@ -220,13 +220,9 @@ function chooseOperation(json, callback) {
         default:
             break;
     }
-    // We need to do something different for schema operations as we don't want to parse
-    // the SQL command twice.
-    if(operation_function !== sql) {
-        if (op_auth.verify_perms(json, operation_function) === false) {
-            harper_logger.error(UNAUTH_RESPONSE);
-            return callback(UNAUTH_RESPONSE, null);
-        }
+    if(op_auth.verify_perms(json, schema.describeAll) === false) {
+        harper_logger.error(UNAUTH_RESPONSE);
+        return callback(UNAUTH_RESPONSE, null);
     }
     callback(null, operation_function);
 }
