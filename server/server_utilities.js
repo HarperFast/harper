@@ -1,4 +1,4 @@
-
+"use strict";
 const  write = require('../data_layer/insert'),
     uuidv1 = require('uuid/v1'),
     search = require('../data_layer/search'),
@@ -44,7 +44,17 @@ function processLocalTransaction(req, res, operation_function, callback) {
         }
         if(typeof data !== 'object')
             data = {"message": data};
-
+        //TODO: This works to remove the password field from the returned values for now.  We should have a function
+        // that will analyze all responses and scrub them as instructed by a config file.
+        if(operation_function === user.listUsers) {
+            try {
+                for (let i = 0; i < data.length; i++) {
+                    delete data[i].password;
+                }
+            } catch (e) {
+                harper_logger.error(e);
+            }
+        }
         res.status(200).json(data);
         return callback(null, data);
     });
@@ -198,9 +208,13 @@ function chooseOperation(json, callback) {
         default:
             break;
     }
-    if(op_auth.verify_perms(json, schema.describeAll) === false) {
-        harper_logger.error(UNAUTH_RESPONSE);
-        return callback(UNAUTH_RESPONSE, null);
+    // We need to do something different for schema operations as we don't want to parse
+    // the SQL command twice.
+    if(operation_function !== sql) {
+        if (op_auth.verify_perms(json, operation_function) === false) {
+            harper_logger.error(UNAUTH_RESPONSE);
+            return callback(UNAUTH_RESPONSE, null);
+        }
     }
     callback(null, operation_function);
 }
