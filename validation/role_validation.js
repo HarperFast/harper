@@ -44,13 +44,13 @@ function customValidate(object) {
         validationErrors.push(validate_result);
     }
 
-    if (object.permission.super_admin) {
-        if (!validate.isBoolean(object.permission.super_admin))
-            validationErrors.push(validate.isBoolean(object.permission.super_admin));
+    if (object.permission.super_user) {
+        if (!validate.isBoolean(object.permission.super_user))
+            validationErrors.push(validate.isBoolean(object.permission.super_user));
     }
 
     for (item in  object.permission) {
-        if (item != 'super_admin') {
+        if (item != 'super_user') {
             let schema = object.permission[item];
             if(schema.tables ){
                 for(t in schema.tables){

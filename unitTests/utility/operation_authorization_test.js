@@ -8,9 +8,10 @@ const rewire = require('rewire');
 const op_auth = require('../../utility/operation_authorization');
 const op_auth_rewire = rewire('../../utility/operation_authorization');
 const write = require('../../data_layer/insert');
+const user = require('../../security/user');
 
 let EMPTY_PERMISSION = {
-    "super_admin": false
+    "super_user": false
 };
 
 let TEST_JSON = {
@@ -36,7 +37,7 @@ let TEST_JSON = {
         "role": {
             "id": "9c9aae33-4d1d-40b5-a52e-bbbc1b2e2ba6",
             "permission": {
-                "super_admin": false,
+                "super_user": false,
                 "dev": {
                     "tables": {
                         "dog": {
@@ -78,7 +79,7 @@ let TEST_JSON_SUPER_USER = {
         "role": {
             "id": "9c9aae33-4d1d-40b5-a52e-bbbc1b2e2ba6",
             "permission": {
-                "super_admin": true,
+                "super_user": true,
                 "dev": {
                     "tables": {
                         "dog": {
@@ -107,8 +108,14 @@ describe(`Test verify_perms`, function () {
         //let verifyParams = server_utilities.__get__('verify_perms');
         assert.equal(op_auth.verify_perms(null, null), false);
     });
-    it('Pass in bad values, expect false', function () {
+    it('Check return if user has su.  Expect true', function () {
         assert.equal(op_auth.verify_perms(TEST_JSON_SUPER_USER, write.insert.name), true);
+    });
+    it('Pass function instead of function name.  Expect true (no errors)', function () {
+        assert.equal(op_auth.verify_perms(TEST_JSON, write.insert), true);
+    });
+    it('Pass function name instead of function.  Expect true (no errors)', function () {
+        assert.equal(op_auth.verify_perms(TEST_JSON, write.insert.name), true);
     });
     it('Pass in JSON with no schemas restrictions defined, expect true', function () {
         let test_copy = clone(TEST_JSON);
@@ -118,7 +125,7 @@ describe(`Test verify_perms`, function () {
     it('Pass in JSON with schemas but no tables defined, expect true', function () {
         let test_copy = clone(TEST_JSON);
         let perms = {
-            "super_admin": false,
+            "super_user": false,
             "dev": {
                 "tables": {
                 }
@@ -134,7 +141,7 @@ describe(`Test verify_perms`, function () {
     it('Pass in JSON with schemas and table dog defined, insert not allowed, expect false', function () {
         let test_copy = clone(TEST_JSON);
         let perms = {
-            "super_admin": false,
+            "super_user": false,
             "dev": {
                 "tables": {
                     "dog": {
@@ -153,7 +160,7 @@ describe(`Test verify_perms`, function () {
     it('(NOMINAL) - Pass in JSON with schemas and table dog defined, insert allowed, expect true', function () {
         let test_copy = clone(TEST_JSON);
         let perms = {
-            "super_admin": false,
+            "super_user": false,
             "dev": {
                 "tables": {
                     "dog": {
@@ -174,7 +181,7 @@ describe(`Test verify_perms`, function () {
         required_permissions.set('test method', ['insert', 'read']);
         let test_copy = clone(TEST_JSON);
         let perms = {
-            "super_admin": false,
+            "super_user": false,
             "dev": {
                 "tables": {
                     "dog": {
@@ -193,7 +200,7 @@ describe(`Test verify_perms`, function () {
     it('Test bad method.  False expected', function () {
         let test_copy = clone(TEST_JSON);
         let perms = {
-            "super_admin": false,
+            "super_user": false,
             "dev": {
                 "tables": {
                     "dog": {
@@ -212,7 +219,7 @@ describe(`Test verify_perms`, function () {
     it('Test bad permission name.  False expected', function () {
         let test_copy = clone(TEST_JSON);
         let perms = {
-            "super_admin": false,
+            "super_user": false,
             "dev": {
                 "tables": {
                     "dog": {
@@ -227,5 +234,43 @@ describe(`Test verify_perms`, function () {
         };
         test_copy.hdb_user.role.permission = perms;
         assert.equal(op_auth.verify_perms(test_copy, write.insert.name), false);
+    });
+    it('NOMINAL - Pass in JSON with su, function that requires su.  Expect true.', function () {
+        let test_copy = clone(TEST_JSON);
+        let perms = {
+            "super_user": true,
+            "dev": {
+                "tables": {
+                    "dog": {
+                        "read": false,
+                        "insert": true,
+                        "update": false,
+                        "delete": false,
+                        "attribute_restrictions": []
+                    }
+                }
+            },
+        };
+        test_copy.hdb_user.role.permission = perms;
+        assert.equal(op_auth.verify_perms(test_copy, user.addUser), true);
+    });
+    it('Pass in JSON with no su, function that requires su.  Expect false.', function () {
+        let test_copy = clone(TEST_JSON);
+        let perms = {
+            "super_user": false,
+            "dev": {
+                "tables": {
+                    "dog": {
+                        "read": false,
+                        "insert": true,
+                        "update": false,
+                        "delete": false,
+                        "attribute_restrictions": []
+                    }
+                }
+            },
+        };
+        test_copy.hdb_user.role.permission = perms;
+        assert.equal(op_auth.verify_perms(test_copy, user.addUser), false);
     });
 });
