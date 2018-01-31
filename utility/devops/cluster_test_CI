@@ -18,28 +18,57 @@ mkdir -p $target_dir/node_$node_count/harperdb
 mkdir -p $target_dir/node_$node_count/data
 cp -R $working_dir/* $target_dir/node_$node_count/harperdb/
 
-sed -i "/HDB_PROC_NAME/ s/ =.*/ = 'no_oneis_here';/" $target_dir/node_$node_count/harperdb/bin/run.js
+#sed -i "/HDB_PROC_NAME/ s/ =.*/ = 'no_oneis_here';/" $target_dir/node_$node_count/harperdb/bin/run.js
 
 cd $target_dir/node_$node_count/harperdb/bin
-node harperdb.js install --TC_AGREEMENT yes --HDB_ROOT $target_dir/node_$node_count/data/hdb --HTTP_PORT $http_port  --HTTPS_PORT 31283 --HDB_ADMIN_USERNAME admin --HDB_ADMIN_PASSWORD Abc1234! --HDB_REGISTER false
 
-printf  "\nCLUSTERING=TRUE\nCLUSTERING_PORT = %s\nNODE_NAME = node_%s" "$cluster_port" "$node_count" >> $target_dir/node_$node_count/data/hdb/config/settings.js
+#INSTALL 
+./linux-harperdb install --TC_AGREEMENT yes --HDB_ROOT $target_dir/node_$node_count/data/hdb --HTTP_PORT $http_port  --HTTPS_PORT 31283 --HDB_ADMIN_USERNAME admin --HDB_ADMIN_PASSWORD Abc1234! --HDB_REGISTER false
 
+#Update hdb/config/settings.js
+printf  "\nCLUSTERING = TRUE\nCLUSTERING_PORT = %s\nNODE_NAME = node_%s" "$cluster_port" "$node_count" >> $target_dir/node_$node_count/data/hdb/config/settings.js
+
+#License register
 /opt/harperdb/utility/devops/script_register.exp $target_dir/node_$node_count/harperdb
 
-node harperdb.js run
+#KILL only this node
+kill $(ps -ef | grep $(cd .. && pwd) | awk '{print $2}')
 
-node_count=$(($node_count -1));
+./linux-harperdb run
+sleep 7s
+
+#Add Node
+newman run https://api.getpostman.com/collections/4f5d17b0-e923-e7c0-feb9-f80dbcf1764a?apikey=fe1dfb2c3647474f8f3e9d836783e694 --environment https://api.getpostman.com/environments/e8201aee-1a99-7de7-4910-62c0e0e6b755?apikey=fe1dfb2c3647474f8f3e9d836783e694 --folder add_node$node_count
+
+#Kill only this node
+kill $(ps -ef | grep $(cd .. && pwd) | awk '{print $2}')
+
+#sleep 10s
+#./linux-harperdb run
+
+node_count=$(($node_count - 1));
 http_port=$(($http_port + $port_offset));
-cluster_port=$(($cluster_port));
+cluster_port=$(($cluster_port + $port_offset));
 
 done
+echo "CLUSTER BUILT NOTHING SHOULD BE RUNNING: $(ps -ef | grep $target_dir)"
+
+cd $target_dir/node_1/harperdb/bin/
+./linux-harperdb run
+
+cd $target_dir/node_2/harperdb/bin/
+./linux-harperdb run
+#Check Clustering by adding schema, table, data, select.
+newman run https://api.getpostman.com/collections/4f5d17b0-e923-e7c0-feb9-f80dbcf1764a?apikey=fe1dfb2c3647474f8f3e9d836783e694 --environment https://api.getpostman.com/environments/e8201aee-1a99-7de7-4910-62c0e0e6b755?apikey=fe1dfb2c3647474f8f3e9d836783e694 --folder clustered
 
 echo "DONE"
 }
 
 destroy(){
-kill $(ps -ef | grep [h]db_ | awk '{print $2}')
+kill $(ps -ef | grep [c]luster/node_ | awk '{print $2}')
+rm -rf $target_dir/*
+echo "Targe dir empty? $(ls -al $target_dir)"
+echo "cluster processess killed? $(ps -ef | grep [n]ode_)"
 }
 
 $@

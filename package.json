@@ -72,6 +72,7 @@
       "./server/**/*.js",
       "./data_layer/*.js",
       "./triggers/**",
+      "./security/*.js",
       "./utility/*.js",
       "./utility/**/*.js",
       "./sqlTranslator/*.js",
@@ -79,7 +80,8 @@
       "./validation/*.js"
     ],
     "assets": [
-      "./utility/install/*.txt"
+      "./utility/install/*.txt",
+      "./json/*.json"
     ]
   },
   "devDependencies": {
