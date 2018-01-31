@@ -2,6 +2,9 @@
 hdb_data="/root/hdb"
 obfuscript()
 {
+#REMOVE FOR PRODUCTION
+sed -i "/HDB_PROC_NAME/ s/ =.*/ = 'no_oneis_here';/" /opt/harperdb/bin/run.js
+
 #Change into each Directory generate an array of the Javascript; js_files
 #Itterate through js_files, Obfuscate each file send output to file mirrored HarperDB directory; mirrored_dir
 #Change directory back to this scripts working directory to prepare for next directory; working_dir
