@@ -5,7 +5,7 @@
   "main": "run.js",
   "bin": "./bin/run.js",
   "scripts": {
-    "test": "nyc --reporter=html mocha unitTests --watch"
+    "test": "cd bin/ && nyc --reporter=html mocha ../unitTests --watch"
   },
   "author": "HarperDB, Inc.",
   "license": "ISC",
