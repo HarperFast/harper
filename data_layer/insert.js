@@ -266,7 +266,7 @@ function compareUpdatesToExistingRecords(update_object, hash_attribute, existing
                     update[attr] = update_record[attr];
 
                     let value = typeof existing_record[attr] === 'object' ? JSON.stringify(existing_record[attr]) : existing_record[attr];
-                    let value_stripped = String(value).replace(regex, '');
+                    let value_stripped = String(value).replace(regex, 'U+002F');
                     value_stripped = Buffer.byteLength(value_stripped) > 255  ? truncate(value_stripped, 255) + '/blob' : value_stripped;
 
                     if (existing_record[attr] !== null && existing_record[attr] !== undefined) {
@@ -368,7 +368,7 @@ function checkAttributeSchema(insert_object, callerback) {
             }
 
             let value = typeof record[property] === 'object' ? JSON.stringify(record[property]) : record[property];
-            let value_stripped = String(value).replace(regex, '');
+            let value_stripped = String(value).replace(regex, 'U+002F');
             let value_path = Buffer.byteLength(value_stripped) > 255 ? truncate(value_stripped, 255) + '/blob' : value_stripped;
             let attribute_file_name = record[hash_attribute] + '.hdb';
             let attribute_path = base_path + property + '/' + value_path;

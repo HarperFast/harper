@@ -14,7 +14,7 @@ module.exports = {
 };
 
 function evaluateSQL(sql, callback) {
-    processSQL(sql.sql, (error, results)=>{
+    processSQL(sql.sql.trim(), (error, results)=>{
         if(error){
             return callback(error);
         }
