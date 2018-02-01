@@ -16,6 +16,12 @@ const INSERT_PERM = 'insert';
 const READ_PERM = 'read';
 const UPDATE_PERM = 'update';
 
+//SQL operations supported
+const SQL_CREATE = "create";
+const SQL_DROP = 'drop';
+const SQL_SELECT = 'select';
+const SQL_INSERT = 'insert';
+
 class permission {
     constructor(requires_su, perms) {
         this.requires_su = requires_su;
@@ -51,10 +57,91 @@ required_permissions.set(role.dropRole.name, new permission(true, []));
 required_permissions.set(user.userInfo.name, new permission(true, []));
 required_permissions.set(read_log.read_log.name, new permission(true, []));
 required_permissions.set(cluser_utilities.addNode.name, new permission(true, []));
+required_permissions.set(search.search.name, new permission(false, [READ_PERM]));
+required_permissions.set(read_log.read_log.name, new permission(true, []));
+required_permissions.set(SQL_CREATE, new permission(false, [INSERT_PERM]));
+required_permissions.set(SQL_DROP, new permission(false, [DELETE_PERM]));
+required_permissions.set(SQL_SELECT, new permission(false, [READ_PERM]));
+required_permissions.set(SQL_INSERT, new permission(false, [UPDATE_PERM]));
 
 module.exports = {
-    verify_perms:verify_perms
+    verify_perms:verify_perms,
+    verify_perms_ast:verify_perms_ast
 };
+
+function updateMapValue(key, newValue, map) {
+    try {
+        if (map.has(key)) {
+            map.get(key).push(newValue);
+        } else {
+            map.set(key, [newValue]);
+        }
+    } catch(e) {
+        throw e;
+    }
+}
+
+function verify_perms_ast(ast, user, operation) {
+    let schema_table_map = new Map();
+    try {
+        for (let tab = 0; tab < ast.from.length; tab++) {
+            updateMapValue(ast.from[tab].databaseid, ast.from[tab].tableid, schema_table_map);
+        }
+        for (let join = 0; join < ast.joins.length; join++) {
+            updateMapValue(ast.joins[join].table.databaseid, ast.joins[join].table.tableid, schema_table_map);
+        }
+        return hasPermissions(user, operation, schema_table_map);
+    } catch(e) {
+        //TODO: Remove console message
+        console.log(e);
+        harper_logger.info(e);
+        return false;
+    }
+}
+
+function hasPermissions(user, op, schema_table_map ) {
+    if(user.role.permission.super_user) {
+        //admins can do anything through the hole in sheet!
+        return true;
+    }
+    let temp = required_permissions.get(op);
+    if(required_permissions.get(op) && required_permissions.get(op).requires_su) {
+        // still here after the su check above but this operation require su, so fail.
+        return false;
+    }
+    for(let schema in schema_table_map) {
+        //ASSUME ALL TABLES AND SCHEMAS ARE WIDE OPEN
+        // check for schema restrictions
+        for(let table in schema_table_map[schema]) {
+            let table_restrictions = [];
+            try {
+                table_restrictions = user.role.permission[schema];
+            } catch (e) {
+                // no-op, no restrictions is OK;
+            }
+
+            if(table_restrictions && table) {
+                try {
+                    if (user.role.permission[schema].tables[table] === undefined || user.role.permission[schema].tables[table] === null) {
+                        return true;
+                    }
+                    //Here we check all required permissions for the operation defined in the map with the values of the permissions in the role.
+                    for(let i = 0; i<required_permissions.get(op).length; i++) {
+                        let permission = user.role.permission[schema].tables[table][required_permissions.get(op)[i]];
+                        if (permission === undefined || permission === null || permission === false) {
+                            harper_logger.info(`Required permission not found for operation ${op} in role ${user.role.id}`);
+                            return false;
+                        }
+                    }
+                } catch(e) {
+                    harper_logger.info(e);
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
 
 function verify_perms(json, operation) {
     if(json === null || operation === null || json.hdb_user === undefined || json.hdb_user === null) {

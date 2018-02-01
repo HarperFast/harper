@@ -205,6 +205,8 @@ function chooseOperation(json, callback) {
             harper_logger.error(UNAUTH_RESPONSE);
             return callback(UNAUTH_RESPONSE, null);
         }
+    } else {
+
     }
     callback(null, operation_function);
 }
