@@ -1,7 +1,8 @@
 "use strict";
 
 const RecursiveIterator = require('recursive-iterator'),
-    alasql = require('alasql');
+    alasql = require('alasql'),
+    clone = require('clone');
 
 const validateTables = Symbol('validateTables'),
     validateTable = Symbol('validateTable'),
@@ -61,8 +62,9 @@ class SelectValidator{
         let schema_table = global.hdb_schema[table.databaseid][table.tableid];
 
         schema_table.attributes.forEach((attribute)=>{
-            attribute.table = table;
-            this.attributes.push(attribute);
+            let attribute_clone = clone(attribute);
+            attribute_clone.table = table;
+            this.attributes.push(attribute_clone);
         });
     }
 
