@@ -206,7 +206,7 @@ if (cluster.isMaster && !DEBUG && numCPUs > 1) {
                 if (err) {
                     winston.error(err);
                     if(err === server_utilities.UNAUTH_RESPONSE) {
-                        return res.status(403).send({error: UNAUTH_ERROR_MESSAGE});
+                        return res.status(403).send({error: server_utilities.UNAUTHORIZED_TEXT});
                     } else {
                         if (typeof err === 'string') {
                             return res.status(500).send({error: err});

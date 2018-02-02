@@ -12,6 +12,8 @@ module.exports = {
     evaluateSQL: evaluateSQL
 };
 
+let UNAUTHORIZED_RESPONSE = 403;
+
 function evaluateSQL(sql, callback) {
     processSQL(sql, (error, results)=>{
         if(error){
@@ -32,7 +34,7 @@ function processSQL(sql, callback){
         let sql_function = nullFunction;
 
         if(!op_auth.verify_perms_ast(ast.statements[0], sql.hdb_user, variant)) {
-            callback(UNAUTH_RESPONSE, null);
+            return callback(UNAUTHORIZED_RESPONSE, null);
         }
         switch (variant) {
             case 'select':

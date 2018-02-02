@@ -14,6 +14,7 @@ const  write = require('../data_layer/insert'),
     cluser_utilities = require('./clustering/cluster_utilities');
 
 const UNAUTH_RESPONSE = 403;
+const UNAUTHORIZED_TEXT = 'You are not authorized to performs the operation specified';
 let OPERATION_PARAM_ERROR_MSG = `operation parameter is undefined`;
 
 module.exports = {
@@ -21,7 +22,8 @@ module.exports = {
     processLocalTransaction: processLocalTransaction,
     proccessDelegatedTransaction: proccessDelegatedTransaction,
     processInThread: processInThread,
-    UNAUTH_RESPONSE
+    UNAUTH_RESPONSE,
+    UNAUTHORIZED_TEXT
 }
 
 function processLocalTransaction(req, res, operation_function, callback) {
@@ -37,10 +39,14 @@ function processLocalTransaction(req, res, operation_function, callback) {
     operation_function(req.body, (error, data) => {
         if (error) {
             harper_logger.info(error);
-            if(typeof error !== 'object')
+            if(error === UNAUTH_RESPONSE) {
+                error = UNAUTHORIZED_TEXT;
+            }
+            if (typeof error !== 'object') {
                 error = {"error": error};
+            }
             res.status(500).json({error: (error.message ? error.message : error.error)});
-            return callback(error);;
+            return callback(error);
         }
         if(typeof data !== 'object')
             data = {"message": data};
@@ -205,8 +211,6 @@ function chooseOperation(json, callback) {
             harper_logger.error(UNAUTH_RESPONSE);
             return callback(UNAUTH_RESPONSE, null);
         }
-    } else {
-
     }
     callback(null, operation_function);
 }

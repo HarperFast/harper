@@ -8,6 +8,7 @@ const write = require('../data_layer/insert'),
     role = require('../security/role'),
     read_log = require('../utility/logging/read_logs'),
     harper_logger = require('../utility/logging/harper_logger'),
+    common_utils = require('../utility/common_utils'),
     cluser_utilities = require('../server/clustering/cluster_utilities');
 
 const required_permissions = new Map();
@@ -70,9 +71,20 @@ module.exports = {
 };
 
 function updateMapValue(key, newValue, map) {
+    if(common_utils.isEmptyOrZeroLength(key)) {
+        harper_logger.info(`updateMapValue has an empty 'key' parameter`);
+    }
+    if(common_utils.isEmptyOrZeroLength(newValue)) {
+        harper_logger.info(`updateMapValue has an empty value parameter`);
+    }
+    if(common_utils.isEmpty(map)) {
+        harper_logger.info(`updateMapValue has a null map parameter`);
+    }
     try {
         if (map.has(key)) {
-            map.get(key).push(newValue);
+            let temp = map.get(key);
+            temp.push(newValue);
+            map.set(key, temp);
         } else {
             map.set(key, [newValue]);
         }
@@ -82,6 +94,18 @@ function updateMapValue(key, newValue, map) {
 }
 
 function verify_perms_ast(ast, user, operation) {
+    if(common_utils.isEmptyOrZeroLength(ast)) {
+        harper_logger.info(`verify_perms_ast has an empty 'user' parameter`);
+        return false;
+    }
+    if(common_utils.isEmptyOrZeroLength(user)) {
+        harper_logger.info(`verify_perms_ast has an empty user parameter`);
+        return false;
+    }
+    if(common_utils.isEmptyOrZeroLength(operation)) {
+        harper_logger.info(`verify_perms_ast has a null operation parameter`);
+        return false;
+    }
     let schema_table_map = new Map();
     try {
         for (let tab = 0; tab < ast.from.length; tab++) {
@@ -104,15 +128,15 @@ function hasPermissions(user, op, schema_table_map ) {
         //admins can do anything through the hole in sheet!
         return true;
     }
-    let temp = required_permissions.get(op);
+
     if(required_permissions.get(op) && required_permissions.get(op).requires_su) {
         // still here after the su check above but this operation require su, so fail.
         return false;
     }
-    for(let schema in schema_table_map) {
+    for(let schema of schema_table_map.keys()) {
         //ASSUME ALL TABLES AND SCHEMAS ARE WIDE OPEN
         // check for schema restrictions
-        for(let table in schema_table_map[schema]) {
+        for(let table of schema_table_map.get(schema)) {
             let table_restrictions = [];
             try {
                 table_restrictions = user.role.permission[schema];
@@ -122,12 +146,9 @@ function hasPermissions(user, op, schema_table_map ) {
 
             if(table_restrictions && table) {
                 try {
-                    if (user.role.permission[schema].tables[table] === undefined || user.role.permission[schema].tables[table] === null) {
-                        return true;
-                    }
                     //Here we check all required permissions for the operation defined in the map with the values of the permissions in the role.
-                    for(let i = 0; i<required_permissions.get(op).length; i++) {
-                        let permission = user.role.permission[schema].tables[table][required_permissions.get(op)[i]];
+                    for(let i = 0; i<required_permissions.get(op).perms.length; i++) {
+                        let permission = user.role.permission[schema].tables[table][required_permissions.get(op).perms[i]];
                         if (permission === undefined || permission === null || permission === false) {
                             harper_logger.info(`Required permission not found for operation ${op} in role ${user.role.id}`);
                             return false;
@@ -185,8 +206,8 @@ function verify_perms(json, operation) {
                 return true;
             }
             //Here we check all required permissions for the operation defined in the map with the values of the permissions in the role.
-            for(let i = 0; i<required_permissions.get(op).length; i++) {
-                let permission = json.hdb_user.role.permission[schema].tables[table][required_permissions.get(op)[i]];
+            for(let i = 0; i<required_permissions.get(op).perms.length; i++) {
+                let permission = json.hdb_user.role.permission[schema].tables[table][required_permissions.get(op).perms[i]];
                 if (permission === undefined || permission === null || permission === false) {
                     harper_logger.info(`Required permission not found for operation ${op} in role ${json.hdb_user.role.id}`);
                     return false;
