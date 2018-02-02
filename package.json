@@ -10,7 +10,7 @@
   "author": "HarperDB, Inc.",
   "license": "ISC",
   "dependencies": {
-    "alasql": "^0.4.4",
+    "alasql": "^0.4.5",
     "async": "^2.5.0",
     "autocast": "0.0.4",
     "body-parser": "^1.18.1",
