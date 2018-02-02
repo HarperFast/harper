@@ -8,7 +8,7 @@ const write = require('../data_layer/insert'),
     role = require('../security/role'),
     read_log = require('../utility/logging/read_logs'),
     harper_logger = require('../utility/logging/harper_logger'),
-    common_utils = require('../utility/common_utils'),
+    common_utils = require('./common_utils.js'),
     cluser_utilities = require('../server/clustering/cluster_utilities');
 
 const required_permissions = new Map();

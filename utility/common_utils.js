@@ -1,6 +1,6 @@
 "use strict"
 
-module.export = {
+module.exports = {
     isEmpty:isEmpty,
     isEmptyOrZeroLength:isEmptyOrZeroLength
 }
