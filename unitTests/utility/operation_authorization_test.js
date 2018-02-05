@@ -102,7 +102,7 @@ function clone(a) {
     return JSON.parse(JSON.stringify(a));
 }
 
-describe(`Test verify_perms`, function () {ß
+describe(`Test verify_perms`, function () {
     it('Pass in bad values, expect false', function () {
         assert.equal(op_auth.verifyPerms(null, null), false);
     });
@@ -270,5 +270,57 @@ describe(`Test verify_perms`, function () {ß
         };
         test_copy.hdb_user.role.permission = perms;
         assert.equal(op_auth.verifyPerms(test_copy, user.addUser), false);
+    });
+});
+
+describe(`Test hasPermissions`, function () {
+    let test_map = new Map();
+    test_map.set('dev',['dog']);
+
+    it('Test invalid parameter', function () {
+        let hasPermissions = op_auth_rewire.__get__('hasPermissions');
+        assert.equal(hasPermissions(null, write.insert.name, new Map()), false);
+    });
+
+    it('Test nominal path, insert required.  Expect true', function () {
+        let hasPermissions = op_auth_rewire.__get__('hasPermissions');
+        let test_copy = clone(TEST_JSON);
+        let perms = {
+            "super_user": false,
+            "dev": {
+                "tables": {
+                    "dog": {
+                        "read": false,
+                        "insert": true,
+                        "update": false,
+                        "delete": false,
+                        "attribute_restrictions": []
+                    }
+                }
+            },
+        };
+        test_copy.hdb_user.role.permission = perms;
+        assert.equal(hasPermissions(test_copy.hdb_user, write.insert.name, test_map), true);
+    });
+
+    it('Test insert required but missing from perms.  Expect false.', function () {
+        let hasPermissions = op_auth_rewire.__get__('hasPermissions');
+        let test_copy = clone(TEST_JSON);
+        let perms = {
+            "super_user": false,
+            "dev": {
+                "tables": {
+                    "dog": {
+                        "read": false,
+                        "insert": false,
+                        "update": false,
+                        "delete": false,
+                        "attribute_restrictions": []
+                    }
+                }
+            },
+        };
+        test_copy.hdb_user.role.permission = perms;
+        assert.equal(hasPermissions(test_copy.hdb_user, write.insert.name, test_map), false);
     });
 });

@@ -16,8 +16,11 @@ function isEmptyOrZeroLength(value) {
 }
 
 function listHasEmptyValues(values_list) {
-    for(let val=0; val<values_lsit.length; val++) {
-        if(isEmpty(val)) {
+    if(isEmpty(values_list)) {
+        return true;
+    }
+    for(let val=0; val<values_list.length; val++) {
+        if(isEmpty(values_list[val])) {
             return true;
         }
     }
@@ -25,8 +28,11 @@ function listHasEmptyValues(values_list) {
 }
 
 function listHasEmptyOrZeroLengthValues(values_list) {
-    for(let val=0; val<values_lsit.length; val++) {
-        if(isEmptyOrZeroLength(val)) {
+    if(isEmptyOrZeroLength(values_list)) {
+        return true;
+    }
+    for(let val=0; val<values_list.length; val++) {
+        if(isEmptyOrZeroLength(values_list[val])) {
             return true;
         }
     }

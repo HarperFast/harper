@@ -116,8 +116,6 @@ function verifyPermsAst(ast, user, operation) {
         }
         return hasPermissions(user, operation, schema_table_map);
     } catch(e) {
-        //TODO: Remove console message
-        console.log(e);
         harper_logger.info(e);
         return false;
     }
@@ -132,7 +130,7 @@ function hasPermissions(user, op, schema_table_map ) {
         //admins can do anything through the hole in sheet!
         return true;
     }
-    if(required_permissions.get(op) && required_permissions.get(op).requires_su) {
+    if(!required_permissions.get(op) || (required_permissions.get(op) && required_permissions.get(op).requires_su)) {
         // still here after the su check above but this operation require su, so fail.
         return false;
     }
@@ -151,7 +149,8 @@ function hasPermissions(user, op, schema_table_map ) {
                 try {
                     //Here we check all required permissions for the operation defined in the map with the values of the permissions in the role.
                     for(let i = 0; i<required_permissions.get(op).perms.length; i++) {
-                        let permission = user.role.permission[schema].tables[table][required_permissions.get(op).perms[i]];
+                        let perms = required_permissions.get(op).perms[i];
+                        let permission = user.role.permission[schema].tables[table][perms];
                         if (permission === undefined || permission === null || permission === false) {
                             harper_logger.info(`Required permission not found for operation ${op} in role ${user.role.id}`);
                             return false;
@@ -159,7 +158,9 @@ function hasPermissions(user, op, schema_table_map ) {
                     }
                 } catch(e) {
                     harper_logger.info(e);
-                    return false;
+                    // If we are here, either there are not any permissions specified for the operation, or the schema/table was not found
+                    // In those cases we want to return true, as we assume wide open access unless specified otherwise.
+                    return true;
                 }
             }
         }
@@ -180,21 +181,11 @@ function verifyPerms(json, operation) {
         op = operation;
     }
 
-    if(json.hdb_user.role.permission.super_user) {
-        //admins can do anything through the hole in sheet!
-        return true;
-    }
-
-    if(required_permissions.get(op) && required_permissions.get(op).requires_su) {
-        // still here after the su check above but this operation require su, so fail.
-        return false;
-    }
-
     let schema = json.schema;
     let table = json.table;
 
     let schema_table_map = new Map();
     schema_table_map.set(schema, [table]);
     // go
-    return hasPermissions(json.hdb_user, op, schema_table_map);;
+    return hasPermissions(json.hdb_user, op, schema_table_map);
 }
