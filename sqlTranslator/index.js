@@ -33,7 +33,7 @@ function processSQL(sql, callback){
         let variant = sql.sql.split(" ")[0].toLowerCase();
         let sql_function = nullFunction;
 
-        if(!op_auth.verify_perms_ast(ast.statements[0], sql.hdb_user, variant)) {
+        if(!op_auth.verifyPermsAst(ast.statements[0], sql.hdb_user, variant)) {
             return callback(UNAUTHORIZED_RESPONSE, null);
         }
         switch (variant) {

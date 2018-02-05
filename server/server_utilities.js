@@ -207,7 +207,7 @@ function chooseOperation(json, callback) {
     // We need to do something different for sql operations as we don't want to parse
     // the SQL command twice.
     if(operation_function !== sql) {
-        if (op_auth.verify_perms(json, operation_function) === false) {
+        if (op_auth.verifyPerms(json, operation_function) === false) {
             harper_logger.error(UNAUTH_RESPONSE);
             return callback(UNAUTH_RESPONSE, null);
         }

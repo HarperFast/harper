@@ -9,7 +9,7 @@ const write = require('../data_layer/insert'),
     read_log = require('../utility/logging/read_logs'),
     harper_logger = require('../utility/logging/harper_logger'),
     common_utils = require('./common_utils.js'),
-    cluser_utilities = require('../server/clustering/cluster_utilities');
+    cluster_utilities = require('../server/clustering/cluster_utilities');
 
 const required_permissions = new Map();
 const DELETE_PERM = 'delete';
@@ -57,7 +57,7 @@ required_permissions.set(role.alterRole.name, new permission(true, []));
 required_permissions.set(role.dropRole.name, new permission(true, []));
 required_permissions.set(user.userInfo.name, new permission(true, []));
 required_permissions.set(read_log.read_log.name, new permission(true, []));
-required_permissions.set(cluser_utilities.addNode.name, new permission(true, []));
+required_permissions.set(cluster_utilities.addNode.name, new permission(true, []));
 required_permissions.set(search.search.name, new permission(false, [READ_PERM]));
 required_permissions.set(read_log.read_log.name, new permission(true, []));
 required_permissions.set(SQL_CREATE, new permission(false, [INSERT_PERM]));
@@ -66,8 +66,8 @@ required_permissions.set(SQL_SELECT, new permission(false, [READ_PERM]));
 required_permissions.set(SQL_INSERT, new permission(false, [UPDATE_PERM]));
 
 module.exports = {
-    verify_perms:verify_perms,
-    verify_perms_ast:verify_perms_ast
+    verifyPerms:verifyPerms,
+    verifyPermsAst:verifyPermsAst
 };
 
 function updateMapValue(key, newValue, map) {
@@ -93,7 +93,7 @@ function updateMapValue(key, newValue, map) {
     }
 }
 
-function verify_perms_ast(ast, user, operation) {
+function verifyPermsAst(ast, user, operation) {
     if(common_utils.isEmptyOrZeroLength(ast)) {
         harper_logger.info(`verify_perms_ast has an empty 'user' parameter`);
         return false;
@@ -124,11 +124,14 @@ function verify_perms_ast(ast, user, operation) {
 }
 
 function hasPermissions(user, op, schema_table_map ) {
+    if(common_utils.listHasEmptyOrZeroLengthValues([user,op,schema_table_map])) {
+        harper_logger.info(`hasPermissions has an invalid parameter`);
+        return false;
+    }
     if(user.role.permission.super_user) {
         //admins can do anything through the hole in sheet!
         return true;
     }
-
     if(required_permissions.get(op) && required_permissions.get(op).requires_su) {
         // still here after the su check above but this operation require su, so fail.
         return false;
@@ -164,7 +167,7 @@ function hasPermissions(user, op, schema_table_map ) {
     return true;
 }
 
-function verify_perms(json, operation) {
+function verifyPerms(json, operation) {
     if(json === null || operation === null || json.hdb_user === undefined || json.hdb_user === null) {
         return false;
     }
@@ -190,34 +193,8 @@ function verify_perms(json, operation) {
     let schema = json.schema;
     let table = json.table;
 
-    //ASSUME ALL TABLES AND SCHEMAS ARE WIDE OPEN
-    // check for schema restrictions
-    let table_restrictions = [];
-    try {
-        table_restrictions = json.hdb_user.role.permission[schema];
-    } catch (e) {
-        // no-op, no restrictions is OK;
-    }
-
-    // if there are table_restrictions and table is specified
-    if(table_restrictions && table) {
-        try {
-            if (json.hdb_user.role.permission[schema].tables[table] === undefined || json.hdb_user.role.permission[schema].tables[table] === null) {
-                return true;
-            }
-            //Here we check all required permissions for the operation defined in the map with the values of the permissions in the role.
-            for(let i = 0; i<required_permissions.get(op).perms.length; i++) {
-                let permission = json.hdb_user.role.permission[schema].tables[table][required_permissions.get(op).perms[i]];
-                if (permission === undefined || permission === null || permission === false) {
-                    harper_logger.info(`Required permission not found for operation ${op} in role ${json.hdb_user.role.id}`);
-                    return false;
-                }
-            }
-        } catch(e) {
-            harper_logger.info(e);
-            return false;
-        }
-    }
+    let schema_table_map = new Map();
+    schema_table_map.set(schema, [table]);
     // go
-    return true;
+    return hasPermissions(json.hdb_user, op, schema_table_map);;
 }

@@ -102,25 +102,23 @@ function clone(a) {
     return JSON.parse(JSON.stringify(a));
 }
 
-describe(`Test verify_perms`, function () {
-
+describe(`Test verify_perms`, function () {ß
     it('Pass in bad values, expect false', function () {
-        //let verifyParams = server_utilities.__get__('verify_perms');
-        assert.equal(op_auth.verify_perms(null, null), false);
+        assert.equal(op_auth.verifyPerms(null, null), false);
     });
     it('Check return if user has su.  Expect true', function () {
-        assert.equal(op_auth.verify_perms(TEST_JSON_SUPER_USER, write.insert.name), true);
+        assert.equal(op_auth.verifyPerms(TEST_JSON_SUPER_USER, write.insert.name), true);
     });
     it('Pass function instead of function name.  Expect true (no errors)', function () {
-        assert.equal(op_auth.verify_perms(TEST_JSON, write.insert), true);
+        assert.equal(op_auth.verifyPerms(TEST_JSON, write.insert), true);
     });
     it('Pass function name instead of function.  Expect true (no errors)', function () {
-        assert.equal(op_auth.verify_perms(TEST_JSON, write.insert.name), true);
+        assert.equal(op_auth.verifyPerms(TEST_JSON, write.insert.name), true);
     });
     it('Pass in JSON with no schemas restrictions defined, expect true', function () {
         let test_copy = clone(TEST_JSON);
         test_copy.hdb_user.role.permission = EMPTY_PERMISSION;
-        assert.equal(op_auth.verify_perms(test_copy, write.insert.name), true);
+        assert.equal(op_auth.verifyPerms(test_copy, write.insert.name), true);
     });
     it('Pass in JSON with schemas but no tables defined, expect true', function () {
         let test_copy = clone(TEST_JSON);
@@ -136,7 +134,7 @@ describe(`Test verify_perms`, function () {
             }
         };
         test_copy.hdb_user.role.permission = perms;
-        assert.equal(op_auth.verify_perms(test_copy, write.insert.name), true);
+        assert.equal(op_auth.verifyPerms(test_copy, write.insert.name), true);
     });
     it('Pass in JSON with schemas and table dog defined, insert not allowed, expect false', function () {
         let test_copy = clone(TEST_JSON);
@@ -155,7 +153,7 @@ describe(`Test verify_perms`, function () {
             },
         };
         test_copy.hdb_user.role.permission = perms;
-        assert.equal(op_auth.verify_perms(test_copy, write.insert.name), false);
+        assert.equal(op_auth.verifyPerms(test_copy, write.insert.name), false);
     });
     it('(NOMINAL) - Pass in JSON with schemas and table dog defined, insert allowed, expect true', function () {
         let test_copy = clone(TEST_JSON);
@@ -174,7 +172,7 @@ describe(`Test verify_perms`, function () {
             },
         };
         test_copy.hdb_user.role.permission = perms;
-        assert.equal(op_auth.verify_perms(test_copy, write.insert.name), true);
+        assert.equal(op_auth.verifyPerms(test_copy, write.insert.name), true);
     });
     it('Test operation with read & insert required, but user only has insert.  False expected', function () {
         let required_permissions = op_auth_rewire.__get__('required_permissions');
@@ -195,7 +193,7 @@ describe(`Test verify_perms`, function () {
             },
         };
         test_copy.hdb_user.role.permission = perms;
-        assert.equal(op_auth.verify_perms(test_copy, 'test method'), false);
+        assert.equal(op_auth.verifyPerms(test_copy, 'test method'), false);
     });
     it('Test bad method.  False expected', function () {
         let test_copy = clone(TEST_JSON);
@@ -214,7 +212,7 @@ describe(`Test verify_perms`, function () {
             },
         };
         test_copy.hdb_user.role.permission = perms;
-        assert.equal(op_auth.verify_perms(test_copy, 'bad method'), false);
+        assert.equal(op_auth.verifyPerms(test_copy, 'bad method'), false);
     });
     it('Test bad permission name.  False expected', function () {
         let test_copy = clone(TEST_JSON);
@@ -233,7 +231,7 @@ describe(`Test verify_perms`, function () {
             },
         };
         test_copy.hdb_user.role.permission = perms;
-        assert.equal(op_auth.verify_perms(test_copy, write.insert.name), false);
+        assert.equal(op_auth.verifyPerms(test_copy, write.insert.name), false);
     });
     it('NOMINAL - Pass in JSON with su, function that requires su.  Expect true.', function () {
         let test_copy = clone(TEST_JSON);
@@ -252,7 +250,7 @@ describe(`Test verify_perms`, function () {
             },
         };
         test_copy.hdb_user.role.permission = perms;
-        assert.equal(op_auth.verify_perms(test_copy, user.addUser), true);
+        assert.equal(op_auth.verifyPerms(test_copy, user.addUser), true);
     });
     it('Pass in JSON with no su, function that requires su.  Expect false.', function () {
         let test_copy = clone(TEST_JSON);
@@ -271,6 +269,6 @@ describe(`Test verify_perms`, function () {
             },
         };
         test_copy.hdb_user.role.permission = perms;
-        assert.equal(op_auth.verify_perms(test_copy, user.addUser), false);
+        assert.equal(op_auth.verifyPerms(test_copy, user.addUser), false);
     });
 });
