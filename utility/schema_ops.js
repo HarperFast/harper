@@ -16,11 +16,11 @@ function addToQueue(ops_object, callback){
     fs.writeFile(`${hdb_properties.get('HDB_ROOT')}/staging/schema_op_queue/${id}.hdb`,
         ops_object, (err) => {
             if (err) {
-                callback(err);
-                return;
+                return callback(err);
+
             }
 
-            callback(null, id);
+            return callback(null, id);
 
         });
 

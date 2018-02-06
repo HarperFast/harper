@@ -3,7 +3,8 @@
 const async = require('async'),
     search = require('./search'),
     winston = require('../utility/logging/winston_logger'),
-    validator = require('../validation/schema_validator');
+    validator = require('../validation/schema_validator'),
+    _ = require('lodash');
 
 
 module.exports = {
@@ -224,6 +225,11 @@ function descTable(describe_table_object, callback) {
                             //initialize();
                             return;
                         }
+
+                        //need to remove possible dups
+                        attributes = _.uniqBy(attributes, (attribute)=>{
+                            return attribute.attribute;
+                        });
 
                         table_result.attributes = attributes;
                         callback(null, table_result);
