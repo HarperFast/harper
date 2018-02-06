@@ -17,7 +17,7 @@ module.exports = {
 let UNAUTHORIZED_RESPONSE = 403;
 
 function evaluateSQL(sql, callback) {
-    processSQL(sql.sql.trim(), (error, results)=>{
+    processSQL(sql, (error, results)=>{
         if(error){
             return callback(error);
         }
@@ -31,8 +31,9 @@ function processSQL(sql, callback){
         if(!sql || !sql.sql) {
             throw new Error('invalid SQL: ' + sql);
         }
-        let ast = alasql.parse(sql.sql);
-        let variant = sql.sql.split(" ")[0].toLowerCase();
+        let trimmed_sql = sql.sql.trim();
+        let ast = alasql.parse(trimmed_sql);
+        let variant = trimmed_sql.split(" ")[0].toLowerCase();
         let sql_function = nullFunction;
 
         if(!op_auth.verifyPermsAst(ast.statements[0], sql.hdb_user, variant)) {
