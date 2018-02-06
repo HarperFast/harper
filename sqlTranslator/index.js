@@ -6,14 +6,9 @@ const sqliteParser = require('sqlite-parser'),
     //update_translator = require('./updateTranslator').convertUpdate,
     update = require('../data_layer/update').update,
     delete_translator = require('./deleteTranslator').convertDelete,
-<<<<<<< HEAD
     alasql = require('alasql'),
     op_auth = require('../utility/operation_authorization'),
     winston = require('../utility/logging/winston_logger');
-=======
-    winston = require('../utility/logging/winston_logger'),
-    alasql = require('alasql');
->>>>>>> HDB-230
 
 module.exports = {
     evaluateSQL: evaluateSQL
@@ -22,11 +17,7 @@ module.exports = {
 let UNAUTHORIZED_RESPONSE = 403;
 
 function evaluateSQL(sql, callback) {
-<<<<<<< HEAD
-    processSQL(sql, (error, results)=>{
-=======
     processSQL(sql.sql.trim(), (error, results)=>{
->>>>>>> HDB-230
         if(error){
             return callback(error);
         }
