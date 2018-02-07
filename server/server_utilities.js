@@ -36,6 +36,16 @@ function processLocalTransaction(req, res, operation_function, callback) {
         return res.status(500).json(e);
     }
 
+    // We need to do something different for sql operations as we don't want to parse
+    // the SQL command twice.
+    if(operation_function !== sql) {
+        if (op_auth.verifyPerms(req.body, operation_function) === false) {
+            harper_logger.error(UNAUTHORIZED_TEXT);
+            res.status(UNAUTH_RESPONSE).json({error: UNAUTHORIZED_TEXT});
+            return callback(UNAUTHORIZED_TEXT, null);
+        }
+    }
+
     operation_function(req.body, (error, data) => {
         if (error) {
             harper_logger.info(error);
@@ -206,12 +216,12 @@ function chooseOperation(json, callback) {
     }
     // We need to do something different for sql operations as we don't want to parse
     // the SQL command twice.
-    if(operation_function !== sql) {
+    /*if(operation_function !== sql) {
         if (op_auth.verifyPerms(json, operation_function) === false) {
             harper_logger.error(UNAUTH_RESPONSE);
             return callback(UNAUTH_RESPONSE, null);
         }
-    }
+    } */
     callback(null, operation_function);
 }
 
