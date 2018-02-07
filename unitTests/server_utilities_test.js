@@ -7,13 +7,12 @@ const assert = require('assert');
 const sinon = require('sinon');
 const rewire = require('rewire');
 const server_utilities = rewire('../server/server_utilities');
-const write = require('../data_layer/insert');
 
-function test_func(test_value, callback) {
+function test_func(test_valuse, callback) {
     return callback(null, true);
 }
 
-function test_func_error(test_value, callback) {
+function test_func_error(test_valuse, callback) {
     return callback("This is bad!", null);
 }
 
@@ -129,6 +128,15 @@ describe(`Test chooseOperation`, function () {
             done();
         })
     });
+    it('Invalid operation specified in json.', function (done) {
+        let chooseOperation = server_utilities.__get__('chooseOperation');
+        let test_copy = clone(TEST_JSON);
+        test_copy.operation = 'blah';
+        chooseOperation(test_copy, function(err, found) {
+            assert.ok(err === 403);
+            done();
+        })
+    });
 });
 
 describe(`Test proccessDelegatedTransaction`, function () {
@@ -205,8 +213,6 @@ describe(`Test processLocalTransaction`, function () {
 
     it('Test processLocalTransaction nominal path by using test_func declared above', function (done) {
         let processLocalTransaction = server_utilities.__get__('processLocalTransaction');
-        let request = clone(mock_request);
-        request.body = TEST_JSON_SUPER_USER;
         let mock = {
             send: function(){ },
             json: function(stuff){
@@ -219,7 +225,7 @@ describe(`Test processLocalTransaction`, function () {
             }
         }
         //Use the test_func function above as an operation function stub
-        processLocalTransaction(request, mock, test_func, function (err, found) {
+        processLocalTransaction(mock_request, mock, test_func, function (err, found) {
             assert.equal(mock.status,200);
             assert.equal(mock.json.message,true);
             done();
@@ -227,8 +233,6 @@ describe(`Test processLocalTransaction`, function () {
     });
     it('Test processLocalTransaction error path by using test_func_error declared above', function (done) {
         let processLocalTransaction = server_utilities.__get__('processLocalTransaction');
-        let request = clone(mock_request);
-        request.body = TEST_JSON_SUPER_USER;
         let mock = {
             send: function(){ },
             json: function(stuff){
@@ -241,69 +245,8 @@ describe(`Test processLocalTransaction`, function () {
             }
         }
         //Use the test_func function above as an operation function stub
-        processLocalTransaction(request, mock, test_func_error, function (err, found) {
+        processLocalTransaction(mock_request, mock, test_func_error, function (err, found) {
             assert.equal(mock.status,500);
-            assert.ok(mock.json.error.length > 0 );
-            done();
-        });
-    });
-    it('Test processLocalTransaction with permissions.  Should not get a 403.', function (done) {
-        let processLocalTransaction = server_utilities.__get__('processLocalTransaction');
-        let request = clone(mock_request);
-        request.body = TEST_JSON_SUPER_USER;
-        let mock = {
-            send: function(){ },
-            json: function(stuff){
-                this.json = stuff;
-            },
-            status: function(responseStatus) {
-                this.status = responseStatus;
-                // This next line makes it chainable
-                return this;
-            }
-        };
-        //Use the test_func function above as an operation function stub
-        processLocalTransaction(request, mock, test_func_error, function (err, found) {
-            assert.equal(mock.status,500);
-            assert.ok(mock.json.error.length > 0 );
-            done();
-        });
-    });
-
-    it('Test processLocalTransaction without permissions.  Should get a 403.', function (done) {
-        let processLocalTransaction = server_utilities.__get__('processLocalTransaction');
-        let perms = {
-            "super_user": false,
-            "dev": {
-                "tables": {
-                    "dog": {
-                        "read": false,
-                        "insert": false,
-                        "update": false,
-                        "delete": false,
-                        "attribute_restrictions": []
-                    }
-                }
-            },
-        };
-
-        let request = clone(mock_request);
-        request.body = TEST_JSON_SUPER_USER;
-        request.body.hdb_user.role.permission = perms;
-        let mock = {
-            send: function(){ },
-            json: function(stuff){
-                this.json = stuff;
-            },
-            status: function(responseStatus) {
-                this.status = responseStatus;
-                // This next line makes it chainable
-                return this;
-            }
-        };
-        //Use the test_func function above as an operation function stub
-        processLocalTransaction(request, mock, write.insert, function (err, found) {
-            assert.equal(mock.status,403);
             assert.ok(mock.json.error.length > 0 );
             done();
         });
