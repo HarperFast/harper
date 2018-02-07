@@ -101,7 +101,7 @@ class SelectValidator{
             if(!table_name || (table_name && (attribute.table.tableid === table_name || attribute.table.as === table_name))){
                 this.statement.columns.push(new alasql.yy.Column({
                     columnid: attribute.attribute,
-                    tableid: attribute.table.tableid
+                    tableid: attribute.table.as ? attribute.table.as : attribute.table.tableid
                 }));
             }
         });
