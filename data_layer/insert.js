@@ -584,7 +584,7 @@ function createFolders(folders, callback) {
  * @param base_folder
  * @param callback
  */
-function createNewAttribute(base_folder, callback){
+function createNewAttribute(base_folder, callback) {
     let base_parts = base_folder.replace(hdb_path, '').split('/');
     let attribute_object = {
         schema:base_parts[1],
@@ -592,8 +592,8 @@ function createNewAttribute(base_folder, callback){
         attribute:base_parts[base_parts.length - 1]
     };
 
-    schema.createAttribute(attribute_object, (err, data)=>{
-        if(err){
+    schema.createAttribute(attribute_object, (err, data)=> {
+        if(err) {
             winston.error(err);
         }
 

@@ -174,11 +174,9 @@ function descTable(describe_table_object, callback) {
         }
 
         if (describe_table_object.schema == 'system') {
-            let global_schema = require('../utility/globalSchema');
-            global_schema.setSchemaDataToGlobal(function (err, data) {
-                callback(null, global.hdb_schema['system'][describe_table_object.table]);
-                return;
-            });
+            //let global_schema = require('../utility/globalSchema');
+            //global_schema.setSchemaDataToGlobal(function (err, data) {
+                return global.hdb_schema['system'][describe_table_object.table];
         } else {
 
             let table_search_obj = {};

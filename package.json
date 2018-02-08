@@ -5,7 +5,7 @@
   "main": "run.js",
   "bin": "./bin/run.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "cd bin/ && nyc --reporter=html mocha ../unitTests --watch"
   },
   "author": "HarperDB, Inc.",
   "license": "ISC",
@@ -50,6 +50,7 @@
     "passport": "^0.3.2",
     "passport-http": "^0.3.0",
     "passport-local": "^1.0.0",
+    "pino": "^4.10.3",
     "portscanner": "^2.1.1",
     "prompt": "^1.0.0",
     "properties-reader": "0.0.15",
@@ -74,6 +75,7 @@
       "./server/**/*.js",
       "./data_layer/*.js",
       "./triggers/**",
+      "./security/*.js",
       "./utility/*.js",
       "./utility/**/*.js",
       "./sqlTranslator/*.js",
@@ -81,7 +83,15 @@
       "./validation/*.js"
     ],
     "assets": [
-      "./utility/install/*.txt"
+      "./utility/install/*.txt",
+      "./json/*.json"
     ]
+  },
+  "devDependencies": {
+    "assert": "^1.4.1",
+    "mocha": "^4.1.0",
+    "nyc": "^11.4.1",
+    "rewire": "^3.0.2",
+    "sinon": "^4.2.1"
   }
 }
