@@ -105,11 +105,61 @@ function verify_perms(json, operation) {
                     return false;
                 }
             }
+            checkAttributePerms(json, op)
         } catch(e) {
             harper_logger.info(e);
             return false;
         }
     }
     // go
+    return true;
+}
+
+function checkAttributePerms(json, operation) {
+    // leave early if the role has no attribute permissions set
+    let att_perms = new Map();
+    json.hdb_user.role.permission[json.schema].tables[json.table].attribute_restrictions.forEach(function(element) {
+        if(!att_perms.has(element.attribute_name)) {
+            att_perms.set(element.attribute_name, element);
+        }
+    });
+    //TODO: Replace with common utils empty check when it is merged
+    if(!att_perms || att_perms.length === 0) {
+        return true;
+    }
+
+    let attributes = new Map();
+    // get unique attributes
+    for(let record =0; record<json.records.length; record++) {
+        let keys = Object.keys(json.records[record]);
+        for(let att=0; att<keys.length; att++) {
+            if(!attributes.has(keys[att]) ) {
+                attributes.set(keys[att], null);
+            }
+        }
+    }
+    // check each attribute with role permissions.  Required perm should match the per in the operation
+    let needed_perm = required_permissions.get(operation);
+    if(!needed_perm || needed_perm === '') {
+        // We should never get in here since all of our operations should have a perm, but just in case.
+        return true;
+    }
+
+    // For each key in attributes
+    attributes.forEach(function(value, key) {
+        //check for restriction
+        let temp = att_perms.get(key);
+        console.log(temp);
+        //If restriction, check if it matches the needed operation perm.
+        if(temp) {
+            needed_perm.forEach(function(perm)
+            {
+                let testtemp = temp[needed_perm];
+                if (temp[needed_perm] === false) {
+                    return false;
+                }
+            });
+        }
+    });
     return true;
 }
