@@ -73,8 +73,10 @@ harperdb_run()
 		#collection_id=b21ee620-6c69-7566-9a11-e2ce6ece23cd
 
 		#mycos Environment
-		environment_id=65398310-b319-fc53-7f6c-78710804cda3
-
+		#environment_id=65398310-b319-fc53-7f6c-78710804cda3
+		
+		#LOCAL EnV
+		environment_id=51185097-c2d6-56d4-9a3d-2896ffdda237
 		#zach' s dummmy environment
 		#environment_id=d4f6eefe-b922-9888-043f-43a374a1ef1a
 
