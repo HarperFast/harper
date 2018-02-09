@@ -80,7 +80,7 @@ harperdb_run()
 #environment_id=d4f6eefe-b922-9888-043f-43a374a1ef1a
 
     newman run https://api.getpostman.com/collections/$collection_id?apikey=$apiKey \
-    --environment https://api.getpostman.com/environments/$environment_id?apikey=$apiKey -r teamcity
+    --environment https://api.getpostman.com/environments/$environment_id?apikey=$apiKey -r cli > ../newman_output.log
   
 ./linux-harperdb stop
        else
