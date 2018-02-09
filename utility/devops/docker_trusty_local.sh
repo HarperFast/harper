@@ -65,9 +65,9 @@ harperdb_run()
 	theProc=$(ps -ef | grep [h]db_express);
 
 	if [ "$theProc" ]; then
-		apiKey = fe1dfb2c3647474f8f3e9d836783e694
+		apiKey=fe1dfb2c3647474f8f3e9d836783e694
 		# mycos Collection
-		collection_id = 45f26d10-5af1-3f5d-b00b-a39a52c9aa45
+		collection_id=45f26d10-5af1-3f5d-b00b-a39a52c9aa45
 
 		# zach 's dummy tests
 		#collection_id=b21ee620-6c69-7566-9a11-e2ce6ece23cd
@@ -76,7 +76,7 @@ harperdb_run()
 		environment_id=65398310-b319-fc53-7f6c-78710804cda3
 
 		#zach' s dummmy environment
-		#environment_id = d4f6eefe-b922-9888-043f-43a374a1ef1a
+		#environment_id=d4f6eefe-b922-9888-043f-43a374a1ef1a
 
 		newman run https://api.getpostman.com/collections/$collection_id?apikey=$apiKey --environment https://api.getpostman.com/environments/$environment_id?apikey=$apiKey -r cli > ../newman_output.log
 				
