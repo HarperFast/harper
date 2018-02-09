@@ -1,3 +1,5 @@
+'use strict';
+
 const fs = require('graceful-fs'),
       uuidV4 = require('uuid/v4');
       PropertiesReader = require('properties-reader'),
