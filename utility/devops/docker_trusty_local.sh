@@ -80,7 +80,7 @@ harperdb_run()
 		#zach' s dummmy environment
 		#environment_id=d4f6eefe-b922-9888-043f-43a374a1ef1a
 
-		newman run https://api.getpostman.com/collections/$collection_id?apikey=$apiKey --environment https://api.getpostman.com/environments/$environment_id?apikey=$apiKey -x --delay-request 10 -r teamcity
+		newman run https://api.getpostman.com/collections/$collection_id?apikey=$apiKey --environment https://api.getpostman.com/environments/$environment_id?apikey=$apiKey -r teamcity
 				
 	else
 		echo "Process hdb_express did not start?"
