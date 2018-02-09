@@ -1,7 +1,7 @@
 'use strict';
 
 const fs = require('graceful-fs'),
-      uuidV4 = require('uuid/v4');
+      uuidV4 = require('uuid/v4'),
       PropertiesReader = require('properties-reader'),
       hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
       hdb_properties.append(hdb_properties.get('settings_path'));
