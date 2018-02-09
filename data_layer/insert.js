@@ -25,7 +25,9 @@ const insert_validator = require('../validation/insertValidator.js'),
 
 const hdb_path = path.join(hdb_properties.get('HDB_ROOT'), '/schema');
 const regex = /\//g,
-    hash_regex = /^[a-zA-Z0-9-_]+$/;
+    hash_regex = /^[a-zA-Z0-9-_]+$/,
+    unicode_slash = 'U+002F';
+
 //TODO: This is ugly and string compare is slow.  Refactor this when we bring in promises.
 const NO_RESULTS = 'NR';
 //This is an internal value that should not be written to the DB.
@@ -266,7 +268,10 @@ function compareUpdatesToExistingRecords(update_object, hash_attribute, existing
                     update[attr] = update_record[attr];
 
                     let value = typeof existing_record[attr] === 'object' ? JSON.stringify(existing_record[attr]) : existing_record[attr];
-                    let value_stripped = String(value).replace(regex, 'U+002F');
+
+                    //here we replace any forward slashes with the unicode  encoding of a forward slash.
+                    // The reason is you cannot have a forward slash in a folder name and we want to preserve the value for search
+                    let value_stripped = String(value).replace(regex, unicode_slash);
                     value_stripped = Buffer.byteLength(value_stripped) > 255  ? truncate(value_stripped, 255) + '/blob' : value_stripped;
 
                     if (existing_record[attr] !== null && existing_record[attr] !== undefined) {
