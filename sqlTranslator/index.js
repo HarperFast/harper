@@ -81,12 +81,15 @@ function convertInsert(statement, callback) {
         return column.columnid;
     });
 
-    insert_object.records = createDataObjects(columns, statement.values);
+    try {
+        insert_object.records = createDataObjects(columns, statement.values);
+    } catch(e){
+        return callback(e);
+    }
 
     insert.insert(insert_object, (err, data) => {
         if (err) {
-            callback(err);
-            return;
+            return callback(err);
         }
 
         callback(null, data);
