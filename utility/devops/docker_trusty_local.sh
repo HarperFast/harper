@@ -111,7 +111,7 @@ exit 0
 cleanup(){
 cd ./bin
 
-node harperdb stop
+kill $(ps -ef | grep $(cd ../ && pwd)| awk '{print $2}')
 #clean Up install artifacts.
                 rm -f ../hdb_* ../install_*
                 rm -rf $hdb_data/*
