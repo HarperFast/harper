@@ -1,5 +1,5 @@
 #!/bin/bash
-hdb_data="/root/hdb"
+hdb_data="/home/harperdb/hdb"
 obfuscript()
 {
 #REMOVE FOR PRODUCTION
@@ -109,16 +109,15 @@ exit 0
 }
 
 cleanup(){
-cd ./bin/
+cd ./bin
 
-./linux-harperdb stop
+node harperdb stop
 #clean Up install artifacts.
                 rm -f ../hdb_* ../install_*
                 rm -rf $hdb_data/*
 
 
               exit 0;
-
 
 }
 armrunner(){
