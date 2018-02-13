@@ -105,7 +105,10 @@ function verify_perms(json, operation) {
                     return false;
                 }
             }
-            checkAttributePerms(json, op)
+            if ( !checkAttributePerms(json, op) ) {
+                return false;
+            }
+
         } catch(e) {
             harper_logger.info(e);
             return false;
@@ -115,51 +118,89 @@ function verify_perms(json, operation) {
     return true;
 }
 
+/**
+ * Compare the attributes specified in the call with the user's role.  If there are restrictions in the role,
+ * ensure that the permission required for the operation matches the restriction in the role.
+ * @param json
+ * @param operation
+ * @returns {boolean}
+ */
 function checkAttributePerms(json, operation) {
-    // leave early if the role has no attribute permissions set
-    let att_perms = new Map();
-    json.hdb_user.role.permission[json.schema].tables[json.table].attribute_restrictions.forEach(function(element) {
-        if(!att_perms.has(element.attribute_name)) {
-            att_perms.set(element.attribute_name, element);
-        }
-    });
-    //TODO: Replace with common utils empty check when it is merged
-    if(!att_perms || att_perms.length === 0) {
-        return true;
-    }
-
-    let attributes = new Map();
-    // get unique attributes
-    for(let record =0; record<json.records.length; record++) {
-        let keys = Object.keys(json.records[record]);
-        for(let att=0; att<keys.length; att++) {
-            if(!attributes.has(keys[att]) ) {
-                attributes.set(keys[att], null);
-            }
-        }
-    }
     // check each attribute with role permissions.  Required perm should match the per in the operation
     let needed_perm = required_permissions.get(operation);
     if(!needed_perm || needed_perm === '') {
-        // We should never get in here since all of our operations should have a perm, but just in case.
+        // We should never get in here since all of our operations should have a perm, but just in case we should fail
+        // any operation that doesn't have perms.
+        return false;
+    }
+
+    //TODO: It might be worth caching these to avoid this for every call.
+    let role_attribute_restrictions = getAttributeRestrictions(json);
+
+    //TODO: Replace with common utils empty check when it is merged
+    // leave early if the role has no attribute permissions set
+    if(!role_attribute_restrictions || role_attribute_restrictions.size === 0) {
         return true;
     }
 
-    // For each key in attributes
-    attributes.forEach(function(value, key) {
-        //check for restriction
-        let temp = att_perms.get(key);
-        console.log(temp);
-        //If restriction, check if it matches the needed operation perm.
-        if(temp) {
-            needed_perm.forEach(function(perm)
-            {
-                let testtemp = temp[needed_perm];
-                if (temp[needed_perm] === false) {
+    let affected_attributes = getRecordAttributes(json);
+
+    // Check if each specified attribute in the call has a restriction specified in the role.  If there is
+    // a restriction, check if the operation permission/ restriction is false.
+    for(let element of affected_attributes.values()) {
+        let restriction = role_attribute_restrictions.get(element);
+        if(restriction && needed_perm.perms) {
+            for(let perm of needed_perm.perms) {
+                if (restriction[perm] === false) {
                     return false;
                 }
-            });
+            }
         }
-    });
+    }
     return true;
+}
+
+/**
+ * Pull the table attributes specified in the statement.  Will always return a Set, even if empty or on error.
+ * @param json
+ * @returns {Set}
+ */
+function getRecordAttributes(json) {
+    let affected_attributes = new Set();
+    try {
+        // get unique affected_attributes
+        for (let record = 0; record < json.records.length; record++) {
+            let keys = Object.keys(json.records[record]);
+            for (let att = 0; att < keys.length; att++) {
+                if (!affected_attributes.has(keys[att])) {
+                    affected_attributes.add(keys[att]);
+                }
+            }
+        }
+    } catch (ex) {
+        harper_logger.info(ex);
+    }
+    return affected_attributes;
+}
+
+/**
+ * Pull the attribute restrictions for the schema/table.  Will always return a map, even empty or on error.
+ * @param json
+ * @returns {Map}
+ */
+function getAttributeRestrictions(json) {
+    let role_attribute_restrictions = new Map();
+    if(!json || json.length === 0) {
+        return role_attribute_restrictions;
+    }
+    try {
+        json.hdb_user.role.permission[json.schema].tables[json.table].attribute_restrictions.forEach(function (element) {
+            if (!role_attribute_restrictions.has(element.attribute_name)) {
+                role_attribute_restrictions.set(element.attribute_name, element);
+            }
+        });
+    } catch (e) {
+        harper_logger.info(e);
+    }
+    return role_attribute_restrictions;
 }

@@ -274,3 +274,145 @@ describe(`Test verify_perms`, function () {
         assert.equal(op_auth.verify_perms(test_copy, user.addUser), false);
     });
 });
+
+describe(`Test checkAttributePerms`, function () {
+    it('Nominal path - Pass in JSON with insert attribute required.  Expect true.', function () {
+        let checkAttributePerms = op_auth_rewire.__get__('checkAttributePerms');
+        let test_copy = clone(TEST_JSON);
+        let perms = {
+            "super_user": false,
+            "dev": {
+                "tables": {
+                    "dog": {
+                        "read": false,
+                        "insert": true,
+                        "update": false,
+                        "delete": false,
+                        "attribute_restrictions": [{
+                            "attribute_name": "name",
+                            "read": false,
+                            "insert": true,
+                            "update": false,
+                            "delete": false
+                        }]
+
+                    }
+                }
+            },
+        };
+        test_copy.hdb_user.role.permission = perms;
+        let result = checkAttributePerms(test_copy, write.insert.name);
+        assert.equal(result, true);
+    });
+    it('Pass in JSON with insert attribute required, but role does not have insert perm.  Expect false.', function () {
+        let checkAttributePerms = op_auth_rewire.__get__('checkAttributePerms');
+        let test_copy = clone(TEST_JSON);
+        let perms = {
+            "super_user": false,
+            "dev": {
+                "tables": {
+                    "dog": {
+                        "read": false,
+                        "insert": true,
+                        "update": false,
+                        "delete": false,
+                        "attribute_restrictions": [{
+                            "attribute_name": "name",
+                            "read": false,
+                            "insert": false,
+                            "update": false,
+                            "delete": false
+                        }]
+
+                    }
+                }
+            },
+        };
+        test_copy.hdb_user.role.permission = perms;
+        let result = checkAttributePerms(test_copy, write.insert.name);
+        assert.equal(result, false);
+    });
+    it('Pass invalid operation.  Expect false.', function () {
+        let checkAttributePerms = op_auth_rewire.__get__('checkAttributePerms');
+        let test_copy = clone(TEST_JSON);
+        let result = checkAttributePerms(test_copy, 'derp');
+        assert.equal(result, false);
+    });
+    it('Pass invalid json.  Expect false.', function () {
+        let checkAttributePerms = op_auth_rewire.__get__('checkAttributePerms');
+        //let test_copy = clone(TEST_JSON);
+        let result = checkAttributePerms(null, write.insert.name);
+        assert.equal(result, false);
+    });
+});
+
+describe(`Test getRecordAttributes`, function () {
+    it('Nominal case, valid JSON with attributes.  Expect set with size of 4', function () {
+        let getRecordAttributes = op_auth_rewire.__get__('getRecordAttributes');
+        let test_copy = clone(TEST_JSON);
+        let result = getRecordAttributes(test_copy);
+        assert.equal(result.size , 4);
+    });
+    it('pass invalid JSON with attributes.  Expect empty set.', function () {
+        let getRecordAttributes = op_auth_rewire.__get__('getRecordAttributes');
+        let result = getRecordAttributes(null);
+        assert.equal(result.size, 0);
+    });
+});
+
+describe(`Test getAttributeRestrictions`, function () {
+    it('Nominal case, valid JSON with attributes in the role.', function () {
+        let getAttributeRestrictions = op_auth_rewire.__get__('getAttributeRestrictions');
+        let test_copy = clone(TEST_JSON);
+        let perms = {
+            "super_user": false,
+            "dev": {
+                "tables": {
+                    "dog": {
+                        "read": false,
+                        "insert": true,
+                        "update": false,
+                        "delete": false,
+                        "attribute_restrictions": [{
+                            "attribute_name": "name",
+                            "read": false,
+                            "insert": false,
+                            "update": false,
+                            "delete": false
+                        }]
+
+                    }
+                }
+            },
+        };
+        test_copy.hdb_user.role.permission = perms;
+        let result = getAttributeRestrictions(test_copy);
+        assert.equal(result.size, 1);
+        assert.equal(result.get('name').attribute_name,'name');
+    });
+    it('invalid JSON, Expect zero length Map returned ', function () {
+        let getAttributeRestrictions = op_auth_rewire.__get__('getAttributeRestrictions');
+        let result = getAttributeRestrictions(null);
+        assert.equal(result.size, 0);
+    });
+    it('JSON with no restrictions in the role. Expect false ', function () {
+        let getAttributeRestrictions = op_auth_rewire.__get__('getAttributeRestrictions');
+        let test_copy = clone(TEST_JSON);
+        let perms = {
+            "super_user": false,
+            "dev": {
+                "tables": {
+                    "dog": {
+                        "read": false,
+                        "insert": true,
+                        "update": false,
+                        "delete": false
+                    }
+                }
+            },
+        };
+        test_copy.hdb_user.role.permission = perms;
+        let result = getAttributeRestrictions(test_copy);
+        assert.equal(result.size, 0);
+    });
+});
