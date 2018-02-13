@@ -1,6 +1,6 @@
 #!/bin/bash
 
-working_dir=/opt/harperdb
+working_dir=$(pwd)
 target_dir=/opt/harperdb_cluster
 node_count=$2
 port_offset=3
