@@ -10,11 +10,13 @@ const  write = require('../data_layer/insert'),
     role = require('../security/role'),
     read_log = require('../utility/logging/read_logs'),
     winston = require('../utility/logging/winston_logger'),
-    clusert_utilities = require('./clustering/cluster_utilities');
+    clusert_utilities = require('./clustering/cluster_utilities'),
+    auth = require('../security/auth');
 
 
 
-module.exports = {
+
+    module.exports = {
     chooseOperation: chooseOperation,
     processLocalTransaction: processLocalTransaction,
     proccessDelegatedTransaction: proccessDelegatedTransaction,
@@ -76,15 +78,27 @@ function processInThread(operation, operation_function, callback){
 
 
 function proccessDelegatedTransaction(operation, operation_function, callback){
+    req = {};
+    req.headers = {};
+    req.headers.authorization = operation.hdb_auth_header;
 
-    let f = Math.floor(Math.random() * Math.floor(global.forks.length))
-    let payload = {
-        "id": uuidv1(),
-        "body":operation,
-        "type":"delegate_transaction"
-    }
-    global.delegate_callback_queue[payload.id] = callback;
-    global.forks[f].send(payload);
+    auth.authorize(req, null, function(err, user){
+         if(err){
+             return callback(err);
+         }
+
+        operation.hdb_user = user;
+        let f = Math.floor(Math.random() * Math.floor(global.forks.length))
+        let payload = {
+            "id": uuidv1(),
+            "body":operation,
+            "type":"delegate_transaction"
+        }
+        global.delegate_callback_queue[payload.id] = callback;
+        global.forks[f].send(payload);
+
+    });
+
 
 
 }

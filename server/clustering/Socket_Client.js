@@ -93,23 +93,27 @@ class Socket_Client{
         });
 
         client.on('msg', (msg, fn) => {
-
-            winston.info(`recieved by ${node.name} : msg = ${JSON.stringify(msg)}`);
-            server_utilities.chooseOperation(msg.body, (err, operation_function) => {
-                server_utilities.proccessDelegatedTransaction(msg.body, operation_function, function (err, data) {
-                    let payload = {
-                        "id": msg.id,
-                        "error": err,
-                        "data": data,
-                        "node":node
-                    };
+            console.trace(msg);
 
 
-                    client.emit('confirm_msg', payload);
+                winston.info(`received by ${node.name} : msg = ${JSON.stringify(msg)}`);
+                server_utilities.chooseOperation(msg.body, (err, operation_function) => {
+                    server_utilities.proccessDelegatedTransaction(msg.body, operation_function, function (err, data) {
+                        console.trace(err);
+                        console.trace(data);
+                        let payload = {
+                            "id": msg.id,
+                            "error": err,
+                            "data": data,
+                            "node": node
+                        };
+
+
+                        client.emit('confirm_msg', payload);
+                    });
+
+
                 });
-
-
-            });
 
 
             //fn(name);

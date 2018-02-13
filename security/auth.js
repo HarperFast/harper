@@ -8,27 +8,43 @@ const express = require('express'),
     passport = require('passport'),
     LocalStrategy = require('passport-local').Strategy,
     BasicStrategy = require('passport-http').BasicStrategy,
+    user_functions = require('./user'),
     clone = require('clone');
 
 
 function findAndValidateUser(username, password, done){
-    let user_tmp = global.hdb_users.filter((user)=>{
-        return user.username === username;
-    })[0];
-
-    if(!user_tmp){
-        return done(`Cannot complete request: User '${username}' not found`, null);
+    if(!global.hdb_users){
+        user_functions.setUsersToGlobal(function(){
+            handleResponse();
+        })
+    }else{
+       handleResponse();
     }
 
-    if(user_tmp && !user_tmp.active){
-        return done('Cannot complete request: User is inactive', null);
+
+
+
+
+    function handleResponse(){
+        let user_tmp = global.hdb_users.filter((user)=>{
+            return user.username === username;
+        })[0];
+
+        if(!user_tmp){
+            return done(`Cannot complete request: User '${username}' not found`, null);
+        }
+
+        if(user_tmp && !user_tmp.active){
+            return done('Cannot complete request: User is inactive', null);
+        }
+        let user = clone(user_tmp);
+        if (!password_function.validate(user.password, password)) {
+            return done('Cannot complete request:  Invalid password', false);
+        }
+        delete user.password;
+        return done(null, user);
     }
-    let user = clone(user_tmp);
-    if (!password_function.validate(user.password, password)) {
-        return done('Cannot complete request:  Invalid password', false);
-    }
-    delete user.password;
-    return done(null, user);
+
 }
 
 
@@ -78,12 +94,19 @@ function authorize(req, res, next) {
         if (!user) {
             return next("User not found");
         }
-        req.logIn(user, function (err) {
-            if (err) {
-                return next(err);
-            }
+        if(req.logIn){
+            req.logIn(user, function (err) {
+                if (err) {
+                    return next(err);
+                }
+                return next(null, user);
+            });
+        }else{
             return next(null, user);
-        });
+
+        }
+
+
     }
 
     switch (strategy) {

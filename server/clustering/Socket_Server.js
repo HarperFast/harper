@@ -2,7 +2,9 @@ const
     winston = require('../../utility/logging/winston_logger'),
     search = require('../../data_layer/search'),
     insert = require('../../data_layer/insert'),
-    delete_ = require('../../data_layer/delete');
+    delete_ = require('../../data_layer/delete'),
+    uuidv4 = require('uuid/v1');
+
 
 class Socket_Server {
     constructor(node) {
@@ -78,30 +80,40 @@ class Socket_Server {
 
                 socket.on('confirm_msg', function (msg) {
                     winston.info(msg);
+                    console.trace(JSON.stringify(msg));
 
                     msg.type = 'cluster_response';
                     let queded_msg = global.forkClusterMsgQueue[msg.id];
-                    for (let f in global.forks) {
-                        if (global.forks[f].process.pid === queded_msg.pid) {
-                            global.forks[f].send(msg);
+                    if(queded_msg){
+                        console.trace(JSON.stringify(queded_msg));
+                        for (let f in global.forks) {
+                            if (global.forks[f].process.pid === queded_msg.pid) {
+                                global.forks[f].send(msg);
+                            }
                         }
+
+                        // delete from memory
+                        delete global.cluster_queue[msg.node.name][msg.id];
+                        // delete from disk
+                       let delete_obj = {
+                            "table":"hdb_queue",
+                            "schema":"system",
+                            "hash_values":[msg.id]
+
+                        }
+
+                        delete_.delete(delete_obj, function(err, result){
+                            console.trace(result);
+                            if(err){
+                                console.trace(err);
+                                winston.error(err);
+                            }
+                        });
+
                     }
 
-                    // delete from memory
-                    delete global.cluster_queue[msg.node.name][msg.id];
-                    // delete from disk
-                    delete_obj = {
-                        "table":"hdb_queue",
-                        "schema":"system",
-                        "hash_values":[msg.id]
 
-                    }
 
-                    delete_.delete(delete_obj, function(err, result){
-                       if(err){
-                           winston.error(err);
-                       }
-                    });
 
 
 
@@ -139,6 +151,10 @@ class Socket_Server {
         //console.trace('msg in send:' + JSON.stringify(msg));
 
         try {
+            delete msg.body.hdb_user;
+            if(!msg.id)
+                msg.id = uuidv4();
+
             let payload = {"body": msg.body, "id": msg.id};
 
 
@@ -167,20 +183,22 @@ class Socket_Server {
 }
 
 function saveToDisk(item) {
+    try {
+        let insert_object = {
+            operation: 'insert',
+            schema: 'system',
+            table: 'hdb_queue',
+            records: [item]
+        };
 
-    let insert_object = {
-        operation: 'insert',
-        schema: 'system',
-        table: 'hdb_queue',
-        records: [item]
-    };
-
-    insert.insert(insert_object, function (err) {
-        if (err) {
-            return winston.error(err);
-        }
-    });
-
+        insert.insert(insert_object, function (err) {
+            if (err) {
+                return winston.error(err);
+            }
+        });
+    }catch(e){
+        winston.error(e);
+    }
 }
 
 function getFromDisk(node, callback) {
