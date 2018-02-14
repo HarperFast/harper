@@ -1,17 +1,20 @@
 const sqliteParser = require('sqlite-parser'),
     insert = require('../data_layer/insert'),
     global_schema = require('../utility/globalSchema'),
-    select_translator = require('./selectTranslator').convertSelect,
-    update_translator = require('./updateTranslator').convertUpdate,
+    //select_translator = require('./selectTranslator').convertSelect,
+    search = require('../data_layer/search').search,
+    //update_translator = require('./updateTranslator').convertUpdate,
+    update = require('../data_layer/update').update,
     delete_translator = require('./deleteTranslator').convertDelete,
-    winston = require('../utility/logging/winston_logger');
+    winston = require('../utility/logging/winston_logger'),
+    alasql = require('alasql');
 
 module.exports = {
     evaluateSQL: evaluateSQL
 };
 
 function evaluateSQL(sql, callback) {
-    processSQL(sql.sql, (error, results)=>{
+    processSQL(sql.sql.trim(), (error, results)=>{
         if(error){
             return callback(error);
         }
@@ -22,29 +25,32 @@ function evaluateSQL(sql, callback) {
 
 function processSQL(sql, callback){
     try {
-        //the LIKE operator causes the format of the where ast to go bonkers so we replace with something palatable and replace again on the other side
-        //sql = sql.replace(/ like /gi, ' || ');
-        let ast = sqliteParser(sql);
+        if(!sql){
+            throw new Error('invalid SQL: ' + sql);
+        }
+        let ast = alasql.parse(sql);
+        let variant = sql.split(" ")[0].toLowerCase();
         let sql_function = nullFunction;
-        switch (ast.statement[0].variant) {
+        switch (variant) {
             case 'select':
-                sql_function = select_translator;
+                sql_function = search;
                 break;
             case 'insert':
                 //TODO add validator for insert, need to make sure columns are specified
                 sql_function = convertInsert;
                 break;
             case 'update':
-                sql_function = update_translator;
+                sql_function = update;
                 break;
             case 'delete':
                 sql_function = delete_translator;
                 break;
             default:
+                throw new Error(`unsupported SQL type ${variant} in SQL: ${sql}`);
                 break;
         }
 
-        sql_function(ast.statement[0], (err, data) => {
+        sql_function(ast.statements[0], (err, data) => {
             if (err) {
                 callback(err);
                 return;
@@ -64,41 +70,49 @@ function nullFunction(sql, callback) {
 
 function convertInsert(statement, callback) {
 
-    let schema_table = statement.into.name.split('.');
+    let schema_table = statement.into;
     let insert_object = {
-        schema : schema_table[0],
-        table : schema_table[1],
+        schema : schema_table.databaseid,
+        table : schema_table.tableid,
         operation:'insert'
     };
 
-    let columns = statement.into.columns.map((column) => {
-        return column.name;
+    let columns = statement.columns.map((column) => {
+        return column.columnid;
     });
 
-    insert_object.records = createDataObjects(columns, statement.result);
+    try {
+        insert_object.records = createDataObjects(columns, statement.values);
+    } catch(e){
+        return callback(e);
+    }
 
     insert.insert(insert_object, (err, data) => {
         if (err) {
-            callback(err);
-            return;
+            return callback(err);
         }
 
         callback(null, data);
     });
 }
 
-function createDataObjects(columns, expressions) {
-    let records = [];
-    expressions.forEach((values) => {
-        let record = {};
-        for (let x = 0; x < values.expression.length; x++) {
-            if(values.expression[x].type === 'identifier' && (values.expression[x].name === 'true' || values.expression[x].name === 'false')){
-                record[columns[x]] = (values.expression[x].name === 'true');
-            } else if(values.expression[x].type === 'literal'){
-                record[columns[x]] = values.expression[x].value;
-            }
+function createDataObjects(columns, values) {
+    let records = values.map((value_objects)=>{
+        //compare number of values to number of columns, if no matchie throw error
+        if(columns.length !== value_objects.length){
+            throw "number of values do not match number of columns in insert";
         }
-        records.push(record);
+        let record = {};
+        //make sure none of the value entries have a columnid
+        value_objects.forEach((value, x)=>{
+            if(value.columnid){
+                throw "cannot use a column in insert value";
+            }
+
+            record[columns[x]] = value.value;
+        });
+
+        return record;
     });
 
     return records;
