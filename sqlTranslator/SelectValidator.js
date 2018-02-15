@@ -51,7 +51,7 @@ class SelectValidator{
 
     [validateTable](table){
         if(!table.databaseid){
-            throw `schema not defined from table ${table.tableid}`;
+            throw `schema not defined for table ${table.tableid}`;
         }
 
         if(!global.hdb_schema[table.databaseid] || !global.hdb_schema[table.databaseid][table.tableid]){
@@ -60,7 +60,8 @@ class SelectValidator{
 
         //let the_table = clone(table);
         let schema_table = global.hdb_schema[table.databaseid][table.tableid];
-
+/*TODO rather than putting every attribute in an array we will create a Map there will be a map element for every table and every table alias
+ (this will create duplicate map elements) this will have downstream effects in comparison functions like findColumn*/
         schema_table.attributes.forEach((attribute)=>{
             let attribute_clone = clone(attribute);
             attribute_clone.table = table;
@@ -94,14 +95,12 @@ class SelectValidator{
     }
 
     [setColumnsForTable](table_name){
-        let table_columns = [];
-
         this.attributes.forEach((attribute)=>{
 
             if(!table_name || (table_name && (attribute.table.tableid === table_name || attribute.table.as === table_name))){
                 this.statement.columns.push(new alasql.yy.Column({
                     columnid: attribute.attribute,
-                    tableid: attribute.table.tableid
+                    tableid: attribute.table.as ? attribute.table.as : attribute.table.tableid
                 }));
             }
         });
@@ -140,28 +139,32 @@ class SelectValidator{
             return;
         }
         //check select for aggregates and non-aggregates, if it has both non-aggregates need to be in group by
-        let columns = [];
-
+        let select_columns = [];
+//here we are pulling out all non-aggregate functions into an array for comaprison to the group by
         this.statement.columns.forEach((column)=>{
+
             if(!column.aggregatorid && !column.columnid){
-                columns.push(column);
+                //this is to make sure functions or any type ofevaluatory statement is being compared to the select.
+                //i.e. "GROUP BY UPPER(name)" needs to have UPPER(name) in the select
+                select_columns.push(column);
             } else if(column.columnid){
                 let found = this[findColumn](column)[0];
                 if(found){
-                    columns.push(found);
+                    select_columns.push(found);
                 }
             }
         });
 
-        let found_group_columns = [];
+//here we iterate the group by and compare to what is in the select and make sure they match appropriately
         this.statement.group.forEach((group_column)=>{
             let found_column = null;
 
             if(!group_column.columnid){
-                columns.forEach((column, x) => {
+                //TODO can use for of to break out of the loop rather than this janky way
+                select_columns.forEach((column, x) => {
                     if (column.toString() === group_column.toString()) {
                         found_column = column;
-                        columns.splice(x, 1);
+                        select_columns.splice(x, 1);
                         return;
                     }
                 });
@@ -177,10 +180,11 @@ class SelectValidator{
                     throw `ambiguously defined column '${group_column.toString()}' in group by`;
                 }
 
-                columns.forEach((column, x) => {
+                //TODO can use for of to break out of the loop rather than this janky way
+                select_columns.forEach((column, x) => {
                     if (column.attribute === found_group_column[0].attribute && column.table.tableid === found_group_column[0].table.tableid) {
                         found_column = column;
-                        columns.splice(x, 1);
+                        select_columns.splice(x, 1);
                         return;
                     }
                 });
@@ -191,8 +195,8 @@ class SelectValidator{
             }
         });
 
-        if(columns.length > 0){
-            throw `select column '${columns[0].attribute ? columns[0].attribute : columns[0].toString()}' must be in group by`;
+        if(select_columns.length > 0){
+            throw `select column '${select_columns[0].attribute ? select_columns[0].attribute : select_columns[0].toString()}' must be in group by`;
         }
     }
 
@@ -201,9 +205,8 @@ class SelectValidator{
             return col.as === column.columnid;
         });
 
-        let column_name =  (column.tableid ? column.tableid + '.' : '') + column.columnid;
-
         if(found_columns.length > 1){
+            let column_name =  (column.tableid ? column.tableid + '.' : '') + column.columnid;
             throw `ambiguous column reference ${column_name} in order by`;
         } else if(found_columns.length === 0){
             this[validateColumn](column);

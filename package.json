@@ -33,7 +33,6 @@
     "globby": "^6.1.0",
     "graceful-fs": "^4.1.11",
     "is-root": "^1.0.0",
-    "jinq": "^1.6.1",
     "json-2-csv": "^2.1.1",
     "licensekey": "^2.0.11",
     "lodash": "^4.17.4",

@@ -8,21 +8,17 @@ const base_path = hdb_properties.get('HDB_ROOT') + "/schema/"
     , async = require('async'),
     winston = require('../utility/logging/winston_logger'),
     file_search = require('../lib/fileSystem/fileSearch'),
-    FileSearch = require('../lib/fileSystem/Search'),
+    FileSearch = require('../lib/fileSystem/SQLSearch'),
     _ = require('lodash'),
     condition_patterns = require('../sqlTranslator/conditionPatterns'),
-    ConditionPatterns = require('../sqlTranslator/Conditions'),
     autocast = require('autocast'),
     math = require('mathjs'),
-    aggregate_functions = require('../utility/functions/aggregateFunctions.json'),
-    jinqjs = require('jinq'),
     system_schema = require('../json/systemSchema.json'),
     SelectValidator = require('../sqlTranslator/SelectValidator');
 
 math.import([
     require('../utility/functions/math/count'),
-    require('../utility/functions/math/avg'),
-//    require('../utility/functions/date/dateFunctions')
+    require('../utility/functions/math/avg')
 ]);
 
 module.exports = {
@@ -190,11 +186,6 @@ function multiConditionSearch(conditions, table_schema, callback){
     try {
         let all_ids = [];
 
-        /*let patterns = new ConditionPatterns(conditions);
-        patterns.parseConditions();*/
-
-        //async.forEachOf(patterns.column_conditions, (condition));
-
         async.forEachOf(conditions, (condition, key, caller) => {
             all_ids[key] = {};
             let condition_key = Object.keys(condition)[0];
@@ -252,7 +243,7 @@ function search(statement, callback){
                 return callback(err);
             }
 
-            callback(null, data);
+            return callback(null, data);
         });
     } catch(e){
         callback(e);
