@@ -98,6 +98,34 @@ let TEST_JSON_SUPER_USER = {
     }
 }
 
+let PERMISSION_BASE = {
+    "super_user": false,
+    "dev": {
+        "tables": {
+            "dog": {
+                "read": false,
+                "insert": false,
+                "update": false,
+                "delete": false,
+                "attribute_restrictions": []
+            }
+        }
+    },
+};
+
+let ATTRIBUTE_RESTRICTION_BASE = {
+    "attribute_restrictions": [{
+        "attribute_name": "name",
+        "read": false,
+        "insert": true,
+        "update": false,
+        "delete": false
+    }]
+};
+
+/*
+    This is a simple, naive clone implementation.  It should never, ever! be used in prod.
+ */
 function clone(a) {
     return JSON.parse(JSON.stringify(a));
 }
@@ -140,39 +168,14 @@ describe(`Test verify_perms`, function () {
     });
     it('Pass in JSON with schemas and table dog defined, insert not allowed, expect false', function () {
         let test_copy = clone(TEST_JSON);
-        let perms = {
-            "super_user": false,
-            "dev": {
-                "tables": {
-                    "dog": {
-                        "read": false,
-                        "insert": false,
-                        "update": false,
-                        "delete": false,
-                        "attribute_restrictions": []
-                    }
-                }
-            },
-        };
+        let perms = clone(PERMISSION_BASE);
         test_copy.hdb_user.role.permission = perms;
         assert.equal(op_auth.verify_perms(test_copy, write.insert.name), false);
     });
     it('(NOMINAL) - Pass in JSON with schemas and table dog defined, insert allowed, expect true', function () {
         let test_copy = clone(TEST_JSON);
-        let perms = {
-            "super_user": false,
-            "dev": {
-                "tables": {
-                    "dog": {
-                        "read": false,
-                        "insert": true,
-                        "update": false,
-                        "delete": false,
-                        "attribute_restrictions": []
-                    }
-                }
-            },
-        };
+        let perms = clone(PERMISSION_BASE);
+        perms.dev.tables.dog.insert = true;
         test_copy.hdb_user.role.permission = perms;
         assert.equal(op_auth.verify_perms(test_copy, write.insert.name), true);
     });
@@ -180,44 +183,21 @@ describe(`Test verify_perms`, function () {
         let required_permissions = op_auth_rewire.__get__('required_permissions');
         required_permissions.set('test method', ['insert', 'read']);
         let test_copy = clone(TEST_JSON);
-        let perms = {
-            "super_user": false,
-            "dev": {
-                "tables": {
-                    "dog": {
-                        "read": false,
-                        "insert": true,
-                        "update": false,
-                        "delete": false,
-                        "attribute_restrictions": []
-                    }
-                }
-            },
-        };
+        let perms = clone(PERMISSION_BASE);
+        perms.dev.tables.dog.insert = true;
         test_copy.hdb_user.role.permission = perms;
         assert.equal(op_auth.verify_perms(test_copy, 'test method'), false);
     });
     it('Test bad method.  False expected', function () {
         let test_copy = clone(TEST_JSON);
-        let perms = {
-            "super_user": false,
-            "dev": {
-                "tables": {
-                    "dog": {
-                        "read": false,
-                        "insert": true,
-                        "update": false,
-                        "delete": false,
-                        "attribute_restrictions": []
-                    }
-                }
-            },
-        };
+        let perms = clone(PERMISSION_BASE);
+        perms.dev.tables.dog.insert = true;
         test_copy.hdb_user.role.permission = perms;
         assert.equal(op_auth.verify_perms(test_copy, 'bad method'), false);
     });
     it('Test bad permission name.  False expected', function () {
         let test_copy = clone(TEST_JSON);
+        // Leaving the manual perms definition due to the bad permission name below.
         let perms = {
             "super_user": false,
             "dev": {
@@ -237,39 +217,16 @@ describe(`Test verify_perms`, function () {
     });
     it('NOMINAL - Pass in JSON with su, function that requires su.  Expect true.', function () {
         let test_copy = clone(TEST_JSON);
-        let perms = {
-            "super_user": true,
-            "dev": {
-                "tables": {
-                    "dog": {
-                        "read": false,
-                        "insert": true,
-                        "update": false,
-                        "delete": false,
-                        "attribute_restrictions": []
-                    }
-                }
-            },
-        };
+        let perms = clone(PERMISSION_BASE);
+        perms.super_user = true;
+        perms.dev.tables.dog.insert = true;
         test_copy.hdb_user.role.permission = perms;
         assert.equal(op_auth.verify_perms(test_copy, user.addUser), true);
     });
     it('Pass in JSON with no su, function that requires su.  Expect false.', function () {
         let test_copy = clone(TEST_JSON);
-        let perms = {
-            "super_user": false,
-            "dev": {
-                "tables": {
-                    "dog": {
-                        "read": false,
-                        "insert": true,
-                        "update": false,
-                        "delete": false,
-                        "attribute_restrictions": []
-                    }
-                }
-            },
-        };
+        let perms = clone(PERMISSION_BASE);
+        perms.dev.tables.dog.insert = true;
         test_copy.hdb_user.role.permission = perms;
         assert.equal(op_auth.verify_perms(test_copy, user.addUser), false);
     });
@@ -279,27 +236,9 @@ describe(`Test checkAttributePerms`, function () {
     it('Nominal path - Pass in JSON with insert attribute required.  Expect true.', function () {
         let checkAttributePerms = op_auth_rewire.__get__('checkAttributePerms');
         let test_copy = clone(TEST_JSON);
-        let perms = {
-            "super_user": false,
-            "dev": {
-                "tables": {
-                    "dog": {
-                        "read": false,
-                        "insert": true,
-                        "update": false,
-                        "delete": false,
-                        "attribute_restrictions": [{
-                            "attribute_name": "name",
-                            "read": false,
-                            "insert": true,
-                            "update": false,
-                            "delete": false
-                        }]
-
-                    }
-                }
-            },
-        };
+        let perms = clone(PERMISSION_BASE);
+        perms.dev.tables.dog.insert = true;
+        perms.dev.tables.dog.attribute_restrictions.push(ATTRIBUTE_RESTRICTION_BASE.attribute_restrictions[0]);
         test_copy.hdb_user.role.permission = perms;
         let result = checkAttributePerms(test_copy, write.insert.name);
         assert.equal(result, true);
@@ -307,27 +246,11 @@ describe(`Test checkAttributePerms`, function () {
     it('Pass in JSON with insert attribute required, but role does not have insert perm.  Expect false.', function () {
         let checkAttributePerms = op_auth_rewire.__get__('checkAttributePerms');
         let test_copy = clone(TEST_JSON);
-        let perms = {
-            "super_user": false,
-            "dev": {
-                "tables": {
-                    "dog": {
-                        "read": false,
-                        "insert": true,
-                        "update": false,
-                        "delete": false,
-                        "attribute_restrictions": [{
-                            "attribute_name": "name",
-                            "read": false,
-                            "insert": false,
-                            "update": false,
-                            "delete": false
-                        }]
-
-                    }
-                }
-            },
-        };
+        let perms = clone(PERMISSION_BASE);
+        perms.dev.tables.dog.insert = true;
+        let att_base = clone(ATTRIBUTE_RESTRICTION_BASE);
+        att_base.attribute_restrictions[0].insert = false;
+        perms.dev.tables.dog.attribute_restrictions.push(att_base.attribute_restrictions[0]);
         test_copy.hdb_user.role.permission = perms;
         let result = checkAttributePerms(test_copy, write.insert.name);
         assert.equal(result, false);
@@ -340,7 +263,6 @@ describe(`Test checkAttributePerms`, function () {
     });
     it('Pass invalid json.  Expect false.', function () {
         let checkAttributePerms = op_auth_rewire.__get__('checkAttributePerms');
-        //let test_copy = clone(TEST_JSON);
         let result = checkAttributePerms(null, write.insert.name);
         assert.equal(result, false);
     });
@@ -364,27 +286,11 @@ describe(`Test getAttributeRestrictions`, function () {
     it('Nominal case, valid JSON with attributes in the role.', function () {
         let getAttributeRestrictions = op_auth_rewire.__get__('getAttributeRestrictions');
         let test_copy = clone(TEST_JSON);
-        let perms = {
-            "super_user": false,
-            "dev": {
-                "tables": {
-                    "dog": {
-                        "read": false,
-                        "insert": true,
-                        "update": false,
-                        "delete": false,
-                        "attribute_restrictions": [{
-                            "attribute_name": "name",
-                            "read": false,
-                            "insert": false,
-                            "update": false,
-                            "delete": false
-                        }]
-
-                    }
-                }
-            },
-        };
+        let perms = clone(PERMISSION_BASE);
+        perms.dev.tables.dog.insert = true;
+        let att_base = clone(ATTRIBUTE_RESTRICTION_BASE);
+        att_base.attribute_restrictions[0].insert = false;
+        perms.dev.tables.dog.attribute_restrictions.push(att_base.attribute_restrictions[0]);
         test_copy.hdb_user.role.permission = perms;
         let result = getAttributeRestrictions(test_copy);
         assert.equal(result.size, 1);
@@ -398,6 +304,7 @@ describe(`Test getAttributeRestrictions`, function () {
     it('JSON with no restrictions in the role. Expect false ', function () {
         let getAttributeRestrictions = op_auth_rewire.__get__('getAttributeRestrictions');
         let test_copy = clone(TEST_JSON);
+        // Leaving this manual definition of the JSON to omit attribute_restrictions
         let perms = {
             "super_user": false,
             "dev": {

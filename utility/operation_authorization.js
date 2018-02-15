@@ -126,6 +126,9 @@ function verify_perms(json, operation) {
  * @returns {boolean}
  */
 function checkAttributePerms(json, operation) {
+    if(!json || json.length === 0) {
+        return false;
+    }
     // check each attribute with role permissions.  Required perm should match the per in the operation
     let needed_perm = required_permissions.get(operation);
     if(!needed_perm || needed_perm === '') {
