@@ -123,6 +123,13 @@ let ATTRIBUTE_RESTRICTION_BASE = {
     }]
 };
 
+let AFFECTED_ATTRIBUTES_SET = new Set(['name', 'breed', 'id', 'age']);
+
+let ROLE_RESTRICTION_KEY = 'name';
+
+let ROLE_ATTRIBUTE_RESTRICTIONS = new Map();
+ROLE_ATTRIBUTE_RESTRICTIONS.set(ROLE_RESTRICTION_KEY, ATTRIBUTE_RESTRICTION_BASE.attribute_restrictions[0]);
+
 /*
     This is a simple, naive clone implementation.  It should never, ever! be used in prod.
  */
@@ -130,7 +137,7 @@ function clone(a) {
     return JSON.parse(JSON.stringify(a));
 }
 
-describe(`Test verify_perms`, function () {
+describe(`Test verifyPerms`, function () {
     it('Pass in bad values, expect false', function () {
         assert.equal(op_auth.verifyPerms(null, null), false);
     });
@@ -174,15 +181,27 @@ describe(`Test verify_perms`, function () {
         let test_copy = clone(TEST_JSON);
         let perms = clone(PERMISSION_BASE);
         perms.dev.tables.dog.insert = true;
+        let att_base = clone(ATTRIBUTE_RESTRICTION_BASE);
+        att_base.attribute_restrictions[0].insert = true;
+        perms.dev.tables.dog.attribute_restrictions.push(att_base.attribute_restrictions[0]);
         test_copy.hdb_user.role.permission = perms;
         assert.equal(op_auth.verifyPerms(test_copy, write.insert.name), true);
+    });
+    it('Pass in JSON with schemas and table dog defined, insert allowed, user insert restriction false. expect false', function () {
+        let test_copy = clone(TEST_JSON);
+        let perms = clone(PERMISSION_BASE);
+        perms.dev.tables.dog.insert = true;
+        let att_base = clone(ATTRIBUTE_RESTRICTION_BASE);
+        att_base.attribute_restrictions[0].insert = false;
+        perms.dev.tables.dog.attribute_restrictions.push(att_base.attribute_restrictions[0]);
+        test_copy.hdb_user.role.permission = perms;
+        assert.equal(op_auth.verifyPerms(test_copy, write.insert.name), false);
     });
     it('Test operation with read & insert required, but user only has insert.  False expected', function () {
         let required_permissions = op_auth_rewire.__get__('required_permissions');
         required_permissions.set('test method', ['insert', 'read']);
         let test_copy = clone(TEST_JSON);
         let perms = clone(PERMISSION_BASE);
-        perms.dev.tables.dog.insert = true;
         test_copy.hdb_user.role.permission = perms;
         assert.equal(op_auth.verifyPerms(test_copy, 'test method'), false);
     });
@@ -233,35 +252,24 @@ describe(`Test verify_perms`, function () {
 describe(`Test checkAttributePerms`, function () {
     it('Nominal path - Pass in JSON with insert attribute required.  Expect true.', function () {
         let checkAttributePerms = op_auth_rewire.__get__('checkAttributePerms');
-        let test_copy = clone(TEST_JSON);
-        let perms = clone(PERMISSION_BASE);
-        perms.dev.tables.dog.insert = true;
-        perms.dev.tables.dog.attribute_restrictions.push(ATTRIBUTE_RESTRICTION_BASE.attribute_restrictions[0]);
-        test_copy.hdb_user.role.permission = perms;
-        let result = checkAttributePerms(test_copy, write.insert.name);
+        let result = checkAttributePerms(AFFECTED_ATTRIBUTES_SET, ROLE_ATTRIBUTE_RESTRICTIONS, write.insert.name);
         assert.equal(result, true);
     });
     it('Pass in JSON with insert attribute required, but role does not have insert perm.  Expect false.', function () {
         let checkAttributePerms = op_auth_rewire.__get__('checkAttributePerms');
-        let test_copy = clone(TEST_JSON);
-        let perms = clone(PERMISSION_BASE);
-        perms.dev.tables.dog.insert = true;
-        let att_base = clone(ATTRIBUTE_RESTRICTION_BASE);
-        att_base.attribute_restrictions[0].insert = false;
-        perms.dev.tables.dog.attribute_restrictions.push(att_base.attribute_restrictions[0]);
-        test_copy.hdb_user.role.permission = perms;
-        let result = checkAttributePerms(test_copy, write.insert.name);
+        let role_att = new Map(ROLE_ATTRIBUTE_RESTRICTIONS);
+        role_att.get(ROLE_RESTRICTION_KEY).insert = false;
+        let result = checkAttributePerms(AFFECTED_ATTRIBUTES_SET, role_att, write.insert.name);
         assert.equal(result, false);
     });
     it('Pass invalid operation.  Expect false.', function () {
         let checkAttributePerms = op_auth_rewire.__get__('checkAttributePerms');
-        let test_copy = clone(TEST_JSON);
-        let result = checkAttributePerms(test_copy, 'derp');
+        let result = checkAttributePerms(AFFECTED_ATTRIBUTES_SET, ROLE_ATTRIBUTE_RESTRICTIONS, 'derp');
         assert.equal(result, false);
     });
     it('Pass invalid json.  Expect false.', function () {
         let checkAttributePerms = op_auth_rewire.__get__('checkAttributePerms');
-        let result = checkAttributePerms(null, write.insert.name);
+        let result = checkAttributePerms(null, null, write.insert.name);
         assert.equal(result, false);
     });
 });

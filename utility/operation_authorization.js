@@ -127,7 +127,7 @@ function hasPermissions(user, op, schema_table_map ) {
         return false;
     }
     if(user.role.permission.super_user) {
-        //admins can do anything through the hole in sheet!
+         //admins can do anything through the hole in sheet!
         return true;
     }
     if(!required_permissions.get(op) || (required_permissions.get(op) && required_permissions.get(op).requires_su)) {
@@ -157,9 +157,6 @@ function hasPermissions(user, op, schema_table_map ) {
                             return false;
                         }
                     }
-                    if ( !checkAttributePerms(json, op) ) {
-                        return false;
-                    }
                 } catch(e) {
                     harper_logger.info(e);
                     // If we are here, either there are not any permissions specified for the operation, or the schema/table was not found
@@ -173,8 +170,11 @@ function hasPermissions(user, op, schema_table_map ) {
 }
 
 function verifyPerms(json, operation) {
-    if(json === null || operation === null || json.hdb_user === undefined || json.hdb_user === null) {return false;
-        }//passing in the function rather than the function name is an easy mistake to make, so taking care of that case here.
+    if(json === null || operation === null || json.hdb_user === undefined || json.hdb_user === null) {
+        return false;
+    }
+
+    //passing in the function rather than the function name is an easy mistake to make, so taking care of that case here.
     let op = undefined;
     if(operation instanceof Function) {
         op = operation.name;
@@ -188,7 +188,11 @@ function verifyPerms(json, operation) {
     let schema_table_map = new Map();
     schema_table_map.set(schema, [table]);
     // go
-    return hasPermissions(json.hdb_user, op, schema_table_map);
+    if(hasPermissions(json.hdb_user, op, schema_table_map)) {
+        return checkAttributePerms(getRecordAttributes(json), getAttributeRestrictions(json),op);
+    } else {
+        return false;
+    }
 }
 
 /**
@@ -198,8 +202,9 @@ function verifyPerms(json, operation) {
  * @param operation
  * @returns {boolean}
  */
-function checkAttributePerms(json, operation) {
-    if(!json || json.length === 0) {
+function checkAttributePerms(record_attributes, role_attribute_restrictions, operation) {
+
+    if(!record_attributes || !role_attribute_restrictions) {
         return false;
     }
     // check each attribute with role permissions.  Required perm should match the per in the operation
@@ -210,20 +215,15 @@ function checkAttributePerms(json, operation) {
         return false;
     }
 
-    //TODO: It might be worth caching these to avoid this for every call.
-    let role_attribute_restrictions = getAttributeRestrictions(json);
-
     //TODO: Replace with common utils empty check when it is merged
     // leave early if the role has no attribute permissions set
     if(!role_attribute_restrictions || role_attribute_restrictions.size === 0) {
         return true;
     }
 
-    let affected_attributes = getRecordAttributes(json);
-
     // Check if each specified attribute in the call has a restriction specified in the role.  If there is
     // a restriction, check if the operation permission/ restriction is false.
-    for(let element of affected_attributes.values()) {
+    for(let element of record_attributes.values()) {
         let restriction = role_attribute_restrictions.get(element);
         if(restriction && needed_perm.perms) {
             for(let perm of needed_perm.perms) {
@@ -265,6 +265,7 @@ function getRecordAttributes(json) {
  * @returns {Map}
  */
 function getAttributeRestrictions(json) {
+    //TODO: It might be worth caching these to avoid this for every call.
     let role_attribute_restrictions = new Map();
     if(!json || json.length === 0) {
         return role_attribute_restrictions;
