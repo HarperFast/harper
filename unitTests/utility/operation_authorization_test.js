@@ -14,6 +14,160 @@ let EMPTY_PERMISSION = {
     "super_user": false
 };
 
+let TEST_AST = {
+    "columns": [
+        {
+            "columnid": "customerid",
+            "tableid": "a"
+        },
+        {
+            "columnid": "companyname",
+            "tableid": "a"
+        },
+        {
+            "columnid": "contactmame",
+            "tableid": "a"
+        },
+        {
+            "columnid": "orderid",
+            "tableid": "b"
+        },
+        {
+            "columnid": "shipname",
+            "tableid": "b"
+        },
+        {
+            "columnid": "productid",
+            "tableid": "d"
+        },
+        {
+            "columnid": "productname",
+            "tableid": "d"
+        },
+        {
+            "columnid": "unitprice",
+            "tableid": "d"
+        },
+        {
+            "columnid": "quantity",
+            "tableid": "c"
+        },
+        {
+            "columnid": "discount",
+            "tableid": "c"
+        },
+        {
+            "columnid": "employeeid",
+            "tableid": "e"
+        },
+        {
+            "columnid": "firstname",
+            "tableid": "e"
+        },
+        {
+            "columnid": "lastname",
+            "tableid": "e"
+        }
+    ],
+    "from": [
+        {
+            "databaseid": "northnwd",
+            "tableid": "customers",
+            "as": "a"
+        }
+    ],
+    "joins": [
+        {
+            "joinmode": "INNER",
+            "table": {
+                "databaseid": "northnwd",
+                "tableid": "orders"
+            },
+            "as": "b",
+            "on": {
+                "left": {
+                    "columnid": "customerid",
+                    "tableid": "a"
+                },
+                "op": "=",
+                "right": {
+                    "columnid": "customerid",
+                    "tableid": "b"
+                }
+            }
+        },
+        {
+            "joinmode": "INNER",
+            "table": {
+                "databaseid": "northnwd",
+                "tableid": "order_details"
+            },
+            "as": "c",
+            "on": {
+                "left": {
+                    "columnid": "orderid",
+                    "tableid": "b"
+                },
+                "op": "=",
+                "right": {
+                    "columnid": "orderid",
+                    "tableid": "c"
+                }
+            }
+        },
+        {
+            "joinmode": "INNER",
+            "table": {
+                "databaseid": "northnwd",
+                "tableid": "products"
+            },
+            "as": "d",
+            "on": {
+                "left": {
+                    "columnid": "productid",
+                    "tableid": "c"
+                },
+                "op": "=",
+                "right": {
+                    "columnid": "productid",
+                    "tableid": "d"
+                }
+            }
+        },
+        {
+            "joinmode": "INNER",
+            "table": {
+                "databaseid": "northnwd",
+                "tableid": "employees"
+            },
+            "as": "e",
+            "on": {
+                "left": {
+                    "columnid": "employeeid",
+                    "tableid": "b"
+                },
+                "op": "=",
+                "right": {
+                    "columnid": "employeeid",
+                    "tableid": "e"
+                }
+            }
+        }
+    ],
+    "where": {
+        "expression": {
+            "left": {
+                "columnid": "companyname",
+                "tableid": "a"
+            },
+            "op": "=",
+            "right": {
+                "value": "Alfreds Futterkiste"
+            }
+        }
+    }
+};
+
 let TEST_JSON = {
     "operation": "insert",
     "schema": "dev",
@@ -246,6 +400,12 @@ describe(`Test verifyPerms`, function () {
         perms.dev.tables.dog.insert = true;
         test_copy.hdb_user.role.permission = perms;
         assert.equal(op_auth.verifyPerms(test_copy, user.addUser), false);
+    });
+});
+
+describe(`Test verifyPermsAst`, function () {
+    it('NOMINAL, test verify with proper syntax', function () {
+        assert.equal(op_auth.verifyPermsAst(TEST_AST, TEST_JSON.hdb_user, write.insert.name), true);
     });
 });
 

@@ -114,7 +114,19 @@ function verifyPermsAst(ast, user, operation) {
         for (let join = 0; join < ast.joins.length; join++) {
             updateMapValue(ast.joins[join].table.databaseid, ast.joins[join].table.tableid, schema_table_map);
         }
-        return hasPermissions(user, operation, schema_table_map);
+
+        let affected_attributes = new Map();
+        let table_lookup = new Map();
+        getRecordAttributesAST(ast, affected_attributes, table_lookup);
+        //TODO: LEFT OFF HERE!
+        for(const entry of affected_attributes.keys()) {
+            let map_submap = new Map();
+            map_submap.set(entry, Array.from(affected_attributes.get(entry).keys()))
+            if (!hasPermissions(user, operation, map_submap)) {
+                return false;
+            }
+            return true;
+        }
     } catch(e) {
         harper_logger.info(e);
         return false;
@@ -147,7 +159,6 @@ function hasPermissions(user, op, schema_table_map ) {
 
             if(table_restrictions && table) {
                 try {
-
                     //Here we check all required permissions for the operation defined in the map with the values of the permissions in the role.
                     for(let i = 0; i<required_permissions.get(op).perms.length; i++) {
                                 let perms = required_permissions.get(op).perms[i];
@@ -257,6 +268,61 @@ function getRecordAttributes(json) {
         harper_logger.info(ex);
     }
     return affected_attributes;
+}
+
+/**
+ * Pull the table attributes specified in the AST statement.  Will always return a Map, even if empty or on error.
+ * @param json
+ * @returns {Set}
+ */
+function getRecordAttributesAST(ast, affected_attributes, table_lookup) {
+    // We can reference any schema/table attributes, so we need to check each possibility
+    // affected attributes is a Map of Maps like so [databaseid, [tableid, [attributes/columns]];
+    ast.from.forEach((table)=>{
+        addSchemaTableToMap(table, affected_attributes, table_lookup);
+    });
+
+    if(ast.joins){
+        ast.joins.forEach((join)=>{
+            addSchemaTableToMap(join.table, affected_attributes, table_lookup)
+        });
+    }
+    ast.columns.forEach((col)=>{
+        let table_name = col.tableid;
+        if(!affected_attributes.has(col.databaseid)) {
+            //schema not found, exit.
+            return;
+        }
+        if(!affected_attributes.get(col.databaseid).has(table_name)) {
+            if(!table_lookup.has(table_name)) {
+                harper_logger.info(`table specified as ${table_name} not found.`);
+                return;
+            } else {
+                table_name = table_lookup.get(table_name);
+            }
+        }
+        affected_attributes.get(col.databaseid).get(table_name).push(col.columnid);
+    });
+    return affected_attributes;
+}
+
+/**
+ * Takes an AST record and adds it to the schema/table map.
+ * @param record
+ * @param map
+ */
+function addSchemaTableToMap(record, map, table_lookup) {
+    if(!map.has(record.databaseid)) {
+        map.set(record.databaseid, new Map());
+    }
+    if(!map.get(record.databaseid).has(record.tableid)) {
+        map.get(record.databaseid).set(record.tableid, []);
+    }
+    if(record.as) {
+        if(!table_lookup.has(record.as)) {
+            table_lookup.set(record.as, record.tableid)
+        }
+    }
 }
 
 /**
