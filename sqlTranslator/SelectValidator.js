@@ -16,12 +16,20 @@ const validateTables = Symbol('validateTables'),
     checkColumnsForAsterisk = Symbol('checkColumnsForAsterisk'),
     validateGroupBy = Symbol('validateGroupBy');
 
+/**
+ * Validates the tables and attributes against the actual schema
+ * Validates general SQL rules
+ */
 class SelectValidator{
     constructor(statement){
         this.statement = statement;
         this.attributes = [];
     }
 
+    /**
+     * entry point for validation
+     * @returns {*}
+     */
     validate(){
         if(!this.statement){
             return callback('invalid sql statement');
@@ -32,6 +40,9 @@ class SelectValidator{
         this[validateAllColumns]();
     }
 
+    /**
+     * loops thru the from and join arrays of the AST and passes individual entries into validateTable
+     */
     [validateTables](){
         if(!this.statement.from || this.statement.from.length === 0){
             throw `no from clause`;
@@ -49,6 +60,10 @@ class SelectValidator{
         }
     }
 
+    /**
+     * Checks that the table exists in the schema, adds all of it's attributes to the class level collection this.attributes
+     * @param table
+     */
     [validateTable](table){
         if(!table.databaseid){
             throw `schema not defined for table ${table.tableid}`;
@@ -69,8 +84,11 @@ class SelectValidator{
         });
     }
 
-
-
+    /**
+     * validates the column against the schema
+     * @param column
+     * @returns {*[]}
+     */
     [findColumn](column){
         //look to see if this attribute exists on one of the tables we are selecting from
         let found_columns = this.attributes.filter((attribute)=>{
@@ -84,6 +102,9 @@ class SelectValidator{
         return found_columns;
     }
 
+    /**
+     * detects * in the select, if found adds all columns to the select
+     */
     [checkColumnsForAsterisk](){
         var iterator = new RecursiveIterator(this.statement.columns);
 
@@ -94,6 +115,10 @@ class SelectValidator{
         }
     }
 
+    /**
+     * takes a table and adds all of it's columns to the select. if no table it adds every column from every tabl;e in the select
+     * @param table_name
+     */
     [setColumnsForTable](table_name){
         this.attributes.forEach((attribute)=>{
 
@@ -106,6 +131,9 @@ class SelectValidator{
         });
     }
 
+    /**
+     * passes segments to ValidateSegment for validation
+     */
     [validateAllColumns](){
         this[validateSegment](this.statement.columns, false);
         this[validateSegment](this.statement.joins, false);
@@ -114,6 +142,12 @@ class SelectValidator{
         this[validateSegment](this.statement.order, true);
     }
 
+    /**
+     * iterates the attributes in a segment and validates them against the schema
+     * @param segment
+     * @param is_order_by
+     * @returns {*}
+     */
     [validateSegment](segment, is_order_by){
         if(!segment){
             return;
@@ -134,6 +168,11 @@ class SelectValidator{
         return attributes;
     }
 
+    /**
+     * validation specific for GROUP BY
+     * makes sure that the non-aggregate functionsa and columns from the select are represented in the group by and the columns match the schema
+     * @param segment
+     */
     [validateGroupBy](segment){
         if(!segment){
             return;
@@ -200,6 +239,11 @@ class SelectValidator{
         }
     }
 
+    /**
+     * Order BY specific validation
+     *
+     * @param column
+     */
     [validateOrderBy](column){
         let found_columns = this.statement.columns.filter((col)=>{
             return col.as === column.columnid;
@@ -213,6 +257,11 @@ class SelectValidator{
         }
     }
 
+    /**
+     * validates a column to the schema
+     * @param column
+     * @returns {*}
+     */
     [validateColumn](column){
         let found_columns = this[findColumn](column);
 
