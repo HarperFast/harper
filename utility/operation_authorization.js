@@ -1,4 +1,8 @@
 "use strict";
+/**
+ * This module is used before a SQL or NoSQL operation is performed in order to ensure the user's assigned role
+ * has the permissions and lack of restrictions needed to process the operation.
+ */
 const write = require('../data_layer/insert'),
     search = require('../data_layer/search'),
     csv = require('../data_layer/csvBulkLoad'),
@@ -70,29 +74,13 @@ module.exports = {
     verifyPermsAst:verifyPermsAst
 };
 
-function updateMapValue(key, newValue, map) {
-    if(common_utils.isEmptyOrZeroLength(key)) {
-        harper_logger.info(`updateMapValue has an empty 'key' parameter`);
-    }
-    if(common_utils.isEmptyOrZeroLength(newValue)) {
-        harper_logger.info(`updateMapValue has an empty value parameter`);
-    }
-    if(common_utils.isEmpty(map)) {
-        harper_logger.info(`updateMapValue has a null map parameter`);
-    }
-    try {
-        if (map.has(key)) {
-            let temp = map.get(key);
-            temp.push(newValue);
-            map.set(key, temp);
-        } else {
-            map.set(key, [newValue]);
-        }
-    } catch(e) {
-        throw e;
-    }
-}
-
+/**
+ * Verifies permissions and restrictions for a SQL operation based on the user's assigned role.
+ * @param ast
+ * @param user
+ * @param operation
+ * @returns {boolean}
+ */
 function verifyPermsAst(ast, user, operation) {
     if(common_utils.isEmptyOrZeroLength(ast)) {
         harper_logger.info(`verify_perms_ast has an empty 'user' parameter`);
@@ -106,33 +94,41 @@ function verifyPermsAst(ast, user, operation) {
         harper_logger.info(`verify_perms_ast has a null operation parameter`);
         return false;
     }
-    let schema_table_map = new Map();
     try {
-        for (let tab = 0; tab < ast.from.length; tab++) {
-            updateMapValue(ast.from[tab].databaseid, ast.from[tab].tableid, schema_table_map);
-        }
-        for (let join = 0; join < ast.joins.length; join++) {
-            updateMapValue(ast.joins[join].table.databaseid, ast.joins[join].table.tableid, schema_table_map);
-        }
-
         let affected_attributes = new Map();
         let table_lookup = new Map();
         getRecordAttributesAST(ast, affected_attributes, table_lookup);
-        //TODO: LEFT OFF HERE!
-        for(const entry of affected_attributes.keys()) {
+        //TODO: MAP object only returns an iterator for keys.  It might be worth making these plain JS objects
+        //which will return arrays of keys rather than iterator
+        //TODO: This is a hard to read mess.  Will this be easier to read by breaking out into function calls?
+        for(const schema of affected_attributes.keys()) {
             let map_submap = new Map();
-            map_submap.set(entry, Array.from(affected_attributes.get(entry).keys()))
-            if (!hasPermissions(user, operation, map_submap)) {
+            map_submap.set(schema, Array.from(affected_attributes.get(schema).keys()))
+            if (hasPermissions(user, operation, map_submap)) {
+                for(const table of affected_attributes.get(schema).keys()) {
+                    let target_table = affected_attributes.get(schema).get(table);
+                    if(!checkAttributePerms(target_table, getAttributeRestrictions(user, schema,table), operation) ) {
+                        return false;
+                    }
+                }
+            } else {
                 return false;
             }
-            return true;
         }
+        return true;
     } catch(e) {
         harper_logger.info(e);
         return false;
     }
 }
 
+/**
+ * Checks if the user's role has the required permissions for the opertion specified.
+ * @param user - the hdb_user specified in the request body
+ * @param op - the name of the operation
+ * @param schema_table_map - A map in the format [schema_key, [tables]].
+ * @returns {boolean}
+ */
 function hasPermissions(user, op, schema_table_map ) {
     if(common_utils.listHasEmptyOrZeroLengthValues([user,op,schema_table_map])) {
         harper_logger.info(`hasPermissions has an invalid parameter`);
@@ -144,6 +140,7 @@ function hasPermissions(user, op, schema_table_map ) {
     }
     if(!required_permissions.get(op) || (required_permissions.get(op) && required_permissions.get(op).requires_su)) {
         // still here after the su check above but this operation require su, so fail.
+        harper_logger.info(`Super user is required for ${op}`);
         return false;
     }
     for(let schema of schema_table_map.keys()) {
@@ -172,7 +169,7 @@ function hasPermissions(user, op, schema_table_map ) {
                     harper_logger.info(e);
                     // If we are here, either there are not any permissions specified for the operation, or the schema/table was not found
                     // In those cases we want to return true, as we assume wide open access unless specified otherwise.
-                    return true;
+                    //return true;
                 }
             }
         }
@@ -180,8 +177,15 @@ function hasPermissions(user, op, schema_table_map ) {
     return true;
 }
 
-function verifyPerms(json, operation) {
-    if(json === null || operation === null || json.hdb_user === undefined || json.hdb_user === null) {
+/**
+ * Verifies permissions and restrictions for the NoSQL operation based on the user's assigned role.
+ * @param request_json - The request body as json
+ * @param operation - The name of the operation specifed in the request.
+ * @returns {boolean}
+ */
+function verifyPerms(request_json, operation) {
+    if(request_json === null || operation === null || request_json.hdb_user === undefined || request_json.hdb_user === null) {
+        harper_logger.info(`null required parameter in verifyPerms`);
         return false;
     }
 
@@ -193,14 +197,14 @@ function verifyPerms(json, operation) {
         op = operation;
     }
 
-    let schema = json.schema;
-    let table = json.table;
+    let schema = request_json.schema;
+    let table = request_json.table;
 
     let schema_table_map = new Map();
     schema_table_map.set(schema, [table]);
     // go
-    if(hasPermissions(json.hdb_user, op, schema_table_map)) {
-        return checkAttributePerms(getRecordAttributes(json), getAttributeRestrictions(json),op);
+    if(hasPermissions(request_json.hdb_user, op, schema_table_map)) {
+        return checkAttributePerms(getRecordAttributes(request_json), getAttributeRestrictions(request_json.hdb_user, schema, table),op);
     } else {
         return false;
     }
@@ -209,13 +213,15 @@ function verifyPerms(json, operation) {
 /**
  * Compare the attributes specified in the call with the user's role.  If there are restrictions in the role,
  * ensure that the permission required for the operation matches the restriction in the role.
- * @param json
+ * @param record_attributes - An array of the attributes specified in the operation
+ * @param role_attribute_restrictions - A Map of each restriction in the user role, specified as [table_name, [attribute_restrictions]].
  * @param operation
  * @returns {boolean}
  */
 function checkAttributePerms(record_attributes, role_attribute_restrictions, operation) {
 
     if(!record_attributes || !role_attribute_restrictions) {
+        harper_logger.info(`no attributes specified in checkAttributePerms.`);
         return false;
     }
     // check each attribute with role permissions.  Required perm should match the per in the operation
@@ -223,18 +229,20 @@ function checkAttributePerms(record_attributes, role_attribute_restrictions, ope
     if(!needed_perm || needed_perm === '') {
         // We should never get in here since all of our operations should have a perm, but just in case we should fail
         // any operation that doesn't have perms.
+        harper_logger.info(`no permissions found for ${operation} in checkAttributePerms().`);
         return false;
     }
 
     //TODO: Replace with common utils empty check when it is merged
     // leave early if the role has no attribute permissions set
     if(!role_attribute_restrictions || role_attribute_restrictions.size === 0) {
+        harper_logger.info(`No role restructions set (this is OK).`);
         return true;
     }
 
     // Check if each specified attribute in the call has a restriction specified in the role.  If there is
     // a restriction, check if the operation permission/ restriction is false.
-    for(let element of record_attributes.values()) {
+    for(let element of record_attributes) {
         let restriction = role_attribute_restrictions.get(element);
         if(restriction && needed_perm.perms) {
             for(let perm of needed_perm.perms) {
@@ -278,6 +286,7 @@ function getRecordAttributes(json) {
 function getRecordAttributesAST(ast, affected_attributes, table_lookup) {
     // We can reference any schema/table attributes, so we need to check each possibility
     // affected attributes is a Map of Maps like so [databaseid, [tableid, [attributes/columns]];
+    let database_id = ast.from[0].databaseid;
     ast.from.forEach((table)=>{
         addSchemaTableToMap(table, affected_attributes, table_lookup);
     });
@@ -289,11 +298,7 @@ function getRecordAttributesAST(ast, affected_attributes, table_lookup) {
     }
     ast.columns.forEach((col)=>{
         let table_name = col.tableid;
-        if(!affected_attributes.has(col.databaseid)) {
-            //schema not found, exit.
-            return;
-        }
-        if(!affected_attributes.get(col.databaseid).has(table_name)) {
+        if(!affected_attributes.get(database_id).has(table_name)) {
             if(!table_lookup.has(table_name)) {
                 harper_logger.info(`table specified as ${table_name} not found.`);
                 return;
@@ -301,7 +306,7 @@ function getRecordAttributesAST(ast, affected_attributes, table_lookup) {
                 table_name = table_lookup.get(table_name);
             }
         }
-        affected_attributes.get(col.databaseid).get(table_name).push(col.columnid);
+        affected_attributes.get(database_id).get(table_name).push(col.columnid);
     });
     return affected_attributes;
 }
@@ -327,17 +332,18 @@ function addSchemaTableToMap(record, map, table_lookup) {
 
 /**
  * Pull the attribute restrictions for the schema/table.  Will always return a map, even empty or on error.
- * @param json
+ * @param json - The hdb_user from the json request body
  * @returns {Map}
  */
-function getAttributeRestrictions(json) {
+function getAttributeRestrictions(json_hdb_user, schema, table) {
     //TODO: It might be worth caching these to avoid this for every call.
     let role_attribute_restrictions = new Map();
-    if(!json || json.length === 0) {
+    if(!json_hdb_user || json_hdb_user.length === 0) {
+        harper_logger.info(`no hdb_user specified in getAttributeRestrictions`);
         return role_attribute_restrictions;
     }
     try {
-        json.hdb_user.role.permission[json.schema].tables[json.table].attribute_restrictions.forEach(function (element) {
+        json_hdb_user.role.permission[schema].tables[table].attribute_restrictions.forEach(function (element) {
             if (!role_attribute_restrictions.has(element.attribute_name)) {
                 role_attribute_restrictions.set(element.attribute_name, element);
             }

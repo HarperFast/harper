@@ -17,139 +17,50 @@ let EMPTY_PERMISSION = {
 let TEST_AST = {
     "columns": [
         {
-            "columnid": "customerid",
-            "tableid": "a"
+            "columnid": "id",
+            "tableid": "d"
         },
         {
-            "columnid": "companyname",
-            "tableid": "a"
+            "columnid": "name",
+            "tableid": "d"
         },
         {
-            "columnid": "contactmame",
-            "tableid": "a"
+            "columnid": "owner_name",
+            "tableid": "d"
         },
         {
-            "columnid": "orderid",
+            "columnid": "name",
             "tableid": "b"
         },
         {
-            "columnid": "shipname",
+            "columnid": "section",
             "tableid": "b"
-        },
-        {
-            "columnid": "productid",
-            "tableid": "d"
-        },
-        {
-            "columnid": "productname",
-            "tableid": "d"
-        },
-        {
-            "columnid": "unitprice",
-            "tableid": "d"
-        },
-        {
-            "columnid": "quantity",
-            "tableid": "c"
-        },
-        {
-            "columnid": "discount",
-            "tableid": "c"
-        },
-        {
-            "columnid": "employeeid",
-            "tableid": "e"
-        },
-        {
-            "columnid": "firstname",
-            "tableid": "e"
-        },
-        {
-            "columnid": "lastname",
-            "tableid": "e"
         }
     ],
     "from": [
         {
-            "databaseid": "northnwd",
-            "tableid": "customers",
-            "as": "a"
+            "databaseid": "dev",
+            "tableid": "dog",
+            "as": "d"
         }
     ],
     "joins": [
         {
             "joinmode": "INNER",
             "table": {
-                "databaseid": "northnwd",
-                "tableid": "orders"
+                "databaseid": "dev",
+                "tableid": "breed"
             },
             "as": "b",
             "on": {
                 "left": {
-                    "columnid": "customerid",
-                    "tableid": "a"
-                },
-                "op": "=",
-                "right": {
-                    "columnid": "customerid",
-                    "tableid": "b"
-                }
-            }
-        },
-        {
-            "joinmode": "INNER",
-            "table": {
-                "databaseid": "northnwd",
-                "tableid": "order_details"
-            },
-            "as": "c",
-            "on": {
-                "left": {
-                    "columnid": "orderid",
-                    "tableid": "b"
-                },
-                "op": "=",
-                "right": {
-                    "columnid": "orderid",
-                    "tableid": "c"
-                }
-            }
-        },
-        {
-            "joinmode": "INNER",
-            "table": {
-                "databaseid": "northnwd",
-                "tableid": "products"
-            },
-            "as": "d",
-            "on": {
-                "left": {
-                    "columnid": "productid",
-                    "tableid": "c"
-                },
-                "op": "=",
-                "right": {
-                    "columnid": "productid",
+                    "columnid": "breed_id",
                     "tableid": "d"
-                }
-            }
-        },
-        {
-            "joinmode": "INNER",
-            "table": {
-                "databaseid": "northnwd",
-                "tableid": "employees"
-            },
-            "as": "e",
-            "on": {
-                "left": {
-                    "columnid": "employeeid",
-                    "tableid": "b"
                 },
                 "op": "=",
                 "right": {
-                    "columnid": "employeeid",
-                    "tableid": "e"
+                    "columnid": "id",
+                    "tableid": "b"
                 }
             }
         }
@@ -157,15 +68,45 @@ let TEST_AST = {
     "where": {
         "expression": {
             "left": {
-                "columnid": "companyname",
-                "tableid": "a"
+                "left": {
+                    "columnid": "owner_name",
+                    "tableid": "d"
+                },
+                "op": "IN",
+                "right": [
+                    {
+                        "value": "Kyle"
+                    },
+                    {
+                        "value": "Zach"
+                    },
+                    {
+                        "value": "Stephen"
+                    }
+                ]
             },
-            "op": "=",
+            "op": "AND",
             "right": {
-                "value": "Alfreds Futterkiste"
+                "left": {
+                    "columnid": "section",
+                    "tableid": "b"
+                },
+                "op": "=",
+                "right": {
+                    "value": "Mutt"
+                }
             }
         }
-    }
+    },
+    "order": [
+        {
+            "expression": {
+                "columnid": "dog_name",
+                "tableid": "d"
+            },
+            "direction": "ASC"
+        }
+    ]
 };
 
 let TEST_JSON = {
@@ -404,8 +345,24 @@ describe(`Test verifyPerms`, function () {
 });
 
 describe(`Test verifyPermsAst`, function () {
-    it('NOMINAL, test verify with proper syntax', function () {
+    it('NOMINAL, test verify with proper syntax, expect true', function () {
         assert.equal(op_auth.verifyPermsAst(TEST_AST, TEST_JSON.hdb_user, write.insert.name), true);
+    });
+    it('Test verify AST with no insert perm, expect false', function () {
+        let test_copy = clone(TEST_AST);
+        let perms_user = clone(TEST_JSON);
+        perms_user.hdb_user.role.permission.dev.tables.dog.insert = false;
+        //test_copy.hdb_user.role.permission = perms;
+        assert.equal(op_auth.verifyPermsAst(test_copy, perms_user.hdb_user, write.insert.name), false);
+    });
+    it('Test verify AST with role insert perm false, expect false', function () {
+        let test_copy = clone(TEST_AST);
+        let perms_user = clone(TEST_JSON);
+        perms_user.hdb_user.role.permission.dev.tables.dog.insert = true;
+        let att_base = clone(ATTRIBUTE_RESTRICTION_BASE);
+        att_base.attribute_restrictions[0].insert = false;
+        perms_user.hdb_user.role.permission.dev.tables.dog.attribute_restrictions.push(att_base.attribute_restrictions[0]);
+        assert.equal(op_auth.verifyPermsAst(test_copy, perms_user.hdb_user, write.insert.name), false);
     });
 });
 
@@ -458,7 +415,7 @@ describe(`Test getAttributeRestrictions`, function () {
         att_base.attribute_restrictions[0].insert = false;
         perms.dev.tables.dog.attribute_restrictions.push(att_base.attribute_restrictions[0]);
         test_copy.hdb_user.role.permission = perms;
-        let result = getAttributeRestrictions(test_copy);
+        let result = getAttributeRestrictions(test_copy.hdb_user, 'dev', 'dog');
         assert.equal(result.size, 1);
         assert.equal(result.get('name').attribute_name,'name');
     });
