@@ -1,8 +1,15 @@
 "use strict";
 /**
  * This module is used before a SQL or NoSQL operation is performed in order to ensure the user's assigned role
- * has the permissions and lack of restrictions needed to process the operation.
- */
+ * has the permissions and lack of restrictions needed to process the operation.  Only verifyPerms and verifyPermsAST
+ * should be outward facing functions.
+ *
+ * verifyPerms() should be used to check permissions for NoSQL calls.  verifyPermsAST() should be used to check permissions
+ * for SQL calls.
+ *
+ * The required_permissions member contains the permissions needed for each operation.  Any new operations added to
+ * Harper need to have operations specified in here or they will never pass the permissions checks.
+ * */
 const write = require('../data_layer/insert'),
     search = require('../data_layer/search'),
     csv = require('../data_layer/csvBulkLoad'),
@@ -76,10 +83,10 @@ module.exports = {
 
 /**
  * Verifies permissions and restrictions for a SQL operation based on the user's assigned role.
- * @param ast
- * @param user
- * @param operation
- * @returns {boolean}
+ * @param ast - The SQL statement in Syntax Tree form.
+ * @param user - The user and role specification
+ * @param operation - The operation specified in the call.
+ * @returns {boolean} - True if permissions match, false if not authorized.
  */
 function verifyPermsAst(ast, user, operation) {
     if(common_utils.isEmptyOrZeroLength(ast)) {
@@ -127,7 +134,7 @@ function verifyPermsAst(ast, user, operation) {
  * @param user - the hdb_user specified in the request body
  * @param op - the name of the operation
  * @param schema_table_map - A map in the format [schema_key, [tables]].
- * @returns {boolean}
+ * @returns {boolean} - True if permissions match, false if not authorized.
  */
 function hasPermissions(user, op, schema_table_map ) {
     if(common_utils.listHasEmptyOrZeroLengthValues([user,op,schema_table_map])) {
@@ -181,7 +188,7 @@ function hasPermissions(user, op, schema_table_map ) {
  * Verifies permissions and restrictions for the NoSQL operation based on the user's assigned role.
  * @param request_json - The request body as json
  * @param operation - The name of the operation specifed in the request.
- * @returns {boolean}
+ * @returns {boolean} - True if permissions match, false if not authorized.
  */
 function verifyPerms(request_json, operation) {
     if(request_json === null || operation === null || request_json.hdb_user === undefined || request_json.hdb_user === null) {
@@ -216,7 +223,7 @@ function verifyPerms(request_json, operation) {
  * @param record_attributes - An array of the attributes specified in the operation
  * @param role_attribute_restrictions - A Map of each restriction in the user role, specified as [table_name, [attribute_restrictions]].
  * @param operation
- * @returns {boolean}
+ * @returns {boolean} - True if permissions match, false if not authorized.
  */
 function checkAttributePerms(record_attributes, role_attribute_restrictions, operation) {
 
@@ -257,8 +264,8 @@ function checkAttributePerms(record_attributes, role_attribute_restrictions, ope
 
 /**
  * Pull the table attributes specified in the statement.  Will always return a Set, even if empty or on error.
- * @param json
- * @returns {Set}
+ * @param json - json containing the request
+ * @returns {Set} - all attributes affected by the request statement.
  */
 function getRecordAttributes(json) {
     let affected_attributes = new Set();
@@ -279,9 +286,10 @@ function getRecordAttributes(json) {
 }
 
 /**
- * Pull the table attributes specified in the AST statement.  Will always return a Map, even if empty or on error.
- * @param json
- * @returns {Set}
+ * Pull the table attributes specified in the AST statement and adds them to the affected_attributes and table_lookup parameters.
+ * @param ast - the syntax tree containing SQL specifications
+ * @param {Map} affected_attributes - A map containing attributes affected by the statement. Defined as [schema, Map[table, [attributes_array]]].
+ * @param {Map} table_lookup - A map that will be filled in.  This map contains alias to table definitions as [alias, table_name].
  */
 function getRecordAttributesAST(ast, affected_attributes, table_lookup) {
     // We can reference any schema/table attributes, so we need to check each possibility
@@ -312,16 +320,17 @@ function getRecordAttributesAST(ast, affected_attributes, table_lookup) {
 }
 
 /**
- * Takes an AST record and adds it to the schema/table map.
- * @param record
- * @param map
+ * Takes an AST definition and adds it to the schema/table affected_attributes parameter as well as adding table alias' to the table_lookup parameter.
+ * @param record - An AST style record
+ * @param {Map} affected_attributes - A map of attributes affected in the call.  Defined as [schema, Map[table, [attributes_array]]].
+ * @param {Map} table_lookup - A map that will be filled in.  This map contains alias to table definitions as [alias, table_name].
  */
-function addSchemaTableToMap(record, map, table_lookup) {
-    if(!map.has(record.databaseid)) {
-        map.set(record.databaseid, new Map());
+function addSchemaTableToMap(record, affected_attributes, table_lookup) {
+    if(!affected_attributes.has(record.databaseid)) {
+        affected_attributes.set(record.databaseid, new Map());
     }
-    if(!map.get(record.databaseid).has(record.tableid)) {
-        map.get(record.databaseid).set(record.tableid, []);
+    if(!affected_attributes.get(record.databaseid).has(record.tableid)) {
+        affected_attributes.get(record.databaseid).set(record.tableid, []);
     }
     if(record.as) {
         if(!table_lookup.has(record.as)) {
@@ -332,8 +341,10 @@ function addSchemaTableToMap(record, map, table_lookup) {
 
 /**
  * Pull the attribute restrictions for the schema/table.  Will always return a map, even empty or on error.
- * @param json - The hdb_user from the json request body
- * @returns {Map}
+ * @param json_hdb_user - The hdb_user from the json request body
+ * @param schema - The schema specified in the request
+ * @param table - The table specified.
+ * @returns {Map} A Map of attribute restrictions of the form [attribute_name, attribute_restriction];
  */
 function getAttributeRestrictions(json_hdb_user, schema, table) {
     //TODO: It might be worth caching these to avoid this for every call.
@@ -343,9 +354,9 @@ function getAttributeRestrictions(json_hdb_user, schema, table) {
         return role_attribute_restrictions;
     }
     try {
-        json_hdb_user.role.permission[schema].tables[table].attribute_restrictions.forEach(function (element) {
-            if (!role_attribute_restrictions.has(element.attribute_name)) {
-                role_attribute_restrictions.set(element.attribute_name, element);
+        json_hdb_user.role.permission[schema].tables[table].attribute_restrictions.forEach(function (restriction) {
+            if (!role_attribute_restrictions.has(restriction.attribute_name)) {
+                role_attribute_restrictions.set(restriction.attribute_name, restriction);
             }
         });
     } catch (e) {
