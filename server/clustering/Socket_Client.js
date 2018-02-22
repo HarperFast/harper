@@ -93,14 +93,11 @@ class Socket_Client{
         });
 
         client.on('msg', (msg, fn) => {
-            console.trace(msg);
 
 
                 winston.info(`received by ${node.name} : msg = ${JSON.stringify(msg)}`);
                 server_utilities.chooseOperation(msg.body, (err, operation_function) => {
                     server_utilities.proccessDelegatedTransaction(msg.body, operation_function, function (err, data) {
-                        console.trace(err);
-                        console.trace(data);
                         let payload = {
                             "id": msg.id,
                             "error": err,

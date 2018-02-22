@@ -1,5 +1,5 @@
 const cluster = require('cluster');
-const DEBUG = true;
+const DEBUG = false;
 const winston = require('../utility/logging/winston_logger');
 const uuidv1 = require('uuid/v1');
 const user_schema = require('../utility/user_schema');
@@ -48,7 +48,7 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
     const search = require('../data_layer/search');
     const cluster_utilities = require('./clustering/cluster_utilities');
     const enterprise_util = require('../utility/enterprise_initialization');
-    let enterprise = true;
+    let enterprise = false;
     global.delegate_callback_queue = [];
     let licenseKeySearch = {
         operation: 'search_by_value',
@@ -328,7 +328,6 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
     });
 
     process.on('message', (msg) => {
-        console.trace(msg);
         switch (msg.type) {
             case 'schema':
                 global_schema.schemaSignal((err) => {

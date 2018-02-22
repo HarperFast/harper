@@ -80,12 +80,10 @@ class Socket_Server {
 
                 socket.on('confirm_msg', function (msg) {
                     winston.info(msg);
-                    console.trace(JSON.stringify(msg));
 
                     msg.type = 'cluster_response';
                     let queded_msg = global.forkClusterMsgQueue[msg.id];
                     if(queded_msg){
-                        console.trace(JSON.stringify(queded_msg));
                         for (let f in global.forks) {
                             if (global.forks[f].process.pid === queded_msg.pid) {
                                 global.forks[f].send(msg);
@@ -103,9 +101,7 @@ class Socket_Server {
                         }
                         winston.info("delete_obj === " + JSON.stringify(delete_obj));
                         delete_.delete(delete_obj, function(err, result){
-                            console.trace(result);
                             if(err){
-                                console.trace(err);
                                 winston.error(err);
                             }
                         });
@@ -148,7 +144,6 @@ class Socket_Server {
     }
 
     send(msg) {
-        //console.trace('msg in send:' + JSON.stringify(msg));
 
         try {
             delete msg.body.hdb_user;
