@@ -20,12 +20,14 @@ const insert_validator = require('../validation/insertValidator.js'),
     autocast = require('autocast'),
     signalling = require('../utility/signalling'),
     hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
-    hdb_properties.append(hdb_properties.get('settings_path'));
+hdb_properties.append(hdb_properties.get('settings_path'));
 
 
 const hdb_path = path.join(hdb_properties.get('HDB_ROOT'), '/schema');
 const regex = /\//g,
-    hash_regex = /^[a-zA-Z0-9-_]+$/;
+    hash_regex = /^[a-zA-Z0-9-_]+$/,
+    unicode_slash = 'U+002F';
+
 //TODO: This is ugly and string compare is slow.  Refactor this when we bring in promises.
 const NO_RESULTS = 'NR';
 //This is an internal value that should not be written to the DB.
@@ -266,7 +268,10 @@ function compareUpdatesToExistingRecords(update_object, hash_attribute, existing
                     update[attr] = update_record[attr];
 
                     let value = typeof existing_record[attr] === 'object' ? JSON.stringify(existing_record[attr]) : existing_record[attr];
-                    let value_stripped = String(value).replace(regex, '');
+
+                    //here we replace any forward slashes with the unicode  encoding of a forward slash.
+                    // The reason is you cannot have a forward slash in a folder name and we want to preserve the value for search
+                    let value_stripped = String(value).replace(regex, unicode_slash);
                     value_stripped = Buffer.byteLength(value_stripped) > 255  ? truncate(value_stripped, 255) + '/blob' : value_stripped;
 
                     if (existing_record[attr] !== null && existing_record[attr] !== undefined) {
@@ -368,7 +373,7 @@ function checkAttributeSchema(insert_object, callerback) {
             }
 
             let value = typeof record[property] === 'object' ? JSON.stringify(record[property]) : record[property];
-            let value_stripped = String(value).replace(regex, '');
+            let value_stripped = String(value).replace(regex, 'U+002F');
             let value_path = Buffer.byteLength(value_stripped) > 255 ? truncate(value_stripped, 255) + '/blob' : value_stripped;
             let attribute_file_name = record[hash_attribute] + '.hdb';
             let attribute_path = base_path + property + '/' + value_path;
@@ -382,7 +387,7 @@ function checkAttributeSchema(insert_object, callerback) {
                 folders[attribute_path] = "";
 
                 link_objects.push({
-                    link: `${base_path}/__hdb_hash/${property}/${attribute_file_name}`,
+                    link: `${base_path}__hdb_hash/${property}/${attribute_file_name}`,
                     file_name: `${attribute_path}/${attribute_file_name}`
                 });
             } else {
@@ -402,14 +407,20 @@ function checkAttributeSchema(insert_object, callerback) {
             callerback(err);
             return;
         }
+
         let data_wrapper = {
             data_folders: Object.keys(hash_folders),
             data: insert_objects,
             link_folders: Object.keys(folders),
             links: symbolic_links,
             hash_paths: hash_paths,
-            operation: insert_object.operation
+            operation: insert_object.operation,
+
         };
+
+        if( insert_object.hdb_auth_header){
+            data_wrapper.hdb_auth_header = insert_object.hdb_auth_header;
+        }
 
         return callerback(null, data_wrapper);
     });
@@ -448,9 +459,9 @@ function checkRecordsExist(insert_object, skipped_records, inserted_records, cal
  * @param callback
  */
 function processData(data_wrapper, callback) {
-    async.parallel([
-        writeRawData.bind(null, data_wrapper.data_folders, data_wrapper.data),
-        writeLinks.bind(null, data_wrapper.link_folders, data_wrapper.links),
+    async.waterfall([
+        writeRawData.bind(null, data_wrapper),
+        writeLinks.bind(null, data_wrapper),
     ], (err, results) => {
         if (err) {
             callback(err);
@@ -466,10 +477,10 @@ function processData(data_wrapper, callback) {
  * @param data
  * @param callback
  */
-function writeRawData(folders, data, callback) {
+function writeRawData(data_wrapper, callback) {
     async.waterfall([
-        createFolders.bind(null, folders),
-        writeRawDataFiles.bind(null, data)
+        createFolders.bind(null, data_wrapper, data_wrapper.data_folders),
+        writeRawDataFiles.bind(null, data_wrapper.data)
     ], (err, results) => {
         if (err) {
             callback(err);
@@ -508,10 +519,10 @@ function writeRawDataFiles(data, callback) {
  * @param links
  * @param callback
  */
-function writeLinks(folders, links, callback) {
+function writeLinks(data_wrapper, callback) {
     async.waterfall([
-        createFolders.bind(null, folders),
-        writeLinkFiles.bind(null, links)
+        createFolders.bind(null, data_wrapper, data_wrapper.link_folders),
+        writeLinkFiles.bind(null, data_wrapper.links)
     ], (err, results) => {
         if (err) {
             callback(err);
@@ -528,7 +539,7 @@ function writeLinks(folders, links, callback) {
  */
 function writeLinkFiles(links, callback) {
     async.each(links, (link, caller) => {
-        fs.symlink(link.link, link.file_name, (err) => {
+        fs.link(link.link, link.file_name, (err) => {
             if (err && err.code !== 'EEXIST') {
                 caller(err);
                 return;
@@ -549,7 +560,8 @@ function writeLinkFiles(links, callback) {
  * @param folders
  * @param callback
  */
-function createFolders(folders, callback) {
+function createFolders(data_wrapper,folders, callback) {
+
     let folder_created_flag = false;
     async.each(folders, (folder, caller) => {
         mkdirp(folder, (err, created_folder) => {
@@ -560,11 +572,12 @@ function createFolders(folders, callback) {
 
             if(folder.indexOf('/__hdb_hash/') >= 0 && created_folder) {
                 folder_created_flag = true;
-                createNewAttribute(folder, (error)=>{
-                    caller();
+
+                createNewAttribute(data_wrapper,folder, (error)=>{
+                    return caller();
                 });
             } else {
-                caller();
+                return caller();
             }
         });
     }, function (err) {
@@ -584,13 +597,19 @@ function createFolders(folders, callback) {
  * @param base_folder
  * @param callback
  */
-function createNewAttribute(base_folder, callback) {
-    let base_parts = base_folder.replace(hdb_path, '').split('/');
+function createNewAttribute(data_wrapper,folder, callback) {
+
+    let base_parts = folder.replace(hdb_path, '').split('/');
     let attribute_object = {
         schema:base_parts[1],
         table:base_parts[2],
-        attribute:base_parts[base_parts.length - 1]
+        attribute:base_parts[base_parts.length - 1],
+
     };
+
+    if(data_wrapper.hdb_auth_header){
+        attribute_object.hdb_auth_header = data_wrapper.hdb_auth_header;
+    }
 
     schema.createAttribute(attribute_object, (err, data)=> {
         if(err) {

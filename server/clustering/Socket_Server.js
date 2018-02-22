@@ -101,7 +101,7 @@ class Socket_Server {
                             "hash_values":[msg.id]
 
                         }
-
+                        winston.info("delete_obj === " + JSON.stringify(delete_obj));
                         delete_.delete(delete_obj, function(err, result){
                             console.trace(result);
                             if(err){
@@ -162,16 +162,20 @@ class Socket_Server {
                 global.cluster_queue[msg.node.name] = {};
             }
             global.cluster_queue[msg.node.name][payload.id] = payload;
+            //kyle...this needs to be a var not a let ....
+            var this_io = this.io;
+            saveToDisk({"payload": payload, "id": payload.id, "node": msg.node, "node_name": msg.node.name}, function(err, result){
+                if(err){
+                    return err;
+                }
 
-            this.io.to(msg.node.name).emit('msg', payload)
+                this_io.to(msg.node.name).emit('msg', payload);
 
 
-            if (!global.o_nodes[msg.node.name] ||
-                !global.o_nodes[msg.node.name].status ||
-                !global.o_nodes[msg.node.name].status != 'connected') {
-                saveToDisk({"payload": payload, "id": payload.id, "node": msg.node, "node_name": msg.node.name});
 
-            }
+            });
+
+
 
 
         } catch (e) {
@@ -182,7 +186,7 @@ class Socket_Server {
 
 }
 
-function saveToDisk(item) {
+function saveToDisk(item, callback) {
     try {
         let insert_object = {
             operation: 'insert',
@@ -191,10 +195,14 @@ function saveToDisk(item) {
             records: [item]
         };
 
-        insert.insert(insert_object, function (err) {
+        insert.insert(insert_object, function (err, result) {
             if (err) {
-                return winston.error(err);
+                 winston.error(err);
+                 return callback(err);
             }
+            callback(null, result);
+
+
         });
     }catch(e){
         winston.error(e);

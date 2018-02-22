@@ -92,6 +92,7 @@ function authorize(req, res, next) {
             return next(err);
         }
         if (!user) {
+            winston.log(console.trace('hello'));
             return next("User not found");
         }
         if(req.logIn){
@@ -108,10 +109,12 @@ function authorize(req, res, next) {
 
 
     }
-
     switch (strategy) {
         case 'Basic':
             passport.authenticate('basic', function (err, user, info) {
+                winston.info("auth response err:"  + JSON.stringify(err));
+                winston.info("auth response user:"  + JSON.stringify(user));
+                winston.info("auth response info:"  + JSON.stringify(info));
                 handleResponse(err, user, info);
             })(req, res, next);
             break;
