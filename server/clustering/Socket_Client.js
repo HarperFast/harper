@@ -92,8 +92,6 @@ class Socket_Client {
         });
 
         client.on('msg', (msg, fn) => {
-
-
             winston.info(`received by ${node.name} : msg = ${JSON.stringify(msg)}`);
             server_utilities.chooseOperation(msg.body, (err, operation_function) => {
                 server_utilities.proccessDelegatedTransaction(msg.body, operation_function, function (err, data) {
@@ -103,15 +101,9 @@ class Socket_Client {
                         "data": data,
                         "node": node
                     };
-
-
                     client.emit('confirm_msg', payload);
                 });
-
-
             });
-
-
         });
 
         client.on('disconnect', function (reason) {
@@ -119,11 +111,7 @@ class Socket_Client {
             global.o_nodes[o_node.name] = o_node;
             winston.info(`server ${o_node.name} down`);
         });
-
-
     }
-
-
 }
 
 
