@@ -42,7 +42,7 @@ if {$force_conservative} {
 # -Don
 #exp_internal 1
 set rootdir [lindex $argv 0];
-
+puts "the root: $rootdir"
 
 if { $rootdir eq ""} {
     puts "True";

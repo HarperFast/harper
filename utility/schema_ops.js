@@ -1,5 +1,7 @@
+'use strict';
+
 const fs = require('graceful-fs'),
-      uuidV4 = require('uuid/v4');
+      uuidV4 = require('uuid/v4'),
       PropertiesReader = require('properties-reader'),
       hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
       hdb_properties.append(hdb_properties.get('settings_path'));
@@ -16,11 +18,11 @@ function addToQueue(ops_object, callback){
     fs.writeFile(`${hdb_properties.get('HDB_ROOT')}/staging/schema_op_queue/${id}.hdb`,
         ops_object, (err) => {
             if (err) {
-                callback(err);
-                return;
+                return callback(err);
+
             }
 
-            callback(null, id);
+            return callback(null, id);
 
         });
 

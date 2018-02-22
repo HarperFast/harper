@@ -20,7 +20,7 @@ const insert_validator = require('../validation/insertValidator.js'),
     autocast = require('autocast'),
     signalling = require('../utility/signalling'),
     hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
-hdb_properties.append(hdb_properties.get('settings_path'));
+    hdb_properties.append(hdb_properties.get('settings_path'));
 
 
 const hdb_path = path.join(hdb_properties.get('HDB_ROOT'), '/schema');
@@ -407,15 +407,13 @@ function checkAttributeSchema(insert_object, callerback) {
             callerback(err);
             return;
         }
-
         let data_wrapper = {
             data_folders: Object.keys(hash_folders),
             data: insert_objects,
             link_folders: Object.keys(folders),
             links: symbolic_links,
             hash_paths: hash_paths,
-            operation: insert_object.operation,
-
+            operation: insert_object.operation
         };
 
         if( insert_object.hdb_auth_header){
@@ -603,8 +601,7 @@ function createNewAttribute(data_wrapper,folder, callback) {
     let attribute_object = {
         schema:base_parts[1],
         table:base_parts[2],
-        attribute:base_parts[base_parts.length - 1],
-
+        attribute:base_parts[base_parts.length - 1]
     };
 
     if(data_wrapper.hdb_auth_header){

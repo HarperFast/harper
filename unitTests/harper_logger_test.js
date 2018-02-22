@@ -175,7 +175,9 @@ describe(`Test log writing - Winston`, function() {
         if(harper_trace_spy === undefined) {
             harper_trace_spy = sinon.spy(harper_log, 'trace');
         }
+        harper_log.setLogLevel(harper_log.TRACE);
         harper_log.trace(TRACE_LOG_MESSAGE);
+
         assert.equal(harper_trace_spy.called,true, "logger 'trace' function was not called.");
         setTimeout( function () {
             assert.equal(file_change_results, true, "Did not detect a file change after calling trace.");
@@ -187,7 +189,9 @@ describe(`Test log writing - Winston`, function() {
         if( harper_debug_spy === undefined) {
             harper_debug_spy = sinon.spy(harper_log, 'debug');
         }
+        harper_log.setLogLevel(harper_log.DEBUG);
         harper_log.debug(DEBUG_LOG_MESSAGE);
+
         assert.equal(harper_debug_spy.called,true, "logger 'debug' function was not called.");
         setTimeout( function () {
             assert.equal(file_change_results, true, "Did not detect a file change after calling debug.");
@@ -199,7 +203,9 @@ describe(`Test log writing - Winston`, function() {
         if( harper_info_spy === undefined) {
             harper_info_spy = sinon.spy(harper_log, 'info');
         }
+        harper_log.setLogLevel(harper_log.INFO);
         harper_log.info(INFO_LOG_MESSAGE);
+
         assert.equal(harper_info_spy.called,true, "logger 'info' function was not called.");
         setTimeout( function () {
             assert.equal(file_change_results, true, "Did not detect a file change after calling info.");
@@ -211,7 +217,9 @@ describe(`Test log writing - Winston`, function() {
         if( harper_warn_spy === undefined) {
             harper_warn_spy = sinon.spy(harper_log, 'warn');
         }
+        harper_log.setLogLevel(harper_log.WARN);
         harper_log.warn(WARN_LOG_MESSAGE);
+
         assert.equal(harper_warn_spy.called,true, "logger 'warn' function was not called.");
         setTimeout( function () {
             assert.equal(file_change_results, true, "Did not detect a file change after calling warn.");
@@ -223,7 +231,9 @@ describe(`Test log writing - Winston`, function() {
         if( harper_error_spy === undefined) {
             harper_error_spy = sinon.spy(harper_log, 'error');
         }
+        harper_log.setLogLevel(harper_log.ERR);
         harper_log.error(ERROR_LOG_MESSAGE);
+
         assert.equal(harper_error_spy.called,true, "logger 'error' function was not called.");
 
         setTimeout( function () {
@@ -236,7 +246,9 @@ describe(`Test log writing - Winston`, function() {
         if( harper_fatal_spy === undefined) {
             harper_fatal_spy = sinon.spy(harper_log, 'fatal');
         }
+        harper_log.setLogLevel(harper_log.FATAL);
         harper_log.fatal(FATAL_LOG_MESSAGE);
+
         assert.equal(harper_fatal_spy.called,true, "logger 'fatal' function was not called.");
 
         setTimeout( function () {
@@ -277,6 +289,7 @@ describe(`Test log writing - PINO`, function() {
         if(harper_trace_spy === undefined) {
             harper_trace_spy = sinon.spy(harper_log, 'trace');
         }
+        harper_log.setLogLevel(harper_log.TRACE);
         harper_log.trace(TRACE_LOG_MESSAGE);
         assert.equal(harper_trace_spy.called,true, "logger 'trace' function was not called.");
         setTimeout( function () {
@@ -289,6 +302,7 @@ describe(`Test log writing - PINO`, function() {
         if( harper_debug_spy === undefined) {
             harper_debug_spy = sinon.spy(harper_log, 'debug');
         }
+        harper_log.setLogLevel(harper_log.DEBUG);
         harper_log.debug(DEBUG_LOG_MESSAGE);
         assert.equal(harper_debug_spy.called,true, "logger 'debug' function was not called.");
         setTimeout( function () {
@@ -301,6 +315,7 @@ describe(`Test log writing - PINO`, function() {
         if( harper_info_spy === undefined) {
             harper_info_spy = sinon.spy(harper_log, 'info');
         }
+        harper_log.setLogLevel(harper_log.INFO);
         harper_log.info(INFO_LOG_MESSAGE);
         assert.equal(harper_info_spy.called,true, "logger 'info' function was not called.");
         setTimeout( function () {
@@ -313,6 +328,7 @@ describe(`Test log writing - PINO`, function() {
         if( harper_warn_spy === undefined) {
             harper_warn_spy = sinon.spy(harper_log, 'warn');
         }
+        harper_log.setLogLevel(harper_log.WARN);
         harper_log.warn(WARN_LOG_MESSAGE);
         assert.equal(harper_warn_spy.called,true, "logger 'warn' function was not called.");
         setTimeout( function () {
@@ -325,6 +341,7 @@ describe(`Test log writing - PINO`, function() {
         if( harper_error_spy === undefined) {
             harper_error_spy = sinon.spy(harper_log, 'error');
         }
+        harper_log.setLogLevel(harper_log.ERR);
         harper_log.error(ERROR_LOG_MESSAGE);
         assert.equal(harper_error_spy.called,true, "logger 'error' function was not called.");
 
@@ -338,6 +355,7 @@ describe(`Test log writing - PINO`, function() {
         if( harper_fatal_spy === undefined) {
             harper_fatal_spy = sinon.spy(harper_log, 'fatal');
         }
+        harper_log.setLogLevel(harper_log.FATAL);
         harper_log.fatal(FATAL_LOG_MESSAGE);
         assert.equal(harper_fatal_spy.called,true, "logger 'fatal' function was not called.");
 
@@ -356,22 +374,22 @@ describe(`Test log level writing - WINSTON`, function(done) {
         zeroizeOutputFile();
     });
     it('Set log level to fatal, should only see fatal message', function (done) {
-        log_something('fatal', done);
+        log_something(harper_log.FATAL, done);
     });
     it('Set log level to error, should only see error and fatal message', function (done) {
-        log_something('error', done);
+        log_something(harper_log.ERR, done);
     });
     it('Set log level to warn, should only see error, fatal, warn message', function (done) {
-        log_something('warn', done);
+        log_something(harper_log.WARN, done);
     });
     it('Set log level to info, should see error, fatal, warn, info message', function (done) {
-        log_something('info', done);
+        log_something(harper_log.INFO, done);
     });
     it('Set log level to debug, should see all but trace', function (done) {
-        log_something('debug', done);
+        log_something(harper_log.DEBUG, done);
     });
     it('Set log level to trace, should see all messages', function (done) {
-        log_something('trace', done);
+        log_something(harper_log.TRACE, done);
     });
 });
 describe(`Test log level writing - PINO`, function (done) {
@@ -382,22 +400,22 @@ describe(`Test log level writing - PINO`, function (done) {
         zeroizeOutputFile();
     });
     it('Set log level to fatal, should only see fatal message', function (done) {
-        log_something('fatal', done);
+        log_something(harper_log.FATAL, done);
     });
     it('Set log level to error, should only see error and fatal message', function (done) {
-        log_something('info', done);
+        log_something(harper_log.ERR, done);
     });
     it('Set log level to warn, should only see error, fatal, warn message', function (done) {
-        log_something('warn', done);
+        log_something(harper_log.WARN, done);
     });
     it('Set log level to info, should see error, fatal, warn, info message', function (done) {
-        log_something('info', done);
+        log_something(harper_log.INFO, done);
     });
     it('Set log level to debug, should see all but trace', function (done) {
-        log_something('debug', done);
+        log_something(harper_log.DEBUG, done);
     });
     it('Set log level to trace, should see all messages', function (done) {
-        log_something('trace', done);
+        log_something(harper_log.TRACE, done);
     });
 });
 

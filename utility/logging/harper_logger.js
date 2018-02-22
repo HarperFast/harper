@@ -1,4 +1,4 @@
-"use strict";
+"use strict"
 /**
  * This module decouples a logging call from any specific logging implementation or module (e.g. Winston).  It currently
  * support Winston and Pino though it should be easy to add additional supported loggers if needed.  The logging levels
@@ -28,7 +28,12 @@ let log_level  = hdb_properties.get('LOG_LEVEL');
 let log_type  = hdb_properties.get('LOGGER');
 let log_location  = hdb_properties.get('LOG_PATH');
 
-let pino_write_stream = fs.createWriteStream(log_location,{'flags': 'a'});
+//if log location isn't defined, assume HDB_ROOT/log/hdb_log.log
+if(log_location === undefined || log_location === 0 || log_location === null) {
+    log_location = (hdb_properties.get('HDB_ROOT') + '/log/hdb_log.log');
+}
+
+let pino_write_stream = fs.createWriteStream(log_location, {'flags': 'a'});
 
 //  RFC5424: severity of all levels is assumed to be numerically ascending from most important to least important
 const winston_log_levels = {
@@ -38,7 +43,7 @@ const winston_log_levels = {
     info: 3,
     debug: 4,
     trace: 5
-}
+};
 
 const FATAL = 'fatal';
 const ERR = 'error';
@@ -48,18 +53,13 @@ const DEBUG = 'debug';
 const TRACE = 'trace';
 
 //TODO: All of this should be happening in an env variable module (yet to be written).
-if(log_level === undefined || log_level === 0) {
+if(log_level === undefined || log_level === 0 || log_level === null) {
     log_level = ERR;
 }
 
 //TODO: All of this should be happening in an env variable module (yet to be written).
-if(log_type === undefined || log_type === 0) {
+if(log_type === undefined || log_type === 0 || log_type === null) {
     log_type = WIN;
-}
-
-//TODO: All of this should be happening in an env variable module (yet to be written).
-if(log_location === undefined || log_location === 0) {
-    log_location = './hdb_log.log';
 }
 
 //TODO: not sure if this set to global is needed or useful.  This should be happening in a module.
@@ -74,8 +74,14 @@ module.exports = {
     error:error,
     fatal:fatal,
     setLogLevel:setLogLevel,
-    setLogType:setLogType
-}
+    setLogType:setLogType,
+    FATAL,
+    ERR,
+    WARN,
+    INFO,
+    DEBUG,
+    TRACE
+};
 
 let pin_logger = undefined;
 let win_logger = undefined;
@@ -117,11 +123,11 @@ function initPinoLogger() {
  */
 function write_log(level, message) {
     // The properties reader returns an object with a length of 0 if a value isn't found.
-    if(log_type === undefined || log_type === 0) {
+    if(log_type === undefined || log_type === 0 || log_type === null) {
         log_type = 1;
     }
-    if(level === undefined || level === 0) {
-        log_level = ERR;
+    if(level === undefined || level === 0 || level === null) {
+        level = ERR;
     }
     switch(log_type) {
         case WIN:
@@ -195,10 +201,16 @@ function warn(message) {
  */
 function setLogLevel(level) {
     let log_index = Object.keys(winston_log_levels).indexOf(level);
+
     if(log_index !== -1) {
         switch(log_type) {
             case WIN:
                 //WINSTON
+                if(win_logger === undefined) {
+                    log_level = level;
+                    global.log_level = level;
+                    return;
+                }
                 //Winston is strange, it has a log level at the logger level, the transport level, and each individual transport.
                 win_logger.level = level;
                 win_logger.transports.level = level;
@@ -206,9 +218,15 @@ function setLogLevel(level) {
                 break;
             case PIN:
                 //PINO
+                if(pin_logger === undefined) {
+                    log_level = level;
+                    global.log_level = level;
+                    return;
+                }
                 pin_logger.level = level;
                 break;
         }
+        log_level = level;
         global.log_level = level;
     } else {
         write_log(ERR, `Log level could not be updated to ${level}, that level is not valid.`);

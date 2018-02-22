@@ -5,11 +5,12 @@
   "main": "run.js",
   "bin": "./bin/run.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "cd bin/ && nyc --reporter=html mocha ../unitTests --watch"
   },
   "author": "HarperDB, Inc.",
   "license": "ISC",
   "dependencies": {
+    "alasql": "^0.4.5",
     "async": "^2.5.0",
     "autocast": "0.0.4",
     "body-parser": "^1.18.1",
@@ -32,18 +33,18 @@
     "globby": "^6.1.0",
     "graceful-fs": "^4.1.11",
     "is-root": "^1.0.0",
-    "jinq": "^1.6.1",
     "json-2-csv": "^2.1.1",
     "licensekey": "^2.0.11",
     "lodash": "^4.17.4",
     "lodash-joins": "^2.0.3",
-    "mathjs": "^3.20.1",
+    "mathjs": "^3.17.0",
     "mkdirp": "^0.5.1",
     "moment": "^2.20.1",
     "net": "^1.0.2",
     "node-forge": "^0.7.1",
-    "node-schedule": "^1.3.0",
-    "nodejs-license-file": "^1.1.4",
+    "node-ls": "0.0.4",
+    "node-schedule": "^1.2.5",
+    "nodejs-license-file": "^1.1.0",
     "optimist": "^0.6.1",
     "passport": "^0.3.2",
     "passport-http": "^0.3.0",
@@ -53,6 +54,7 @@
     "prompt": "^1.0.0",
     "properties-reader": "0.0.15",
     "randomstring": "^1.1.5",
+    "recursive-iterator": "^3.3.0",
     "request": "^2.82.0",
     "retry-as-promised": "^2.3.2",
     "socket.io": "^2.0.4",
@@ -72,6 +74,7 @@
       "./server/**/*.js",
       "./data_layer/*.js",
       "./triggers/**",
+      "./security/*.js",
       "./utility/*.js",
       "./utility/**/*.js",
       "./sqlTranslator/*.js",
@@ -79,12 +82,15 @@
       "./validation/*.js"
     ],
     "assets": [
-      "./utility/install/*.txt"
+      "./utility/install/*.txt",
+      "./json/*.json"
     ]
   },
   "devDependencies": {
     "assert": "^1.4.1",
     "mocha": "^4.1.0",
-    "sinon": "^4.1.4"
+    "nyc": "^11.4.1",
+    "rewire": "^3.0.2",
+    "sinon": "^4.2.1"
   }
 }
