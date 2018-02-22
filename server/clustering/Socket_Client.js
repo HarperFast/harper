@@ -4,8 +4,7 @@ const server_utilities = require('../server_utilities'),
     ioc = require('socket.io-client');
 
 
-
-class Socket_Client{
+class Socket_Client {
     constructor(node) {
         this.node = node;
 
@@ -18,8 +17,8 @@ class Socket_Client{
             let node = this.node;
 
             async.each(node.other_nodes, function (o_node, caller) {
-                global.cluster_server.connectToNode(node, o_node, function(err){
-                    if(err){
+                global.cluster_server.connectToNode(node, o_node, function (err) {
+                    if (err) {
                         caller(err);
                     }
 
@@ -29,25 +28,25 @@ class Socket_Client{
 
 
             }, function (err) {
-                if(err)
-                   return  next(err);
+                if (err)
+                    return next(err);
 
                 return next();
             });
-        }catch(e){
+        } catch (e) {
             winston.error(e);
             next(e)
         }
     }
 
 
-    connectToNode(node, o_node, callback){
-        if(node.port == o_node.port && o_node.host == node.host ){
+    connectToNode(node, o_node, callback) {
+        if (node.port == o_node.port && o_node.host == node.host) {
             callback("cannot connect to thyself. ");
         }
         //TODO needs to be HTTPS
         winston.info(`${node.name} is attempting to connect to ${o_node.name} at ${o_node.host}:${o_node.port}`);
-        var client =  ioc.connect(`http://${o_node.host}:${o_node.port}`);
+        var client = ioc.connect(`http://${o_node.host}:${o_node.port}`);
 
         client.on("connect", function () {
             o_node.status = 'connected';
@@ -63,24 +62,24 @@ class Socket_Client{
 
         });
 
-        client.on('catchup', function(queue_string){
+        client.on('catchup', function (queue_string) {
             winston.info('catchup' + queue_string);
             let queue = JSON.parse(queue_string);
-            for(let item in queue){
-                server_utilities.chooseOperation(queue[item].body, function(err, operation_function){
-                    if(err){
+            for (let item in queue) {
+                server_utilities.chooseOperation(queue[item].body, function (err, operation_function) {
+                    if (err) {
                         return winston.error(err);
                     }
 
                     server_utilities.proccessDelegatedTransaction(queue[item].body,
-                        operation_function, function(err, result){
-                        if(err){
-                            client.emit('error', err);
-                            return winston.error(err);
-                        }
-                        queue[item].node = global.cluster_server.socket_server.node;
-                        client.emit('confirm_msg', queue[item]);
-                    });
+                        operation_function, function (err, result) {
+                            if (err) {
+                                client.emit('error', err);
+                                return winston.error(err);
+                            }
+                            queue[item].node = global.cluster_server.socket_server.node;
+                            client.emit('confirm_msg', queue[item]);
+                        });
                 });
 
             }
@@ -95,25 +94,24 @@ class Socket_Client{
         client.on('msg', (msg, fn) => {
 
 
-                winston.info(`received by ${node.name} : msg = ${JSON.stringify(msg)}`);
-                server_utilities.chooseOperation(msg.body, (err, operation_function) => {
-                    server_utilities.proccessDelegatedTransaction(msg.body, operation_function, function (err, data) {
-                        let payload = {
-                            "id": msg.id,
-                            "error": err,
-                            "data": data,
-                            "node": node
-                        };
+            winston.info(`received by ${node.name} : msg = ${JSON.stringify(msg)}`);
+            server_utilities.chooseOperation(msg.body, (err, operation_function) => {
+                server_utilities.proccessDelegatedTransaction(msg.body, operation_function, function (err, data) {
+                    let payload = {
+                        "id": msg.id,
+                        "error": err,
+                        "data": data,
+                        "node": node
+                    };
 
 
-                        client.emit('confirm_msg', payload);
-                    });
-
-
+                    client.emit('confirm_msg', payload);
                 });
 
 
-            //fn(name);
+            });
+
+
         });
 
         client.on('disconnect', function (reason) {
@@ -123,14 +121,10 @@ class Socket_Client{
         });
 
 
-
     }
 
 
 }
-
-
-
 
 
 module.exports = Socket_Client;

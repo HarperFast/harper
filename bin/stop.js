@@ -19,7 +19,6 @@ function stop(callback) {
 
         var terminal = spawn('bash');
         terminal.stderr.on('data', function (data) {
-            console.trace("How did we get here folks?");
             console.error(data);
             winston.info('error', `HarperDB server failed to run: ${data}`);
             winston.info('|------------- HarperDB failed stopped ------------|');

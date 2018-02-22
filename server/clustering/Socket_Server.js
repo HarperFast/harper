@@ -83,7 +83,7 @@ class Socket_Server {
 
                     msg.type = 'cluster_response';
                     let queded_msg = global.forkClusterMsgQueue[msg.id];
-                    if(queded_msg){
+                    if (queded_msg) {
                         for (let f in global.forks) {
                             if (global.forks[f].process.pid === queded_msg.pid) {
                                 global.forks[f].send(msg);
@@ -93,24 +93,20 @@ class Socket_Server {
                         // delete from memory
                         delete global.cluster_queue[msg.node.name][msg.id];
                         // delete from disk
-                       let delete_obj = {
-                            "table":"hdb_queue",
-                            "schema":"system",
-                            "hash_values":[msg.id]
+                        let delete_obj = {
+                            "table": "hdb_queue",
+                            "schema": "system",
+                            "hash_values": [msg.id]
 
                         }
                         winston.info("delete_obj === " + JSON.stringify(delete_obj));
-                        delete_.delete(delete_obj, function(err, result){
-                            if(err){
+                        delete_.delete(delete_obj, function (err, result) {
+                            if (err) {
                                 winston.error(err);
                             }
                         });
 
                     }
-
-
-
-
 
 
                 });
@@ -147,7 +143,7 @@ class Socket_Server {
 
         try {
             delete msg.body.hdb_user;
-            if(!msg.id)
+            if (!msg.id)
                 msg.id = uuidv4();
 
             let payload = {"body": msg.body, "id": msg.id};
@@ -159,18 +155,20 @@ class Socket_Server {
             global.cluster_queue[msg.node.name][payload.id] = payload;
             //kyle...this needs to be a var not a let ....
             var this_io = this.io;
-            saveToDisk({"payload": payload, "id": payload.id, "node": msg.node, "node_name": msg.node.name}, function(err, result){
-                if(err){
+            saveToDisk({
+                "payload": payload,
+                "id": payload.id,
+                "node": msg.node,
+                "node_name": msg.node.name
+            }, function (err, result) {
+                if (err) {
                     return err;
                 }
 
                 this_io.to(msg.node.name).emit('msg', payload);
 
 
-
             });
-
-
 
 
         } catch (e) {
@@ -192,14 +190,14 @@ function saveToDisk(item, callback) {
 
         insert.insert(insert_object, function (err, result) {
             if (err) {
-                 winston.error(err);
-                 return callback(err);
+                winston.error(err);
+                return callback(err);
             }
             callback(null, result);
 
 
         });
-    }catch(e){
+    } catch (e) {
         winston.error(e);
     }
 }
