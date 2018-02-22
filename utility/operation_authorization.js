@@ -20,6 +20,7 @@ const write = require('../data_layer/insert'),
     read_log = require('../utility/logging/read_logs'),
     harper_logger = require('../utility/logging/harper_logger'),
     common_utils = require('./common_utils.js'),
+    alasql = require('alasql'),
     cluster_utilities = require('../server/clustering/cluster_utilities');
 
 const required_permissions = new Map();
@@ -147,7 +148,7 @@ function hasPermissions(user, op, schema_table_map ) {
     }
     if(!required_permissions.get(op) || (required_permissions.get(op) && required_permissions.get(op).requires_su)) {
         // still here after the su check above but this operation require su, so fail.
-        harper_logger.info(`Super user is required for ${op}`);
+        harper_logger.info(`operation ${op} not found or requires SU permissions.`);
         return false;
     }
     for(let schema of schema_table_map.keys()) {
@@ -293,14 +294,29 @@ function getRecordAttributes(json) {
  */
 function getRecordAttributesAST(ast, affected_attributes, table_lookup) {
     // We can reference any schema/table attributes, so we need to check each possibility
-    // affected attributes is a Map of Maps like so [databaseid, [tableid, [attributes/columns]];
-    let database_id = ast.from[0].databaseid;
+    // affected attributes is a Map of Maps like so [schema, Map[table, [attributes_array]]];
+    let type = ast.name;
+    let database_id = "";
+    if(ast instanceof alasql.yy.Insert) {
+        database_id = ast.into.databaseid;
+    } else if (ast instanceof alasql.yy.Select) {
+        database_id = ast.from.databaseid;
+    } else if (ast instanceof alasql.yy.Update) {
+        database_id = ast.table.databaseid;
+    } else if (ast instanceof alasql.yy.Delete) {
+        database_id = ast.table.databaseid;
+    }
     ast.from.forEach((table)=>{
         addSchemaTableToMap(table, affected_attributes, table_lookup);
     });
 
     if(ast.joins){
-        ast.joins.forEach((join)=>{
+        ast.joins.forEach((join)=> {
+            //copying the 'as' to the table rather than on the join allows for a more generic function in addSchemaTableToMap().
+            // as it can take a .table as well as a .join record. It's a bit hacky, but I don't think this should cause any problems.
+            if(join.as) {
+                join.table.as = join.as;
+            }
             addSchemaTableToMap(join.table, affected_attributes, table_lookup)
         });
     }
@@ -316,7 +332,6 @@ function getRecordAttributesAST(ast, affected_attributes, table_lookup) {
         }
         affected_attributes.get(database_id).get(table_name).push(col.columnid);
     });
-    return affected_attributes;
 }
 
 /**
