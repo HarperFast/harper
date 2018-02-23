@@ -26,7 +26,6 @@
     "del": "^2.2.2",
     "express": "^4.15.4",
     "express-session": "^1.15.5",
-    "fast-csv": "^2.4.1",
     "fill-range": "^4.0.0",
     "find-process": "^1.1.0",
     "fs-extra": "^3.0.1",
