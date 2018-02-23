@@ -11,7 +11,8 @@ const  write = require('../data_layer/insert'),
     read_log = require('../utility/logging/read_logs'),
     harper_logger = require('../utility/logging/harper_logger'),
     op_auth = require('../utility/operation_authorization'),
-    cluser_utilities = require('./clustering/cluster_utilities');
+    cluser_utilities = require('./clustering/cluster_utilities'),
+    export_ = require('../data_layer/export');
 
 const UNAUTH_RESPONSE = 403;
 let OPERATION_PARAM_ERROR_MSG = `operation parameter is undefined`;
@@ -195,6 +196,8 @@ function chooseOperation(json, callback) {
         case 'add_node':
             operation_function = cluser_utilities.addNode;
             break;
+        case 'export_to_s3':
+            operation_function = export_.export_to_s3;
         default:
             break;
     }
