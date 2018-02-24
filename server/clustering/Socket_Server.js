@@ -1,7 +1,8 @@
 const
     winston = require('../../utility/logging/winston_logger'),
     search = require('../../data_layer/search')
-insert = require('../../data_layer/insert');
+    insert = require('../../data_layer/insert'),
+    schema = require('../../data_layer/schema');
 
 class Socket_Server {
     constructor(node) {
@@ -12,27 +13,15 @@ class Socket_Server {
         global.msg_queue = [];
         global.o_nodes = [];
         global.cluster_queue = [];
-
-
     }
-
 
     init(next) {
         try {
-
-
-
-
             // TODO probably need to make this https
-            var server = require('http').createServer().listen(this.port, function () {
-            });
-
+            var server = require('http').createServer().listen(this.port, function () {});
             let node = this.node;
             this.io = require('socket.io').listen(server);
-
             this.io.sockets.on("connection", function (socket) {
-
-
                 socket.on("identify", function (msg, callback) {
                     socket.join(msg, () => {
 
@@ -53,7 +42,6 @@ class Socket_Server {
                                 }
                             }
 
-
                             socket.emit('confirm_identity');
 
                             if (global.cluster_queue
@@ -63,21 +51,14 @@ class Socket_Server {
 
                                 let catchup_payload = JSON.stringify(global.cluster_queue[msg]);
                                 socket.emit('catchup', catchup_payload);
-
-
                             }
-
                         });
                     });
-
-
-                    // callback( msg );
                 });
 
 
                 socket.on('confirm_msg', function (msg) {
                     winston.info(msg);
-
                     msg.type = 'cluster_response';
                     let queded_msg = global.forkClusterMsgQueue[msg.id];
                     for (let f in global.forks) {
@@ -85,20 +66,12 @@ class Socket_Server {
                             global.forks[f].send(msg);
                         }
                     }
-
-
                     delete global.cluster_queue[msg.node.name][msg.id];
-
-
-                    //this.queue[msg].recieved = true;
                 });
 
                 socket.on("msg", function (msg, callback) {
-
                     winston.info(`${this_node.name} says ${msg}`);
-                    //callback( msg );
                 });
-
 
                 socket.on('error', function (error) {
                     winston.error(error);
@@ -107,7 +80,15 @@ class Socket_Server {
                 socket.on('disconnect', function (error) {
                     if (error != 'transport close')
                         winston.error(error);
+                });
 
+                socket.on('schema_update_request', function(error){
+                    schema.describeAll({}, function(err, schema){
+                        if(err){
+                            return winston.error(err);
+                        }
+                        socket.emit('schema_update_response', schema);
+                    });
                 });
 
 
@@ -122,11 +103,8 @@ class Socket_Server {
     }
 
     send(msg) {
-        //console.trace('msg in send:' + JSON.stringify(msg));
-
         try {
             let payload = {"body": msg.body, "id": msg.id};
-
 
             if (!global.cluster_queue[msg.node.name]) {
                 global.cluster_queue[msg.node.name] = {};
@@ -140,10 +118,7 @@ class Socket_Server {
                 !global.o_nodes[msg.node.name].status ||
                 !global.o_nodes[msg.node.name].status != 'connected') {
                 saveToDisk({"payload": payload, "id": payload.id, "node": msg.node, "node_name": msg.node.name});
-
             }
-
-
         } catch (e) {
             //save the queue to disk for all nodes.
             winston.error(e);
@@ -153,7 +128,6 @@ class Socket_Server {
 }
 
 function saveToDisk(item) {
-
     let insert_object = {
         operation: 'insert',
         schema: 'system',
@@ -190,6 +164,5 @@ function getFromDisk(node, callback) {
 
     });
 };
-
 
 module.exports = Socket_Server;
