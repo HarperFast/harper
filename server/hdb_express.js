@@ -37,11 +37,15 @@ if (node_env_value === undefined || node_env_value === null || node_env_value ==
 process.env['NODE_ENV'] = node_env_value;
 
 let numCPUs = 4;
+
 let num_workers = require('os').cpus().length;
 numCPUs = num_workers < numCPUs ? num_workers : numCPUs;
 
+if(DEBUG){
+    numCPUs = 1;
+}
 
-if (cluster.isMaster && !DEBUG && numCPUs > 1) {
+if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
     const search = require('../data_layer/search');
     const cluster_utilities = require('./clustering/cluster_utilities');
     const enterprise_util = require('../utility/enterprise_initialization');
@@ -109,20 +113,27 @@ if (cluster.isMaster && !DEBUG && numCPUs > 1) {
             global.forkClusterMsgQueue = [];
 
             function messageHandler(msg) {
-                if (msg.type === 'clustering_payload') {
-                    forkClusterMsgQueue[msg.id] = msg;
-                    cluster_utilities.payloadHandler(msg);
-                } else if (msg.type === 'delegate_thread_response') {
-                    global.delegate_callback_queue[msg.id](msg.err, msg.data);
-                } else {
-                    forks.forEach((fork) => {
-                        fork.send(msg);
-                    });
+                try {
+                    if (msg.type === 'clustering_payload') {
+                        forkClusterMsgQueue[msg.id] = msg;
+                        cluster_utilities.payloadHandler(msg);
+                    } else if (msg.type === 'delegate_thread_response') {
+                        global.delegate_callback_queue[msg.id](msg.err, msg.data);
+                    } else {
+                        forks.forEach((fork) => {
+                            fork.send(msg);
+                        });
+                    }
+                }catch(e){
+                    winston.error(e);
+
                 }
             }
         });
     });
 } else {
+
+
     winston.info('In express' + process.cwd());
     winston.info(`Running with NODE_ENV as: ${process.env.NODE_ENV}`);
     const express = require('express'),
@@ -202,6 +213,10 @@ if (cluster.isMaster && !DEBUG && numCPUs > 1) {
                 return res.status(401).send(err);
             }
             req.body.hdb_user = user;
+            req.body.hdb_auth_header  = req.headers.authorization;
+
+
+
             server_utilities.chooseOperation(req.body, (err, operation_function) => {
                 if (err) {
                     winston.error(err);
