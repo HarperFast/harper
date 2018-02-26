@@ -10,9 +10,35 @@ const op_auth_rewire = rewire('../../utility/operation_authorization');
 const write = require('../../data_layer/insert');
 const user = require('../../security/user');
 const alasql = require('alasql');
+const search = require('../../data_layer/search');
 
 let EMPTY_PERMISSION = {
     "super_user": false
+};
+
+let TEST_SELECT_WILDCARD_JSON = {
+    "columns": [
+    {
+        "columnid": "*"
+    }
+],
+    "from": [
+    {
+        "databaseid": "dev",
+        "tableid": "dog"
+    }
+],
+    "where": {
+    "expression": {
+        "left": {
+            "columnid": "id"
+        },
+        "op": "=",
+            "right": {
+            "value": 1
+        }
+    }
+}
 };
 
 let TEST_INSERT_JSON = {
@@ -313,6 +339,26 @@ describe(`Test verifyPermsAst`, function () {
         perms_user.hdb_user.role.permission.dev.tables.dog.attribute_restrictions.push(att_base.attribute_restrictions[0]);
         assert.equal(op_auth.verifyPermsAst(temp_insert, perms_user.hdb_user, 'fart'), false);
     });
+    it(`Test select wildcard with proper perms, expect true`, function () {
+        let test_json = clone(TEST_SELECT_WILDCARD_JSON);
+        let temp_select = new alasql.yy.Select(test_json);
+        let perms_user = clone(TEST_JSON);
+        perms_user.hdb_user.role.permission.dev.tables.dog.read = true;
+        let att_base = clone(ATTRIBUTE_RESTRICTION_BASE);
+        att_base.attribute_restrictions[0].read = true;
+        perms_user.hdb_user.role.permission.dev.tables.dog.attribute_restrictions.push(att_base.attribute_restrictions[0]);
+        assert.equal(op_auth.verifyPermsAst(temp_select, perms_user.hdb_user, search.search.name), true);
+    });
+    it(`Test select wildcard with read attribute restriction false, expect false`, function () {
+        let test_json = clone(TEST_SELECT_WILDCARD_JSON);
+        let temp_select = new alasql.yy.Select(test_json);
+        let perms_user = clone(TEST_JSON);
+        perms_user.hdb_user.role.permission.dev.tables.dog.read = true;
+        let att_base = clone(ATTRIBUTE_RESTRICTION_BASE);
+        att_base.attribute_restrictions[0].read = false;
+        perms_user.hdb_user.role.permission.dev.tables.dog.attribute_restrictions.push(att_base.attribute_restrictions[0]);
+        assert.equal(op_auth.verifyPermsAst(temp_select, perms_user.hdb_user, search.search.name), false);
+    });
 });
 
 describe(`Test checkAttributePerms`, function () {
@@ -350,6 +396,13 @@ describe(`Test getRecordAttributes`, function () {
     it('pass invalid JSON with attributes.  Expect empty set.', function () {
         let getRecordAttributes = op_auth_rewire.__get__('getRecordAttributes');
         let result = getRecordAttributes(null);
+        assert.equal(result.size, 0);
+    });
+    it('Nominal case pass JSON with no records.  Expect empty set.', function () {
+        let getRecordAttributes = op_auth_rewire.__get__('getRecordAttributes');
+        let test_copy = clone(TEST_JSON);
+        test_copy.records = null;
+        let result = getRecordAttributes(test_copy);
         assert.equal(result.size, 0);
     });
 });
@@ -391,7 +444,28 @@ describe(`Test getAttributeRestrictions`, function () {
             },
         };
         test_copy.hdb_user.role.permission = perms;
-        let result = getAttributeRestrictions(test_copy);
+        let result = getAttributeRestrictions(test_copy.hdb_user);
+        assert.equal(result.size, 0);
+    });
+    it('JSON with super user. Expect zero length back ', function () {
+        let getAttributeRestrictions = op_auth_rewire.__get__('getAttributeRestrictions');
+        let test_copy = clone(TEST_JSON);
+        // Leaving this manual definition of the JSON to omit attribute_restrictions
+        let perms = {
+            "super_user": true,
+            "dev": {
+                "tables": {
+                    "dog": {
+                        "read": false,
+                        "insert": true,
+                        "update": false,
+                        "delete": false
+                    }
+                }
+            },
+        };
+        test_copy.hdb_user.role.permission = perms;
+        let result = getAttributeRestrictions(test_copy.hdb_user);
         assert.equal(result.size, 0);
     });
 });

@@ -34,6 +34,9 @@ const SQL_CREATE = "create";
 const SQL_DROP = 'drop';
 const SQL_SELECT = 'select';
 const SQL_INSERT = 'insert';
+const SQL_UPDATE = 'update';
+
+const WILDCARD = '*';
 
 class permission {
     constructor(requires_su, perms) {
@@ -70,12 +73,11 @@ required_permissions.set(role.dropRole.name, new permission(true, []));
 required_permissions.set(user.userInfo.name, new permission(true, []));
 required_permissions.set(read_log.read_log.name, new permission(true, []));
 required_permissions.set(cluster_utilities.addNode.name, new permission(true, []));
-required_permissions.set(search.search.name, new permission(false, [READ_PERM]));
-required_permissions.set(read_log.read_log.name, new permission(true, []));
 required_permissions.set(SQL_CREATE, new permission(false, [INSERT_PERM]));
 required_permissions.set(SQL_DROP, new permission(false, [DELETE_PERM]));
 required_permissions.set(SQL_SELECT, new permission(false, [READ_PERM]));
 required_permissions.set(SQL_INSERT, new permission(false, [UPDATE_PERM]));
+required_permissions.set(SQL_UPDATE, new permission(false, [UPDATE_PERM]));
 
 module.exports = {
     verifyPerms:verifyPerms,
@@ -250,14 +252,28 @@ function checkAttributePerms(record_attributes, role_attribute_restrictions, ope
         return true;
     }
 
-    // Check if each specified attribute in the call has a restriction specified in the role.  If there is
+    // Check if each specified attribute in the call (record_attributes) has a restriction specified in the role.  If there is
     // a restriction, check if the operation permission/ restriction is false.
     for(let element of record_attributes) {
-        let restriction = role_attribute_restrictions.get(element);
-        if(restriction && needed_perm.perms) {
-            for(let perm of needed_perm.perms) {
-                if (restriction[perm] === false) {
-                    return false;
+        // If there is a wildcard, we need to make sure there are no role_attribute_restrictions that have the needed_perm (READ, UPDATE, etc)
+        // set to false.
+        if(element === WILDCARD) {
+            if(needed_perm.perms) {
+                for (let perm of needed_perm.perms) {
+                    for(let restriction of role_attribute_restrictions.keys()) {
+                        if(role_attribute_restrictions.get(restriction)[perm] === false) {
+                            return false;
+                        }
+                    }
+                }
+            }
+        } else {
+            let restriction = role_attribute_restrictions.get(element);
+            if (restriction && needed_perm.perms) {
+                for (let perm of needed_perm.perms) {
+                    if (restriction[perm] === false) {
+                        return false;
+                    }
                 }
             }
         }
@@ -273,6 +289,9 @@ function checkAttributePerms(record_attributes, role_attribute_restrictions, ope
 function getRecordAttributes(json) {
     let affected_attributes = new Set();
     try {
+        if(!json.records || json.records.length === 0) {
+            return affected_attributes;
+        }
         // get unique affected_attributes
         for (let record = 0; record < json.records.length; record++) {
             let keys = Object.keys(json.records[record]);
@@ -288,7 +307,6 @@ function getRecordAttributes(json) {
     return affected_attributes;
 }
 
-
 /**
  * Pull the attribute restrictions for the schema/table.  Will always return a map, even empty or on error.
  * @param json_hdb_user - The hdb_user from the json request body
@@ -303,6 +321,14 @@ function getAttributeRestrictions(json_hdb_user, schema, table) {
         harper_logger.info(`no hdb_user specified in getAttributeRestrictions`);
         return role_attribute_restrictions;
     }
+    if(json_hdb_user.role.permission.super_user) {
+        return role_attribute_restrictions;
+    }
+    // Some commands do not require a table to be specified.  If there is no table, there is likely not
+    // anything attribute restrictions needs to check.
+    if(!schema || !table) {
+        return role_attribute_restrictions;
+    }
     try {
         json_hdb_user.role.permission[schema].tables[table].attribute_restrictions.forEach(function (restriction) {
             if (!role_attribute_restrictions.has(restriction.attribute_name)) {
@@ -310,7 +336,7 @@ function getAttributeRestrictions(json_hdb_user, schema, table) {
             }
         });
     } catch (e) {
-        harper_logger.info(e);
+        harper_logger.info(`No attribute restrictions found for schema ${schema} and table ${table}.`);
     }
     return role_attribute_restrictions;
 }
