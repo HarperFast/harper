@@ -14,7 +14,7 @@ function export_to_s3(export_object, callback) {
         return callback("format missing");
     }
 
-    if (export_object.format != 'json' && export_object.format != 'csv') {
+    if (export_object.format !== 'json' && export_object.format !== 'csv') {
         return callback("format invalid. must be json or csv.");
     }
 
