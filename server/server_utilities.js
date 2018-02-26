@@ -1,5 +1,4 @@
-
-const  write = require('../data_layer/insert'),
+const write = require('../data_layer/insert'),
     uuidv1 = require('uuid/v1'),
     search = require('../data_layer/search'),
     sql = require('../sqlTranslator/index').evaluateSQL,
@@ -9,9 +8,11 @@ const  write = require('../data_layer/insert'),
     user = require('../security/user'),
     role = require('../security/role'),
     read_log = require('../utility/logging/read_logs'),
-    harper_logger = require('../utility/logging/harper_logger'),
-    op_auth = require('../utility/operation_authorization'),
-    cluser_utilities = require('./clustering/cluster_utilities');
+    winston = require('../utility/logging/winston_logger'),
+    clusert_utilities = require('./clustering/cluster_utilities'),
+    auth = require('../security/auth');
+harper_logger = require('../utility/logging/harper_logger'),
+    op_auth = require('../utility/operation_authorization');
 
 const UNAUTH_RESPONSE = 403;
 const UNAUTHORIZED_TEXT = 'You are not authorized to performs the operation specified';
@@ -42,13 +43,13 @@ function processLocalTransaction(req, res, operation_function, callback) {
             if(error === UNAUTH_RESPONSE) {
                 error = UNAUTHORIZED_TEXT;
             }
-            if (typeof error !== 'object') {
+            if(typeof error !== 'object')
                 error = {"error": error};
             }
             res.status(500).json({error: (error.message ? error.message : error.error)});
             return callback(error);
         }
-        if(typeof data !== 'object')
+        if (typeof data !== 'object')
             data = {"message": data};
 
         res.status(200).json(data);
@@ -57,16 +58,16 @@ function processLocalTransaction(req, res, operation_function, callback) {
 }
 
 function processInThread(operation, operation_function, callback) {
-    if(!operationParameterValid(operation)) {
+    if (!operationParameterValid(operation)) {
         return callback(OPERATION_PARAM_ERROR_MSG, null);
     }
-    if(operation_function === undefined || operation_function === null ) {
+    if (operation_function === undefined || operation_function === null) {
         let msg = `operation_function parameter in processInThread is undefined`;
         harper_logger.error(msg);
         return callback(msg, null);
     }
     try {
-        if(operation.operation !== 'read_log')
+        if (operation.operation !== 'read_log')
             harper_logger.info(JSON.stringify(operation));
     } catch (e) {
         harper_logger.error(e);
@@ -75,39 +76,55 @@ function processInThread(operation, operation_function, callback) {
     operation_function(operation, (error, data) => {
         if (error) {
             harper_logger.info(error);
-            if(typeof error !== 'object')
+            if (typeof error !== 'object')
                 error = {"error": error};
             return callback(error, null);
         }
-        if(typeof data !== 'object')
+        if (typeof data !== 'object')
             data = {"message": data};
         return callback(null, data);
     });
 }
 
+
 //TODO: operation_function is not used, do we need it?
 function proccessDelegatedTransaction(operation, operation_function, callback) {
-    if(!operationParameterValid(operation)) {
+    if (!operationParameterValid(operation)) {
         return callback(OPERATION_PARAM_ERROR_MSG, null);
     }
-    if(global.forks === undefined || global.forks === null ) {
+    if (global.forks === undefined || global.forks === null) {
         let message = 'global forks is undefined';
         harper_logger.error(message);
         return callback(message, null);
     }
-    let f = Math.floor(Math.random() * Math.floor(global.forks.length));
-    let payload = {
-        "id": uuidv1(),
-        "body":operation,
-        "type":"delegate_transaction"
-    };
-    global.delegate_callback_queue[payload.id] = callback;
-    global.forks[f].send(payload);
+
+    req = {};
+    req.headers = {};
+    req.headers.authorization = operation.hdb_auth_header;
+
+    auth.authorize(req, null, function (err, user) {
+        if (err) {
+            return callback(err);
+        }
+
+        operation.hdb_user = user;
+        let f = Math.floor(Math.random() * Math.floor(global.forks.length))
+        let payload = {
+            "id": uuidv1(),
+            "body": operation,
+            "type": "delegate_transaction"
+        };
+        global.delegate_callback_queue[payload.id] = callback;
+        global.forks[f].send(payload);
+
+    });
+
+
 }
 
 // TODO: This doesn't really need a callback, should simplify it to a return statement.
 function chooseOperation(json, callback) {
-    if(json === undefined || json === null) {
+    if (json === undefined || json === null) {
         harper_logger.error(`invalid message body parameters found`);
         return nullOperation(json, callback);
     }
@@ -220,7 +237,7 @@ function nullOperation(json, callback) {
 }
 
 function operationParameterValid(operation) {
-    if(operation === undefined || operation === null ) {
+    if (operation === undefined || operation === null) {
         harper_logger.error(OPERATION_PARAM_ERROR_MSG);
         return false;
     }
