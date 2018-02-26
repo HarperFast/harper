@@ -81,7 +81,6 @@ function processInThread(operation, operation_function, callback) {
     });
 }
 
-
 //TODO: operation_function is not used, do we need it?
 function proccessDelegatedTransaction(operation, operation_function, callback) {
     if (!operationParameterValid(operation)) {
@@ -213,6 +212,8 @@ function chooseOperation(json, callback) {
         case 'add_node':
             operation_function = cluser_utilities.addNode;
             break;
+        case 'export_to_s3':
+            operation_function = export_.export_to_s3;
         default:
             break;
     }
