@@ -43,7 +43,7 @@ function processLocalTransaction(req, res, operation_function, callback) {
             if(error === UNAUTH_RESPONSE) {
                 error = UNAUTHORIZED_TEXT;
             }
-            if(typeof error !== 'object')
+            if(typeof error !== 'object') {
                 error = {"error": error};
             }
             res.status(500).json({error: (error.message ? error.message : error.error)});
