@@ -1,8 +1,9 @@
 const
     winston = require('../../utility/logging/winston_logger'),
-    search = require('../../data_layer/search')
+    search = require('../../data_layer/search'),
     insert = require('../../data_layer/insert'),
-    schema = require('../../data_layer/schema');
+    delete_ = require('../../data_layer/delete'),
+    uuidv4 = require('uuid/v1');
 
 class Socket_Server {
     constructor(node) {
@@ -61,12 +62,32 @@ class Socket_Server {
                     winston.info(msg);
                     msg.type = 'cluster_response';
                     let queded_msg = global.forkClusterMsgQueue[msg.id];
-                    for (let f in global.forks) {
-                        if (global.forks[f].process.pid === queded_msg.pid) {
-                            global.forks[f].send(msg);
+                    if (queded_msg) {
+                        for (let f in global.forks) {
+                            if (global.forks[f].process.pid === queded_msg.pid) {
+                                global.forks[f].send(msg);
+                            }
                         }
+
+                        // delete from memory
+                        delete global.cluster_queue[msg.node.name][msg.id];
+                        // delete from disk
+                        let delete_obj = {
+                            "table": "hdb_queue",
+                            "schema": "system",
+                            "hash_values": [msg.id]
+
+                        }
+                        winston.info("delete_obj === " + JSON.stringify(delete_obj));
+                        delete_.delete(delete_obj, function (err, result) {
+                            if (err) {
+                                winston.error(err);
+                            }
+                        });
+
                     }
-                    delete global.cluster_queue[msg.node.name][msg.id];
+
+
                 });
 
                 socket.on("msg", function (msg, callback) {
@@ -103,22 +124,36 @@ class Socket_Server {
     }
 
     send(msg) {
+
         try {
+            delete msg.body.hdb_user;
+            if (!msg.id)
+                msg.id = uuidv4();
+
             let payload = {"body": msg.body, "id": msg.id};
 
             if (!global.cluster_queue[msg.node.name]) {
                 global.cluster_queue[msg.node.name] = {};
             }
             global.cluster_queue[msg.node.name][payload.id] = payload;
+            //kyle...this needs to be a var not a let ....
+            var this_io = this.io;
+            saveToDisk({
+                "payload": payload,
+                "id": payload.id,
+                "node": msg.node,
+                "node_name": msg.node.name
+            }, function (err, result) {
+                if (err) {
+                    return err;
+                }
 
-            this.io.to(msg.node.name).emit('msg', payload)
+                this_io.to(msg.node.name).emit('msg', payload);
 
 
-            if (!global.o_nodes[msg.node.name] ||
-                !global.o_nodes[msg.node.name].status ||
-                !global.o_nodes[msg.node.name].status != 'connected') {
-                saveToDisk({"payload": payload, "id": payload.id, "node": msg.node, "node_name": msg.node.name});
-            }
+            });
+
+
         } catch (e) {
             //save the queue to disk for all nodes.
             winston.error(e);
@@ -127,20 +162,27 @@ class Socket_Server {
 
 }
 
-function saveToDisk(item) {
-    let insert_object = {
-        operation: 'insert',
-        schema: 'system',
-        table: 'hdb_queue',
-        records: [item]
-    };
+function saveToDisk(item, callback) {
+    try {
+        let insert_object = {
+            operation: 'insert',
+            schema: 'system',
+            table: 'hdb_queue',
+            records: [item]
+        };
 
-    insert.insert(insert_object, function (err) {
-        if (err) {
-            return winston.error(err);
-        }
-    });
+        insert.insert(insert_object, function (err, result) {
+            if (err) {
+                winston.error(err);
+                return callback(err);
+            }
+            callback(null, result);
 
+
+        });
+    } catch (e) {
+        winston.error(e);
+    }
 }
 
 function getFromDisk(node, callback) {

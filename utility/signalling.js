@@ -19,6 +19,7 @@ function signalSchemaChange(message){
             process.send(message);
         }
     }catch(e){
+        winston.error(e);
         global_schema.schemaSignal((err) => {
             if (err) {
                 winston.error(err);
