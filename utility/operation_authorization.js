@@ -20,7 +20,7 @@ const write = require('../data_layer/insert'),
     read_log = require('../utility/logging/read_logs'),
     harper_logger = require('../utility/logging/harper_logger'),
     common_utils = require('./common_utils.js'),
-    alasql = require('alasql'),
+    bucket = require('../sqlTranslator/sql_statement_bucket'),
     cluster_utilities = require('../server/clustering/cluster_utilities');
 
 const required_permissions = new Map();
@@ -103,25 +103,28 @@ function verifyPermsAst(ast, user, operation) {
         return false;
     }
     try {
-        let affected_attributes = new Map();
-        let table_lookup = new Map();
-        getRecordAttributesAST(ast, affected_attributes, table_lookup);
-        //TODO: MAP object only returns an iterator for keys.  It might be worth making these plain JS objects
-        //which will return arrays of keys rather than iterator
-        //TODO: This is a hard to read mess.  Will this be easier to read by breaking out into function calls?
-        for(const schema of affected_attributes.keys()) {
-            let map_submap = new Map();
-            map_submap.set(schema, Array.from(affected_attributes.get(schema).keys()))
-            if (hasPermissions(user, operation, map_submap)) {
-                for(const table of affected_attributes.get(schema).keys()) {
-                    let target_table = affected_attributes.get(schema).get(table);
-                    if(!checkAttributePerms(target_table, getAttributeRestrictions(user, schema,table), operation) ) {
-                        return false;
-                    }
-                }
-            } else {
+        let parsed_ast = new bucket(ast);
+        let schemas = parsed_ast.getSchemas();
+        let schema_table_map = new Map();
+        // Should not continue if there are no schemas defined.
+        if(!schemas || schemas.length === 0) {
+            harper_logger.info(`No schemas defined in verifyPermsAst(), will not continue.`);
+            return false;
+        }
+        for(let s = 0; s<schemas.length; s++) {
+            let tables = parsed_ast.getTablesBySchemaName(schemas[s]);
+            if(!tables) {
                 return false;
             }
+
+            for(let t = 0; t<tables.length; t++) {
+                let attributes = parsed_ast.getAttributesBySchemaTableName(schemas[s], tables[t]);
+                if(!checkAttributePerms(attributes, getAttributeRestrictions(user, schemas[s],tables[t]), operation) ) {
+                    return false;
+                }
+            }
+            schema_table_map.set(schemas[s], tables);
+            return hasPermissions(user, operation, schema_table_map);
         }
         return true;
     } catch(e) {
@@ -227,7 +230,6 @@ function verifyPerms(request_json, operation) {
  * @returns {boolean} - True if permissions match, false if not authorized.
  */
 function checkAttributePerms(record_attributes, role_attribute_restrictions, operation) {
-
     if(!record_attributes || !role_attribute_restrictions) {
         harper_logger.info(`no attributes specified in checkAttributePerms.`);
         return false;

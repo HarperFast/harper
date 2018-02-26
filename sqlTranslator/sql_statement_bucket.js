@@ -49,6 +49,7 @@ class sql_statement_bucket {
         for(const schema of this.affected_attributes.keys()) {
             tables.push(Array.from(this.affected_attributes.get(schema).keys()));
         }
+        return tables;
     }
 
     /**
@@ -58,7 +59,7 @@ class sql_statement_bucket {
      */
     getTablesBySchemaName(schema_name) {
         if(!schema_name || !this.affected_attributes) return [];
-        return Array.from(this.affected_attributes.get(schema).keys());
+        return Array.from(this.affected_attributes.get(schema_name).keys());
     }
 
     /**
@@ -69,7 +70,7 @@ class sql_statement_bucket {
         if(!this.affected_attributes) {
             return [];
         }
-        Array.from(this.affected_attributes.keys());
+        return Array.from(this.affected_attributes.keys());
     }
 
     /**
@@ -132,6 +133,8 @@ function getRecordAttributesAST(ast, affected_attributes, table_lookup) {
         getUpdateAttributes(ast, affected_attributes, table_lookup);
     } else if (ast instanceof alasql.yy.Delete) {
         getDeleteAttributes(ast, affected_attributes, table_lookup);
+    } else {
+        harper_logger.error(`AST in getRecordAttributesAST() is not a valid SQL type.`);
     }
 }
 

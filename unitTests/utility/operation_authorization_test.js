@@ -9,103 +9,34 @@ const op_auth = require('../../utility/operation_authorization');
 const op_auth_rewire = rewire('../../utility/operation_authorization');
 const write = require('../../data_layer/insert');
 const user = require('../../security/user');
+const alasql = require('alasql');
 
 let EMPTY_PERMISSION = {
     "super_user": false
 };
 
-let TEST_AST = {
+let TEST_INSERT_JSON = {
+    "into": {
+        "databaseid": "dev",
+        "tableid": "dog"
+    },
     "columns": [
         {
-            "columnid": "id",
-            "tableid": "d"
+            "columnid": "id"
         },
         {
-            "columnid": "name",
-            "tableid": "d"
-        },
-        {
-            "columnid": "owner_name",
-            "tableid": "d"
-        },
-        {
-            "columnid": "name",
-            "tableid": "b"
-        },
-        {
-            "columnid": "section",
-            "tableid": "b"
+            "columnid": "name"
         }
     ],
-    "from": [
-        {
-            "databaseid": "dev",
-            "tableid": "dog",
-            "as": "d"
-        }
-    ],
-    "joins": [
-        {
-            "joinmode": "INNER",
-            "table": {
-                "databaseid": "dev",
-                "tableid": "breed"
+    "values": [
+        [
+            {
+                "value": 22
             },
-            "as": "b",
-            "on": {
-                "left": {
-                    "columnid": "breed_id",
-                    "tableid": "d"
-                },
-                "op": "=",
-                "right": {
-                    "columnid": "id",
-                    "tableid": "b"
-                }
+            {
+                "value": "Simon"
             }
-        }
-    ],
-    "where": {
-        "expression": {
-            "left": {
-                "left": {
-                    "columnid": "owner_name",
-                    "tableid": "d"
-                },
-                "op": "IN",
-                "right": [
-                    {
-                        "value": "Kyle"
-                    },
-                    {
-                        "value": "Zach"
-                    },
-                    {
-                        "value": "Stephen"
-                    }
-                ]
-            },
-            "op": "AND",
-            "right": {
-                "left": {
-                    "columnid": "section",
-                    "tableid": "b"
-                },
-                "op": "=",
-                "right": {
-                    "value": "Mutt"
-                }
-            }
-        }
-    },
-    "order": [
-        {
-            "expression": {
-                "columnid": "dog_name",
-                "tableid": "d"
-            },
-            "direction": "ASC"
-        }
+        ]
     ]
 };
 
@@ -346,37 +277,41 @@ describe(`Test verifyPerms`, function () {
 
 describe(`Test verifyPermsAst`, function () {
     it('NOMINAL, test verify with proper syntax, expect true', function () {
-        let test_copy = clone(TEST_AST);
+        let test_json = clone(TEST_INSERT_JSON);
+        let temp_insert = new alasql.yy.Insert(test_json);
         let perms_user = clone(TEST_JSON);
         perms_user.hdb_user.role.permission.dev.tables.dog.insert = true;
         let att_base = clone(ATTRIBUTE_RESTRICTION_BASE);
         att_base.attribute_restrictions[0].insert = true;
         perms_user.hdb_user.role.permission.dev.tables.dog.attribute_restrictions.push(att_base.attribute_restrictions[0]);
-        assert.equal(op_auth.verifyPermsAst(test_copy, perms_user.hdb_user, write.insert.name), true);
+        assert.equal(op_auth.verifyPermsAst(temp_insert, perms_user.hdb_user, write.insert.name), true);
     });
     it('Test verify AST with no insert perm, expect false', function () {
-        let test_copy = clone(TEST_AST);
+        let test_json = clone(TEST_INSERT_JSON);
+        let temp_insert = new alasql.yy.Insert(test_json);
         let perms_user = clone(TEST_JSON);
         perms_user.hdb_user.role.permission.dev.tables.dog.insert = false;
-        assert.equal(op_auth.verifyPermsAst(test_copy, perms_user.hdb_user, write.insert.name), false);
+        assert.equal(op_auth.verifyPermsAst(temp_insert, perms_user.hdb_user, write.insert.name), false);
     });
     it('Test verify AST with role insert perm false, expect false', function () {
-        let test_copy = clone(TEST_AST);
+        let test_json = clone(TEST_INSERT_JSON);
+        let temp_insert = new alasql.yy.Insert(test_json);
         let perms_user = clone(TEST_JSON);
         perms_user.hdb_user.role.permission.dev.tables.dog.insert = true;
         let att_base = clone(ATTRIBUTE_RESTRICTION_BASE);
         att_base.attribute_restrictions[0].insert = false;
         perms_user.hdb_user.role.permission.dev.tables.dog.attribute_restrictions.push(att_base.attribute_restrictions[0]);
-        assert.equal(op_auth.verifyPermsAst(test_copy, perms_user.hdb_user, write.insert.name), false);
+        assert.equal(op_auth.verifyPermsAst(temp_insert, perms_user.hdb_user, write.insert.name), false);
     });
     it('Test with bad operations, expect false', function () {
-        let test_copy = clone(TEST_AST);
+        let test_json = clone(TEST_INSERT_JSON);
+        let temp_insert = new alasql.yy.Insert(test_json);
         let perms_user = clone(TEST_JSON);
         perms_user.hdb_user.role.permission.dev.tables.dog.insert = true;
         let att_base = clone(ATTRIBUTE_RESTRICTION_BASE);
         att_base.attribute_restrictions[0].insert = true;
         perms_user.hdb_user.role.permission.dev.tables.dog.attribute_restrictions.push(att_base.attribute_restrictions[0]);
-        assert.equal(op_auth.verifyPermsAst(test_copy, perms_user.hdb_user, 'fart'), false);
+        assert.equal(op_auth.verifyPermsAst(temp_insert, perms_user.hdb_user, 'fart'), false);
     });
 });
 
@@ -417,65 +352,6 @@ describe(`Test getRecordAttributes`, function () {
         let result = getRecordAttributes(null);
         assert.equal(result.size, 0);
     });
-});
-
-describe(`Test getRecordAttributesAST`, function () {
-    it('Nominal case, valid AST with attributes. ', function () {
-        let getRecordAttributes = op_auth_rewire.__get__('getRecordAttributesAST');
-        let test_copy = clone(TEST_AST);
-        let affected_attributes = new Map();
-        let table_lookup = new Map();
-        getRecordAttributes(test_copy, affected_attributes, table_lookup);
-        let all_tables = new Map();
-        let lookups = new Map();
-        let attributes = new Map();
-        let schema = test_copy.from[0].databaseid;
-        test_copy.from.forEach((table)=>{
-            if(!all_tables.has(table.tableid)) {
-                all_tables.set(table.tableid, null);
-            }
-            if(table.as) {
-                if(!lookups.has(table.as)) {
-                    lookups.set(table.as, table.tableid);
-                }
-            }
-        });
-        test_copy.joins.forEach((join)=>{
-            if(!all_tables.has(join.table.tableid)) {
-                all_tables.set(join.table.tableid, null);
-            }
-            if(join.table.as) {
-                if(!lookups.has(join.table.as)) {
-                    lookups.set(join.table.as, join.table.tableid);
-                }
-            }
-        });
-        test_copy.columns.forEach((col) => {
-            let table_name = col.tableid;
-            if(lookups.has(col.tableid)) {
-                table_name = lookups.get(table_name);
-            }
-            //Keeping this more simple than the function in operation_auth.  We are always dealing with the same schema
-            // in this test, so limiting this to a [table, [attributes]] map.
-            if(attributes.has(table_name)) {
-                attributes.get(table_name).push(col.columnid);
-            } else {
-                attributes.set(table_name, [col.columnid]);
-            }
-        });
-
-        // assert all aliases are accounted for in table lookup
-        lookups.forEach(function (value, key) {
-           assert.equal(table_lookup.has(key), true, `table_lookup does not have key ${key}`);
-        });
-        //assert all columns are accounted for
-        attributes.forEach(function (value, key, obj) {
-            // assert all tables are accounted for
-            assert.equal(affected_attributes.get(schema).has(key), true, `attributes does not contain key ${key}`);
-            assert.equal(value.length, affected_attributes.get(schema).get(key).length, `expected attribute length ${value.length}, actual: ${affected_attributes.get(schema).get(key).length}`);
-        });
-    });
-
 });
 
 describe(`Test getAttributeRestrictions`, function () {

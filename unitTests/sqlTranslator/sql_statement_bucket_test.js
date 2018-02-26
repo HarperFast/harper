@@ -119,6 +119,101 @@ let TEST_SELECT_JSON = {
     }
 };
 
+let TEST_COMPLEX_AST = {
+    "columns": [
+        {
+            "columnid": "id",
+            "tableid": "d"
+        },
+        {
+            "columnid": "name",
+            "tableid": "d"
+        },
+        {
+            "columnid": "owner_name",
+            "tableid": "d"
+        },
+        {
+            "columnid": "name",
+            "tableid": "b"
+        },
+        {
+            "columnid": "section",
+            "tableid": "b"
+        }
+    ],
+    "from": [
+        {
+            "databaseid": "dev",
+            "tableid": "dog",
+            "as": "d"
+        }
+    ],
+    "joins": [
+        {
+            "joinmode": "INNER",
+            "table": {
+                "databaseid": "dev",
+                "tableid": "breed"
+            },
+            "as": "b",
+            "on": {
+                "left": {
+                    "columnid": "breed_id",
+                    "tableid": "d"
+                },
+                "op": "=",
+                "right": {
+                    "columnid": "id",
+                    "tableid": "b"
+                }
+            }
+        }
+    ],
+    "where": {
+        "expression": {
+            "left": {
+                "left": {
+                    "columnid": "owner_name",
+                    "tableid": "d"
+                },
+                "op": "IN",
+                "right": [
+                    {
+                        "value": "Kyle"
+                    },
+                    {
+                        "value": "Zach"
+                    },
+                    {
+                        "value": "Stephen"
+                    }
+                ]
+            },
+            "op": "AND",
+            "right": {
+                "left": {
+                    "columnid": "section",
+                    "tableid": "b"
+                },
+                "op": "=",
+                "right": {
+                    "value": "Mutt"
+                }
+            }
+        }
+    },
+    "order": [
+        {
+            "expression": {
+                "columnid": "dog_name",
+                "tableid": "d"
+            },
+            "direction": "ASC"
+        }
+    ]
+};
+
 let TEST_SELECT = new alasql.yy.Select(TEST_SELECT_JSON);
 
 let SCHEMA_NAME = 'dev';
@@ -234,5 +329,85 @@ describe(`Test getSelectAttributes`, function () {
         getSelectAttributes(temp_update, statement, table_lookup);
         // No table was defined, so the returned value should be empty
         assert.equal(statement.get(SCHEMA_NAME), undefined);
+    });
+});
+
+describe(`Test getRecordAttributesAST`, function () {
+    it('Nominal case, valid, reasonably complex AST with attributes. ', function () {
+        let getRecordAttributesAST = sql_statement_rewire.__get__('getRecordAttributesAST');
+        let test_copy = clone(TEST_COMPLEX_AST);
+        let temp_select = new alasql.yy.Select(test_copy);
+        let affected_attributes = new Map();
+        let table_lookup = new Map();
+        getRecordAttributesAST(temp_select, affected_attributes, table_lookup);
+        let all_tables = new Map();
+        let lookups = new Map();
+        let attributes = new Map();
+        let schema = test_copy.from[0].databaseid;
+        test_copy.from.forEach((table)=>{
+            if(!all_tables.has(table.tableid)) {
+                all_tables.set(table.tableid, null);
+            }
+            if(table.as) {
+                if(!lookups.has(table.as)) {
+                    lookups.set(table.as, table.tableid);
+                }
+            }
+        });
+        test_copy.joins.forEach((join)=>{
+            if(!all_tables.has(join.table.tableid)) {
+                all_tables.set(join.table.tableid, null);
+            }
+            if(join.table.as) {
+                if(!lookups.has(join.table.as)) {
+                    lookups.set(join.table.as, join.table.tableid);
+                }
+            }
+        });
+        test_copy.columns.forEach((col) => {
+            let table_name = col.tableid;
+            if(lookups.has(col.tableid)) {
+                table_name = lookups.get(table_name);
+            }
+            //Keeping this more simple than the function in operation_auth.  We are always dealing with the same schema
+            // in this test, so limiting this to a [table, [attributes]] map.
+            if(attributes.has(table_name)) {
+                attributes.get(table_name).push(col.columnid);
+            } else {
+                attributes.set(table_name, [col.columnid]);
+            }
+        });
+
+        // assert all aliases are accounted for in table lookup
+        lookups.forEach(function (value, key) {
+            assert.equal(table_lookup.has(key), true, `table_lookup does not have key ${key}`);
+        });
+        //assert all columns are accounted for
+        attributes.forEach(function (value, key, obj) {
+            // assert all tables are accounted for
+            assert.equal(affected_attributes.get(schema).has(key), true, `attributes does not contain key ${key}`);
+            assert.equal(value.length, affected_attributes.get(schema).get(key).length, `expected attribute length ${value.length}, actual: ${affected_attributes.get(schema).get(key).length}`);
+        });
+    });
+});
+
+describe(`Test getAttributesBySchemaTableName`, function () {
+    it('Nominal, get attributes expected from select parsing', function () {
+        let statement = new sql_statement_bucket(TEST_SELECT);
+        assert.equal(statement.getSchemas().length, 1);
+    });
+});
+
+describe(`Test getAllTables`, function () {
+    it('Nominal, get all tables expected from select parsing', function () {
+        let statement = new sql_statement_bucket(TEST_SELECT);
+        assert.equal(statement.getAllTables().length, 1);
+    });
+});
+
+describe(`Test getAllTables`, function () {
+    it('Nominal, get all tables expected from select parsing', function () {
+        let statement = new sql_statement_bucket(TEST_SELECT);
+        assert.equal(statement.getTablesBySchemaName(SCHEMA_NAME).length, 1);
     });
 });
