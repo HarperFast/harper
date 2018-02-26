@@ -41,7 +41,7 @@
     "lodash-joins": "^2.0.3",
     "mathjs": "^3.17.0",
     "mkdirp": "^0.5.1",
-    "moment": "^2.17.1",
+    "moment": "^2.20.1",
     "net": "^1.0.2",
     "node-forge": "^0.7.1",
     "node-ls": "0.0.4",
@@ -66,7 +66,7 @@
     "tar-fs": "^1.16.0",
     "truncate-utf8-bytes": "^1.0.2",
     "underscore": "^1.8.3",
-    "uuid": "^3.1.0",
+    "uuid": "^3.2.1",
     "validate.js": "^0.11.1",
     "winston": "^2.3.1"
   },

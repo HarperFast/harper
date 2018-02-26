@@ -8,43 +8,54 @@ const express = require('express'),
     passport = require('passport'),
     LocalStrategy = require('passport-local').Strategy,
     BasicStrategy = require('passport-http').BasicStrategy,
+    user_functions = require('./user'),
     clone = require('clone');
 
 
-function findAndValidateUser(username, password, done){
-    let user_tmp = global.hdb_users.filter((user)=>{
-        return user.username === username;
-    })[0];
-
-    if(!user_tmp){
-        return done(`Cannot complete request: User '${username}' not found`, null);
+function findAndValidateUser(username, password, done) {
+    if (!global.hdb_users) {
+        user_functions.setUsersToGlobal(function () {
+            handleResponse();
+        })
+    } else {
+        handleResponse();
     }
 
-    if(user_tmp && !user_tmp.active){
-        return done('Cannot complete request: User is inactive', null);
+
+    function handleResponse() {
+        let user_tmp = global.hdb_users.filter((user) => {
+            return user.username === username;
+        })[0];
+
+        if (!user_tmp) {
+            return done(`Cannot complete request: User '${username}' not found`, null);
+        }
+
+        if (user_tmp && !user_tmp.active) {
+            return done('Cannot complete request: User is inactive', null);
+        }
+        let user = clone(user_tmp);
+        if (!password_function.validate(user.password, password)) {
+            return done('Cannot complete request:  Invalid password', false);
+        }
+        delete user.password;
+        return done(null, user);
     }
-    let user = clone(user_tmp);
-    if (!password_function.validate(user.password, password)) {
-        return done('Cannot complete request:  Invalid password', false);
-    }
-    delete user.password;
-    return done(null, user);
+
 }
-
-
 
 
 passport.use(new LocalStrategy(
     function (username, password, done) {
-        findAndValidateUser(username,password,done);
+        findAndValidateUser(username, password, done);
 
     }
 ));
 
 passport.use(new BasicStrategy(
     function (username, password, done) {
-        findAndValidateUser(username,password,done);
-}));
+        findAndValidateUser(username, password, done);
+    }));
 
 
 passport.serializeUser(function (user, done) {
@@ -78,12 +89,19 @@ function authorize(req, res, next) {
         if (!user) {
             return next("User not found");
         }
-        req.logIn(user, function (err) {
-            if (err) {
-                return next(err);
-            }
+        if (req.logIn) {
+            req.logIn(user, function (err) {
+                if (err) {
+                    return next(err);
+                }
+                return next(null, user);
+            });
+        } else {
             return next(null, user);
-        });
+
+        }
+
+
     }
 
     switch (strategy) {
@@ -107,7 +125,7 @@ function checkPermissions(check_permission_obj, callback) {
 
     let validation_results = validation(check_permission_obj);
 
-    if(validation_results){
+    if (validation_results) {
         callback(validation_results);
         return;
     }
@@ -124,49 +142,49 @@ function checkPermissions(check_permission_obj, callback) {
 
     let role = check_permission_obj.user.role;
 
-    if(!role || !role.permission){
+    if (!role || !role.permission) {
         return callback('Invalid role');
     }
     let permission = JSON.parse(role.permission);
 
-    if(permission.super_user){
+    if (permission.super_user) {
         return callback(null, authoriziation_obj);
     }
 
-    if(!permission[check_permission_obj.schema]){
+    if (!permission[check_permission_obj.schema]) {
         authoriziation_obj.authorized = false;
         authoriziation_obj.messages.push(`Not authorized to access ${check_permission_obj.schema} schema`);
         return callback(null, authoriziation_obj);
     }
 
-    if(!permission[check_permission_obj.schema].tables[check_permission_obj.table]){
+    if (!permission[check_permission_obj.schema].tables[check_permission_obj.table]) {
         authoriziation_obj.authorized = false;
         authoriziation_obj.messages.push(`Not authorized to access ${check_permission_obj.table} table`);
         return callback(null, authoriziation_obj);
 
     }
 
-    if(!permission[check_permission_obj.schema].tables[check_permission_obj.table][check_permission_obj.operation]){
+    if (!permission[check_permission_obj.schema].tables[check_permission_obj.table][check_permission_obj.operation]) {
         authoriziation_obj.authorized = false;
         authoriziation_obj.messages.push(`Not authorized to access ${check_permission_obj.operation} on ${check_permission_obj.table} table`);
         return callback(null, authoriziation_obj);
     }
 
 
-    if(permission[check_permission_obj.schema].tables[check_permission_obj.table].attribute_restrictions
-        && !check_permission_obj.attributes ){
+    if (permission[check_permission_obj.schema].tables[check_permission_obj.table].attribute_restrictions
+        && !check_permission_obj.attributes) {
 
         authoriziation_obj.authorized = false;
         authoriziation_obj.messages.push(`${check_permission_obj.schema}.${check_permission_obj.table} has attribute restrictions. Missing attributes to validate`);
         return callback(null, authoriziation_obj);
     }
 
-    if(permission[check_permission_obj.schema].tables[check_permission_obj.table].attribute_restrictions
-        && check_permission_obj.attributes ){
+    if (permission[check_permission_obj.schema].tables[check_permission_obj.table].attribute_restrictions
+        && check_permission_obj.attributes) {
 
         let restricted_attrs = permission[check_permission_obj.schema].tables[check_permission_obj.table].attribute_restrictions;
-        for(let r_attr in restricted_attrs){
-            if(check_permission_obj.attributes.indexOf(restricted_attrs[r_attr].attribute_name) > -1 && !restricted_attrs[r_attr][check_permission_obj.operation]){
+        for (let r_attr in restricted_attrs) {
+            if (check_permission_obj.attributes.indexOf(restricted_attrs[r_attr].attribute_name) > -1 && !restricted_attrs[r_attr][check_permission_obj.operation]) {
                 authoriziation_obj.authorized = false;
                 authoriziation_obj.messages.push(`Not authorized to ${check_permission_obj.operation} ${restricted_attrs[r_attr].attribute_name} `);
             }

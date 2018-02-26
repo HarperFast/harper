@@ -617,7 +617,7 @@ function createAttributeStructure(create_attribute_object, callback) {
                 hash_attribute: 'id',
                 records: [record]
             };
-
+            winston.info("insert object:" + JSON.stringify(insertObject));
             insert.insert(insertObject, function (err, result) {
                 winston.info('attribute:' + record.attribute);
                 winston.info(result);
@@ -681,11 +681,8 @@ function deleteAttributeStructure(attribute_drop_object, callback) {
 
 function createAttribute(create_attribute_object, callback) {
     try {
-        if(global.cluster_server
-            && global.cluster_server.socket_server.name
+        if(global.clustering_on
             && !create_attribute_object.delegated && create_attribute_object.schema != 'system'   ){
-
-
 
 
             createAttributeStructure(create_attribute_object, function (err, success) {
@@ -698,15 +695,20 @@ function createAttribute(create_attribute_object, callback) {
                 create_attribute_object.operation = 'create_attribute';
                 create_attribute_object.id = success.id;
 
-                for(let o_node in global.cluster_server.socket_server.other_nodes){
-                    let payload = {};
-                    payload.msg = create_attribute_object;
-                    payload.node = global.cluster_server.socket_server.other_nodes[o_node];
-                    global.cluster_server.send(payload, null);
-                }
+                process.send({
+                    "type": "clustering_payload", "pid": process.pid,
+                    "clustering_type": "broadcast",
+                    "id": success.id,
+                    "body": create_attribute_object
+                });
+
+
+
+
 
                 signalling.signalSchemaChange({type: 'schema'});
                 addAndRemoveFromQueue(create_attribute_object, success, callback);
+                return callback();
 
             });
 
