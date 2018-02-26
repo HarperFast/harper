@@ -2,6 +2,7 @@ const Socket_Server = require('./Socket_Server'),
     Socket_Client = require('./Socket_Client'),
     insert = require('../../data_layer/insert'),
     clone = require('clone'),
+    winston = require('../../utility/logging/winston_logger');
     server_utilities = require('../server_utilities');
 
 
@@ -22,6 +23,7 @@ class ClusterServer {
     }
 
     send(msg, res) {
+        winston.debug('node cluster msg out: ' + JSON.stringify(msg));
         let payload = {};
         payload.body = msg.body;
         payload.id = msg.id;
@@ -31,15 +33,12 @@ class ClusterServer {
     }
 
     broadCast(msg) {
-
+        winston.debug('broadcast msg out: ' + JSON.stringify(msg));
         var operation = clone(msg.body.operation);
         for (let o_node in global.cluster_server.socket_server.other_nodes) {
             let payload = {};
             payload.body = msg.body;
             payload.id = msg.id;
-
-
-
 
             if (!msg.body.operation) {
                 payload.body.operation = operation;

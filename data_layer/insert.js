@@ -416,6 +416,10 @@ function checkAttributeSchema(insert_object, callerback) {
             operation: insert_object.operation
         };
 
+        if( insert_object.hdb_auth_header){
+            data_wrapper.hdb_auth_header = insert_object.hdb_auth_header;
+        }
+
         return callerback(null, data_wrapper);
     });
 }
@@ -454,8 +458,8 @@ function checkRecordsExist(insert_object, skipped_records, inserted_records, cal
  */
 function processData(data_wrapper, callback) {
     async.waterfall([
-        writeRawData.bind(null, data_wrapper.data_folders, data_wrapper.data),
-        writeLinks.bind(null, data_wrapper.link_folders, data_wrapper.links),
+        writeRawData.bind(null, data_wrapper),
+        writeLinks.bind(null, data_wrapper),
     ], (err, results) => {
         if (err) {
             callback(err);
@@ -471,10 +475,10 @@ function processData(data_wrapper, callback) {
  * @param data
  * @param callback
  */
-function writeRawData(folders, data, callback) {
+function writeRawData(data_wrapper, callback) {
     async.waterfall([
-        createFolders.bind(null, folders),
-        writeRawDataFiles.bind(null, data)
+        createFolders.bind(null, data_wrapper, data_wrapper.data_folders),
+        writeRawDataFiles.bind(null, data_wrapper.data)
     ], (err, results) => {
         if (err) {
             callback(err);
@@ -513,10 +517,10 @@ function writeRawDataFiles(data, callback) {
  * @param links
  * @param callback
  */
-function writeLinks(folders, links, callback) {
+function writeLinks(data_wrapper, callback) {
     async.waterfall([
-        createFolders.bind(null, folders),
-        writeLinkFiles.bind(null, links)
+        createFolders.bind(null, data_wrapper, data_wrapper.link_folders),
+        writeLinkFiles.bind(null, data_wrapper.links)
     ], (err, results) => {
         if (err) {
             callback(err);
@@ -554,7 +558,8 @@ function writeLinkFiles(links, callback) {
  * @param folders
  * @param callback
  */
-function createFolders(folders, callback) {
+function createFolders(data_wrapper,folders, callback) {
+
     let folder_created_flag = false;
     async.each(folders, (folder, caller) => {
         mkdirp(folder, (err, created_folder) => {
@@ -565,7 +570,8 @@ function createFolders(folders, callback) {
 
             if(folder.indexOf('/__hdb_hash/') >= 0 && created_folder) {
                 folder_created_flag = true;
-                createNewAttribute(folder, (error)=>{
+
+                createNewAttribute(data_wrapper,folder, (error)=>{
                     return caller();
                 });
             } else {
@@ -589,13 +595,18 @@ function createFolders(folders, callback) {
  * @param base_folder
  * @param callback
  */
-function createNewAttribute(base_folder, callback) {
-    let base_parts = base_folder.replace(hdb_path, '').split('/');
+function createNewAttribute(data_wrapper,folder, callback) {
+
+    let base_parts = folder.replace(hdb_path, '').split('/');
     let attribute_object = {
         schema:base_parts[1],
         table:base_parts[2],
         attribute:base_parts[base_parts.length - 1]
     };
+
+    if(data_wrapper.hdb_auth_header){
+        attribute_object.hdb_auth_header = data_wrapper.hdb_auth_header;
+    }
 
     schema.createAttribute(attribute_object, (err, data)=> {
         if(err) {
