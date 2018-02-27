@@ -101,6 +101,7 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                 messageHandler({"type": "enterprise", "enterprise": enterprise});
                 enterprise_util.kickOffEnterprise(function (enterprise_msg) {
                     if (enterprise_msg.clustering) {
+                        global.clustering_on = true;
                         messageHandler({"type": "clustering"});
                     }
                 });
