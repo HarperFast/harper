@@ -5,7 +5,6 @@ const
     delete_ = require('../../data_layer/delete'),
     uuidv4 = require('uuid/v1');
 
-
 class Socket_Server {
     constructor(node) {
         this.node = node;
@@ -15,27 +14,15 @@ class Socket_Server {
         global.msg_queue = [];
         global.o_nodes = [];
         global.cluster_queue = [];
-
-
     }
-
 
     init(next) {
         try {
-
-
-
-
             // TODO probably need to make this https
-            var server = require('http').createServer().listen(this.port, function () {
-            });
-
+            var server = require('http').createServer().listen(this.port, function () {});
             let node = this.node;
             this.io = require('socket.io').listen(server);
-
             this.io.sockets.on("connection", function (socket) {
-
-
                 socket.on("identify", function (msg, callback) {
                     socket.join(msg, () => {
 
@@ -56,7 +43,6 @@ class Socket_Server {
                                 }
                             }
 
-
                             socket.emit('confirm_identity');
 
                             if (global.cluster_queue
@@ -66,21 +52,14 @@ class Socket_Server {
 
                                 let catchup_payload = JSON.stringify(global.cluster_queue[msg]);
                                 socket.emit('catchup', catchup_payload);
-
-
                             }
-
                         });
                     });
-
-
-                    // callback( msg );
                 });
 
 
                 socket.on('confirm_msg', function (msg) {
                     winston.info(msg);
-
                     msg.type = 'cluster_response';
                     let queded_msg = global.forkClusterMsgQueue[msg.id];
                     if (queded_msg) {
@@ -112,11 +91,8 @@ class Socket_Server {
                 });
 
                 socket.on("msg", function (msg, callback) {
-
                     winston.info(`${this_node.name} says ${msg}`);
-                    //callback( msg );
                 });
-
 
                 socket.on('error', function (error) {
                     winston.error(error);
@@ -125,7 +101,15 @@ class Socket_Server {
                 socket.on('disconnect', function (error) {
                     if (error != 'transport close')
                         winston.error(error);
+                });
 
+                socket.on('schema_update_request', function(error){
+                    schema.describeAll({}, function(err, schema){
+                        if(err){
+                            return winston.error(err);
+                        }
+                        socket.emit('schema_update_response', schema);
+                    });
                 });
 
 
@@ -147,7 +131,6 @@ class Socket_Server {
                 msg.id = uuidv4();
 
             let payload = {"body": msg.body, "id": msg.id};
-
 
             if (!global.cluster_queue[msg.node.name]) {
                 global.cluster_queue[msg.node.name] = {};
@@ -223,6 +206,5 @@ function getFromDisk(node, callback) {
 
     });
 };
-
 
 module.exports = Socket_Server;

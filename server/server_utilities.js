@@ -9,7 +9,7 @@ const write = require('../data_layer/insert'),
     role = require('../security/role'),
     read_log = require('../utility/logging/read_logs'),
     winston = require('../utility/logging/winston_logger'),
-    clusert_utilities = require('./clustering/cluster_utilities'),
+    cluster_utilities = require('./clustering/cluster_utilities'),
     auth = require('../security/auth');
 harper_logger = require('../utility/logging/harper_logger'),
     op_auth = require('../utility/operation_authorization');
@@ -80,7 +80,6 @@ function processInThread(operation, operation_function, callback) {
         return callback(null, data);
     });
 }
-
 
 //TODO: operation_function is not used, do we need it?
 function proccessDelegatedTransaction(operation, operation_function, callback) {
@@ -211,8 +210,10 @@ function chooseOperation(json, callback) {
             operation_function = read_log.read_log;
             break;
         case 'add_node':
-            operation_function = cluser_utilities.addNode;
+            operation_function = cluster_utilities.addNode;
             break;
+        case 'export_to_s3':
+            operation_function = export_.export_to_s3;
         default:
             break;
     }
