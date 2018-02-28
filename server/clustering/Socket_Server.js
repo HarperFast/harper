@@ -1,7 +1,9 @@
 const
     winston = require('../../utility/logging/winston_logger'),
-    search = require('../../data_layer/search')
-insert = require('../../data_layer/insert');
+    search = require('../../data_layer/search'),
+    insert = require('../../data_layer/insert'),
+    delete_ = require('../../data_layer/delete'),
+    uuidv4 = require('uuid/v1');
 
 class Socket_Server {
     constructor(node) {
@@ -12,27 +14,15 @@ class Socket_Server {
         global.msg_queue = [];
         global.o_nodes = [];
         global.cluster_queue = [];
-
-
     }
-
 
     init(next) {
         try {
-
-
-
-
             // TODO probably need to make this https
-            var server = require('http').createServer().listen(this.port, function () {
-            });
-
+            var server = require('http').createServer().listen(this.port, function () {});
             let node = this.node;
             this.io = require('socket.io').listen(server);
-
             this.io.sockets.on("connection", function (socket) {
-
-
                 socket.on("identify", function (msg, callback) {
                     socket.join(msg, () => {
 
@@ -53,7 +43,6 @@ class Socket_Server {
                                 }
                             }
 
-
                             socket.emit('confirm_identity');
 
                             if (global.cluster_queue
@@ -63,42 +52,47 @@ class Socket_Server {
 
                                 let catchup_payload = JSON.stringify(global.cluster_queue[msg]);
                                 socket.emit('catchup', catchup_payload);
-
-
                             }
-
                         });
                     });
-
-
-                    // callback( msg );
                 });
 
 
                 socket.on('confirm_msg', function (msg) {
                     winston.info(msg);
-
                     msg.type = 'cluster_response';
                     let queded_msg = global.forkClusterMsgQueue[msg.id];
-                    for (let f in global.forks) {
-                        if (global.forks[f].process.pid === queded_msg.pid) {
-                            global.forks[f].send(msg);
+                    if (queded_msg) {
+                        for (let f in global.forks) {
+                            if (global.forks[f].process.pid === queded_msg.pid) {
+                                global.forks[f].send(msg);
+                            }
                         }
+
+                        // delete from memory
+                        delete global.cluster_queue[msg.node.name][msg.id];
+                        // delete from disk
+                        let delete_obj = {
+                            "table": "hdb_queue",
+                            "schema": "system",
+                            "hash_values": [msg.id]
+
+                        }
+                        winston.info("delete_obj === " + JSON.stringify(delete_obj));
+                        delete_.delete(delete_obj, function (err, result) {
+                            if (err) {
+                                winston.error(err);
+                            }
+                        });
+
                     }
 
 
-                    delete global.cluster_queue[msg.node.name][msg.id];
-
-
-                    //this.queue[msg].recieved = true;
                 });
 
                 socket.on("msg", function (msg, callback) {
-
                     winston.info(`${this_node.name} says ${msg}`);
-                    //callback( msg );
                 });
-
 
                 socket.on('error', function (error) {
                     winston.error(error);
@@ -107,7 +101,15 @@ class Socket_Server {
                 socket.on('disconnect', function (error) {
                     if (error != 'transport close')
                         winston.error(error);
+                });
 
+                socket.on('schema_update_request', function(error){
+                    schema.describeAll({}, function(err, schema){
+                        if(err){
+                            return winston.error(err);
+                        }
+                        socket.emit('schema_update_response', schema);
+                    });
                 });
 
 
@@ -122,26 +124,34 @@ class Socket_Server {
     }
 
     send(msg) {
-        //console.trace('msg in send:' + JSON.stringify(msg));
 
         try {
-            let payload = {"body": msg.body, "id": msg.id};
+            delete msg.body.hdb_user;
+            if (!msg.id)
+                msg.id = uuidv4();
 
+            let payload = {"body": msg.body, "id": msg.id};
 
             if (!global.cluster_queue[msg.node.name]) {
                 global.cluster_queue[msg.node.name] = {};
             }
             global.cluster_queue[msg.node.name][payload.id] = payload;
+            //kyle...this needs to be a var not a let ....
+            var this_io = this.io;
+            saveToDisk({
+                "payload": payload,
+                "id": payload.id,
+                "node": msg.node,
+                "node_name": msg.node.name
+            }, function (err, result) {
+                if (err) {
+                    return err;
+                }
 
-            this.io.to(msg.node.name).emit('msg', payload)
+                this_io.to(msg.node.name).emit('msg', payload);
 
 
-            if (!global.o_nodes[msg.node.name] ||
-                !global.o_nodes[msg.node.name].status ||
-                !global.o_nodes[msg.node.name].status != 'connected') {
-                saveToDisk({"payload": payload, "id": payload.id, "node": msg.node, "node_name": msg.node.name});
-
-            }
+            });
 
 
         } catch (e) {
@@ -152,21 +162,27 @@ class Socket_Server {
 
 }
 
-function saveToDisk(item) {
+function saveToDisk(item, callback) {
+    try {
+        let insert_object = {
+            operation: 'insert',
+            schema: 'system',
+            table: 'hdb_queue',
+            records: [item]
+        };
 
-    let insert_object = {
-        operation: 'insert',
-        schema: 'system',
-        table: 'hdb_queue',
-        records: [item]
-    };
+        insert.insert(insert_object, function (err, result) {
+            if (err) {
+                winston.error(err);
+                return callback(err);
+            }
+            callback(null, result);
 
-    insert.insert(insert_object, function (err) {
-        if (err) {
-            return winston.error(err);
-        }
-    });
 
+        });
+    } catch (e) {
+        winston.error(e);
+    }
 }
 
 function getFromDisk(node, callback) {
@@ -190,6 +206,5 @@ function getFromDisk(node, callback) {
 
     });
 };
-
 
 module.exports = Socket_Server;
