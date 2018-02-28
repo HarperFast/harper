@@ -75,7 +75,6 @@ harperdb_run()
 		#mycos Environment
 		#environment_id=65398310-b319-fc53-7f6c-78710804cda3
 	
-
 		#LOCAL EnV
 		environment_id='b26572ae-9cf0-bb2e-565f-3f5c6e30ad07'
 		#zach' s dummmy environment
