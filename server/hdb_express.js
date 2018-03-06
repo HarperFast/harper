@@ -331,7 +331,7 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
 
                     global_schema.getTableSchema(req.body.schema, req.body.table, function (err, table) {
 
-                        if(!table || table.residence.indexOf(hdb_properties.get('NODE_NAME')) > -1){
+                        if(!table || !table.residence || table.residence.indexOf(hdb_properties.get('NODE_NAME')) > -1){
                             server_utilities.processLocalTransaction(req, res, operation_function, function () {
 
                             });
