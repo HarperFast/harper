@@ -11,7 +11,8 @@ const write = require('../data_layer/insert'),
     winston = require('../utility/logging/winston_logger'),
     cluster_utilities = require('./clustering/cluster_utilities'),
     auth = require('../security/auth');
-harper_logger = require('../utility/logging/harper_logger'),
+    harper_logger = require('../utility/logging/harper_logger'),
+    export_ = require('../data_layer/export') ;
     op_auth = require('../utility/operation_authorization');
 
 const UNAUTH_RESPONSE = 403;
