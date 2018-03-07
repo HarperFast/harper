@@ -252,25 +252,4 @@ describe(`Test processLocalTransaction`, function () {
             done();
         });
     });
-    it('Test processLocalTransaction scrubbing of pw field from list_users', function (done) {
-        let processLocalTransaction = server_utilities.__get__('processLocalTransaction');
-        let mock = {
-            send: function(){ },
-            json: function(stuff){
-                this.json = stuff;
-            },
-            status: function(responseStatus) {
-                this.status = responseStatus;
-                // This next line makes it chainable
-                return this;
-            }
-        };
-        mock_request = {"body": {"operation":"list_users"}};
-
-        //Use the test_func function above as an operation function stub
-        processLocalTransaction(mock_request, mock, user.listUsers, function (err, found) {
-            assert.equal(mock.status,200);
-            done();
-        });
-    })
 });
