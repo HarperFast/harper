@@ -24,24 +24,6 @@ module.exports = {
     UNAUTH_RESPONSE
 }
 
-function scrubResponse(data, operation) {
-    if(!operation) {
-        return data;
-    }
-    if(operation === user.listUsers) {
-        try {
-            if(data) {
-                for (let i = 0; i < data.length; i++) {
-                    delete data[i].password;
-                }
-            }
-        } catch (e) {
-            harper_logger.error(e);
-        }
-    }
-    return data;
-}
-
 function processLocalTransaction(req, res, operation_function, callback) {
     try {
         if (req.body.operation !== 'read_log')
@@ -63,10 +45,6 @@ function processLocalTransaction(req, res, operation_function, callback) {
         if(typeof data !== 'object')
             data = {"message": data};
         //TODO: This works to remove the password field from the returned values for now.  We should have a function
-        // that will analyze all responses and scrub them as instructed by a config file.  The scrubResponse function is a band-aid.
-        if(operation_function === user.listUsers) {
-            data = scrubResponse(data, operation_function);
-        }
         res.status(200).json(data);
         return callback(null, data);
     });
@@ -194,7 +172,7 @@ function chooseOperation(json, callback) {
             operation_function = user.dropUser;
             break;
         case 'list_users':
-            operation_function = user.listUsers;
+            operation_function = user.listUsersExternal;
             break;
         case 'list_roles':
             operation_function = role.listRoles;

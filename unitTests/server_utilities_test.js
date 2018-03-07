@@ -25,7 +25,6 @@ class fork_stub  {
 };
 
 let FORK_STUB = new fork_stub();
-let TEST_PASSWORD = "OMG_REMOVE_THIS";
 let TEST_JSON = {
     "operation": "insert",
     "schema": "dev",
@@ -66,33 +65,7 @@ let TEST_JSON = {
         },
         "username": "bad_user_2"
     }
-}
-
-let TEST_LIST_USER_RESPONSE = [
-    {
-        "active": true,
-        "password":`${TEST_PASSWORD}`,
-        "role": {
-            "id": "9c9aae33-4d1d-40b5-a52e-bbbc1b2e2ba6",
-            "permission": {
-                "super_admin": false,
-                "dev": {
-                    "tables": {
-                        "dog": {
-                            "read": false,
-                            "insert": false,
-                            "update": false,
-                            "delete": false,
-                            "attribute_restrictions": []
-                        }
-                    }
-                }
-            },
-            "role": "no_perms"
-        },
-        "username": "bad_user"
-    }
-];
+};
 
 let TEST_JSON_SUPER_USER = {
     "operation": "insert",
@@ -136,6 +109,7 @@ let TEST_JSON_SUPER_USER = {
     }
 }
 
+// Naive clone, never ever do this in prod code.
 function clone(a) {
     return JSON.parse(JSON.stringify(a));
 }
@@ -299,36 +273,4 @@ describe(`Test processLocalTransaction`, function () {
             done();
         });
     })
-});
-
-describe(`Test scrubResponse`, function () {
-    it('Test scrubResponse scrubbing of pw field from list_users', function () {
-        let scrubResponse = server_utilities.__get__('scrubResponse');
-        let list_copy = clone(TEST_LIST_USER_RESPONSE);
-        assert.equal(list_copy[0].password, TEST_PASSWORD);
-        let found = scrubResponse(list_copy, user.listUsers);
-        assert.ok(found.length > 0);
-        assert.equal(found[0].password, undefined);
-    })
-    it('Test scrubResponse with data that is missing password to ensure it works', function () {
-        let scrubResponse = server_utilities.__get__('scrubResponse');
-        let list_copy = clone(TEST_LIST_USER_RESPONSE);
-        delete list_copy[0].password;
-        assert.ok(list_copy[0].password === undefined);
-        let found = scrubResponse(list_copy, user.listUsers);
-        assert.ok(found.length > 0);
-        assert.equal(found[0].password, undefined);
-    })
-    it('Test scrubResponse with null data to ensure it doesnt break', function () {
-        let scrubResponse = server_utilities.__get__('scrubResponse');
-        let found = scrubResponse(null, user.listUsers);
-        assert.equal(found, undefined);
-    });
-    it('Test scrubResponse with null operation', function () {
-        let scrubResponse = server_utilities.__get__('scrubResponse');
-        let list_copy = clone(TEST_LIST_USER_RESPONSE);
-        let found = scrubResponse(list_copy, null);
-        assert.ok(found.length > 0);
-        assert.equal(found[0].password, TEST_PASSWORD);
-    });
 });
