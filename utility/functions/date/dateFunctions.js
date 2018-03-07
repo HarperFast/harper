@@ -2,7 +2,7 @@
 
 const moment = require('moment');
 
-let self = module.exports = {
+module.exports = {
     current_date: () => {
         return moment().format('YYYY-MM-DD');
     },
