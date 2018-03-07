@@ -4,3 +4,8 @@
 node_modules/*
 hdb/*
 *.log
+.nyc_output/*
+.vs_code/*
+/bin/coverage/*
+coverage/*
+hdb_boot_properties.file

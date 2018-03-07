@@ -1,4 +1,15 @@
 "use strict";
+/**
+ * This module is used before a SQL or NoSQL operation is performed in order to ensure the user's assigned role
+ * has the permissions and lack of restrictions needed to process the operation.  Only verifyPerms and verifyPermsAST
+ * should be outward facing functions.
+ *
+ * verifyPerms() should be used to check permissions for NoSQL calls.  verifyPermsAST() should be used to check permissions
+ * for SQL calls.
+ *
+ * The required_permissions member contains the permissions needed for each operation.  Any new operations added to
+ * Harper need to have operations specified in here or they will never pass the permissions checks.
+ * */
 const write = require('../data_layer/insert'),
     search = require('../data_layer/search'),
     csv = require('../data_layer/csvBulkLoad'),
@@ -8,13 +19,27 @@ const write = require('../data_layer/insert'),
     role = require('../security/role'),
     read_log = require('../utility/logging/read_logs'),
     harper_logger = require('../utility/logging/harper_logger'),
-    cluser_utilities = require('../server/clustering/cluster_utilities');
+    common_utils = require('./common_utils.js'),
+    bucket = require('../sqlTranslator/sql_statement_bucket'),
+    cluster_utilities = require('../server/clustering/cluster_utilities');
 
 const required_permissions = new Map();
 const DELETE_PERM = 'delete';
 const INSERT_PERM = 'insert';
 const READ_PERM = 'read';
 const UPDATE_PERM = 'update';
+
+//SQL operations supported
+//The delete (or any other operation) comes through the parser as an operation separate from the delete_.delete opertaion.
+// Since we store the required permissions for each operation, we need to store required permissions for the SQL delete o
+// peration separate from the delete_.delete operation.
+const SQL_CREATE = "create";
+const SQL_DROP = 'drop';
+const SQL_SELECT = 'select';
+const SQL_INSERT = 'insert';
+const SQL_UPDATE = 'update';
+
+const WILDCARD = '*';
 
 class permission {
     constructor(requires_su, perms) {
@@ -50,14 +75,134 @@ required_permissions.set(role.alterRole.name, new permission(true, []));
 required_permissions.set(role.dropRole.name, new permission(true, []));
 required_permissions.set(user.userInfo.name, new permission(true, []));
 required_permissions.set(read_log.read_log.name, new permission(true, []));
-required_permissions.set(cluser_utilities.addNode.name, new permission(true, []));
+required_permissions.set(cluster_utilities.addNode.name, new permission(true, []));
+// SQL operations are distinct from operations above, so we need to store required perms for both.
+required_permissions.set(SQL_CREATE, new permission(false, [INSERT_PERM]));
+required_permissions.set(SQL_DROP, new permission(false, [DELETE_PERM]));
+required_permissions.set(SQL_SELECT, new permission(false, [READ_PERM]));
+required_permissions.set(SQL_INSERT, new permission(false, [UPDATE_PERM]));
+required_permissions.set(SQL_UPDATE, new permission(false, [UPDATE_PERM]));
 
 module.exports = {
-    verify_perms:verify_perms
+    verifyPerms:verifyPerms,
+    verifyPermsAst:verifyPermsAst
 };
 
-function verify_perms(json, operation) {
-    if(json === null || operation === null || json.hdb_user === undefined || json.hdb_user === null) {
+/**
+ * Verifies permissions and restrictions for a SQL operation based on the user's assigned role.
+ * @param ast - The SQL statement in Syntax Tree form.
+ * @param user - The user and role specification
+ * @param operation - The operation specified in the call.
+ * @returns {boolean} - True if permissions match, false if not authorized.
+ */
+function verifyPermsAst(ast, user, operation) {
+    if(common_utils.isEmptyOrZeroLength(ast)) {
+        harper_logger.info(`verify_perms_ast has an empty 'user' parameter`);
+        return false;
+    }
+    if(common_utils.isEmptyOrZeroLength(user)) {
+        harper_logger.info(`verify_perms_ast has an empty user parameter`);
+        return false;
+    }
+    if(common_utils.isEmptyOrZeroLength(operation)) {
+        harper_logger.info(`verify_perms_ast has a null operation parameter`);
+        return false;
+    }
+    try {
+        let parsed_ast = new bucket(ast);
+        let schemas = parsed_ast.getSchemas();
+        let schema_table_map = new Map();
+        // Should not continue if there are no schemas defined.
+        if(!schemas || schemas.length === 0) {
+            harper_logger.info(`No schemas defined in verifyPermsAst(), will not continue.`);
+            return false;
+        }
+        for(let s = 0; s<schemas.length; s++) {
+            let tables = parsed_ast.getTablesBySchemaName(schemas[s]);
+            if(!tables) {
+                return false;
+            }
+
+            for(let t = 0; t<tables.length; t++) {
+                let attributes = parsed_ast.getAttributesBySchemaTableName(schemas[s], tables[t]);
+                if(!checkAttributePerms(attributes, getAttributeRestrictions(user, schemas[s],tables[t]), operation) ) {
+                    return false;
+                }
+            }
+            schema_table_map.set(schemas[s], tables);
+            return hasPermissions(user, operation, schema_table_map);
+        }
+        return true;
+    } catch(e) {
+        harper_logger.info(e);
+        return false;
+    }
+}
+
+/**
+ * Checks if the user's role has the required permissions for the opertion specified.
+ * @param user - the hdb_user specified in the request body
+ * @param op - the name of the operation
+ * @param schema_table_map - A map in the format [schema_key, [tables]].
+ * @returns {boolean} - True if permissions match, false if not authorized.
+ */
+function hasPermissions(user, op, schema_table_map ) {
+    if(common_utils.arrayHasEmptyOrZeroLengthValues([user,op,schema_table_map])) {
+        harper_logger.info(`hasPermissions has an invalid parameter`);
+        return false;
+    }
+    if(user.role.permission.super_user) {
+         //admins can do anything through the hole in sheet!
+        return true;
+    }
+    if(!required_permissions.get(op) || (required_permissions.get(op) && required_permissions.get(op).requires_su)) {
+        // still here after the su check above but this operation require su, so fail.
+        harper_logger.info(`operation ${op} not found or requires SU permissions.`);
+        return false;
+    }
+    for(let schema of schema_table_map.keys()) {
+        //ASSUME ALL TABLES AND SCHEMAS ARE WIDE OPEN
+        // check for schema restrictions
+        for(let table of schema_table_map.get(schema)) {
+            let table_restrictions = [];
+            try {
+                table_restrictions = user.role.permission[schema];
+            } catch (e) {
+                // no-op, no restrictions is OK;
+            }
+
+            if(table_restrictions && table) {
+                try {
+                    //Here we check all required permissions for the operation defined in the map with the values of the permissions in the role.
+                    for(let i = 0; i<required_permissions.get(op).perms.length; i++) {
+                                let perms = required_permissions.get(op).perms[i];
+                        let permission = user.role.permission[schema].tables[table][perms];
+                        if (permission === undefined || permission === null || permission === false) {
+                            harper_logger.info(`Required permission not found for operation ${op} in role ${user.role.id}`);
+                            return false;
+                        }
+                    }
+                } catch(e) {
+                    harper_logger.info(e);
+                    // If we are here, either there are not any permissions specified for the operation, or the schema/table was not found
+                    // In those cases we want to return true, as we assume wide open access unless specified otherwise.
+                    //return true;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+/**
+ * Verifies permissions and restrictions for the NoSQL operation based on the user's assigned role.
+ * @param request_json - The request body as json
+ * @param operation - The name of the operation specifed in the request.
+ * @returns {boolean} - True if permissions match, false if not authorized.
+ */
+function verifyPerms(request_json, operation) {
+    if(request_json === null || operation === null || request_json.hdb_user === undefined || request_json.hdb_user === null) {
+        harper_logger.info(`null required parameter in verifyPerms`);
         return false;
     }
 
@@ -69,64 +214,30 @@ function verify_perms(json, operation) {
         op = operation;
     }
 
-    if(json.hdb_user.role.permission.super_user) {
-        //admins can do anything through the hole in sheet!
-        return true;
-    }
+    let schema = request_json.schema;
+    let table = request_json.table;
 
-    if(required_permissions.get(op) && required_permissions.get(op).requires_su) {
-        // still here after the su check above but this operation require su, so fail.
+    let schema_table_map = new Map();
+    schema_table_map.set(schema, [table]);
+    // go
+    if(hasPermissions(request_json.hdb_user, op, schema_table_map)) {
+        return checkAttributePerms(getRecordAttributes(request_json), getAttributeRestrictions(request_json.hdb_user, schema, table),op);
+    } else {
         return false;
     }
-
-    let schema = json.schema;
-    let table = json.table;
-
-    //ASSUME ALL TABLES AND SCHEMAS ARE WIDE OPEN
-    // check for schema restrictions
-    let table_restrictions = [];
-    try {
-        table_restrictions = json.hdb_user.role.permission[schema];
-    } catch (e) {
-        // no-op, no restrictions is OK;
-    }
-
-    // if there are table_restrictions and table is specified
-    if(table_restrictions && table) {
-        try {
-            if (json.hdb_user.role.permission[schema].tables[table] === undefined || json.hdb_user.role.permission[schema].tables[table] === null) {
-                return true;
-            }
-            //Here we check all required permissions for the operation defined in the map with the values of the permissions in the role.
-            for(let i = 0; i<required_permissions.get(op).length; i++) {
-                let permission = json.hdb_user.role.permission[schema].tables[table][required_permissions.get(op)[i]];
-                if (permission === undefined || permission === null || permission === false) {
-                    harper_logger.info(`Required permission not found for operation ${op} in role ${json.hdb_user.role.id}`);
-                    return false;
-                }
-            }
-            if ( !checkAttributePerms(json, op) ) {
-                return false;
-            }
-
-        } catch(e) {
-            harper_logger.info(e);
-            return false;
-        }
-    }
-    // go
-    return true;
 }
 
 /**
  * Compare the attributes specified in the call with the user's role.  If there are restrictions in the role,
  * ensure that the permission required for the operation matches the restriction in the role.
- * @param json
+ * @param record_attributes - An array of the attributes specified in the operation
+ * @param role_attribute_restrictions - A Map of each restriction in the user role, specified as [table_name, [attribute_restrictions]].
  * @param operation
- * @returns {boolean}
+ * @returns {boolean} - True if permissions match, false if not authorized.
  */
-function checkAttributePerms(json, operation) {
-    if(!json || json.length === 0) {
+function checkAttributePerms(record_attributes, role_attribute_restrictions, operation) {
+    if(!record_attributes || !role_attribute_restrictions) {
+        harper_logger.info(`no attributes specified in checkAttributePerms.`);
         return false;
     }
     // check each attribute with role permissions.  Required perm should match the per in the operation
@@ -134,28 +245,39 @@ function checkAttributePerms(json, operation) {
     if(!needed_perm || needed_perm === '') {
         // We should never get in here since all of our operations should have a perm, but just in case we should fail
         // any operation that doesn't have perms.
+        harper_logger.info(`no permissions found for ${operation} in checkAttributePerms().`);
         return false;
     }
-
-    //TODO: It might be worth caching these to avoid this for every call.
-    let role_attribute_restrictions = getAttributeRestrictions(json);
 
     //TODO: Replace with common utils empty check when it is merged
     // leave early if the role has no attribute permissions set
     if(!role_attribute_restrictions || role_attribute_restrictions.size === 0) {
+        harper_logger.info(`No role restructions set (this is OK).`);
         return true;
     }
 
-    let affected_attributes = getRecordAttributes(json);
-
-    // Check if each specified attribute in the call has a restriction specified in the role.  If there is
+    // Check if each specified attribute in the call (record_attributes) has a restriction specified in the role.  If there is
     // a restriction, check if the operation permission/ restriction is false.
-    for(let element of affected_attributes.values()) {
-        let restriction = role_attribute_restrictions.get(element);
-        if(restriction && needed_perm.perms) {
-            for(let perm of needed_perm.perms) {
-                if (restriction[perm] === false) {
-                    return false;
+    for(let element of record_attributes) {
+        // If there is a wildcard, we need to make sure there are no role_attribute_restrictions that have the needed_perm (READ, UPDATE, etc)
+        // set to false.
+        if(element === WILDCARD) {
+            if(needed_perm.perms) {
+                for (let perm of needed_perm.perms) {
+                    for(let restriction of role_attribute_restrictions.keys()) {
+                        if(role_attribute_restrictions.get(restriction)[perm] === false) {
+                            return false;
+                        }
+                    }
+                }
+            }
+        } else {
+            let restriction = role_attribute_restrictions.get(element);
+            if (restriction && needed_perm.perms) {
+                for (let perm of needed_perm.perms) {
+                    if (restriction[perm] === false) {
+                        return false;
+                    }
                 }
             }
         }
@@ -165,12 +287,15 @@ function checkAttributePerms(json, operation) {
 
 /**
  * Pull the table attributes specified in the statement.  Will always return a Set, even if empty or on error.
- * @param json
- * @returns {Set}
+ * @param json - json containing the request
+ * @returns {Set} - all attributes affected by the request statement.
  */
 function getRecordAttributes(json) {
     let affected_attributes = new Set();
     try {
+        if(!json.records || json.records.length === 0) {
+            return affected_attributes;
+        }
         // get unique affected_attributes
         for (let record = 0; record < json.records.length; record++) {
             let keys = Object.keys(json.records[record]);
@@ -188,22 +313,34 @@ function getRecordAttributes(json) {
 
 /**
  * Pull the attribute restrictions for the schema/table.  Will always return a map, even empty or on error.
- * @param json
- * @returns {Map}
+ * @param json_hdb_user - The hdb_user from the json request body
+ * @param schema - The schema specified in the request
+ * @param table - The table specified.
+ * @returns {Map} A Map of attribute restrictions of the form [attribute_name, attribute_restriction];
  */
-function getAttributeRestrictions(json) {
+function getAttributeRestrictions(json_hdb_user, schema, table) {
+    //TODO: It might be worth caching these to avoid this for every call.
     let role_attribute_restrictions = new Map();
-    if(!json || json.length === 0) {
+    if(!json_hdb_user || json_hdb_user.length === 0) {
+        harper_logger.info(`no hdb_user specified in getAttributeRestrictions`);
+        return role_attribute_restrictions;
+    }
+    if(json_hdb_user.role.permission.super_user) {
+        return role_attribute_restrictions;
+    }
+    // Some commands do not require a table to be specified.  If there is no table, there is likely not
+    // anything attribute restrictions needs to check.
+    if(!schema || !table) {
         return role_attribute_restrictions;
     }
     try {
-        json.hdb_user.role.permission[json.schema].tables[json.table].attribute_restrictions.forEach(function (element) {
-            if (!role_attribute_restrictions.has(element.attribute_name)) {
-                role_attribute_restrictions.set(element.attribute_name, element);
+        json_hdb_user.role.permission[schema].tables[table].attribute_restrictions.forEach(function (restriction) {
+            if (!role_attribute_restrictions.has(restriction.attribute_name)) {
+                role_attribute_restrictions.set(restriction.attribute_name, restriction);
             }
         });
     } catch (e) {
-        harper_logger.info(e);
+        harper_logger.info(`No attribute restrictions found for schema ${schema} and table ${table}.`);
     }
     return role_attribute_restrictions;
 }

@@ -156,21 +156,6 @@ describe(`Test proccessDelegatedTransaction`, function () {
             done();
         })
     });
-    it('Nominal path Global.forks with fork stub "send" spy', function (done) {
-        let proccessDelegatedTransaction_spy =  sinon.spy(FORK_STUB, 'send');
-        let proccessDelegatedTransaction = server_utilities.__get__('proccessDelegatedTransaction');
-        global.forks = [FORK_STUB];
-        global.delegate_callback_queue = [];
-        proccessDelegatedTransaction('insert', 'insert', function (err, found) {
-            // Manually invoking the callback below will return us into here.
-            assert.equal(proccessDelegatedTransaction_spy.called,true, "'send' function was not called.");
-            done();
-        });
-        // Need to call the callback that was assigned in the queue in order to ensure it was called.
-        for(var propertyName in global.delegate_callback_queue) {
-            global.delegate_callback_queue[propertyName]();
-        }
-    });
 });
 
 describe(`Test processInThread`, function () {
