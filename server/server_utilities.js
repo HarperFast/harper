@@ -1,5 +1,5 @@
 
-const  write = require('../data_layer/insert'),
+const write = require('../data_layer/insert'),
     uuidv1 = require('uuid/v1'),
     search = require('../data_layer/search'),
     sql = require('../sqlTranslator/index').evaluateSQL,

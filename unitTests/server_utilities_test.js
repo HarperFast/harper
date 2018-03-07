@@ -7,7 +7,6 @@ const assert = require('assert');
 const sinon = require('sinon');
 const rewire = require('rewire');
 const server_utilities = rewire('../server/server_utilities');
-const user = require('../security/user');
 
 function test_func(test_valuse, callback) {
     return callback(null, true);
