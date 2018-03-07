@@ -8,14 +8,12 @@ const write = require('../data_layer/insert'),
     user = require('../security/user'),
     role = require('../security/role'),
     read_log = require('../utility/logging/read_logs'),
-    winston = require('../utility/logging/winston_logger'),
-    clusert_utilities = require('./clustering/cluster_utilities'),
-    auth = require('../security/auth');
-harper_logger = require('../utility/logging/harper_logger'),
+    auth = require('../security/auth'),
+    harper_logger = require('../utility/logging/harper_logger'),
     op_auth = require('../utility/operation_authorization');
 
 const UNAUTH_RESPONSE = 403;
-const UNAUTHORIZED_TEXT = 'You are not authorized to performs the operation specified';
+const UNAUTHORIZED_TEXT = 'You are not authorized to perform the operation specified';
 let OPERATION_PARAM_ERROR_MSG = `operation parameter is undefined`;
 
 module.exports = {
@@ -25,7 +23,7 @@ module.exports = {
     processInThread: processInThread,
     UNAUTH_RESPONSE,
     UNAUTHORIZED_TEXT
-}
+};
 
 function processLocalTransaction(req, res, operation_function, callback) {
     try {

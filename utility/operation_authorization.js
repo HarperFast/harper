@@ -30,6 +30,9 @@ const READ_PERM = 'read';
 const UPDATE_PERM = 'update';
 
 //SQL operations supported
+//The delete (or any other operation) comes through the parser as an operation separate from the delete_.delete opertaion.
+// Since we store the required permissions for each operation, we need to store required permissions for the SQL delete o
+// peration separate from the delete_.delete operation.
 const SQL_CREATE = "create";
 const SQL_DROP = 'drop';
 const SQL_SELECT = 'select';
@@ -73,6 +76,7 @@ required_permissions.set(role.dropRole.name, new permission(true, []));
 required_permissions.set(user.userInfo.name, new permission(true, []));
 required_permissions.set(read_log.read_log.name, new permission(true, []));
 required_permissions.set(cluster_utilities.addNode.name, new permission(true, []));
+// SQL operations are distinct from operations above, so we need to store required perms for both.
 required_permissions.set(SQL_CREATE, new permission(false, [INSERT_PERM]));
 required_permissions.set(SQL_DROP, new permission(false, [DELETE_PERM]));
 required_permissions.set(SQL_SELECT, new permission(false, [READ_PERM]));
@@ -143,7 +147,7 @@ function verifyPermsAst(ast, user, operation) {
  * @returns {boolean} - True if permissions match, false if not authorized.
  */
 function hasPermissions(user, op, schema_table_map ) {
-    if(common_utils.listHasEmptyOrZeroLengthValues([user,op,schema_table_map])) {
+    if(common_utils.arrayHasEmptyOrZeroLengthValues([user,op,schema_table_map])) {
         harper_logger.info(`hasPermissions has an invalid parameter`);
         return false;
     }
