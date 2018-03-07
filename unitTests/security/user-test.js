@@ -105,6 +105,7 @@ describe('Test addUser', function () {
     let validate_stub = undefined;
     let signal_spy = undefined;
     beforeEach( function() {
+        // We are not testing these other functions, so we stub them.
         search_stub = sinon.stub(search, "searchByHash").yields("", TEST_ADD_USER_SEARCH_OBJ);
         insert_stub = sinon.stub(insert, "insert").yields("", true);
         validate_stub = sinon.stub(validation, "addUserValidation").callsFake(function() {
@@ -119,7 +120,6 @@ describe('Test addUser', function () {
         signal_spy.restore();
     });
     it('Nominal path, add a user', function (done) {
-        // We are not testing these other functions, so we stub them.
         user.addUser(TEST_ADD_USER_JSON, function(err, results) {
             assert.equal(results, ADD_USER_RESULT, 'Expected success result not returned.');
             assert.equal(signal_spy.called, true);
@@ -162,6 +162,7 @@ describe('Test alterUser', function () {
     let validate_stub = undefined;
     let signal_spy = undefined;
     beforeEach( function() {
+        // We are not testing these other functions, so we stub them.
         insert_stub = sinon.stub(insert, "update").yields("", true);
         validate_stub = sinon.stub(validation, "alterUserValidation").callsFake(function() {
             return null;
@@ -199,6 +200,7 @@ describe('Test dropUser', function () {
     let validate_stub = undefined;
     let signal_spy = undefined;
     beforeEach( function() {
+        // We are not testing these other functions, so we stub them.
         delete_stub = sinon.stub(delete_, "delete").yields("", true);
         validate_stub = sinon.stub(validation, "dropUserValidation").callsFake(function() {
             return null;
@@ -234,6 +236,7 @@ describe('Test dropUser', function () {
 describe('Test user_info', function () {
     let search_stub = undefined;
     beforeEach( function() {
+        // We are not testing these other functions, so we stub them.
         search_stub = sinon.stub(search, "searchByHash").yields("", TEST_USER_INFO_SEARCH_RESPONSE);
     });
     afterEach( function() {
@@ -261,6 +264,7 @@ describe('Test user_info', function () {
 describe('Test list_users', function () {
     let search_stub = undefined;
     beforeEach( function() {
+        // We are not testing these other functions, so we stub them.
         // Need to clone these since the list_users function attaches the role into the user.
         let role_search_response_clone = clone(TEST_LIST_USER_ROLE_SEARCH_RESPONSE);
         let user_search_response_clone = clone(TEST_LIST_USER_SEARCH_RESPONSE);
@@ -297,6 +301,7 @@ describe('Test list_users', function () {
 describe('Test list_users_external', function () {
     let search_stub = undefined;
     beforeEach( function() {
+        // We are not testing these other functions, so we stub them.
         // Need to clone these since the list_users function attaches the role into the user.
         let role_search_response_clone = clone(TEST_LIST_USER_ROLE_SEARCH_RESPONSE);
         let user_search_response_clone = clone(TEST_LIST_USER_SEARCH_RESPONSE);
