@@ -4,6 +4,9 @@ const RecursiveIterator = require('recursive-iterator'),
     alasql = require('alasql'),
     clone = require('clone');
 
+//exclusion list for validation on group bys
+const custom_aggregators = ['DISTINCT_ARRAY'];
+
 const validateTables = Symbol('validateTables'),
     validateTable = Symbol('validateTable'),
     getAllColumns = Symbol('getAllColumns'),
@@ -183,10 +186,17 @@ class SelectValidator{
 //here we are pulling out all non-aggregate functions into an array for comaprison to the group by
         this.statement.columns.forEach((column)=>{
 
+            //this keeps white listed custom functions from being validated
+            if(column.funcid && custom_aggregators.indexOf(column.funcid.toUpperCase()) >= 0){
+                return;
+            }
+
             if(!column.aggregatorid && !column.columnid){
                 //this is to make sure functions or any type ofevaluatory statement is being compared to the select.
                 //i.e. "GROUP BY UPPER(name)" needs to have UPPER(name) in the select
-                select_columns.push(column);
+                let column_clone = clone(column);
+                delete column_clone.as;
+                select_columns.push(column_clone);
             } else if(column.columnid){
                 let found = this[findColumn](column)[0];
                 if(found){
