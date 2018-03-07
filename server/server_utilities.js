@@ -8,14 +8,14 @@ const write = require('../data_layer/insert'),
     user = require('../security/user'),
     role = require('../security/role'),
     read_log = require('../utility/logging/read_logs'),
-    winston = require('../utility/logging/winston_logger'),
     cluster_utilities = require('./clustering/cluster_utilities'),
-    auth = require('../security/auth');
+    auth = require('../security/auth'),
     harper_logger = require('../utility/logging/harper_logger'),
     export_ = require('../data_layer/export') ;
     op_auth = require('../utility/operation_authorization');
 
 const UNAUTH_RESPONSE = 403;
+const UNAUTHORIZED_TEXT = 'You are not authorized to perform the operation specified';
 let OPERATION_PARAM_ERROR_MSG = `operation parameter is undefined`;
 
 module.exports = {
@@ -23,8 +23,9 @@ module.exports = {
     processLocalTransaction: processLocalTransaction,
     proccessDelegatedTransaction: proccessDelegatedTransaction,
     processInThread: processInThread,
-    UNAUTH_RESPONSE
-}
+    UNAUTH_RESPONSE,
+    UNAUTHORIZED_TEXT
+};
 
 function processLocalTransaction(req, res, operation_function, callback) {
     try {
@@ -39,11 +40,14 @@ function processLocalTransaction(req, res, operation_function, callback) {
     operation_function(req.body, (error, data) => {
         if (error) {
             harper_logger.info(error);
-            if (typeof error !== 'object')
+            if(error === UNAUTH_RESPONSE) {
+                error = UNAUTHORIZED_TEXT;
+            }
+            if(typeof error !== 'object') {
                 error = {"error": error};
+            }
             res.status(500).json({error: (error.message ? error.message : error.error)});
             return callback(error);
-            ;
         }
         if (typeof data !== 'object')
             data = {"message": data};
@@ -220,8 +224,8 @@ function chooseOperation(json, callback) {
     }
     // We need to do something different for sql operations as we don't want to parse
     // the SQL command twice.
-    if (operation_function !== sql) {
-        if (op_auth.verify_perms(json, operation_function) === false) {
+    if(operation_function !== sql) {
+        if (op_auth.verifyPerms(json, operation_function) === false) {
             harper_logger.error(UNAUTH_RESPONSE);
             return callback(UNAUTH_RESPONSE, null);
         }
