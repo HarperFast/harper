@@ -48,7 +48,7 @@ let TEST_JSON = {
         "role": {
             "id": "9c9aae33-4d1d-40b5-a52e-bbbc1b2e2ba6",
             "permission": {
-                "super_admin": false,
+                "super_user": false,
                 "dev": {
                     "tables": {
                         "dog": {
@@ -90,7 +90,7 @@ let TEST_JSON_SUPER_USER = {
         "role": {
             "id": "9c9aae33-4d1d-40b5-a52e-bbbc1b2e2ba6",
             "permission": {
-                "super_admin": true,
+                "super_user": true,
                 "dev": {
                     "tables": {
                         "dog": {

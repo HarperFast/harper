@@ -1,250 +1,292 @@
 "use strict";
 
-const _ = require('lodash'),
-    AttributeParser = require('./AttributeParser');
+const RecursiveIterator = require('recursive-iterator'),
+    alasql = require('alasql'),
+    clone = require('clone');
 
-//defines "private" functions
+//exclusion list for validation on group bys
+const custom_aggregators = ['DISTINCT_ARRAY'];
+
 const validateTables = Symbol('validateTables'),
-    validateSelectColumns = Symbol('validateSelectColumns'),
-    createTableObject = Symbol('createTableObject'),
+    validateTable = Symbol('validateTable'),
+    getAllColumns = Symbol('getAllColumns'),
+    validateAllColumns = Symbol('validateAllColumns'),
+    findColumn = Symbol('findColumn'),
+    validateOrderBy = Symbol('validateOrderBy'),
+    validateSegment = Symbol('validateSegment'),
     validateColumn = Symbol('validateColumn'),
-    validateOrderByColumn = Symbol('validateOrderByColumn'),
-    validateConditions = Symbol('validateConditions'),
-    checkConditionColumns = Symbol('checkConditionColumns'),
-    createAttributeFromSplitString = Symbol('createAttributeFromSplitString'),
-    validateTableJoins = Symbol('validateTableJoins');
+    setColumnsForTable = Symbol('setColumnsForTable'),
+    checkColumnsForAsterisk = Symbol('checkColumnsForAsterisk'),
+    validateGroupBy = Symbol('validateGroupBy');
 
-const TABLE_INDEX = 0,
-    COLUMN_INDEX = 1;
-
-class SelectValidator {
+/**
+ * Validates the tables and attributes against the actual schema
+ * Validates general SQL rules
+ */
+class SelectValidator{
     constructor(statement){
         this.statement = statement;
-        //get all of the tables
-        this.tables = [];
-        this.attribute_parser;
+        this.attributes = [];
     }
 
-    validator(callback){
-        let condition_columns = [];
-        let order_by_columns = [];
-
-        try {
-            if(!this.statement){
-                return callback('invalid sql statement');
-            }
-
-            if (this.statement.having) {
-                throw 'HAVING clauses are not supported at this time';
-            }
-
-            //get all of the tables
-            this.tables = this[validateTables]();
-            this.attribute_parser = new AttributeParser(this.statement.result, this.tables);
-
-            let select_columns = this[validateSelectColumns]();
-
-            this[validateTableJoins]();
-
-            this[validateConditions](this.statement.where ? this.statement.where[0] : null);
-
-            if(this.statement.order) {
-                this.statement.order.forEach((order_by) => {
-                    let order = order_by.expression ? order_by.expression : order_by;
-                    let found_column = this[validateOrderByColumn](select_columns, order.name, false);
-                    if(!found_column){
-                        throw `column '${order.name}' must be in select`;
-                    }
-                    order_by_columns.push(order.name);
-                });
-            }
-
-            if(this.statement.group) {
-                this.statement.group.expression.forEach((group_by) => {
-                    let group = group_by.expression ? group_by.expression : group_by;
-                    this[validateOrderByColumn](select_columns, group.name, true);
-                });
-            }
-
-            callback();
-
-        }catch(e){
-            callback(e);
+    /**
+     * entry point for validation
+     * @returns {*}
+     */
+    validate(){
+        if(!this.statement){
+            return callback('invalid sql statement');
         }
+
+        this[validateTables]();
+        this[checkColumnsForAsterisk]();
+        this[validateAllColumns]();
     }
 
+    /**
+     * loops thru the from and join arrays of the AST and passes individual entries into validateTable
+     */
     [validateTables](){
-        let tables = [];
-        if (this.statement.from.type === 'map') {
-            tables.push(this[createTableObject](this.statement.from.source));
-            this.statement.from.map.forEach((table) => {
-                tables.push(this[createTableObject](table.source));
-            });
-        } else {
-            tables.push(this[createTableObject](this.statement.from));
+        if(!this.statement.from || this.statement.from.length === 0){
+            throw `no from clause`;
         }
 
-        //make sure tables have unique names
-        let unique_tables = _.uniqBy(tables, 'alias');
-        if(unique_tables.length !== tables.length){
-            throw 'table name/aliases are not distinct';
-        }
-
-        return tables;
-    }
-
-    [validateTableJoins](){
-        //evaluate table joins
-        if (this.statement.from.type === 'map') {
-            this.statement.from.map.forEach((table) => {
-                this[validateConditions](table.constraint.on);
-            });
-        }
-    }
-
-    [validateSelectColumns](){
-        let select_columns = this.attribute_parser.parseGetAttributes();
-
-        return select_columns;
-    }
-
-    [createTableObject](table){
-        let schema_table = table.name.split('.');
-
-        if(schema_table.length !== 2){
-            throw `invalid table ${table.name}`;
-        }
-
-        if(!global.hdb_schema[schema_table[0]] || !global.hdb_schema[schema_table[0]][schema_table[1]]){
-            throw `invalid table ${table.name}`;
-        }
-
-        return {
-            alias: table.alias ? table.alias : schema_table[1],
-            schema: schema_table[0],
-            table: schema_table[1]
-        };
-    }
-
-    [validateColumn](column_name){
-
-        let table_column = column_name.split('.');
-
-        if (this.tables.length > 1 && table_column.length === 1) {
-            throw `column '${column_name}' ambiguously defined`;
-        }
-
-        if(table_column.length === 1){
-            //add the only table name to the array so we can validate properly
-            table_column.unshift(this.tables[0].table);
-        } else {
-            let found_table = _.filter(this.tables, (table) => {
-                return table.table === table_column[0] || table.alias === table_column[0];
-            });
-
-            if (found_table.length === 0) {
-                throw `unknown table for column '${column_name}'`;
-            }
-        }
-
-        let attribute = this[createAttributeFromSplitString](table_column, column_name);
-        this.attribute_parser.checkColumnExists(attribute);
-    }
-
-    //receive an array based on a string split by '.' convert it to an attribute object,
-    // mainly used to verify the column exists in the schema
-    [createAttributeFromSplitString](table_column, raw_name){
-        let table_info = this.tables.filter((table)=>{
-            return table.alias === table_column[0] || table.table === table_column[0];
-        })[0];
-
-        if(!table_info){
-            throw `unknown table for column ${raw_name}`;
-        }
-
-        let attribute = {
-            schema:table_info.schema,
-            table:table_info.table,
-            table_alias:table_info.alias,
-            attribute:table_column[1],
-            raw_name: raw_name
-        };
-
-        return attribute;
-    }
-
-    [validateOrderByColumn](select_columns, column_name, is_group_by){
-        let table_column = column_name.split('.');
-
-        if(table_column.length === 1){
-            //add the only table name to the array so we can validate properly
-            table_column.unshift(this.tables[0].table);
-        }
-
-        let table_info = this.tables.filter((table)=>{
-            return table.alias === table_column[TABLE_INDEX] || table.table === table_column[TABLE_INDEX];
-        })[0];
-
-        if(!table_info){
-            throw `unknown table for column ${column_name}`;
-        }
-
-
-        let col = table_column.length === 1 ? column_name : table_column[COLUMN_INDEX];
-        let found_column = _.filter(select_columns, (column)=>{
-            //if the column is a calculation i.e. sum(age) we need to see if the calculation value equals the col value
-            //or if col == alias. NOTE a calculation will never have a name attribute
-            if(column.calculation){
-                return column.calculation === col || column.alias === col;
-            }
-
-            // check if the column name or alias matches with it's table and schema
-            return (column.table === table_info.table || column.table_alias === table_info.alias) && (column.name === '*' || column.alias === col || column.name === col);
+        this.statement.from.forEach((table)=>{
+            this[validateTable](table);
         });
 
-        let attribute = found_column[0];
-        if(is_group_by && !attribute){
-            attribute = {
-                table:table_info.table,
-                table_alias:table_info.alias,
-                attribute:col,
-                alias:col
-            };
-        } else if(!attribute){
+        if(this.statement.joins){
+            this.statement.joins.forEach((join)=>{
+                join.table.as = join.as;
+                this[validateTable](join.table);
+            });
+        }
+    }
+
+    /**
+     * Checks that the table exists in the schema, adds all of it's attributes to the class level collection this.attributes
+     * @param table
+     */
+    [validateTable](table){
+        if(!table.databaseid){
+            throw `schema not defined for table ${table.tableid}`;
+        }
+
+        if(!global.hdb_schema[table.databaseid] || !global.hdb_schema[table.databaseid][table.tableid]){
+            throw `invalid table ${table.databaseid}.${table.tableid}`;
+        }
+
+        //let the_table = clone(table);
+        let schema_table = global.hdb_schema[table.databaseid][table.tableid];
+/*TODO rather than putting every attribute in an array we will create a Map there will be a map element for every table and every table alias
+ (this will create duplicate map elements) this will have downstream effects in comparison functions like findColumn*/
+        schema_table.attributes.forEach((attribute)=>{
+            let attribute_clone = clone(attribute);
+            attribute_clone.table = table;
+            this.attributes.push(attribute_clone);
+        });
+    }
+
+    /**
+     * validates the column against the schema
+     * @param column
+     * @returns {*[]}
+     */
+    [findColumn](column){
+        //look to see if this attribute exists on one of the tables we are selecting from
+        let found_columns = this.attributes.filter((attribute)=>{
+            if(column.tableid){
+                return (attribute.table.as === column.tableid || attribute.table.tableid === column.tableid) && attribute.attribute === column.columnid;
+            } else {
+                return attribute.attribute === column.columnid;
+            }
+        });
+
+        return found_columns;
+    }
+
+    /**
+     * detects * in the select, if found adds all columns to the select
+     */
+    [checkColumnsForAsterisk](){
+        var iterator = new RecursiveIterator(this.statement.columns);
+
+        for(let {node, path} of iterator) {
+            //we check the path to make sure the '*' is not wrapped in some form of expression like count(*)
+            if(node && node.columnid === '*' && path.indexOf('expression') < 0){
+                this[setColumnsForTable](node.tableid);
+            }
+        }
+    }
+
+    /**
+     * takes a table and adds all of it's columns to the select. if no table it adds every column from every tabl;e in the select
+     * @param table_name
+     */
+    [setColumnsForTable](table_name){
+        this.attributes.forEach((attribute)=>{
+
+            if(!table_name || (table_name && (attribute.table.tableid === table_name || attribute.table.as === table_name))){
+                this.statement.columns.push(new alasql.yy.Column({
+                    columnid: attribute.attribute,
+                    tableid: attribute.table.as ? attribute.table.as : attribute.table.tableid
+                }));
+            }
+        });
+    }
+
+    /**
+     * passes segments to ValidateSegment for validation
+     */
+    [validateAllColumns](){
+        this[validateSegment](this.statement.columns, false);
+        this[validateSegment](this.statement.joins, false);
+        this[validateSegment](this.statement.where, false);
+        this[validateGroupBy](this.statement.group);
+        this[validateSegment](this.statement.order, true);
+    }
+
+    /**
+     * iterates the attributes in a segment and validates them against the schema
+     * @param segment
+     * @param is_order_by
+     * @returns {*}
+     */
+    [validateSegment](segment, is_order_by){
+        if(!segment){
+            return;
+        }
+
+        let iterator = new RecursiveIterator(segment);
+        let attributes = [];
+        for(let {node, path} of iterator) {
+            if(node && node.columnid && node.columnid !== '*'){
+                if(is_order_by) {
+                    this[validateOrderBy](node);
+                } else {
+                    attributes.push(this[validateColumn](node));
+                }
+            }
+        }
+
+        return attributes;
+    }
+
+    /**
+     * validation specific for GROUP BY
+     * makes sure that the non-aggregate functionsa and columns from the select are represented in the group by and the columns match the schema
+     * @param segment
+     */
+    [validateGroupBy](segment){
+        if(!segment){
+            return;
+        }
+        //check select for aggregates and non-aggregates, if it has both non-aggregates need to be in group by
+        let select_columns = [];
+//here we are pulling out all non-aggregate functions into an array for comaprison to the group by
+        this.statement.columns.forEach((column)=>{
+
+            //this keeps white listed custom functions from being validated
+            if(column.funcid && custom_aggregators.indexOf(column.funcid.toUpperCase()) >= 0){
+                return;
+            }
+
+            if(!column.aggregatorid && !column.columnid){
+                //this is to make sure functions or any type ofevaluatory statement is being compared to the select.
+                //i.e. "GROUP BY UPPER(name)" needs to have UPPER(name) in the select
+                let column_clone = clone(column);
+                delete column_clone.as;
+                select_columns.push(column_clone);
+            } else if(column.columnid){
+                let found = this[findColumn](column)[0];
+                if(found){
+                    select_columns.push(found);
+                }
+            }
+        });
+
+//here we iterate the group by and compare to what is in the select and make sure they match appropriately
+        this.statement.group.forEach((group_column)=>{
+            let found_column = null;
+
+            if(!group_column.columnid){
+                //TODO can use for of to break out of the loop rather than this janky way
+                select_columns.forEach((column, x) => {
+                    if (column.toString() === group_column.toString()) {
+                        found_column = column;
+                        select_columns.splice(x, 1);
+                        return;
+                    }
+                });
+            } else {
+
+                let found_group_column = this[findColumn](group_column);
+
+                if (!found_group_column || found_group_column.length === 0) {
+                    throw `unknown column '${group_column.toString()}' in group by`;
+                }
+
+                if (found_group_column.length > 1) {
+                    throw `ambiguously defined column '${group_column.toString()}' in group by`;
+                }
+
+                //TODO can use for of to break out of the loop rather than this janky way
+                select_columns.forEach((column, x) => {
+                    if (column.attribute === found_group_column[0].attribute && column.table.tableid === found_group_column[0].table.tableid) {
+                        found_column = column;
+                        select_columns.splice(x, 1);
+                        return;
+                    }
+                });
+            }
+
+            if(!found_column) {
+                throw `group by column '${group_column.toString()}' must be in select`;
+            }
+        });
+
+        if(select_columns.length > 0){
+            throw `select column '${select_columns[0].attribute ? select_columns[0].attribute : select_columns[0].toString()}' must be in group by`;
+        }
+    }
+
+    /**
+     * Order BY specific validation
+     *
+     * @param column
+     */
+    [validateOrderBy](column){
+        let found_columns = this.statement.columns.filter((col)=>{
+            return col.as === column.columnid;
+        });
+
+        if(found_columns.length > 1){
+            let column_name =  (column.tableid ? column.tableid + '.' : '') + column.columnid;
+            throw `ambiguous column reference ${column_name} in order by`;
+        } else if(found_columns.length === 0){
+            this[validateColumn](column);
+        }
+    }
+
+    /**
+     * validates a column to the schema
+     * @param column
+     * @returns {*}
+     */
+    [validateColumn](column){
+        let found_columns = this[findColumn](column);
+
+        let column_name =  (column.tableid ? column.tableid + '.' : '') + column.columnid;
+
+        if(found_columns.length === 0){
             throw `unknown column ${column_name}`;
         }
 
-        attribute.schema = table_info.schema;
-
-        if(!attribute.calculation) {
-            this.attribute_parser.checkColumnExists(attribute);
+        if(found_columns.length > 1){
+            throw `ambiguous column reference ${column_name}`;
         }
 
-        return attribute;
-    }
-
-    [validateConditions](where_clause){
-        if(where_clause) {
-            let left = where_clause;
-
-            while (left.left.type === 'expression') {
-                let condition = left.right;
-                this[checkConditionColumns](condition);
-
-                left = left.left;
-            }
-            this[checkConditionColumns](left);
-        }
-    }
-
-    [checkConditionColumns](condition){
-        if(condition.left.variant === 'column') {
-            this[validateColumn](condition.left.name);
-        }
-
-        if(condition.right.variant === 'column') {
-            this[validateColumn](condition.right.name);
-        }
+        return found_columns[0];
     }
 }
 
