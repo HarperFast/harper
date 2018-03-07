@@ -4,10 +4,15 @@ const sqliteParser = require('sqlite-parser'),
     //select_translator = require('./selectTranslator').convertSelect,
     search = require('../data_layer/search').search,
     //update_translator = require('./updateTranslator').convertUpdate,
+    alasql_extension = require('../utility/functions/sql/alaSQLExtension'),
+    date_functions = require('../utility/functions/date/dateFunctions'),
     update = require('../data_layer/update').update,
     delete_translator = require('./deleteTranslator').convertDelete,
     winston = require('../utility/logging/winston_logger'),
-    alasql = require('alasql');
+    alasql = require('alasql'),
+    alasql_function_importer = require('./alasqlFunctionImporter');
+//here we call to define and import custom functions to alasql
+    alasql_function_importer(alasql);
 
 module.exports = {
     evaluateSQL: evaluateSQL

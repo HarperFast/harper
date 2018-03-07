@@ -9,12 +9,6 @@ let self = module.exports = {
     current_time: () => {
         return moment().format('HH:mm:ss');
     },
-    current_timestamp: () => {
-        return moment().format();
-    },
-    now: ()=>{
-        return self.current_timestamp();
-    },
     extract: (date, date_part)=>{
         switch(date_part.toLowerCase()){
             case 'year':

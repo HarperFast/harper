@@ -39,7 +39,7 @@
     "licensekey": "^2.0.11",
     "lodash": "^4.17.4",
     "lodash-joins": "^2.0.3",
-    "mathjs": "^3.17.0",
+    "mathjs": "^4.0.0",
     "mkdirp": "^0.5.1",
     "moment": "^2.20.1",
     "net": "^1.0.2",
