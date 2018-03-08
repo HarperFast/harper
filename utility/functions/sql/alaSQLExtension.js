@@ -36,7 +36,11 @@ module.exports = {
     /***
      * compute the product based on http://mathjs.org/docs/reference/functions/prod.html
      */
-    prod:aggregateFunction.bind(null, mathjs.prod)
+    prod:aggregateFunction.bind(null, mathjs.prod),
+    /***
+     * compute the median based on http://mathjs.org/docs/reference/functions/median.html
+     */
+    median:aggregateFunction.bind(null, mathjs.median)
 };
 
 /***
