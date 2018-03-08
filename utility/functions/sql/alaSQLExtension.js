@@ -68,11 +68,10 @@ function aggregateFunction(calculation_function, value, array, stage){
         }
         return array;
     } else {
-        if(array.length > 0){
+        if(array !== null && array !== undefined && array.length > 0){
             return calculation_function(array);
         }
 
-        return 0;
-
+        return null;
     }
 }
