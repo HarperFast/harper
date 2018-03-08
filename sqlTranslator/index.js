@@ -1,11 +1,14 @@
-const sqliteParser = require('sqlite-parser'),
-    insert = require('../data_layer/insert'),
+const insert = require('../data_layer/insert'),
     search = require('../data_layer/search').search,
     update = require('../data_layer/update').update,
     delete_translator = require('./deleteTranslator').convertDelete,
     alasql = require('alasql'),
     op_auth = require('../utility/operation_authorization'),
-    winston = require('../utility/logging/winston_logger');
+    winston = require('../utility/logging/winston_logger'),
+    alasql_function_importer = require('./alasqlFunctionImporter');
+
+//here we call to define and import custom functions to alasql
+alasql_function_importer(alasql);
 
 module.exports = {
     evaluateSQL: evaluateSQL
