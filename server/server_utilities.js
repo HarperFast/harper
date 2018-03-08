@@ -1,3 +1,4 @@
+
 const write = require('../data_layer/insert'),
     uuidv1 = require('uuid/v1'),
     search = require('../data_layer/search'),
@@ -51,7 +52,6 @@ function processLocalTransaction(req, res, operation_function, callback) {
         }
         if (typeof data !== 'object')
             data = {"message": data};
-
         res.status(200).json(data);
         return callback(null, data);
     });
@@ -194,7 +194,7 @@ function chooseOperation(json, callback) {
             operation_function = user.dropUser;
             break;
         case 'list_users':
-            operation_function = user.listUsers;
+            operation_function = user.listUsersExternal;
             break;
         case 'list_roles':
             operation_function = role.listRoles;

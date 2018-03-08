@@ -24,7 +24,6 @@ class fork_stub  {
 };
 
 let FORK_STUB = new fork_stub();
-
 let TEST_JSON = {
     "operation": "insert",
     "schema": "dev",
@@ -65,7 +64,7 @@ let TEST_JSON = {
         },
         "username": "bad_user_2"
     }
-}
+};
 
 let TEST_JSON_SUPER_USER = {
     "operation": "insert",
@@ -109,6 +108,7 @@ let TEST_JSON_SUPER_USER = {
     }
 }
 
+// Naive clone, never ever do this in prod code.
 function clone(a) {
     return JSON.parse(JSON.stringify(a));
 }
