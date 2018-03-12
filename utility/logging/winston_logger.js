@@ -9,7 +9,7 @@ const logger = new (winston.Logger)({
     transports: [
         new(winston.transports.File)({
             level: 'error',
-            //filename:`${hdb_properties.get('HDB_ROOT')}/log/hdb_log.log`,
+            filename:`${hdb_properties.get('HDB_ROOT')}/log/hdb_log.log`,
             handleExceptions: true,
             prettyPrint:true
         })
