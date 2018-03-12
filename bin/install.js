@@ -9,7 +9,7 @@ function install (callback) {
             }
             console.log("There was an error during the install.  Please check the install logs. \n ERROR: " + err);
             winston.error(err)
-            callback(err);
+            return callback(err);
         }
         callback(null, "Installation successful");
     });
