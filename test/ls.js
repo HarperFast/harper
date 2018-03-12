@@ -1,77 +1,120 @@
-const ls = require('node-ls'),
-async = require('async'),
-fs = require('fs');
+const alasql = require('alasql'),
+    mathjs = require('mathjs');
 
-let base_path = '/home/kyle/ssd/hdb/schema/iot_data/message/';
-let attributes = [
-    base_path +'timetoken',
-    base_path + 'ambient_temperature',
-    base_path + 'humidity',
-    base_path + 'radiation_level',
-    base_path + 'photosensor',
-    base_path + 'sensor_uuid',
-    base_path + 'timestamp'
+let array = [
+    {
+        "else": "Penny Bernhardy",
+        "age": 5,
+        "owner_name": "Kyle",
+        "adorable": true,
+        "id": 1,
+        "breed_id": 154,
+        "weight_lbs": 35
+    },
+    {
+        "else": "Harper",
+        "age": 5,
+        "owner_name": "Stephen",
+        "adorable": true,
+        "id": 2,
+        "breed_id": 346,
+        "weight_lbs": 55
+    },
+    {
+        "else": "Alby",
+        "age": 5,
+        "owner_name": "Kaylan",
+        "adorable": true,
+        "id": 3,
+        "breed_id": 348,
+        "weight_lbs": 84
+    },
+    {
+        "else": "Billy",
+        "age": 4,
+        "owner_name": "Zach",
+        "adorable": true,
+        "id": 4,
+        "breed_id": 347,
+        "weight_lbs": 60
+    },
+    {
+        "else": "Rose Merry",
+        "age": 6,
+        "owner_name": "Zach",
+        "adorable": true,
+        "id": 5,
+        "breed_id": 348,
+        "weight_lbs": 15
+    },
+    {
+        "else": "Kato",
+        "age": 4,
+        "owner_name": "Kyle",
+        "adorable": true,
+        "id": 6,
+        "breed_id": 351,
+        "weight_lbs": 28
+    },
+    {
+        "else": "Simon",
+        "age": 1,
+        "owner_name": "Fred",
+        "adorable": true,
+        "id": 7,
+        "breed_id": 349,
+        "weight_lbs": 35
+    },
+    {
+        "else": "Gemma",
+        "age": 3,
+        "owner_name": "Stephen",
+        "adorable": true,
+        "id": 8,
+        "breed_id": 350,
+        "weight_lbs": 55
+    },
+    {
+        "else": "Gertrude",
+        "age": 5,
+        "owner_name": "Eli",
+        "adorable": true,
+        "id": 9,
+        "breed_id": 158,
+        "weight_lbs": 70
+    },
+    {
+        "else": "Big Louie",
+        "age": 11,
+        "owner_name": "Eli",
+        "adorable": true,
+        "id": 10,
+        "breed_id": 241,
+        "weight_lbs": 20
+    }
 ];
-
-
-/*getValues(base_path, attributes, (err, data)=>{
-    console.timeEnd('ls');
-    /!*async.each(Object.keys(data), (path, callback)=>{
-        console.time('ls ' + path);
-        getValues(path, data[path], (error, results)=>{
-            console.timeEnd('ls ' + path);
-            if(error){
-                console.error(error);
-            }
-            callback();
-        });
-    }, (err)=>{
-        console.timeEnd('ls');
-    });*!/
-});*/
-console.time('ls');
-let final = [];
-    ls(attributes, 'a', (err, values)=>{
-        console.timeEnd('ls');
-        Object.keys(values).forEach((key)=>{
-            let key_split = key.split('/');
-            let attr = key_split[key_split.length - 1];
-            async.each(values,(value, (err, data)=>{}))
-            values[key].forEach((value)=>{
-                final.push({
-                    attribute: attr,
-                    value: value
-                });
-            });
-        });
-
-        console.log(final.length);
-
-        fs.writeFileSync('/home/kyle/ssd/data.json', JSON.stringify(final));
-
-    });
-
-
-
-
-function getValues(path, attributes, callback){
-    let all_values = {};
-    async.each(attributes, (attribute, caller)=>{
-        let attribute_path = path+attribute+'/';
-        console.time('ls' + attribute);
-        ls(attribute_path, '-a', (err, values)=>{
-           // console.timeEnd('ls' + attribute);
-            if(err){
-                return caller(err);
-            }
-
-
-        });
-    }, (err)=>{
-        if(err){
-            console.error(err);
+alasql.aggr.MEDIAN = (value, array, stage)=>{
+    if(stage === 1){
+        if(value === null || value === undefined){
+            return [];
         }
 
-        callback(null, all_values);
-    });
-}
+        return [value];
+    } else if(stage === 2){
+        if(value !== null && value !== undefined){
+            array.push(value);
+        }
+        return array;
+    } else {
+        if(array.length > 0){
+            return mathjs.median(array);
+        }
+
+        return 0;
+
+    }
+};
+
+
+console.log(alasql.parse('SELECT round(age) as `as` from ? order by round(age)'));
+
