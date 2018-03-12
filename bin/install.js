@@ -1,7 +1,7 @@
 const installer = require('../utility/install/installer');
 
 function install (callback) {
-    installer.install(function(err, result) {
+    installer.install(function(err) {
         if(err) {
             if(err === 'REFUSED') {
                 console.log("Terms & Conditions refused, closing installer.");
@@ -9,7 +9,7 @@ function install (callback) {
             }
             console.log("There was an error during the install.  Please check the install logs. \n ERROR: " + err);
             winston.error(err)
-            callback(err, result);
+            callback(err);
         }
         callback(null, "Installation successful");
     });
