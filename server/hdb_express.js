@@ -36,7 +36,7 @@ if (node_env_value === undefined || node_env_value === null || node_env_value ==
 
 process.env['NODE_ENV'] = node_env_value;
 
-let numCPUs = 1;
+let numCPUs = 4;
 
 let num_workers = require('os').cpus().length;
 numCPUs = num_workers < numCPUs ? num_workers : numCPUs;

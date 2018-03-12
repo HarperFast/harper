@@ -7,7 +7,7 @@ hdb_properties.append(hdb_properties.get('settings_path'));
 
 const logger = new (winston.Logger)({
     transports: [
-        new(winston.transports.Console)({
+        new(winston.transports.File)({
             level: 'error',
             //filename:`${hdb_properties.get('HDB_ROOT')}/log/hdb_log.log`,
             handleExceptions: true,
