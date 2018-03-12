@@ -1,5 +1,6 @@
 #!/bin/bash
 
+
 working_dir=$(pwd)
 target_dir=/opt/harperdb_cluster
 node_count=$2
