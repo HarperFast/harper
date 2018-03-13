@@ -1,5 +1,6 @@
 #!/bin/bash
 hdb_data="/home/harperdb/hdb"
+
 obfuscript()
 {
 #REMOVE FOR PRODUCTION
