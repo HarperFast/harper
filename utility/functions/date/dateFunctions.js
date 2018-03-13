@@ -2,18 +2,12 @@
 
 const moment = require('moment');
 
-let self = module.exports = {
+module.exports = {
     current_date: () => {
         return moment().format('YYYY-MM-DD');
     },
     current_time: () => {
         return moment().format('HH:mm:ss');
-    },
-    current_timestamp: () => {
-        return moment().format();
-    },
-    now: ()=>{
-        return self.current_timestamp();
     },
     extract: (date, date_part)=>{
         switch(date_part.toLowerCase()){

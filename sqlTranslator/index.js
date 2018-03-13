@@ -1,20 +1,23 @@
-const sqliteParser = require('sqlite-parser'),
-    insert = require('../data_layer/insert'),
-    global_schema = require('../utility/globalSchema'),
-    //select_translator = require('./selectTranslator').convertSelect,
+const insert = require('../data_layer/insert'),
     search = require('../data_layer/search').search,
-    //update_translator = require('./updateTranslator').convertUpdate,
     update = require('../data_layer/update').update,
     delete_translator = require('./deleteTranslator').convertDelete,
+    alasql = require('alasql'),
+    op_auth = require('../utility/operation_authorization'),
     winston = require('../utility/logging/winston_logger'),
-    alasql = require('alasql');
+    alasql_function_importer = require('./alasqlFunctionImporter');
+
+//here we call to define and import custom functions to alasql
+alasql_function_importer(alasql);
 
 module.exports = {
     evaluateSQL: evaluateSQL
 };
 
+let UNAUTHORIZED_RESPONSE = 403;
+
 function evaluateSQL(sql, callback) {
-    processSQL(sql.sql.trim(), (error, results)=>{
+    processSQL(sql, (error, results)=>{
         if(error){
             return callback(error);
         }
@@ -25,12 +28,17 @@ function evaluateSQL(sql, callback) {
 
 function processSQL(sql, callback){
     try {
-        if(!sql){
+        if(!sql || !sql.sql) {
             throw new Error('invalid SQL: ' + sql);
         }
-        let ast = alasql.parse(sql);
-        let variant = sql.split(" ")[0].toLowerCase();
+        let trimmed_sql = sql.sql.trim();
+        let ast = alasql.parse(trimmed_sql);
+        let variant = trimmed_sql.split(" ")[0].toLowerCase();
         let sql_function = nullFunction;
+
+        if(!op_auth.verifyPermsAst(ast.statements[0], sql.hdb_user, variant)) {
+            return callback(UNAUTHORIZED_RESPONSE, null);
+        }
         switch (variant) {
             case 'select':
                 sql_function = search;
