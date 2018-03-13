@@ -4,6 +4,8 @@ const winston = require('../utility/logging/winston_logger');
 const uuidv1 = require('uuid/v1');
 const user_schema = require('../utility/user_schema');
 const async = require('async');
+const insert = require('../data_layer/insert');
+
 
 const DEFAULT_SERVER_TIMEOUT = 120000;
 const UNAUTH_ERROR_MESSAGE = "You are not authorized to perform this action.";
@@ -337,7 +339,6 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                             });
                         }else{
                             try {
-                                const insert = require('../data_layer/insert')
                                 async.forEach(table.residence, function(residence, callback_){
                                     let id = uuidv1();
                                     let item = {
