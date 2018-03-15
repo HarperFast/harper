@@ -69,12 +69,11 @@
     "winston": "^2.3.1"
   },
   "pkg": {
-    "scripts": [
-    ],
+    "scripts": [],
     "assets": [
       "./utility/install/*.txt",
       "./json/*.json",
-       "./server/*.js",
+      "./server/*.js",
       "./server/**/*.js",
       "./data_layer/*.js",
       "./triggers/**",
