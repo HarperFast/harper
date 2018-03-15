@@ -35,6 +35,7 @@ const UPDATE_PERM = 'update';
 // peration separate from the delete_.delete operation.
 const SQL_CREATE = "create";
 const SQL_DROP = 'drop';
+const SQL_DELETE = 'delete';
 const SQL_SELECT = 'select';
 const SQL_INSERT = 'insert';
 const SQL_UPDATE = 'update';
@@ -79,8 +80,9 @@ required_permissions.set(cluster_utilities.addNode.name, new permission(true, []
 // SQL operations are distinct from operations above, so we need to store required perms for both.
 required_permissions.set(SQL_CREATE, new permission(false, [INSERT_PERM]));
 required_permissions.set(SQL_DROP, new permission(false, [DELETE_PERM]));
+required_permissions.set(SQL_DELETE, new permission(false, [DELETE_PERM]));
 required_permissions.set(SQL_SELECT, new permission(false, [READ_PERM]));
-required_permissions.set(SQL_INSERT, new permission(false, [UPDATE_PERM]));
+required_permissions.set(SQL_INSERT, new permission(false, [INSERT_PERM]));
 required_permissions.set(SQL_UPDATE, new permission(false, [UPDATE_PERM]));
 
 module.exports = {
@@ -116,6 +118,10 @@ function verifyPermsAst(ast, user, operation) {
         if(!schemas || schemas.length === 0) {
             harper_logger.info(`No schemas defined in verifyPermsAst(), will not continue.`);
             return false;
+        }
+        if(user.role.permission.super_user) {
+            //admins can do anything through the hole in sheet!
+            return true;
         }
         for(let s = 0; s<schemas.length; s++) {
             let tables = parsed_ast.getTablesBySchemaName(schemas[s]);
@@ -219,6 +225,11 @@ function verifyPerms(request_json, operation) {
 
     let schema_table_map = new Map();
     schema_table_map.set(schema, [table]);
+
+    if(request_json.hdb_user.role.permission.super_user) {
+        //admins can do anything through the hole in sheet!
+        return true;
+    }
     // go
     if(hasPermissions(request_json.hdb_user, op, schema_table_map)) {
         return checkAttributePerms(getRecordAttributes(request_json), getAttributeRestrictions(request_json.hdb_user, schema, table),op);
@@ -294,14 +305,23 @@ function getRecordAttributes(json) {
     let affected_attributes = new Set();
     try {
         if(!json.records || json.records.length === 0) {
-            return affected_attributes;
-        }
-        // get unique affected_attributes
-        for (let record = 0; record < json.records.length; record++) {
-            let keys = Object.keys(json.records[record]);
-            for (let att = 0; att < keys.length; att++) {
-                if (!affected_attributes.has(keys[att])) {
-                    affected_attributes.add(keys[att]);
+            if(!json.get_attributes || !json.get_attributes.length === 0) {
+                return affected_attributes;
+            } else {
+                for(let record = 0; record < json.get_attributes.length; record++) {
+                    if (!affected_attributes.has(json.get_attributes[record])) {
+                        affected_attributes.add(json.get_attributes[record]);
+                    }
+                }
+            }
+        } else {
+            // get unique affected_attributes
+            for (let record = 0; record < json.records.length; record++) {
+                let keys = Object.keys(json.records[record]);
+                for (let att = 0; att < keys.length; att++) {
+                    if (!affected_attributes.has(keys[att])) {
+                        affected_attributes.add(keys[att]);
+                    }
                 }
             }
         }

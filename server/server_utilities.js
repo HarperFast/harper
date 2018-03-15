@@ -42,7 +42,8 @@ function processLocalTransaction(req, res, operation_function, callback) {
         if (error) {
             harper_logger.info(error);
             if(error === UNAUTH_RESPONSE) {
-                error = UNAUTHORIZED_TEXT;
+                res.status(403).json({error: UNAUTHORIZED_TEXT});
+                return callback(error);
             }
             if(typeof error !== 'object') {
                 error = {"error": error};
