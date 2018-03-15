@@ -119,6 +119,10 @@ function verifyPermsAst(ast, user, operation) {
             harper_logger.info(`No schemas defined in verifyPermsAst(), will not continue.`);
             return false;
         }
+        if(user.role.permission.super_user) {
+            //admins can do anything through the hole in sheet!
+            return true;
+        }
         for(let s = 0; s<schemas.length; s++) {
             let tables = parsed_ast.getTablesBySchemaName(schemas[s]);
             if(!tables) {
@@ -221,6 +225,11 @@ function verifyPerms(request_json, operation) {
 
     let schema_table_map = new Map();
     schema_table_map.set(schema, [table]);
+
+    if(request_json.hdb_user.role.permission.super_user) {
+        //admins can do anything through the hole in sheet!
+        return true;
+    }
     // go
     if(hasPermissions(request_json.hdb_user, op, schema_table_map)) {
         return checkAttributePerms(getRecordAttributes(request_json), getAttributeRestrictions(request_json.hdb_user, schema, table),op);
