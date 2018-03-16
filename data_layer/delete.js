@@ -15,7 +15,8 @@ const base_path = hdb_properties.get('HDB_ROOT') + "/schema/";
 
 module.exports ={
     delete: deleteRecord,
-    conditionalDelete:conditionalDelete
+    conditionalDelete:conditionalDelete,
+    deleteRecords: deleteRecords
 };
 
 /**
@@ -101,28 +102,43 @@ function deleteRecords(delete_object, records, callback){
         callback("Item not found!");
         return;
     }
+    let hash_attribute = global.hdb_schema[delete_object.schema][delete_object.table].hash_attribute;
+    let paths = [];
+    let table_path = `${base_path}${delete_object.schema}/${delete_object.table}`;
 
-    async.eachOf(records,
-        (record, x, call)=>{
-            let delete_wrapper = delete_object;
-            delete_wrapper.hash_value = delete_object.hash_values[x];
-            deleteFiles(delete_wrapper, record, (e)=>{
-                if(e){
-                    call(e);
+    records.forEach((record)=>{
+        Object.keys(record).forEach((attribute)=>{
+            let hash_value = record[hash_attribute];
+            paths.push(`${table_path}/__hdb_hash/${attribute}/${hash_value}.hdb`);
+            let stripped_value = String(record[attribute]).replace(slash_regex, '');
+            stripped_value = stripped_value.length > 255 ? stripped_value.substring(0, 255) + '/blob' : stripped_value;
+            paths.push(`${table_path}/${attribute}/${stripped_value}/${hash_value}.hdb`);
+        });
+    });
+
+    async.each(paths, (path, caller)=>{
+        fs.unlink(path, (err)=>{
+            if(err){
+
+                if(err.code === 'ENOENT'){
+                    caller();
                     return;
                 }
-
-                call();
-            });
-        }, (error)=>{
-            if(error){
-                callback(error);
+                winston.error(err);
+                caller(err);
                 return;
             }
 
-            callback(null, 'records successfully deleted');
+            caller();
+        });
+    }, (err)=>{
+        if(err){
+            callback(err);
+            return;
         }
-    );
+
+        callback();
+    });
 }
 
 /**

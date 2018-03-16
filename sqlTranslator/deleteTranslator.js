@@ -1,5 +1,9 @@
 const condition_parser = require('./conditionParser'),
-    deleter = require('../data_layer/delete');
+    deleter = require('../data_layer/delete'),
+    alasql = require('alasql'),
+    async = require('async'),
+    search = require('../data_layer/search'),
+    _delete = require('../data_layer/delete');
 
 module.exports = {
     convertDelete:convertDelete
@@ -7,18 +11,25 @@ module.exports = {
 
 function convertDelete(statement, callback){
     try{
-        let delete_wrapper = {};
-        let schema_table = statement.from.name.split('.');
+        //convert this update statement to a search capable statement
+        let {table: from, where} = statement;
+        //let table_clone = clone(from);
+        let search_statement = new alasql.yy.Select();
+        let columns = [new alasql.yy.Column({columnid:'*', tableid: statement.table.tableid})];
+        search_statement.columns = columns;
+        search_statement.from = [from];
+        search_statement.where = where;
 
-        delete_wrapper.schema = schema_table[0];
-        delete_wrapper.table = schema_table[1];
-
-        delete_wrapper.conditions = condition_parser.parseConditions(statement.where);
-
-        deleter.conditionalDelete(delete_wrapper, (err, results)=>{
+        async.waterfall([
+            search.search.bind(null, search_statement),
+            buildDeleteObject,
+            //updateRecords.bind(null, table_clone)
+        ], (err, results)=>{
             if(err){
-                callback(err);
-                return;
+                if(err.hdb_code){
+                    return callback(null, err.message);
+                }
+                return callback(err);
             }
 
             callback(null, results);
@@ -27,4 +38,10 @@ function convertDelete(statement, callback){
     } catch(e){
         callback(e);
     }
+}
+
+function buildDeleteObject(delete_wrapper, results, callback){
+
+    _delete.deleteRecords()
+    console.log(results);
 }
