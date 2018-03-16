@@ -15,7 +15,7 @@ const fs = require('fs'),
     HTTP_PORT_KEY = 'HTTP_PORT',
     HTTPSECURE_ON_KEY = 'HTTPS_ON',
     HTTP_ON_KEY = 'HTTP_ON',
-    HDB_PROC_NAME = 'hdb_express.js';
+    HDB_PROC_NAME = 'stuff';
 
 let hdb_boot_properties = null;
 let hdb_properties = null;
@@ -215,7 +215,7 @@ function kickOffExpress(err, callback){
     child.unref();
     console.log(colors.magenta('' + fs.readFileSync(path.join(__dirname,'../utility/install/ascii_logo.txt'))));
     console.log(colors.magenta(`|------------- HarperDB ${pjson.version} successfully started ------------|`));
-    return callback();
+    //return callback();
 }
 
 function increaseMemory(callback){
