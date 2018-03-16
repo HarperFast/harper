@@ -4,6 +4,8 @@ const winston = require('../utility/logging/winston_logger');
 const uuidv1 = require('uuid/v1');
 const user_schema = require('../utility/user_schema');
 const async = require('async');
+const insert = require('../data_layer/insert');
+
 
 const DEFAULT_SERVER_TIMEOUT = 120000;
 const UNAUTH_ERROR_MESSAGE = "You are not authorized to perform this action.";
@@ -222,7 +224,7 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                 if (err) {
                     winston.error(err);
                     if(err === server_utilities.UNAUTH_RESPONSE) {
-                        return res.status(403).send({error: UNAUTH_ERROR_MESSAGE});
+                        return res.status(403).send({error: server_utilities.UNAUTHORIZED_TEXT});
                     } else {
                         if (typeof err === 'string') {
                             return res.status(500).send({error: err});
@@ -230,6 +232,8 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                         return res.status(500).send(err);
                     }
                 }
+                var localOnlyOperations = ['describe_all', 'describe_table', 'describe_schema', 'read_log']
+
                 if (global.clustering_on && req.body.operation != 'sql') {
                     if (!req.body.schema
                         || !req.body.table
@@ -237,7 +241,6 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                         || req.body.operation === 'drop_table'
 
                     ) {
-                        var localOnlyOperations = ['describe_all', 'describe_table', 'describe_schema', 'read_log']
                         if (localOnlyOperations.includes(req.body.operation)) {
                             server_utilities.processLocalTransaction(req, res, operation_function, function (err) {
                                 winston.error(err);
@@ -325,9 +328,68 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                             }
                         });
                     }
-                } else {
+                } else if(req.body.schema && req.body.table
+                    && req.body.operation !== 'create_table' && req.body.operation !='drop_table' && !localOnlyOperations.includes(req.body.operation) ) {
+
+                    global_schema.getTableSchema(req.body.schema, req.body.table, function (err, table) {
+
+                        if(!table || !table.residence || table.residence.indexOf(hdb_properties.get('NODE_NAME')) > -1){
+                            server_utilities.processLocalTransaction(req, res, operation_function, function () {
+
+                            });
+                        }else{
+                            try {
+                                async.forEach(table.residence, function(residence, callback_){
+                                    let id = uuidv1();
+                                    let item = {
+                                        "payload": {"body":req.body, "id": id},
+                                        "id": id,
+                                        "node": {"node": residence},
+                                        "node_name": residence
+                                    }
+
+                                    let insert_object = {
+                                        operation: 'insert',
+                                        schema: 'system',
+                                        table: 'hdb_queue',
+                                        records: [item]
+                                    };
+
+                                    insert.insert(insert_object, function (err, result) {
+                                        if (err) {
+                                            winston.error(err);
+                                            return callback_(err);
+                                        }
+
+                                        return callback_();
+
+
+                                    });
+
+                                }, function(err){
+                                    if(err){
+                                        return res.status(501).send(err);
+                                    }
+                                   return res.status(201).send('{"message":"clustering is down. request has been queued and will be processed when clustering reestablishes.  "}');
+                                });
+
+
+
+
+                            } catch (e) {
+                                winston.error(e);
+                            }
+
+
+                        }
+
+
+
+
+                    });
+                }else{
                     server_utilities.processLocalTransaction(req, res, operation_function, function () {
-                        // no-op
+
                     });
                 }
             });

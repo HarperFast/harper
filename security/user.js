@@ -6,6 +6,7 @@ module.exports = {
     dropUser: dropUser,
     userInfo: user_info,
     listUsers: list_users,
+    listUsersExternal : list_users_external,
     setUsersToGlobal: setUsersToGlobal
 };
 
@@ -20,8 +21,7 @@ const insert = require('../data_layer/insert'),
 function addUser(user, callback){
     let validation_resp = validation.addUserValidation(user);
     if(validation_resp){
-        callback(validation_resp);
-        return;
+        return callback(validation_resp);
     }
     delete user.hdb_user;
     delete user.operation;
@@ -51,8 +51,7 @@ function addUser(user, callback){
 
         insert.insert(insert_object, function (err, success) {
             if (err) {
-                callback(err);
-                return;
+                return callback(err);
             }
             setUsersToGlobal((err) => {
                 if (err) {
@@ -126,7 +125,11 @@ function dropUser(user, callback){
 }
 
 
-function user_info(body, callback){
+function user_info(body, callback) {
+    if(!body || !body.hdb_user) {
+        return callback('There was no user info in the body', null);
+    }
+
     let user = body.hdb_user;
     let search_obj = {};
     search_obj.schema = 'system';
@@ -143,7 +146,28 @@ function user_info(body, callback){
         delete user.password;
         return callback(null, user);
     });
+}
 
+/**
+ * This function should be called by chooseOperation as it scrubs sensitive information before returning
+ * the results of list users.
+ * @param body - request body
+ * @param callback
+ */
+function list_users_external(body, callback) {
+    list_users(body, function (err, user_data) {
+        if(err) {
+            return callback(err);
+        }
+        try {
+            for (let u in user_data) {
+                delete user_data[u].password;
+            }
+        } catch (e) {
+            return callback('there was an error massaging the user data', null);
+        }
+        return callback(null, user_data);
+    });
 }
 
 function list_users(body, callback){

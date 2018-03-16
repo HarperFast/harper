@@ -131,7 +131,7 @@ function startHarper() {
     fs.stat(`${process.cwd()}/../hdb_boot_properties.file`, function(err, stats) {
         if(err) {
             if(err.errno === -2) {
-                install.install(function (err, result) {
+                install.install(function (err) {
                     if (err) {
                         basic_winston.error(err);
                         return;
@@ -150,7 +150,7 @@ function startHarper() {
                 fs.stat(hdb_boot_properties.get('settings_path'), function (err, stats) {
                     if (err) {
                         if (err.errno === -2) {
-                            install.install(function (err, result) {
+                            install.install(function (err) {
                                 if (err) {
                                     basic_winston.error(err);
                                     return;

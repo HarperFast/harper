@@ -2,6 +2,7 @@ const insert = require('../data_layer/insert'),
     search = require('../data_layer/search'),
     delete_ = require('../data_layer/delete'),
     validation = require('../validation/role_validation'),
+    signalling  = require('../utility/signalling'),
     uuidV4 = require('uuid/v4');
 
 module.exports = {
@@ -54,6 +55,7 @@ function addRole(role, callback){
                 callback(err);
                 return;
             }
+            signalling.signalUserChange({type: 'user'});
             callback(null, role);
         });
     })
@@ -82,6 +84,7 @@ function alterRole(role, callback){
             callback(err);
             return;
         }
+        signalling.signalUserChange({type: 'user'});
         callback(null, success);
     });
 }
@@ -125,6 +128,7 @@ function dropRole(role, callback){
                 callback(err);
                 return;
             }
+            signalling.signalUserChange({type: 'user'});
             callback(null, `${role.rolename} successfully deleted`);
         });
     });
