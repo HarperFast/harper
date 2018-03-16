@@ -1,10 +1,13 @@
 "use strict"
 
+const folder_seperator = process.platform === 'win32' ? '\\' : '/';
+
 module.exports = {
     isEmpty:isEmpty,
     isEmptyOrZeroLength:isEmptyOrZeroLength,
     arrayHasEmptyValues:arrayHasEmptyValues,
-    arrayHasEmptyOrZeroLengthValues:arrayHasEmptyOrZeroLengthValues
+    arrayHasEmptyOrZeroLengthValues:arrayHasEmptyOrZeroLengthValues,
+    buildFolderPath: buildFolderPath
 };
 
 /**
@@ -57,4 +60,16 @@ function arrayHasEmptyOrZeroLengthValues(values_list) {
         }
     }
     return false;
+}
+
+/**
+ * takes an array of strings and joins them with the folder separator to return a path
+ * @param path_elements
+ */
+function buildFolderPath(...path_elements){
+    try {
+        return path_elements.join(folder_seperator);
+    } catch(e){
+        console.error(path_elements);
+    }
 }
