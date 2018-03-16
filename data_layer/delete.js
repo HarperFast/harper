@@ -106,6 +106,7 @@ function deleteRecords(delete_object, records, callback){
     let paths = [];
     let table_path = `${base_path}${delete_object.schema}/${delete_object.table}`;
 
+    //generate the paths for each file to delete
     records.forEach((record)=>{
         Object.keys(record).forEach((attribute)=>{
             let hash_value = record[hash_attribute];
@@ -139,47 +140,4 @@ function deleteRecords(delete_object, records, callback){
 
         callback();
     });
-}
-
-/**
- * Removes the sym link for each attribute.  Important to note that this function
- * @param delete_object - The descriptor for the object to be deleted.
- * @param record - The records found that may be deleted
- * @param callback
- */
-function deleteFiles(delete_object, record, callback){
-    let paths = [];
-    let table_path = `${base_path}${delete_object.schema}/${delete_object.table}`;
-    Object.keys(record).forEach((attribute)=>{
-        paths.push(`${table_path}/__hdb_hash/${attribute}/${delete_object.hash_value}.hdb`);
-        let stripped_value = String(record[attribute]).replace(slash_regex, '');
-        stripped_value = stripped_value.length > 255 ? stripped_value.substring(0, 255) + '/blob' : stripped_value;
-        paths.push(`${table_path}/${attribute}/${stripped_value}/${delete_object.hash_value}.hdb`);
-    });
-
-    async.each(paths,
-        (path, caller)=>{
-            fs.unlink(path, (err)=>{
-                if(err){
-
-                    if(err.code === 'ENOENT'){
-                        caller();
-                        return;
-                    }
-                    winston.error(err);
-                    caller(err);
-                    return;
-                }
-
-                caller();
-            });
-        },
-        (err)=>{
-            if(err){
-                callback(err);
-                return;
-            }
-
-            callback();
-        });
 }
