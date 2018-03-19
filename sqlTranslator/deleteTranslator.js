@@ -5,6 +5,8 @@ const condition_parser = require('./conditionParser'),
     search = require('../data_layer/search'),
     _delete = require('../data_layer/delete');
 
+const SUCCESS_MESSAGE = 'records successfully deleted';
+
 module.exports = {
     convertDelete:convertDelete
 };
@@ -12,8 +14,8 @@ module.exports = {
 function convertDelete(statement, callback){
     try{
         //convert this update statement to a search capable statement
+        //use javascript destructuring to assign variables into from & where
         let {table: from, where} = statement;
-        //let table_clone = clone(from);
         let search_statement = new alasql.yy.Select();
         let columns = [new alasql.yy.Column({columnid:'*', tableid: statement.table.tableid})];
         search_statement.columns = columns;
@@ -22,7 +24,7 @@ function convertDelete(statement, callback){
 
         async.waterfall([
             search.search.bind(null, search_statement),
-            _delete.deleteRecords.bind(null, {schema:from.databaseid, table:from.tableid}),
+            _delete.deleteRecords.bind(null, from.databaseid, from.tableid),
         ], (err)=>{
             if(err){
                 if(err.hdb_code){
@@ -31,7 +33,7 @@ function convertDelete(statement, callback){
                 return callback(err);
             }
 
-            callback(null, 'records successfully deleted');
+            callback(null, SUCCESS_MESSAGE);
         });
 
     } catch(e){
