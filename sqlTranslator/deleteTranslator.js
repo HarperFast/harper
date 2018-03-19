@@ -22,9 +22,8 @@ function convertDelete(statement, callback){
 
         async.waterfall([
             search.search.bind(null, search_statement),
-            buildDeleteObject,
-            //updateRecords.bind(null, table_clone)
-        ], (err, results)=>{
+            _delete.deleteRecords.bind(null, {schema:from.databaseid, table:from.tableid}),
+        ], (err)=>{
             if(err){
                 if(err.hdb_code){
                     return callback(null, err.message);
@@ -32,16 +31,10 @@ function convertDelete(statement, callback){
                 return callback(err);
             }
 
-            callback(null, results);
+            callback(null, 'records successfully deleted');
         });
 
     } catch(e){
         callback(e);
     }
-}
-
-function buildDeleteObject(delete_wrapper, results, callback){
-
-    _delete.deleteRecords()
-    console.log(results);
 }
