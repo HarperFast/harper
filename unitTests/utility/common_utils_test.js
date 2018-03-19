@@ -79,3 +79,21 @@ describe(`Test listHasEmptyOrZeroLengthValues`, function () {
         assert.equal(cu.arrayHasEmptyOrZeroLengthValues(['']), true);
     });
 });
+
+describe(`Test buildFolderPath`, function(){
+    it(`Pass in null, expect empty string`, function(){
+        assert.equal(cu.buildFolderPath(null), "");
+    });
+
+    it(`Pass in empty string, expect empty string`, function(){
+        assert.equal(cu.buildFolderPath(''), "");
+    });
+
+    it(`Pass in values with mixed null and empty string, expect double slashes where empty values would be`, function(){
+        assert.equal(cu.buildFolderPath('opt', null, 'test', '', 'data'), "opt//test//data");
+    });
+
+    it(`Pass in values mixed with numbers and strings, expect a path`, function(){
+        assert.equal(cu.buildFolderPath('opt', 1, 'test', 45, 'data', '333-55'), 'opt/1/test/45/data/333-55');
+    });
+});
