@@ -298,7 +298,7 @@ describe('Test list_users', function () {
     });
 });
 
-describe('Test list_users_external', function () {
+describe('Test listUsersExternal', function () {
     let search_stub = undefined;
     beforeEach( function() {
         // We are not testing these other functions, so we stub them.
@@ -311,7 +311,7 @@ describe('Test list_users_external', function () {
     afterEach( function() {
         search_stub.restore();
     });
-    it('Nominal path, list_users_external', function (done) {
+    it('Nominal path, listUsersExternal', function (done) {
         user.listUsersExternal(null, function(err, results) {
             assert.ok(results[0].role !== undefined);
             assert.equal(results[0].role.role, TEST_LIST_USER_ROLE_SEARCH_RESPONSE.role);
