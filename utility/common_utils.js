@@ -1,6 +1,5 @@
 "use strict"
-
-const folder_seperator = process.platform === 'win32' ? '\\' : '/';
+const path = require('path');
 
 module.exports = {
     isEmpty:isEmpty,
@@ -68,7 +67,7 @@ function arrayHasEmptyOrZeroLengthValues(values_list) {
  */
 function buildFolderPath(...path_elements){
     try {
-        return path_elements.join(folder_seperator);
+        return path_elements.join(path.sep);
     } catch(e){
         console.error(path_elements);
     }
