@@ -28,7 +28,7 @@ function csvDataLoad(csv_object, callback){
             return callback(validation_msg);
         }
 
-        csv_records = [];
+        let csv_records = [];
 
         csv()
             .fromString(csv_object.data)
@@ -76,7 +76,7 @@ function csvURLLoad(csv_object, callback){
                 return callback(err);
             }
 
-            csv_records = [];
+            let csv_records = [];
 
             csv()
                 .fromStream(response)
@@ -138,7 +138,7 @@ function csvFileLoad(csv_object, callback){
         if (validation_msg) {
             return callback(validation_msg);
         }
-        csv_records = [];
+        let csv_records = [];
 
         csv()
             .fromFile(csv_object.file_path)
