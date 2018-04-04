@@ -6,7 +6,7 @@ module.exports = {
     dropUser: dropUser,
     userInfo: user_info,
     listUsers: list_users,
-    listUsersExternal : list_users_external,
+    listUsersExternal : listUsersExternal,
     setUsersToGlobal: setUsersToGlobal
 };
 
@@ -154,7 +154,7 @@ function user_info(body, callback) {
  * @param body - request body
  * @param callback
  */
-function list_users_external(body, callback) {
+function listUsersExternal(body, callback) {
     list_users(body, function (err, user_data) {
         if(err) {
             return callback(err);

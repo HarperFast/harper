@@ -12,6 +12,7 @@ const insert_validator = require('../validation/insertValidator.js'),
     async = require('async'),
     path = require('path'),
     mkdirp = require('mkdirp'),
+    h_utils = require('../utility/common_utils'),
     search = require('./search'),
     winston = require('../utility/logging/winston_logger'),
     _ = require('lodash'),
@@ -47,11 +48,21 @@ const global_schema = require('../utility/globalSchema');
  * @param write_object - the object that will be written post-validation
  * @param callback - The caller
  */
-function validation(write_object, callback){
+function validation(write_object, callback) {
+    // Need to validate these outside of the validator as the getTableSchema call will fail with
+    // invalid values.
+    if(h_utils.isEmpty(write_object)) {
+        return callback(`invalid update parameters defined.`);
+    }
+    if(h_utils.isEmptyOrZeroLength(write_object.schema)) {
+        return callback(`invalid schema specified.`);
+    }
+    if(h_utils.isEmptyOrZeroLength(write_object.table)) {
+        return callback(`invalid table specified.`);
+    }
     global_schema.getTableSchema(write_object.schema, write_object.table, (err, table_schema) => {
         if (err) {
-            callback(err);
-            return;
+            return callback(err);
         }
         //validate insert_object for required attributes
         let validator = insert_validator(write_object);

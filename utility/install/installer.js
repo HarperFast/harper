@@ -50,7 +50,7 @@ function run_install(callback) {
             async.waterfall([
                 termsAgreement,
                 wizard,
-                mount,
+                async.apply(mount, winston),
                 createSettingsFile,
                 createAdminUser,
                 generateKeys,
@@ -58,13 +58,13 @@ function run_install(callback) {
                     console.log("HarperDB Installation was successful");
                     winston.info("Installation Successful");
                 }
-            ], function (err, result) {
+            ], function (err) {
                 if (err) {
-                    return callback(err, result);
+                    return callback(err, null);
                 }
+                return callback(null, null);
             });
         }
-        return callback(null, result);
     });
 }
 
@@ -73,6 +73,7 @@ function run_install(callback) {
  * @param {*} callback 
  */
 function termsAgreement(callback) {
+    prompt.message = ``;
     let terms_schema = {
         properties: {
             TC_AGREEMENT: {
@@ -102,11 +103,15 @@ function termsAgreement(callback) {
  */
 function checkInstall(callback) {
     try {
-        if( hdb_boot_properties ) { return callback(null, false); }
+        if( hdb_boot_properties ) {
+            return callback(null, false);
+        }
 
         hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
         hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
-        if( !hdb_boot_properties.get('HDB_ROOT') ) { return callback(null, true); }
+        if( !hdb_properties.get('HDB_ROOT') ) {
+            return callback(null, true);
+        }
 
         let schema = {
             properties: {
@@ -166,7 +171,7 @@ function checkRegister(callback) {
  */
 function wizard(err, callback) {
 
-    prompt.message = 'Install HarperDB ' + __dirname;
+    prompt.message = ``;
 
     let install_schema = {
         properties: {
@@ -219,10 +224,9 @@ function wizard(err, callback) {
                 }
             }
             else {
-                callback('~ was specified in the path, but the HOME environment variable is not defined.');
+                return callback('~ was specified in the path, but the HOME environment variable is not defined.');
             }
         }
-        winston.info('wizard result : ' + JSON.stringify(wizard_result));
         if (err) {
             return callback(err);
         }
@@ -311,7 +315,6 @@ function createSettingsFile(mount_status, callback) {
             });
         } catch (e) {
             winston.info(e);
-            winston.info('info', e);
         }
     });
 }
@@ -449,7 +452,6 @@ function createBootPropertiesFile(settings_path, callback) {
         }
         winston.info('info', `props path ${process.cwd()}/../hdb_boot_properties.file`);
         hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
-        winston.info('hdb_boot_properties' + hdb_boot_properties);
         return callback(null, 'success');
     });
 }

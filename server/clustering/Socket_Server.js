@@ -3,6 +3,7 @@ const
     search = require('../../data_layer/search'),
     insert = require('../../data_layer/insert'),
     delete_ = require('../../data_layer/delete'),
+    schema = require('../../data_layer/schema'),
     uuidv4 = require('uuid/v1');
 
 class Socket_Server {

@@ -38,7 +38,6 @@
     "json2csv": "^4.0.0-alpha.0",
     "licensekey": "^2.0.11",
     "lodash": "^4.17.4",
-    "lodash-joins": "^2.0.3",
     "mathjs": "^4.0.0",
     "mkdirp": "^0.5.1",
     "moment": "^2.20.1",
@@ -70,7 +69,10 @@
     "winston": "^2.3.1"
   },
   "pkg": {
-    "scripts": [
+    "scripts": [],
+    "assets": [
+      "./utility/install/*.txt",
+      "./json/*.json",
       "./server/*.js",
       "./server/**/*.js",
       "./data_layer/*.js",
@@ -81,10 +83,6 @@
       "./sqlTranslator/*.js",
       "./lib/**/*.js",
       "./validation/*.js"
-    ],
-    "assets": [
-      "./utility/install/*.txt",
-      "./json/*.json"
     ]
   },
   "devDependencies": {
