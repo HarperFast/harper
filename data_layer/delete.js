@@ -1,22 +1,215 @@
-const validate = require('validate.js'),
-    PropertiesReader = require('properties-reader'),
-    hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`),
-    bulk_delete_validator = require('../validation/bulkDeleteValidator'),
-    conditional_delete_validator = require('../validation/conditionalDeleteValidator'),
-    search = require('./search');
-hdb_properties.append(hdb_properties.get('settings_path')),
-    async = require('async'),
-    fs = require('graceful-fs'),
-    global_schema = require('../utility/globalSchema');
+'use strict';
 
+const PropertiesReader = require('properties-reader');
+const bulk_delete_validator = require('../validation/bulkDeleteValidator');
+const conditional_delete_validator = require('../validation/conditionalDeleteValidator');
+const search = require('./search');
+const common_utils = require('../utility/common_utils');
+const async = require('async');
+const fs = require('graceful-fs');
+const global_schema = require('../utility/globalSchema');
+const truncate = require('truncate-utf8-bytes');
+const moment = require('moment');
+const path = require('path');
+const winston = require('../utility/logging/winston_logger');
+
+const hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
 const slash_regex =  /\//g;
-const base_path = hdb_properties.get('HDB_ROOT') + "/schema/";
 
+const base_path = common_utils.buildFolderPath(hdb_properties.get('HDB_ROOT'), "schema");
+const HDB_HASH_FOLDER_NAME = '__hdb_hash';
+const BLOB_FOLDER_NAME = 'blob';
+const MAX_BYTES = '255';
+const ENOENT_ERROR_CODE = 'ENOENT';
+const SUCCESS_MESSAGE = 'records successfully deleted';
+hdb_properties.append(hdb_properties.get('settings_path'));
+const hdb_path = path.join(hdb_properties.get('HDB_ROOT'), '/schema');
 
-module.exports ={
+module.exports = {
     delete: deleteRecord,
-    conditionalDelete:conditionalDelete
+    conditionalDelete:conditionalDelete,
+    deleteRecords: deleteRecords,
+    deleteFilesBefore: deleteFilesBefore
 };
+
+/**
+ * Deletes files that have a system date before the date parameter.  Note this does not technically delete the values from the database,
+ * so if clustering is enabled values added will still remain in a parent node.  This serves only to remove files for
+ * devices that have a small amount of disk space.
+ *
+ * @param date - the date where all file before this time will be deleted from the disk.
+ * @param schema - The schema to remove files from
+ * @param table - The table to remove files from
+ * @param callback
+ */
+function deleteFilesBefore(date, schema, table, callback) {
+    if(common_utils.isEmptyOrZeroLength(date)) {
+        callback("Invalid date.", null);
+    }
+    if(common_utils.isEmptyOrZeroLength(schema)) {
+        callback("Invalid schema.", null);
+    }
+    if(common_utils.isEmptyOrZeroLength(table)) {
+        callback("Invalid table.", null);
+    }
+    let parsed = moment(date, moment.ISO_8601);
+
+    if(!parsed.isValid()) {
+        return callback("Invalid date");
+    }
+
+    let dir_path = common_utils.buildFolderPath(hdb_path, schema, table, HDB_HASH_FOLDER_NAME);
+
+    async.waterfall([
+        listDirectories.bind(null, dir_path),
+        getFiles,
+        removeFiles.bind(null, parsed)
+    ], function(err, data) {
+        if (err) {
+            return callback(err);
+        }
+        return callback(null, data);
+    });
+    /*
+    listDirectories(file_path, function getDirs(err, results) {
+        if(err) {
+            return callback(err);
+        }
+        hdbDirectories = results;
+        results.forEach(function getFilesInDirectores(dir) {
+            if(err) {
+                return callback(common_utils.errorizeMessage(err));
+            }
+            getFilesInDirectory(path.join(dir), function getFiles(err, files) {
+                files.forEach(function inspectFiles(file) {
+                    let fileRemovePath = path.join(dir,file);
+                    fs.stat(fileRemovePath, function statFile(err, stat) {
+                        if(stat.mtimeMs < parsed.valueOf()) {
+                            harper_logger.info(`removing file ${fileRemovePath}`)
+                            fs.unlink(fileRemovePath, function unlinkFile(err) {
+                               if(err) {
+                                   harper_logger.error(`failed to remove file ${fileRemovePath}`);
+                               }
+                               callback(null, null);
+                            });
+                        }
+                    });
+                });
+            });
+        });
+    }); */
+}
+
+/**
+ * Returns all files found in the directories array passed as a parameter.
+ * @param results - An array of directory paths
+ * @param callback
+ */
+function getFiles(results, callback) {
+    let foundFiles = [];
+    async.each(results, function getFilesInDirs(file) {
+        getFilesInDirectory(file, function(files, caller) {
+            if(!common_utils.isEmpty(files)) {
+                foundFiles.push(...files);
+            }
+            caller(null, null);
+        });
+    }, function done(err) {
+        if(err) {
+            return callback(common_utils.errorizeMessage(err), null);
+        }
+        return callback(null, foundFiles);
+    });
+}
+
+/**
+ * Removes all files which had a last modified date less than the date parameter.
+ * @param files - An array of file paths
+ * @param date - A date passed as a moment.js object.
+ * @param callback
+ */
+function removeFiles(files, date, callback) {
+    let filesRemoved = [];
+    async.each(files, function getFilesInDirs(file) {
+        let fileRemovePath = file;
+        fs.stat(file, function statFile(err, stat) {
+            if(stat.mtimeMs < parsed.valueOf()) {
+                filesRemoved.push(fileRemovePath);
+                harper_logger.info(`removing file ${fileRemovePath}`)
+                fs.unlink(fileRemovePath, function unlinkFile(err) {
+                    if(err) {
+                        harper_logger.error(`failed to remove file ${fileRemovePath}`);
+                    }
+                });
+            }
+        });
+    }, function done(err) {
+        if(err) {
+            return callback(common_utils.errorizeMessage(err), null);
+        }
+        return callback(null, filesRemoved);
+    });
+}
+
+/**
+ * Returns an array containing all files in a directory path.
+ * @param dirPath - Path to find directories for.
+ * @param callback
+ */
+function getFilesInDirectory(dirPath, callback) {
+    if(common_utils.isEmptyOrZeroLength(dirPath) || common_utils.isEmptyOrZeroLength(dirPath.trim())) {
+        return callback(new Error('Invalid directory path'), results);
+    }
+
+    fs.readdir(dirPath, function readDir(err, list) {
+        if (err) {
+            return callback(common_utils.errorizeMessage(err), null);
+        }
+        return callback(null, list);
+    });
+}
+
+/**
+ * Return an array or directories in the path sent.  Will always return an array, even empty, when no files found.
+ * @param dirPath - path to find directories for.
+ * @param callback
+ * @returns {Array}
+ */
+function listDirectories(dirPath, callback) {
+    let results = [];
+    if(common_utils.isEmptyOrZeroLength(dirPath) || common_utils.isEmptyOrZeroLength(dirPath.trim())) {
+        return callback(common_utils.errorizeMessage('Invalid directory path'), results);
+    }
+    fs.readdir(dirPath, function readDir(err, list) {
+        if (err) {
+            return callback(common_utils.errorizeMessage(err), results);
+        }
+        if(list.length === 0) {
+            return callback(common_utils.errorizeMessage('No files found'), results);
+        }
+        let pending = list.length;
+        if (!pending){ return callback(null, results);}
+        list.forEach(function iterateFileList(file) {
+            try {
+                file = path.resolve(dirPath, file);
+            } catch(e) {
+                console.error(e);
+            }
+            fs.stat(file, function statFiles(err, stat) {
+                if (stat && stat.isDirectory()) {
+                    results.push(file);
+                    if (!--pending) {
+                        callback(null, results);
+                    }
+                } else {
+                    if (!--pending) {
+                        callback(null, results);
+                    }
+                }
+            });
+        });
+    });
+}
 
 /**
  * Delete a record and unlink all attributes associated with that record.
@@ -79,7 +272,6 @@ function conditionalDelete(delete_object, callback){
                     table: delete_object.table,
                     hash_values: ids
                 };
-
                 callback(null, delete_wrapper);
             },
             deleteRecord
@@ -88,8 +280,7 @@ function conditionalDelete(delete_object, callback){
                 callback(err);
                 return;
             }
-
-            callback(null, 'records successfully deleted');
+            callback(null, SUCCESS_MESSAGE);
         });
     } catch(e) {
         callback(e);

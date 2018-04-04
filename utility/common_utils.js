@@ -4,8 +4,27 @@ module.exports = {
     isEmpty:isEmpty,
     isEmptyOrZeroLength:isEmptyOrZeroLength,
     arrayHasEmptyValues:arrayHasEmptyValues,
+<<<<<<< Updated upstream
     arrayHasEmptyOrZeroLengthValues:arrayHasEmptyOrZeroLengthValues
+=======
+    arrayHasEmptyOrZeroLengthValues:arrayHasEmptyOrZeroLengthValues,
+    buildFolderPath: buildFolderPath,
+    errorizeMessage: errorizeMessage
+>>>>>>> Stashed changes
 };
+
+/**
+ * Converts a message to an error containing the error as a message. Will always return an error if the passed in error is
+ * not a message.
+ * @param message
+ * @returns {*}
+ */
+function errorizeMessage(message) {
+    if(!(message instanceof Error)) {
+        return new Error(message);
+    }
+    return message;
+}
 
 /**
  * Test if the passed value is null or undefined.  This will not check string length.

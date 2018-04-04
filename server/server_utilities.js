@@ -12,7 +12,7 @@ const write = require('../data_layer/insert'),
     cluster_utilities = require('./clustering/cluster_utilities'),
     auth = require('../security/auth'),
     harper_logger = require('../utility/logging/harper_logger'),
-    export_ = require('../data_layer/export') ;
+    export_ = require('../data_layer/export'),
     op_auth = require('../utility/operation_authorization');
 
 const UNAUTH_RESPONSE = 403;
@@ -219,6 +219,10 @@ function chooseOperation(json, callback) {
             break;
         case 'export_to_s3':
             operation_function = export_.export_to_s3;
+            break;
+        case 'delete_files_before':
+            operation_function = delete_.deleteFilesBefore;
+            break;
         default:
             break;
     }
