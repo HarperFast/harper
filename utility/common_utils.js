@@ -4,13 +4,9 @@ module.exports = {
     isEmpty:isEmpty,
     isEmptyOrZeroLength:isEmptyOrZeroLength,
     arrayHasEmptyValues:arrayHasEmptyValues,
-<<<<<<< Updated upstream
-    arrayHasEmptyOrZeroLengthValues:arrayHasEmptyOrZeroLengthValues
-=======
     arrayHasEmptyOrZeroLengthValues:arrayHasEmptyOrZeroLengthValues,
     buildFolderPath: buildFolderPath,
     errorizeMessage: errorizeMessage
->>>>>>> Stashed changes
 };
 
 /**
