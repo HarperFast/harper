@@ -23,15 +23,19 @@ const TEST_TABLE_1_PATH = path.join(TEST_SCHEMA_PATH, TEST_TABLE_1);
 const TEST_TABLE_1_HASH = path.join(TEST_SCHEMA_PATH, TEST_TABLE_1, HDB_HASH_FOLDER_NAME);
 
 const TABLE_1_ATTRIBUTE_PATH = path.join(TEST_TABLE_1_PATH, TEST_ATTRIBUTE_NAME);
-const TABLE_1_ATTRIBUTE_HASH_PATH = path.join(TEST_TABLE_1_HASH, TEST_ATTRIBUTE_NAME);
-const TABLE_1_ATTRIBUTE_INSTANCE_PATH = path.join(TABLE_1_ATTRIBUTE_PATH, FILE_CONTENTS);
+const TABLE_1_ATTRIBUTE_HASH_DIRECTORY_PATH = path.join(TEST_TABLE_1_HASH, TEST_ATTRIBUTE_NAME);
+const TABLE_1_ATTRIBUTE_INSTANCE_DIRECTORY_PATH = path.join(TABLE_1_ATTRIBUTE_PATH, FILE_CONTENTS);
+const TABLE_1_ATTRIBUTE_HASH_FILE_PATH = path.join(TABLE_1_ATTRIBUTE_HASH_DIRECTORY_PATH, TEST_FILE_NAME_1);
+const TABLE_1_ATTRIBUTE_INSTANCE_FILE_PATH = path.join(TABLE_1_ATTRIBUTE_INSTANCE_DIRECTORY_PATH, TEST_FILE_NAME_1);
 
 const TEST_TABLE_2 = 'test_dir2';
 const TEST_TABLE_2_PATH = path.join(TEST_SCHEMA_PATH, TEST_TABLE_2);
 const TEST_TABLE_2_HASH = path.join(TEST_SCHEMA_PATH, TEST_TABLE_2, HDB_HASH_FOLDER_NAME);
 const TABLE_2_ATTRIBUTE_PATH = path.join(TEST_TABLE_2_PATH, TEST_ATTRIBUTE_NAME);
-const TABLE_2_ATTRIBUTE_HASH_PATH = path.join(TEST_TABLE_2_HASH, TEST_ATTRIBUTE_NAME);
-const TABLE_2_ATTRIBUTE_INSTANCE_PATH = path.join(TABLE_2_ATTRIBUTE_PATH, FILE_CONTENTS);
+const TABLE_2_ATTRIBUTE_HASH_DIRECTORY_PATH = path.join(TEST_TABLE_2_HASH, TEST_ATTRIBUTE_NAME);
+const TABLE_2_ATTRIBUTE_INSTANCE_DIRECTORY_PATH = path.join(TABLE_2_ATTRIBUTE_PATH, FILE_CONTENTS);
+const TABLE_2_ATTRIBUTE_HASH_FILE_PATH = path.join(TABLE_2_ATTRIBUTE_HASH_DIRECTORY_PATH, TEST_FILE_NAME_2);
+const TABLE_2_ATTRIBUTE_INSTANCE_FILE_PATH = path.join(TABLE_2_ATTRIBUTE_INSTANCE_DIRECTORY_PATH, TEST_FILE_NAME_2);
 
 const TEST_TABLE_3 = 'test_dir3';
 const TEST_TABLE_3_PATH = path.join(TEST_SCHEMA_PATH, TEST_TABLE_3);
@@ -42,23 +46,19 @@ function setup() {
     fs.mkdirSync(TEST_TABLE_1_PATH);
     fs.mkdirSync(TEST_TABLE_1_HASH);
     fs.mkdirSync(TABLE_1_ATTRIBUTE_PATH);
-    fs.mkdirSync(TABLE_1_ATTRIBUTE_HASH_PATH);
-    fs.mkdirSync(TABLE_1_ATTRIBUTE_INSTANCE_PATH);
-    let hash_attribute_path = path.join(TABLE_1_ATTRIBUTE_HASH_PATH, TEST_FILE_NAME_1);
-    let attribute_path = path.join(TABLE_1_ATTRIBUTE_INSTANCE_PATH, TEST_FILE_NAME_1);
-    fs.writeFileSync(hash_attribute_path, `${FILE_CONTENTS}.hdb`);
-    fs.linkSync(hash_attribute_path, attribute_path);
+    fs.mkdirSync(TABLE_1_ATTRIBUTE_HASH_DIRECTORY_PATH);
+    fs.mkdirSync(TABLE_1_ATTRIBUTE_INSTANCE_DIRECTORY_PATH);
+    fs.writeFileSync(TABLE_1_ATTRIBUTE_HASH_FILE_PATH);
+    fs.linkSync(TABLE_1_ATTRIBUTE_HASH_FILE_PATH, TABLE_1_ATTRIBUTE_INSTANCE_FILE_PATH);
 
     // Setup table 2
     fs.mkdirSync(TEST_TABLE_2_PATH);
     fs.mkdirSync(TEST_TABLE_2_HASH);
     fs.mkdirSync(TABLE_2_ATTRIBUTE_PATH);
-    fs.mkdirSync(TABLE_2_ATTRIBUTE_HASH_PATH);
-    fs.mkdirSync(TABLE_2_ATTRIBUTE_INSTANCE_PATH);
-    hash_attribute_path = path.join(TABLE_2_ATTRIBUTE_HASH_PATH, TEST_FILE_NAME_2);
-    attribute_path = path.join(TABLE_2_ATTRIBUTE_INSTANCE_PATH, TEST_FILE_NAME_2);
-    fs.writeFileSync(hash_attribute_path, `${FILE_CONTENTS}.hdb`);
-    fs.linkSync(hash_attribute_path, attribute_path);
+    fs.mkdirSync(TABLE_2_ATTRIBUTE_HASH_DIRECTORY_PATH);
+    fs.mkdirSync(TABLE_2_ATTRIBUTE_INSTANCE_DIRECTORY_PATH);
+    fs.writeFileSync(TABLE_2_ATTRIBUTE_HASH_FILE_PATH);
+    fs.linkSync(TABLE_2_ATTRIBUTE_HASH_FILE_PATH, TABLE_2_ATTRIBUTE_INSTANCE_FILE_PATH);
 
     //Setup empty table 3
     fs.mkdirSync(TEST_TABLE_3_PATH);
@@ -66,28 +66,22 @@ function setup() {
     fs.writeFileSync(path.join(TEST_SCHEMA_PATH, TEST_FILE_NAME_2), FILE_CONTENTS);
 }
 
-function shutdown() {
-    // Remove table 1
-    /*fs.unlinkSync(path.join(TEST_TABLE_1_HASH, TEST_FILE_NAME_1));
-    fs.unlinkSync(path.join(TEST_TABLE_1_PATH, TEST_FILE_NAME_1));
-    fs.rmdirSync(TEST_TABLE_1_HASH);
-    fs.rmdirSync(TEST_TABLE_1_PATH);
-
-    //Remove table 2
-    fs.unlinkSync(path.join(TEST_TABLE_2_HASH, TEST_FILE_NAME_2));
-    fs.unlinkSync(path.join(TEST_TABLE_2_PATH, TEST_FILE_NAME_2));
-    fs.rmdirSync(TEST_TABLE_2_HASH);
-    fs.rmdirSync(TEST_TABLE_2_PATH);
-
-    // Remove extra test file
-    fs.unlinkSync(path.join(BASE, TEST_FILE_NAME_2));
-
-    //Remove empty table
-    fs.rmdirSync(TEST_TABLE_3_PATH);
-
-    // Remove schema
-    fs.rmdirSync(TEST_SCHEMA_PATH); */
-}
+function tearDown(target_path) {
+    if(!target_path) return;
+    let files = [];
+    if( fs.existsSync(target_path) ) {
+        files = fs.readdirSync(target_path);
+        files.forEach(function(file,index){
+            let curPath = path.join(target_path, file);
+            if(fs.lstatSync(curPath).isDirectory()) { // recurse
+                tearDown(curPath);
+            } else { // delete file
+                fs.unlinkSync(curPath);
+            }
+        });
+        fs.rmdirSync(target_path);
+    }
+};
 
 describe('Test listDirectories', function () {
     let listDirectories = delete_rewire.__get__('listDirectories');
@@ -95,14 +89,14 @@ describe('Test listDirectories', function () {
         try {
             setup();
         } catch(e) {
-            console.error(e);
+            //console.error(e);
         }
     });
     after( function() {
         try {
-            shutdown();
+            tearDown(TEST_SCHEMA_PATH);
         } catch(e) {
-            console.error(e);
+            //console.error(e);
         }
     });
     // There should be 2 directories, each with 1 file, and 1 text file in the current directory
@@ -146,18 +140,96 @@ describe('Test listDirectories', function () {
 });
 
 describe('Test deleteFilesBefore', function () {
-    let this_time = moment().add(1, 'days');
-    before( function() {
+    let tomorrow_time = moment().add(1, 'days');
+    let yesterday_time = moment().subtract(1, 'days');
+    before(function () {
         try {
             setup();
-        } catch(e) {
+            delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
+        } catch (e) {
             console.error(e);
         }
     });
-    it('Nominal path of deleteFilesBefore', function (done) {
+    after(function () {
+        try {
+            tearDown(TEST_SCHEMA_PATH);
+        } catch (e) {
+            console.error(e);
+        }
+    });
+    it('deleteFilesBefore with yesterday as a time stamp', function (done) {
         delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
-        delete_rewire.deleteFilesBefore(this_time, TEST_SCHEMA, TEST_TABLE_1, function del(err) {
+        delete_rewire.deleteFilesBefore(yesterday_time, TEST_SCHEMA, TEST_TABLE_1, function del(err, msg) {
+            assert.equal(msg, `Deleted 0 files`);
+            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_HASH_FILE_PATH), true);
             done();
         });
     });
+    it('Nominal path of deleteFilesBefore', function (done) {
+        delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
+        delete_rewire.deleteFilesBefore(tomorrow_time, TEST_SCHEMA, TEST_TABLE_1, function del(err, msg) {
+            assert.equal(msg, `Deleted 1 files`);
+            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_HASH_FILE_PATH), false);
+            done();
+        });
+    });
+    it('Call deleteFilesBefore in directory with no files', function (done) {
+        delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
+        delete_rewire.deleteFilesBefore(tomorrow_time, TEST_SCHEMA, TEST_TABLE_1, function del(err, msg) {
+            assert.equal(msg, `Deleted 0 files`);
+            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_HASH_FILE_PATH), false);
+            done();
+        });
+    });
+    it('Call deleteFilesBefore with null date', function (done) {
+        delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
+        delete_rewire.deleteFilesBefore(null, TEST_SCHEMA, TEST_TABLE_1, function del(err, msg) {
+            assert.equal(err, 'Invalid date.');
+            done();
+        });
+    });
+
+    it(`Call deleteFileBefore with invalid schema`, function(done) {
+        delete_rewire.deleteFilesBefore(tomorrow_time, null, TEST_TABLE_1, function del(err, msg) {
+            assert.equal(err, "Invalid schema.");
+            done();
+        });
+    });
+
+    it(`Call deleteFileBefore with invalid table`, function(done) {
+        delete_rewire.deleteFilesBefore(tomorrow_time, TEST_SCHEMA, null, function del(err, msg) {
+            assert.equal(err, "Invalid table.");
+            done();
+        });
+    });
+
+    it('Call deleteFilesBefore with valid date strings', function(done) {
+        delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
+        // Test nominal case
+        delete_rewire.deleteFilesBefore('2011-01-11', TEST_SCHEMA, TEST_TABLE_1, function del(err, msg) {
+            assert.equal(err, null);
+            done();
+        });
+    });
+        // Test date with Times included
+     it('Call with valid date/time', function(done) {
+         delete_rewire.deleteFilesBefore('2011-01-11T17:45:55+00:00', TEST_SCHEMA, TEST_TABLE_1, function del(err, msg) {
+             assert.equal(err, null);
+             done();
+         });
+     });
+        // Test leap year silliness
+     it('Call with invalid leap year', function(done) {
+         delete_rewire.deleteFilesBefore('2011-02-29', TEST_SCHEMA, TEST_TABLE_1, function del(err, msg) {
+             assert.equal(err, 'Invalid date.');
+             done();
+         });
+     });
+        //Test Epoc
+     it('Call with Epoc', function(done) {
+         delete_rewire.deleteFilesBefore('1969-01-01', TEST_SCHEMA, TEST_TABLE_1, function del(err, msg) {
+             assert.equal(err, null);
+             done();
+         });
+     });
 });

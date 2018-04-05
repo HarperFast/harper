@@ -1,4 +1,3 @@
-const validate = require('validate.js');
 const PropertiesReader = require('properties-reader');
 const bulk_delete_validator = require('../validation/bulkDeleteValidator');
 const conditional_delete_validator = require('../validation/conditionalDeleteValidator');
@@ -11,6 +10,7 @@ const truncate = require('truncate-utf8-bytes');
 const moment = require('moment');
 const path = require('path');
 const winston = require('../utility/logging/winston_logger');
+const harper_logger = require('../utility/logging/harper_logger');
 
 hdb_properties.append(hdb_properties.get('settings_path'));
 const slash_regex =  /\//g;
@@ -20,7 +20,7 @@ const BLOB_FOLDER_NAME = 'blob';
 const MAX_BYTES = '255';
 const ENOENT_ERROR_CODE = 'ENOENT';
 const SUCCESS_MESSAGE = 'records successfully deleted';
-hdb_properties.append(hdb_properties.get('settings_path'));
+
 const hdb_path = path.join(hdb_properties.get('HDB_ROOT'), '/schema');
 
 module.exports = {
@@ -35,7 +35,7 @@ module.exports = {
  * so if clustering is enabled values added will still remain in a parent node.  This serves only to remove files for
  * devices that have a small amount of disk space.
  *
- * @param date - the date where all file before this time will be deleted from the disk.
+ * @param date - the date where all file before this time will be deleted from the disk.  The string must match ISO-8601 format.
  * @param schema - The schema to remove files from
  * @param table - The table to remove files from
  * @param callback
@@ -50,95 +50,108 @@ function deleteFilesBefore(date, schema, table, callback) {
     if(common_utils.isEmptyOrZeroLength(table)) {
         callback("Invalid table.", null);
     }
-    let parsed = moment(date, moment.ISO_8601);
+    let parsed_date = moment(date, moment.ISO_8601);
 
-    if(!parsed.isValid()) {
-        return callback("Invalid date");
+    if(!parsed_date.isValid()) {
+        return callback("Invalid date.");
     }
 
-    let dir_path = common_utils.buildFolderPath(hdb_path, schema, table, HDB_HASH_FOLDER_NAME);
-
+    let hash_dir_path = common_utils.buildFolderPath(hdb_path, schema, table, HDB_HASH_FOLDER_NAME);
+    let deleted_file_count = 0;
     async.waterfall([
-        listDirectories.bind(null, dir_path),
+        checkPath.bind(null, hash_dir_path),
+        listDirectories.bind(null, hash_dir_path),
         getFiles,
-        removeFiles.bind(null, parsed)
-    ], function(err, data) {
+        function inAllDirs(results, callback) {
+            async.forEachOf(results, function callRemoveOnDirs(found_in_path) {
+                removeFiles(parsed_date, found_in_path.dir_path, found_in_path.files, function removeComplete(err, deleted) {
+                    if(err) {
+                        return callback(common_utils.errorizeMessage(err));
+                    }
+                    deleted_file_count += deleted;
+                    return callback(null);
+                });
+            })
+        }
+    ], function deleteFilesWaterfallDone(err, data) {
         if (err) {
             return callback(err);
         }
-        return callback(null, data);
+        let message = `Deleted ${deleted_file_count} files`;
+        harper_logger.error(message);
+        return callback(null, message);
     });
-    /*
-    listDirectories(file_path, function getDirs(err, results) {
-        if(err) {
-            return callback(err);
-        }
-        hdbDirectories = results;
-        results.forEach(function getFilesInDirectores(dir) {
+}
+
+function checkPath(dir_path, callback) {
+    try {
+        fs.stat(dir_path, function statDir(err, stat) {
             if(err) {
-                return callback(common_utils.errorizeMessage(err));
+                return callback(err, null);
             }
-            getFilesInDirectory(path.join(dir), function getFiles(err, files) {
-                files.forEach(function inspectFiles(file) {
-                    let fileRemovePath = path.join(dir,file);
-                    fs.stat(fileRemovePath, function statFile(err, stat) {
-                        if(stat.mtimeMs < parsed.valueOf()) {
-                            harper_logger.info(`removing file ${fileRemovePath}`)
-                            fs.unlink(fileRemovePath, function unlinkFile(err) {
-                               if(err) {
-                                   harper_logger.error(`failed to remove file ${fileRemovePath}`);
-                               }
-                               callback(null, null);
-                            });
-                        }
-                    });
-                });
-            });
+            if (stat && stat.isDirectory()) {
+                // This callback is empty on purpose, we don't want to pass anything to the next function in the waterfall.
+                return callback();
+            } else {
+                return callback(common_utils.errorizeMessage('not a valid directory path'), null);
+            }
         });
-    }); */
+    } catch (e) {
+        return callback(e, null);
+    }
 }
 
 /**
- * Returns all files found in the directories array passed as a parameter.
+ * Returns a map of all files found in the directories array passed as a parameter.
  * @param results - An array of directory paths
  * @param callback
  */
 function getFiles(results, callback) {
-    let foundFiles = [];
+    // We don't want object prototypes to avoid any name collisions.
+    let foundFiles = Object.create(null);
     async.each(results, function getFilesInDirs(file) {
-        getFilesInDirectory(file, function(files, caller) {
-            if(!common_utils.isEmpty(files)) {
-                foundFiles.push(...files);
-            }
-            caller(null, null);
-        });
+        if(!common_utils.isEmptyOrZeroLength(file)) {
+            foundFiles[file] = {dir_path: file, files: []};
+            getFilesInDirectory(file, function(caller, files) {
+                if(!common_utils.isEmpty(files)) {
+                    foundFiles[file].files.push(...files);
+                }
+                return callback(null, foundFiles);
+            });
+        }
     }, function done(err) {
         if(err) {
             return callback(common_utils.errorizeMessage(err), null);
         }
-        return callback(null, foundFiles);
     });
 }
 
 /**
  * Removes all files which had a last modified date less than the date parameter.
- * @param files - An array of file paths
  * @param date - A date passed as a moment.js object.
+ * @param files - An array of file paths.
  * @param callback
  */
-function removeFiles(files, date, callback) {
-    let filesRemoved = [];
-    async.each(files, function getFilesInDirs(file) {
-        let fileRemovePath = file;
-        fs.stat(file, function statFile(err, stat) {
-            if(stat.mtimeMs < parsed.valueOf()) {
-                filesRemoved.push(fileRemovePath);
+function removeFiles(date, dir_path, files, callback) {
+    let filesRemoved = 0;
+    async.each(files, function getFilesInDirs(file, caller) {
+        let fileRemovePath = path.join(dir_path, file);
+        fs.stat(fileRemovePath, function statFile(err, stat) {
+            if(err) {
+                return callback(common_utils.errorizeMessage(err));
+            }
+            if(stat.mtimeMs < date.valueOf()) {
                 harper_logger.info(`removing file ${fileRemovePath}`)
                 fs.unlink(fileRemovePath, function unlinkFile(err) {
                     if(err) {
                         harper_logger.error(`failed to remove file ${fileRemovePath}`);
+                        caller(common_utils.errorizeMessage(err));
                     }
+                    filesRemoved++;
+                    caller(null);
                 });
+            } else {
+                caller(null);
             }
         });
     }, function done(err) {
@@ -150,7 +163,7 @@ function removeFiles(files, date, callback) {
 }
 
 /**
- * Returns an array containing all files in a directory path.
+ * Returns an array containing the file names of all files in a directory path.
  * @param dirPath - Path to find directories for.
  * @param callback
  */
