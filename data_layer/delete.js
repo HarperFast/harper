@@ -157,17 +157,28 @@ function getFiles(results, callback) {
 
 /**
  * Removes all files which had a last modified date less than the date parameter.
- * @param date - A date passed as a moment.js object.
- * @param files - An array of file paths.
+ * @param date - A date passed as a moment.js date object.
+ * @param dir_path - The path to the directory containing the files listed in the files parameter.
+ * @param files - An array of file names.
  * @param callback
  */
 function removeFiles(date, dir_path, files, callback) {
     let filesRemoved = 0;
+    if(common_utils.isEmptyOrZeroLength(date) || !date.isValid()) {
+        return callback(common_utils.errorizeMessage('Invalid date'), filesRemoved);
+    }
+    if(common_utils.isEmptyOrZeroLength(dir_path)) {
+        return callback(common_utils.errorizeMessage('Invalid directory path'), filesRemoved);
+    }
+    if(common_utils.isEmptyOrZeroLength(files)) {
+        return callback(null, filesRemoved);
+    }
     async.each(files, function getFilesInDirs(file, caller) {
         let fileRemovePath = path.join(dir_path, file);
         fs.stat(fileRemovePath, function statFile(err, stat) {
             if(err) {
-                return callback(common_utils.errorizeMessage(err));
+                harper_logger.info(err);
+                return caller();
             }
             if(stat.mtimeMs < date.valueOf()) {
                 harper_logger.info(`removing file ${fileRemovePath}`)
@@ -177,10 +188,10 @@ function removeFiles(date, dir_path, files, callback) {
                         caller(common_utils.errorizeMessage(err));
                     }
                     filesRemoved++;
-                    caller(null);
+                    caller();
                 });
             } else {
-                caller(null);
+                caller();
             }
         });
     }, function asyncEachDone(err) {
@@ -193,17 +204,17 @@ function removeFiles(date, dir_path, files, callback) {
 
 /**
  * Returns an array containing the file names of all files in a directory path.
- * @param dirPath - Path to find directories for.
+ * @param dirPath - Path to find file names for.
  * @param callback
  */
 function getFilesInDirectory(dirPath, callback) {
     if(common_utils.isEmptyOrZeroLength(dirPath) || common_utils.isEmptyOrZeroLength(dirPath.trim())) {
-        return callback(new Error('Invalid directory path'), results);
+        return callback(common_utils.errorizeMessage('Invalid directory path'), []);
     }
 
     fs.readdir(dirPath, function readDir(err, list) {
         if (err) {
-            return callback(common_utils.errorizeMessage(err), null);
+            return callback(common_utils.errorizeMessage(err), []);
         }
         return callback(null, list);
     });
@@ -235,6 +246,10 @@ function listDirectories(dirPath, callback) {
                 console.error(e);
             }
             fs.stat(found_file, function statFiles(err, stat) {
+                if(err) {
+                    harper_logger.info(err);
+                    return caller();
+                }
                 if (stat && stat.isDirectory()) {
                     results.push(found_file);
                 }

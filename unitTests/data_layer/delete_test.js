@@ -11,6 +11,8 @@ const rewire = require('rewire');
 const delete_rewire = rewire('../../data_layer/delete');
 const fs = require('graceful-fs');
 const moment = require('moment');
+const global_schema = require('../utility/globalSchema');
+const bulk_delete_validator = require('../validation/bulkDeleteValidator');
 
 const TEST_FILE_NAME_1 = 'test1.hdb';
 const TEST_FILE_NAME_2 = 'test2.hdb';
@@ -48,6 +50,9 @@ const TABLE_1_ATTRIBUTE_2_INSTANCE_FILE_PATH = path.join(TABLE_1_ATTRIBUTE_INSTA
 
 const TEST_TABLE_3 = 'test_dir3';
 const TEST_TABLE_3_PATH = path.join(TEST_SCHEMA_PATH, TEST_TABLE_3);
+
+const TOMORROW_TIME = moment().add(1, 'days');
+const YESTERDAY_TIME = moment().subtract(1, 'days');
 
 function setup() {
 
@@ -95,65 +100,8 @@ function tearDown(target_path) {
     }
 };
 
-describe('Test listDirectories', function () {
-    let listDirectories = delete_rewire.__get__('listDirectories');
-    before( function() {
-        try {
-            setup();
-        } catch(e) {
-            //console.error(e);
-        }
-    });
-    after( function() {
-        try {
-            tearDown(TEST_SCHEMA_PATH);
-        } catch(e) {
-            //console.error(e);
-        }
-    });
-    // There should be 2 directories, each with 1 file, and 1 text file in the current directory
-    it('Nominal path of listDirectories', function (done) {
-        listDirectories(TEST_SCHEMA_PATH, function(err, results) {
-            assert.equal(results.length, 3);
-            done();
-        });
-    });
-
-    it('test listDirectories with a null path', function (done) {
-        listDirectories(null, function(err, results) {
-            assert.ok(err.message.length > 0);
-            assert.equal(results.length, 0);
-            done();
-        });
-    });
-
-    it('test listDirectories with a space as path', function (done) {
-        listDirectories(' ', function(err, results) {
-            assert.ok(err.message.length > 0);
-            assert.equal(results.length, 0);
-            done();
-        });
-    });
-
-    it('test listDirectories with an invalid path', function (done) {
-        listDirectories('../askdsdfsadc', function(err, results) {
-            assert.equal(err.errno, '-2');
-            assert.equal(results.length, 0);
-            done();
-        });
-    });
-
-    it('test listDirectories with no directories found', function (done) {
-        listDirectories(TEST_TABLE_3_PATH, function(err, results) {
-            assert.equal(results.length, 0);
-            done();
-        });
-    });
-});
-
 describe('Test deleteFilesBefore', function () {
-    let tomorrow_time = moment().add(1, 'days');
-    let yesterday_time = moment().subtract(1, 'days');
+
     before(function () {
         try {
             setup();
@@ -171,7 +119,7 @@ describe('Test deleteFilesBefore', function () {
     });
     it('deleteFilesBefore with yesterday as a time stamp', function (done) {
         delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
-        delete_rewire.deleteFilesBefore(yesterday_time, TEST_SCHEMA, TEST_TABLE_1, function del(err, msg) {
+        delete_rewire.deleteFilesBefore(YESTERDAY_TIME, TEST_SCHEMA, TEST_TABLE_1, function del(err, msg) {
             assert.equal(msg, `Deleted 0 files`);
             assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_HASH_FILE_PATH), true);
             done();
@@ -179,7 +127,7 @@ describe('Test deleteFilesBefore', function () {
     });
     it('Nominal path of deleteFilesBefore', function (done) {
         delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
-        delete_rewire.deleteFilesBefore(tomorrow_time, TEST_SCHEMA, TEST_TABLE_1, function del(err, msg) {
+        delete_rewire.deleteFilesBefore(TOMORROW_TIME, TEST_SCHEMA, TEST_TABLE_1, function del(err, msg) {
             assert.equal(msg, `Deleted 2 files`);
             assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_HASH_FILE_PATH), false);
             done();
@@ -194,14 +142,14 @@ describe('Test deleteFilesBefore', function () {
     });
 
     it(`Call deleteFileBefore with null schema`, function(done) {
-        delete_rewire.deleteFilesBefore(tomorrow_time, null, TEST_TABLE_1, function del(err, msg) {
+        delete_rewire.deleteFilesBefore(TOMORROW_TIME, null, TEST_TABLE_1, function del(err, msg) {
             assert.equal(err, "Invalid schema.");
             done();
         });
     });
 
     it(`Call deleteFileBefore with null table`, function(done) {
-        delete_rewire.deleteFilesBefore(tomorrow_time, TEST_SCHEMA, null, function del(err, msg) {
+        delete_rewire.deleteFilesBefore(TOMORROW_TIME, TEST_SCHEMA, null, function del(err, msg) {
             assert.equal(err, "Invalid table.");
             done();
         });
@@ -215,28 +163,28 @@ describe('Test deleteFilesBefore', function () {
             done();
         });
     });
-        // Test date with Times included
-     it('Call with valid date/time', function(done) {
-         delete_rewire.deleteFilesBefore('2011-01-11T17:45:55+00:00', TEST_SCHEMA, TEST_TABLE_1, function del(err, msg) {
-             assert.equal(err, null);
-             done();
-         });
-     });
-        // Test leap year silliness
-     it('Call with invalid leap year', function(done) {
-         delete_rewire.deleteFilesBefore('2011-02-29', TEST_SCHEMA, TEST_TABLE_1, function del(err, msg) {
-             assert.equal(err, 'Invalid date.');
-             done();
-         });
-     });
-        //Test Epoc
-     it('Call with Epoc', function(done) {
-         delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
-         delete_rewire.deleteFilesBefore('1969-01-01', TEST_SCHEMA, TEST_TABLE_1, function del(err, msg) {
-             assert.equal(err, null);
-             done();
-         });
-     });
+    // Test date with Times included
+    it('Call with valid date/time', function(done) {
+        delete_rewire.deleteFilesBefore('2011-01-11T17:45:55+00:00', TEST_SCHEMA, TEST_TABLE_1, function del(err, msg) {
+            assert.equal(err, null);
+            done();
+        });
+    });
+    // Test leap year silliness
+    it('Call with invalid leap year', function(done) {
+        delete_rewire.deleteFilesBefore('2011-02-29', TEST_SCHEMA, TEST_TABLE_1, function del(err, msg) {
+            assert.equal(err, 'Invalid date.');
+            done();
+        });
+    });
+    //Test Epoc
+    it('Call with Epoc', function(done) {
+        delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
+        delete_rewire.deleteFilesBefore('1969-01-01', TEST_SCHEMA, TEST_TABLE_1, function del(err, msg) {
+            assert.equal(err, null);
+            done();
+        });
+    });
 });
 
 describe('Test doesDirectoryExist', function () {
@@ -259,8 +207,8 @@ describe('Test doesDirectoryExist', function () {
     it('Nominal path with directory that exists.', function(done) {
         delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
         doesDirectoryExist(TEST_TABLE_1_PATH, function doneChecking(err) {
-           assert.equal(err, null);
-           done();
+            assert.equal(err, null);
+            done();
         });
     });
     it('Test non existent directory', function(done) {
@@ -349,3 +297,228 @@ describe('Test getFiles', function () {
         });
     });
 });
+
+describe('Test removeFiles', function() {
+    let removeFiles = delete_rewire.__get__('removeFiles');
+    let files_to_remove = [TEST_FILE_NAME_1, TEST_FILE_NAME_3];
+    beforeEach( function(done) {
+        try {
+            setup();
+            done();
+        } catch(e) {
+            console.log(e);
+        }
+    });
+    afterEach( function(done) {
+        try {
+            tearDown(TEST_SCHEMA_PATH);
+            done();
+        } catch(e) {
+            console.log(e);
+        }
+    });
+    it('Nominal path of removeFiles', function (done) {
+        removeFiles(TOMORROW_TIME, TABLE_1_ATTRIBUTE_HASH_DIRECTORY_PATH, files_to_remove, function(err, results) {
+            assert.equal(results, 2);
+            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_HASH_FILE_PATH), false);
+            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_2_HASH_FILE_PATH), false);
+            done();
+        });
+    });
+    it('removeFiles with files parameter having 1 bad filename', function (done) {
+        let local_files = [TEST_FILE_NAME_1, TEST_FILE_NAME_2];
+        removeFiles(TOMORROW_TIME, TABLE_1_ATTRIBUTE_HASH_DIRECTORY_PATH, local_files, function(err, results) {
+            assert.equal(results, 1);
+            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_HASH_FILE_PATH), false);
+            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_2_HASH_FILE_PATH), true);
+            done();
+        });
+    });
+    it('removeFiles with empty files parameter', function (done) {
+        let local_files = [];
+        removeFiles(TOMORROW_TIME, TABLE_1_ATTRIBUTE_HASH_DIRECTORY_PATH, local_files, function(err, results) {
+            assert.equal(results, 0);
+            done();
+        });
+    });
+    it('removeFiles with 2 invalid files parameter', function (done) {
+        let local_files = ['bad', 'silly'];
+        removeFiles(TOMORROW_TIME, TABLE_1_ATTRIBUTE_HASH_DIRECTORY_PATH, local_files, function(err, results) {
+            assert.equal(results, 0);
+            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_HASH_FILE_PATH), true);
+            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_2_HASH_FILE_PATH), true);
+            done();
+        });
+    });
+    it('removeFiles with null files parameter', function (done) {
+        let local_files = null;
+        removeFiles(TOMORROW_TIME, TABLE_1_ATTRIBUTE_HASH_DIRECTORY_PATH, local_files, function(err, results) {
+            assert.equal(results, 0);
+            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_HASH_FILE_PATH), true);
+            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_2_HASH_FILE_PATH), true);
+            done();
+        });
+    });
+    it('removeFiles with null path parameter', function (done) {
+        removeFiles(TOMORROW_TIME, null, files_to_remove, function(err, results) {
+            assert.equal(results, 0);
+            assert.ok(err instanceof Error);
+            assert.ok(err.message.length > 0);
+            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_HASH_FILE_PATH), true);
+            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_2_HASH_FILE_PATH), true);
+            done();
+        });
+    });
+    it('removeFiles with null date parameter', function (done) {
+        removeFiles(null, TABLE_1_ATTRIBUTE_HASH_DIRECTORY_PATH, files_to_remove, function(err, results) {
+            assert.equal(results, 0);
+            assert.ok(err instanceof Error);
+            assert.ok(err.message.length > 0);
+            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_HASH_FILE_PATH), true);
+            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_2_HASH_FILE_PATH), true);
+            done();
+        });
+    });
+    it('removeFiles with yesterday as a date', function (done) {
+        removeFiles(YESTERDAY_TIME, TABLE_1_ATTRIBUTE_HASH_DIRECTORY_PATH, files_to_remove, function(err, results) {
+            assert.equal(results, 0);
+            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_HASH_FILE_PATH), true);
+            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_2_HASH_FILE_PATH), true);
+            done();
+        });
+    });
+});
+
+describe('Test getFilesInDirectory', function () {
+    let getFilesInDirectory = delete_rewire.__get__('getFilesInDirectory');
+    delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
+    before( function() {
+        try {
+            setup();
+        } catch(e) {
+            console.error(e);
+        }
+    });
+    after( function() {
+        try {
+            tearDown(TEST_SCHEMA_PATH);
+        } catch(e) {
+            console.error(e);
+        }
+    });
+    it('Nominal path testing getFilesInDirectory.', function(done) {
+        delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
+        getFilesInDirectory(TABLE_1_ATTRIBUTE_HASH_DIRECTORY_PATH, function doneChecking(err, found_files) {
+            assert.equal(found_files.length, 2);
+            done();
+        });
+    });
+    it('getFilesInDirectory with null dir path', function(done) {
+        delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
+        getFilesInDirectory(null, function doneChecking(err, found_files) {
+            assert.ok(err instanceof Error);
+            assert.ok(err.message.length > 0);
+            assert.ok(found_files !== null);
+            done();
+        });
+    });
+    it('getFilesInDirectory with invalid dir path', function(done) {
+        delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
+        getFilesInDirectory(BAD_DIR_PATH, function doneChecking(err, found_files) {
+            assert.ok(err instanceof Error);
+            assert.ok(err.message.length > 0);
+            assert.ok(found_files !== null);
+            done();
+        });
+    });
+    it('getFilesInDirectory with empty dir path', function(done) {
+        delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
+        getFilesInDirectory(TEST_TABLE_3_PATH, function doneChecking(err, found_files) {
+            assert.equal(found_files.length, 0);
+            done();
+        });
+    });
+});
+
+describe('Test listDirectories', function () {
+    let listDirectories = delete_rewire.__get__('listDirectories');
+    before( function() {
+        try {
+            setup();
+        } catch(e) {
+            //console.error(e);
+        }
+    });
+    after( function() {
+        try {
+            tearDown(TEST_SCHEMA_PATH);
+        } catch(e) {
+            //console.error(e);
+        }
+    });
+    // There should be 2 directories, each with 1 file, and 1 text file in the current directory
+    it('Nominal path of listDirectories', function (done) {
+        listDirectories(TEST_SCHEMA_PATH, function(err, results) {
+            assert.equal(results.length, 3);
+            done();
+        });
+    });
+
+    it('test listDirectories with a null path', function (done) {
+        listDirectories(null, function(err, results) {
+            assert.ok(err.message.length > 0);
+            assert.equal(results.length, 0);
+            done();
+        });
+    });
+
+    it('test listDirectories with a space as path', function (done) {
+        listDirectories(' ', function(err, results) {
+            assert.ok(err.message.length > 0);
+            assert.equal(results.length, 0);
+            done();
+        });
+    });
+
+    it('test listDirectories with an invalid path', function (done) {
+        listDirectories('../askdsdfsadc', function(err, results) {
+            assert.equal(err.errno, '-2');
+            assert.equal(results.length, 0);
+            done();
+        });
+    });
+
+    it('test listDirectories with no directories found', function (done) {
+        listDirectories(TEST_TABLE_3_PATH, function(err, results) {
+            assert.equal(results.length, 0);
+            done();
+        });
+    });
+});
+
+describe('Test deleteRecord', function () {
+    beforeEach( function(done) {
+        try {
+            setup();
+            done();
+        } catch(e) {
+            console.log(e);
+        }
+    });
+    afterEach( function(done) {
+        try {
+            tearDown(TEST_SCHEMA_PATH);
+            done();
+        } catch(e) {
+            console.log(e);
+        }
+    });
+    it('test listDirectories with no directories found', function (done) {
+        listDirectories(TEST_TABLE_3_PATH, function(err, results) {
+            done();
+        });
+    });
+});
+
+
+
