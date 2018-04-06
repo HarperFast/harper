@@ -42,13 +42,13 @@ module.exports = {
  */
 function deleteFilesBefore(date, schema, table, callback) {
     if(common_utils.isEmptyOrZeroLength(date)) {
-        callback("Invalid date.", null);
+        return callback("Invalid date.", null);
     }
     if(common_utils.isEmptyOrZeroLength(schema)) {
-        callback("Invalid schema.", null);
+        return callback("Invalid schema.", null);
     }
     if(common_utils.isEmptyOrZeroLength(table)) {
-        callback("Invalid table.", null);
+        return callback("Invalid table.", null);
     }
     let parsed_date = moment(date, moment.ISO_8601);
 
@@ -59,10 +59,14 @@ function deleteFilesBefore(date, schema, table, callback) {
     let hash_dir_path = common_utils.buildFolderPath(hdb_path, schema, table, HDB_HASH_FOLDER_NAME);
     let deleted_file_count = 0;
     async.waterfall([
-        checkPath.bind(null, hash_dir_path),
+        doesDirectoryExist.bind(null, hash_dir_path),
         listDirectories.bind(null, hash_dir_path),
         getFiles,
+        // This function is purposefully defined here as it's easier to read than a function that has 2 async.each calls.
         function inAllDirs(results, callback) {
+            if(common_utils.isEmptyOrZeroLength(results)) {
+                return callback(null);
+            }
             async.forEachOf(results, function callRemoveOnDirs(found_in_path) {
                 removeFiles(parsed_date, found_in_path.dir_path, found_in_path.files, function removeComplete(err, deleted) {
                     if(err) {
@@ -71,7 +75,13 @@ function deleteFilesBefore(date, schema, table, callback) {
                     deleted_file_count += deleted;
                     return callback(null);
                 });
-            })
+            }, function forEachOfDone(err) {
+               if(err) {
+                   harper_logger.error(err);
+                   return callback(err, null);
+               }
+               return callback(null);
+            });
         }
     ], function deleteFilesWaterfallDone(err, data) {
         if (err) {
@@ -81,16 +91,25 @@ function deleteFilesBefore(date, schema, table, callback) {
         harper_logger.error(message);
         return callback(null, message);
     });
-}
+};
 
-function checkPath(dir_path, callback) {
+/**
+ * Internal function used to verify a given directory path exists.
+ * @param dir_path - directory path to stat
+ * @param callback
+ * @returns {*}
+ */
+function doesDirectoryExist(dir_path, callback) {
+    if(common_utils.isEmptyOrZeroLength(dir_path)) {
+        return callback(common_utils.errorizeMessage('not a valid directory path'), null);
+    }
     try {
         fs.stat(dir_path, function statDir(err, stat) {
             if(err) {
                 return callback(err, null);
             }
             if (stat && stat.isDirectory()) {
-                // This callback is empty on purpose, we don't want to pass anything to the next function in the waterfall.
+                // This callback is empty on purpose, we don't want to pass anything to the next function in a waterfall.
                 return callback();
             } else {
                 return callback(common_utils.errorizeMessage('not a valid directory path'), null);
@@ -99,32 +118,42 @@ function checkPath(dir_path, callback) {
     } catch (e) {
         return callback(e, null);
     }
-}
+};
 
 /**
  * Returns a map of all files found in the directories array passed as a parameter.
- * @param results - An array of directory paths
+ * @param results - An array of full directory paths
  * @param callback
  */
 function getFiles(results, callback) {
-    // We don't want object prototypes to avoid any name collisions.
+    // This is a "pure" key/value object. We don't want object prototypes to avoid any name collisions.
     let foundFiles = Object.create(null);
-    async.each(results, function getFilesInDirs(file) {
+    if(common_utils.isEmptyOrZeroLength(results)) {
+        return callback(null, foundFiles);
+    }
+    async.each(results, function getFilesInDirs(file, caller) {
         if(!common_utils.isEmptyOrZeroLength(file)) {
-            foundFiles[file] = {dir_path: file, files: []};
-            getFilesInDirectory(file, function(caller, files) {
-                if(!common_utils.isEmpty(files)) {
+            getFilesInDirectory(file, function(err, files) {
+                if(err) {
+                    harper_logger.info(`No files found in path ${file}`);
+                    return caller();
+                }
+                if(!common_utils.isEmptyOrZeroLength(files)) {
+                    foundFiles[file] = Object.create(null);
+                    foundFiles[file].dir_path = file;
+                    foundFiles[file].files = [];
                     foundFiles[file].files.push(...files);
                 }
-                return callback(null, foundFiles);
+                return caller();
             });
         }
-    }, function done(err) {
+    }, function asyncEachDone(err) {
         if(err) {
             return callback(common_utils.errorizeMessage(err), null);
         }
+        return callback(null, foundFiles);
     });
-}
+};
 
 /**
  * Removes all files which had a last modified date less than the date parameter.
@@ -154,13 +183,13 @@ function removeFiles(date, dir_path, files, callback) {
                 caller(null);
             }
         });
-    }, function done(err) {
+    }, function asyncEachDone(err) {
         if(err) {
             return callback(common_utils.errorizeMessage(err), null);
         }
         return callback(null, filesRemoved);
     });
-}
+};
 
 /**
  * Returns an array containing the file names of all files in a directory path.
@@ -178,7 +207,7 @@ function getFilesInDirectory(dirPath, callback) {
         }
         return callback(null, list);
     });
-}
+};
 
 /**
  * Return an array or directories in the path sent.  Will always return an array, even empty, when no files found.
@@ -198,29 +227,28 @@ function listDirectories(dirPath, callback) {
         if(list.length === 0) {
             return callback(common_utils.errorizeMessage('No files found'), results);
         }
-        let pending = list.length;
-        if (!pending){ return callback(null, results);}
-        list.forEach(function iterateFileList(file) {
+
+        async.each(list, function iterateFileList(found_file, caller) {
             try {
-                file = path.resolve(dirPath, file);
+                found_file = path.resolve(dirPath, found_file);
             } catch(e) {
                 console.error(e);
             }
-            fs.stat(file, function statFiles(err, stat) {
+            fs.stat(found_file, function statFiles(err, stat) {
                 if (stat && stat.isDirectory()) {
-                    results.push(file);
-                    if (!--pending) {
-                        callback(null, results);
-                    }
-                } else {
-                    if (!--pending) {
-                        callback(null, results);
-                    }
+                    results.push(found_file);
                 }
+                caller();
             });
+        }, function eachError(err) {
+            if(err) {
+                harper_logger.info(err);
+                return callback(err, null);
+            }
+            return callback(err, results);
         });
     });
-}
+};
 
 /**
  * Delete a record and unlink all attributes associated with that record.
@@ -261,7 +289,7 @@ function deleteRecord(delete_object, callback){
     } catch(e){
         callback(e);
     }
-}
+};
 
 function conditionalDelete(delete_object, callback){
     try {
@@ -296,7 +324,7 @@ function conditionalDelete(delete_object, callback){
     } catch(e) {
         callback(e);
     }
-}
+};
 
 function deleteRecords(schema, table, records, callback){
     if(common_utils.isEmptyOrZeroLength(records)){
@@ -338,4 +366,4 @@ function deleteRecords(schema, table, records, callback){
 
         callback();
     });
-}
+};

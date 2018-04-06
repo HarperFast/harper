@@ -5,6 +5,9 @@
 
 const assert = require('assert');
 const cu = require('../../utility/common_utils');
+const test_utils = require('../test_utils');
+// try to move to /bin directory so our properties reader doesn't explode.
+test_utils.changeProcessToBinDir();
 
 const ALL_SPACES = '     ';
 
