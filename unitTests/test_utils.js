@@ -14,6 +14,14 @@ function changeProcessToBinDir() {
     }
 }
 
+/*
+    This is a simple, naive clone implementation.  It should never, ever! be used in prod.
+ */
+function deepClone(a) {
+    return JSON.parse(JSON.stringify(a));
+}
+
 module.exports = {
-    changeProcessToBinDir:changeProcessToBinDir
+    changeProcessToBinDir:changeProcessToBinDir,
+    deepClone:deepClone
 }

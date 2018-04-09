@@ -11,13 +11,17 @@ const rewire = require('rewire');
 const delete_rewire = rewire('../../data_layer/delete');
 const fs = require('graceful-fs');
 const moment = require('moment');
-const global_schema = require('../utility/globalSchema');
-const bulk_delete_validator = require('../validation/bulkDeleteValidator');
+const global_schema = require('../../utility/globalSchema');
+const search = require('../../data_layer/search');
 
-const TEST_FILE_NAME_1 = 'test1.hdb';
-const TEST_FILE_NAME_2 = 'test2.hdb';
-const TEST_FILE_NAME_3 = 'test3.hdb';
-const FILE_CONTENTS = "Hey there!";
+
+const ATTRIBUTE_1_INSTANCE_NAME = 'FrankThePug';
+const ATTRIBUTE_2_INSTANCE_NAME = 'Bill';
+const ATTRIBUTE_3_INSTANCE_NAME = 'Eddie';
+const TEST_FILE_NAME_1 = `${ATTRIBUTE_1_INSTANCE_NAME}.hdb`;
+const TEST_FILE_NAME_2 = `${ATTRIBUTE_2_INSTANCE_NAME}.hdb`;
+const TEST_FILE_NAME_3 = `${ATTRIBUTE_3_INSTANCE_NAME}.hdb`;
+const FILE_CONTENTS = "Name";
 const DELETE_MOD_BASE_PATH_NAME = 'hdb_path';
 const TEST_ATTRIBUTE_NAME = 'TestAtt';
 
@@ -32,7 +36,7 @@ const TEST_TABLE_1_HASH = path.join(TEST_SCHEMA_PATH, TEST_TABLE_1, HDB_HASH_FOL
 
 const TABLE_1_ATTRIBUTE_PATH = path.join(TEST_TABLE_1_PATH, TEST_ATTRIBUTE_NAME);
 const TABLE_1_ATTRIBUTE_HASH_DIRECTORY_PATH = path.join(TEST_TABLE_1_HASH, TEST_ATTRIBUTE_NAME);
-const TABLE_1_ATTRIBUTE_INSTANCE_DIRECTORY_PATH = path.join(TABLE_1_ATTRIBUTE_PATH, FILE_CONTENTS);
+const TABLE_1_ATTRIBUTE_INSTANCE_DIRECTORY_PATH = path.join(TABLE_1_ATTRIBUTE_PATH, ATTRIBUTE_1_INSTANCE_NAME);
 const TABLE_1_ATTRIBUTE_HASH_FILE_PATH = path.join(TABLE_1_ATTRIBUTE_HASH_DIRECTORY_PATH, TEST_FILE_NAME_1);
 const TABLE_1_ATTRIBUTE_INSTANCE_FILE_PATH = path.join(TABLE_1_ATTRIBUTE_INSTANCE_DIRECTORY_PATH, TEST_FILE_NAME_1);
 
@@ -41,7 +45,7 @@ const TEST_TABLE_2_PATH = path.join(TEST_SCHEMA_PATH, TEST_TABLE_2);
 const TEST_TABLE_2_HASH = path.join(TEST_SCHEMA_PATH, TEST_TABLE_2, HDB_HASH_FOLDER_NAME);
 const TABLE_2_ATTRIBUTE_PATH = path.join(TEST_TABLE_2_PATH, TEST_ATTRIBUTE_NAME);
 const TABLE_2_ATTRIBUTE_HASH_DIRECTORY_PATH = path.join(TEST_TABLE_2_HASH, TEST_ATTRIBUTE_NAME);
-const TABLE_2_ATTRIBUTE_INSTANCE_DIRECTORY_PATH = path.join(TABLE_2_ATTRIBUTE_PATH, FILE_CONTENTS);
+const TABLE_2_ATTRIBUTE_INSTANCE_DIRECTORY_PATH = path.join(TABLE_2_ATTRIBUTE_PATH, ATTRIBUTE_1_INSTANCE_NAME);
 const TABLE_2_ATTRIBUTE_HASH_FILE_PATH = path.join(TABLE_2_ATTRIBUTE_HASH_DIRECTORY_PATH, TEST_FILE_NAME_2);
 const TABLE_2_ATTRIBUTE_INSTANCE_FILE_PATH = path.join(TABLE_2_ATTRIBUTE_INSTANCE_DIRECTORY_PATH, TEST_FILE_NAME_2);
 
@@ -53,6 +57,145 @@ const TEST_TABLE_3_PATH = path.join(TEST_SCHEMA_PATH, TEST_TABLE_3);
 
 const TOMORROW_TIME = moment().add(1, 'days');
 const YESTERDAY_TIME = moment().subtract(1, 'days');
+
+const SEARCH_RESULT_OBJECT = {};
+
+SEARCH_RESULT_OBJECT[TEST_ATTRIBUTE_NAME] = ATTRIBUTE_1_INSTANCE_NAME;
+
+global.hdb_schema = {
+    "test": {
+        "breed": {
+            "hash_attribute": "id",
+            "id": "19888dcb-68ad-4a85-bf93-ad1e8d4b6fc4",
+            "name": "breed",
+            "schema": "dev",
+            "attributes": []
+        },
+        "test_dir1": {
+            "hash_attribute": `${TEST_ATTRIBUTE_NAME}`,
+            "id": "8650f230-be55-4455-8843-55bcfe7f61c4",
+            "name": "test_dir1",
+            "schema": "test",
+            "attributes": [
+                {
+                    "attribute": `${TEST_ATTRIBUTE_NAME}`
+                }
+            ]
+        }
+    },
+    "system": {
+        "hdb_table": {
+            "hash_attribute": "id",
+            "name": "hdb_table",
+            "schema": "system",
+            "residence": [
+                "*"
+            ],
+            "attributes": [
+                {
+                    "attribute": "id"
+                },
+                {
+                    "attribute": "name"
+                },
+                {
+                    "attribute": "hash_attribute"
+                },
+                {
+                    "attribute": "schema"
+                }
+            ]
+        },
+        "hdb_drop_schema": {
+            "hash_attribute": "id",
+            "name": "hdb_drop_schema",
+            "schema": "system",
+            "residence": [
+                "*"
+            ]
+        },
+        "hdb_attribute": {
+            "hash_attribute": "id",
+            "name": "hdb_attribute",
+            "schema": "system",
+            "residence": [
+                "*"
+            ]
+        },
+        "hdb_schema": {
+            "hash_attribute": "name",
+            "name": "hdb_schema",
+            "schema": "system",
+            "residence": [
+                "*"
+            ],
+            "attributes": [
+                {
+                    "attribute": "name"
+                },
+                {
+                    "attribute": "createddate"
+                }
+            ]
+        },
+        "hdb_user": {
+            "hash_attribute": "username",
+            "name": "hdb_user",
+            "schema": "system",
+            "residence": [
+                "*"
+            ]
+        },
+        "hdb_role": {
+            "hash_attribute": "id",
+            "name": "hdb_user",
+            "schema": "system",
+            "residence": [
+                "*"
+            ]
+        },
+        "hdb_license": {
+            "hash_attribute": "license_key",
+            "name": "hdb_license",
+            "schema": "system"
+        },
+        "hdb_nodes": {
+            "hash_attribute": "name",
+            "residence": [
+                "*"
+            ]
+        },
+        "hdb_queue": {
+            "hash_attribute": "id",
+            "name": "hdb_queue",
+            "schema": "system",
+            "residence": [
+                "*"
+            ]
+        }
+    }
+}
+
+const DELETE_OBJECT = {
+    "operation": "delete",
+    "table": "test_dir1",
+    "schema": "test",
+    "hash_values": [
+        FILE_CONTENTS
+    ],
+    "hdb_user": {
+        "active": true,
+        "role": {
+            "id": "dc52dc65-efc7-4cc4-b3ed-04a98602c0b2",
+            "permission": {
+                "super_user": true
+            },
+            "role": "super_user"
+        },
+        "username": "eli"
+    },
+    "hdb_auth_header": "Basic ZWxpOnBhc3M="
+};
 
 function setup() {
 
@@ -81,6 +224,7 @@ function setup() {
     fs.mkdirSync(TEST_TABLE_3_PATH);
     // Writes a text file to ensure listDirectories only shows directories
     fs.writeFileSync(path.join(TEST_SCHEMA_PATH, TEST_FILE_NAME_2), FILE_CONTENTS);
+
 }
 
 function tearDown(target_path) {
@@ -442,6 +586,7 @@ describe('Test getFilesInDirectory', function () {
 
 describe('Test listDirectories', function () {
     let listDirectories = delete_rewire.__get__('listDirectories');
+    delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
     before( function() {
         try {
             setup();
@@ -497,6 +642,9 @@ describe('Test listDirectories', function () {
 });
 
 describe('Test deleteRecord', function () {
+    let global_schema_stub = sinon.stub(global_schema, "getTableSchema").yields("", null);
+    let search_stub = sinon.stub(search, "searchByHash").yields("", [SEARCH_RESULT_OBJECT]);
+
     beforeEach( function(done) {
         try {
             setup();
@@ -513,12 +661,107 @@ describe('Test deleteRecord', function () {
             console.log(e);
         }
     });
-    it('test listDirectories with no directories found', function (done) {
-        listDirectories(TEST_TABLE_3_PATH, function(err, results) {
+    it('Nominal path for delete Record', function (done) {
+        delete_rewire.__set__('base_path', BASE);
+        delete_rewire.delete(DELETE_OBJECT, function(err, results) {
+            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_HASH_FILE_PATH), false);
+            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_INSTANCE_FILE_PATH), false);
+            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_2_HASH_FILE_PATH), true);
+            done();
+        });
+    });
+    it('test deleteRecord with bad deleteObject parameter', function (done) {
+        delete_rewire.__set__('base_path', BASE);
+        delete_rewire.delete(null, function(err, results) {
+            assert.ok(err.message.length > 0);
+            done();
+        });
+    });
+    it('test deleteRecord with bad schema in deleteObject parameter', function (done) {
+        delete_rewire.__set__('base_path', BASE);
+        let del_obj = test_utils.deepClone(DELETE_OBJECT);
+        del_obj.schema = 'hootiehoo';
+        delete_rewire.delete(del_obj, function(err, results) {
+            assert.ok(err.message.length > 0);
+            done();
+        });
+    });
+    it('test deleteRecord with bad table in deleteObject parameter', function (done) {
+        delete_rewire.__set__('base_path', BASE);
+        let del_obj = test_utils.deepClone(DELETE_OBJECT);
+        del_obj.table = 'hootiehoo';
+        delete_rewire.delete(del_obj, function(err, results) {
+            assert.ok(err.message.length > 0);
+            done();
+        });
+    });
+    it('test deleteRecord with search returning no results', function (done) {
+        delete_rewire.__set__('base_path', BASE);
+        search_stub.restore();
+        search_stub = sinon.stub(search, "searchByHash").yields("", []);
+        delete_rewire.delete(DELETE_OBJECT, function(err, results) {
+            assert.ok(err.message.length > 0);
+            search_stub.restore();
+            search_stub = sinon.stub(search, "searchByHash").yields("", [SEARCH_RESULT_OBJECT]);
             done();
         });
     });
 });
 
 
+describe('Test conditionalDelete', function () {
+    //TODO: We dont currently use conditionalDelete so I'm not writing unit tests for it.  If we start using it, we need
+//to add tests.
+});
 
+describe('Test deleteRecords', function () {
+    beforeEach( function(done) {
+        try {
+            setup();
+            done();
+        } catch(e) {
+            console.log(e);
+        }
+    });
+    afterEach( function(done) {
+        try {
+            tearDown(TEST_SCHEMA_PATH);
+            done();
+        } catch(e) {
+            console.log(e);
+        }
+    });
+    it('Nominal path for delete Record', function (done) {
+        delete_rewire.__set__('base_path', BASE);
+        delete_rewire.deleteRecords(TEST_SCHEMA, TEST_TABLE_1, [SEARCH_RESULT_OBJECT], function(err) {
+            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_HASH_FILE_PATH), false);
+            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_INSTANCE_FILE_PATH), false);
+            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_2_HASH_FILE_PATH), true);
+            done();
+        });
+    });
+    it('deleteRecords with invalid schema', function (done) {
+        delete_rewire.__set__('base_path', BASE);
+        delete_rewire.deleteRecords(null, TEST_TABLE_1, [SEARCH_RESULT_OBJECT], function(err) {
+            assert.ok(err.message.length > 0);
+            done();
+        });
+    });
+    it('deleteRecords with invalid table', function (done) {
+        delete_rewire.__set__('base_path', BASE);
+        delete_rewire.deleteRecords(TEST_SCHEMA, null, [SEARCH_RESULT_OBJECT], function(err) {
+            assert.ok(err.message.length > 0);
+            done();
+        });
+    });
+    it('deleteRecords with empty records', function (done) {
+        delete_rewire.__set__('base_path', BASE);
+        delete_rewire.deleteRecords(TEST_SCHEMA, TEST_TABLE_1, [], function(err) {
+            assert.ok(err.message.length > 0);
+            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_HASH_FILE_PATH), true);
+            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_INSTANCE_FILE_PATH), true);
+            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_2_HASH_FILE_PATH), true);
+            done();
+        });
+    });
+});

@@ -1,3 +1,4 @@
+"use strict";
 const PropertiesReader = require('properties-reader');
 const bulk_delete_validator = require('../validation/bulkDeleteValidator');
 const conditional_delete_validator = require('../validation/conditionalDeleteValidator');
@@ -9,9 +10,9 @@ const global_schema = require('../utility/globalSchema');
 const truncate = require('truncate-utf8-bytes');
 const moment = require('moment');
 const path = require('path');
-const winston = require('../utility/logging/winston_logger');
 const harper_logger = require('../utility/logging/harper_logger');
 
+let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
 hdb_properties.append(hdb_properties.get('settings_path'));
 const slash_regex =  /\//g;
 const base_path = common_utils.buildFolderPath(hdb_properties.get('HDB_ROOT'), "schema");
@@ -20,6 +21,7 @@ const BLOB_FOLDER_NAME = 'blob';
 const MAX_BYTES = '255';
 const ENOENT_ERROR_CODE = 'ENOENT';
 const SUCCESS_MESSAGE = 'records successfully deleted';
+const HDB_FILE_SUFFIX = '.hdb';
 
 const hdb_path = path.join(hdb_properties.get('HDB_ROOT'), '/schema');
 
@@ -274,8 +276,7 @@ function deleteRecord(delete_object, callback){
     try {
         let validation = bulk_delete_validator(delete_object);
         if (validation) {
-            callback(validation);
-            return;
+            return callback(validation);
         }
 
         let search_obj =
@@ -293,10 +294,9 @@ function deleteRecord(delete_object, callback){
             },
             search.searchByHash.bind(null, search_obj),
             deleteRecords.bind(null, delete_object.schema, delete_object.table)
-        ], (err, data) => {
+        ], (err) => {
             if (err) {
-                callback(err);
-                return;
+                return callback(err);
             }
 
             callback(null, SUCCESS_MESSAGE);
@@ -343,11 +343,15 @@ function conditionalDelete(delete_object, callback){
 
 function deleteRecords(schema, table, records, callback){
     if(common_utils.isEmptyOrZeroLength(records)){
-        callback("Item not found!");
-        return;
+        return callback(common_utils.errorizeMessage("Item not found!"));
     }
-
-    let hash_attribute = global.hdb_schema[schema][table].hash_attribute;
+    let hash_attribute = null;
+    try {
+        hash_attribute = global.hdb_schema[schema][table].hash_attribute;
+    } catch (e) {
+        harper_logger.error(`could not retrieve hash attribute for schema:${schema} and table ${table}`);
+        return callback(common_utils.errorizeMessage(`hash attribute not found`));
+    }
     let paths = [];
     let table_path = common_utils.buildFolderPath(base_path, schema, table);
 
@@ -355,10 +359,12 @@ function deleteRecords(schema, table, records, callback){
     records.forEach((record)=>{
         Object.keys(record).forEach((attribute)=>{
             let hash_value = record[hash_attribute];
-            paths.push(common_utils.buildFolderPath(table_path, HDB_HASH_FOLDER_NAME, attribute, `${hash_value}.hdb`));
-            let stripped_value = String(record[attribute]).replace(slash_regex, '');
-            stripped_value = stripped_value.length > MAX_BYTES ? common_utils.buildFolderPath(truncate(stripped_value, MAX_BYTES), BLOB_FOLDER_NAME) : stripped_value;
-            paths.push(common_utils.buildFolderPath(table_path, attribute, stripped_value, `${hash_value}.hdb`));
+            if(!common_utils.isEmptyOrZeroLength(hash_value)) {
+                paths.push(common_utils.buildFolderPath(table_path, HDB_HASH_FOLDER_NAME, attribute, `${hash_value}${HDB_FILE_SUFFIX}`));
+                let stripped_value = String(record[attribute]).replace(slash_regex, '');
+                stripped_value = stripped_value.length > MAX_BYTES ? common_utils.buildFolderPath(truncate(stripped_value, MAX_BYTES), BLOB_FOLDER_NAME) : stripped_value;
+                paths.push(common_utils.buildFolderPath(table_path, attribute, stripped_value, `${hash_value}${HDB_FILE_SUFFIX}`));
+            }
         });
     });
 
@@ -368,17 +374,17 @@ function deleteRecords(schema, table, records, callback){
                 if(err.code === ENOENT_ERROR_CODE){
                     return caller();
                 }
-                winston.error(err);
-                return caller(err);
+                harper_logger.error(err);
+                return caller(common_utils.errorizeMessage(err));
             }
 
             return caller();
         });
     }, (err)=>{
         if(err){
-            return callback(err);
+            return callback(common_utils.errorizeMessage(err));
         }
 
-        callback();
+        return callback();
     });
 };
