@@ -42,21 +42,24 @@ module.exports = {
  * @param table - The table to remove files from
  * @param callback
  */
-function deleteFilesBefore(date, schema, table, callback) {
-    if(common_utils.isEmptyOrZeroLength(date)) {
-        return callback("Invalid date.", null);
-    }
-    if(common_utils.isEmptyOrZeroLength(schema)) {
-        return callback("Invalid schema.", null);
-    }
-    if(common_utils.isEmptyOrZeroLength(table)) {
-        return callback("Invalid table.", null);
-    }
-    let parsed_date = moment(date, moment.ISO_8601);
+//function deleteFilesBefore(date, schema, table, callback) {
+function deleteFilesBefore(json_body, callback) {
 
-    if(!parsed_date.isValid()) {
-        return callback("Invalid date.");
+    if(common_utils.isEmptyOrZeroLength(json_body.date)) {
+        return callback(common_utils.errorizeMessage("Invalid date."), null);
     }
+    let parsed_date = moment(json_body.date, moment.ISO_8601);
+    if(!parsed_date.isValid()) {
+        return callback(common_utils.errorizeMessage("Invalid date, must be in ISO-8601 format."));
+    }
+    if(common_utils.isEmptyOrZeroLength(json_body.schema)) {
+        return callback(common_utils.errorizeMessage("Invalid schema."), null);
+    }
+    let schema = json_body.schema;
+    if(common_utils.isEmptyOrZeroLength(json_body.table)) {
+        return callback(common_utils.errorizeMessage("Invalid table."), null);
+    }
+    let table = json_body.table;
 
     let hash_dir_path = common_utils.buildFolderPath(hdb_path, schema, table, HDB_HASH_FOLDER_NAME);
     let deleted_file_count = 0;
@@ -69,18 +72,18 @@ function deleteFilesBefore(date, schema, table, callback) {
             if(common_utils.isEmptyOrZeroLength(results)) {
                 return callback(null);
             }
-            async.forEachOf(results, function callRemoveOnDirs(found_in_path) {
+            async.forEachOf(results, function callRemoveOnDirs(found_in_path, directory, caller) {
                 removeFiles(parsed_date, found_in_path.dir_path, found_in_path.files, function removeComplete(err, deleted) {
                     if(err) {
                         return callback(common_utils.errorizeMessage(err));
                     }
                     deleted_file_count += deleted;
-                    return callback(null);
+                    caller();
                 });
             }, function forEachOfDone(err) {
                if(err) {
                    harper_logger.error(err);
-                   return callback(err, null);
+                   return callback(err,null);
                }
                return callback(null);
             });

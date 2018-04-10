@@ -14,16 +14,19 @@ const moment = require('moment');
 const global_schema = require('../../utility/globalSchema');
 const search = require('../../data_layer/search');
 
-
+const ISO_8601_FORMAT = 'YYYY-MM-DD';
 const ATTRIBUTE_1_INSTANCE_NAME = 'FrankThePug';
 const ATTRIBUTE_2_INSTANCE_NAME = 'Bill';
 const ATTRIBUTE_3_INSTANCE_NAME = 'Eddie';
+const ATTRIBUTE_AGE_INSTANCE_VAL = '3';
 const TEST_FILE_NAME_1 = `${ATTRIBUTE_1_INSTANCE_NAME}.hdb`;
 const TEST_FILE_NAME_2 = `${ATTRIBUTE_2_INSTANCE_NAME}.hdb`;
 const TEST_FILE_NAME_3 = `${ATTRIBUTE_3_INSTANCE_NAME}.hdb`;
+const TEST_AGE_FILE_NAME_3 = `${ATTRIBUTE_AGE_INSTANCE_VAL}.hdb`;
 const FILE_CONTENTS = "Name";
 const DELETE_MOD_BASE_PATH_NAME = 'hdb_path';
-const TEST_ATTRIBUTE_NAME = 'TestAtt';
+const TEST_ATTRIBUTE_NAME = 'Name';
+const TEST_ATTRIBUTE_AGE = 'Age';
 
 const BASE = process.cwd();
 const BAD_DIR_PATH = '/tmp/zaphodbettlebrox';
@@ -39,6 +42,12 @@ const TABLE_1_ATTRIBUTE_HASH_DIRECTORY_PATH = path.join(TEST_TABLE_1_HASH, TEST_
 const TABLE_1_ATTRIBUTE_INSTANCE_DIRECTORY_PATH = path.join(TABLE_1_ATTRIBUTE_PATH, ATTRIBUTE_1_INSTANCE_NAME);
 const TABLE_1_ATTRIBUTE_HASH_FILE_PATH = path.join(TABLE_1_ATTRIBUTE_HASH_DIRECTORY_PATH, TEST_FILE_NAME_1);
 const TABLE_1_ATTRIBUTE_INSTANCE_FILE_PATH = path.join(TABLE_1_ATTRIBUTE_INSTANCE_DIRECTORY_PATH, TEST_FILE_NAME_1);
+
+const TABLE_1_ATTRIBUTE_AGE_PATH = path.join(TEST_TABLE_1_PATH, TEST_ATTRIBUTE_AGE);
+const TABLE_1_ATTRIBUTE_AGE_HASH_DIRECTORY_PATH = path.join(TEST_TABLE_1_HASH, TEST_ATTRIBUTE_AGE);
+const TABLE_1_ATTRIBUTE_AGE_INSTANCE_DIRECTORY_PATH = path.join(TABLE_1_ATTRIBUTE_AGE_PATH, ATTRIBUTE_AGE_INSTANCE_VAL);
+const TABLE_1_ATTRIBUTE_AGE_HASH_FILE_PATH = path.join(TABLE_1_ATTRIBUTE_AGE_HASH_DIRECTORY_PATH, TEST_AGE_FILE_NAME_3);
+const TABLE_1_ATTRIBUTE_AGE_INSTANCE_FILE_PATH = path.join(TABLE_1_ATTRIBUTE_AGE_INSTANCE_DIRECTORY_PATH, TEST_AGE_FILE_NAME_3);
 
 const TEST_TABLE_2 = 'test_dir2';
 const TEST_TABLE_2_PATH = path.join(TEST_SCHEMA_PATH, TEST_TABLE_2);
@@ -61,6 +70,15 @@ const YESTERDAY_TIME = moment().subtract(1, 'days');
 const SEARCH_RESULT_OBJECT = {};
 
 SEARCH_RESULT_OBJECT[TEST_ATTRIBUTE_NAME] = ATTRIBUTE_1_INSTANCE_NAME;
+
+const TEST_DELETE_BEFORE_REQUEST = {
+    "operation": "delete_files_before",
+    "date": "2018-04-11",
+    "schema": `${TEST_SCHEMA}`,
+    "table": `${TEST_TABLE_1}`,
+    "hdb_user": {},
+    "hdb_auth_header": "Basic abcdefg"
+}
 
 global.hdb_schema = {
     "test": {
@@ -204,12 +222,17 @@ function setup() {
     fs.mkdirSync(TEST_TABLE_1_PATH);
     fs.mkdirSync(TEST_TABLE_1_HASH);
     fs.mkdirSync(TABLE_1_ATTRIBUTE_PATH);
+    fs.mkdirSync(TABLE_1_ATTRIBUTE_AGE_PATH);
     fs.mkdirSync(TABLE_1_ATTRIBUTE_HASH_DIRECTORY_PATH);
     fs.mkdirSync(TABLE_1_ATTRIBUTE_INSTANCE_DIRECTORY_PATH);
+    fs.mkdirSync(TABLE_1_ATTRIBUTE_AGE_HASH_DIRECTORY_PATH);
+    fs.mkdirSync(TABLE_1_ATTRIBUTE_AGE_INSTANCE_DIRECTORY_PATH);
     fs.writeFileSync(TABLE_1_ATTRIBUTE_HASH_FILE_PATH);
     fs.linkSync(TABLE_1_ATTRIBUTE_HASH_FILE_PATH, TABLE_1_ATTRIBUTE_INSTANCE_FILE_PATH);
     fs.writeFileSync(TABLE_1_ATTRIBUTE_2_HASH_FILE_PATH);
     fs.linkSync(TABLE_1_ATTRIBUTE_2_HASH_FILE_PATH, TABLE_1_ATTRIBUTE_2_INSTANCE_FILE_PATH);
+    fs.writeFileSync(TABLE_1_ATTRIBUTE_AGE_HASH_FILE_PATH);
+    fs.linkSync(TABLE_1_ATTRIBUTE_AGE_HASH_FILE_PATH, TABLE_1_ATTRIBUTE_AGE_INSTANCE_FILE_PATH);
 
     // Setup table 2
     fs.mkdirSync(TEST_TABLE_2_PATH);
@@ -263,68 +286,96 @@ describe('Test deleteFilesBefore', function () {
     });
     it('deleteFilesBefore with yesterday as a time stamp', function (done) {
         delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
-        delete_rewire.deleteFilesBefore(YESTERDAY_TIME, TEST_SCHEMA, TEST_TABLE_1, function del(err, msg) {
+        let request = test_utils.deepClone(TEST_DELETE_BEFORE_REQUEST);
+        request.date = YESTERDAY_TIME.format(ISO_8601_FORMAT);
+        delete_rewire.deleteFilesBefore(request, function del(err, msg) {
             assert.equal(msg, `Deleted 0 files`);
             assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_HASH_FILE_PATH), true);
             done();
         });
     });
-    it('Nominal path of deleteFilesBefore', function (done) {
+    it('Nominal path of deleteFilesBefore with 1 directory', function (done) {
         delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
-        delete_rewire.deleteFilesBefore(TOMORROW_TIME, TEST_SCHEMA, TEST_TABLE_1, function del(err, msg) {
-            assert.equal(msg, `Deleted 2 files`);
+        let request = test_utils.deepClone(TEST_DELETE_BEFORE_REQUEST);
+        request.table = TEST_TABLE_2;
+        delete_rewire.deleteFilesBefore(request, function del(err, msg) {
+            assert.equal(msg, `Deleted 1 files`);
+            assert.equal(fs.existsSync(TABLE_2_ATTRIBUTE_HASH_FILE_PATH), false);
+            done();
+        });
+    });
+    it('Nominal path of deleteFilesBefore with 2 directories', function (done) {
+        delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
+        let request = test_utils.deepClone(TEST_DELETE_BEFORE_REQUEST);
+        delete_rewire.deleteFilesBefore(request, function del(err, msg) {
+            assert.equal(msg, `Deleted 3 files`);
             assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_HASH_FILE_PATH), false);
             done();
         });
     });
     it('Call deleteFilesBefore with null date', function (done) {
         delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
-        delete_rewire.deleteFilesBefore(null, TEST_SCHEMA, TEST_TABLE_1, function del(err, msg) {
-            assert.equal(err, 'Invalid date.');
+        let request = test_utils.deepClone(TEST_DELETE_BEFORE_REQUEST);
+        request.date = null;
+        delete_rewire.deleteFilesBefore(request, function del(err, msg) {
+            assert.equal(err.message, 'Invalid date.');
             done();
         });
     });
 
     it(`Call deleteFileBefore with null schema`, function(done) {
-        delete_rewire.deleteFilesBefore(TOMORROW_TIME, null, TEST_TABLE_1, function del(err, msg) {
-            assert.equal(err, "Invalid schema.");
+        let request = test_utils.deepClone(TEST_DELETE_BEFORE_REQUEST);
+        request.schema = null;
+        delete_rewire.deleteFilesBefore(request, function del(err, msg) {
+            assert.equal(err.message, "Invalid schema.");
             done();
         });
     });
 
     it(`Call deleteFileBefore with null table`, function(done) {
-        delete_rewire.deleteFilesBefore(TOMORROW_TIME, TEST_SCHEMA, null, function del(err, msg) {
-            assert.equal(err, "Invalid table.");
+        let request = test_utils.deepClone(TEST_DELETE_BEFORE_REQUEST);
+        request.table = null;
+        delete_rewire.deleteFilesBefore(request, function del(err, msg) {
+            assert.equal(err.message, "Invalid table.");
             done();
         });
     });
 
     it('Call deleteFilesBefore with valid date strings', function(done) {
         delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
+        let request = test_utils.deepClone(TEST_DELETE_BEFORE_REQUEST);
+        request.date = '2011-01-11';
         // Test nominal case
-        delete_rewire.deleteFilesBefore('2011-01-11', TEST_SCHEMA, TEST_TABLE_1, function del(err, msg) {
+        delete_rewire.deleteFilesBefore(request, function del(err, msg) {
             assert.equal(err, null);
             done();
         });
     });
     // Test date with Times included
     it('Call with valid date/time', function(done) {
-        delete_rewire.deleteFilesBefore('2011-01-11T17:45:55+00:00', TEST_SCHEMA, TEST_TABLE_1, function del(err, msg) {
+        delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
+        let request = test_utils.deepClone(TEST_DELETE_BEFORE_REQUEST);
+        request.date = '2011-01-11T17:45:55+00:00';
+        delete_rewire.deleteFilesBefore(request, function del(err, msg) {
             assert.equal(err, null);
             done();
         });
     });
     // Test leap year silliness
     it('Call with invalid leap year', function(done) {
-        delete_rewire.deleteFilesBefore('2011-02-29', TEST_SCHEMA, TEST_TABLE_1, function del(err, msg) {
-            assert.equal(err, 'Invalid date.');
+        let request = test_utils.deepClone(TEST_DELETE_BEFORE_REQUEST);
+        request.date = '2011-02-29';
+        delete_rewire.deleteFilesBefore(request, function del(err, msg) {
+            assert.equal(err.message, 'Invalid date, must be in ISO-8601 format.');
             done();
         });
     });
     //Test Epoc
     it('Call with Epoc', function(done) {
         delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
-        delete_rewire.deleteFilesBefore('1969-01-01', TEST_SCHEMA, TEST_TABLE_1, function del(err, msg) {
+        let request = test_utils.deepClone(TEST_DELETE_BEFORE_REQUEST);
+        request.date = '1969-01-01';
+        delete_rewire.deleteFilesBefore(request, function del(err, msg) {
             assert.equal(err, null);
             done();
         });
