@@ -15,6 +15,7 @@ const global_schema = require('../../utility/globalSchema');
 const search = require('../../data_layer/search');
 
 const ISO_8601_FORMAT = 'YYYY-MM-DD';
+const NOW_FORMAT = 'YYYY-MM-DDTHH:mm:ss.SSSZ';
 const ATTRIBUTE_1_INSTANCE_NAME = 'FrankThePug';
 const ATTRIBUTE_2_INSTANCE_NAME = 'Bill';
 const ATTRIBUTE_3_INSTANCE_NAME = 'Eddie';
@@ -66,6 +67,7 @@ const TEST_TABLE_3_PATH = path.join(TEST_SCHEMA_PATH, TEST_TABLE_3);
 
 const TOMORROW_TIME = moment().add(1, 'days');
 const YESTERDAY_TIME = moment().subtract(1, 'days');
+const NOW = moment();
 
 const SEARCH_RESULT_OBJECT = {};
 
@@ -191,6 +193,87 @@ global.hdb_schema = {
                 "*"
             ]
         }
+    }
+}
+
+const FOUND_FILES_IN_TABLE_1 = {
+    "/Users/elipalmer/harperdb/bin/test/test_dir1/Age/3/3.hdb": {
+        "nlink": 2,
+        "mtimeMs": NOW.valueOf(),
+        "mtime": NOW.format(NOW_FORMAT)
+    },
+    "/Users/elipalmer/harperdb/bin/test/test_dir1/Name/FrankThePug/Eddie.hdb": {
+        "nlink": 2,
+        "mtimeMs": NOW.valueOf(),
+        "mtime": NOW.format(NOW_FORMAT)
+    },
+    "/Users/elipalmer/harperdb/bin/test/test_dir1/Name/FrankThePug/FrankThePug.hdb": {
+        "nlink": 2,
+        "mtimeMs": NOW.valueOf(),
+        "mtime": NOW.format(NOW_FORMAT)
+    },
+    "/Users/elipalmer/harperdb/bin/test/test_dir1/__hdb_hash/Age/3.hdb": {
+        "nlink": 2,
+        "mtimeMs": NOW.valueOf(),
+        "mtime": NOW.format(NOW_FORMAT)
+    },
+    "/Users/elipalmer/harperdb/bin/test/test_dir1/__hdb_hash/Name/Eddie.hdb": {
+        "nlink": 2,
+        "mtimeMs": NOW.valueOf(),
+        "mtime": NOW.format(NOW_FORMAT)
+    },
+    "/Users/elipalmer/harperdb/bin/test/test_dir1/__hdb_hash/Name/FrankThePug.hdb": {
+        "nlink": 2,
+        "mtimeMs": NOW.valueOf(),
+        "mtime": NOW.format(NOW_FORMAT)
+    }
+}
+
+const FOUND_FILES_IN_SCHEMA = {
+    "/Users/elipalmer/harperdb/bin/test/Bill.hdb": {
+        "nlink": 1,
+        "mtimeMs": NOW.valueOf(),
+        "mtime": NOW.format(NOW_FORMAT)
+    },
+    "/Users/elipalmer/harperdb/bin/test/test_dir1/Age/3/3.hdb": {
+        "nlink": 2,
+        "mtimeMs": NOW.valueOf(),
+        "mtime": NOW.format(NOW_FORMAT)
+    },
+    "/Users/elipalmer/harperdb/bin/test/test_dir1/Name/FrankThePug/Eddie.hdb": {
+        "nlink": 2,
+        "mtimeMs": NOW.valueOf(),
+        "mtime": NOW.format(NOW_FORMAT)
+    },
+    "/Users/elipalmer/harperdb/bin/test/test_dir1/Name/FrankThePug/FrankThePug.hdb": {
+        "nlink": 2,
+        "mtimeMs": NOW.valueOf(),
+        "mtime": NOW.format(NOW_FORMAT)
+    },
+    "/Users/elipalmer/harperdb/bin/test/test_dir1/__hdb_hash/Age/3.hdb": {
+        "nlink": 2,
+        "mtimeMs": NOW.valueOf(),
+        "mtime": NOW.format(NOW_FORMAT)
+    },
+    "/Users/elipalmer/harperdb/bin/test/test_dir1/__hdb_hash/Name/Eddie.hdb": {
+        "nlink": 2,
+        "mtimeMs": NOW.valueOf(),
+        "mtime": NOW.format(NOW_FORMAT)
+    },
+    "/Users/elipalmer/harperdb/bin/test/test_dir1/__hdb_hash/Name/FrankThePug.hdb": {
+        "nlink": 2,
+        "mtimeMs": NOW.valueOf(),
+        "mtime": NOW.format(NOW_FORMAT)
+    },
+    "/Users/elipalmer/harperdb/bin/test/test_dir2/Name/FrankThePug/Bill.hdb": {
+        "nlink": 2,
+        "mtimeMs": NOW.valueOf(),
+        "mtime": NOW.format(NOW_FORMAT)
+    },
+    "/Users/elipalmer/harperdb/bin/test/test_dir2/__hdb_hash/Name/Bill.hdb": {
+        "nlink": 2,
+        "mtimeMs": NOW.valueOf(),
+        "mtime": NOW.format(NOW_FORMAT)
     }
 }
 
@@ -399,27 +482,22 @@ describe('Test doesDirectoryExist', function () {
             console.error(e);
         }
     });
-    it('Nominal path with directory that exists.', function(done) {
+    it('Nominal path with directory that exists.', test_utils.mochaAsyncWrapper(async () => {
         delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
-        doesDirectoryExist(TEST_TABLE_1_PATH, function doneChecking(err) {
-            assert.equal(err, null);
-            done();
-        });
-    });
-    it('Test non existent directory', function(done) {
+        let doesExist = await doesDirectoryExist(TEST_TABLE_1_PATH);
+        assert.equal(doesExist, true);
+    }));
+    //
+    it('Test non existent directory', test_utils.mochaAsyncWrapper(async () => {
         delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
-        doesDirectoryExist('/tmp/howdyho', function doneChecking(err) {
-            assert.ok(err.message.length > 0);
-            done();
-        });
-    });
-    it('Test null directory', function(done) {
+        let doesExist = await doesDirectoryExist('/tmp/howdyho');
+        assert.equal(doesExist, false);
+    }));
+    it('Test null directory', test_utils.mochaAsyncWrapper(async () => {
         delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
-        doesDirectoryExist(null, function doneChecking(err) {
-            assert.ok(err.message.length > 0);
-            done();
-        });
-    });
+        let doesExist = await doesDirectoryExist(null);
+        assert.equal(doesExist, false);
+    }));
 });
 
 describe('Test getFiles', function () {
@@ -512,76 +590,66 @@ describe('Test removeFiles', function() {
             console.log(e);
         }
     });
-    it('Nominal path of removeFiles', function (done) {
-        removeFiles(TOMORROW_TIME, TABLE_1_ATTRIBUTE_HASH_DIRECTORY_PATH, files_to_remove, function(err, results) {
-            assert.equal(results, 2);
-            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_HASH_FILE_PATH), false);
-            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_2_HASH_FILE_PATH), false);
-            done();
-        });
-    });
-    it('removeFiles with files parameter having 1 bad filename', function (done) {
-        let local_files = [TEST_FILE_NAME_1, TEST_FILE_NAME_2];
-        removeFiles(TOMORROW_TIME, TABLE_1_ATTRIBUTE_HASH_DIRECTORY_PATH, local_files, function(err, results) {
-            assert.equal(results, 1);
-            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_HASH_FILE_PATH), false);
-            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_2_HASH_FILE_PATH), true);
-            done();
-        });
-    });
-    it('removeFiles with empty files parameter', function (done) {
+    it('Nominal path of removeFiles', test_utils.mochaAsyncWrapper(async () => {
+        let removed_count = await removeFiles(TOMORROW_TIME, FOUND_FILES_IN_TABLE_1);
+        assert.equal(removed_count, 6);
+        for( let file in FOUND_FILES_IN_TABLE_1) {
+            assert.equal(fs.existsSync(file), false, `File ${file} still exists.`);
+        }
+    }));
+    it('removeFiles with files parameter having 1 bad filename', test_utils.mochaAsyncWrapper(async () => {
+        let files_copy = test_utils.deepClone(FOUND_FILES_IN_TABLE_1);
+        let temp = "/Users/elipalmer/harperdb/bin/test/test_dir1/Age/3/3.hdb";
+        Object.defineProperty(files_copy, './badpath.hdb',
+            Object.getOwnPropertyDescriptor(files_copy, temp));
+        delete files_copy[temp];
+        let removed_count = await removeFiles(TOMORROW_TIME, files_copy);
+        assert.equal(removed_count, 5);
+        for( let file in files_copy) {
+            if(file !== temp) {
+                assert.equal(fs.existsSync(file), false, `File ${file} still exists.`);
+            }
+        }
+    }));
+    it('removeFiles with empty files parameter', test_utils.mochaAsyncWrapper(async () => {
         let local_files = [];
-        removeFiles(TOMORROW_TIME, TABLE_1_ATTRIBUTE_HASH_DIRECTORY_PATH, local_files, function(err, results) {
-            assert.equal(results, 0);
-            done();
-        });
-    });
-    it('removeFiles with 2 invalid files parameter', function (done) {
-        let local_files = ['bad', 'silly'];
-        removeFiles(TOMORROW_TIME, TABLE_1_ATTRIBUTE_HASH_DIRECTORY_PATH, local_files, function(err, results) {
-            assert.equal(results, 0);
-            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_HASH_FILE_PATH), true);
-            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_2_HASH_FILE_PATH), true);
-            done();
-        });
-    });
-    it('removeFiles with null files parameter', function (done) {
-        let local_files = null;
-        removeFiles(TOMORROW_TIME, TABLE_1_ATTRIBUTE_HASH_DIRECTORY_PATH, local_files, function(err, results) {
-            assert.equal(results, 0);
-            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_HASH_FILE_PATH), true);
-            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_2_HASH_FILE_PATH), true);
-            done();
-        });
-    });
-    it('removeFiles with null path parameter', function (done) {
-        removeFiles(TOMORROW_TIME, null, files_to_remove, function(err, results) {
-            assert.equal(results, 0);
-            assert.ok(err instanceof Error);
-            assert.ok(err.message.length > 0);
-            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_HASH_FILE_PATH), true);
-            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_2_HASH_FILE_PATH), true);
-            done();
-        });
-    });
-    it('removeFiles with null date parameter', function (done) {
-        removeFiles(null, TABLE_1_ATTRIBUTE_HASH_DIRECTORY_PATH, files_to_remove, function(err, results) {
-            assert.equal(results, 0);
-            assert.ok(err instanceof Error);
-            assert.ok(err.message.length > 0);
-            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_HASH_FILE_PATH), true);
-            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_2_HASH_FILE_PATH), true);
-            done();
-        });
-    });
-    it('removeFiles with yesterday as a date', function (done) {
-        removeFiles(YESTERDAY_TIME, TABLE_1_ATTRIBUTE_HASH_DIRECTORY_PATH, files_to_remove, function(err, results) {
-            assert.equal(results, 0);
-            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_HASH_FILE_PATH), true);
-            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_2_HASH_FILE_PATH), true);
-            done();
-        });
-    });
+        let removed_count = await removeFiles(TOMORROW_TIME, local_files);
+        assert.equal(removed_count, 0);
+    }));
+    it('removeFiles with all invalid files parameter', test_utils.mochaAsyncWrapper(async () => {
+        let files_copy = test_utils.deepClone(FOUND_FILES_IN_TABLE_1);
+        let counter = 0;
+        for( let file in files_copy) {
+            Object.defineProperty(files_copy, './badpath' + counter + '.hdb',
+                Object.getOwnPropertyDescriptor(files_copy, file));
+            delete files_copy[file];
+            counter++;
+        }
+        let removed_count = await removeFiles(TOMORROW_TIME, files_copy);
+        assert.equal(removed_count, 0);
+        assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_HASH_FILE_PATH), true);
+        assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_2_HASH_FILE_PATH), true);
+    }));
+    it('removeFiles with null files parameter', test_utils.mochaAsyncWrapper(async () => {
+        let removed_count = await removeFiles(TOMORROW_TIME, null);
+        assert.equal(removed_count, 0);
+        assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_HASH_FILE_PATH), true);
+        assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_2_HASH_FILE_PATH), true);
+    }));
+    it('removeFiles with null date parameter', test_utils.mochaAsyncWrapper(async () => {
+        let removed_count = await removeFiles(null, FOUND_FILES_IN_SCHEMA);
+        assert.equal(removed_count, 0);
+        for( let file in FOUND_FILES_IN_SCHEMA) {
+            assert.equal(fs.existsSync(file), true, `File ${file} was deleted for some reason.`);
+        }
+    }));
+    it('removeFiles with yesterday as a date', test_utils.mochaAsyncWrapper(async () => {
+        let removed_count = await removeFiles(YESTERDAY_TIME, FOUND_FILES_IN_SCHEMA);
+        assert.equal(removed_count, 0);
+        for( let file in FOUND_FILES_IN_SCHEMA) {
+            assert.equal(fs.existsSync(file), true, `File ${file} was deleted for some reason.`);
+        }
+    }));
 });
 
 describe('Test getFilesInDirectory', function () {
@@ -635,8 +703,8 @@ describe('Test getFilesInDirectory', function () {
     });
 });
 
-describe('Test listDirectories', function () {
-    let listDirectories = delete_rewire.__get__('listDirectories');
+describe('Test getFilesInDirectories', function () {
+    let getFilesInDirectories = delete_rewire.__get__('getFilesInDirectories');
     delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
     before( function() {
         try {
@@ -653,43 +721,35 @@ describe('Test listDirectories', function () {
         }
     });
     // There should be 2 directories, each with 1 file, and 1 text file in the current directory
-    it('Nominal path of listDirectories', function (done) {
-        listDirectories(TEST_SCHEMA_PATH, function(err, results) {
-            assert.equal(results.length, 3);
-            done();
-        });
-    });
+    it('Nominal path of getFilesInDirectories', test_utils.mochaAsyncWrapper(async () => {
+        let list_dir_results = Object.create(null);
+        await getFilesInDirectories(TEST_SCHEMA_PATH, list_dir_results);
+        assert.equal(Object.keys(list_dir_results).length, 9);
+    }));
 
-    it('test listDirectories with a null path', function (done) {
-        listDirectories(null, function(err, results) {
-            assert.ok(err.message.length > 0);
-            assert.equal(results.length, 0);
-            done();
-        });
-    });
+    it('test getFilesInDirectories with a null path', test_utils.mochaAsyncWrapper(async () => {
+        let list_dir_results = Object.create(null);
+        await getFilesInDirectories(null, list_dir_results);
+        assert.equal(Object.keys(list_dir_results).length, 0);
+    }));
 
-    it('test listDirectories with a space as path', function (done) {
-        listDirectories(' ', function(err, results) {
-            assert.ok(err.message.length > 0);
-            assert.equal(results.length, 0);
-            done();
-        });
-    });
+    it('test getFilesInDirectories with a space as path', test_utils.mochaAsyncWrapper(async () => {
+        let list_dir_results = Object.create(null);
+        await getFilesInDirectories(' ', list_dir_results);
+        assert.equal(Object.keys(list_dir_results).length, 0);
+    }));
 
-    it('test listDirectories with an invalid path', function (done) {
-        listDirectories('../askdsdfsadc', function(err, results) {
-            assert.equal(err.errno, '-2');
-            assert.equal(results.length, 0);
-            done();
-        });
-    });
+    it('test getFilesInDirectories with an invalid path', test_utils.mochaAsyncWrapper(async () => {
+        let list_dir_results = Object.create(null);
+        await getFilesInDirectories('../askdsdfsadc', list_dir_results);
+        assert.equal(Object.keys(list_dir_results).length, 0);
+    }));
 
-    it('test listDirectories with no directories found', function (done) {
-        listDirectories(TEST_TABLE_3_PATH, function(err, results) {
-            assert.equal(results.length, 0);
-            done();
-        });
-    });
+    it('test getFilesInDirectories with no directories found', test_utils.mochaAsyncWrapper(async () => {
+        let list_dir_results = Object.create(null);
+        await getFilesInDirectories(TEST_TABLE_3_PATH, list_dir_results);
+        assert.equal(Object.keys(list_dir_results).length, 0);
+    }));
 });
 
 describe('Test deleteRecord', function () {

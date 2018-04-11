@@ -11,6 +11,7 @@ const truncate = require('truncate-utf8-bytes');
 const moment = require('moment');
 const path = require('path');
 const harper_logger = require('../utility/logging/harper_logger');
+const { promisify } = require('util');
 
 let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
 hdb_properties.append(hdb_properties.get('settings_path'));
@@ -24,6 +25,11 @@ const SUCCESS_MESSAGE = 'records successfully deleted';
 const HDB_FILE_SUFFIX = '.hdb';
 
 const hdb_path = path.join(hdb_properties.get('HDB_ROOT'), '/schema');
+
+// Promisified functions
+const p_fs_stat = promisify(fs.stat);
+const p_fs_readdir = promisify(fs.readdir);
+const p_fs_unlink = promisify(fs.unlink);
 
 module.exports = {
     delete: deleteRecord,
@@ -42,7 +48,6 @@ module.exports = {
  * @param table - The table to remove files from
  * @param callback
  */
-//function deleteFilesBefore(date, schema, table, callback) {
 function deleteFilesBefore(json_body, callback) {
 
     if(common_utils.isEmptyOrZeroLength(json_body.date)) {
@@ -63,9 +68,10 @@ function deleteFilesBefore(json_body, callback) {
 
     let hash_dir_path = common_utils.buildFolderPath(hdb_path, schema, table, HDB_HASH_FOLDER_NAME);
     let deleted_file_count = 0;
+    /*
     async.waterfall([
         doesDirectoryExist.bind(null, hash_dir_path),
-        listDirectories.bind(null, hash_dir_path),
+        getFilesInDirectories.bind(null, hash_dir_path),
         getFiles,
         // This function is purposefully defined here as it's easier to read than a function that has 2 async.each calls.
         function inAllDirs(results, callback) {
@@ -73,7 +79,7 @@ function deleteFilesBefore(json_body, callback) {
                 return callback(null);
             }
             async.forEachOf(results, function callRemoveOnDirs(found_in_path, directory, caller) {
-                removeFiles(parsed_date, found_in_path.dir_path, found_in_path.files, function removeComplete(err, deleted) {
+                removeFiles(parsed_date, found_in_path.files, function removeComplete(err, deleted) {
                     if(err) {
                         return callback(common_utils.errorizeMessage(err));
                     }
@@ -96,7 +102,27 @@ function deleteFilesBefore(json_body, callback) {
         harper_logger.error(message);
         return callback(null, message);
     });
+    */
+    let message = `Deleted ${deleted_file_count} files`;
+    return callback(null, message);
 };
+
+async function walkPath(dir_path) {
+    const doesExist = await doesDirectoryExist(dir_path);
+    if(!doesExist) {
+        let message = "Invalid Directory Path.";
+        harper_logger.info(message);
+        return common_utils.errorizeMessage(message);
+    }
+
+    let found_files = Object.create(null);
+    await getFilesInDirectories(dir_path, found_files);
+    if(common_utils.isEmptyOrZeroLength(found_files)) {
+        let message = "No files found";
+        harper_logger.info(message);
+        return message;
+    }
+}
 
 /**
  * Internal function used to verify a given directory path exists.
@@ -104,24 +130,21 @@ function deleteFilesBefore(json_body, callback) {
  * @param callback
  * @returns {*}
  */
-function doesDirectoryExist(dir_path, callback) {
+async function doesDirectoryExist(dir_path) {
     if(common_utils.isEmptyOrZeroLength(dir_path)) {
-        return callback(common_utils.errorizeMessage('not a valid directory path'), null);
+        harper_logger.info('not a valid directory path');
+        return false;
     }
     try {
-        fs.stat(dir_path, function statDir(err, stat) {
-            if(err) {
-                return callback(err, null);
-            }
-            if (stat && stat.isDirectory()) {
-                // This callback is empty on purpose, we don't want to pass anything to the next function in a waterfall.
-                return callback();
-            } else {
-                return callback(common_utils.errorizeMessage('not a valid directory path'), null);
-            }
-        });
+        let stats = await p_fs_stat(dir_path);
+        if (stats && stats.isDirectory()) {
+            return true;
+        } else {
+            return false;
+        }
     } catch (e) {
-        return callback(e, null);
+        harper_logger.info(e);
+        return false;
     }
 };
 
@@ -163,48 +186,31 @@ function getFiles(results, callback) {
 /**
  * Removes all files which had a last modified date less than the date parameter.
  * @param date - A date passed as a moment.js date object.
- * @param dir_path - The path to the directory containing the files listed in the files parameter.
- * @param files - An array of file names.
- * @param callback
+ * @param files - An object key,value map of file names and stats <file_name_key, fs_stats>.  This should be a "pure"
+ * key/value object created via Object.create(null). We don't want object prototype keys so we can avoid any name collisions.
  */
-function removeFiles(date, dir_path, files, callback) {
+async function removeFiles(date, files) {
     let filesRemoved = 0;
     if(common_utils.isEmptyOrZeroLength(date) || !date.isValid()) {
-        return callback(common_utils.errorizeMessage('Invalid date'), filesRemoved);
-    }
-    if(common_utils.isEmptyOrZeroLength(dir_path)) {
-        return callback(common_utils.errorizeMessage('Invalid directory path'), filesRemoved);
+        return filesRemoved;
     }
     if(common_utils.isEmptyOrZeroLength(files)) {
-        return callback(null, filesRemoved);
+        return filesRemoved;
     }
-    async.each(files, function getFilesInDirs(file, caller) {
-        let fileRemovePath = path.join(dir_path, file);
-        fs.stat(fileRemovePath, function statFile(err, stat) {
-            if(err) {
-                harper_logger.info(err);
-                return caller();
+
+    for(let file in files) {
+        let stats = files[file];
+        if (stats.mtimeMs < date.valueOf()) {
+            harper_logger.info(`removing file ${file}`);
+            try {
+                await p_fs_unlink(file);
+                filesRemoved++;
+            } catch (e) {
+                harper_logger.error(e);
             }
-            if(stat.mtimeMs < date.valueOf()) {
-                harper_logger.info(`removing file ${fileRemovePath}`)
-                fs.unlink(fileRemovePath, function unlinkFile(err) {
-                    if(err) {
-                        harper_logger.error(`failed to remove file ${fileRemovePath}`);
-                        caller(common_utils.errorizeMessage(err));
-                    }
-                    filesRemoved++;
-                    caller();
-                });
-            } else {
-                caller();
-            }
-        });
-    }, function asyncEachDone(err) {
-        if(err) {
-            return callback(common_utils.errorizeMessage(err), null);
         }
-        return callback(null, filesRemoved);
-    });
+    }
+    return filesRemoved;
 };
 
 /**
@@ -231,43 +237,31 @@ function getFilesInDirectory(dirPath, callback) {
  * @param callback
  * @returns {Array}
  */
-function listDirectories(dirPath, callback) {
-    let results = [];
-    if(common_utils.isEmptyOrZeroLength(dirPath) || common_utils.isEmptyOrZeroLength(dirPath.trim())) {
-        return callback(common_utils.errorizeMessage('Invalid directory path'), results);
+async function getFilesInDirectories(dirPath, found_files) {
+    //let results = Object.create(null);
+    let list = undefined;
+    try {
+        list = await p_fs_readdir(dirPath);
+    } catch (e) {
+        harper_logger.error(e);
+        return;
     }
-    fs.readdir(dirPath, function readDir(err, list) {
-        if (err) {
-            return callback(common_utils.errorizeMessage(err), results);
-        }
-        if(list.length === 0) {
-            return callback(common_utils.errorizeMessage('No files found'), results);
-        }
+    let pending = list.length;
+    if(!pending) { return; }
 
-        async.each(list, function iterateFileList(found_file, caller) {
-            try {
-                found_file = path.resolve(dirPath, found_file);
-            } catch(e) {
-                console.error(e);
-            }
-            fs.stat(found_file, function statFiles(err, stat) {
-                if(err) {
-                    harper_logger.info(err);
-                    return caller();
-                }
-                if (stat && stat.isDirectory()) {
-                    results.push(found_file);
-                }
-                caller();
-            });
-        }, function eachError(err) {
-            if(err) {
-                harper_logger.info(err);
-                return callback(err, null);
-            }
-            return callback(err, results);
-        });
-    });
+    for(let found in list) {
+        let file = path.resolve(dirPath, list[found]);
+        let stats = await p_fs_stat(file);
+        if (stats && stats.isDirectory()) {
+            //results.push(file);
+            let res = await getFilesInDirectories(file, found_files);
+            //results = results.concat(res);
+        } else {
+            //results.push(file);
+            found_files[file] = stats;
+        }
+    }
+    return;
 };
 
 /**

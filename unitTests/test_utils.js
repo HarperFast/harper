@@ -21,7 +21,14 @@ function deepClone(a) {
     return JSON.parse(JSON.stringify(a));
 }
 
+let mochaAsyncWrapper = (fn) => {
+    return (done) => {
+        fn.call().then(done, (err)=>{done(err)});
+    };
+};
+
 module.exports = {
     changeProcessToBinDir:changeProcessToBinDir,
-    deepClone:deepClone
+    deepClone:deepClone,
+    mochaAsyncWrapper:mochaAsyncWrapper
 }
