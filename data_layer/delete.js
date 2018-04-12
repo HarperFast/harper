@@ -43,9 +43,7 @@ module.exports = {
  * so if clustering is enabled values added will still remain in a parent node.  This serves only to remove files for
  * devices that have a small amount of disk space.
  *
- * @param date - the date where all file before this time will be deleted from the disk.  The string must match ISO-8601 format.
- * @param schema - The schema to remove files from
- * @param table - The table to remove files from
+ * @param json_body - the request passed from chooseOperation.
  * @param callback
  */
 function deleteFilesBefore(json_body, callback) {
@@ -82,8 +80,8 @@ function deleteFilesBefore(json_body, callback) {
 /**
  * Starting at the path passed as a parameter, look at each file and compare it to the date parameter.  If the file is
  * older than the date, delete it.
- * @param dir_path
- * @param date
+ * @param dir_path - The path to search for files
+ * @param date - the date as a momentjs object.
  * @returns {Promise<*>}
  */
 async function deleteFilesInPath(dir_path, date) {
@@ -92,7 +90,7 @@ async function deleteFilesInPath(dir_path, date) {
         harper_logger.error(`directory path ${dir_path} is invalid.`);
         return filesRemoved;
     }
-    if(!date) {
+    if(!date || !date.isValid()) {
         harper_logger.error(`date ${date} is invalid.`);
         return filesRemoved;
     }
@@ -122,7 +120,6 @@ async function deleteFilesInPath(dir_path, date) {
 /**
  * Internal function used to verify a given directory path exists.
  * @param dir_path - directory path to stat
- * @param callback
  * @returns {*}
  */
 async function doesDirectoryExist(dir_path) {
@@ -166,7 +163,7 @@ async function removeFiles(date, files) {
                 await p_fs_unlink(file);
                 filesRemoved++;
             } catch (e) {
-                harper_logger.error(e);
+                harper_logger.error(`could not remove file ${file} - ${e}`);
             }
         }
     }
@@ -176,7 +173,8 @@ async function removeFiles(date, files) {
 /**
  * Return an array or directories in the path sent.  Will always return an array, even empty, when no files found.
  * @param dirPath - path to find directories for.
- * @param callback
+ * @param found_files - An object key,value map of file names and stats <file_name_key, fs_stats>.  This should be a "pure"
+ * key/value object created via Object.create(null). We don't want object prototype keys so we can avoid any name collisions.
  * @returns {Array}
  */
 async function getFilesInDirectories(dirPath, found_files) {
@@ -192,9 +190,20 @@ async function getFilesInDirectories(dirPath, found_files) {
 
     for(let found in list) {
         let file = path.resolve(dirPath, list[found]);
-        let stats = await p_fs_stat(file);
+        let stats = undefined;
+        try {
+            stats = await p_fs_stat(file);
+        } catch(e) {
+            harper_logger.info(`Had trouble getting stats for file ${file}.`);
+            return;
+        }
         if (stats && stats.isDirectory()) {
-            await getFilesInDirectories(file, found_files);
+            try {
+                await getFilesInDirectories(file, found_files);
+            } catch(e) {
+                harper_logger.info(`Had trouble getting files for directory ${file}.`);
+                return;
+            }
         } else {
             found_files[file] = stats;
         }

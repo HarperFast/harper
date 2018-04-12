@@ -14,13 +14,18 @@ function changeProcessToBinDir() {
     }
 }
 
-/*
-    This is a simple, naive clone implementation.  It should never, ever! be used in prod.
+/**
+ This is a simple, naive clone implementation.  It should never, ever! be used in prod.
  */
 function deepClone(a) {
     return JSON.parse(JSON.stringify(a));
 }
 
+/**
+ * Wrap an async function with a try/catch to reduce the amount of test code.  This is OK for unit tests, but prod code should be explicitly wrapped.
+ * @param fn
+ * @returns {function(*=)}
+ */
 let mochaAsyncWrapper = (fn) => {
     return (done) => {
         fn.call().then(done, (err)=>{done(err)});
