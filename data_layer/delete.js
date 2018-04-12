@@ -66,61 +66,56 @@ function deleteFilesBefore(json_body, callback) {
     }
     let table = json_body.table;
 
-    let hash_dir_path = common_utils.buildFolderPath(hdb_path, schema, table, HDB_HASH_FOLDER_NAME);
+    let dir_path = common_utils.buildFolderPath(hdb_path, schema, table);
     let deleted_file_count = 0;
-    /*
-    async.waterfall([
-        doesDirectoryExist.bind(null, hash_dir_path),
-        getFilesInDirectories.bind(null, hash_dir_path),
-        getFiles,
-        // This function is purposefully defined here as it's easier to read than a function that has 2 async.each calls.
-        function inAllDirs(results, callback) {
-            if(common_utils.isEmptyOrZeroLength(results)) {
-                return callback(null);
-            }
-            async.forEachOf(results, function callRemoveOnDirs(found_in_path, directory, caller) {
-                removeFiles(parsed_date, found_in_path.files, function removeComplete(err, deleted) {
-                    if(err) {
-                        return callback(common_utils.errorizeMessage(err));
-                    }
-                    deleted_file_count += deleted;
-                    caller();
-                });
-            }, function forEachOfDone(err) {
-               if(err) {
-                   harper_logger.error(err);
-                   return callback(err,null);
-               }
-               return callback(null);
-            });
-        }
-    ], function deleteFilesWaterfallDone(err, data) {
-        if (err) {
-            return callback(err);
-        }
+
+    deleteFilesInPath(dir_path, parsed_date).then( val => {
+        deleted_file_count = val;
         let message = `Deleted ${deleted_file_count} files`;
-        harper_logger.error(message);
         return callback(null, message);
+    }).catch(function caughtError(err) {
+        harper_logger.error(`There was an error deleting files by date: ${err}`);
+        return callback(err, null);
     });
-    */
-    let message = `Deleted ${deleted_file_count} files`;
-    return callback(null, message);
 };
 
-async function walkPath(dir_path) {
-    const doesExist = await doesDirectoryExist(dir_path);
-    if(!doesExist) {
-        let message = "Invalid Directory Path.";
-        harper_logger.info(message);
-        return common_utils.errorizeMessage(message);
+/**
+ * Starting at the path passed as a parameter, look at each file and compare it to the date parameter.  If the file is
+ * older than the date, delete it.
+ * @param dir_path
+ * @param date
+ * @returns {Promise<*>}
+ */
+async function deleteFilesInPath(dir_path, date) {
+    let filesRemoved = 0;
+    if(common_utils.isEmptyOrZeroLength(dir_path)) {
+        harper_logger.error(`directory path ${dir_path} is invalid.`);
+        return filesRemoved;
     }
+    if(!date) {
+        harper_logger.error(`date ${date} is invalid.`);
+        return filesRemoved;
+    }
+    try {
+        let doesExist = await doesDirectoryExist(dir_path);
+        if (!doesExist) {
+            let message = "Invalid Directory Path.";
+            harper_logger.info(message);
+            return common_utils.errorizeMessage(message);
+        }
 
-    let found_files = Object.create(null);
-    await getFilesInDirectories(dir_path, found_files);
-    if(common_utils.isEmptyOrZeroLength(found_files)) {
-        let message = "No files found";
-        harper_logger.info(message);
-        return message;
+        let found_files = Object.create(null);
+        await getFilesInDirectories(dir_path, found_files);
+        if (common_utils.isEmptyOrZeroLength(found_files)) {
+            let message = "No files found";
+            harper_logger.info(message);
+            return message;
+        }
+        filesRemoved = await removeFiles(date, found_files);
+        return filesRemoved;
+    } catch (e) {
+        harper_logger.error(`There was an error deleting files by date: ${e}`);
+        return filesRemoved;
     }
 }
 
@@ -146,41 +141,6 @@ async function doesDirectoryExist(dir_path) {
         harper_logger.info(e);
         return false;
     }
-};
-
-/**
- * Returns a map of all files found in the directories array passed as a parameter.
- * @param results - An array of full directory paths
- * @param callback
- */
-function getFiles(results, callback) {
-    // This is a "pure" key/value object. We don't want object prototypes to avoid any name collisions.
-    let foundFiles = Object.create(null);
-    if(common_utils.isEmptyOrZeroLength(results)) {
-        return callback(null, foundFiles);
-    }
-    async.each(results, function getFilesInDirs(file, caller) {
-        if(!common_utils.isEmptyOrZeroLength(file)) {
-            getFilesInDirectory(file, function(err, files) {
-                if(err) {
-                    harper_logger.info(`No files found in path ${file}`);
-                    return caller();
-                }
-                if(!common_utils.isEmptyOrZeroLength(files)) {
-                    foundFiles[file] = Object.create(null);
-                    foundFiles[file].dir_path = file;
-                    foundFiles[file].files = [];
-                    foundFiles[file].files.push(...files);
-                }
-                return caller();
-            });
-        }
-    }, function asyncEachDone(err) {
-        if(err) {
-            return callback(common_utils.errorizeMessage(err), null);
-        }
-        return callback(null, foundFiles);
-    });
 };
 
 /**
@@ -214,31 +174,12 @@ async function removeFiles(date, files) {
 };
 
 /**
- * Returns an array containing the file names of all files in a directory path.
- * @param dirPath - Path to find file names for.
- * @param callback
- */
-function getFilesInDirectory(dirPath, callback) {
-    if(common_utils.isEmptyOrZeroLength(dirPath) || common_utils.isEmptyOrZeroLength(dirPath.trim())) {
-        return callback(common_utils.errorizeMessage('Invalid directory path'), []);
-    }
-
-    fs.readdir(dirPath, function readDir(err, list) {
-        if (err) {
-            return callback(common_utils.errorizeMessage(err), []);
-        }
-        return callback(null, list);
-    });
-};
-
-/**
  * Return an array or directories in the path sent.  Will always return an array, even empty, when no files found.
  * @param dirPath - path to find directories for.
  * @param callback
  * @returns {Array}
  */
 async function getFilesInDirectories(dirPath, found_files) {
-    //let results = Object.create(null);
     let list = undefined;
     try {
         list = await p_fs_readdir(dirPath);
@@ -253,11 +194,8 @@ async function getFilesInDirectories(dirPath, found_files) {
         let file = path.resolve(dirPath, list[found]);
         let stats = await p_fs_stat(file);
         if (stats && stats.isDirectory()) {
-            //results.push(file);
-            let res = await getFilesInDirectories(file, found_files);
-            //results = results.concat(res);
+            await getFilesInDirectories(file, found_files);
         } else {
-            //results.push(file);
             found_files[file] = stats;
         }
     }

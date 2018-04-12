@@ -27,8 +27,32 @@ let mochaAsyncWrapper = (fn) => {
     };
 };
 
+/**
+ * Call this function near the top of any unit test to assign the unhandledReject event handler (this is due to a bug in Node).
+ * This will prevent tests bombing with an unhandled promise rejection in some cases.
+ */
+function preTestPrep() {
+    let unhandledRejectionExitCode = 0;
+
+    process.on("unhandledRejection", (reason) => {
+        console.log("unhandled rejection:", reason);
+        unhandledRejectionExitCode = 1;
+        throw reason;
+    });
+
+    process.prependListener("exit", (code) => {
+        if (code === 0) {
+            process.exit(unhandledRejectionExitCode);
+        }
+    });
+    // Try to change to bin
+    changeProcessToBinDir();
+}
+
+
 module.exports = {
     changeProcessToBinDir:changeProcessToBinDir,
     deepClone:deepClone,
-    mochaAsyncWrapper:mochaAsyncWrapper
+    mochaAsyncWrapper:mochaAsyncWrapper,
+    preTestPrep:preTestPrep
 }
