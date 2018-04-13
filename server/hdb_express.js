@@ -197,17 +197,20 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
             res.sendFile(guidePath.resolve('../docs/user_guide.html'));
         });
     });
+    // Recent security posts recommend disabling this header.
+    app.disable('x-powered-by');
 
     app.post('/', function (req, res) {
-
+        // Per the body-parser docs, any request which does not match the bodyParser.json middleware will be returned with
+        // an empty body object.
+        if(!req.body || Object.keys(req.body).length === 0) {
+            return res.status(400).send({error: "Invalid JSON."});
+        }
         let enterprise_operations = ['add_node'];
         if ((req.headers.harperdb_connection || enterprise_operations.indexOf(req.body.operation) > -1) && !enterprise) {
             return res.status(401).json({"error": "This feature requires an enterprise license.  Please register or contact us at hello@harperdb.io for more info."});
         }
-
         auth.authorize(req, res, function (err, user) {
-            res.set('x-powered-by', 'HarperDB');
-
             if (err) {
                 winston.warn(`{"ip":"${req.connection.remoteAddress}", "error":"${err.stack}"`);
                 if (typeof err === 'string') {
@@ -217,8 +220,6 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
             }
             req.body.hdb_user = user;
             req.body.hdb_auth_header  = req.headers.authorization;
-
-
 
             server_utilities.chooseOperation(req.body, (err, operation_function) => {
                 if (err) {
@@ -232,14 +233,13 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                         return res.status(500).send(err);
                     }
                 }
-                var localOnlyOperations = ['describe_all', 'describe_table', 'describe_schema', 'read_log']
+                let localOnlyOperations = ['describe_all', 'describe_table', 'describe_schema', 'read_log']
 
                 if (global.clustering_on && req.body.operation != 'sql') {
                     if (!req.body.schema
                         || !req.body.table
                         || req.body.operation === 'create_table'
                         || req.body.operation === 'drop_table'
-
                     ) {
                         if (localOnlyOperations.includes(req.body.operation)) {
                             server_utilities.processLocalTransaction(req, res, operation_function, function (err) {
@@ -335,7 +335,6 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
 
                         if(!table || !table.residence || table.residence.indexOf(hdb_properties.get('NODE_NAME')) > -1){
                             server_utilities.processLocalTransaction(req, res, operation_function, function () {
-
                             });
                         }else{
                             try {
@@ -346,7 +345,7 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                                         "id": id,
                                         "node": {"node": residence},
                                         "node_name": residence
-                                    }
+                                    };
 
                                     let insert_object = {
                                         operation: 'insert',
@@ -360,36 +359,21 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                                             winston.error(err);
                                             return callback_(err);
                                         }
-
                                         return callback_();
-
-
                                     });
-
                                 }, function(err){
                                     if(err){
                                         return res.status(501).send(err);
                                     }
-                                   return res.status(201).send('{"message":"clustering is down. request has been queued and will be processed when clustering reestablishes.  "}');
+                                    return res.status(201).send('{"message":"clustering is down. request has been queued and will be processed when clustering reestablishes.  "}');
                                 });
-
-
-
-
                             } catch (e) {
                                 winston.error(e);
                             }
-
-
                         }
-
-
-
-
                     });
                 }else{
                     server_utilities.processLocalTransaction(req, res, operation_function, function () {
-
                     });
                 }
             });
