@@ -17,6 +17,7 @@ function stop(callback) {
     ps('name', hdb_terms.HDB_PROC_NAME).then(function (list) {
         if( list.length === 0 ) {
             console.log("No instances of HarperDB are running.");
+            return callback(null);
         } else {
             list.forEach(function killProcs(proc) {
                 // Note we are doing loose equality (==) rather than strict
