@@ -14,6 +14,7 @@ module.exports = {
  */
 function stop(callback) {
     let curr_user = os.userInfo();
+    console.log("Stopping HarperDB.")
     ps('name', hdb_terms.HDB_PROC_NAME).then(function (list) {
         if( list.length === 0 ) {
             console.log("No instances of HarperDB are running.");
@@ -24,7 +25,11 @@ function stop(callback) {
                 // equality here, as find-process returns the uid as a string.  No point in spending time converting it.
                 // if curr_user.uid is 0, the user has run stop using sudo or logged in as root.
                 if(curr_user.uid == 0 || proc.uid == curr_user.uid) {
-                    process.kill(proc.pid);
+                    try {
+                        process.kill(proc.pid);
+                    } catch (e) {
+                        console.error(e);
+                    }
                 }
             });
         }
