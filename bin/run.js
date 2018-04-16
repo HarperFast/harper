@@ -1,21 +1,20 @@
 #!/usr/bin/env node
 "use strict";
-const fs = require('fs'),
-    util = require('util'),
-    path = require('path'),
-    net = require('net'),
-    ps = require('find-process'),
-    install = require('../utility/install/installer.js'),
-    colors = require("colors/safe"),
-    basic_winston  = require('winston'),
-    PropertiesReader = require('properties-reader'),
-    async = require('async'),
-    pjson = require('../package.json'),
-    HTTPSECURE_PORT_KEY = 'HTTPS_PORT',
-    HTTP_PORT_KEY = 'HTTP_PORT',
-    HTTPSECURE_ON_KEY = 'HTTPS_ON',
-    HTTP_ON_KEY = 'HTTP_ON',
-    HDB_PROC_NAME = 'hdb_express.js';
+const fs = require('fs');
+const path = require('path');
+const net = require('net');
+const ps = require('find-process');
+const install = require('../utility/install/installer.js');
+const colors = require("colors/safe");
+const basic_winston  = require('winston');
+const PropertiesReader = require('properties-reader');
+const async = require('async');
+const pjson = require('../package.json');
+const HTTPSECURE_PORT_KEY = 'HTTPS_PORT';
+const HTTP_PORT_KEY = 'HTTP_PORT';
+const HTTPSECURE_ON_KEY = 'HTTPS_ON';
+const HTTP_ON_KEY = 'HTTP_ON';
+const HDB_PROC_NAME = 'hdb_express.js';
 
 let hdb_boot_properties = null;
 let hdb_properties = null;
@@ -32,8 +31,9 @@ function run() {
                 prettyPrint:true })
         ],exitOnError:false
     });
-
     ps('name', HDB_PROC_NAME).then(function (list) {
+        // We cannot use the find-process module when searching by port, as it uses netstat and netstat might require
+        // sudo.  We don't recommend hdb run under sudo.
         if( list.length === 0 ) {
             arePortsInUse( (err) => {
               if(err) {
