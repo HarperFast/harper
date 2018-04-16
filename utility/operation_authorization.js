@@ -69,7 +69,7 @@ required_permissions.set(delete_.delete.name, new permission(false, [DELETE_PERM
 required_permissions.set(user.addUser.name, new permission(true, []));
 required_permissions.set(user.alterUser.name, new permission(true, []));
 required_permissions.set(user.dropUser.name, new permission(true, []));
-required_permissions.set(user.listUsers.name, new permission(true, []));
+required_permissions.set(user.listUsersExternal.name, new permission(true, []));
 required_permissions.set(role.listRoles.name, new permission(true, []));
 required_permissions.set(role.addRole.name, new permission(true, []));
 required_permissions.set(role.alterRole.name, new permission(true, []));

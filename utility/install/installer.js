@@ -50,7 +50,7 @@ function run_install(callback) {
             async.waterfall([
                 termsAgreement,
                 wizard,
-                mount,
+                async.apply(mount, winston),
                 createSettingsFile,
                 createAdminUser,
                 generateKeys,
@@ -73,6 +73,7 @@ function run_install(callback) {
  * @param {*} callback 
  */
 function termsAgreement(callback) {
+    prompt.message = ``;
     let terms_schema = {
         properties: {
             TC_AGREEMENT: {
@@ -170,7 +171,7 @@ function checkRegister(callback) {
  */
 function wizard(err, callback) {
 
-    prompt.message = 'Install HarperDB ' + __dirname;
+    prompt.message = ``;
 
     let install_schema = {
         properties: {
@@ -223,7 +224,7 @@ function wizard(err, callback) {
                 }
             }
             else {
-                callback('~ was specified in the path, but the HOME environment variable is not defined.');
+                return callback('~ was specified in the path, but the HOME environment variable is not defined.');
             }
         }
         if (err) {
