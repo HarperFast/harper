@@ -109,8 +109,9 @@ function isPortTaken(port, callback) {
         return callback();
     }
 
-    var tester = net.createServer()
+    let tester = net.createServer()
         .once('error', function (err) {
+            console.log("FOUND AN ERROR MESSAGE IN CREATE SERVER" + err);
             if (err.code != 'EADDRINUSE') {
                 return callback(err);
             }
