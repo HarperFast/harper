@@ -66,21 +66,17 @@ harperdb_run()
 
         if [ "$theProc" ];
            then
-    apiKey=fe1dfb2c3647474f8f3e9d836783e694
-#mycos Collection
-    collection_id=45f26d10-5af1-3f5d-b00b-a39a52c9aa45    
+		         apiKey=fe1dfb2c3647474f8f3e9d836783e694
 
-#zach's dummy tests
-#collection_id=b21ee620-6c69-7566-9a11-e2ce6ece23cd
+               #ELI COLLECTION CI
+               collection_id=f3d05f41-9265-42b3-9799-91eff759a589
+               #eli Collection ENV ARM
+               # environment_id=0e9e6428-313b-403e-acb7-75e9ba1efdfd
+               #eli Collection ENV CI
+            	environment_id=58f8be47-5446-4516-8e72-669fe9a41c24
 
-#mycos Environment 
-    environment_id=65398310-b319-fc53-7f6c-78710804cda3
-
-#zach's dummmy environment 
-#environment_id=d4f6eefe-b922-9888-043f-43a374a1ef1a
-
-    newman run https://api.getpostman.com/collections/$collection_id?apikey=$apiKey \
-    --environment https://api.getpostman.com/environments/$environment_id?apikey=$apiKey -r cli > ../newman_output.log
+               newman run https://api.getpostman.com/collections/$collection_id?apikey=$apiKey \
+               --environment https://api.getpostman.com/environments/$environment_id?apikey=$apiKey -r cli > ../newman_output.log
   
 ./linux-harperdb stop
        else
@@ -140,23 +136,18 @@ theProc=$(ps -ef | grep [h]db_express);
 
 if [ "$theProc" ];
   then
-    apiKey=fe1dfb2c3647474f8f3e9d836783e694
-#mycos Collection
-#   collection_id=45f26d10-5af1-3f5d-b00b-a39a52c9aa45
-#ELI COLLECTION
-    collection_id=1459b523-39e8-6c37-0ed0-d2bbacca3c25
-#zach's dummy tests
-#collection_id=b21ee620-6c69-7566-9a11-e2ce6ece23cd
+     apiKey=fe1dfb2c3647474f8f3e9d836783e694
 
-#mycos Environment PI 3 env
-#    environment_id=f02e9c0e-4dd5-891c-8c32-9ac1efb022fa
+      #ELI COLLECTION CI
+         collection_id=f3d05f41-9265-42b3-9799-91eff759a589
+         #eli Collection ENV ARM
+         environment_id=0e9e6428-313b-403e-acb7-75e9ba1efdfd
+         #eli Collection ENV CI
+         #environment_id=58f8be47-5446-4516-8e72-669fe9a41c24
 
-#eli Collection ENV
-    environment_id=58f8be47-5446-4516-8e72-669fe9a41c24
+         newman run https://api.getpostman.com/collections/$collection_id?apikey=$apiKey \
+         --environment https://api.getpostman.com/environments/$environment_id?apikey=$apiKey -r cli > ../newman_output.log
 
-#zach's dummmy environment
-#environment_id=d4f6eefe-b922-9888-043f-43a374a1ef1a
-    newman run https://api.getpostman.com/collections/$collection_id?apikey=$apiKey --environment https://api.getpostman.com/environments/$environment_id?apikey=$apiKey -r cli > ../newman_output.log
 
 ./armv7-harperdb stop
    else
