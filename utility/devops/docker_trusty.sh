@@ -16,7 +16,7 @@ sed -i "/HDB_PROC_NAME/ s/ =.*/ = 'no_oneis_here';/" /opt/harperdb/bin/run.js
 #"data_layer" "sqlTranslator" "validation" "security" "utility" "utility/install" "utility/logging" 
 #"utility/functions/date" "utility/functions/math" "lib/fileSystem" "lib/server" "lib/streams" "server" "server/clustering"
 
-files=( "data_layer" "sqlTranslator" "validation" "security" "utility" "utility/install" "utility/logging" "utility/functions/date" "utility/functions/math" "lib/fileSystem" "lib/server" "lib/streams" "server" "server/clustering" "json" )
+files=( "data_layer" "sqlTranslator" "validation" "security" "utility" "utility/install" "utility/logging" "utility/functions/date" "utility/functions/math" "utility/functions/string" "utility/functions/sql" "lib/fileSystem" "lib/server" "lib/streams" "server" "server/clustering" "json" )
 working_dir="$(pwd)/../../";
 mirrored_dir="/tmp/harperdb_dev"
 echo "here i am $working_dir"
@@ -142,13 +142,17 @@ if [ "$theProc" ];
   then
     apiKey=fe1dfb2c3647474f8f3e9d836783e694
 #mycos Collection
-    collection_id=45f26d10-5af1-3f5d-b00b-a39a52c9aa45
-
+#   collection_id=45f26d10-5af1-3f5d-b00b-a39a52c9aa45
+#ELI COLLECTION
+    collection_id=1459b523-39e8-6c37-0ed0-d2bbacca3c25
 #zach's dummy tests
 #collection_id=b21ee620-6c69-7566-9a11-e2ce6ece23cd
 
 #mycos Environment PI 3 env
-    environment_id=f02e9c0e-4dd5-891c-8c32-9ac1efb022fa
+#    environment_id=f02e9c0e-4dd5-891c-8c32-9ac1efb022fa
+
+#eli Collection ENV
+    environment_id=58f8be47-5446-4516-8e72-669fe9a41c24
 
 #zach's dummmy environment
 #environment_id=d4f6eefe-b922-9888-043f-43a374a1ef1a
