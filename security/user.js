@@ -135,7 +135,7 @@ function user_info(body, callback) {
     search_obj.schema = 'system';
     search_obj.table = 'hdb_role';
     search_obj.hash_attribute = 'id';
-    search_obj.hash_values = [user.role];
+    search_obj.hash_values = [user.role.id];
     search_obj.get_attributes = ['*'];
     search.searchByHash(search_obj, function (err, role_data) {
         if (err) {
