@@ -1,3 +1,5 @@
+"use strict";
+
 const assert = require('assert');
 const sinon = require('sinon');
 const user = require('../../security/user');
@@ -55,11 +57,15 @@ const TEST_USER_INFO_JSON = {
     }
 };
 
-const TEST_USER_INFO_SEARCH_RESPONSE = {
-    "active": true,
-    "username": "blah",
-    "password": "thisshouldberemoved"
-}
+const TEST_USER_INFO_SEARCH_RESPONSE = [
+    {
+        "permission": {
+            "super_user": true
+        },
+        "role": "super_user",
+        "id": "dc52dc65-efc7-4cc4-b3ed-04a98602c0b2"
+    }
+];
 
 const TEST_USER_INFO_RESPONSE = {
     "active": true,
@@ -245,9 +251,12 @@ describe('Test user_info', function () {
     it('Nominal path, get user info', function (done) {
         // We are not testing these other functions, so we stub them.
         user.userInfo(TEST_USER_INFO_JSON, function(err, results) {
-            //TODO: UNCOMMENT THIS WHEN HDB-388 is fixed.  Also add additional asserts with found data.
-            //assert.ok(results.role !== undefined);
+            assert.ok(results.role !== undefined);
+            assert.equal(results.role.role, TEST_USER_INFO_SEARCH_RESPONSE[0].role);
+            assert.equal(results.role.id, TEST_USER_INFO_SEARCH_RESPONSE[0].id);
+            assert.equal(results.role.permission.super_user, TEST_USER_INFO_SEARCH_RESPONSE[0].permission.super_user);
             assert.ok(results.username === 'blah');
+            assert.ok(results.password === undefined);
             done();
         });
     });
