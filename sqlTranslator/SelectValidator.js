@@ -17,7 +17,8 @@ const validateTables = Symbol('validateTables'),
     validateColumn = Symbol('validateColumn'),
     setColumnsForTable = Symbol('setColumnsForTable'),
     checkColumnsForAsterisk = Symbol('checkColumnsForAsterisk'),
-    validateGroupBy = Symbol('validateGroupBy');
+    validateGroupBy = Symbol('validateGroupBy'),
+    hasColumns = Symbol('hasColumns');
 
 /**
  * Validates the tables and attributes against the actual schema
@@ -44,23 +45,42 @@ class SelectValidator{
     }
 
     /**
+     * if the statement has columns in it:
      * loops thru the from and join arrays of the AST and passes individual entries into validateTable
      */
     [validateTables](){
-        if(!this.statement.from || this.statement.from.length === 0){
-            throw `no from clause`;
-        }
+        if(this[hasColumns]()) {
+            if (!this.statement.from || this.statement.from.length === 0) {
+                throw `no from clause`;
+            }
 
-        this.statement.from.forEach((table)=>{
-            this[validateTable](table);
-        });
-
-        if(this.statement.joins){
-            this.statement.joins.forEach((join)=>{
-                join.table.as = join.as;
-                this[validateTable](join.table);
+            this.statement.from.forEach((table) => {
+                this[validateTable](table);
             });
+
+            if (this.statement.joins) {
+                this.statement.joins.forEach((join) => {
+                    join.table.as = join.as;
+                    this[validateTable](join.table);
+                });
+            }
         }
+    }
+
+    /**
+     * check to see if there are columns in any part of the select
+     * @returns {boolean}
+     */
+    [hasColumns](){
+        let has_columns = false;
+        let iterator = new RecursiveIterator(this.statement);
+        for(let {node, path} of iterator) {
+            if(node && node.columnid){
+                has_columns = true;
+                break;
+            }
+        }
+        return has_columns;
     }
 
     /**
