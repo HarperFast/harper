@@ -183,7 +183,9 @@ function completeRun() {
     ], (error, data) => {
         if(error)
             console.error(error);
-        exitInstall();
+
+        //FOR NOW JUST COMMENTING OUT THIS LINE WE NEED TO CREATE A COMMAND LINE ARGUMENT TO DECIDE TO NOT CALL THIS
+        //exitInstall();
     });
 }
 
