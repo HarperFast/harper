@@ -17,6 +17,8 @@ const fs = require('fs'),
     HTTP_ON_KEY = 'HTTP_ON',
     HDB_PROC_NAME = 'hdb_express.js';
 
+const stop = require('./stop');
+
 let hdb_boot_properties = null;
 let hdb_properties = null;
 let fork = require('child_process').fork;
@@ -184,9 +186,39 @@ function completeRun() {
         if(error)
             console.error(error);
 
-        //FOR NOW JUST COMMENTING OUT THIS LINE WE NEED TO CREATE A COMMAND LINE ARGUMENT TO DECIDE TO NOT CALL THIS
-        //exitInstall();
+        let is_foreground = isForegroundProcess();
+        if(!is_foreground){
+            exitInstall();
+        }
+
+        process.on('exit', processExitHandler.bind(null, {is_foreground: is_foreground}));
+
+        //catches ctrl+c event
+        process.on('SIGINT', processExitHandler.bind(null, {is_foreground: is_foreground}));
+
+        // catches "kill pid"
+        process.on('SIGUSR1', processExitHandler.bind(null, {is_foreground: is_foreground}));
+        process.on('SIGUSR2', processExitHandler.bind(null, {is_foreground: is_foreground}));
     });
+}
+
+function processExitHandler(options, err){
+    if(options.is_foreground){
+        stop.stop((err)=>{
+            console.error(err);
+        });
+    }
+}
+
+function isForegroundProcess(){
+    let is_foreground = false;
+    process.argv.forEach((arg)=>{
+        if(arg==='foreground'){
+            is_foreground = true;
+        }
+    });
+
+    return is_foreground;
 }
 
 function checkPermission(callback){

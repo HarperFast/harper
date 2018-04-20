@@ -54,10 +54,10 @@ function validation(write_object, callback) {
     if(h_utils.isEmpty(write_object)) {
         return callback(`invalid update parameters defined.`);
     }
-    if(h_utils.isEmptyOrZeroLength(write_object.schema) || !global.hdb_schema[write_object.schema]) {
+    if(h_utils.isEmptyOrZeroLength(write_object.schema) ) {
         return callback(`invalid schema specified.`);
     }
-    if(h_utils.isEmptyOrZeroLength(write_object.table) || !global.hdb_schema[write_object.schema][write_object.table]) {
+    if(h_utils.isEmptyOrZeroLength(write_object.table) ) {
         return callback(`invalid table specified.`);
     }
 
