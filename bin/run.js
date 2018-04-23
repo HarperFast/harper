@@ -186,22 +186,37 @@ function completeRun() {
         if(error)
             console.error(error);
 
-        let is_foreground = isForegroundProcess();
-        if(!is_foreground){
-            exitInstall();
-        }
-
-        process.on('exit', processExitHandler.bind(null, {is_foreground: is_foreground}));
-
-        //catches ctrl+c event
-        process.on('SIGINT', processExitHandler.bind(null, {is_foreground: is_foreground}));
-
-        // catches "kill pid"
-        process.on('SIGUSR1', processExitHandler.bind(null, {is_foreground: is_foreground}));
-        process.on('SIGUSR2', processExitHandler.bind(null, {is_foreground: is_foreground}));
+        foregroundHandler()
     });
 }
 
+/**
+ * if foreground is passed on the command line we do not exit the process
+ * also if foreground is passed we setup the processExitHandler to call the stop handler which kills the hdb processes
+ */
+function foregroundHandler(){
+    let is_foreground = isForegroundProcess();
+
+    if(!is_foreground){
+        exitInstall();
+    }
+
+
+    process.on('exit', processExitHandler.bind(null, {is_foreground: is_foreground}));
+
+    //catches ctrl+c event
+    process.on('SIGINT', processExitHandler.bind(null, {is_foreground: is_foreground}));
+
+    // catches "kill pid"
+    process.on('SIGUSR1', processExitHandler.bind(null, {is_foreground: is_foreground}));
+    process.on('SIGUSR2', processExitHandler.bind(null, {is_foreground: is_foreground}));
+}
+
+/**
+ * if is_foreground we call the stop function which kills the hdb processes
+ * @param options
+ * @param err
+ */
 function processExitHandler(options, err){
     if(options.is_foreground){
         stop.stop((err)=>{
@@ -210,6 +225,10 @@ function processExitHandler(options, err){
     }
 }
 
+/**
+ * check to see if any of the cli arguments are 'foreground'
+ * @returns {boolean}
+ */
 function isForegroundProcess(){
     let is_foreground = false;
     process.argv.forEach((arg)=>{
