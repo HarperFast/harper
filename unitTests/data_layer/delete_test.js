@@ -13,56 +13,70 @@ const fs = require('graceful-fs');
 const moment = require('moment');
 const global_schema = require('../../utility/globalSchema');
 const search = require('../../data_layer/search');
+const util = require('util');
 
 const ISO_8601_FORMAT = 'YYYY-MM-DD';
 const NOW_FORMAT = 'YYYY-MM-DDTHH:mm:ss.SSSZ';
-const ATTRIBUTE_1_INSTANCE_NAME = 'FrankThePug';
+const ATTRIBUTE_1_INSTANCE_NAME = '';
+const ATTRIBUTE_1_TIME_NAME = moment().valueOf();
 const ATTRIBUTE_2_INSTANCE_NAME = 'Bill';
+const ATTRIBUTE_2_TIME_NAME = moment().subtract(6, 'hours').valueOf();
 const ATTRIBUTE_3_INSTANCE_NAME = 'Eddie';
+const ATTRIBUTE_3_TIME_NAME = moment().subtract(8, 'hours').valueOf();
 const ATTRIBUTE_AGE_INSTANCE_VAL = '3';
-const TEST_FILE_NAME_1 = `${ATTRIBUTE_1_INSTANCE_NAME}.hdb`;
-const TEST_FILE_NAME_2 = `${ATTRIBUTE_2_INSTANCE_NAME}.hdb`;
-const TEST_FILE_NAME_3 = `${ATTRIBUTE_3_INSTANCE_NAME}.hdb`;
-const TEST_AGE_FILE_NAME_3 = `${ATTRIBUTE_AGE_INSTANCE_VAL}.hdb`;
+const TEST_FILE_NAME_1 = `${ATTRIBUTE_1_TIME_NAME}.hdb`;
+const TEST_FILE_NAME_2 = `${ATTRIBUTE_2_TIME_NAME}.hdb`;
+const TEST_FILE_NAME_3 = `${ATTRIBUTE_3_TIME_NAME}.hdb`;
+const TEST_AGE_FILE_NAME = `${ATTRIBUTE_1_TIME_NAME}.hdb`;
 const FILE_CONTENTS = "Name";
 const DELETE_MOD_BASE_PATH_NAME = 'hdb_path';
 const TEST_ATTRIBUTE_NAME = 'Name';
+const HASH_ATTRIBUTE_NAME = 'id';
 const TEST_ATTRIBUTE_AGE = 'Age';
+
+const TEST_DATA = [
+    {
+        "name":"Frank",
+        "id":"1",
+        "age":5,
+        "table":"dog"
+    },
+    {
+        "name":"Bill",
+        "id":"3",
+        "age":4,
+        "table":"dog"
+    },
+    {
+        "name":"Eddie",
+        "id":"2",
+        "age":4,
+        "table":"cat"
+    }
+];
 
 const BASE = process.cwd();
 const BAD_DIR_PATH = '/tmp/zaphodbettlebrox';
 const HDB_HASH_FOLDER_NAME = '__hdb_hash';
 const TEST_SCHEMA = 'test';
 const TEST_SCHEMA_PATH = path.join(BASE, TEST_SCHEMA);
-const TEST_TABLE_1 = 'test_dir1';
+const TEST_TABLE_1 = 'dog';
+const TEST_TABLE_2 = 'cat';
+const TEST_TABLE_3 = 'bird';
 const TEST_TABLE_1_PATH = path.join(TEST_SCHEMA_PATH, TEST_TABLE_1);
 const TEST_TABLE_1_HASH = path.join(TEST_SCHEMA_PATH, TEST_TABLE_1, HDB_HASH_FOLDER_NAME);
 
 const TABLE_1_ATTRIBUTE_PATH = path.join(TEST_TABLE_1_PATH, TEST_ATTRIBUTE_NAME);
 const TABLE_1_ATTRIBUTE_HASH_DIRECTORY_PATH = path.join(TEST_TABLE_1_HASH, TEST_ATTRIBUTE_NAME);
 const TABLE_1_ATTRIBUTE_INSTANCE_DIRECTORY_PATH = path.join(TABLE_1_ATTRIBUTE_PATH, ATTRIBUTE_1_INSTANCE_NAME);
-const TABLE_1_ATTRIBUTE_HASH_FILE_PATH = path.join(TABLE_1_ATTRIBUTE_HASH_DIRECTORY_PATH, TEST_FILE_NAME_1);
+const TABLE_1_ATTRIBUTE_HASH_FILE_PATH = path.join(TABLE_1_ATTRIBUTE_HASH_DIRECTORY_PATH, `${ATTRIBUTE_1_INSTANCE_NAME}.hdb`);
 const TABLE_1_ATTRIBUTE_INSTANCE_FILE_PATH = path.join(TABLE_1_ATTRIBUTE_INSTANCE_DIRECTORY_PATH, TEST_FILE_NAME_1);
 
-const TABLE_1_ATTRIBUTE_AGE_PATH = path.join(TEST_TABLE_1_PATH, TEST_ATTRIBUTE_AGE);
-const TABLE_1_ATTRIBUTE_AGE_HASH_DIRECTORY_PATH = path.join(TEST_TABLE_1_HASH, TEST_ATTRIBUTE_AGE);
-const TABLE_1_ATTRIBUTE_AGE_INSTANCE_DIRECTORY_PATH = path.join(TABLE_1_ATTRIBUTE_AGE_PATH, ATTRIBUTE_AGE_INSTANCE_VAL);
-const TABLE_1_ATTRIBUTE_AGE_HASH_FILE_PATH = path.join(TABLE_1_ATTRIBUTE_AGE_HASH_DIRECTORY_PATH, TEST_AGE_FILE_NAME_3);
-const TABLE_1_ATTRIBUTE_AGE_INSTANCE_FILE_PATH = path.join(TABLE_1_ATTRIBUTE_AGE_INSTANCE_DIRECTORY_PATH, TEST_AGE_FILE_NAME_3);
-
-const TEST_TABLE_2 = 'test_dir2';
-const TEST_TABLE_2_PATH = path.join(TEST_SCHEMA_PATH, TEST_TABLE_2);
 const TEST_TABLE_2_HASH = path.join(TEST_SCHEMA_PATH, TEST_TABLE_2, HDB_HASH_FOLDER_NAME);
-const TABLE_2_ATTRIBUTE_PATH = path.join(TEST_TABLE_2_PATH, TEST_ATTRIBUTE_NAME);
 const TABLE_2_ATTRIBUTE_HASH_DIRECTORY_PATH = path.join(TEST_TABLE_2_HASH, TEST_ATTRIBUTE_NAME);
-const TABLE_2_ATTRIBUTE_INSTANCE_DIRECTORY_PATH = path.join(TABLE_2_ATTRIBUTE_PATH, ATTRIBUTE_1_INSTANCE_NAME);
-const TABLE_2_ATTRIBUTE_HASH_FILE_PATH = path.join(TABLE_2_ATTRIBUTE_HASH_DIRECTORY_PATH, TEST_FILE_NAME_2);
-const TABLE_2_ATTRIBUTE_INSTANCE_FILE_PATH = path.join(TABLE_2_ATTRIBUTE_INSTANCE_DIRECTORY_PATH, TEST_FILE_NAME_2);
+const TABLE_2_ATTRIBUTE_HASH_FILE_PATH = path.join(TABLE_2_ATTRIBUTE_HASH_DIRECTORY_PATH, `${ATTRIBUTE_2_INSTANCE_NAME}.hdb`);
 
-const TABLE_1_ATTRIBUTE_2_HASH_FILE_PATH = path.join(TABLE_1_ATTRIBUTE_HASH_DIRECTORY_PATH, TEST_FILE_NAME_3);
-const TABLE_1_ATTRIBUTE_2_INSTANCE_FILE_PATH = path.join(TABLE_1_ATTRIBUTE_INSTANCE_DIRECTORY_PATH, TEST_FILE_NAME_3);
-
-const TEST_TABLE_3 = 'test_dir3';
+const TABLE_1_ATTRIBUTE_2_HASH_FILE_PATH = path.join(TABLE_1_ATTRIBUTE_HASH_DIRECTORY_PATH, `${ATTRIBUTE_3_INSTANCE_NAME}.hdb`);
 const TEST_TABLE_3_PATH = path.join(TEST_SCHEMA_PATH, TEST_TABLE_3);
 
 const TOMORROW_TIME = moment().add(1, 'days');
@@ -84,21 +98,45 @@ const TEST_DELETE_BEFORE_REQUEST = {
 
 global.hdb_schema = {
     "test": {
-        "breed": {
-            "hash_attribute": "id",
-            "id": "19888dcb-68ad-4a85-bf93-ad1e8d4b6fc4",
-            "name": "breed",
-            "schema": "dev",
-            "attributes": []
-        },
-        "test_dir1": {
-            "hash_attribute": `${TEST_ATTRIBUTE_NAME}`,
+        "dog": {
+            "hash_attribute": `${HASH_ATTRIBUTE_NAME}`,
             "id": "8650f230-be55-4455-8843-55bcfe7f61c4",
-            "name": "test_dir1",
+            "name": "dog",
             "schema": "test",
             "attributes": [
                 {
                     "attribute": `${TEST_ATTRIBUTE_NAME}`
+                },
+                {
+                    "attribute": `${TEST_ATTRIBUTE_AGE}`
+                }
+            ]
+        },
+        "cat": {
+            "hash_attribute": `${HASH_ATTRIBUTE_NAME}`,
+            "id": "8650f230-be55-4455-8843-55bcfe7f61c4",
+            "name": "cat",
+            "schema": "test",
+            "attributes": [
+                {
+                    "attribute": `${TEST_ATTRIBUTE_NAME}`
+                },
+                {
+                    "attribute": `${TEST_ATTRIBUTE_AGE}`
+                }
+            ]
+        },
+        "bird": {
+            "hash_attribute": `${HASH_ATTRIBUTE_NAME}`,
+            "id": "8650f230-be55-4455-8843-55bcfe7f61c4",
+            "name": "bird",
+            "schema": "test",
+            "attributes": [
+                {
+                    "attribute": `${TEST_ATTRIBUTE_NAME}`
+                },
+                {
+                    "attribute": `${TEST_ATTRIBUTE_AGE}`
                 }
             ]
         }
@@ -298,39 +336,61 @@ const DELETE_OBJECT = {
     "hdb_auth_header": "Basic ZWxpOnBhc3M="
 };
 
+/**
+ * This function will simulate the HDB data structure with the data passed in.  It will pull the hash attribute from the
+ * global.hdb_schema values above.  A table value must be defined in the data so the function knows which table to pull
+ * from.  The schema is always assumed to be 'test'.
+ * @param data
+ */
+function fakeInsert(data) {
+    try {
+        let table = data.table;
+        let table_path = path.join(TEST_SCHEMA_PATH, table);
+        makeTheDir(table_path);
+        let table_hash_dir_path = path.join(table_path, HDB_HASH_FOLDER_NAME);
+        makeTheDir(table_hash_dir_path);
+        let hash_att = global.hdb_schema[TEST_SCHEMA][table].hash_attribute;
+        let keys = Object.keys(data).filter(word => word !== 'table');
+
+        keys.forEach(function loopKeys(curr_attribute) {
+            let hash_dir_path = path.join(table_path, HDB_HASH_FOLDER_NAME, curr_attribute);
+            makeTheDir(hash_dir_path);
+            let attribute_dir_path = path.join(table_path, curr_attribute);
+            makeTheDir(attribute_dir_path);
+            let attribute_instance_dir_path = path.join(attribute_dir_path, `${data[curr_attribute]}`);
+            makeTheDir(attribute_instance_dir_path);
+            let is_hash = curr_attribute === hash_att;
+            // make the hash file
+            let hash_file_path = path.join(hash_dir_path, data[hash_att] + '.hdb');
+            fs.writeFileSync(hash_file_path, data[curr_attribute]);
+            if(!is_hash) {
+                fs.linkSync(hash_file_path, path.join(attribute_instance_dir_path, data[hash_att] + '.hdb'));
+            } else {
+                // for hash attributes, we need to write a file with the current time stamp and the delta of the data
+                let time_file_name = `${moment().valueOf()}.hdb`;
+                fs.writeFileSync(path.join(attribute_instance_dir_path, `${moment().valueOf()}.hdb`), util.inspect(data), 'utf-8');
+            }
+        });
+    } catch(e) {
+        console.error(e);
+    }
+}
+
+function makeTheDir(path) {
+    if(!fs.existsSync(path)) {
+        fs.mkdirSync(path);
+    }
+};
+
 function setup() {
-
-    // Setup table 1
     fs.mkdirSync(TEST_SCHEMA_PATH);
-    fs.mkdirSync(TEST_TABLE_1_PATH);
-    fs.mkdirSync(TEST_TABLE_1_HASH);
-    fs.mkdirSync(TABLE_1_ATTRIBUTE_PATH);
-    fs.mkdirSync(TABLE_1_ATTRIBUTE_AGE_PATH);
-    fs.mkdirSync(TABLE_1_ATTRIBUTE_HASH_DIRECTORY_PATH);
-    fs.mkdirSync(TABLE_1_ATTRIBUTE_INSTANCE_DIRECTORY_PATH);
-    fs.mkdirSync(TABLE_1_ATTRIBUTE_AGE_HASH_DIRECTORY_PATH);
-    fs.mkdirSync(TABLE_1_ATTRIBUTE_AGE_INSTANCE_DIRECTORY_PATH);
-    fs.writeFileSync(TABLE_1_ATTRIBUTE_HASH_FILE_PATH);
-    fs.linkSync(TABLE_1_ATTRIBUTE_HASH_FILE_PATH, TABLE_1_ATTRIBUTE_INSTANCE_FILE_PATH);
-    fs.writeFileSync(TABLE_1_ATTRIBUTE_2_HASH_FILE_PATH);
-    fs.linkSync(TABLE_1_ATTRIBUTE_2_HASH_FILE_PATH, TABLE_1_ATTRIBUTE_2_INSTANCE_FILE_PATH);
-    fs.writeFileSync(TABLE_1_ATTRIBUTE_AGE_HASH_FILE_PATH);
-    fs.linkSync(TABLE_1_ATTRIBUTE_AGE_HASH_FILE_PATH, TABLE_1_ATTRIBUTE_AGE_INSTANCE_FILE_PATH);
-
-    // Setup table 2
-    fs.mkdirSync(TEST_TABLE_2_PATH);
-    fs.mkdirSync(TEST_TABLE_2_HASH);
-    fs.mkdirSync(TABLE_2_ATTRIBUTE_PATH);
-    fs.mkdirSync(TABLE_2_ATTRIBUTE_HASH_DIRECTORY_PATH);
-    fs.mkdirSync(TABLE_2_ATTRIBUTE_INSTANCE_DIRECTORY_PATH);
-    fs.writeFileSync(TABLE_2_ATTRIBUTE_HASH_FILE_PATH);
-    fs.linkSync(TABLE_2_ATTRIBUTE_HASH_FILE_PATH, TABLE_2_ATTRIBUTE_INSTANCE_FILE_PATH);
-
+    TEST_DATA.forEach(function loopTest(data) {
+       fakeInsert(data);
+    });
     //Setup empty table 3
     fs.mkdirSync(TEST_TABLE_3_PATH);
     // Writes a text file to ensure listDirectories only shows directories
     fs.writeFileSync(path.join(TEST_SCHEMA_PATH, TEST_FILE_NAME_2), FILE_CONTENTS);
-
 }
 
 function tearDown(target_path) {
@@ -626,8 +686,8 @@ describe('Test removeFiles', function() {
     }));
 });
 
-describe('Test getFilesInDirectories', function () {
-    let getFilesInDirectories = delete_rewire.__get__('getFilesInDirectories');
+describe('Test getDirectoriesInPath', function () {
+    let getDirectoriesInPath = delete_rewire.__get__('getDirectoriesInPath');
     delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
     before( function() {
         try {
@@ -644,33 +704,33 @@ describe('Test getFilesInDirectories', function () {
         }
     });
     // There should be 2 directories, each with 1 file, and 1 text file in the current directory
-    it('Nominal path of getFilesInDirectories', test_utils.mochaAsyncWrapper(async () => {
+    it('Nominal path of getDirectoriesInPath', test_utils.mochaAsyncWrapper(async () => {
         let list_dir_results = Object.create(null);
-        await getFilesInDirectories(TEST_SCHEMA_PATH, list_dir_results);
+        await getDirectoriesInPath(TEST_SCHEMA_PATH, list_dir_results);
         assert.equal(Object.keys(list_dir_results).length, 9);
     }));
 
-    it('test getFilesInDirectories with a null path', test_utils.mochaAsyncWrapper(async () => {
+    it('test getDirectoriesInPath with a null path', test_utils.mochaAsyncWrapper(async () => {
         let list_dir_results = Object.create(null);
-        await getFilesInDirectories(null, list_dir_results);
+        await getDirectoriesInPath(null, list_dir_results);
         assert.equal(Object.keys(list_dir_results).length, 0);
     }));
 
-    it('test getFilesInDirectories with a space as path', test_utils.mochaAsyncWrapper(async () => {
+    it('test getDirectoriesInPath with a space as path', test_utils.mochaAsyncWrapper(async () => {
         let list_dir_results = Object.create(null);
-        await getFilesInDirectories(' ', list_dir_results);
+        await getDirectoriesInPath(' ', list_dir_results);
         assert.equal(Object.keys(list_dir_results).length, 0);
     }));
 
-    it('test getFilesInDirectories with an invalid path', test_utils.mochaAsyncWrapper(async () => {
+    it('test getDirectoriesInPath with an invalid path', test_utils.mochaAsyncWrapper(async () => {
         let list_dir_results = Object.create(null);
-        await getFilesInDirectories('../askdsdfsadc', list_dir_results);
+        await getDirectoriesInPath('../askdsdfsadc', list_dir_results);
         assert.equal(Object.keys(list_dir_results).length, 0);
     }));
 
-    it('test getFilesInDirectories with no directories found', test_utils.mochaAsyncWrapper(async () => {
+    it('test getDirectoriesInPath with no directories found', test_utils.mochaAsyncWrapper(async () => {
         let list_dir_results = Object.create(null);
-        await getFilesInDirectories(TEST_TABLE_3_PATH, list_dir_results);
+        await getDirectoriesInPath(TEST_TABLE_3_PATH, list_dir_results);
         assert.equal(Object.keys(list_dir_results).length, 0);
     }));
 });

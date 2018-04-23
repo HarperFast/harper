@@ -103,7 +103,7 @@ async function deleteFilesInPath(dir_path, date) {
         }
 
         let found_files = Object.create(null);
-        await getFilesInDirectories(dir_path, found_files);
+        await getDirectoriesInPath(dir_path, found_files, date);
         if (common_utils.isEmptyOrZeroLength(found_files)) {
             let message = "No files found";
             harper_logger.info(message);
@@ -151,7 +151,7 @@ async function removeFiles(date, files) {
     if(common_utils.isEmptyOrZeroLength(date) || !date.isValid()) {
         return filesRemoved;
     }
-    if(common_utils.isEmptyOrZeroLength(files)) {
+    if(Object.keys(files).length === 0) {
         return filesRemoved;
     }
 
@@ -171,13 +171,13 @@ async function removeFiles(date, files) {
 };
 
 /**
- * Return an array or directories in the path sent.  Will always return an array, even empty, when no files found.
+ * Return an array of directories in the path sent.  Will always return an array, even empty, when no files found.
  * @param dirPath - path to find directories for.
  * @param found_files - An object key,value map of file names and stats <file_name_key, fs_stats>.  This should be a "pure"
  * key/value object created via Object.create(null). We don't want object prototype keys so we can avoid any name collisions.
  * @returns {Array}
  */
-async function getFilesInDirectories(dirPath, found_files) {
+async function getDirectoriesInPath(dirPath, found_files, date) {
     let list = undefined;
     try {
         list = await p_fs_readdir(dirPath);
@@ -197,15 +197,14 @@ async function getFilesInDirectories(dirPath, found_files) {
             harper_logger.info(`Had trouble getting stats for file ${file}.`);
             return;
         }
-        if (stats && stats.isDirectory()) {
+        if (stats && stats.isDirectory() && stats.mtimeMs < date.valueOf()) {
             try {
-                await getFilesInDirectories(file, found_files);
+                found_files[file] = stats;
+                await getDirectoriesInPath(file, found_files);
             } catch(e) {
                 harper_logger.info(`Had trouble getting files for directory ${file}.`);
                 return;
             }
-        } else {
-            found_files[file] = stats;
         }
     }
     return;
