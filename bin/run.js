@@ -19,6 +19,8 @@ const fs = require('fs'),
 
 const stop = require('./stop');
 
+const FOREGROUND_ARG = 'foreground';
+
 let hdb_boot_properties = null;
 let hdb_properties = null;
 let fork = require('child_process').fork;
@@ -232,7 +234,7 @@ function processExitHandler(options, err){
 function isForegroundProcess(){
     let is_foreground = false;
     process.argv.forEach((arg)=>{
-        if(arg==='foreground'){
+        if(arg === FOREGROUND_ARG){
             is_foreground = true;
         }
     });
