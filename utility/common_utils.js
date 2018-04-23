@@ -1,13 +1,14 @@
 "use strict"
 const path = require('path');
-
+const EMPTY_STRING = '';
 module.exports = {
     isEmpty:isEmpty,
     isEmptyOrZeroLength:isEmptyOrZeroLength,
     arrayHasEmptyValues:arrayHasEmptyValues,
     arrayHasEmptyOrZeroLengthValues:arrayHasEmptyOrZeroLengthValues,
     buildFolderPath: buildFolderPath,
-    errorizeMessage: errorizeMessage
+    errorizeMessage: errorizeMessage,
+    stripFileExtension: stripFileExtension
 };
 
 /**
@@ -85,4 +86,17 @@ function buildFolderPath(...path_elements){
     } catch(e){
         console.error(path_elements);
     }
+}
+
+/**
+ * Strip the .hdb file extension from file names.  To keep this efficient, this will not check that the
+ * parameter contains the .hdb extension.
+ * @param file_name - the filename.
+ * @returns {string}
+ */
+function stripFileExtension(file_name) {
+    if(isEmptyOrZeroLength(file_name)) {
+        return EMPTY_STRING;
+    }
+    return file_name.substr(0, file_name.length-4);
 }

@@ -23,7 +23,7 @@ const MAX_BYTES = '255';
 const ENOENT_ERROR_CODE = 'ENOENT';
 const SUCCESS_MESSAGE = 'records successfully deleted';
 const HDB_FILE_SUFFIX = '.hdb';
-
+const MOMENT_UNIX_TIMESTAMP_FLAG = 'x';
 const hdb_path = path.join(hdb_properties.get('HDB_ROOT'), '/schema');
 
 // Promisified functions
@@ -66,8 +66,9 @@ function deleteFilesBefore(json_body, callback) {
 
     let dir_path = common_utils.buildFolderPath(hdb_path, schema, table);
     let deleted_file_count = 0;
+    let hash_attribute = global.hdb_schema[schema][table].hash_attribute;
 
-    deleteFilesInPath(dir_path, parsed_date).then( val => {
+    deleteFilesInPath(dir_path, parsed_date, hash_attribute).then( val => {
         deleted_file_count = val;
         let message = `Deleted ${deleted_file_count} files`;
         return callback(null, message);
@@ -84,7 +85,7 @@ function deleteFilesBefore(json_body, callback) {
  * @param date - the date as a momentjs object.
  * @returns {Promise<*>}
  */
-async function deleteFilesInPath(dir_path, date) {
+async function deleteFilesInPath(dir_path, date, hash_attribute) {
     let filesRemoved = 0;
     if(common_utils.isEmptyOrZeroLength(dir_path)) {
         harper_logger.error(`directory path ${dir_path} is invalid.`);
@@ -102,8 +103,8 @@ async function deleteFilesInPath(dir_path, date) {
             return common_utils.errorizeMessage(message);
         }
 
-        let found_files = Object.create(null);
-        await getDirectoriesInPath(dir_path, found_files, date);
+        let found_files = [];
+        await inspectHashAttributeDir(date, path.join(dir_path, hash_attribute), hash_attribute, found_files);
         if (common_utils.isEmptyOrZeroLength(found_files)) {
             let message = "No files found";
             harper_logger.info(message);
@@ -147,6 +148,7 @@ async function doesDirectoryExist(dir_path) {
  * key/value object created via Object.create(null). We don't want object prototype keys so we can avoid any name collisions.
  */
 async function removeFiles(date, files) {
+    /*
     let filesRemoved = 0;
     if(common_utils.isEmptyOrZeroLength(date) || !date.isValid()) {
         return filesRemoved;
@@ -167,8 +169,56 @@ async function removeFiles(date, files) {
             }
         }
     }
-    return filesRemoved;
+    return filesRemoved; */
 };
+
+async function inspectHashAttributeDir(date_unix_ms, dir_path, hash_attribute, hash_attributes_to_remove) {
+    let found_dirs = [];
+    await getDirectoriesInPath(dir_path, found_dirs, date_unix_ms);
+    for(let curr_dir in found_dirs) {
+        let files_in_dir = await p_fs_readdir(found_dirs[curr_dir]);
+        if(common_utils.isEmptyOrZeroLength(files_in_dir)) {
+            continue;
+        }
+        let latest_file = undefined;
+        if(files_in_dir.length === 1) {
+            latest_file = files_in_dir[0];
+        } else {
+            for(let i = 0; i<files_in_dir.length; i++) {
+                // if we find any files that have a time greater than the date_unix_mx, then we know there has been
+                // an update more recent than the time, so we should not remove this record.
+                let curr_file_time = convertUnixStringToMoment(files_in_dir[i]);
+                if(!isParameterDateGreaterThanFileDate(latest_file_time, curr_file_time)) {
+                    latest_file = undefined;
+                    break;
+                } else {
+                    latest_file = files_in_dir[i];
+                }
+            }
+        }
+        if(!common_utils.isEmptyOrZeroLength(latest_file) && isParameterDateGreaterThanFileDate(date_unix_ms, latest_file)) {
+            hash_attributes_to_remove.push(curr_dir);
+        }
+    }
+}
+
+function convertUnixStringToMoment(date_val) {
+    try {
+        let parsed_time = moment(common_utils.stripFileExtension(date_val), MOMENT_UNIX_TIMESTAMP_FLAG);
+        return parsed_time;
+    } catch(e) {
+        harper_logger.info("had problem parsing file time" + e);
+        return null;
+    }
+}
+
+function isParameterDateGreaterThanFileDate(parameter_date, file_name) {
+    let parsed_time = convertUnixStringToMoment(file_name);
+    if(parsed_time && parsed_time.isValid() && parsed_time.isBefore(parameter_date)) {
+        return true;
+    }
+    return false;
+}
 
 /**
  * Return an array of directories in the path sent.  Will always return an array, even empty, when no files found.
@@ -177,7 +227,7 @@ async function removeFiles(date, files) {
  * key/value object created via Object.create(null). We don't want object prototype keys so we can avoid any name collisions.
  * @returns {Array}
  */
-async function getDirectoriesInPath(dirPath, found_files, date) {
+async function getDirectoriesInPath(dirPath, found_files, date_unix_ms) {
     let list = undefined;
     try {
         list = await p_fs_readdir(dirPath);
@@ -185,10 +235,13 @@ async function getDirectoriesInPath(dirPath, found_files, date) {
         harper_logger.error(e);
         return;
     }
+    if(!list) { return; }
     let pending = list.length;
-    if(!pending) { return; }
 
     for(let found in list) {
+        if(list[found] === HDB_HASH_FOLDER_NAME) {
+            continue;
+        }
         let file = path.resolve(dirPath, list[found]);
         let stats = undefined;
         try {
@@ -197,10 +250,12 @@ async function getDirectoriesInPath(dirPath, found_files, date) {
             harper_logger.info(`Had trouble getting stats for file ${file}.`);
             return;
         }
-        if (stats && stats.isDirectory() && stats.mtimeMs < date.valueOf()) {
+        let temp = date_unix_ms.valueOf();
+        if (stats && stats.isDirectory() && stats.mtimeMs < date_unix_ms.valueOf()) {
             try {
-                found_files[file] = stats;
-                await getDirectoriesInPath(file, found_files);
+                //found_files[file] = stats;
+                found_files.push(file);
+                await getDirectoriesInPath(file, found_files, date_unix_ms);
             } catch(e) {
                 harper_logger.info(`Had trouble getting files for directory ${file}.`);
                 return;
