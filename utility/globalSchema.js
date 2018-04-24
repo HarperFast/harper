@@ -40,6 +40,10 @@ function getTableSchema(schema_name, table_name, callback) {
             if (err) {
                 return callback(err);
             }
+
+            if (!global.hdb_schema[schema_name]) {
+                return callback(`schema ${schema_name} does not exist`);
+            }
             if (!global.hdb_schema[schema_name] || !global.hdb_schema[schema_name][table_name]) {
                 return callback(`table ${schema_name}.${table_name} does not exist`);
             }
