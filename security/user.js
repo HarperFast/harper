@@ -74,6 +74,8 @@ function alterUser(user, callback){
     delete user.hdb_user;
     delete user.operation;
 
+    user.password = password.hash(user.password);
+
     let update_object = {
         operation:'update',
         schema :  'system',
