@@ -115,8 +115,9 @@ function verifyPermsAst(ast, user, operation) {
         let schemas = parsed_ast.getSchemas();
 
         let schema_table_map = new Map();
-        // Should not continue if there are no schemas defined.
-        if((!schemas || schemas.length === 0) ) {
+        // Should not continue if there are no schemas defined and there are table columns defined.
+        // This is defined so we can do calc selects like : SELECT ABS(-12)
+        if((!schemas || schemas.length === 0) && (parsed_ast.affected_attributes && parsed_ast.affected_attributes.size > 0) ) {
             harper_logger.info(`No schemas defined in verifyPermsAst(), will not continue.`);
             return false;
         }
