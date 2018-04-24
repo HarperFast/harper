@@ -233,11 +233,12 @@ function processExitHandler(options, err){
  */
 function isForegroundProcess(){
     let is_foreground = false;
-    process.argv.forEach((arg)=>{
+    for(let arg of process.argv){
         if(arg === FOREGROUND_ARG){
             is_foreground = true;
+            break;
         }
-    });
+    }
 
     return is_foreground;
 }
