@@ -11,12 +11,13 @@ module.exports = {
 };
 
 //requires must be declared after module.exports to avoid cyclical dependency
-const insert = require('../data_layer/insert'),
-    delete_ = require('../data_layer/delete'),
-    password = require('../utility/password'),
-    validation = require('../validation/user_validation'),
-    search = require('../data_layer/search'),
-    signalling  = require('../utility/signalling');
+const insert = require('../data_layer/insert');
+const delete_ = require('../data_layer/delete');
+const password = require('../utility/password');
+const validation = require('../validation/user_validation');
+const search = require('../data_layer/search');
+const signalling  = require('../utility/signalling');
+const hdb_utility = require('../utility/common_utils');
 
 function addUser(user, callback){
     let validation_resp = validation.addUserValidation(user);
@@ -74,7 +75,9 @@ function alterUser(user, callback){
     delete user.hdb_user;
     delete user.operation;
 
-    user.password = password.hash(user.password);
+    if(!hdb_utility.isEmpty(password)) {
+        user.password = password.hash(user.password);
+    }
 
     let update_object = {
         operation:'update',
