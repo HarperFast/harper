@@ -113,9 +113,10 @@ function verifyPermsAst(ast, user, operation) {
     try {
         let parsed_ast = new bucket(ast);
         let schemas = parsed_ast.getSchemas();
+
         let schema_table_map = new Map();
         // Should not continue if there are no schemas defined.
-        if(!schemas || schemas.length === 0) {
+        if((!schemas || schemas.length === 0) ) {
             harper_logger.info(`No schemas defined in verifyPermsAst(), will not continue.`);
             return false;
         }
