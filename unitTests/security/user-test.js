@@ -25,6 +25,44 @@ const TEST_ALTER_USER_JSON = {
     "password": "test1234!",
 };
 
+const TEST_ALTER_USER_NO_USERNAME_JSON = {
+    "operation": "alter_user",
+    "role": "057540eb-3e93-4fab-8397-a4545f850b18",
+    "password": "test1234!",
+};
+
+const TEST_ALTER_USER_NOTHING_TO_UPDATE_JSON = {
+    "operation": "alter_user",
+    "username": "test_user"
+};
+
+const TEST_ALTER_USER_NOTHING_TO_UPDATE_JSON2 = {
+    "operation": "alter_user",
+    "username": "test_user",
+    "role":"",
+    "password":""
+};
+
+const TEST_ALTER_USER_EMPTY_ROLE_JSON = {
+    "operation": "alter_user",
+    "username": "test_user",
+    "active":true,
+    "role":""
+};
+
+const TEST_ALTER_USER_EMPTY_PASSWORD_JSON = {
+    "operation": "alter_user",
+    "username": "test_user",
+    "active":true,
+    "password":""
+};
+
+const TEST_ALTER_USER_ACTIVE_NOT_BOOLEAN_JSON = {
+    "operation": "alter_user",
+    "username": "test_user",
+    "active":"stuff"
+};
+
 const TEST_DROP_USER_JSON = {
     "operation":"drop_user",
     "username":"test_user"
@@ -188,13 +226,68 @@ describe('Test alterUser', function () {
             done();
         });
     });
-    it('Test failed validation', function (done) {
+    it('Test failed validation no username', function (done) {
         // inject a failed insert
         validate_stub.callsFake(function() {
             return FAILED_VALIDATE_MESSAGE;
         });
-        user.alterUser(TEST_ALTER_USER_JSON, function(err, results) {
-            assert.equal(err, FAILED_VALIDATE_MESSAGE, 'Expected success result not returned.');
+        user.alterUser(TEST_ALTER_USER_NO_USERNAME_JSON, function(err, results) {
+            assert.equal(err.message, user.USERNAME_REQUIRED, 'Expected success result not returned.');
+            assert.equal(signal_spy.called, false);
+            done();
+        });
+    });
+    it('Test failed validation nothing to update', function (done) {
+        // inject a failed insert
+        validate_stub.callsFake(function() {
+            return FAILED_VALIDATE_MESSAGE;
+        });
+        user.alterUser(TEST_ALTER_USER_NOTHING_TO_UPDATE_JSON, function(err, results) {
+            assert.equal(err.message, user.ALTERUSER_NOTHING_TO_UPDATE, 'Expected success result not returned.');
+            assert.equal(signal_spy.called, false);
+            done();
+        });
+    });
+    it('Test failed validation nothing to update 2', function (done) {
+        // inject a failed insert
+        validate_stub.callsFake(function() {
+            return FAILED_VALIDATE_MESSAGE;
+        });
+        user.alterUser(TEST_ALTER_USER_NOTHING_TO_UPDATE_JSON2, function(err, results) {
+            assert.equal(err.message, user.ALTERUSER_NOTHING_TO_UPDATE, 'Expected success result not returned.');
+            assert.equal(signal_spy.called, false);
+            done();
+        });
+    });
+    it('Test failed validation empty role', function (done) {
+        // inject a failed insert
+        validate_stub.callsFake(function() {
+            return FAILED_VALIDATE_MESSAGE;
+        });
+        user.alterUser(TEST_ALTER_USER_EMPTY_ROLE_JSON, function(err, results) {
+            assert.equal(err.message, user.EMPTY_ROLE, 'Expected success result not returned.');
+            assert.equal(signal_spy.called, false);
+            done();
+        });
+    });
+    it('Test failed validation empty password', function (done) {
+        // inject a failed insert
+        validate_stub.callsFake(function() {
+            return FAILED_VALIDATE_MESSAGE;
+        });
+        user.alterUser(TEST_ALTER_USER_EMPTY_PASSWORD_JSON, function(err, results) {
+            assert.equal(err.message, user.EMPTY_PASSWORD, 'Expected success result not returned.');
+            assert.equal(signal_spy.called, false);
+            done();
+        });
+    });
+    it('Test failed validation active not boolean', function (done) {
+        // inject a failed insert
+        validate_stub.callsFake(function() {
+            return FAILED_VALIDATE_MESSAGE;
+        });
+        user.alterUser(TEST_ALTER_USER_ACTIVE_NOT_BOOLEAN_JSON, function(err, results) {
+            assert.equal(err.message, user.ACTIVE_BOOLEAN, 'Expected success result not returned.');
             assert.equal(signal_spy.called, false);
             done();
         });

@@ -1,5 +1,11 @@
 'use strict';
 
+const USERNAME_REQUIRED =  'username is required';
+const ALTERUSER_NOTHING_TO_UPDATE = 'nothing to update, must supply active, role or password to update';
+const EMPTY_PASSWORD = 'password cannot be an empty string';
+const EMPTY_ROLE = 'role cannot be an empty string';
+const ACTIVE_BOOLEAN = 'active must be true or false';
+
 module.exports = {
     addUser: addUser,
     alterUser:alterUser,
@@ -7,7 +13,12 @@ module.exports = {
     userInfo: user_info,
     listUsers: list_users,
     listUsersExternal : listUsersExternal,
-    setUsersToGlobal: setUsersToGlobal
+    setUsersToGlobal: setUsersToGlobal,
+    USERNAME_REQUIRED: USERNAME_REQUIRED,
+    ALTERUSER_NOTHING_TO_UPDATE: ALTERUSER_NOTHING_TO_UPDATE,
+    EMPTY_PASSWORD: EMPTY_PASSWORD,
+    EMPTY_ROLE: EMPTY_ROLE,
+    ACTIVE_BOOLEAN: ACTIVE_BOOLEAN
 };
 
 //requires must be declared after module.exports to avoid cyclical dependency
@@ -20,11 +31,7 @@ const signalling  = require('../utility/signalling');
 const hdb_utility = require('../utility/common_utils');
 const validate = require('validate.js');
 
-const USERNAME_REQUIRED =  'username is required';
-const ALTERUSER_NOTHING_TO_UPDATE = 'nothing to update, must supply active, role or password to update';
-const EMPTY_PASSWORD = 'password cannot be an empty string';
-const EMPTY_ROLE = 'role cannot be an empty string';
-const ACTIVE_BOOLEAN = 'active must be true or false';
+
 
 const USER_ATTRIBUTE_WHITELIST = {
     username: true,
