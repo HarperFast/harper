@@ -69,10 +69,11 @@ function deleteFilesBefore(json_body, callback) {
     let dir_path = common_utils.buildFolderPath(BASE_PATH, schema, table);
     let deleted_file_count = 0;
 
+    callback(null, `Deleting all files before ${json_body.date}, note this operation will not propagate to the cluster.`);
     deleteFilesInPath(schema, table, dir_path, parsed_date).then( val => {
         deleted_file_count = val;
         let message = `Deleted ${deleted_file_count} files`;
-        return callback(null, message);
+        //return callback(null, message);
     }).catch(function caughtError(err) {
         harper_logger.error(`There was an error deleting files by date: ${err}`);
         return callback(err, null);
@@ -156,8 +157,6 @@ async function removeFiles(schema, table, hash_attribute, hashes_to_remove) {
         "hash_values": hashes_to_remove
     };
 
-    //TODO: HERE.  Getting an ID of 0 in hashes_to_remove which is suspicious.  Otherwise call removeRecord.
-    console.log(records_to_remove);
     p_delete_record(records_to_remove).then(msg => {
             return msg;
     }).catch( e => {
@@ -190,6 +189,9 @@ async function removeIDFiles(schema, table, hash_attribute, hash_id_paths) {
             files_in_dir = await p_fs_readdir(curr_id_path);
         } catch(e) {
             harper_logger.error(`There was a problem reading dir ${curr_id_path}.  ${e}`);
+            continue;
+        }
+        if(common_utils.isEmptyOrZeroLength(files_in_dir)) {
             continue;
         }
         for(let file_num = 0; file_num < files_in_dir.length; file_num++) {
