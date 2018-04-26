@@ -16,7 +16,7 @@ const { promisify } = require('util');
 let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
 hdb_properties.append(hdb_properties.get('settings_path'));
 const slash_regex =  /\//g;
-const base_path = common_utils.buildFolderPath(hdb_properties.get('HDB_ROOT'), "schema");
+const BASE_PATH = common_utils.buildFolderPath(hdb_properties.get('HDB_ROOT'), "schema");
 const HDB_HASH_FOLDER_NAME = '__hdb_hash';
 const BLOB_FOLDER_NAME = 'blob';
 const MAX_BYTES = '255';
@@ -24,12 +24,12 @@ const ENOENT_ERROR_CODE = 'ENOENT';
 const SUCCESS_MESSAGE = 'records successfully deleted';
 const HDB_FILE_SUFFIX = '.hdb';
 const MOMENT_UNIX_TIMESTAMP_FLAG = 'x';
-const hdb_path = path.join(hdb_properties.get('HDB_ROOT'), '/schema');
 
 // Promisified functions
 const p_fs_stat = promisify(fs.stat);
 const p_fs_readdir = promisify(fs.readdir);
 const p_fs_unlink = promisify(fs.unlink);
+const delete_record = promisify(deleteRecord);
 
 module.exports = {
     delete: deleteRecord,
@@ -64,11 +64,10 @@ function deleteFilesBefore(json_body, callback) {
     }
     let table = json_body.table;
 
-    let dir_path = common_utils.buildFolderPath(hdb_path, schema, table);
+    let dir_path = common_utils.buildFolderPath(BASE_PATH, schema, table);
     let deleted_file_count = 0;
-    let hash_attribute = global.hdb_schema[schema][table].hash_attribute;
 
-    deleteFilesInPath(dir_path, parsed_date, hash_attribute).then( val => {
+    deleteFilesInPath(schema, table, dir_path, parsed_date).then( val => {
         deleted_file_count = val;
         let message = `Deleted ${deleted_file_count} files`;
         return callback(null, message);
@@ -85,7 +84,7 @@ function deleteFilesBefore(json_body, callback) {
  * @param date - the date as a momentjs object.
  * @returns {Promise<*>}
  */
-async function deleteFilesInPath(dir_path, date, hash_attribute) {
+async function deleteFilesInPath(schema, table, dir_path, date) {
     let filesRemoved = 0;
     if(common_utils.isEmptyOrZeroLength(dir_path)) {
         harper_logger.error(`directory path ${dir_path} is invalid.`);
@@ -96,6 +95,7 @@ async function deleteFilesInPath(dir_path, date, hash_attribute) {
         return filesRemoved;
     }
     try {
+        let hash_attribute = global.hdb_schema[schema][table].hash_attribute;
         let doesExist = await doesDirectoryExist(dir_path);
         if (!doesExist) {
             let message = "Invalid Directory Path.";
@@ -110,7 +110,7 @@ async function deleteFilesInPath(dir_path, date, hash_attribute) {
             harper_logger.info(message);
             return message;
         }
-        filesRemoved = await removeFiles(date, found_files);
+        filesRemoved = await removeFiles(schema, table, found_files);
         return filesRemoved;
     } catch (e) {
         harper_logger.error(`There was an error deleting files by date: ${e}`);
@@ -130,7 +130,7 @@ async function doesDirectoryExist(dir_path) {
     }
     try {
         let stats = await p_fs_stat(dir_path);
-        if (stats && stats.isDirectory()) {
+        if(stats && stats.isDirectory()) {
             return true;
         } else {
             return false;
@@ -147,30 +147,26 @@ async function doesDirectoryExist(dir_path) {
  * @param files - An object key,value map of file names and stats <file_name_key, fs_stats>.  This should be a "pure"
  * key/value object created via Object.create(null). We don't want object prototype keys so we can avoid any name collisions.
  */
-async function removeFiles(date, files) {
-    /*
-    let filesRemoved = 0;
-    if(common_utils.isEmptyOrZeroLength(date) || !date.isValid()) {
-        return filesRemoved;
-    }
-    if(Object.keys(files).length === 0) {
-        return filesRemoved;
-    }
+async function removeFiles(schema, table, hashes_to_remove) {
+    let records_to_remove = {"operation": "delete",
+        "table": `${table}`,
+        "schema": `${schema}`,
+        "hash_values": hashes_to_remove
+    };
 
-    for(let file in files) {
-        let stats = files[file];
-        if (stats.mtimeMs < date.valueOf()) {
-            harper_logger.info(`removing file ${file}`);
-            try {
-                await p_fs_unlink(file);
-                filesRemoved++;
-            } catch (e) {
-                harper_logger.error(`could not remove file ${file} - ${e}`);
-            }
-        }
-    }
-    return filesRemoved; */
+    //TODO: HERE.  Getting an ID of 0 in hashes_to_remove which is suspicious.  Otherwise call removeRecord.
+    console.log(records_to_remove);
+    delete_record(records_to_remove).then(msg => {
+            return msg;
+    }).catch( e => {
+        console.error(`There was a problem deleting records: ${e}`)
+        return common_utils.errorizeMessage(e);
+    });
 };
+
+async function removeIDFiles(schema, table, hash_attribute, hash_ids) {
+
+}
 
 async function inspectHashAttributeDir(date_unix_ms, dir_path, hash_attribute, hash_attributes_to_remove) {
     let found_dirs = [];
@@ -351,7 +347,7 @@ function deleteRecords(schema, table, records, callback){
         return callback(common_utils.errorizeMessage(`hash attribute not found`));
     }
     let paths = [];
-    let table_path = common_utils.buildFolderPath(base_path, schema, table);
+    let table_path = common_utils.buildFolderPath(BASE_PATH, schema, table);
 
     //generate the paths for each file to delete
     records.forEach((record)=>{

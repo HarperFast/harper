@@ -29,7 +29,7 @@ const TEST_FILE_NAME_2 = `${ATTRIBUTE_2_TIME_NAME}.hdb`;
 const TEST_FILE_NAME_3 = `${ATTRIBUTE_3_TIME_NAME}.hdb`;
 const TEST_AGE_FILE_NAME = `${ATTRIBUTE_1_TIME_NAME}.hdb`;
 const FILE_CONTENTS = "Name";
-const DELETE_MOD_BASE_PATH_NAME = 'hdb_path';
+const DELETE_MOD_BASE_PATH_NAME = 'BASE_PATH';
 const TEST_ATTRIBUTE_NAME = 'Name';
 const HASH_ATTRIBUTE_NAME = 'id';
 const TEST_ATTRIBUTE_AGE = 'Age';
@@ -60,41 +60,40 @@ const BAD_DIR_PATH = '/tmp/zaphodbettlebrox';
 const HDB_HASH_FOLDER_NAME = '__hdb_hash';
 const TEST_SCHEMA = 'test';
 const TEST_SCHEMA_PATH = path.join(BASE, TEST_SCHEMA);
-const TEST_TABLE_1 = 'dog';
-const TEST_TABLE_2 = 'cat';
-const TEST_TABLE_3 = 'bird';
-const TEST_TABLE_1_PATH = path.join(TEST_SCHEMA_PATH, TEST_TABLE_1);
-const TEST_TABLE_1_HASH = path.join(TEST_SCHEMA_PATH, TEST_TABLE_1, HDB_HASH_FOLDER_NAME);
+const TEST_TABLE_DOG = 'dog';
+const TEST_TABLE_CAT = 'cat';
+const TEST_TABLE_BIRD = 'bird';
+const TEST_TABLE_DOG_PATH = path.join(TEST_SCHEMA_PATH, TEST_TABLE_DOG);
+const TEST_TABLE_DOG_HASH = path.join(TEST_SCHEMA_PATH, TEST_TABLE_DOG, HDB_HASH_FOLDER_NAME);
 
-const TABLE_1_ATTRIBUTE_PATH = path.join(TEST_TABLE_1_PATH, TEST_ATTRIBUTE_NAME);
-const TABLE_1_ATTRIBUTE_HASH_DIRECTORY_PATH = path.join(TEST_TABLE_1_HASH, TEST_ATTRIBUTE_NAME);
-const TABLE_1_ATTRIBUTE_INSTANCE_DIRECTORY_PATH = path.join(TABLE_1_ATTRIBUTE_PATH, ATTRIBUTE_1_INSTANCE_NAME);
-const TABLE_1_ATTRIBUTE_HASH_FILE_PATH = path.join(TABLE_1_ATTRIBUTE_HASH_DIRECTORY_PATH, `${ATTRIBUTE_1_INSTANCE_NAME}.hdb`);
-const TABLE_1_ATTRIBUTE_INSTANCE_FILE_PATH = path.join(TABLE_1_ATTRIBUTE_INSTANCE_DIRECTORY_PATH, TEST_FILE_NAME_1);
-
-const TEST_TABLE_2_HASH = path.join(TEST_SCHEMA_PATH, TEST_TABLE_2, HDB_HASH_FOLDER_NAME);
-const TABLE_2_ATTRIBUTE_HASH_DIRECTORY_PATH = path.join(TEST_TABLE_2_HASH, TEST_ATTRIBUTE_NAME);
-const TABLE_2_ATTRIBUTE_HASH_FILE_PATH = path.join(TABLE_2_ATTRIBUTE_HASH_DIRECTORY_PATH, `${ATTRIBUTE_2_INSTANCE_NAME}.hdb`);
-
-const TABLE_1_ATTRIBUTE_2_HASH_FILE_PATH = path.join(TABLE_1_ATTRIBUTE_HASH_DIRECTORY_PATH, `${ATTRIBUTE_3_INSTANCE_NAME}.hdb`);
-const TEST_TABLE_3_PATH = path.join(TEST_SCHEMA_PATH, TEST_TABLE_3);
+const TABLE_DOG_ATTRIBUTE_PATH = path.join(TEST_TABLE_DOG_PATH, TEST_ATTRIBUTE_NAME);
+const TABLE_DOG_ATTRIBUTE_HASH_DIRECTORY_PATH = path.join(TEST_TABLE_DOG_HASH, TEST_ATTRIBUTE_NAME);
+const TABLE_DOG_ATTRIBUTE_INSTANCE_DIRECTORY_PATH = path.join(TABLE_DOG_ATTRIBUTE_PATH, ATTRIBUTE_1_INSTANCE_NAME);
+const TABLE_DOG_ATTRIBUTE_HASH_FILE_PATH = path.join(TABLE_DOG_ATTRIBUTE_HASH_DIRECTORY_PATH, `${ATTRIBUTE_1_INSTANCE_NAME}.hdb`);
+const TABLE_DOG_ATTRIBUTE_INSTANCE_FILE_PATH = path.join(TABLE_DOG_ATTRIBUTE_INSTANCE_DIRECTORY_PATH, TEST_FILE_NAME_1);
+const TEST_TABLE_CAT_HASH = path.join(TEST_SCHEMA_PATH, TEST_TABLE_CAT, HDB_HASH_FOLDER_NAME);
+const TABLE_CAT_ATTRIBUTE_HASH_DIRECTORY_PATH = path.join(TEST_TABLE_CAT_HASH, TEST_ATTRIBUTE_NAME);
+const TABLE_CAT_ATTRIBUTE_HASH_FILE_PATH = path.join(TABLE_CAT_ATTRIBUTE_HASH_DIRECTORY_PATH, `${ATTRIBUTE_2_INSTANCE_NAME}.hdb`);
+const TABLE_DOG_ATTRIBUTE_NAME_HASH_FILE_PATH = path.join(TABLE_DOG_ATTRIBUTE_HASH_DIRECTORY_PATH, `${ATTRIBUTE_3_INSTANCE_NAME}.hdb`);
+const TEST_TABLE_BIRD_PATH = path.join(TEST_SCHEMA_PATH, TEST_TABLE_BIRD);
 
 const TOMORROW_TIME = moment().add(1, 'days');
 const YESTERDAY_TIME = moment().subtract(1, 'days');
 const NOW = moment();
 
 const SEARCH_RESULT_OBJECT = {};
-
 SEARCH_RESULT_OBJECT[TEST_ATTRIBUTE_NAME] = ATTRIBUTE_1_INSTANCE_NAME;
+let search_stub = sinon.stub(search, "searchByHash").yields("", [SEARCH_RESULT_OBJECT]);
+
 let now_formatted = NOW.format(ISO_8601_FORMAT);
 const TEST_DELETE_BEFORE_REQUEST = {
     "operation": "delete_files_before",
     "date": `${now_formatted}`,
     "schema": `${TEST_SCHEMA}`,
-    "table": `${TEST_TABLE_1}`,
+    "table": `${TEST_TABLE_DOG}`,
     "hdb_user": {},
     "hdb_auth_header": "Basic abcdefg"
-}
+};
 
 global.hdb_schema = {
     "test": {
@@ -384,11 +383,11 @@ function makeTheDir(path) {
 
 function setup() {
     fs.mkdirSync(TEST_SCHEMA_PATH);
-    TEST_DATA.forEach(function loopTest(data) {
+    TEST_DATA.forEach(function loopTestData(data) {
        fakeInsert(data);
     });
     //Setup empty table 3
-    fs.mkdirSync(TEST_TABLE_3_PATH);
+    fs.mkdirSync(TEST_TABLE_BIRD_PATH);
     // Writes a text file to ensure listDirectories only shows directories
     fs.writeFileSync(path.join(TEST_SCHEMA_PATH, TEST_FILE_NAME_2), FILE_CONTENTS);
 }
@@ -415,10 +414,16 @@ function tearDown(target_path) {
 };
 
 describe('Test deleteFilesBefore', function () {
-    beforeEach(function () {
+    let delete_search_result = [];
+        beforeEach(function () {
         try {
-            setup();
+            delete_search_result = [];
+            delete_search_result.push(TEST_DATA[0]);
+            delete_search_result.push(TEST_DATA[1]);
+            search_stub.restore();
+            search_stub = sinon.stub(search, "searchByHash").yields(null, delete_search_result);
             delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
+            setup();
         } catch (e) {
             console.error(e);
         }
@@ -426,6 +431,8 @@ describe('Test deleteFilesBefore', function () {
     afterEach(function () {
         try {
             tearDown(TEST_SCHEMA_PATH);
+            search_stub.restore();
+            delete_search_result = [];
         } catch (e) {
             console.error(e);
         }
@@ -437,7 +444,7 @@ describe('Test deleteFilesBefore', function () {
         delete_rewire.deleteFilesBefore(request, function del(err, msg) {
             try {
                 assert.equal(msg, `Deleted 0 files`);
-                assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_HASH_FILE_PATH), true);
+                assert.equal(fs.existsSync(TABLE_DOG_ATTRIBUTE_HASH_FILE_PATH), true);
                 done();
             } catch(e) {
                 done(e);
@@ -447,12 +454,12 @@ describe('Test deleteFilesBefore', function () {
     it('Nominal path of deleteFilesBefore with 1 directory', function (done) {
         delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
         let request = test_utils.deepClone(TEST_DELETE_BEFORE_REQUEST);
-        request.table = TEST_TABLE_2;
+        request.table = TEST_TABLE_CAT;
         request.date = TOMORROW_TIME.format(ISO_8601_FORMAT);
         delete_rewire.deleteFilesBefore(request, function del(err, msg) {
             try {
                 assert.equal(msg, `Deleted 2 files`);
-                assert.equal(fs.existsSync(TABLE_2_ATTRIBUTE_HASH_FILE_PATH), false);
+                assert.equal(fs.existsSync(TABLE_CAT_ATTRIBUTE_HASH_FILE_PATH), false);
                 done();
             } catch(e) {
                 done(e);
@@ -466,7 +473,7 @@ describe('Test deleteFilesBefore', function () {
         delete_rewire.deleteFilesBefore(request, function del(err, msg) {
             try {
                 assert.equal(msg, `Deleted 6 files`);
-                assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_HASH_FILE_PATH), false);
+                assert.equal(fs.existsSync(TABLE_DOG_ATTRIBUTE_HASH_FILE_PATH), false);
                 done();
             } catch(e) {
                 done(e);
@@ -589,7 +596,7 @@ describe('Test doesDirectoryExist', function () {
     });
     it('Nominal path with directory that exists.', test_utils.mochaAsyncWrapper(async () => {
         delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
-        let doesExist = await doesDirectoryExist(TEST_TABLE_1_PATH);
+        let doesExist = await doesDirectoryExist(TEST_TABLE_DOG_PATH);
         assert.equal(doesExist, true);
     }));
     //
@@ -661,14 +668,14 @@ describe('Test removeFiles', function() {
         }
         let removed_count = await removeFiles(TOMORROW_TIME, files_copy);
         assert.equal(removed_count, 0);
-        assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_HASH_FILE_PATH), true);
-        assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_2_HASH_FILE_PATH), true);
+        assert.equal(fs.existsSync(TABLE_DOG_ATTRIBUTE_HASH_FILE_PATH), true);
+        assert.equal(fs.existsSync(TABLE_DOG_ATTRIBUTE_NAME_HASH_FILE_PATH), true);
     }));
     it('removeFiles with null files parameter', test_utils.mochaAsyncWrapper(async () => {
         let removed_count = await removeFiles(TOMORROW_TIME, null);
         assert.equal(removed_count, 0);
-        assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_HASH_FILE_PATH), true);
-        assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_2_HASH_FILE_PATH), true);
+        assert.equal(fs.existsSync(TABLE_DOG_ATTRIBUTE_HASH_FILE_PATH), true);
+        assert.equal(fs.existsSync(TABLE_DOG_ATTRIBUTE_NAME_HASH_FILE_PATH), true);
     }));
     it('removeFiles with null date parameter', test_utils.mochaAsyncWrapper(async () => {
         let removed_count = await removeFiles(null, FOUND_FILES_IN_SCHEMA);
@@ -693,14 +700,14 @@ describe('Test getDirectoriesInPath', function () {
         try {
             setup();
         } catch(e) {
-            //console.error(e);
+            console.error(e);
         }
     });
     after( function() {
         try {
             tearDown(TEST_SCHEMA_PATH);
         } catch(e) {
-            //console.error(e);
+            console.error(e);
         }
     });
     // There should be 2 directories, each with 1 file, and 1 text file in the current directory
@@ -730,17 +737,18 @@ describe('Test getDirectoriesInPath', function () {
 
     it('test getDirectoriesInPath with no directories found', test_utils.mochaAsyncWrapper(async () => {
         let list_dir_results = Object.create(null);
-        await getDirectoriesInPath(TEST_TABLE_3_PATH, list_dir_results);
+        await getDirectoriesInPath(TEST_TABLE_BIRD_PATH, list_dir_results);
         assert.equal(Object.keys(list_dir_results).length, 0);
     }));
 });
 
 describe('Test deleteRecord', function () {
     let global_schema_stub = sinon.stub(global_schema, "getTableSchema").yields("", null);
-    let search_stub = sinon.stub(search, "searchByHash").yields("", [SEARCH_RESULT_OBJECT]);
 
     beforeEach( function(done) {
         try {
+            search_stub.restore();
+            search_stub = sinon.stub(search, "searchByHash").yields("", [SEARCH_RESULT_OBJECT]);
             setup();
             done();
         } catch(e) {
@@ -750,29 +758,30 @@ describe('Test deleteRecord', function () {
     afterEach( function(done) {
         try {
             tearDown(TEST_SCHEMA_PATH);
+            search_stub.restore();
             done();
         } catch(e) {
             console.log(e);
         }
     });
     it('Nominal path for delete Record', function (done) {
-        delete_rewire.__set__('base_path', BASE);
+        delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
         delete_rewire.delete(DELETE_OBJECT, function(err, results) {
-            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_HASH_FILE_PATH), false);
-            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_INSTANCE_FILE_PATH), false);
-            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_2_HASH_FILE_PATH), true);
+            assert.equal(fs.existsSync(TABLE_DOG_ATTRIBUTE_HASH_FILE_PATH), false);
+            assert.equal(fs.existsSync(TABLE_DOG_ATTRIBUTE_INSTANCE_FILE_PATH), false);
+            assert.equal(fs.existsSync(TABLE_DOG_ATTRIBUTE_NAME_HASH_FILE_PATH), true);
             done();
         });
     });
     it('test deleteRecord with bad deleteObject parameter', function (done) {
-        delete_rewire.__set__('base_path', BASE);
+        delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
         delete_rewire.delete(null, function(err, results) {
             assert.ok(err.message.length > 0);
             done();
         });
     });
     it('test deleteRecord with bad schema in deleteObject parameter', function (done) {
-        delete_rewire.__set__('base_path', BASE);
+        delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
         let del_obj = test_utils.deepClone(DELETE_OBJECT);
         del_obj.schema = 'hootiehoo';
         delete_rewire.delete(del_obj, function(err, results) {
@@ -781,7 +790,7 @@ describe('Test deleteRecord', function () {
         });
     });
     it('test deleteRecord with bad table in deleteObject parameter', function (done) {
-        delete_rewire.__set__('base_path', BASE);
+        delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
         let del_obj = test_utils.deepClone(DELETE_OBJECT);
         del_obj.table = 'hootiehoo';
         delete_rewire.delete(del_obj, function(err, results) {
@@ -790,7 +799,7 @@ describe('Test deleteRecord', function () {
         });
     });
     it('test deleteRecord with search returning no results', function (done) {
-        delete_rewire.__set__('base_path', BASE);
+        delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
         search_stub.restore();
         search_stub = sinon.stub(search, "searchByHash").yields("", []);
         delete_rewire.delete(DELETE_OBJECT, function(err, results) {
@@ -825,35 +834,35 @@ describe('Test deleteRecords', function () {
         }
     });
     it('Nominal path for delete Record', function (done) {
-        delete_rewire.__set__('base_path', BASE);
-        delete_rewire.deleteRecords(TEST_SCHEMA, TEST_TABLE_1, [SEARCH_RESULT_OBJECT], function(err) {
-            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_HASH_FILE_PATH), false);
-            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_INSTANCE_FILE_PATH), false);
-            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_2_HASH_FILE_PATH), true);
+        delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
+        delete_rewire.deleteRecords(TEST_SCHEMA, TEST_TABLE_DOG, [SEARCH_RESULT_OBJECT], function(err) {
+            assert.equal(fs.existsSync(TABLE_DOG_ATTRIBUTE_HASH_FILE_PATH), false);
+            assert.equal(fs.existsSync(TABLE_DOG_ATTRIBUTE_INSTANCE_FILE_PATH), false);
+            assert.equal(fs.existsSync(TABLE_DOG_ATTRIBUTE_NAME_HASH_FILE_PATH), true);
             done();
         });
     });
     it('deleteRecords with invalid schema', function (done) {
-        delete_rewire.__set__('base_path', BASE);
-        delete_rewire.deleteRecords(null, TEST_TABLE_1, [SEARCH_RESULT_OBJECT], function(err) {
+        delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
+        delete_rewire.deleteRecords(null, TEST_TABLE_DOG, [SEARCH_RESULT_OBJECT], function(err) {
             assert.ok(err.message.length > 0);
             done();
         });
     });
     it('deleteRecords with invalid table', function (done) {
-        delete_rewire.__set__('base_path', BASE);
+        delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
         delete_rewire.deleteRecords(TEST_SCHEMA, null, [SEARCH_RESULT_OBJECT], function(err) {
             assert.ok(err.message.length > 0);
             done();
         });
     });
     it('deleteRecords with empty records', function (done) {
-        delete_rewire.__set__('base_path', BASE);
-        delete_rewire.deleteRecords(TEST_SCHEMA, TEST_TABLE_1, [], function(err) {
+        delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
+        delete_rewire.deleteRecords(TEST_SCHEMA, TEST_TABLE_DOG, [], function(err) {
             assert.ok(err.message.length > 0);
-            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_HASH_FILE_PATH), true);
-            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_INSTANCE_FILE_PATH), true);
-            assert.equal(fs.existsSync(TABLE_1_ATTRIBUTE_2_HASH_FILE_PATH), true);
+            assert.equal(fs.existsSync(TABLE_DOG_ATTRIBUTE_HASH_FILE_PATH), true);
+            assert.equal(fs.existsSync(TABLE_DOG_ATTRIBUTE_INSTANCE_FILE_PATH), true);
+            assert.equal(fs.existsSync(TABLE_DOG_ATTRIBUTE_NAME_HASH_FILE_PATH), true);
             done();
         });
     });
