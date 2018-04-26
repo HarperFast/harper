@@ -24,12 +24,14 @@ const ENOENT_ERROR_CODE = 'ENOENT';
 const SUCCESS_MESSAGE = 'records successfully deleted';
 const HDB_FILE_SUFFIX = '.hdb';
 const MOMENT_UNIX_TIMESTAMP_FLAG = 'x';
+const SYSTEM_SCHEMA_NAME = 'system';
 
 // Promisified functions
 const p_fs_stat = promisify(fs.stat);
 const p_fs_readdir = promisify(fs.readdir);
 const p_fs_unlink = promisify(fs.unlink);
-const delete_record = promisify(deleteRecord);
+const p_delete_record = promisify(deleteRecord);
+const p_fs_rmdir = promisify(fs.rmdir);
 
 module.exports = {
     delete: deleteRecord,
@@ -110,7 +112,7 @@ async function deleteFilesInPath(schema, table, dir_path, date) {
             harper_logger.info(message);
             return message;
         }
-        filesRemoved = await removeFiles(schema, table, found_files);
+        filesRemoved = await removeFiles(schema, table, hash_attribute, found_files);
         return filesRemoved;
     } catch (e) {
         harper_logger.error(`There was an error deleting files by date: ${e}`);
@@ -147,7 +149,7 @@ async function doesDirectoryExist(dir_path) {
  * @param files - An object key,value map of file names and stats <file_name_key, fs_stats>.  This should be a "pure"
  * key/value object created via Object.create(null). We don't want object prototype keys so we can avoid any name collisions.
  */
-async function removeFiles(schema, table, hashes_to_remove) {
+async function removeFiles(schema, table, hash_attribute, hashes_to_remove) {
     let records_to_remove = {"operation": "delete",
         "table": `${table}`,
         "schema": `${schema}`,
@@ -156,16 +158,56 @@ async function removeFiles(schema, table, hashes_to_remove) {
 
     //TODO: HERE.  Getting an ID of 0 in hashes_to_remove which is suspicious.  Otherwise call removeRecord.
     console.log(records_to_remove);
-    delete_record(records_to_remove).then(msg => {
+    p_delete_record(records_to_remove).then(msg => {
             return msg;
     }).catch( e => {
         console.error(`There was a problem deleting records: ${e}`)
         return common_utils.errorizeMessage(e);
     });
+    await removeIDFiles(schema, table, hash_attribute, hashes_to_remove);
 };
 
-async function removeIDFiles(schema, table, hash_attribute, hash_ids) {
-
+async function removeIDFiles(schema, table, hash_attribute, hash_id_paths) {
+    if(common_utils.isEmptyOrZeroLength(schema) || schema === SYSTEM_SCHEMA_NAME) {
+        harper_logger.info(`Invalid schema name.`);
+        return;
+    }
+    if(common_utils.isEmptyOrZeroLength(table)) {
+        harper_logger.info(`Invalid table name.`);
+        return;
+    }
+    if(common_utils.isEmptyOrZeroLength(hash_attribute)) {
+        harper_logger.info(`Invalid hash attribute.`);
+        return;
+    }
+    if(common_utils.isEmptyOrZeroLength(hash_id_paths)) {
+        return;
+    }
+    for(let i = 0; i<hash_id_paths.length; i++) {
+        let curr_id_path = hash_id_paths[i];
+        let files_in_dir = [];
+        try {
+            files_in_dir = await p_fs_readdir(curr_id_path);
+        } catch(e) {
+            harper_logger.error(`There was a problem reading dir ${curr_id_path}.  ${e}`);
+            continue;
+        }
+        for(let file_num = 0; file_num < files_in_dir.length; file_num++) {
+            try {
+                harper_logger.trace(`trying to unlink file ${files_in_dir[file_num]}`);
+                await p_fs_unlink(path.join(curr_id_path, files_in_dir[file_num]));
+            } catch(e) {
+                harper_logger.error(`There was a problem unlinking file ${files_in_dir[file_num]}.  ${e}`);
+                continue;
+            }
+        }
+        try {
+            await p_fs_rmdir(curr_id_path);
+        } catch(e) {
+            harper_logger.error(`There was a problem removing directory ${curr_id_path}.  ${e}`);
+            continue;
+        }
+    }
 }
 
 async function inspectHashAttributeDir(date_unix_ms, dir_path, hash_attribute, hash_attributes_to_remove) {
@@ -193,7 +235,7 @@ async function inspectHashAttributeDir(date_unix_ms, dir_path, hash_attribute, h
             }
         }
         if(!common_utils.isEmptyOrZeroLength(latest_file) && isParameterDateGreaterThanFileDate(date_unix_ms, latest_file)) {
-            hash_attributes_to_remove.push(curr_dir);
+            hash_attributes_to_remove.push(found_dirs[curr_dir]);
         }
     }
 }
