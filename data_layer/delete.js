@@ -69,16 +69,13 @@ function deleteFilesBefore(json_body, callback) {
     let dir_path = common_utils.buildFolderPath(BASE_PATH, schema, table);
     let deleted_file_count = 0;
 
-    callback(null, `Deleting all files before ${json_body.date}, note this operation will not propagate to the cluster.`);
-    deleteFilesInPath(schema, table, dir_path, parsed_date).then( val => {
-        deleted_file_count = val;
-        let message = `Deleted ${deleted_file_count} files`;
-        //return callback(null, message);
+    callback(null, `Deleting all files before ${json_body.date}, this may take some time.  Note this operation will not propagate deletions to the cluster.`);
+    deleteFilesInPath(schema, table, dir_path, parsed_date).then( () => {
+        harper_logger.info(`Finished deleting files before ${json_body.date}`);
     }).catch(function caughtError(err) {
         harper_logger.error(`There was an error deleting files by date: ${err}`);
-        return callback(err, null);
     });
-};
+}
 
 /**
  * Starting at the path passed as a parameter, look at each file and compare it to the date parameter.  If the file is
@@ -88,37 +85,51 @@ function deleteFilesBefore(json_body, callback) {
  * @returns {Promise<*>}
  */
 async function deleteFilesInPath(schema, table, dir_path, date) {
-    let filesRemoved = 0;
     if(common_utils.isEmptyOrZeroLength(dir_path)) {
         harper_logger.error(`directory path ${dir_path} is invalid.`);
-        return filesRemoved;
+        return;
     }
-    if(!date || !date.isValid()) {
+    if(!date || !moment.isMoment(date) || !date.isValid()) {
         harper_logger.error(`date ${date} is invalid.`);
-        return filesRemoved;
+        return;
     }
+    if(common_utils.isEmptyOrZeroLength(schema) || schema === SYSTEM_SCHEMA_NAME) {
+        harper_logger.error(`Schema ${schema} is invalid.`);
+        return;
+    }
+    if(common_utils.isEmptyOrZeroLength(table)) {
+        harper_logger.error(`Table ${table} is invalid.`);
+        return;
+    }
+    let hash_attribute = undefined;
     try {
-        let hash_attribute = global.hdb_schema[schema][table].hash_attribute;
-        let doesExist = await doesDirectoryExist(dir_path);
-        if (!doesExist) {
-            let message = "Invalid Directory Path.";
-            harper_logger.info(message);
-            return common_utils.errorizeMessage(message);
-        }
-
-        let found_files = [];
-        await inspectHashAttributeDir(date, path.join(dir_path, hash_attribute), hash_attribute, found_files);
-        if (common_utils.isEmptyOrZeroLength(found_files)) {
-            let message = "No files found";
-            harper_logger.info(message);
-            return message;
-        }
-        filesRemoved = await removeFiles(schema, table, hash_attribute, found_files);
-        return filesRemoved;
+        hash_attribute = global.hdb_schema[schema][table].hash_attribute;
     } catch (e) {
-        harper_logger.error(`There was an error deleting files by date: ${e}`);
-        return filesRemoved;
+        harper_logger.error(`Schema ${schema} and table ${table} attributes were not found.`);
+        return;
     }
+    let doesExist = await doesDirectoryExist(dir_path).catch(e => {
+        harper_logger.info(`There was a problem checking directory ${dir_path}`);
+    });
+    if (!doesExist) {
+        let message = "Invalid Directory Path.";
+        harper_logger.info(message);
+        return common_utils.errorizeMessage(message);
+    }
+
+    let found_files = [];
+    await inspectHashAttributeDir(date, path.join(dir_path, hash_attribute), hash_attribute, found_files).catch(e => {
+        harper_logger.info(`There was a problem getting attributes for table directory ${dir_path}`);
+    });
+    if (common_utils.isEmptyOrZeroLength(found_files)) {
+        let message = "No files found";
+        harper_logger.info(message);
+        return message;
+    }
+    await removeFiles(schema, table, hash_attribute, found_files).catch( e => {
+        harper_logger.info(`There was a problem removing files for Schema ${schema} and table ${table}`);
+    });
+
 }
 
 /**
@@ -132,17 +143,14 @@ async function doesDirectoryExist(dir_path) {
         return false;
     }
     try {
+        harper_logger.trace(`Checking directory ${dir_path}`);
         let stats = await p_fs_stat(dir_path);
-        if(stats && stats.isDirectory()) {
-            return true;
-        } else {
-            return false;
-        }
+        return stats && stats.isDirectory();
     } catch (e) {
         harper_logger.info(e);
         return false;
     }
-};
+}
 
 /**
  * Removes all files which had a last modified date less than the date parameter.
@@ -160,11 +168,11 @@ async function removeFiles(schema, table, hash_attribute, hashes_to_remove) {
     p_delete_record(records_to_remove).then(msg => {
             return msg;
     }).catch( e => {
-        console.error(`There was a problem deleting records: ${e}`)
+        harper_logger.info(`There was a problem deleting records: ${e}`);
         return common_utils.errorizeMessage(e);
     });
     await removeIDFiles(schema, table, hash_attribute, hashes_to_remove);
-};
+}
 
 async function removeIDFiles(schema, table, hash_attribute, hash_id_paths) {
     if(common_utils.isEmptyOrZeroLength(schema) || schema === SYSTEM_SCHEMA_NAME) {
@@ -200,21 +208,21 @@ async function removeIDFiles(schema, table, hash_attribute, hash_id_paths) {
                 await p_fs_unlink(path.join(curr_id_path, files_in_dir[file_num]));
             } catch(e) {
                 harper_logger.error(`There was a problem unlinking file ${files_in_dir[file_num]}.  ${e}`);
-                continue;
             }
         }
         try {
             await p_fs_rmdir(curr_id_path);
         } catch(e) {
             harper_logger.error(`There was a problem removing directory ${curr_id_path}.  ${e}`);
-            continue;
         }
     }
 }
 
 async function inspectHashAttributeDir(date_unix_ms, dir_path, hash_attribute, hash_attributes_to_remove) {
     let found_dirs = [];
-    await getDirectoriesInPath(dir_path, found_dirs, date_unix_ms);
+    await getDirectoriesInPath(dir_path, found_dirs, date_unix_ms).catch(e => {
+        harper_logger.info(`There was a problem inspecting the hash attribute ${hash_attribute} in dir ${dir_path}`);
+    });
     for(let curr_dir in found_dirs) {
         let files_in_dir = await p_fs_readdir(found_dirs[curr_dir]);
         if(common_utils.isEmptyOrZeroLength(files_in_dir)) {
@@ -228,7 +236,7 @@ async function inspectHashAttributeDir(date_unix_ms, dir_path, hash_attribute, h
                 // if we find any files that have a time greater than the date_unix_mx, then we know there has been
                 // an update more recent than the time, so we should not remove this record.
                 let curr_file_time = convertUnixStringToMoment(files_in_dir[i]);
-                if(!isParameterDateGreaterThanFileDate(latest_file_time, curr_file_time)) {
+                if(!isParameterDateGreaterThanFileDate(date_unix_ms, curr_file_time)) {
                     latest_file = undefined;
                     break;
                 } else {
@@ -244,8 +252,7 @@ async function inspectHashAttributeDir(date_unix_ms, dir_path, hash_attribute, h
 
 function convertUnixStringToMoment(date_val) {
     try {
-        let parsed_time = moment(common_utils.stripFileExtension(date_val), MOMENT_UNIX_TIMESTAMP_FLAG);
-        return parsed_time;
+        return moment(common_utils.stripFileExtension(date_val), MOMENT_UNIX_TIMESTAMP_FLAG);
     } catch(e) {
         harper_logger.info("had problem parsing file time" + e);
         return null;
@@ -254,10 +261,7 @@ function convertUnixStringToMoment(date_val) {
 
 function isParameterDateGreaterThanFileDate(parameter_date, file_name) {
     let parsed_time = convertUnixStringToMoment(file_name);
-    if(parsed_time && parsed_time.isValid() && parsed_time.isBefore(parameter_date)) {
-        return true;
-    }
-    return false;
+    return (parsed_time && parsed_time.isValid() && parsed_time.isBefore(parameter_date));
 }
 
 /**
@@ -265,7 +269,6 @@ function isParameterDateGreaterThanFileDate(parameter_date, file_name) {
  * @param dirPath - path to find directories for.
  * @param found_files - An object key,value map of file names and stats <file_name_key, fs_stats>.  This should be a "pure"
  * key/value object created via Object.create(null). We don't want object prototype keys so we can avoid any name collisions.
- * @returns {Array}
  */
 async function getDirectoriesInPath(dirPath, found_files, date_unix_ms) {
     let list = undefined;
@@ -276,7 +279,6 @@ async function getDirectoriesInPath(dirPath, found_files, date_unix_ms) {
         return;
     }
     if(!list) { return; }
-    let pending = list.length;
 
     for(let found in list) {
         if(list[found] === HDB_HASH_FOLDER_NAME) {
@@ -290,10 +292,8 @@ async function getDirectoriesInPath(dirPath, found_files, date_unix_ms) {
             harper_logger.info(`Had trouble getting stats for file ${file}.`);
             return;
         }
-        let temp = date_unix_ms.valueOf();
         if (stats && stats.isDirectory() && stats.mtimeMs < date_unix_ms.valueOf()) {
             try {
-                //found_files[file] = stats;
                 found_files.push(file);
                 await getDirectoriesInPath(file, found_files, date_unix_ms);
             } catch(e) {
@@ -302,8 +302,7 @@ async function getDirectoriesInPath(dirPath, found_files, date_unix_ms) {
             }
         }
     }
-    return;
-};
+}
 
 /**
  * Delete a record and unlink all attributes associated with that record.
@@ -342,7 +341,7 @@ function deleteRecord(delete_object, callback){
     } catch(e){
         callback(e);
     }
-};
+}
 
 function conditionalDelete(delete_object, callback){
     try {
@@ -377,7 +376,7 @@ function conditionalDelete(delete_object, callback){
     } catch(e) {
         callback(e);
     }
-};
+}
 
 function deleteRecords(schema, table, records, callback){
     if(common_utils.isEmptyOrZeroLength(records)){
@@ -425,4 +424,4 @@ function deleteRecords(schema, table, records, callback){
 
         return callback();
     });
-};
+}

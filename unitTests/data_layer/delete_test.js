@@ -14,7 +14,6 @@ const moment = require('moment');
 const global_schema = require('../../utility/globalSchema');
 const search = require('../../data_layer/search');
 const util = require('util');
-const { promisify } = require('util');
 
 const ISO_8601_FORMAT = 'YYYY-MM-DD';
 const NOW_FORMAT = 'YYYY-MM-DDTHH:mm:ss.SSSZ';
@@ -84,6 +83,8 @@ const TEST_TABLE_BIRD_PATH = path.join(TEST_SCHEMA_PATH, TEST_TABLE_BIRD);
 const TOMORROW_TIME = moment().add(1, 'days');
 const YESTERDAY_TIME = moment().subtract(1, 'days');
 const NOW = moment();
+
+const TIMEOUT_VALUE_MS = 1000;
 
 const SEARCH_RESULT_OBJECT = {};
 SEARCH_RESULT_OBJECT[TEST_ATTRIBUTE_NAME] = ATTRIBUTE_1_INSTANCE_NAME;
@@ -337,8 +338,8 @@ const DELETE_OBJECT = {
     "hdb_auth_header": "Basic ZWxpOnBhc3M="
 };
 
-//Promisified functions
-const p_set_timeout = promisify(setTimeout);
+// Promisified functions
+const p_set_timeout = util.promisify(setTimeout);
 
 /**
  * This function will simulate the HDB data structure with the data passed in.  It will pull the hash attribute from the
@@ -356,7 +357,8 @@ function fakeInsert(data) {
         let hash_att = global.hdb_schema[TEST_SCHEMA][table].hash_attribute;
         let keys = Object.keys(data).filter(word => (word !== 'table' && word !== 'file_paths'));
 
-        keys.forEach(function loopKeys(curr_attribute) {
+        for(let i = 0; i<keys; i++) {
+            let curr_attribute = keys[i];
             let hash_dir_path = path.join(table_path, HDB_HASH_FOLDER_NAME, curr_attribute);
             makeTheDir(hash_dir_path);
             let attribute_dir_path = path.join(table_path, curr_attribute);
@@ -378,7 +380,7 @@ function fakeInsert(data) {
                 fs.writeFileSync(time_file_name, util.inspect(data), 'utf-8');
                 data.file_paths.push(time_file_name);
             }
-        });
+        }
     } catch(e) {
         console.error(e);
     }
@@ -391,11 +393,11 @@ function makeTheDir(path) {
 };
 
 function setup() {
-    fs.mkdirSync(TEST_SCHEMA_PATH);
+    makeTheDir(TEST_SCHEMA_PATH);
     let test_data_clone = test_utils.deepClone(TEST_DATA);
-    test_data_clone.forEach(function loopTestData(data) {
-       fakeInsert(data);
-    });
+    for(let i =0; i<test_data_clone.length; i++) {
+        fakeInsert(test_data_clone[i]);
+    }
     //Setup empty table 3
     fs.mkdirSync(TEST_TABLE_BIRD_PATH);
     // Writes a text file to ensure listDirectories only shows directories
@@ -409,14 +411,15 @@ function tearDown(target_path) {
     if( fs.existsSync(target_path) ) {
         try {
             files = fs.readdirSync(target_path);
-            files.forEach(function (file, index) {
+            for(let i = 0; i<files.length; i++) {
+                let file = files[i];
                 let curPath = path.join(target_path, file);
                 if (fs.lstatSync(curPath).isDirectory()) { // recurse
                     tearDown(curPath);
                 } else { // delete file
                     fs.unlinkSync(curPath);
                 }
-            });
+            }
             fs.rmdirSync(target_path);
         } catch (e) {
             console.error(e);
@@ -424,16 +427,12 @@ function tearDown(target_path) {
     }
 };
 
-function setupSearchStub(data) {
-
-}
 
 describe('Test deleteFilesBefore', function () {
     // deleteFilesBefore returns immediately, so for each test we need to use setTimeout to give it time to complete.
     // deleteFilesBefore is a callback style method in order to remain consistent with other functions
     // called from chooseOperation so we want to test it as it will be used.  That means no promisifying
     // involved even though that would be easier.
-
     let delete_search_result = [];
     let test_data_instance = undefined;
         beforeEach(function () {
@@ -467,7 +466,7 @@ describe('Test deleteFilesBefore', function () {
             let files_to_check = [...test_data_instance[0].file_paths];
             setTimeout( () => {
                 for(let i = 0; i < files_to_check.length; i++) {
-                    assert.equal(fs.existsSync(files_to_check[i]), true, `FAILURE: file ${files_to_check[i]} still exists.`);
+                    assert.equal(fs.existsSync(files_to_check[i]), true, `FAILURE: file ${files_to_check[i]} does not exist.`);
                 }
                 done();
             }, 1000);
@@ -570,7 +569,7 @@ describe('Test deleteFilesBefore', function () {
             let files_to_check = [...test_data_instance[0].file_paths, ...test_data_instance[1].file_paths];
             setTimeout( () => {
                 for(let i = 0; i < files_to_check.length; i++) {
-                    assert.equal(fs.existsSync(files_to_check[i]), true, `FAILURE: file ${files_to_check[i]} still exists.`);
+                    assert.equal(fs.existsSync(files_to_check[i]), true, `FAILURE: file ${files_to_check[i]} does not exist.`);
                 }
                 done();
             }, 1000);
@@ -591,7 +590,7 @@ describe('Test deleteFilesBefore', function () {
             let files_to_check = [...test_data_instance[0].file_paths, ...test_data_instance[1].file_paths];
             setTimeout( () => {
                 for(let i = 0; i < files_to_check.length; i++) {
-                    assert.equal(fs.existsSync(files_to_check[i]), true, `FAILURE: file ${files_to_check[i]} still exists.`);
+                    assert.equal(fs.existsSync(files_to_check[i]), true, `FAILURE: file ${files_to_check[i]} does not exist.`);
                 }
                 done();
             }, 1000);
@@ -626,12 +625,160 @@ describe('Test deleteFilesBefore', function () {
             let files_to_check = [...test_data_instance[0].file_paths, ...test_data_instance[1].file_paths];
             setTimeout( () => {
                 for(let i = 0; i < files_to_check.length; i++) {
-                    assert.equal(fs.existsSync(files_to_check[i]), true, `FAILURE: file ${files_to_check[i]} still exists.`);
+                    assert.equal(fs.existsSync(files_to_check[i]), true, `FAILURE: file ${files_to_check[i]} does not exist.`);
                 }
                 done();
             }, 1000);
         });
     });
+});
+
+describe('Test deleteFilesInPath', function () {
+    let test_data_instance = undefined;
+    let deleteFilesInPath = delete_rewire.__get__('deleteFilesInPath');
+    delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
+
+    beforeEach( function() {
+        try {
+            test_data_instance = undefined;
+            test_data_instance = setup();
+        } catch(e) {
+            console.error(e);
+        }
+    });
+    afterEach( function() {
+        try {
+            tearDown(TEST_SCHEMA_PATH);
+        } catch(e) {
+            console.error(e);
+        }
+    });
+    it('Nominal path of deleteFilesInPath, test against DOG table', test_utils.mochaAsyncWrapper(async () => {
+        let delete_search_result = [];
+        delete_search_result.push(TEST_DATA[0]);
+        delete_search_result.push(TEST_DATA[1]);
+        let files_to_check = [...test_data_instance[0].file_paths, ...test_data_instance[1].file_paths];
+        search_stub.restore();
+        search_stub = sinon.stub(search, "searchByHash").yields(null, delete_search_result);
+        await deleteFilesInPath(TEST_SCHEMA, TEST_TABLE_DOG, TEST_TABLE_DOG_PATH, TOMORROW_TIME)
+            .catch(e => {
+                console.error(e);
+                done(e);
+            });
+        await p_set_timeout(TIMEOUT_VALUE_MS)
+            .catch(e => {
+                console.error(e);
+                done(e);
+            });
+        for(let i = 0; i < files_to_check.length; i++) {
+            assert.equal(fs.existsSync(files_to_check[i]), false, `FAILURE: file ${files_to_check[i]} still exists.`);
+        }
+    }));
+    it('Test invalid directory parameter.  Expect no files to be deleted.', test_utils.mochaAsyncWrapper(async () => {
+        let delete_search_result = [];
+        delete_search_result.push(TEST_DATA[0]);
+        delete_search_result.push(TEST_DATA[1]);
+        let files_to_check = [...test_data_instance[0].file_paths, ...test_data_instance[1].file_paths];
+        search_stub.restore();
+        search_stub = sinon.stub(search, "searchByHash").yields(null, delete_search_result);
+        await deleteFilesInPath(TEST_SCHEMA, TEST_TABLE_DOG, null, TOMORROW_TIME)
+            .catch(e => {
+                console.error(e);
+                done(e);
+            });
+        await p_set_timeout(TIMEOUT_VALUE_MS)
+            .catch(e => {
+                console.error(e);
+                done(e);
+            });
+        for(let i = 0; i < files_to_check.length; i++) {
+            assert.equal(fs.existsSync(files_to_check[i]), true, `FAILURE: file ${files_to_check[i]} does not exist.`);
+        }
+    }));
+    it('Test invalid date parameter.  Expect no files to be deleted.', test_utils.mochaAsyncWrapper(async () => {
+        let delete_search_result = [];
+        delete_search_result.push(TEST_DATA[0]);
+        delete_search_result.push(TEST_DATA[1]);
+        let files_to_check = [...test_data_instance[0].file_paths, ...test_data_instance[1].file_paths];
+        search_stub.restore();
+        search_stub = sinon.stub(search, "searchByHash").yields(null, delete_search_result);
+        await deleteFilesInPath(TEST_SCHEMA, TEST_TABLE_DOG, TEST_TABLE_DOG_PATH, "2011-01-01")
+            .catch(e => {
+                console.error(e);
+                done(e);
+            });
+        await p_set_timeout(TIMEOUT_VALUE_MS)
+            .catch(e => {
+                console.error(e);
+                done(e);
+            });
+        for(let i = 0; i < files_to_check.length; i++) {
+            assert.equal(fs.existsSync(files_to_check[i]), true, `FAILURE: file ${files_to_check[i]} does not exist.`);
+        }
+    }));
+    it('Test invalid schema parameter.  Expect no files to be deleted.', test_utils.mochaAsyncWrapper(async () => {
+        let delete_search_result = [];
+        delete_search_result.push(TEST_DATA[0]);
+        delete_search_result.push(TEST_DATA[1]);
+        let files_to_check = [...test_data_instance[0].file_paths, ...test_data_instance[1].file_paths];
+        search_stub.restore();
+        search_stub = sinon.stub(search, "searchByHash").yields(null, delete_search_result);
+        await deleteFilesInPath(null, TEST_TABLE_DOG, TEST_TABLE_DOG_PATH, TOMORROW_TIME)
+            .catch(e => {
+                console.error(e);
+                done(e);
+            });
+        await p_set_timeout(TIMEOUT_VALUE_MS)
+            .catch(e => {
+                console.error(e);
+                done(e);
+            });
+        for(let i = 0; i < files_to_check.length; i++) {
+            assert.equal(fs.existsSync(files_to_check[i]), true, `FAILURE: file ${files_to_check[i]} does not exist.`);
+        }
+    }));
+    it('Test invalid table parameter.  Expect no files to be deleted.', test_utils.mochaAsyncWrapper(async () => {
+        let delete_search_result = [];
+        delete_search_result.push(TEST_DATA[0]);
+        delete_search_result.push(TEST_DATA[1]);
+        let files_to_check = [...test_data_instance[0].file_paths, ...test_data_instance[1].file_paths];
+        search_stub.restore();
+        search_stub = sinon.stub(search, "searchByHash").yields(null, delete_search_result);
+        await deleteFilesInPath(TEST_SCHEMA, null, TEST_TABLE_DOG_PATH, TOMORROW_TIME)
+            .catch(e => {
+                console.error(e);
+                done(e);
+            });
+        await p_set_timeout(TIMEOUT_VALUE_MS)
+            .catch(e => {
+                console.error(e);
+                done(e);
+            });
+        for(let i = 0; i < files_to_check.length; i++) {
+            assert.equal(fs.existsSync(files_to_check[i]), true, `FAILURE: file ${files_to_check[i]} does not exist.`);
+        }
+    }));
+    it('Test with table not found in the schema.  Expect no files to be deleted.', test_utils.mochaAsyncWrapper(async () => {
+        let delete_search_result = [];
+        delete_search_result.push(TEST_DATA[0]);
+        delete_search_result.push(TEST_DATA[1]);
+        let files_to_check = [...test_data_instance[0].file_paths, ...test_data_instance[1].file_paths];
+        search_stub.restore();
+        search_stub = sinon.stub(search, "searchByHash").yields(null, delete_search_result);
+        await deleteFilesInPath(TEST_SCHEMA, "Fish", TEST_TABLE_DOG_PATH, TOMORROW_TIME)
+            .catch(e => {
+                console.error(e);
+                done(e);
+            });
+        await p_set_timeout(TIMEOUT_VALUE_MS)
+            .catch(e => {
+                console.error(e);
+                done(e);
+            });
+        for(let i = 0; i < files_to_check.length; i++) {
+            assert.equal(fs.existsSync(files_to_check[i]), true, `FAILURE: file ${files_to_check[i]} does not exist.`);
+        }
+    }));
 });
 
 describe('Test doesDirectoryExist', function () {
