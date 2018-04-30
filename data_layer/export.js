@@ -5,24 +5,115 @@ const sql = require('../sqlTranslator/index').evaluateSQL;
 const AWS = require('aws-sdk');
 const Json2csvParser = require('json2csv').Parser;
 const hdb_utils = require('../utility/common_utils');
+const fs = require('graceful-fs');
+const async = require('async');
+const path =  require('path');
 
 const VALID_SEARCH_OPERATIONS = ['search_by_value', 'search_by_hash', 'sql'];
 const VALID_EXPORT_FORMATS = ['json', 'csv'];
 
 module.exports = {
     export_to_s3: export_to_s3,
-    export_to_local: export_to_local
+    export_local: export_local
 };
 
 /**
- * this is a stub for an upcoming feature
+ * Allows for exporting and saving to a file system the receiving system has access to
  * @param export_object
  * @param callback
  */
-function export_to_local(export_object, callback) {
-    callback('Coming soon...');
+function export_local(export_object, callback) {
+    let error_message = exportCoreValidation(export_object);
+    if(!hdb_utils.isEmpty(error_message)){
+        return callback(error_message);
+    }
+
+    if(hdb_utils.isEmpty(export_object.path)){
+        return callback("path is missing");
+    }
+
+    //we will allow for a missing filename and autogen one based on the epoch
+    let filename = (hdb_utils.isEmpty(export_object.filename) ? (new Date).getTime() : export_object.filename)
+        + '.' + export_object.format;
+
+    if(export_object.path.endsWith(path.sep)){
+        export_object.path = export_object.path.substring(0, export_object.path.length - 1);
+    }
+
+    let file_path = hdb_utils.buildFolderPath(export_object.path, filename);
+
+    async.waterfall([
+        confirmPath.bind(null, export_object.path),
+        searchAndConvert.bind(null, export_object),
+        saveToLocal.bind(null, file_path, export_object.format)
+    ], (err)=>{
+        if(err){
+            return callback(err);
+        }
+
+        callback(null, `successfully exported to ${file_path}`);
+    });
 }
 
+/**
+ * stats the path sent in to verify the path exists, the user has access & the path is a directory
+ * @param path
+ * @param callback
+ */
+function confirmPath(path, callback){
+    try {
+        fs.stat(path, function statHandler(err, stat) {
+            if (err) {
+                let error_message;
+                if (err.code === 'ENOENT') {
+                    error_message = `path '${path}' does not exist`;
+                } else if (err.code === 'EACCES') {
+                    error_message = `access to path '${path}' is denied`;
+                } else {
+                    error_message = err.message;
+                }
+
+                return callback(error_message);
+            }
+
+            if (!stat.isDirectory()) {
+                return callback(`path '${path}' is not a directory, please supply a valid folder path`);
+            }
+
+            return callback();
+        });
+    }catch(e){
+        console.error(e);
+    }
+}
+
+/**
+ * takes the data and saves it tgo the file system
+ * @param file_path
+ * @param format
+ * @param data
+ * @param callback
+ */
+function saveToLocal(file_path, format, data, callback) {
+    if(format === 'json'){
+        data = JSON.stringify(data);
+    }
+
+    fs.writeFile(file_path, data, function fileWriteHandler(err, data){
+        if(err){
+            return callback(err);
+        }
+
+        return callback();
+    });
+}
+
+/**
+ *allows for exportinhg a result to s3
+ * @param export_object
+ * @param callback
+ * @returns {*}
+ */
 function export_to_s3(export_object, callback) {
     let error_message = exportCoreValidation(export_object);
 
@@ -79,46 +170,13 @@ function export_to_s3(export_object, callback) {
         });
 
     });
-
-    operation(export_object.search_operation, function (err, results) {
-        if (err) {
-            return callback(err);
-        }
-        AWS.config.update({
-            accessKeyId: export_object.s3.aws_access_key_id,
-            secretAccessKey: export_object.s3.aws_secret_access_key
-        });
-
-        let fields = [];
-        let s3_object;
-        if (export_object.format === 'csv') {
-            for (let key in results[0]) {
-                fields.push(key);
-            }
-
-
-            let  parser = new Json2csvParser({fields});
-            let csv = parser.parse(results);
-            sendToS3(csv, export_object.s3.key + ".csv");
-        }
-
-        if(export_object.format === 'json'){
-            s3_object = results;
-            sendToS3(JSON.stringify(s3_object), export_object.s3.key + ".json");
-        }
-
-
-
-
-
-
-    });
-
-
 }
 
-
-
+/**
+ * handles the core validation of the export_object variable
+ * @param export_object
+ * @returns {string}
+ */
 function exportCoreValidation(export_object){
     if (hdb_utils.isEmpty(export_object.format)) {
         return "format missing";
@@ -138,6 +196,11 @@ function exportCoreValidation(export_object){
     }
 }
 
+/**
+ * determines which search operation to perform, executes it then converts the data to the correct format
+ * @param export_object
+ * @param callback
+ */
 function searchAndConvert(export_object, callback){
     let operation;
     switch (export_object.search_operation.operation) {

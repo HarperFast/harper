@@ -222,8 +222,8 @@ function chooseOperation(json, callback) {
         case 'export_to_s3':
             operation_function = export_.export_to_s3;
             break;
-        case 'export_to_local':
-            operation_function = export_.export_to_local;
+        case 'export_local':
+            operation_function = export_.export_local;
             break;
         default:
             break;

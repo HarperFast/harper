@@ -79,7 +79,7 @@ required_permissions.set(user.userInfo.name, new permission(true, []));
 required_permissions.set(read_log.read_log.name, new permission(true, []));
 required_permissions.set(cluster_utilities.addNode.name, new permission(true, []));
 required_permissions.set(data_export.export_to_s3, new permission(false, [READ_PERM]));
-required_permissions.set(data_export.export_to_local, new permission(false, [READ_PERM]));
+required_permissions.set(data_export.export_local, new permission(false, [READ_PERM]));
 
 // SQL operations are distinct from operations above, so we need to store required perms for both.
 required_permissions.set(SQL_CREATE, new permission(false, [INSERT_PERM]));
