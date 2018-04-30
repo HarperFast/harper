@@ -1,18 +1,19 @@
-const insert = require('../data_layer/insert'),
-    search = require('../data_layer/search').search,
-    update = require('../data_layer/update').update,
-    delete_translator = require('./deleteTranslator').convertDelete,
-    alasql = require('alasql'),
-    op_auth = require('../utility/operation_authorization'),
-    winston = require('../utility/logging/winston_logger'),
-    alasql_function_importer = require('./alasqlFunctionImporter');
-
-//here we call to define and import custom functions to alasql
-alasql_function_importer(alasql);
+"use strict";
 
 module.exports = {
     evaluateSQL: evaluateSQL
 };
+
+const insert = require('../data_layer/insert');
+const search = require('../data_layer/search').search;
+const update = require('../data_layer/update').update;
+const delete_translator = require('./deleteTranslator').convertDelete;
+const alasql = require('alasql');
+const op_auth = require('../utility/operation_authorization');
+const winston = require('../utility/logging/winston_logger');
+const alasql_function_importer = require('./alasqlFunctionImporter');
+//here we call to define and import custom functions to alasql
+alasql_function_importer(alasql);
 
 let UNAUTHORIZED_RESPONSE = 403;
 

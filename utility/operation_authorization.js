@@ -10,18 +10,19 @@
  * The required_permissions member contains the permissions needed for each operation.  Any new operations added to
  * Harper need to have operations specified in here or they will never pass the permissions checks.
  * */
-const write = require('../data_layer/insert'),
-    search = require('../data_layer/search'),
-    csv = require('../data_layer/csvBulkLoad'),
-    schema = require('../data_layer/schema'),
-    delete_ = require('../data_layer/delete'),
-    user = require('../security/user'),
-    role = require('../security/role'),
-    read_log = require('../utility/logging/read_logs'),
-    harper_logger = require('../utility/logging/harper_logger'),
-    common_utils = require('./common_utils.js'),
-    bucket = require('../sqlTranslator/sql_statement_bucket'),
-    cluster_utilities = require('../server/clustering/cluster_utilities');
+const write = require('../data_layer/insert');
+const search = require('../data_layer/search');
+const csv = require('../data_layer/csvBulkLoad');
+const schema = require('../data_layer/schema');
+const delete_ = require('../data_layer/delete');
+const user = require('../security/user');
+const role = require('../security/role');
+const read_log = require('../utility/logging/read_logs');
+const harper_logger = require('../utility/logging/harper_logger');
+const common_utils = require('./common_utils.js');
+const bucket = require('../sqlTranslator/sql_statement_bucket');
+const cluster_utilities = require('../server/clustering/cluster_utilities');
+const data_export = require('../data_layer/export');
 
 const required_permissions = new Map();
 const DELETE_PERM = 'delete';
@@ -77,6 +78,9 @@ required_permissions.set(role.dropRole.name, new permission(true, []));
 required_permissions.set(user.userInfo.name, new permission(true, []));
 required_permissions.set(read_log.read_log.name, new permission(true, []));
 required_permissions.set(cluster_utilities.addNode.name, new permission(true, []));
+required_permissions.set(data_export.export_to_s3, new permission(false, [READ_PERM]));
+required_permissions.set(data_export.export_to_local, new permission(false, [READ_PERM]));
+
 // SQL operations are distinct from operations above, so we need to store required perms for both.
 required_permissions.set(SQL_CREATE, new permission(false, [INSERT_PERM]));
 required_permissions.set(SQL_DROP, new permission(false, [DELETE_PERM]));
