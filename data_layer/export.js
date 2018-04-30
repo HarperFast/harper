@@ -16,7 +16,7 @@ module.exports = {
  * @param callback
  */
 function export_to_local(export_object, callback) {
-    callback('Coming soon...');
+    return callback('Coming soon...');
 }
 
 function export_to_s3(export_object, callback) {
