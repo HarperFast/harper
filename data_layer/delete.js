@@ -159,7 +159,7 @@ async function doesDirectoryExist(dir_path) {
  * @param schema - The schema to remove files in .
  * @param table - The table to remove files in.
  * @param hash_attribute - The hash attribute of the table.
- * @param hashes_to_remove - Array that contains the IDs of the records that should be remove in the schema/table.
+ * @param hashes_to_remove - Array that contains the path to the IDs of the records that should be remove in the schema/table.
  */
 async function removeFiles(schema, table, hash_attribute, hashes_to_remove) {
     let records_to_remove = {"operation": "delete",
@@ -168,13 +168,13 @@ async function removeFiles(schema, table, hash_attribute, hashes_to_remove) {
         "hash_values": hashes_to_remove
     };
 
-    p_delete_record(records_to_remove).then(msg => {
-            return msg;
-    }).catch( e => {
+    try {
+        await p_delete_record(records_to_remove);
+        await removeIDFiles(schema, table, hashes_to_remove);
+    } catch (e) {
         harper_logger.info(`There was a problem deleting records: ${e}`);
         return common_utils.errorizeMessage(e);
-    });
-    await removeIDFiles(schema, table, hashes_to_remove);
+    }
 }
 
 /**
@@ -394,10 +394,10 @@ function deleteRecord(delete_object, callback){
                 return callback(err);
             }
 
-            callback(null, SUCCESS_MESSAGE);
+            return callback(null, SUCCESS_MESSAGE);
         });
     } catch(e){
-        callback(e);
+        return callback(e);
     }
 }
 

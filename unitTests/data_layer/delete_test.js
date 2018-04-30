@@ -434,6 +434,7 @@ function tearDown(target_path) {
             console.error(e);
         }
     }
+    search_stub.restore();
 };
 
 
@@ -658,6 +659,7 @@ describe('Test deleteFilesInPath', function () {
     afterEach( function() {
         try {
             tearDown(TEST_SCHEMA_PATH);
+            search_stub.restore();
         } catch(e) {
             console.error(e);
         }
@@ -803,6 +805,7 @@ describe('Test doesDirectoryExist', function () {
     after( function() {
         try {
             tearDown(TEST_SCHEMA_PATH);
+            search_stub.restore();
         } catch(e) {
             console.error(e);
         }
@@ -840,6 +843,7 @@ describe('Test inspectHashAttributeDir', function() {
     afterEach( function(done) {
         try {
             tearDown(TEST_SCHEMA_PATH);
+            search_stub.restore();
             done();
         } catch(e) {
             console.log(e);
@@ -938,10 +942,11 @@ describe('Test isFileTimeBeforeParameterTime', function() {
 
 describe('Test removeFiles', function() {
     let removeFiles = delete_rewire.__get__('removeFiles');
-    let files_to_remove = [TEST_FILE_NAME_1, TEST_FILE_NAME_3];
+    let files_to_remove = [];
+    let test_data_instance = null;
     beforeEach( function(done) {
         try {
-            setup();
+            test_data_instance = setup();
             done();
         } catch(e) {
             console.log(e);
@@ -950,69 +955,62 @@ describe('Test removeFiles', function() {
     afterEach( function(done) {
         try {
             tearDown(TEST_SCHEMA_PATH);
+            files_to_remove = [];
+            search_stub.restore();
             done();
         } catch(e) {
             console.log(e);
         }
     });
-    it('Nominal path of removeFiles', test_utils.mochaAsyncWrapper(async () => {
-        let removed_count = await removeFiles(TEST_SCHEMA, TEST_TABLE_DOG, HASH_ATTRIBUTE_NAME, FOUND_FILES_IN_TABLE_1);
-        assert.equal(removed_count, 6);
-        for( let file in FOUND_FILES_IN_TABLE_1) {
+    it('Nominal path of removeFiles on dog table', test_utils.mochaAsyncWrapper(async () => {
+        let delete_search_result = [];
+        delete_search_result.push(TEST_DATA[0], TEST_DATA[1]);
+        search_stub.restore();
+        search_stub = sinon.stub(search, "searchByHash").yields(null, delete_search_result);
+        let entry_1_id_path = path.join(TEST_TABLE_DOG_PATH, HASH_ATTRIBUTE_NAME, test_data_instance[0].id);
+        let entry_2_id_path = path.join(TEST_TABLE_DOG_PATH, HASH_ATTRIBUTE_NAME, test_data_instance[1].id);
+        let id_files_to_remove = [];
+        id_files_to_remove.push(entry_1_id_path);
+        id_files_to_remove.push(entry_2_id_path);
+        files_to_remove = [...test_data_instance[0].file_paths, ...test_data_instance[1].file_paths];
+        await removeFiles(TEST_SCHEMA, TEST_TABLE_DOG, HASH_ATTRIBUTE_NAME, id_files_to_remove);
+        for( let file of files_to_remove) {
             assert.equal(fs.existsSync(file), false, `File ${file} still exists.`);
         }
     }));
-    it('removeFiles with files parameter having 1 bad filename', test_utils.mochaAsyncWrapper(async () => {
-        let files_copy = test_utils.deepClone(FOUND_FILES_IN_TABLE_1);
-        let temp = "/Users/elipalmer/harperdb/bin/test/test_dir1/Age/3/3.hdb";
-        Object.defineProperty(files_copy, './badpath.hdb',
-            Object.getOwnPropertyDescriptor(files_copy, temp));
-        delete files_copy[temp];
-        let removed_count = await removeFiles(TOMORROW_TIME, files_copy);
-        assert.equal(removed_count, 5);
-        for( let file in files_copy) {
-            if(file !== temp) {
-                assert.equal(fs.existsSync(file), false, `File ${file} still exists.`);
-            }
-        }
-    }));
     it('removeFiles with empty files parameter', test_utils.mochaAsyncWrapper(async () => {
-        let local_files = [];
-        let removed_count = await removeFiles(TOMORROW_TIME, local_files);
-        assert.equal(removed_count, 0);
+        let files_to_remove = [...test_data_instance[0].file_paths, ...test_data_instance[1].file_paths];
+        let delete_search_result = [];
+        delete_search_result.push(TEST_DATA[0], TEST_DATA[1]);
+        search_stub.restore();
+        search_stub = sinon.stub(search, "searchByHash").yields(null, delete_search_result);
+        await removeFiles(TEST_SCHEMA, TEST_TABLE_DOG, HASH_ATTRIBUTE_NAME, []);
+        for( let file of files_to_remove) {
+            assert.equal(fs.existsSync(file), true, `File ${file} still exists.`);
+        }
     }));
     it('removeFiles with all invalid files parameter', test_utils.mochaAsyncWrapper(async () => {
-        let files_copy = test_utils.deepClone(FOUND_FILES_IN_TABLE_1);
-        let counter = 0;
-        for( let file in files_copy) {
-            Object.defineProperty(files_copy, './badpath' + counter + '.hdb',
-                Object.getOwnPropertyDescriptor(files_copy, file));
-            delete files_copy[file];
-            counter++;
+        let files_to_remove = [...test_data_instance[0].file_paths, ...test_data_instance[1].file_paths];
+        let delete_search_result = [];
+        delete_search_result.push(TEST_DATA[0], TEST_DATA[1]);
+        search_stub.restore();
+        search_stub = sinon.stub(search, "searchByHash").yields(null, []);
+        let bad_files = [BAD_DIR_PATH]
+        await removeFiles(TEST_SCHEMA, TEST_TABLE_DOG, HASH_ATTRIBUTE_NAME, bad_files);
+        for( let file of files_to_remove) {
+            assert.equal(fs.existsSync(file), true, `File ${file} still exists.`);
         }
-        let removed_count = await removeFiles(TOMORROW_TIME, files_copy);
-        assert.equal(removed_count, 0);
-        assert.equal(fs.existsSync(TABLE_DOG_ATTRIBUTE_HASH_FILE_PATH), true);
-        assert.equal(fs.existsSync(TABLE_DOG_ATTRIBUTE_NAME_HASH_FILE_PATH), true);
     }));
     it('removeFiles with null files parameter', test_utils.mochaAsyncWrapper(async () => {
-        let removed_count = await removeFiles(TOMORROW_TIME, null);
-        assert.equal(removed_count, 0);
-        assert.equal(fs.existsSync(TABLE_DOG_ATTRIBUTE_HASH_FILE_PATH), true);
-        assert.equal(fs.existsSync(TABLE_DOG_ATTRIBUTE_NAME_HASH_FILE_PATH), true);
-    }));
-    it('removeFiles with null date parameter', test_utils.mochaAsyncWrapper(async () => {
-        let removed_count = await removeFiles(null, FOUND_FILES_IN_SCHEMA);
-        assert.equal(removed_count, 0);
-        for( let file in FOUND_FILES_IN_SCHEMA) {
-            assert.equal(fs.existsSync(file), true, `File ${file} was deleted for some reason.`);
-        }
-    }));
-    it('removeFiles with yesterday as a date', test_utils.mochaAsyncWrapper(async () => {
-        let removed_count = await removeFiles(YESTERDAY_TIME, FOUND_FILES_IN_SCHEMA);
-        assert.equal(removed_count, 0);
-        for( let file in FOUND_FILES_IN_SCHEMA) {
-            assert.equal(fs.existsSync(file), true, `File ${file} was deleted for some reason.`);
+        let files_to_remove = [...test_data_instance[0].file_paths, ...test_data_instance[1].file_paths];
+        let delete_search_result = [];
+        delete_search_result.push(TEST_DATA[0], TEST_DATA[1]);
+        search_stub.restore();
+        search_stub = sinon.stub(search, "searchByHash").yields(null, []);
+        let bad_files = [BAD_DIR_PATH]
+        await removeFiles(TEST_SCHEMA, TEST_TABLE_DOG, HASH_ATTRIBUTE_NAME, null);
+        for( let file of files_to_remove) {
+            assert.equal(fs.existsSync(file), true, `File ${file} still exists.`);
         }
     }));
 });

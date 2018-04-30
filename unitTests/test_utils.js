@@ -1,5 +1,6 @@
 "use strict"
 const path = require('path');
+const sinon = require('sinon');
 
 /**
  * This needs to be called near the top of our unit tests.  Most will fail when loading harper modules due to the
