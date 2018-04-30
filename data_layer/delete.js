@@ -8,8 +8,8 @@ const async = require('async');
 const fs = require('graceful-fs');
 const global_schema = require('../utility/globalSchema');
 const truncate = require('truncate-utf8-bytes');
-const moment = require('moment');
 const path = require('path');
+const moment = require('moment');
 const harper_logger = require('../utility/logging/harper_logger');
 const { promisify } = require('util');
 
@@ -237,9 +237,13 @@ async function removeIDFiles(schema, table, hash_id_paths) {
 async function inspectHashAttributeDir(date_unix_ms, dir_path, hash_attributes_to_remove) {
 
     let found_dirs = [];
-    if(!(date_unix_ms) || !moment.isValid(date_unix_ms)) {
-        harper_logger.info(`An invalid date ${date_unix_ms} was passed `);
-        return;
+    try {
+        if (!(date_unix_ms) || !moment(date_unix_ms).isValid()) {
+            harper_logger.info(`An invalid date ${date_unix_ms} was passed `);
+            return;
+        }
+    } catch (e) {
+        harper_logger.error(e);
     }
     await getDirectoriesInPath(dir_path, found_dirs, date_unix_ms).catch(e => {
         harper_logger.info(`There was a problem inspecting the hash attribute dir ${dir_path}`);

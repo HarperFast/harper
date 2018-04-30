@@ -40,21 +40,24 @@ const TEST_DATA = [
         "id":"1",
         "age":5,
         "table":"dog",
-        "file_paths":[]
+        "file_paths":[],
+        "journal_paths":[]
     },
     {
         "name":"Bill",
         "id":"3",
         "age":4,
         "table":"dog",
-        "file_paths":[]
+        "file_paths":[],
+        "journal_paths":[]
     },
     {
         "name":"Eddie",
         "id":"2",
         "age":4,
         "table":"cat",
-        "file_paths":[]
+        "file_paths":[],
+        "journal_paths":[]
     }
 ];
 
@@ -355,17 +358,20 @@ function fakeInsert(data) {
         let table_hash_dir_path = path.join(table_path, HDB_HASH_FOLDER_NAME);
         makeTheDir(table_hash_dir_path);
         let hash_att = global.hdb_schema[TEST_SCHEMA][table].hash_attribute;
-        let keys = Object.keys(data).filter(word => (word !== 'table' && word !== 'file_paths'));
+        let keys = Object.keys(data).filter(word => (word !== 'table' && word !== 'file_paths' && word !== 'journal_paths'));
 
         for(let i = 0; i<keys.length; i++) {
             let curr_attribute = keys[i];
+            let is_hash = curr_attribute === hash_att;
             let hash_dir_path = path.join(table_path, HDB_HASH_FOLDER_NAME, curr_attribute);
             makeTheDir(hash_dir_path);
             let attribute_dir_path = path.join(table_path, curr_attribute);
             makeTheDir(attribute_dir_path);
             let attribute_instance_dir_path = path.join(attribute_dir_path, `${data[curr_attribute]}`);
             makeTheDir(attribute_instance_dir_path);
-            let is_hash = curr_attribute === hash_att;
+            if(is_hash) {
+                data.journal_paths.push(attribute_instance_dir_path);
+            }
             // make the hash file
             let hash_file_path = path.join(hash_dir_path, data[hash_att] + '.hdb');
             fs.writeFileSync(hash_file_path, data[curr_attribute]);
@@ -378,6 +384,7 @@ function fakeInsert(data) {
                 // for hash attributes, we need to write a file with the current time stamp and the delta of the data
                 let time_file_name = path.join(attribute_instance_dir_path, `${moment().valueOf()}.hdb`);
                 fs.writeFileSync(time_file_name, util.inspect(data), 'utf-8');
+                data.journal_paths.push(time_file_name);
                 data.file_paths.push(time_file_name);
             }
         }
@@ -471,7 +478,7 @@ describe('Test deleteFilesBefore', function () {
                     assert.equal(fs.existsSync(files_to_check[i]), true, `FAILURE: file ${files_to_check[i]} does not exist.`);
                 }
                 done();
-            }, 1000);
+            }, TIMEOUT_VALUE_MS);
         });
     });
     it('Nominal path of deleteFilesBefore with 1 directory', function (done) {
@@ -491,7 +498,7 @@ describe('Test deleteFilesBefore', function () {
                     assert.equal(fs.existsSync(files_to_check[i]), false, `FAILURE: file ${files_to_check[i]} still exists.`);
                 }
                 done();
-            }, 1000);
+            }, TIMEOUT_VALUE_MS);
         });
     });
     it('Nominal path of deleteFilesBefore on the dog table', function (done) {
@@ -511,7 +518,7 @@ describe('Test deleteFilesBefore', function () {
                     assert.equal(fs.existsSync(files_to_check[i]), false, `FAILURE: file ${files_to_check[i]} still exists.`);
                 }
                 done();
-            }, 1000);
+            }, TIMEOUT_VALUE_MS);
         });
     });
     it('Call deleteFilesBefore with null date', function (done) {
@@ -574,7 +581,7 @@ describe('Test deleteFilesBefore', function () {
                     assert.equal(fs.existsSync(files_to_check[i]), true, `FAILURE: file ${files_to_check[i]} does not exist.`);
                 }
                 done();
-            }, 1000);
+            }, TIMEOUT_VALUE_MS);
         });
     });
     // Test date with Times included
@@ -595,7 +602,7 @@ describe('Test deleteFilesBefore', function () {
                     assert.equal(fs.existsSync(files_to_check[i]), true, `FAILURE: file ${files_to_check[i]} does not exist.`);
                 }
                 done();
-            }, 1000);
+            }, TIMEOUT_VALUE_MS);
         });
     });
     // Test leap year silliness
@@ -630,7 +637,7 @@ describe('Test deleteFilesBefore', function () {
                     assert.equal(fs.existsSync(files_to_check[i]), true, `FAILURE: file ${files_to_check[i]} does not exist.`);
                 }
                 done();
-            }, 1000);
+            }, TIMEOUT_VALUE_MS);
         });
     });
 });
@@ -922,7 +929,6 @@ describe('Test isFileTimeBeforeParameterTime', function() {
         let result = isFileTimeBeforeParameterTime(tomorrow, null);
         assert.equal(result, false);
     });
-    // TODO: HERE, need to think about how to handle this.
     it('test isFileTimeBeforeParameterTime with file passed as empty string' , function() {
         let tomorrow = moment().add(1, "days").valueOf();
         let result = isFileTimeBeforeParameterTime(tomorrow, "");
@@ -1030,26 +1036,31 @@ describe('Test removeIDFiles', function() {
         }
     });
     it('Nominal path of removeIDFiles against dog table.', test_utils.mochaAsyncWrapper(async () => {
-        let hash_files = [];
-        // Find all the hash related files and directories
-        for(let file of test_values[0].file_paths) {
-            if(file.includes(HASH_ATTRIBUTE_NAME)) {
-                if(!file.includes(HDB_HASH_FOLDER_NAME) && !file.includes('.hdb')) {
-                    hash_files.push(file);
-                }
-            }
-        }
-        await removeIDFiles(TEST_SCHEMA, TEST_TABLE_DOG, hash_files);
+        let journal_files = [...test_values[0].journal_paths, ...test_values[1].journal_paths];
+        //console.log(test_values);
+        await removeIDFiles(TEST_SCHEMA, TEST_TABLE_DOG, journal_files);
         //let files_to_check = [...test_values[0].file_paths, ...test_values[1]];
-        await p_set_timeout(10000)
+        await p_set_timeout(TIMEOUT_VALUE_MS)
             .catch(e => {
                 console.error(e);
                 done(e);
             });
-        for(let i = 0; i < hash_files.length; i++) {
-            assert.equal(fs.existsSync(files_to_check[i]), true, `FAILURE: file ${hash_files[i]} does not exist.`);
+        for(let i = 0; i < journal_files.length; i++) {
+            assert.equal(fs.existsSync(journal_files[i]), false, `FAILURE: file ${journal_files[i]} still exists.`);
         }
 
+    }));
+    it('Try to pass system schema.', test_utils.mochaAsyncWrapper(async () => {
+        let journal_files = [...test_values[0].journal_paths, ...test_values[1].journal_paths];
+        await removeIDFiles('system', TEST_TABLE_DOG, journal_files);
+        await p_set_timeout(TIMEOUT_VALUE_MS)
+            .catch(e => {
+                console.error(e);
+                done(e);
+            });
+        for(let i = 0; i < journal_files.length; i++) {
+            assert.equal(fs.existsSync(journal_files[i]), true, `FAILURE: file ${journal_files[i]} does not exist.`);
+        }
     }));
 });
 
