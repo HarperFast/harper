@@ -11,6 +11,8 @@ const path =  require('path');
 
 const VALID_SEARCH_OPERATIONS = ['search_by_value', 'search_by_hash', 'sql'];
 const VALID_EXPORT_FORMATS = ['json', 'csv'];
+const JSON = 'json';
+const CSV = 'csv';
 
 module.exports = {
     export_to_s3: export_to_s3,
@@ -96,7 +98,7 @@ function confirmPath(path, callback){
  * @param callback
  */
 function saveToLocal(file_path, format, data, callback) {
-    if(format === 'json'){
+    if(format === JSON){
         data = JSON.stringify(data);
     }
 
@@ -150,17 +152,17 @@ function export_to_s3(export_object, callback) {
 
         let s3_data;
         let s3_name;
-        if(export_object.format === 'csv'){
+        if(export_object.format === CSV){
             s3_data = data;
             s3_name = export_object.s3.key + ".csv";
-        } else if(export_object.format === 'json'){
+        } else if(export_object.format === JSON){
             s3_data = JSON.stringify(data);
             s3_name = export_object.s3.key + ".json";
         } else {
             return callback("an unexpected exception has occurred, please check your request and try again.");
         }
 
-        var s3 = new AWS.S3();
+        let s3 = new AWS.S3();
         let params = {Bucket: export_object.s3.bucket, Key: s3_name, Body: s3_data};
         s3.putObject(params, function (err, data) {
             if (err) {
@@ -224,16 +226,20 @@ function searchAndConvert(export_object, callback){
             return callback(err);
         }
 
-        if(export_object.format === 'json'){
+        if(export_object.format === JSON){
             return callback(null, results);
-        } else if (export_object.format === 'csv') {
+        } else if (export_object.format === CSV) {
             let fields = [];
             for (let key in results[0]) {
                 fields.push(key);
             }
 
-            let  parser = new Json2csvParser({fields});
-            let csv = parser.parse(results);
+            try {
+                let parser = new Json2csvParser({fields});
+                let csv = parser.parse(results);
+            } catch(e){
+                return callback(e);
+            }
             return callback(null, csv);
         }
     });
