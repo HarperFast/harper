@@ -16,18 +16,11 @@ const search = require('../../data_layer/search');
 const util = require('util');
 
 const ISO_8601_FORMAT = 'YYYY-MM-DD';
-const NOW_FORMAT = 'YYYY-MM-DDTHH:mm:ss.SSSZ';
 const ATTRIBUTE_1_INSTANCE_NAME = '';
 const ATTRIBUTE_1_TIME_NAME = moment().valueOf();
-const ATTRIBUTE_2_INSTANCE_NAME = 'Bill';
 const ATTRIBUTE_2_TIME_NAME = moment().subtract(6, 'hours').valueOf();
-const ATTRIBUTE_3_INSTANCE_NAME = 'Eddie';
-const ATTRIBUTE_3_TIME_NAME = moment().subtract(8, 'hours').valueOf();
-const ATTRIBUTE_AGE_INSTANCE_VAL = '3';
 const TEST_FILE_NAME_1 = `${ATTRIBUTE_1_TIME_NAME}.hdb`;
 const TEST_FILE_NAME_2 = `${ATTRIBUTE_2_TIME_NAME}.hdb`;
-const TEST_FILE_NAME_3 = `${ATTRIBUTE_3_TIME_NAME}.hdb`;
-const TEST_AGE_FILE_NAME = `${ATTRIBUTE_1_TIME_NAME}.hdb`;
 const FILE_CONTENTS = "Name";
 const DELETE_MOD_BASE_PATH_NAME = 'BASE_PATH';
 const TEST_ATTRIBUTE_NAME = 'Name';
@@ -62,7 +55,7 @@ const TEST_DATA = [
 ];
 
 const BASE = process.cwd();
-const BAD_DIR_PATH = '/tmp/zaphodbettlebrox';
+const BAD_DIR_PATH = '/tmp/zaphodbeeblebrox';
 const HDB_HASH_FOLDER_NAME = '__hdb_hash';
 const TEST_SCHEMA = 'test';
 const TEST_SCHEMA_PATH = path.join(BASE, TEST_SCHEMA);
@@ -77,10 +70,6 @@ const TABLE_DOG_ATTRIBUTE_HASH_DIRECTORY_PATH = path.join(TEST_TABLE_DOG_HASH_PA
 const TABLE_DOG_ATTRIBUTE_INSTANCE_DIRECTORY_PATH = path.join(TABLE_DOG_ATTRIBUTE_PATH, ATTRIBUTE_1_INSTANCE_NAME);
 const TABLE_DOG_ATTRIBUTE_HASH_FILE_PATH = path.join(TABLE_DOG_ATTRIBUTE_HASH_DIRECTORY_PATH, `${ATTRIBUTE_1_INSTANCE_NAME}.hdb`);
 const TABLE_DOG_ATTRIBUTE_INSTANCE_FILE_PATH = path.join(TABLE_DOG_ATTRIBUTE_INSTANCE_DIRECTORY_PATH, TEST_FILE_NAME_1);
-const TEST_TABLE_CAT_HASH = path.join(TEST_SCHEMA_PATH, TEST_TABLE_CAT, HDB_HASH_FOLDER_NAME);
-const TABLE_CAT_ATTRIBUTE_HASH_DIRECTORY_PATH = path.join(TEST_TABLE_CAT_HASH, TEST_ATTRIBUTE_NAME);
-const TABLE_CAT_ATTRIBUTE_HASH_FILE_PATH = path.join(TABLE_CAT_ATTRIBUTE_HASH_DIRECTORY_PATH, `${ATTRIBUTE_2_INSTANCE_NAME}.hdb`);
-const TABLE_DOG_ATTRIBUTE_NAME_HASH_FILE_PATH = path.join(TABLE_DOG_ATTRIBUTE_HASH_DIRECTORY_PATH, `${ATTRIBUTE_3_INSTANCE_NAME}.hdb`);
 const TEST_TABLE_BIRD_PATH = path.join(TEST_SCHEMA_PATH, TEST_TABLE_BIRD);
 const TABLE_HASH_ATTRIBUTE = 'id';
 const TOMORROW_TIME = moment().add(1, 'days');
@@ -241,85 +230,6 @@ global.hdb_schema = {
     }
 }
 
-const FOUND_FILES_IN_TABLE_1 = {
-    "/Users/elipalmer/harperdb/bin/test/test_dir1/Age/3/3.hdb": {
-        "nlink": 2,
-        "mtimeMs": NOW.valueOf(),
-        "mtime": NOW.format(NOW_FORMAT)
-    },
-    "/Users/elipalmer/harperdb/bin/test/test_dir1/Name/FrankThePug/Eddie.hdb": {
-        "nlink": 2,
-        "mtimeMs": NOW.valueOf(),
-        "mtime": NOW.format(NOW_FORMAT)
-    },
-    "/Users/elipalmer/harperdb/bin/test/test_dir1/Name/FrankThePug/FrankThePug.hdb": {
-        "nlink": 2,
-        "mtimeMs": NOW.valueOf(),
-        "mtime": NOW.format(NOW_FORMAT)
-    },
-    "/Users/elipalmer/harperdb/bin/test/test_dir1/__hdb_hash/Age/3.hdb": {
-        "nlink": 2,
-        "mtimeMs": NOW.valueOf(),
-        "mtime": NOW.format(NOW_FORMAT)
-    },
-    "/Users/elipalmer/harperdb/bin/test/test_dir1/__hdb_hash/Name/Eddie.hdb": {
-        "nlink": 2,
-        "mtimeMs": NOW.valueOf(),
-        "mtime": NOW.format(NOW_FORMAT)
-    },
-    "/Users/elipalmer/harperdb/bin/test/test_dir1/__hdb_hash/Name/FrankThePug.hdb": {
-        "nlink": 2,
-        "mtimeMs": NOW.valueOf(),
-        "mtime": NOW.format(NOW_FORMAT)
-    }
-}
-const FOUND_FILES_IN_SCHEMA = {
-    "/Users/elipalmer/harperdb/bin/test/Bill.hdb": {
-        "nlink": 1,
-        "mtimeMs": NOW.valueOf(),
-        "mtime": NOW.format(NOW_FORMAT)
-    },
-    "/Users/elipalmer/harperdb/bin/test/test_dir1/Age/3/3.hdb": {
-        "nlink": 2,
-        "mtimeMs": NOW.valueOf(),
-        "mtime": NOW.format(NOW_FORMAT)
-    },
-    "/Users/elipalmer/harperdb/bin/test/test_dir1/Name/FrankThePug/Eddie.hdb": {
-        "nlink": 2,
-        "mtimeMs": NOW.valueOf(),
-        "mtime": NOW.format(NOW_FORMAT)
-    },
-    "/Users/elipalmer/harperdb/bin/test/test_dir1/Name/FrankThePug/FrankThePug.hdb": {
-        "nlink": 2,
-        "mtimeMs": NOW.valueOf(),
-        "mtime": NOW.format(NOW_FORMAT)
-    },
-    "/Users/elipalmer/harperdb/bin/test/test_dir1/__hdb_hash/Age/3.hdb": {
-        "nlink": 2,
-        "mtimeMs": NOW.valueOf(),
-        "mtime": NOW.format(NOW_FORMAT)
-    },
-    "/Users/elipalmer/harperdb/bin/test/test_dir1/__hdb_hash/Name/Eddie.hdb": {
-        "nlink": 2,
-        "mtimeMs": NOW.valueOf(),
-        "mtime": NOW.format(NOW_FORMAT)
-    },
-    "/Users/elipalmer/harperdb/bin/test/test_dir1/__hdb_hash/Name/FrankThePug.hdb": {
-        "nlink": 2,
-        "mtimeMs": NOW.valueOf(),
-        "mtime": NOW.format(NOW_FORMAT)
-    },
-    "/Users/elipalmer/harperdb/bin/test/test_dir2/Name/FrankThePug/Bill.hdb": {
-        "nlink": 2,
-        "mtimeMs": NOW.valueOf(),
-        "mtime": NOW.format(NOW_FORMAT)
-    },
-    "/Users/elipalmer/harperdb/bin/test/test_dir2/__hdb_hash/Name/Bill.hdb": {
-        "nlink": 2,
-        "mtimeMs": NOW.valueOf(),
-        "mtime": NOW.format(NOW_FORMAT)
-    }
-}
 const DELETE_OBJECT = {
     "operation": "delete",
     "table": "test_dir1",
@@ -425,7 +335,7 @@ function tearDown(target_path) {
                 let curPath = path.join(target_path, file);
                 if (fs.lstatSync(curPath).isDirectory()) { // recurse
                     tearDown(curPath);
-                } else { // delete file
+                } else {
                     fs.unlinkSync(curPath);
                 }
             }
@@ -815,7 +725,6 @@ describe('Test doesDirectoryExist', function () {
         let doesExist = await doesDirectoryExist(TEST_TABLE_DOG_PATH);
         assert.equal(doesExist, true);
     }));
-    //
     it('Test non existent directory', test_utils.mochaAsyncWrapper(async () => {
         delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
         let doesExist = await doesDirectoryExist(BAD_DIR_PATH);
@@ -1035,9 +944,7 @@ describe('Test removeIDFiles', function() {
     });
     it('Nominal path of removeIDFiles against dog table.', test_utils.mochaAsyncWrapper(async () => {
         let journal_files = [...test_values[0].journal_paths, ...test_values[1].journal_paths];
-        //console.log(test_values);
         await removeIDFiles(TEST_SCHEMA, TEST_TABLE_DOG, journal_files);
-        //let files_to_check = [...test_values[0].file_paths, ...test_values[1]];
         await p_set_timeout(TIMEOUT_VALUE_MS)
             .catch(e => {
                 console.error(e);
