@@ -8,6 +8,7 @@ const hdb_utils = require('../utility/common_utils');
 const fs = require('graceful-fs');
 const async = require('async');
 const path =  require('path');
+const hdb_logger = require('../utility/logging/harper_logger');
 
 const VALID_SEARCH_OPERATIONS = ['search_by_value', 'search_by_hash', 'sql'];
 const VALID_EXPORT_FORMATS = ['json', 'csv'];
@@ -26,12 +27,15 @@ module.exports = {
  * @param callback
  */
 function export_local(export_object, callback) {
+    hdb_logger.trace("export_local request: " + JSON.stringify(export_object));
     let error_message = exportCoreValidation(export_object);
     if(!hdb_utils.isEmpty(error_message)){
+        hdb_logger.error(error_message);
         return callback(error_message);
     }
 
     if(hdb_utils.isEmpty(export_object.path)){
+        hdb_logger.error("path is missing");
         return callback("path is missing");
     }
 
@@ -51,6 +55,7 @@ function export_local(export_object, callback) {
         saveToLocal.bind(null, file_path, export_object.format)
     ], (err)=>{
         if(err){
+            hdb_logger.error(err);
             return callback(err);
         }
 
@@ -64,6 +69,7 @@ function export_local(export_object, callback) {
  * @param callback
  */
 function confirmPath(path, callback){
+    hdb_logger.trace("in confirmPath");
     try {
         fs.stat(path, function statHandler(err, stat) {
             if (err) {
@@ -75,7 +81,7 @@ function confirmPath(path, callback){
                 } else {
                     error_message = err.message;
                 }
-
+                hdb_logger.error(err);
                 return callback(error_message);
             }
 
@@ -86,7 +92,8 @@ function confirmPath(path, callback){
             return callback();
         });
     }catch(e){
-        console.error(e);
+        hdb_logger.error(e);
+        callback(e);
     }
 }
 
@@ -98,12 +105,14 @@ function confirmPath(path, callback){
  * @param callback
  */
 function saveToLocal(file_path, format, data, callback) {
+    hdb_logger.trace("in saveToLocal");
     if(format === JSON){
         data = JSON.stringify(data);
     }
 
     fs.writeFile(file_path, data, function fileWriteHandler(err, data){
         if(err){
+            hdb_logger.error(err);
             return callback(err);
         }
 
@@ -118,6 +127,7 @@ function saveToLocal(file_path, format, data, callback) {
  * @returns {*}
  */
 function export_to_s3(export_object, callback) {
+    hdb_logger.trace("export_to_s3: " + JSON.stringify(export_object));
     let error_message = exportCoreValidation(export_object);
 
     if(!hdb_utils.isEmpty(error_message)){
@@ -165,7 +175,9 @@ function export_to_s3(export_object, callback) {
         let s3 = new AWS.S3();
         let params = {Bucket: export_object.s3.bucket, Key: s3_name, Body: s3_data};
         s3.putObject(params, function (err, data) {
+            hdb_logger.trace("send to S3");
             if (err) {
+                hdb_logger.error(err);
                 return callback(err);
             }
 
@@ -181,6 +193,7 @@ function export_to_s3(export_object, callback) {
  * @returns {string}
  */
 function exportCoreValidation(export_object){
+    hdb_logger.trace("in exportCoreValidation");
     if (hdb_utils.isEmpty(export_object.format)) {
         return "format missing";
     }
@@ -205,6 +218,7 @@ function exportCoreValidation(export_object){
  * @param callback
  */
 function searchAndConvert(export_object, callback){
+    hdb_logger.trace("in searchAndConvert");
     let operation;
     switch (export_object.search_operation.operation) {
         case 'search_by_value':
@@ -238,6 +252,7 @@ function searchAndConvert(export_object, callback){
                 let parser = new Json2csvParser({fields});
                 let csv = parser.parse(results);
             } catch(e){
+                hdb_logger.error(e);
                 return callback(e);
             }
             return callback(null, csv);
