@@ -1,13 +1,23 @@
-const search = require('./search'),
-    sql = require('../sqlTranslator/index').evaluateSQL,
-    AWS = require('aws-sdk'),
-    Json2csvParser = require('json2csv').Parser,
-    fs = require('fs');
+"use strict";
 
+const search = require('./search');
+const sql = require('../sqlTranslator/index').evaluateSQL;
+const AWS = require('aws-sdk');
+const Json2csvParser = require('json2csv').Parser;
 
 module.exports = {
-    export_to_s3: export_to_s3
+    export_to_s3: export_to_s3,
+    export_to_local: export_to_local
 };
+
+/**
+ * this is a stub for an upcoming feature
+ * @param export_object
+ * @param callback
+ */
+function export_to_local(export_object, callback) {
+    return callback('Coming soon...');
+}
 
 function export_to_s3(export_object, callback) {
     if (!export_object.format) {
@@ -59,6 +69,8 @@ function export_to_s3(export_object, callback) {
             break;
     }
 
+//in order to validate the search function and invoke permissions we need to add the hdb_user to the search_operation
+    export_object.search_operation.hdb_user = export_object.hdb_user;
 
     operation(export_object.search_operation, function (err, results) {
         if (err) {
@@ -72,7 +84,7 @@ function export_to_s3(export_object, callback) {
         let fields = [];
         let s3_object;
         if (export_object.format === 'csv') {
-            for (key in results[0]) {
+            for (let key in results[0]) {
                 fields.push(key);
             }
 
