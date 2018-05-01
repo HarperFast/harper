@@ -4,58 +4,221 @@ const search = require('./search');
 const sql = require('../sqlTranslator/index').evaluateSQL;
 const AWS = require('aws-sdk');
 const Json2csvParser = require('json2csv').Parser;
+const hdb_utils = require('../utility/common_utils');
+const fs = require('graceful-fs');
+const async = require('async');
+const path =  require('path');
+const hdb_logger = require('../utility/logging/harper_logger');
+
+const VALID_SEARCH_OPERATIONS = ['search_by_value', 'search_by_hash', 'sql'];
+const VALID_EXPORT_FORMATS = ['json', 'csv'];
+const JSON = 'json';
+const CSV = 'csv';
 
 module.exports = {
     export_to_s3: export_to_s3,
-    export_to_local: export_to_local
+    export_local: export_local
 };
 
 /**
- * this is a stub for an upcoming feature
+ * Allows for exporting and saving to a file system the receiving system has access to
+ *
  * @param export_object
  * @param callback
  */
-function export_to_local(export_object, callback) {
-    return callback('Coming soon...');
+function export_local(export_object, callback) {
+    hdb_logger.trace("export_local request: " + JSON.stringify(export_object));
+    let error_message = exportCoreValidation(export_object);
+    if(!hdb_utils.isEmpty(error_message)){
+        hdb_logger.error(error_message);
+        return callback(error_message);
+    }
+
+    if(hdb_utils.isEmpty(export_object.path)){
+        hdb_logger.error("path is missing");
+        return callback("path is missing");
+    }
+
+    //we will allow for a missing filename and autogen one based on the epoch
+    let filename = (hdb_utils.isEmpty(export_object.filename) ? (new Date).getTime() : export_object.filename)
+        + '.' + export_object.format;
+
+    if(export_object.path.endsWith(path.sep)){
+        export_object.path = export_object.path.substring(0, export_object.path.length - 1);
+    }
+
+    let file_path = hdb_utils.buildFolderPath(export_object.path, filename);
+
+    async.waterfall([
+        confirmPath.bind(null, export_object.path),
+        searchAndConvert.bind(null, export_object),
+        saveToLocal.bind(null, file_path, export_object.format)
+    ], (err)=>{
+        if(err){
+            hdb_logger.error(err);
+            return callback(err);
+        }
+
+        callback(null, `successfully exported to ${file_path}`);
+    });
 }
 
+/**
+ * stats the path sent in to verify the path exists, the user has access & the path is a directory
+ * @param path
+ * @param callback
+ */
+function confirmPath(path, callback){
+    hdb_logger.trace("in confirmPath");
+    try {
+        fs.stat(path, function statHandler(err, stat) {
+            if (err) {
+                let error_message;
+                if (err.code === 'ENOENT') {
+                    error_message = `path '${path}' does not exist`;
+                } else if (err.code === 'EACCES') {
+                    error_message = `access to path '${path}' is denied`;
+                } else {
+                    error_message = err.message;
+                }
+                hdb_logger.error(err);
+                return callback(error_message);
+            }
+
+            if (!stat.isDirectory()) {
+                return callback(`path '${path}' is not a directory, please supply a valid folder path`);
+            }
+
+            return callback();
+        });
+    }catch(e){
+        hdb_logger.error(e);
+        callback(e);
+    }
+}
+
+/**
+ * takes the data and saves it tgo the file system
+ * @param file_path
+ * @param format
+ * @param data
+ * @param callback
+ */
+function saveToLocal(file_path, format, data, callback) {
+    hdb_logger.trace("in saveToLocal");
+    if(format === JSON){
+        data = JSON.stringify(data);
+    }
+
+    fs.writeFile(file_path, data, function fileWriteHandler(err, data){
+        if(err){
+            hdb_logger.error(err);
+            return callback(err);
+        }
+
+        return callback();
+    });
+}
+
+/**
+ *allows for exportinhg a result to s3
+ * @param export_object
+ * @param callback
+ * @returns {*}
+ */
 function export_to_s3(export_object, callback) {
-    if (!export_object.format) {
-        return callback("format missing");
+    hdb_logger.trace("export_to_s3: " + JSON.stringify(export_object));
+    let error_message = exportCoreValidation(export_object);
+
+    if(!hdb_utils.isEmpty(error_message)){
+        return callback(error_message);
     }
 
-    if (export_object.format !== 'json' && export_object.format !== 'csv') {
-        return callback("format invalid. must be json or csv.");
-    }
-
-    if (!export_object.s3) {
+    if (hdb_utils.isEmpty(export_object.s3)) {
         return callback("S3 object missing");
     }
 
-    if (!export_object.s3.aws_access_key_id) {
+    if (hdb_utils.isEmpty(export_object.s3.aws_access_key_id)) {
         return callback("S3.aws_access_key_id missing");
     }
 
-    if (!export_object.s3.aws_secret_access_key) {
+    if (hdb_utils.isEmpty(export_object.s3.aws_secret_access_key)) {
         return callback("S3.aws_secret_access_key missing");
     }
 
-    if (!export_object.s3.bucket) {
+    if (hdb_utils.isEmpty(export_object.s3.bucket)) {
         return callback("S3.bucket missing");
     }
 
-    if (!export_object.s3.key) {
+    if (hdb_utils.isEmpty(export_object.s3.key)) {
         return callback("S3.key missing");
     }
 
-    if (!export_object.search_operation) {
-        return callback("search_operation missing");
+    searchAndConvert(export_object, function handleResults(err, data){
+        AWS.config.update({
+            accessKeyId: export_object.s3.aws_access_key_id,
+            secretAccessKey: export_object.s3.aws_secret_access_key
+        });
+
+        let s3_data;
+        let s3_name;
+        if(export_object.format === CSV){
+            s3_data = data;
+            s3_name = export_object.s3.key + ".csv";
+        } else if(export_object.format === JSON){
+            s3_data = JSON.stringify(data);
+            s3_name = export_object.s3.key + ".json";
+        } else {
+            return callback("an unexpected exception has occurred, please check your request and try again.");
+        }
+
+        let s3 = new AWS.S3();
+        let params = {Bucket: export_object.s3.bucket, Key: s3_name, Body: s3_data};
+        s3.putObject(params, function (err, data) {
+            hdb_logger.trace("send to S3");
+            if (err) {
+                hdb_logger.error(err);
+                return callback(err);
+            }
+
+            return callback(null, data);
+        });
+
+    });
+}
+
+/**
+ * handles the core validation of the export_object variable
+ * @param export_object
+ * @returns {string}
+ */
+function exportCoreValidation(export_object){
+    hdb_logger.trace("in exportCoreValidation");
+    if (hdb_utils.isEmpty(export_object.format)) {
+        return "format missing";
     }
 
-    if (!export_object.search_operation.operation) {
-        return callback("search_operation.operation missing");
+    if (VALID_EXPORT_FORMATS.indexOf(export_object.format) < 0) {
+        return `format invalid. must be one of the following values: ${VALID_EXPORT_FORMATS.join(', ')}`;
     }
 
+    let search_operation = export_object.search_operation.operation;
+    if (hdb_utils.isEmpty(search_operation)) {
+        return "search_operation.operation missing";
+    }
+
+    if(VALID_SEARCH_OPERATIONS.indexOf(search_operation) < 0 ){
+        return `search_operation.operation must be one of the following values: ${VALID_SEARCH_OPERATIONS.join(', ')}`
+    }
+}
+
+/**
+ * determines which search operation to perform, executes it then converts the data to the correct format
+ * @param export_object
+ * @param callback
+ */
+function searchAndConvert(export_object, callback){
+    hdb_logger.trace("in searchAndConvert");
     let operation;
     switch (export_object.search_operation.operation) {
         case 'search_by_value':
@@ -69,55 +232,30 @@ function export_to_s3(export_object, callback) {
             break;
     }
 
-//in order to validate the search function and invoke permissions we need to add the hdb_user to the search_operation
+    //in order to validate the search function and invoke permissions we need to add the hdb_user to the search_operation
     export_object.search_operation.hdb_user = export_object.hdb_user;
 
     operation(export_object.search_operation, function (err, results) {
         if (err) {
             return callback(err);
         }
-        AWS.config.update({
-            accessKeyId: export_object.s3.aws_access_key_id,
-            secretAccessKey: export_object.s3.aws_secret_access_key
-        });
 
-        let fields = [];
-        let s3_object;
-        if (export_object.format === 'csv') {
+        if(export_object.format === JSON){
+            return callback(null, results);
+        } else if (export_object.format === CSV) {
+            let fields = [];
             for (let key in results[0]) {
                 fields.push(key);
             }
 
-
-            let  parser = new Json2csvParser({fields});
-            let csv = parser.parse(results);
-            sendToS3(csv, export_object.s3.key + ".csv");
-
-
+            try {
+                let parser = new Json2csvParser({fields});
+                let csv = parser.parse(results);
+            } catch(e){
+                hdb_logger.error(e);
+                return callback(e);
+            }
+            return callback(null, csv);
         }
-
-        if(export_object.format === 'json'){
-            s3_object = results;
-            sendToS3(JSON.stringify(s3_object), export_object.s3.key + ".json");
-        }
-
-
-        function sendToS3(s3_object, file_name){
-            var s3 = new AWS.S3();
-            params = {Bucket: export_object.s3.bucket, Key: file_name, Body: s3_object};
-            s3.putObject(params, function (err, data) {
-
-                if (err) {
-                    return callback(err);
-                }
-
-                return callback(null, data);
-            });
-        }
-
-
-
     });
-
-
 }
