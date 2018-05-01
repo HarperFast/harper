@@ -1,44 +1,45 @@
 #!/usr/bin/env node
+"use strict";
+const ps = require('find-process');
+const hdb_terms = require('../utility/hdbTerms');
+const os = require('os');
 
 module.exports = {
     stop: stop
 }
 
-
-
+/**
+ * Stop all instances of harperDB running on the system.  If the current logged in user is not root or the installed user
+ * this will fail.
+ */
 function stop(callback) {
-
-    const spawn = require('child_process').spawn,
-        winston = require('../utility/logging/winston_logger'),
-        check_permission = require('../utility/check_permissions');
-
-    check_permission.checkPermission(function(err){
-        if(err){
-            return console.error(err);
+    let curr_user = os.userInfo();
+    console.log("Stopping HarperDB.")
+    ps('name', hdb_terms.HDB_PROC_NAME).then(function (list) {
+        if( list.length === 0 ) {
+            console.log("No instances of HarperDB are running.");
+            return callback(null);
+        } else {
+            list.forEach(function killProcs(proc) {
+                // Note we are doing loose equality (==) rather than strict
+                // equality here, as find-process returns the uid as a string.  No point in spending time converting it.
+                // if curr_user.uid is 0, the user has run stop using sudo or logged in as root.
+                if(curr_user.uid == 0 || proc.uid == curr_user.uid) {
+                    try {
+                        process.kill(proc.pid);
+                    } catch (e) {
+                        console.error(e);
+                    }
+                }
+            });
         }
-
-        var terminal = spawn('bash');
-        terminal.stderr.on('data', function (data) {
-            console.error(data);
-            winston.info('error', `HarperDB server failed to run: ${data}`);
-            winston.info('|------------- HarperDB failed stopped ------------|');
-            //Here is where the error output goes
-        });
-
-        terminal.stdout.on('data', function (data) {
-            if (callback) {
-                callback();
-            }
-            console.log(`HarperDB Server stopped`);
-            winston.info(`HarperDB Server stopped`);
-        });
-        terminal.stdin.write(`kill $(ps -ef | grep [h]db_ | awk '{print $2}'); echo done;`);
-        terminal.stdin.end();
+        return callback(null);
+    }).catch( function stopErr(err) {
+        if(err) {
+            console.error(err);
+            return callback(err);
+        }
     });
-
-
-
-
 }
 
 
