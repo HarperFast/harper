@@ -49,7 +49,11 @@ function harperDBService() {
                     register.register();
                     break;
                 case "stop":
-                    stop.stop();
+                    sstop.stop(function stopDone(err) {
+                        if(err) {
+                            console.err(err);
+                        }
+                    });
                     break;
                 case "restart":
                     stop.stop(function () {
