@@ -5,6 +5,7 @@ const uuidv1 = require('uuid/v1');
 const user_schema = require('../utility/user_schema');
 const async = require('async');
 const insert = require('../data_layer/insert');
+const os = require('os');
 
 const DEFAULT_SERVER_TIMEOUT = 120000;
 const PROPS_SERVER_TIMEOUT_KEY = 'SERVER_TIMEOUT_MS';
@@ -38,7 +39,7 @@ process.env['NODE_ENV'] = node_env_value;
 
 let numCPUs = 4;
 
-let num_workers = require('os').cpus().length;
+let num_workers = os.cpus().length;
 numCPUs = num_workers < numCPUs ? num_workers : numCPUs;
 
 if(DEBUG){
@@ -428,6 +429,14 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
         }
     });
 
+    process.on('uncaughtException', function (err) {
+        let os = require('os');
+        let message = `Found an uncaught exception with message: os.EOL ${err.message}.  Stack: ${err.stack} ${os.EOL} Terminating HDB.`;
+        console.error(message);
+        harper_logger.fatal(message);
+        process.exit(1)
+    });
+
     try {
         const http = require('http');
         const httpsecure = require('https');
@@ -481,4 +490,3 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
         harper_logger.error(e);
     }
 }
-
