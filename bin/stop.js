@@ -6,7 +6,7 @@ const os = require('os');
 
 module.exports = {
     stop: stop
-}
+};
 
 /**
  * Stop all instances of harperDB running on the system.  If the current logged in user is not root or the installed user
