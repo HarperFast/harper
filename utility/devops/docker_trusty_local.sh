@@ -74,7 +74,7 @@ harperdb_run()
                #eli Collection ENV ARM
                # environment_id=0e9e6428-313b-403e-acb7-75e9ba1efdfd
                #eli Collection ENV CI
-            	environment_id=58f8be47-5446-4516-8e72-669fe9a41c24
+            	environment_id=76e7cef5-43aa-4b46-8afa-1f161c2ea223
 
 		newman run https://api.getpostman.com/collections/$collection_id?apikey=$apiKey --environment https://api.getpostman.com/environments/$environment_id?apikey=$apiKey -r teamcity
 							
