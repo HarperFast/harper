@@ -99,7 +99,7 @@ function proccessDelegatedTransaction(operation, operation_function, callback) {
         return callback(message, null);
     }
 
-    req = {};
+    let req = {};
     req.headers = {};
     req.headers.authorization = operation.hdb_auth_header;
 
