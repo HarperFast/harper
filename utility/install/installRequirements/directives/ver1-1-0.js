@@ -1,9 +1,11 @@
 "use strict";
 const os = require('os');
-const install_directive = require('utility/install/installRequirements/installDirective');
+const env_variable = require('../EnvironmentVariable');
+const upgrade_directive = require('../UpgradeDirective');
+
 
 let sep = os.EOL;
-let ver1_1_0_directive = new install_directive.installDirective('1_1_0');
+let ver1_1_0_directive = new upgrade_directive('1_1_0');
 
 ver1_1_0_directive.relative_directory_paths.push(`staging`);
 ver1_1_0_directive.relative_directory_paths.push(`staging${sep}scripts`);
@@ -32,57 +34,54 @@ ver1_1_0_directive.relative_directory_paths.push(`schema${sep}system${sep}hdb_qu
 ver1_1_0_directive.relative_directory_paths.push(`schema${sep}system${sep}hdb_nodes`);
 
 ver1_1_0_directive.environment_variables.push(
-    new install_directive.environmentVariable(`PROJECT_DIR`, ``, [])
+    new env_variable(`PROJECT_DIR`, ``, [])
 );
 ver1_1_0_directive.environment_variables.push(
-    new install_directive.environmentVariable(`HDB_ROOT`, ``, [])
+    new env_variable(`HDB_ROOT`, ``, [])
 );
 ver1_1_0_directive.environment_variables.push(
-    new install_directive.environmentVariable("HTTP_PORT", "", [])
+    new env_variable("HTTP_PORT", "", [])
 );
 ver1_1_0_directive.environment_variables.push(
-    new install_directive.environmentVariable("HTTPS_PORT", "", [])
+    new env_variable("HTTPS_PORT", "", [])
 );
 ver1_1_0_directive.environment_variables.push(
-    new install_directive.environmentVariable("CERTIFICATE", "", [])
+    new env_variable("CERTIFICATE", "", [])
 );
 ver1_1_0_directive.environment_variables.push(
-    new install_directive.environmentVariable("PRIVATE_KEY", "", [])
+    new env_variable("PRIVATE_KEY", "", [])
 );
 ver1_1_0_directive.environment_variables.push(
-    new install_directive.environmentVariable("HTTPS_ON", "FALSE", [])
+    new env_variable("HTTPS_ON", "FALSE", [])
 );
 ver1_1_0_directive.environment_variables.push(
-    new install_directive.environmentVariable("HTTP_ON", "TRUE", [])
+    new env_variable("HTTP_ON", "TRUE", [])
 );
 ver1_1_0_directive.environment_variables.push(
-    new install_directive.environmentVariable("CORS_ON", "TRUE", [])
+    new env_variable("CORS_ON", "TRUE", [])
 );
 ver1_1_0_directive.environment_variables.push(
-    new install_directive.environmentVariable("CORS_WHITELIST", "", [])
+    new env_variable("CORS_WHITELIST", "", [])
 );
 ver1_1_0_directive.environment_variables.push(
-    new install_directive.environmentVariable("SERVER_TIMEOUT_MS", "120000", [])
+    new env_variable("SERVER_TIMEOUT_MS", "120000", [])
 );
 ver1_1_0_directive.environment_variables.push(
-    new install_directive.environmentVariable("LOG_LEVEL", "error", [
+    new env_variable("LOG_LEVEL", "error", [
         "LOGGER = 1 Uses the WINSTON logger.",
         "LOGGER = 2 Uses the more performant PINO logger."
     ])
 );
 ver1_1_0_directive.environment_variables.push(
-    new install_directive.environmentVariable("LOGGER", "1", [])
+    new env_variable("LOGGER", "1", [])
 );
 ver1_1_0_directive.environment_variables.push(
-    new install_directive.environmentVariable("LOG_PATH", "/log/hdb_log.log", [])
+    new env_variable("LOG_PATH", "/log/hdb_log.log", [])
 );
 ver1_1_0_directive.environment_variables.push(
-    new install_directive.environmentVariable("NODE_ENV", "production", [])
+    new env_variable("NODE_ENV", "production", [])
 );
 
-module.exports = {
-  "paths": relative_paths
-}
-
+module.exports = ver1_1_0_directive;
 
 
