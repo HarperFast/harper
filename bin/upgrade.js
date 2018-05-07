@@ -1,27 +1,28 @@
-const os = require('os'),
-    mkdirp = require('mkdirp'),
-    fs = require('fs'),
-    http = require('http'),
-    tar = require('tar-fs'),
-    CLI = require('clui'),
-    request = require("request");
-PropertiesReader = require('properties-reader'),
-    winston = require('winston');
-    let hdb_properties;
+const os = require('os');
+const mkdirp = require('mkdirp');
+const fs = require('fs');
+const http = require('http');
+const tar = require('tar-fs');
+const CLI = require('clui');
+const request = require("request-promise-native");
+const PropertiesReader = require('properties-reader');
+const harper_logger = require('../utility/logging/harper_logger');
+const hdb_util = require('../utility/common_utils');
+const { promisify } = require('util');
+
+//Promisified functions
+const p_fs_readFile = promisify(fs.readFile);
+const p_fs_rename = promisify(fs.rename);
+const p_fs_unlink = promisify(fs.unlink);
+
+let hdb_properties;
 
 try {
     hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
     hdb_properties.append(hdb_properties.get('settings_path'));
 } catch (e) {
-    // Intentionally blank
+    harper_logger.fatal(`There was an error reading settings the properties & settings file. ${e}`);
 }
-
-
-winston.configure({
-    transports: [
-        new (winston.transports.File)({filename: 'error.log'})
-    ]
-});
 
 module.exports = {
     upgrade: upgrade
@@ -30,49 +31,36 @@ module.exports = {
 const versions_url = 'http://products.harperdb.io:9925/',
       versions_auth ='Basic dXBncmFkZV91c2VyOl43Snk3JCgmIW45TWpsIV4oSDAzMCUhU3ZFOFU2c1RY';
 
-
-
-function upgrade() {
-    if(hdb_properties === undefined) {
-        winston.error('the hdb_boot_properties file was not found.  Please install HDB.');
+async function upgrade() {
+    if(hdb_util.isEmptyOrZeroLength(hdb_properties) ) {
+        harper_logger.error('the hdb_boot_properties file was not found.  Please install HDB.');
         console.error('the hdb_boot_properties file was not found.  Please install HDB.');
         return;
     }
     let os = findOs();
     if (!os) {
         return console.error('You are attempting to upgrade HarperDB on an unsupported operating system');
-
-
     }
 
-    getBuild(os, function (err, build) {
-        if (err) {
-            return console.error(err);
-        }
-        fs.readFile(hdb_properties.get('PROJECT_DIR') + '/package.json', 'utf8', function (err, package_json) {
-            if (err) {
-                winston.error(err);
-                return console.error(err);
-            }
+    try {
+        let build = await getBuild(os);
+    } catch (err) {
+        harper_logger.error(err);
+        return console.error(err);
+    }
 
-            if (JSON.parse(package_json).version >= build[0].product_version) {
-                return console.warn('HarperDB already up to date on ' + JSON.parse(package_json).version);
-            }
-
-
-            executeUpgrade(build[0]);
-
-        });
-
-
+    let package_json = await p_fs_readFile(hdb_properties.get('PROJECT_DIR') + '/package.json', 'utf8').catch(err => {
+        harper_logger.error(err);
+        return console.error(err);
     });
 
-
+    if (JSON.parse(package_json).version >= build[0].product_version) {
+        return console.warn('HarperDB already up to date on ' + JSON.parse(package_json).version);
+    }
+    executeUpgrade(build[0]);
 }
 
-
-function getBuild(os, callback) {
-
+async function getBuild(os) {
     let options = {
         method: 'POST',
         url: versions_url,
@@ -90,21 +78,22 @@ function getBuild(os, callback) {
             },
         json: true
     };
-
-    request(options, function (error, response, body) {
-        if (error) {
-            winston.error(error);
-            return callback(error);
-        }
-        return callback(null, body);
-    });
-
+    let res = undefined;
+    try {
+        res = await request(options);
+    } catch (e) {
+        harper_logger.error(`There was an error with the request to get the latest HDB Build: ${e}`);
+        throw new Error("Error getting latest build");
+    }
+    if(!res || !res.body || hdb_util.isEmptyOrZeroLength(res.body)) {
+        harper_logger.error(`Got empty response from the HDB Version server`);
+        throw new Error("Got empty response from the HDB Version server");
+    }
+    return res.body;
 }
 
 function findOs() {
     if (os.arch() === 'arm' || os.arch() === 'arm64') {
-        //armv7l
-        //armv6l
         switch (os.release()) {
             case "armv7l":
                 return 'ARM 7'
@@ -116,9 +105,7 @@ function findOs() {
                 return null;
                 break;
         }
-
     }
-
     switch (os.platform()) {
         case "darwin":
             return 'Mac';
@@ -133,7 +120,6 @@ function findOs() {
 
 function executeUpgrade(build) {
     let  Spinner = CLI.Spinner;
-
     let countdown = new Spinner('Upgrading HarperDB ', ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷']);
 
     countdown.start();
@@ -149,9 +135,7 @@ function executeUpgrade(build) {
         "method": "GET",
         "hostname": host,
         "port": port,
-
         "path": "/" + path
-
     };
 
     let file = fs.createWriteStream(upgradeFolder + '' + path);
@@ -161,42 +145,29 @@ function executeUpgrade(build) {
             let stream = fs.createReadStream(upgradeFolder + '' + path);
             stream.pipe(tar.extract(upgradeFolder));
             stream.on('error', function (err) {
-                winston.error(err);
+                harper_logger.error(err);
                 return console.error(err);
             });
-            stream.on('close', function () {
-                fs.unlink(hdb_properties.get('PROJECT_DIR') + '/bin/harperdb', function (err) {
-                    if (err) {
-                        winston.error(err);
-                        return console.error(err);
-                    }
-                    fs.rename(upgradeFolder + 'HarperDB/bin/harperdb', hdb_properties.get('PROJECT_DIR') + '/bin/harperdb', function (err) {
-                        if (err) {
-                            winston.error(err);
-                            return console.error(err);
-                        }
-                        fs.rename(upgradeFolder + 'HarperDB/package.json', hdb_properties.get('PROJECT_DIR') + '/package.json', function (err) {
-                            if (err) {
-                                winston.error(err);
-                                return console.error(err);
-                            }
-                            fs.rename(upgradeFolder + 'HarperDB/user_guide.html', hdb_properties.get('PROJECT_DIR') + '/user_guide.html', function (err) {
-                                if (err) {
-                                    winston.error(err);
-                                    return console.error(err);
-                                }
-                                countdown.stop();
-                                console.log('HarperDB has been upgraded to ' + build.product_version);
-
-                            });
-                        });
-                    });
-
-
+            stream.on('close', async function () {
+                await p_fs_unlink(hdb_properties.get('PROJECT_DIR') + '/bin/harperdb').catch(err => {
+                    harper_logger.error(err);
+                    return console.error(err);
                 });
-
+                await p_fs_rename(upgradeFolder + 'HarperDB/bin/harperdb', hdb_properties.get('PROJECT_DIR') + '/bin/harperdb').catch(err => {
+                    harper_logger.error(err);
+                    return console.error(err);
+                });
+                await p_fs_rename(upgradeFolder + 'HarperDB/package.json', hdb_properties.get('PROJECT_DIR') + '/package.json').catch(err => {
+                    harper_logger.error(err);
+                    return console.error(err);
+                });
+                await p_fs_rename(upgradeFolder + 'HarperDB/user_guide.html', hdb_properties.get('PROJECT_DIR') + '/user_guide.html').catch(err => {
+                    harper_logger.error(err);
+                    return console.error(err);
+                });
+                countdown.stop();
+                console.log('HarperDB has been upgraded to ' + build.product_version);
             });
-
         });
     });
 }
