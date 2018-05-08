@@ -16,6 +16,7 @@ const HTTPSECURE_ON_KEY = 'HTTPS_ON';
 const HTTP_ON_KEY = 'HTTP_ON';
 const HDB_PROC_NAME = 'hdb_express.js';
 const stop = require('./stop');
+const os = require('os');
 
 const FOREGROUND_ARG = 'foreground';
 
@@ -297,7 +298,6 @@ function exitInstall() {
 }
 
 process.on('uncaughtException', function (err) {
-    let os = require('os');
     let message = `Found an uncaught exception with message: os.EOL ${err.message}.  Stack: ${err.stack} ${os.EOL} Terminating HDB.`;
     console.error(message);
     harper_logger.fatal(message);
