@@ -55,7 +55,7 @@ function deleteFilesBefore(json_body, callback) {
     }
     let parsed_date = moment(json_body.date, moment.ISO_8601);
     if(!parsed_date.isValid()) {
-        return callback(common_utils.errorizeMessage("Invalid date, must be in ISO-8601 format."));
+        return callback(common_utils.errorizeMessage("Invalid date, must be in ISO-8601 format (YYYY-MM-DD)."));
     }
     if(common_utils.isEmptyOrZeroLength(json_body.schema)) {
         return callback(common_utils.errorizeMessage("Invalid schema."), null);
