@@ -5,8 +5,28 @@
 
 const assert = require('assert');
 const cu = require('../../utility/common_utils');
+const test_utils = require('../test_utils');
+// try to move to /bin directory so our properties reader doesn't explode.
+test_utils.changeProcessToBinDir();
 
 const ALL_SPACES = '     ';
+
+describe(`Test errorizeMessage`, function () {
+    it('Nominal, pass message', function () {
+        let err = cu.errorizeMessage('This is an error');
+        assert.equal((err instanceof Error), true);
+    });
+
+    it('Pass in null', function () {
+        let err = cu.errorizeMessage(null);
+        assert.equal((err instanceof Error), true);
+    });
+
+    it('Pass in undefined', function () {
+        let err = cu.errorizeMessage(null);
+        assert.equal((err instanceof Error), true);
+    });
+});
 
 describe(`Test isEmpty`, function () {
     it('Pass in null value, expect true', function () {

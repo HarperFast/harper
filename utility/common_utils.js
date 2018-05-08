@@ -1,14 +1,29 @@
 "use strict"
 const path = require('path');
-
+const EMPTY_STRING = '';
 module.exports = {
     isEmpty:isEmpty,
     isEmptyOrZeroLength:isEmptyOrZeroLength,
     arrayHasEmptyValues:arrayHasEmptyValues,
     arrayHasEmptyOrZeroLengthValues:arrayHasEmptyOrZeroLengthValues,
     buildFolderPath: buildFolderPath,
-    isBoolean: isBoolean
+    isBoolean: isBoolean,
+    errorizeMessage: errorizeMessage,
+    stripFileExtension: stripFileExtension
 };
+
+/**
+ * Converts a message to an error containing the error as a message. Will always return an error if the passed in error is
+ * not a message.
+ * @param message
+ * @returns {*}
+ */
+function errorizeMessage(message) {
+    if(!(message instanceof Error)) {
+        return new Error(message);
+    }
+    return message;
+}
 
 /**
  * Test if the passed value is null or undefined.  This will not check string length.
@@ -89,4 +104,17 @@ function isBoolean(value){
     }
 
     return false;
+}
+
+/**
+ * Strip the .hdb file extension from file names.  To keep this efficient, this will not check that the
+ * parameter contains the .hdb extension.
+ * @param file_name - the filename.
+ * @returns {string}
+ */
+function stripFileExtension(file_name) {
+    if(isEmptyOrZeroLength(file_name)) {
+        return EMPTY_STRING;
+    }
+    return file_name.substr(0, file_name.length-4);
 }
