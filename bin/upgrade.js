@@ -9,6 +9,8 @@ const PropertiesReader = require('properties-reader');
 const harper_logger = require('../utility/logging/harper_logger');
 const hdb_util = require('../utility/common_utils');
 const { promisify } = require('util');
+const version = require('./version');
+const process_directives = require('../utility/install/installRequirements/processDirectives');
 
 //Promisified functions
 const p_fs_readFile = promisify(fs.readFile);
@@ -24,12 +26,17 @@ try {
     harper_logger.fatal(`There was an error reading settings the properties & settings file. ${e}`);
 }
 
+const hdb_base = hdb_properties.get('PROJECT_DIR');
+
 module.exports = {
     upgrade: upgrade
 };
 
-const versions_url = 'http://products.harperdb.io:9925/',
-      versions_auth ='Basic dXBncmFkZV91c2VyOl43Snk3JCgmIW45TWpsIV4oSDAzMCUhU3ZFOFU2c1RY';
+//const versions_url = 'http://products.harperdb.io:9926/',
+//      versions_auth ='Basic dXBncmFkZV91c2VyOl43Snk3JCgmIW45TWpsIV4oSDAzMCUhU3ZFOFU2c1RY';
+
+const versions_url = 'http://lms.harperdb.io:9926/';
+const versions_auth ='Basic dXBncmFkZV91c2VyOl43Snk3JCgmIW45TWpsIV4oSDAzMCUhU3ZFOFU2c1RY';
 
 async function upgrade() {
     if(hdb_util.isEmptyOrZeroLength(hdb_properties) ) {
@@ -41,9 +48,9 @@ async function upgrade() {
     if (!os) {
         return console.error('You are attempting to upgrade HarperDB on an unsupported operating system');
     }
-
+    let build = undefined;
     try {
-        let build = await getBuild(os);
+        build = await getBuild(os);
     } catch (err) {
         harper_logger.error(err);
         return console.error(err);
@@ -57,7 +64,9 @@ async function upgrade() {
     if (JSON.parse(package_json).version >= build[0].product_version) {
         return console.warn('HarperDB already up to date on ' + JSON.parse(package_json).version);
     }
+    let found_directives = await process_directives.readDirectiveFiles(hdb_base);
     executeUpgrade(build[0]);
+    await processDirectives(version.version(), build[0].product_version);
 }
 
 async function getBuild(os) {
@@ -165,11 +174,38 @@ function executeUpgrade(build) {
                     harper_logger.error(err);
                     return console.error(err);
                 });
-                countdown.stop();
-                console.log('HarperDB has been upgraded to ' + build.product_version);
             });
         });
     });
+}
+
+/**
+ * Get old_version list of version directives to run during an upgrade.  Can be used via [<versions>].sort(compareVersions)
+ * @param old_version
+ * @param new_version_number
+ * @returns {*}
+ */
+function compareVersions (old_version, new_version_number) {
+    var i, diff;
+    var regExStrip0 = /(\.0+)+$/;
+    var segmentsA = old_version.version.replace(regExStrip0, '').split('.');
+    var segmentsB = new_version_number.version.replace(regExStrip0, '').split('.');
+    var l = Math.min(segmentsA.length, segmentsB.length);
+
+    for (i = 0; i < l; i++) {
+        diff = parseInt(segmentsA[i], 10) - parseInt(segmentsB[i], 10);
+        if (diff) {
+            return diff;
+        }
+    }
+    return segmentsA.length - segmentsB.length;
+}
+
+
+async function processDirectives(old_version_number, new_version_number) {
+
+    countdown.stop();
+    console.log('HarperDB has been upgraded to ' + build.product_version);
 }
 
 

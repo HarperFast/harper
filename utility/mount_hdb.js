@@ -7,8 +7,8 @@
 const fs = require('fs');
 const path = require('path');
 const {promisify} = require('util');
-const log = require('logging/harper_logger');
-const hdb_util = require('common_utils');
+const log = require('../utility/logging/harper_logger');
+const hdb_util = require('../utility/common_utils');
 
 // Promisified functions
 const p_fs_readdir = promisify(fs.readdir);

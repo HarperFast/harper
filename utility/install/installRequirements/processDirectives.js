@@ -12,7 +12,7 @@ const path = require('path');
 const propertiesReader = require('properties-reader');
 const upgrade_directive = require('./UpgradeDirective');
 const env_variable = require('./EnvironmentVariable');
-const dirTest = require('./directives/ver1-1-0.js');
+const dirTest = require('./directives/1-1-0.js');
 
 // Promisified functions
 const p_fs_writeFile = promisify(fs.writeFile);
@@ -23,11 +23,6 @@ module.exports = {
     listFoundDirectives: listFoundDirectives,
     writeEnvVariables: writeEnvVariables
 };
-
-// Classes are not hoisted, so need to declare them first.
-
-
-
 
 let loaded_directives = [];
 let hdb_properties = undefined;
@@ -154,3 +149,4 @@ async function readDirectiveFiles(base_path) {
     }
     return loaded_directives;
 }
+
