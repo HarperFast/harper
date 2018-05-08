@@ -7,6 +7,7 @@ module.exports = {
     arrayHasEmptyValues:arrayHasEmptyValues,
     arrayHasEmptyOrZeroLengthValues:arrayHasEmptyOrZeroLengthValues,
     buildFolderPath: buildFolderPath,
+    isBoolean: isBoolean,
     errorizeMessage: errorizeMessage,
     stripFileExtension: stripFileExtension
 };
@@ -86,6 +87,23 @@ function buildFolderPath(...path_elements){
     } catch(e){
         console.error(path_elements);
     }
+}
+
+/**
+ * takes a value and checks if it is a boolean value (true/false)
+ * @param value
+ * @returns {boolean}
+ */
+function isBoolean(value){
+    if(isEmpty(value)){
+        return false;
+    }
+
+    if(value === true || value === false){
+        return true;
+    }
+
+    return false;
 }
 
 /**

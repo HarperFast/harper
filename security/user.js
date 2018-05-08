@@ -1,5 +1,11 @@
 'use strict';
 
+const USERNAME_REQUIRED =  'username is required';
+const ALTERUSER_NOTHING_TO_UPDATE = 'nothing to update, must supply active, role or password to update';
+const EMPTY_PASSWORD = 'password cannot be an empty string';
+const EMPTY_ROLE = 'role cannot be an empty string';
+const ACTIVE_BOOLEAN = 'active must be true or false';
+
 module.exports = {
     addUser: addUser,
     alterUser:alterUser,
@@ -7,29 +13,45 @@ module.exports = {
     userInfo: user_info,
     listUsers: list_users,
     listUsersExternal : listUsersExternal,
-    setUsersToGlobal: setUsersToGlobal
+    setUsersToGlobal: setUsersToGlobal,
+    USERNAME_REQUIRED: USERNAME_REQUIRED,
+    ALTERUSER_NOTHING_TO_UPDATE: ALTERUSER_NOTHING_TO_UPDATE,
+    EMPTY_PASSWORD: EMPTY_PASSWORD,
+    EMPTY_ROLE: EMPTY_ROLE,
+    ACTIVE_BOOLEAN: ACTIVE_BOOLEAN
 };
 
 //requires must be declared after module.exports to avoid cyclical dependency
-const insert = require('../data_layer/insert'),
-    delete_ = require('../data_layer/delete'),
-    password = require('../utility/password'),
-    validation = require('../validation/user_validation'),
-    search = require('../data_layer/search'),
-    signalling  = require('../utility/signalling');
+const insert = require('../data_layer/insert');
+const delete_ = require('../data_layer/delete');
+const password = require('../utility/password');
+const validation = require('../validation/user_validation');
+const search = require('../data_layer/search');
+const signalling  = require('../utility/signalling');
+const hdb_utility = require('../utility/common_utils');
+const validate = require('validate.js');
+
+
+
+const USER_ATTRIBUTE_WHITELIST = {
+    username: true,
+    active: true,
+    role: true,
+    password: true
+};
 
 function addUser(user, callback){
-    let validation_resp = validation.addUserValidation(user);
+    let clean_user = validate.cleanAttributes(user, USER_ATTRIBUTE_WHITELIST);
+
+    let validation_resp = validation.addUserValidation(clean_user);
     if(validation_resp){
         return callback(validation_resp);
     }
-    delete user.hdb_user;
-    delete user.operation;
 
     let search_obj = {
         schema: 'system',
         table : 'hdb_role',
-        hash_values: [user.role],
+        hash_values: [clean_user.role],
         hash_attribute : 'id',
         get_attributes: ['id']
     };
@@ -39,14 +61,14 @@ function addUser(user, callback){
             return callback("Role not found!");
         }
 
-        user.password = password.hash(user.password);
+        clean_user.password = password.hash(clean_user.password);
 
         let insert_object = {
             operation: 'insert',
             schema: 'system',
             table: 'hdb_user',
             hash_attribute: 'username',
-            records: [user]
+            records: [clean_user]
         };
 
         insert.insert(insert_object, function (err, success) {
@@ -58,28 +80,46 @@ function addUser(user, callback){
                     winston.error(err);
                 }
                 signalling.signalUserChange({type: 'user'});
-                callback(null, `${user.username} successfully added`);
+                callback(null, `${clean_user.username} successfully added`);
             });
         });
     });
 }
 
 function alterUser(user, callback){
-    let validation_resp = validation.alterUserValidation(user);
-    if(validation_resp){
-        callback(validation_resp);
-        return;
+    let clean_user = validate.cleanAttributes(user, USER_ATTRIBUTE_WHITELIST);
+
+    if(hdb_utility.isEmptyOrZeroLength(clean_user.username)){
+        return callback(Error(USERNAME_REQUIRED));
     }
 
-    delete user.hdb_user;
-    delete user.operation;
+    if(hdb_utility.isEmptyOrZeroLength(clean_user.password) && hdb_utility.isEmptyOrZeroLength(clean_user.role)
+        && hdb_utility.isEmptyOrZeroLength(clean_user.active)){
+        return callback(Error(ALTERUSER_NOTHING_TO_UPDATE));
+    }
+
+    if(!hdb_utility.isEmpty(clean_user.password) && hdb_utility.isEmptyOrZeroLength(clean_user.password.trim())) {
+        return callback(Error(EMPTY_PASSWORD));
+    }
+
+    if(!hdb_utility.isEmpty(clean_user.active) && !hdb_utility.isBoolean(clean_user.active)) {
+        return callback(Error(ACTIVE_BOOLEAN));
+    }
+
+    if(!hdb_utility.isEmpty(clean_user.password) && !hdb_utility.isEmptyOrZeroLength(clean_user.password.trim())) {
+        clean_user.password = password.hash(clean_user.password);
+    }
+
+    if(!hdb_utility.isEmpty(clean_user.role) && hdb_utility.isEmptyOrZeroLength(clean_user.role.trim())){
+        return callback(Error(EMPTY_ROLE));
+    }
 
     let update_object = {
         operation:'update',
         schema :  'system',
         table:'hdb_user',
         hash_attribute: 'username',
-        records: [user]
+        records: [clean_user]
     };
 
     insert.update(update_object, function(err, success){
@@ -135,7 +175,7 @@ function user_info(body, callback) {
     search_obj.schema = 'system';
     search_obj.table = 'hdb_role';
     search_obj.hash_attribute = 'id';
-    search_obj.hash_values = [user.role];
+    search_obj.hash_values = [user.role.id];
     search_obj.get_attributes = ['*'];
     search.searchByHash(search_obj, function (err, role_data) {
         if (err) {

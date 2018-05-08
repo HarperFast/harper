@@ -1,3 +1,5 @@
+"use strict";
+
 const validate = require('validate.js'),
     validator = require('./validationWrapper.js'),
     moment = require('moment');
@@ -18,15 +20,11 @@ validate.extend(validate.validators.datetime, {
 const constraints = {
     from: {
         presence: false,
-        datetime: {
-            dateOnly: true
-        }
+        datetime: true
     },
     until: {
         presence: false,
-        datetime: {
-            dateOnly: true
-        }
+        datetime: true
     },
     level: {
         presence: false,

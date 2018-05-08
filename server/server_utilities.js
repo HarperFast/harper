@@ -1,19 +1,20 @@
+"use strict";
 
-const write = require('../data_layer/insert'),
-    uuidv1 = require('uuid/v1'),
-    search = require('../data_layer/search'),
-    sql = require('../sqlTranslator/index').evaluateSQL,
-    csv = require('../data_layer/csvBulkLoad'),
-    schema = require('../data_layer/schema'),
-    delete_ = require('../data_layer/delete'),
-    user = require('../security/user'),
-    role = require('../security/role'),
-    read_log = require('../utility/logging/read_logs'),
-    cluster_utilities = require('./clustering/cluster_utilities'),
-    auth = require('../security/auth'),
-    harper_logger = require('../utility/logging/harper_logger'),
-    export_ = require('../data_layer/export'),
-    op_auth = require('../utility/operation_authorization');
+const write = require('../data_layer/insert');
+const uuidv1 = require('uuid/v1');
+const search = require('../data_layer/search');
+const sql = require('../sqlTranslator/index').evaluateSQL;
+const csv = require('../data_layer/csvBulkLoad');
+const schema = require('../data_layer/schema');
+const delete_ = require('../data_layer/delete');
+const user = require('../security/user');
+const role = require('../security/role');
+const read_log = require('../utility/logging/read_logs');
+const cluster_utilities = require('./clustering/cluster_utilities');
+const auth = require('../security/auth');
+const harper_logger = require('../utility/logging/harper_logger');
+const export_ = require('../data_layer/export');
+const op_auth = require('../utility/operation_authorization');
 
 const UNAUTH_RESPONSE = 403;
 const UNAUTHORIZED_TEXT = 'You are not authorized to perform the operation specified';
@@ -98,7 +99,7 @@ function proccessDelegatedTransaction(operation, operation_function, callback) {
         return callback(message, null);
     }
 
-    req = {};
+    let req = {};
     req.headers = {};
     req.headers.authorization = operation.hdb_auth_header;
 
@@ -223,6 +224,9 @@ function chooseOperation(json, callback) {
             break;
         case 'delete_files_before':
             operation_function = delete_.deleteFilesBefore;
+            break;
+        case 'export_local':
+            operation_function = export_.export_local;
             break;
         default:
             break;

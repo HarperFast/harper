@@ -54,16 +54,18 @@ function validation(write_object, callback) {
     if(h_utils.isEmpty(write_object)) {
         return callback(`invalid update parameters defined.`);
     }
-    if(h_utils.isEmptyOrZeroLength(write_object.schema)) {
+    if(h_utils.isEmptyOrZeroLength(write_object.schema) ) {
         return callback(`invalid schema specified.`);
     }
-    if(h_utils.isEmptyOrZeroLength(write_object.table)) {
+    if(h_utils.isEmptyOrZeroLength(write_object.table) ) {
         return callback(`invalid table specified.`);
     }
+
     global_schema.getTableSchema(write_object.schema, write_object.table, (err, table_schema) => {
         if (err) {
             return callback(err);
         }
+
         //validate insert_object for required attributes
         let validator = insert_validator(write_object);
         if (validator) {

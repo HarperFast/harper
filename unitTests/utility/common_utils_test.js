@@ -117,3 +117,58 @@ describe(`Test buildFolderPath`, function(){
         assert.equal(cu.buildFolderPath('opt', 1, 'test', 45, 'data', '333-55'), 'opt/1/test/45/data/333-55');
     });
 });
+
+
+describe(`Test isBoolean`, function(){
+    it(`Pass in null, expect false`, function(){
+        assert.equal(cu.isBoolean(null), false);
+    });
+
+    it(`Pass in undefined, expect false`, function(){
+        assert.equal(cu.isBoolean(undefined), false);
+    });
+
+    it(`Pass in empty string, expect false`, function(){
+        assert.equal(cu.isBoolean(""), false);
+    });
+
+    it(`Pass in spaces, expect false`, function(){
+        assert.equal(cu.isBoolean("   "), false);
+    });
+
+    it(`Pass in string, expect false`, function(){
+        assert.equal(cu.isBoolean("am i false?"), false);
+    });
+
+    it(`Pass in 1, expect false`, function(){
+        assert.equal(cu.isBoolean(1), false);
+    });
+
+    it(`Pass in 0, expect false`, function(){
+        assert.equal(cu.isBoolean(0), false);
+    });
+
+    it(`Pass in number, expect false`, function(){
+        assert.equal(cu.isBoolean(2.3455), false);
+    });
+
+    it(`Pass in array, expect false`, function(){
+        assert.equal(cu.isBoolean([2,'stuff']), false);
+    });
+
+    it(`Pass in object, expect false`, function(){
+        assert.equal(cu.isBoolean({active: true}), false);
+    });
+
+    it(`Pass in true, expect true`, function(){
+        assert.equal(cu.isBoolean(true), true);
+    });
+
+    it(`Pass in false, expect true`, function(){
+        assert.equal(cu.isBoolean(false), true);
+    });
+
+    it(`Pass in evaluation, expect true`, function(){
+        assert.equal(cu.isBoolean(2>1), true);
+    });
+});
