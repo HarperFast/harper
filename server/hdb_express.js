@@ -1,27 +1,26 @@
 const cluster = require('cluster');
 const DEBUG = false;
-const winston = require('../utility/logging/winston_logger');
+const harper_logger = require('../utility/logging/harper_logger');
 const uuidv1 = require('uuid/v1');
 const user_schema = require('../utility/user_schema');
 const async = require('async');
 const insert = require('../data_layer/insert');
-
+const os = require('os');
 
 const DEFAULT_SERVER_TIMEOUT = 120000;
-const UNAUTH_ERROR_MESSAGE = "You are not authorized to perform this action.";
-const PROPS_SERVER_TIMEOUT_KEY = 'SERVER_TIMEOUT_MS',
-    PROPS_PRIVATE_KEY = 'PRIVATE_KEY',
-    PROPS_CERT_KEY = 'CERTIFICATE',
-    PROPS_HTTP_ON_KEY = 'HTTP_ON',
-    PROPS_HTTP_SECURE_ON_KEY = 'HTTPS_ON',
-    PROPS_HTTP_PORT_KEY = 'HTTP_PORT',
-    PROPS_HTTP_SECURE_PORT_KEY = 'HTTPS_PORT',
-    PROPS_CORS_KEY = 'CORS_ON',
-    PROPS_CORS_WHITELIST_KEY = 'CORS_WHITELIST',
-    PROPS_ENV_KEY = 'NODE_ENV',
-    ENV_PROD_VAL = 'production',
-    ENV_DEV_VAL = 'development',
-    TRUE_COMPARE_VAL = 'TRUE';
+const PROPS_SERVER_TIMEOUT_KEY = 'SERVER_TIMEOUT_MS';
+const PROPS_PRIVATE_KEY = 'PRIVATE_KEY';
+const PROPS_CERT_KEY = 'CERTIFICATE';
+const PROPS_HTTP_ON_KEY = 'HTTP_ON';
+const PROPS_HTTP_SECURE_ON_KEY = 'HTTPS_ON';
+const PROPS_HTTP_PORT_KEY = 'HTTP_PORT';
+const PROPS_HTTP_SECURE_PORT_KEY = 'HTTPS_PORT';
+const PROPS_CORS_KEY = 'CORS_ON';
+const PROPS_CORS_WHITELIST_KEY = 'CORS_WHITELIST';
+const PROPS_ENV_KEY = 'NODE_ENV';
+const ENV_PROD_VAL = 'production';
+const ENV_DEV_VAL = 'development';
+const TRUE_COMPARE_VAL = 'TRUE';
 
 PropertiesReader = require('properties-reader');
 hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
@@ -40,7 +39,7 @@ process.env['NODE_ENV'] = node_env_value;
 
 let numCPUs = 4;
 
-let num_workers = require('os').cpus().length;
+let num_workers = os.cpus().length;
 numCPUs = num_workers < numCPUs ? num_workers : numCPUs;
 
 if(DEBUG){
@@ -51,6 +50,7 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
     const search = require('../data_layer/search');
     const cluster_utilities = require('./clustering/cluster_utilities');
     const enterprise_util = require('../utility/enterprise_initialization');
+
     let enterprise = false;
     global.delegate_callback_queue = [];
     let licenseKeySearch = {
@@ -66,7 +66,7 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
     search.searchByValue(licenseKeySearch, function (err, licenses) {
         const hdb_license = require('../utility/hdb_license');
         if (err) {
-            return winston.error(err);
+            return harper_logger.error(err);
         }
 
         async.each(licenses, function (license, callback) {
@@ -80,22 +80,24 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                             numCPUs += 16;
                         }
                     }
-
                 }
                 callback();
             });
         }, function (err) {
-
             if (err)
-                return winston.error(err);
-            winston.info(`Master ${process.pid} is running`);
-            winston.info(`Running with NODE_ENV as: ${process.env.NODE_ENV}`);
+                return harper_logger.error(err);
+            harper_logger.info(`Master ${process.pid} is running`);
+            harper_logger.info(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
             // Fork workers.
             let forks = [];
             for (let i = 0; i < numCPUs; i++) {
-                let forked = cluster.fork();
-                forked.on('message', messageHandler);
-                forks.push(forked);
+                try {
+                    let forked = cluster.fork();
+                    forked.on('message', messageHandler);
+                    forks.push(forked);
+                } catch(e) {
+                    harper_logger.fatal(`Had trouble kicking off new HDB processes.  ${e}`);
+                }
             }
 
             global.forks = forks;
@@ -109,12 +111,25 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                 });
             }
 
-            cluster.on('exit', (worker, code, signal) => {
-                winston.info(`worker ${worker.process.pid} died`);
+            cluster.on('exit', (dead_worker, code, signal) => {
+                harper_logger.info(`worker ${dead_worker.process.pid} died with signal ${signal} and code ${code}`);
+                let new_worker = undefined;
+                try {
+                    new_worker = cluster.fork();
+                    harper_logger.info(`kicked off replacement worker with new pid=${new_worker.process.pid}`);
+                } catch(e) {
+                    harper_logger.fatal(`FATAL error trying to restart a dead_worker with pid ${dead_worker.process.pid}.  ${e}`);
+                    return;
+                }
+                for(let a_fork in global.forks) {
+                    if(global.forks[a_fork].process.pid === dead_worker.process.pid) {
+                        global.forks[a_fork] = new_worker;
+                        harper_logger.trace(`replaced dead fork in global.forks with new fork that has pid ${new_worker.process.pid}`);
+                    }
+                }
             });
 
             global.forkClusterMsgQueue = [];
-
             function messageHandler(msg) {
                 try {
                     if (msg.type === 'clustering_payload') {
@@ -127,31 +142,25 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                             fork.send(msg);
                         });
                     }
-                }catch(e){
-                    winston.error(e);
-
+                } catch(e) {
+                    harper_logger.error(e);
                 }
             }
         });
     });
 } else {
+    harper_logger.info('In express' + process.cwd());
+    harper_logger.info(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
+    const express = require('express');
+    const bodyParser = require('body-parser');
+    const auth = require('../security/auth');
+    const passport = require('passport');
+    const global_schema = require('../utility/globalSchema');
+    const pjson = require('../package.json');
+    const server_utilities = require('./server_utilities');
+    const cors = require('cors');
 
-
-    winston.info('In express' + process.cwd());
-    winston.info(`Running with NODE_ENV as: ${process.env.NODE_ENV}`);
-    const express = require('express'),
-        app = express(),
-        bodyParser = require('body-parser'),
-
-        auth = require('../security/auth'),
-        passport = require('passport'),
-        global_schema = require('../utility/globalSchema'),
-        pjson = require('../package.json'),
-        server_utilities = require('./server_utilities'),
-        clone = require('clone');
-
-    cors = require('cors');
-
+    const app = express();
     hdb_properties.append(hdb_properties.get('settings_path'));
     global.clusterMsgQueue = [];
     let enterprise = false;
@@ -192,7 +201,7 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
 
     app.use(passport.initialize());
     app.get('/', function (req, res) {
-        auth.authorize(req, res, function (err, user) {
+        auth.authorize(req, res, function () {
             let guidePath = require('path');
             res.sendFile(guidePath.resolve('../docs/user_guide.html'));
         });
@@ -212,7 +221,7 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
         }
         auth.authorize(req, res, function (err, user) {
             if (err) {
-                winston.warn(`{"ip":"${req.connection.remoteAddress}", "error":"${err.stack}"`);
+                harper_logger.warn(`{"ip":"${req.connection.remoteAddress}", "error":"${err.stack}"`);
                 if (typeof err === 'string') {
                     return res.status(401).send({error: err});
                 }
@@ -223,7 +232,7 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
 
             server_utilities.chooseOperation(req.body, (err, operation_function) => {
                 if (err) {
-                    winston.error(err);
+                    harper_logger.error(err);
                     if(err === server_utilities.UNAUTH_RESPONSE) {
                         return res.status(403).send({error: server_utilities.UNAUTHORIZED_TEXT});
                     } else {
@@ -243,13 +252,12 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                     ) {
                         if (localOnlyOperations.includes(req.body.operation)) {
                             server_utilities.processLocalTransaction(req, res, operation_function, function (err) {
-                                winston.error(err);
+                                harper_logger.error(err);
                             });
                         } else {
                             server_utilities.processLocalTransaction(req, res, operation_function, function (err) {
                                 if (!err) {
                                     let id = uuidv1();
-                                    //  global.clusterMsgQueue[id] = res;
                                     process.send({
                                         "type": "clustering_payload", "pid": process.pid,
                                         "clustering_type": "broadcast",
@@ -262,7 +270,7 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                     } else {
                         global_schema.getTableSchema(req.body.schema, req.body.table, function (err, table) {
                             if (err) {
-                                winston.error(err);
+                                harper_logger.error(err);
                                 return res.status(500).send(err);
                             }
                             if (table.residence) {
@@ -272,11 +280,9 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                                 }
 
                                 if (residence.indexOf('*') > -1) {
-
                                     server_utilities.processLocalTransaction(req, res, operation_function, function (err) {
                                         if (!err) {
                                             let id = uuidv1();
-                                            //  global.clusterMsgQueue[id] = res;
                                             process.send({
                                                 "type": "clustering_payload", "pid": process.pid,
                                                 "clustering_type": "broadcast",
@@ -294,7 +300,6 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                                                 if (residence[node] != hdb_properties.get('NODE_NAME')) {
 
                                                     let id = uuidv1();
-                                                    // global.clusterMsgQueue[id] = res;
                                                     process.send({
                                                         "type": "clustering_payload", "pid": process.pid,
                                                         "clustering_type": "send",
@@ -356,7 +361,7 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
 
                                     insert.insert(insert_object, function (err, result) {
                                         if (err) {
-                                            winston.error(err);
+                                            harper_logger.error(err);
                                             return callback_(err);
                                         }
                                         return callback_();
@@ -368,7 +373,7 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                                     return res.status(201).send('{"message":"clustering is down. request has been queued and will be processed when clustering reestablishes.  "}');
                                 });
                             } catch (e) {
-                                winston.error(e);
+                                harper_logger.error(e);
                             }
                         }
                     });
@@ -385,14 +390,14 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
             case 'schema':
                 global_schema.schemaSignal((err) => {
                     if (err) {
-                        winston.error(err);
+                        harper_logger.error(err);
                     }
                 });
                 break;
             case 'user':
                 user_schema.setUsersToGlobal((err) => {
                     if (err) {
-                        winston.error(err);
+                        harper_logger.error(err);
                     }
                 });
                 break;
@@ -424,15 +429,25 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
         }
     });
 
+    process.on('uncaughtException', function (err) {
+        let os = require('os');
+        let message = `Found an uncaught exception with message: os.EOL ${err.message}.  Stack: ${err.stack} ${os.EOL} Terminating HDB.`;
+        console.error(message);
+        harper_logger.fatal(message);
+        process.exit(1)
+    });
+
     try {
-        let http = require('http');
-        let httpsecure = require('https');
-        let privateKey = hdb_properties.get(PROPS_PRIVATE_KEY);
-        let certificate = hdb_properties.get(PROPS_CERT_KEY);
-        let credentials = {key: privateKey, cert: certificate};
-        let server_timeout = hdb_properties.get(PROPS_SERVER_TIMEOUT_KEY);
-        let props_http_secure_on = hdb_properties.get(PROPS_HTTP_SECURE_ON_KEY);
-        let props_http_on = hdb_properties.get(PROPS_HTTP_ON_KEY);
+        const http = require('http');
+        const httpsecure = require('https');
+
+        const privateKey = hdb_properties.get(PROPS_PRIVATE_KEY);
+        const certificate = hdb_properties.get(PROPS_CERT_KEY);
+        const credentials = {key: privateKey, cert: certificate};
+        const server_timeout = hdb_properties.get(PROPS_SERVER_TIMEOUT_KEY);
+        const props_http_secure_on = hdb_properties.get(PROPS_HTTP_SECURE_ON_KEY);
+        const props_http_on = hdb_properties.get(PROPS_HTTP_ON_KEY);
+
         let httpServer = undefined;
         let secureServer = undefined;
 
@@ -441,14 +456,14 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
             secureServer = httpsecure.createServer(credentials, app);
             secureServer.setTimeout(server_timeout ? server_timeout : DEFAULT_SERVER_TIMEOUT);
             secureServer.listen(hdb_properties.get(PROPS_HTTP_SECURE_PORT_KEY), function () {
-                winston.info(`HarperDB ${pjson.version} HTTPS Server running on ${hdb_properties.get(PROPS_HTTP_SECURE_PORT_KEY)}`);
+                harper_logger.info(`HarperDB ${pjson.version} HTTPS Server running on ${hdb_properties.get(PROPS_HTTP_SECURE_PORT_KEY)}`);
                 async.parallel(
                     [
                         global_schema.setSchemaDataToGlobal,
                         user_schema.setUsersToGlobal
-                    ], (error, data) => {
+                    ], (error) => {
                         if (error) {
-                            winston.error(error);
+                            harper_logger.error(error);
                         }
                     });
             });
@@ -459,20 +474,19 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
             httpServer = http.createServer(app);
             httpServer.setTimeout(server_timeout ? server_timeout : DEFAULT_SERVER_TIMEOUT);
             httpServer.listen(hdb_properties.get(PROPS_HTTP_PORT_KEY), function () {
-                winston.info(`HarperDB ${pjson.version} HTTP Server running on ${hdb_properties.get(PROPS_HTTP_PORT_KEY)}`);
+                harper_logger.info(`HarperDB ${pjson.version} HTTP Server running on ${hdb_properties.get(PROPS_HTTP_PORT_KEY)}`);
                 async.parallel(
                     [
                         global_schema.setSchemaDataToGlobal,
                         user_schema.setUsersToGlobal
-                    ], (error, data) => {
+                    ], (error) => {
                         if (error) {
-                            winston.error(error);
+                            harper_logger.error(error);
                         }
                     });
             });
         }
     } catch (e) {
-        winston.error(e);
+        harper_logger.error(e);
     }
 }
-
