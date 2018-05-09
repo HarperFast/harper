@@ -222,6 +222,9 @@ function chooseOperation(json, callback) {
         case 'export_to_s3':
             operation_function = export_.export_to_s3;
             break;
+        case 'delete_files_before':
+            operation_function = delete_.deleteFilesBefore;
+            break;
         case 'export_local':
             operation_function = export_.export_local;
             break;
