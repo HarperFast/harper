@@ -6,7 +6,7 @@ const tar = require('tar-fs');
 const CLI = require('clui');
 const request = require("request-promise-native");
 const PropertiesReader = require('properties-reader');
-const harper_logger = require('../utility/logging/harper_logger');
+const log = require('../utility/logging/harper_logger');
 const hdb_util = require('../utility/common_utils');
 const { promisify } = require('util');
 const version = require('./version');
@@ -23,10 +23,12 @@ try {
     hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
     hdb_properties.append(hdb_properties.get('settings_path'));
 } catch (e) {
-    harper_logger.fatal(`There was an error reading settings the properties & settings file. ${e}`);
+    log.fatal(`There was an error reading settings the properties & settings file. ${e}`);
 }
 
 const hdb_base = hdb_properties.get('PROJECT_DIR');
+let Spinner = CLI.Spinner;
+let countdown = new Spinner('Upgrading HarperDB ', ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷']);
 
 module.exports = {
     upgrade: upgrade
@@ -40,7 +42,7 @@ const versions_auth ='Basic dXBncmFkZV91c2VyOl43Snk3JCgmIW45TWpsIV4oSDAzMCUhU3ZF
 
 async function upgrade() {
     if(hdb_util.isEmptyOrZeroLength(hdb_properties) ) {
-        harper_logger.error('the hdb_boot_properties file was not found.  Please install HDB.');
+        log.error('the hdb_boot_properties file was not found.  Please install HDB.');
         console.error('the hdb_boot_properties file was not found.  Please install HDB.');
         return;
     }
@@ -52,12 +54,12 @@ async function upgrade() {
     try {
         build = await getBuild(os);
     } catch (err) {
-        harper_logger.error(err);
+        log.error(err);
         return console.error(err);
     }
 
     let package_json = await p_fs_readFile(hdb_properties.get('PROJECT_DIR') + '/package.json', 'utf8').catch(err => {
-        harper_logger.error(err);
+        log.error(err);
         return console.error(err);
     });
 
@@ -66,7 +68,7 @@ async function upgrade() {
     }
     let found_directives = await process_directives.readDirectiveFiles(hdb_base);
     executeUpgrade(build[0]);
-    await processDirectives(version.version(), build[0].product_version);
+    await startUpgradeDirectives(version.version(), build[0].product_version);
 }
 
 async function getBuild(os) {
@@ -91,11 +93,11 @@ async function getBuild(os) {
     try {
         res = await request(options);
     } catch (e) {
-        harper_logger.error(`There was an error with the request to get the latest HDB Build: ${e}`);
+        log.error(`There was an error with the request to get the latest HDB Build: ${e}`);
         throw new Error("Error getting latest build");
     }
     if(!res || !res.body || hdb_util.isEmptyOrZeroLength(res.body)) {
-        harper_logger.error(`Got empty response from the HDB Version server`);
+        log.error(`Got empty response from the HDB Version server`);
         throw new Error("Got empty response from the HDB Version server");
     }
     return res.body;
@@ -128,8 +130,6 @@ function findOs() {
 }
 
 function executeUpgrade(build) {
-    let  Spinner = CLI.Spinner;
-    let countdown = new Spinner('Upgrading HarperDB ', ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷']);
 
     countdown.start();
 
@@ -154,24 +154,24 @@ function executeUpgrade(build) {
             let stream = fs.createReadStream(upgradeFolder + '' + path);
             stream.pipe(tar.extract(upgradeFolder));
             stream.on('error', function (err) {
-                harper_logger.error(err);
+                log.error(err);
                 return console.error(err);
             });
             stream.on('close', async function () {
                 await p_fs_unlink(hdb_properties.get('PROJECT_DIR') + '/bin/harperdb').catch(err => {
-                    harper_logger.error(err);
+                    log.error(err);
                     return console.error(err);
                 });
                 await p_fs_rename(upgradeFolder + 'HarperDB/bin/harperdb', hdb_properties.get('PROJECT_DIR') + '/bin/harperdb').catch(err => {
-                    harper_logger.error(err);
+                    log.error(err);
                     return console.error(err);
                 });
                 await p_fs_rename(upgradeFolder + 'HarperDB/package.json', hdb_properties.get('PROJECT_DIR') + '/package.json').catch(err => {
-                    harper_logger.error(err);
+                    log.error(err);
                     return console.error(err);
                 });
                 await p_fs_rename(upgradeFolder + 'HarperDB/user_guide.html', hdb_properties.get('PROJECT_DIR') + '/user_guide.html').catch(err => {
-                    harper_logger.error(err);
+                    log.error(err);
                     return console.error(err);
                 });
             });
@@ -179,31 +179,14 @@ function executeUpgrade(build) {
     });
 }
 
-/**
- * Get old_version list of version directives to run during an upgrade.  Can be used via [<versions>].sort(compareVersions)
- * @param old_version
- * @param new_version_number
- * @returns {*}
- */
-function compareVersions (old_version, new_version_number) {
-    var i, diff;
-    var regExStrip0 = /(\.0+)+$/;
-    var segmentsA = old_version.version.replace(regExStrip0, '').split('.');
-    var segmentsB = new_version_number.version.replace(regExStrip0, '').split('.');
-    var l = Math.min(segmentsA.length, segmentsB.length);
-
-    for (i = 0; i < l; i++) {
-        diff = parseInt(segmentsA[i], 10) - parseInt(segmentsB[i], 10);
-        if (diff) {
-            return diff;
-        }
+async function startUpgradeDirectives(old_version_number, new_version_number) {
+    let found_directives = await process_directives.readDirectiveFiles(hdb_base);
+    if(hdb_util.isEmptyOrZeroLength(found_directives)) {
+        log.info('No upgrade directives found.');
+        countdown.stop();
+        return;
     }
-    return segmentsA.length - segmentsB.length;
-}
-
-
-async function processDirectives(old_version_number, new_version_number) {
-
+    await process_directives.processDirectives(old_version_number, new_version_number);
     countdown.stop();
     console.log('HarperDB has been upgraded to ' + build.product_version);
 }
