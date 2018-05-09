@@ -132,15 +132,17 @@ function write_log(level, message) {
     switch(log_type) {
         case WIN:
             //WINSTON
-            if(win_logger === undefined) {
+            if(!win_logger) {
                 initWinstonLogger();
+                trace(`initialized winston logger writing to ${log_location}`);
             }
             win_logger.log(level, message);
             break;
         case PIN:
             //PINO
-            if(pin_logger === undefined) {
+            if(!pin_logger) {
                 initPinoLogger();
+                trace(`initialized winston logger writing to ${log_location}`);
             }
             pin_logger[level](message);
             break;
@@ -229,8 +231,7 @@ function setLogLevel(level) {
         log_level = level;
         global.log_level = level;
     } else {
-        write_log(ERR, `Log level could not be updated to ${level}, that level is not valid.`);
-        return;
+        write_log(INFO, `Log level could not be updated to ${level}, that level is not valid.`);
     }
 }
 
