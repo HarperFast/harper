@@ -1,9 +1,11 @@
+"use strict";
 const server_utilities = require('../server_utilities'),
     winston = require('../../utility/logging/winston_logger'),
     retry = require('retry-as-promised'),
     ioc = require('socket.io-client'),
     schema = require('../../data_layer/schema'),
     _ = require('lodash');
+const async = require('async');
 
 
 class Socket_Client {
@@ -14,8 +16,6 @@ class Socket_Client {
 
     establishConnections(next) {
         try {
-            const async = require('async');
-
             let node = this.node;
 
             async.each(node.other_nodes, function (o_node, caller) {
@@ -138,7 +138,7 @@ class Socket_Client {
                                 });
 
                                 let missing_attrs = _.difference(their_attributes, my_attributes);
-                                for(attr in missing_attrs){
+                                for(let attr in missing_attrs){
                                     missing_attributes.push(this_schema + "." + table +"."+  missing_attrs[attr]);
                                 }
                             }
