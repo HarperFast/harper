@@ -48,7 +48,7 @@ function createSchema(schema_create_object, callback) {
             }
 
             signalling.signalSchemaChange({type: 'schema'});
-            addAndRemoveFromQueue(schema_create_object, success, callback);
+            return callback(null, success);
         });
     } catch (e) {
         callback(e);
@@ -115,7 +115,7 @@ function createTable(create_table_object, callback) {
             }
 
             signalling.signalSchemaChange({type: 'schema'});
-            addAndRemoveFromQueue(create_table_object, success, callback);
+            return callback(null, success);
         });
     } catch (e) {
         callback(e);
@@ -334,7 +334,7 @@ function dropSchema(drop_schema_object, callback) {
             signalling.signalSchemaChange({type: 'schema'});
 
             delete global.hdb_schema[drop_schema_object.schema];
-            addAndRemoveFromQueue(drop_schema_object, success, callback);
+            return callback(null, success);
         });
     } catch (e) {
         winston.error(e);
@@ -351,7 +351,7 @@ function dropTable(drop_table_object, callback) {
             }
 
             signalling.signalSchemaChange({type: 'schema'});
-            addAndRemoveFromQueue(drop_table_object, success, callback);
+            return callback(null, success);
         });
     } catch (e) {
         callback(e);
@@ -370,7 +370,7 @@ function dropAttribute(drop_attribute_object, callback) {
                 callback(err);
                 return;
             }
-            addAndRemoveFromQueue(drop_attribute_object, success, callback);
+            return callback(null, success);
         });
     } catch (e) {
         callback(e);
@@ -702,13 +702,8 @@ function createAttribute(create_attribute_object, callback) {
                     "body": create_attribute_object
                 });
 
-
-
-
-
                 signalling.signalSchemaChange({type: 'schema'});
-                addAndRemoveFromQueue(create_attribute_object, success, callback);
-                return callback();
+                return callback(null, success);
 
             });
 
@@ -721,8 +716,7 @@ function createAttribute(create_attribute_object, callback) {
                 }
 
                 signalling.signalSchemaChange({type: 'schema'});
-                addAndRemoveFromQueue(create_attribute_object, success, callback);
-
+                return callback(null, success);
             });
         }
 
@@ -731,20 +725,4 @@ function createAttribute(create_attribute_object, callback) {
     } catch (e) {
         callback(e);
     }
-}
-
-function addAndRemoveFromQueue(ops_object, success_message, callback) {
-    schema_ops.addToQueue(ops_object, function (err, id) {
-        if (err) {
-            callback(err);
-            return;
-        }
-        schema_ops.addToQueue(id, function (err) {
-            if (err) {
-                callback(err);
-                return;
-            }
-            callback(null, success_message);
-        });
-    });
 }
