@@ -10,9 +10,6 @@ const os = require('os');
 const fs = require('fs');
 const path = require('path');
 const PropertiesReader = require('properties-reader');
-const upgrade_directive = require('./UpgradeDirective');
-const env_variable = require('./EnvironmentVariable');
-const dirTest = require('./directives/1-1-0.js');
 const hdb_utils = require('../../common_utils');
 
 // Promisified functions
@@ -21,13 +18,12 @@ const p_fs_readdir = promisify(fs.readdir);
 
 module.exports = {
     readDirectiveFiles: readDirectiveFiles,
-    listFoundDirectives: listFoundDirectives,
     writeEnvVariables: writeEnvVariables,
     processDirectives: processDirectives
 };
 
 let loaded_directives = [];
-let comments = [];
+let comments = Object.create(null);
 let hdb_properties = undefined;
 let hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
 hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
@@ -43,11 +39,23 @@ try {
     log.info("Could not set hdb_base and settings_file_path" + e);
 }
 
+/**
+ * Iterates through the directives files to find uninstalled updates and runs the files.
+ * @param curr_version - The version of HDB at this point.
+ * @param upgrade_version - The desired upgrade version
+ * @returns {Promise<void>}
+ */
 async function processDirectives(curr_version, upgrade_version) {
     if(hdb_util.isEmptyOrZeroLength(loaded_directives)) {
         console.error(`No directive files found.  Exiting.`);
         log.error(`No directive files found.  Exiting.`);
         process.exit(1);
+    }
+    if(hdb_util.isEmptyOrZeroLength(curr_version)) {
+        log.info(`Invalid value for curr_version`);
+    }
+    if(hdb_util.isEmptyOrZeroLength(upgrade_version)) {
+        log.info(`Invalid value for curr_version`);
     }
     let upgrade_directives = getVersionsToInstall(curr_version);
     for(let vers of upgrade_directives) {
@@ -57,25 +65,39 @@ async function processDirectives(curr_version, upgrade_version) {
         // Update Environment variables
         updateEnvironmentVariable(vers.environment_variables);
         // Run Functions
-        runFunctions(vers.functions);
+        await runFunctions(vers.functions);
     }
     await writeEnvVariables();
 }
 
+/**
+ * Creates all directories specified in a directive file.
+ * @param directive_paths
+ * @returns {Promise<void>}
+ */
 async function createDirectories(directive_paths) {
     if(hdb_util.isEmptyOrZeroLength(directive_paths)) {
         log.info('No upgrade directories to create.');
         return;
     }
     for(let dir_path of directive_paths) {
+        // This is synchronous
         makeDirectory(path.join(hdb_base, dir_path));
     }
 }
 
-async function updateEnvironmentVariable(directive_variables) {
+/**
+ * Update the properties reader object with env variables specified in the directives
+ * @param directive_variables - Variables from a directives object
+ */
+function updateEnvironmentVariable(directive_variables) {
+    if(hdb_util.isEmptyOrZeroLength(directive_variables)) {
+        log.info(`No upgrade environment variables were found.`);
+        return;
+    }
     for(let dir_var of directive_variables) {
-        if(hdb_properties.get(dir_var.name) === null) {
-            // our current props file doesn't have this var, add it
+        let found_var = hdb_properties.get(dir_var.name);
+        if( found_var === null || dir_var.force_value_update) {
             hdb_properties.set(dir_var.name, dir_var.value);
         }
         if(!hdb_util.isEmptyOrZeroLength(dir_var.comments)) {
@@ -86,15 +108,28 @@ async function updateEnvironmentVariable(directive_variables) {
 
 // TODO: The functions data member may need to be a map with a function as a key and
 // arguments as the value.  For now, don't allow values passed into functions.
+/**
+ * Runs the functions specified in a directive object.
+ * @param directive_functions
+ * @returns {Promise<void>}
+ */
 async function runFunctions(directive_functions) {
+    if(hdb_util.isEmptyOrZeroLength(directive_functions)) {
+        log.info('No functions found to run for upgrade');
+        return;
+    }
     for(let func of directive_functions) {
         await func();
     }
 }
 
+/**
+ * Write the environment variables updated in the
+ * @returns {Promise<void>}
+ */
 async function writeEnvVariables() {
     try {
-        p_fs_writeFile(settings_file_path, stringifyProps(hdb_properties, comments));
+        await p_fs_writeFile(settings_file_path, stringifyProps(hdb_properties, comments));
     } catch (e) {
         console.error('There was a problem writing the settings file.  Please check the install log for details.');
         log.error(e);
@@ -108,37 +143,52 @@ async function writeEnvVariables() {
     }
 }
 
+/**
+ * Takes a PropertiesReader object and converts it to a string so it can be printed to a file.
+ * @param prop_reader_object
+ * @param comments
+ * @returns {string}
+ */
 function stringifyProps(prop_reader_object, comments) {
-    let lines = [];
+    if(hdb_util.isEmpty(prop_reader_object)) {
+        log.info('Properties object is null');
+        return "";
+    }
+    let lines = "";
     let section = null;
     prop_reader_object.each(function (key, value) {
         let tokens = key.split('.');
         if (tokens.length > 1) {
             if (section !== tokens[0]) {
                 section = tokens[0];
-                lines.push('[' + section + ']');
+                lines += ('[' + section + ']');
             }
             key = tokens.slice(1).join('.');
         } else {
             section = null;
         }
-        if(comments[key] !== null) {
+        if(comments && comments[key]) {
             let curr_comments = comments[key];
             for(let comm of curr_comments) {
-                lines.push(';' + comm + os.EOL);
+                lines += (';' + comm + os.EOL);
             }
         }
-        lines.push(key + '=' + value);
+        lines += key + '=' + value + os.EOL;
     });
     return lines;
 }
 
-async function writeDirectory(var_rel_path) {
-
-}
-
 //TODO: Should probably make this async, but not a huge priority since this only is called during an upgrade.
+/**
+ * Recursively create directory specified.
+ * @param targetDir - Directory to create
+ * @param isRelativeToScript - Defaults to false, if true will use curr directory as the base path
+ */
 function makeDirectory(targetDir, {isRelativeToScript = false} = {}) {
+    if(hdb_util.isEmptyOrZeroLength()) {
+        log.info(`Invalid directory path.`);
+        return;
+    }
     const sep = path.sep;
     const initDir = path.isAbsolute(targetDir) ? sep : '';
     const baseDir = isRelativeToScript ? __dirname : '.';
@@ -159,10 +209,11 @@ function makeDirectory(targetDir, {isRelativeToScript = false} = {}) {
     }, initDir);
 }
 
-function listFoundDirectives() {
-    return loaded_directives;
-}
-
+/**
+ * Read all directive files in a path and require them for use.
+ * @param base_path - Base path to find the directives dir from.
+ * @returns {Promise<Array>}
+ */
 async function readDirectiveFiles(base_path) {
     const directive_path = path.join(base_path, 'utility', 'install', 'installRequirements', 'directives');
     let files = undefined;
@@ -188,6 +239,11 @@ async function readDirectiveFiles(base_path) {
     return loaded_directives;
 }
 
+/**
+ * Based on the current version, find all upgrade directives that need to be installed to make this installation current.
+ * @param curr_version_num - The current versrion of HDB.
+ * @returns {Array}
+ */
 function getVersionsToInstall(curr_version_num) {
     if(hdb_util.isEmptyOrZeroLength(curr_version_num)) {
         return [];
@@ -195,8 +251,7 @@ function getVersionsToInstall(curr_version_num) {
     if(hdb_util.isEmptyOrZeroLength(loaded_directives)) {
         return [];
     }
-    let versions_modules_to_run = [];
-    versions_modules_to_run = loaded_directives.sort(compareVersions).filter( function(curr_version) {
+    let versions_modules_to_run = loaded_directives.sort(compareVersions).filter( function(curr_version) {
         return curr_version.version > curr_version_num;
     });
     return versions_modules_to_run;
@@ -209,13 +264,19 @@ function getVersionsToInstall(curr_version_num) {
  * @returns {*}
  */
 function compareVersions (old_version, new_version_number) {
-    let i, diff;
+    if(hdb_util.isEmptyOrZeroLength(old_version)) {
+        log.info(`Invalid current version sent as parameter.`);
+    }
+    if(hdb_util.isEmptyOrZeroLength(new_version_number)) {
+        log.info(`Invalid upgrade version sent as parameter.`);
+    }
+    let diff;
     let regExStrip0 = /(\.0+)+$/;
     let segmentsA = old_version.version.replace(regExStrip0, '').split('.');
     let segmentsB = new_version_number.version.replace(regExStrip0, '').split('.');
     let l = Math.min(segmentsA.length, segmentsB.length);
 
-    for (i = 0; i < l; i++) {
+    for (let i = 0; i < l; i++) {
         diff = parseInt(segmentsA[i], 10) - parseInt(segmentsB[i], 10);
         if (diff) {
             return diff;

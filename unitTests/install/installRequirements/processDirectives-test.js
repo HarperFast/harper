@@ -5,13 +5,16 @@ const test_util = require('../../test_utils');
 test_util.preTestPrep();
 
 const assert = require('assert');
-let sinon = require('sinon');
-let fs = require('fs');
+const sinon = require('sinon');
+const fs = require('fs');
 
 const rewire = require('rewire');
 const process_directive_rw = rewire('../../../utility/install/installRequirements/processDirectives');
 const upgrade_directive = require('../../../utility/install/installRequirements/UpgradeDirective');
+const env_variable = require('../../../utility/install/installRequirements/EnvironmentVariable');
+
 const BASE = process.cwd();
+let DIR_PATH_BASE = BASE + '/processDirectivesTest/';
 
 describe('Test compareVersions', function() {
     let compareVersions = process_directive_rw.__get__('compareVersions');
@@ -75,6 +78,72 @@ describe('test readDirectiveFiles', function() {
     });
 });
 
+describe('test createDirectories', function() {
+    let createDirectories = process_directive_rw.__get__('createDirectories');
+    process_directive_rw.__set__('settings_file_path', BASE + '/testsettings.js');
+    beforeEach( function() {
+        try {
+            process_directive_rw.__set__('hdb_base', BASE + '/processDirectivesTest/');
+        } catch(e) {
+            console.error(e);
+        }
+        process_directive_rw.__set__('loaded_directives', [ver1_1_module]);
+    });
+
+    afterEach( function () {
+        try {
+            test_util.cleanUpDirectories(BASE + '/processDirectivesTest/');
+        } catch(e) {
+            console.error(e);
+        }
+    });
+
+    it('test creating 3 directories', test_util.mochaAsyncWrapper(async () => {
+
+        let dirs_to_create = [
+            DIR_PATH_BASE,
+            DIR_PATH_BASE + 'test1',
+            DIR_PATH_BASE + 'test2'
+        ];
+        await createDirectories(dirs_to_create);
+        assert.equal(fs.existsSync(DIR_PATH_BASE), true);
+        assert.equal(fs.existsSync(DIR_PATH_BASE + 'test1'), true);
+        assert.equal(fs.existsSync(DIR_PATH_BASE + 'test2'), true);
+    }));
+    it('test empty directory array', test_util.mochaAsyncWrapper(async () => {
+        let dirs_to_create = [];
+        await createDirectories(dirs_to_create);
+        assert.equal(fs.existsSync(DIR_PATH_BASE), false);
+    }));
+});
+
+describe('test updateEnvironmentVariable', function() {
+    let updateEnvironmentVariable = process_directive_rw.__get__('updateEnvironmentVariable');
+    let props_value = process_directive_rw.__get__('hdb_properties');
+    it('test adding new variable', test_util.mochaAsyncWrapper(async () => {
+        let new_var = new env_variable("TEST_VAR", "big_test", null);
+        await updateEnvironmentVariable([new_var]);
+        let new_props = process_directive_rw.__get__('hdb_properties');
+        assert.equal(new_props.get("TEST_VAR") === 'big_test', true);
+    }));
+    it('test updating existing with new value', test_util.mochaAsyncWrapper(async () => {
+        let update_var = new env_variable("HTTP_PORT", "12345", null);
+        update_var.force_value_update = true;
+        await updateEnvironmentVariable([update_var]);
+        let new_props = process_directive_rw.__get__('hdb_properties');
+        assert.equal(new_props.get("HTTP_PORT"),'12345', true);
+    }));
+    it('test updating comments', test_util.mochaAsyncWrapper(async () => {
+        let update_var = new env_variable("HTTP_PORT", "12345", null);
+        update_var.comments = ['test'];
+        await updateEnvironmentVariable([update_var]);
+        let comments = process_directive_rw.__get__('comments');
+        assert.equal(comments["HTTP_PORT"].length,1, true);
+    }));
+});
+
+
+
 describe('test processDirectives', function() {
     let ver1_1_module = undefined;
     let processDirectives = process_directive_rw.__get__('processDirectives');
@@ -88,6 +157,14 @@ describe('test processDirectives', function() {
             console.error(e);
         }
         process_directive_rw.__set__('loaded_directives', [ver1_1_module]);
+    });
+
+    afterEach( function () {
+       try {
+           test_util.cleanUpDirectories(BASE + '/processDirectivesTest/');
+       } catch(e) {
+           console.error(e);
+       }
     });
 
     it('test with middle version number, expect 1 returned.', async function() {

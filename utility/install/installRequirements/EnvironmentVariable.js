@@ -21,6 +21,9 @@ class EnvironmentVariable {
         // be an individual comment.  Each string will be prefixed with a ';', which is a .ini file
         // directory denoting a comment.  Each string in the array will have a newline character appended.
         this.comments = comments;
+        // This should be manually set to true if the value currently set in the settings file needs to be
+        // updated to this value.
+        this.force_value_update = false;
     }
 }
 
