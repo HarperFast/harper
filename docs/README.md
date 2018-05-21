@@ -6,7 +6,8 @@
 2. [Running HarperDB](#running-harperdb)
 3. [Stopping HarperDB](#stopping-harperdb)
 4. [CRUD Samples](#crud-samples)
-5. [Need Help?](#need-help)
+5. [HarperDB Studio](#harperdb-studio)
+6. [Need Help?](#need-help)
 
 
 ## Getting Started
