@@ -100,6 +100,10 @@ from top to bottom to learn how to create, populate, and query our sample 'dog' 
 Sample code is also available in many common languages in the sample code pane.  Select the language you want from the drop down and 
 paste the code. See the Postman documentation on supported languages here: https://www.getpostman.com/docs/postman/sending_api_requests/generate_code_snippets
 
+## HarperDB Studio
+Need a UI? HarperDB Studio is a web based UI for managing users, roles, and your schema. The HarperDB Studio also enables you to run NoSQL & SQL queries, create charts, save your favorite queries & charts and share them via live links to your organization.
+http://harperdb.io/studio
+
 ## Need Help
 
 -contact us via email: support@harperdb.io
