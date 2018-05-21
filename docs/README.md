@@ -5,9 +5,11 @@
 1. [Getting Started](#getting-started)
 2. [Running HarperDB](#running-harperdb)
 3. [Stopping HarperDB](#stopping-harperdb)
-4. [CRUD Samples](#crud-samples)
-5. [HarperDB Studio](#harperdb-studio)
-6. [Need Help?](#need-help)
+4. [Restarting HarperDB](#restarting-harperdb)
+5. [Check HarperDB Version](#check-harperdb-version)
+6. [CRUD Samples](#crud-samples)
+7. [HarperDB Studio](#harperdb-studio)
+8. [Need Help?](#need-help)
 
 
 ## Getting Started
@@ -103,6 +105,7 @@ paste the code. See the Postman documentation on supported languages here: https
 
 ## HarperDB Studio
 Need a UI? HarperDB Studio is a web based UI for managing users, roles, and your schema. The HarperDB Studio also enables you to run NoSQL & SQL queries, create charts, save your favorite queries & charts and share them via live links to your organization.
+
 http://harperdb.io/studio
 
 ## Need Help
