@@ -1,54 +1,148 @@
-"use strict";
+'use strict';
 
 const uuidV4 = require('uuid/v4');
 const insert = require('../data_layer/insert');
 const search = require('../data_layer/search');
-const search_object = require('../data_layer/SearchObject');
+const Search_Object = require('../data_layer/SearchObject');
+const SQL_Search_Object = require('../data_layer/SqlSearchObject');
+const Delete_Object = require('../data_layer/DeleteObject');
 const hdb_terms = require('../utility/hdbTerms');
 const Job_Object = require('./JobObject');
 const log = require('../utility/logging/harper_logger');
 const Insert_Object = require('../data_layer/InsertObject');
 const hdb_util = require('../utility/common_utils');
 const {promisify} = require('util');
+const moment = require('moment');
+const hdb_sql = require('../sqlTranslator/index');
+const hdb_delete = require('../data_layer/delete');
 
 //Promisified functions
 const p_search_by_value = promisify(search.searchByValue);
 const p_insert = promisify(insert.insert);
+const p_sql_evaluate = promisify(hdb_sql.evaluateSQL);
+const p_delete = promisify(hdb_delete.delete);
 
 module.exports = {
+	jobHandler: jobHandler,
     addJob: addJob
 };
 
+function jobHandler(json_body, callback) {
+	switch(json_body.operation) {
+		case 'add_job':
+			addJob(json_body).then( (result) => {
+				log.trace(`Added job with type ${json_body.job_type}`);
+                return callback(null, result);
+			}).catch(function caughtError(err) {
+                let message = `There was an error adding a job: ${err}`;
+				log.error(message);
+                return callback(message, null);
+			});
+			break;
+		case 'search_jobs_by_start_date':
+            getJobsInDateRange(json_body).then( (result) => {
+                log.trace(`Searching for jobs from ${json_body.from_date} to ${json_body.to_date}`);
+                if(result && result.length > 0) {
+                    for(let curr_res of result) {
+                        if (curr_res.start_datetime) {
+                            curr_res.start_datetime_converted = moment(curr_res.start_datetime);
+                        }
+                        if (curr_res.end_datetime) {
+                            curr_res.end_datetime_converted = moment(curr_res.end_datetime);
+                        }
+                    }
+                }
+                return callback(null, result);
+            }).catch(function caughtError(err) {
+                let message = `There was an error searching jobs by date: ${err}`;
+                log.error(message);
+                return callback(message, null);
+            });
+			break;
+		case 'search_jobs_by_id':
+                getJobById(json_body).then( (result) => {
+                    log.trace(`Searching for jobs from ${json_body.from_date} to ${json_body.to_date}`);
+                    if(result && result.length > 0) {
+                        for(let curr_res of result) {
+                            if (curr_res.start_datetime) {
+                                curr_res.start_datetime_converted = moment(curr_res.start_datetime);
+                            }
+                            if (curr_res.end_datetime) {
+                                curr_res.end_datetime_converted = moment(curr_res.end_datetime);
+                            }
+                        }
+                    }
+                    return callback(null, result);
+                }).catch(function caughtError(err) {
+                    let message = `There was an error searching jobs by date: ${err}`;
+                    log.error(message);
+                    return callback(message, null);
+                });
+			break;
+		case 'delete_job':
+            deleteJobById(json_body).then( (result) => {
+                log.trace(`Searching for jobs from ${json_body.from_date} to ${json_body.to_date}`);
+                if(result && result.length > 0) {
+                    for(let curr_res of result) {
+                        if (curr_res.start_datetime) {
+                            curr_res.start_datetime_converted = moment(curr_res.start_datetime);
+                        }
+                        if (curr_res.end_datetime) {
+                            curr_res.end_datetime_converted = moment(curr_res.end_datetime);
+                        }
+                    }
+                }
+                return callback(null, result);
+            }).catch(function caughtError(err) {
+                let message = `There was an error searching jobs by date: ${err}`;
+                log.error(message);
+                return callback(message, null);
+            });
+			break;
+		default:
+			break;
+	}
+}
+
 /**
  * Add a job to the job schema.
- * @param job - job descriptor defined in the endpoint.
+ * @param json_body - job descriptor defined in the endpoint.
  * @returns {Promise<*>}
  */
-async function addJob(job) {
-    if(hdb_util.isEmptyOrZeroLength(job) || hdb_util.isEmptyOrZeroLength(job.job_type)) {
+async function addJob(json_body) {
+    if(hdb_util.isEmptyOrZeroLength(json_body) || hdb_util.isEmptyOrZeroLength(json_body.job_type)) {
         log.info(`job parameter is invalid`);
+        return false;
+	}
+	
+    // Check for valid job type.
+    if(!hdb_terms.JOB_TYPE_ENUM[json_body.job_type]) {
+        log.info(`invalid job type specified: ${json_body.job_type}.`);
         return false;
     }
 
-    // Check for valid job type.
-    if(!hdb_terms.JOB_TYPE_ENUM[job.job_type]) {
-	    log.info(`invalid job type specified: ${job.job_type}.`);
-	    return false;
-    }
-
-    let new_job = new Job_Object(uuidV4(), job.job_type, '', job.hdb_user);
-    let search_obj = new search_object(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.JOB_TABLE_NAME, 'id', new_job.id, 'id', 'id');
-    let found_job = await p_search_by_value(search_obj);
+    let new_job = new Job_Object(uuidV4(), json_body.job_type, '', json_body.hdb_user);
+    let search_obj = new Search_Object(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.JOB_TABLE_NAME, 'id', new_job.id, 'id', 'id');
+    let found_job = await p_search_by_value(search_obj).catch(function caughtError(e) {
+        let message = `There was an error inserting a new job: ${e}`;
+        log.error(message);
+        return false;
+    });
     //TODO: Once https://harperdb.atlassian.net/browse/HDB-501 is resolved, this check is no longer needed.
     let found_values = (Array.isArray(found_job) ? found_job : Object.keys(found_job));
+
     // It is highly unlikely that we will ever get into this, as a UUID duplicate is very rare.  Just in case we
     // do have a collision, we regenerate an ID and search again.  The odds of 2 collisions are so astronomically high
-    // that we will just throw an error assuming there is bad input somewhere.
+    // that we will just throw an error assuming there is bad input causing the issue.
     if(found_values && found_values.length > 0) {
         new_job.id = uuidV4();
-        found_job = await p_search_by_value(search_obj);
-	    //TODO: Once https://harperdb.atlassian.net/browse/HDB-501 is resolved, this check is no longer needed.
-	    found_values = (Array.isArray(found_job) ? found_job : Object.keys(found_job));
+        found_job = await p_search_by_value(search_obj).catch(function caughtError(e) {
+            let message = `There was an error inserting a new job: ${e}`;
+            log.error(message);
+            return false;
+        });
+        //TODO: Once https://harperdb.atlassian.net/browse/HDB-501 is resolved, this check is no longer needed.
+        found_values = (Array.isArray(found_job) ? found_job : Object.keys(found_job));
         if(found_values && found_values.length > 0) {
             log.error('Error creating a job, could not find a unique job id.');
             return false;
@@ -56,5 +150,50 @@ async function addJob(job) {
     }
 
     let insert_object = new Insert_Object('insert', hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.JOB_TABLE_NAME, 'id', [new_job]);
-    return await p_insert(insert_object);
+    let insert_result = undefined;
+    try {
+        insert_result = await p_insert(insert_object);
+    } catch (e) {
+        log.error(`There was an error inserting a job for job type: ${json_body.job_type} -- ${e}`);
+    }
+	let return_result = { message: ''};
+	if(insert_result.inserted_hashes.length === 0) {
+		return_result.message = `Had a problem creating a job with type ${new_job.type} and id ${new_job.id}`;
+	} else {
+        return_result.message = `Created a job with type ${new_job.type} and id ${new_job.id}`;
+    }
+	return return_result;
+}
+
+async function getJobsInDateRange(json_body) {
+	let parsed_date_left = moment(json_body.from_date, moment.ISO_8601);
+	let parsed_date_right = moment(json_body.to_date, moment.ISO_8601);
+
+    let job_search_sql = `select * from system.hdb_job where start_datetime > '${parsed_date_left.valueOf()}' and start_datetime < '${parsed_date_right.valueOf()}'`;
+    let sql_search_obj = new SQL_Search_Object(job_search_sql, json_body.hdb_user);
+
+    try {
+        return await p_sql_evaluate(sql_search_obj);
+    } catch (e) {
+        log.error(`there was a problem searching for jobs from date ${json_body.from_date} to date ${json_body.to_date} ${e}` );
+        return hdb_util.errorizeMessage(`there was an error searching for jobs.  Please check the log for details.`);
+    }
+}
+
+async function getJobById(json_body) {
+    let search_obj = new Search_Object(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.JOB_TABLE_NAME, 'id', json_body.id, 'id', ['*']);
+    return await p_search_by_value(search_obj).catch(function caughtError(e) {
+        let message = `There was an error searching for a job by id: ${json_body.id} ${e}`;
+        log.error(message);
+        return hdb_util.errorizeMessage(`there was an error searching for jobs.  Please check the log for details.`);
+    });
+}
+
+async function deleteJobById(json_body) {
+    let delete_obj = new Delete_Object(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.JOB_TABLE_NAME, [json_body.id]);
+    return await p_delete(delete_obj).catch(function caughtError(e) {
+        let message = `There was an error deleting a job by id: ${json_body.id} ${e}`;
+        log.error(message);
+        return hdb_util.errorizeMessage(`there was an deleting job with id ${json_body.id}.  Please check the log for details.`);
+    });
 }

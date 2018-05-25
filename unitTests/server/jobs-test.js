@@ -18,12 +18,7 @@ describe('Test addJob', function() {
     let search_stub = undefined;
     let insert_stub = undefined;
     let sandbox = null;
-    beforeEach(function() {
-		sandbox = sinon.sandbox.create();
-    });
-    after(function() {
-        sandbox.restore();
-    });
+    describe('Test addJob', function() {
 	it('nominal case, add a job to the schema.', test_util.mochaAsyncWrapper(async function() {
 	    // we are not testing insert or search so stub them.
 	   insert_stub = sandbox.stub().returns(true);
@@ -83,4 +78,3 @@ describe('Test addJob', function() {
 		assert.equal(add_result, false);
 	}));
 });
-
