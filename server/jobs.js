@@ -34,7 +34,7 @@ module.exports = {
 /**
  * Handles all job related messages.  This function accepts a callback to remain compatible with chooseOperation.
  * @param json_body - The inbound message
- * @param callback - callback are supp
+ * @param callback - callback is supported to remain compatible with chooseOperation.
  * @returns {*}
  */
 function jobHandler(json_body, callback) {
