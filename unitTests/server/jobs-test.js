@@ -50,7 +50,7 @@ describe('Test jobHandler', function() {
     });
 
     it('nominal case, call addJob.', function(done) {
-        addJob_stub = sandbox.stub(jobs, "addJob").resolves(ADD_JOB_SUCCESS);
+        addJob_stub = sandbox.stub().resolves(ADD_JOB_SUCCESS);
         jobs.__set__('addJob', addJob_stub);
 
         let test_request = {};
@@ -71,7 +71,7 @@ describe('Test jobHandler', function() {
     });
 
     it('call addJob, throw an error to test catch.', function(done) {
-        addJob_stub = sandbox.stub(jobs, "addJob").rejects(new Error('Oh Noes!'));
+        addJob_stub = sandbox.stub().rejects(new Error('Oh Noes!'));
         jobs.__set__('addJob', addJob_stub);
 
         let test_request = {};
