@@ -43,7 +43,6 @@
     "moment": "^2.20.1",
     "net": "^1.0.2",
     "node-forge": "^0.7.1",
-    "node-ls": "0.0.4",
     "node-schedule": "^1.2.5",
     "nodejs-license-file": "^1.1.0",
     "optimist": "^0.6.1",
