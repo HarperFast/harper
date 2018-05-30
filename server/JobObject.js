@@ -3,6 +3,9 @@
 const hdb_term = require('../utility/hdbTerms');
 const moment = require('moment');
 
+/**
+ * This class represents a Job as it resides in the jobs table.
+ */
 class JobObject {
     constructor(id, job_type, message, user) {
         this.id = id;

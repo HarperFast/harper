@@ -1,5 +1,8 @@
 "use strict";
 
+/**
+ * This class represents the data that is passed into a Sql search.
+ */
 class SqlSearchObject {
     constructor(sql_command, user) {
         this.operation = "sql";

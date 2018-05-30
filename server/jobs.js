@@ -1,5 +1,10 @@
 'use strict';
 
+/**
+ * The jobs class is used to enable operations on the jobs system table.  The jobHandler function is the only
+ * exposed method to simplify the interaction.
+ */
+
 const uuidV4 = require('uuid/v4');
 const insert = require('../data_layer/insert');
 const search = require('../data_layer/search');
@@ -26,6 +31,12 @@ module.exports = {
 	jobHandler: jobHandler
 };
 
+/**
+ * Handles all job related messages.  This function accepts a callback to remain compatible with chooseOperation.
+ * @param json_body - The inbound message
+ * @param callback - callback are supp
+ * @returns {*}
+ */
 function jobHandler(json_body, callback) {
 	switch(json_body.operation) {
 		case 'add_job':
@@ -164,6 +175,11 @@ async function addJob(json_body) {
 	return result;
 }
 
+/**
+ * Get jobs in a range of dates by comparing start date of the job.
+ * @param json_body - The inbound message
+ * @returns {Promise<*>}
+ */
 async function getJobsInDateRange(json_body) {
 	let parsed_from_date = moment(json_body.from_date, moment.ISO_8601);
 	let parsed_to_date = moment(json_body.to_date, moment.ISO_8601);
@@ -186,6 +202,11 @@ async function getJobsInDateRange(json_body) {
     }
 }
 
+/**
+ * Get a job by a specific id
+ * @param json_body - The inbound message
+ * @returns {Promise<*>}
+ */
 async function getJobById(json_body) {
     if(hdb_util.isEmptyOrZeroLength(json_body.id)) {
         return hdb_util.errorizeMessage('Invalid job ID specified.');
@@ -200,6 +221,11 @@ async function getJobById(json_body) {
     }
 }
 
+/**
+ * Delete a job by it's ID
+ * @param json_body - The inbound message
+ * @returns {Promise<*>}
+ */
 async function deleteJobById(json_body) {
     if(hdb_util.isEmptyOrZeroLength(json_body.id)) {
         return hdb_util.errorizeMessage('Invalid job ID specified.');

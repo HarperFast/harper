@@ -1,5 +1,8 @@
 "use strict";
 
+/**
+ * This class represents the data that is passed into the delete functions.
+ */
 class DeleteObject {
     constructor(schema, table, hash_values) {
         this.schema = schema;
