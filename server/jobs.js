@@ -185,10 +185,10 @@ async function getJobsInDateRange(json_body) {
 	let parsed_to_date = moment(json_body.to_date, moment.ISO_8601);
 
 	if(!parsed_from_date.isValid()) {
-        return hdb_util.errorizeMessage(`Invalid from date.`);
+        return hdb_util.errorizeMessage(`Invalid 'from' date, must be in ISO-8601 format (YYYY-MM-DD).`);
     }
     if(!parsed_to_date.isValid()) {
-        return hdb_util.errorizeMessage(`Invalid to date.`);
+        return hdb_util.errorizeMessage(`Invalid 'to' date, must be in ISO-8601 format (YYYY-MM-DD)`);
     }
 
     let job_search_sql = `select * from system.hdb_job where start_datetime > '${parsed_from_date.valueOf()}' and start_datetime < '${parsed_to_date.valueOf()}'`;
