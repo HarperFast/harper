@@ -10,6 +10,8 @@ hdb_data=$(pwd)
 	
 	node harperdb run
 	
+#theProc checks to make sure this specific instance of harperdb is running.
+#grep -v grep makes sure theProc does not get the value of the grep process that is being used to grep the harperdb proccess.
 	theProc=$(ps -ef | grep $hdb_express_route/server/hdb_express | grep -v grep);
 
 	if [ "$theProc" ]; then
@@ -20,13 +22,24 @@ hdb_data=$(pwd)
 		node harperdb stop
 	    
 		stopped=$(ps -ef | grep $hdb_express_route/server/hdb_express | grep -v grep)
-		
+#Check variable stop is empty		
 		if [ -z "$stopped" ]; then
 		 					
 		   echo "HarperDB stopped";
 		   echo "Success!!"
-                   echo "clean up"
-                   rm -rf ../hdb_* ../install_* ../hdb/ 
+                   echo "Check Logs for Errors"
+#grep error values in install_log.log
+                   the_errors=$(grep "\"level\":\"error\"" ./../install_log.log)
+                   pico_errors=$(grep "\"level\":\"50\"" ./../install_log.log) 
+#Check variable error for errors                   
+                   if [ "$the_errors" ] || [ "$pico_errors" ] ; then
+		       echo "ERRORS FOUND"
+		       echo "$the_errors"
+                       echo "$pico_errors"
+		   fi
+#remove hdb/ dir and hdb_ files
+                   echo "Clean up"
+                   rm -rf ../hdb_* ../hdb/ 
                    sed -i "s/HDB_PROC_NAME =.*/HDB_PROC_NAME = 'hdb_express.js';/" run.js
                    echo "Exit 0"
 		   exit 0;
