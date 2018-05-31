@@ -6,6 +6,8 @@ const csv=require('csvtojson'),
     async = require('async'),
     validator = require('../validation/csvLoadValidator');
 
+const hdb_utils = require('../utility/common_utils');
+
 module.exports = {
     csvDataLoad: csvDataLoad,
     csvURLLoad: csvURLLoad,
@@ -37,20 +39,18 @@ function csvDataLoad(csv_object, callback){
             })
             .on('done', (error) => {
                 if (error) {
-                    callback(error);
-                    return;
+                    return callback(error);
                 }
 
                 bulkLoad(csv_records, csv_object.schema, csv_object.table, csv_object.action, (err, data) => {
                     if (err) {
-                        callback(err);
-                        return;
+                        return callback(hdb_utils.errorizeMessage(err));
                     }
-                    callback(null, `successfully loaded ${csv_records.length} records`);
+                    return callback(null, `successfully loaded ${csv_records.length} records`);
                 });
             });
     } catch(e){
-        callback(e);
+        return callback(e);
     }
 }
 

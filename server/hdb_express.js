@@ -401,6 +401,9 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                     }
                 });
                 break;
+            case 'job':
+
+                break;
             case 'enterprise':
                 enterprise = msg.enterprise;
                 break;

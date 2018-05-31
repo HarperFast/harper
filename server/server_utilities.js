@@ -15,6 +15,9 @@ const auth = require('../security/auth');
 const harper_logger = require('../utility/logging/harper_logger');
 const export_ = require('../data_layer/export');
 const op_auth = require('../utility/operation_authorization');
+const JobObject = require('./JobObject');
+const jobs = require('jobs');
+const signal = require('../utility/signalling');
 
 const UNAUTH_RESPONSE = 403;
 const UNAUTHORIZED_TEXT = 'You are not authorized to perform the operation specified';
@@ -151,7 +154,7 @@ function chooseOperation(json, callback) {
             operation_function = sql;
             break;
         case 'csv_data_load':
-            operation_function = csv.csvDataLoad;
+            operation_function = signalJob;
             break;
         case 'csv_file_load':
             operation_function = csv.csvFileLoad;
@@ -244,6 +247,11 @@ function chooseOperation(json, callback) {
 
 function nullOperation(json, callback) {
     callback('Invalid operation');
+}
+
+function signalJob(json, callback) {
+    //let new_job_object = new JobObject()
+    //let job_signal_message = signal.JobAddedSignalObject()
 }
 
 function operationParameterValid(operation) {
