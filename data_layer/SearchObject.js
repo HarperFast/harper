@@ -1,5 +1,8 @@
 "use strict";
 
+/**
+ * This class represents the data that is passed into NoSQL searches.
+ */
 class SearchObject {
     constructor(schema, table, search_attribute, search_value, hash_attribute, get_attributes) {
             this.schema = schema;

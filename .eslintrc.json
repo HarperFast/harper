@@ -46,6 +46,7 @@
     "no-confusing-arrow":"error",
     "no-const-assign":"error",
     "no-var":"error",
-    "no-console":"off"
+    "no-console":"off",
+    "no-mixed-spaces-and-tabs": "off"
   }
 }
