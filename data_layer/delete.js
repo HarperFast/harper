@@ -15,7 +15,7 @@ const { promisify } = require('util');
 
 let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
 hdb_properties.append(hdb_properties.get('settings_path'));
-const slash_regex =  /\//g;
+const slash_regex = /\//g;
 const BASE_PATH = common_utils.buildFolderPath(hdb_properties.get('HDB_ROOT'), "schema");
 const HDB_HASH_FOLDER_NAME = '__hdb_hash';
 const BLOB_FOLDER_NAME = 'blob';
@@ -69,6 +69,7 @@ function deleteFilesBefore(json_body, callback) {
     let dir_path = common_utils.buildFolderPath(BASE_PATH, schema, table);
     let deleted_file_count = 0;
 
+	//Intentionally left out a return here, as we want to immediately respond and let processing happen
     callback(null, `Deleting all files before ${json_body.date}, this may take some time.  Note this operation will not propagate deletions to the cluster.`);
     deleteFilesInPath(schema, table, dir_path, parsed_date).then( () => {
         harper_logger.info(`Finished deleting files before ${json_body.date}`);

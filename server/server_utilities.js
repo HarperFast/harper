@@ -16,6 +16,7 @@ const harper_logger = require('../utility/logging/harper_logger');
 const export_ = require('../data_layer/export');
 const op_auth = require('../utility/operation_authorization');
 const JobObject = require('./JobObject');
+const hdb_terms = require('../utility/hdbTerms');
 const jobs = require('jobs');
 const signal = require('../utility/signalling');
 
@@ -230,6 +231,18 @@ function chooseOperation(json, callback) {
             break;
         case 'export_local':
             operation_function = export_.export_local;
+			break;
+		case 'add_job':
+            operation_function = jobs.jobHandler;
+            break;
+        case 'search_jobs_by_start_date':
+            operation_function = jobs.jobHandler;
+            break;
+        case 'search_jobs_by_id':
+            operation_function = jobs.jobHandler;
+            break;
+        case 'delete_job':
+            operation_function = jobs.jobHandler;
             break;
         default:
             break;
@@ -250,7 +263,7 @@ function nullOperation(json, callback) {
 }
 
 function signalJob(json, callback) {
-    //let new_job_object = new JobObject()
+    //let new_job_object = new JobObject(hdb_terms.JOB_TYPE_ENUM.CSV_DATA_LOAD, '', json.hdb_user.name);
     //let job_signal_message = signal.JobAddedSignalObject()
 }
 
