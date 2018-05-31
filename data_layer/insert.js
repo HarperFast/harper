@@ -180,7 +180,7 @@ function insertData(insert_object, callback){
 function updateData(update_object, callback){
     try {
         if (update_object.operation !== 'update') {
-            callback('invalid operation, must be update');
+            return callback('invalid operation, must be update');
         }
         let tracker = {
             all_ids:[],

@@ -20,7 +20,7 @@ const INSERT_RESULT = {
 const JOB_SEARCH_RESULT =
 {
     'user': 'eli',
-    'type': 'EXPORT_TO_S3',
+    'type': 'export_to_s3',
     'status': 'CREATED',
     'start_datetime': 1527638663991,
     'id': '2e358f82-523c-48b0-ab92-46ab52054419'
@@ -230,7 +230,7 @@ describe('Test addJob', function() {
 	   jobs.__set__('p_search_by_value', search_stub);
 	   jobs.__set__('p_insert', insert_stub);
 	   let test_job = {};
-	   test_job.job_type = hdb_term.JOB_TYPE_ENUM.CSV_FILE_UPLOAD;
+	   test_job.job_type = hdb_term.JOB_TYPE_ENUM.csv_file_upload;
 	   test_job.hdb_user = 'test user';
 
 	   let add_result = await addJob(test_job);
@@ -255,7 +255,7 @@ describe('Test addJob', function() {
 		jobs.__set__('p_search_by_value', search_stub);
 		jobs.__set__('p_insert', insert_stub);
 		let test_job = {};
-		test_job.job_type = hdb_term.JOB_TYPE_ENUM.CSV_FILE_UPLOAD;
+		test_job.job_type = hdb_term.JOB_TYPE_ENUM.csv_file_upload;
 		test_job.hdb_user = 'test user';
 
 		let add_result = await addJob(test_job);
@@ -267,7 +267,7 @@ describe('Test addJob', function() {
 		jobs.__set__('p_search_by_value', search_stub);
 		jobs.__set__('p_insert', insert_stub);
 		let test_job = {};
-		test_job.job_type = hdb_term.JOB_TYPE_ENUM.CSV_FILE_UPLOAD;
+		test_job.job_type = hdb_term.JOB_TYPE_ENUM.csv_file_upload;
 		test_job.hdb_user = 'test user';
 
 		let add_result = await addJob(test_job);

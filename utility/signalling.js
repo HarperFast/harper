@@ -1,11 +1,5 @@
 const winston = require('../utility/logging/winston_logger');
 
-module.exports = {
-    signalSchemaChange,
-    signalUserChange,
-    signalJobAdded: signalJobAdded,
-    JobAddedSignalObject: JobAddedSignalObject
-};
 const global_schema = require('../utility/globalSchema');
 
 class JobAddedSignalObject {
@@ -60,3 +54,9 @@ function signalJobAdded(job_added_signal_object){
     }
 }
 
+module.exports = {
+    signalSchemaChange,
+    signalUserChange,
+    signalJobAdded: signalJobAdded,
+    JobAddedSignalObject: JobAddedSignalObject
+};

@@ -17,8 +17,9 @@ const export_ = require('../data_layer/export');
 const op_auth = require('../utility/operation_authorization');
 const JobObject = require('./JobObject');
 const hdb_terms = require('../utility/hdbTerms');
-const jobs = require('jobs');
+const jobs = require('./jobs');
 const signal = require('../utility/signalling');
+const job_parser = require('./jobRunner');
 
 const UNAUTH_RESPONSE = 403;
 const UNAUTHORIZED_TEXT = 'You are not authorized to perform the operation specified';
@@ -232,9 +233,6 @@ function chooseOperation(json, callback) {
         case 'export_local':
             operation_function = export_.export_local;
 			break;
-		case 'add_job':
-            operation_function = jobs.jobHandler;
-            break;
         case 'search_jobs_by_start_date':
             operation_function = jobs.jobHandler;
             break;
@@ -243,6 +241,9 @@ function chooseOperation(json, callback) {
             break;
         case 'delete_job':
             operation_function = jobs.jobHandler;
+            break;
+        case 'update_job':
+            operation_function = jobs.updateJob;
             break;
         default:
             break;
@@ -263,8 +264,29 @@ function nullOperation(json, callback) {
 }
 
 function signalJob(json, callback) {
-    //let new_job_object = new JobObject(hdb_terms.JOB_TYPE_ENUM.CSV_DATA_LOAD, '', json.hdb_user.name);
-    //let job_signal_message = signal.JobAddedSignalObject()
+    let new_job_object = undefined;
+    jobs.addJob(json).then( (result) => {
+        new_job_object = result.createdJob;
+        let job_runner_message = new job_parser.ParserMessage(new_job_object, json);
+        signal.signalJobAdded({type: 'job', runnerMessage: job_runner_message});
+        return callback(null, `Starting job with id ${new_job_object.id}`);
+    }).catch(function caughtError(err) {
+        let message = `There was an error adding a job: ${err}`;
+        harper_logger.error(message);
+        return callback(message, null);
+    });
+
+    /*
+    let response = undefined;
+    job_parser.parseMessage(job_parse_message).then((result) => {
+        response = result;
+    }).catch(function caughtError(err) {
+        let message = `There was an error parsing a job message: ${err}`;
+        harper_logger.error(message);
+        return callback(message, null);
+    });
+    */
+
 }
 
 function operationParameterValid(operation) {

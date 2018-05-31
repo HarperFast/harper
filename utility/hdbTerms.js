@@ -19,13 +19,13 @@ const JOB_TABLE_NAME = 'hdb_job';
 
 // Describes all available job types
 const JOB_TYPE_ENUM = {
-    CSV_FILE_UPLOAD: 'CSV_FILE_UPLOAD',
-    EMPTY_TRASH: 'EMPTY_TRASH',
-    CSV_URL_LOAD: 'CSV_URL_LOAD',
-    CSV_DATA_LOAD: 'CSV_DATA_LOAD',
-    EXPORT_TO_S3: 'EXPORT_TO_S3',
-    EXPORT_LOCAL: 'EXPORT_LOCAL',
-	TTL: 'TTL'
+    csv_file_upload: 'csv_file_upload',
+    empty_trash: 'empty_trash',
+    csv_url_load: 'csv_url_load',
+    csv_data_load: 'csv_data_load',
+    export_to_s3: 'export_to_s3',
+    export_local: 'export_local',
+	delete_files_before: 'delete_files_before'
 };
 
 // Describes the available statuses for jobs

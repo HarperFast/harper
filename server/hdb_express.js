@@ -6,6 +6,7 @@ const user_schema = require('../utility/user_schema');
 const async = require('async');
 const insert = require('../data_layer/insert');
 const os = require('os');
+const job_runner = require('./jobRunner');
 
 const DEFAULT_SERVER_TIMEOUT = 120000;
 const PROPS_SERVER_TIMEOUT_KEY = 'SERVER_TIMEOUT_MS';
@@ -402,7 +403,11 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                 });
                 break;
             case 'job':
-
+                job_runner.parseMessage(msg).then((result) => {
+                    harper_logger.info(`Finished job with id: ${result.success}`);
+                }).catch(function isError(e) {
+                    harper_logger.error(e);
+                });
                 break;
             case 'enterprise':
                 enterprise = msg.enterprise;

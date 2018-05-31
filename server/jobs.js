@@ -20,16 +20,18 @@ const {promisify} = require('util');
 const moment = require('moment');
 const hdb_sql = require('../sqlTranslator/index');
 const hdb_delete = require('../data_layer/delete');
+const UpdateObject = require('../data_layer/UpdateObject');
 
 //Promisified functions
 const p_search_by_value = promisify(search.searchByValue);
 const p_insert = promisify(insert.insert);
 const p_sql_evaluate = promisify(hdb_sql.evaluateSQL);
 const p_delete = promisify(hdb_delete.delete);
-
+const p_insert_update = promisify(insert.update);
 module.exports = {
 	jobHandler: jobHandler,
-    createJob: createJob
+    addJob: addJob,
+    updateJob: updateJob
 };
 
 /**
@@ -92,7 +94,7 @@ function jobHandler(json_body, callback) {
 			break;
 		case 'delete_job':
             deleteJobById(json_body).then( (result) => {
-                log.trace(`Searching for jobs from ${json_body.from_date} to ${json_body.to_date}`);
+                log.trace(`Deleting jobs ${json_body.id}`);
                 return callback(null, result);
             }).catch(function caughtError(err) {
                 let message = `There was an error searching jobs by date: ${err}`;
@@ -100,21 +102,46 @@ function jobHandler(json_body, callback) {
                 return callback(message, null);
             });
 			break;
+        case 'update_job':
+            updateJob(json_body.id, null, null, null, json_body.hdb_user.username).then( (result) => {
+                log.trace(`Updateing for jobs from ${json_body.from_date} to ${json_body.to_date}`);
+                return callback(null, result);
+            }).catch(function caughtError(err) {
+                let message = `There was an error searching jobs by date: ${err}`;
+                log.error(message);
+                return callback(message, null);
+            });
+            break;
 		default:
             return callback('Invalid operation specified.', null);
 	}
 }
 
-/**
- * Exposed function to create a job.
- * @param job_type
- * @param user
- * @param job_body
- * @returns {Promise<void>}
- */
-async function createJob(job_type, user, job_body) {
-    let createdJob = new JobObject(job_type, null, user);
-    createdJob.job_body = job_body;
+async function updateJob(json) {
+    let job_object = new JobObject();
+    if(hdb_util.isEmptyOrZeroLength(json.id)) {
+        return hdb_util.errorizeMessage('invalid ID passed to updateJob');
+    }
+    job_object.id = json.id;
+    if(!hdb_util.isEmptyOrZeroLength(json.status)) {
+        job_object.status = json.job_status;
+    }
+    if(!hdb_util.isEmptyOrZeroLength(json.error)) {
+        job_object.error = json.error;
+    }
+    if(!hdb_util.isEmptyOrZeroLength(json.message)) {
+        job_object.message = json.message;
+    }
+    if(json.status === hdb_terms.JOB_STATUS_ENUM.COMPLETE || json.status === hdb_terms.JOB_STATUS_ENUM.ERROR) {
+        job_object.end_time = moment().valueOf();
+    }
+    if(!hdb_util.isEmptyOrZeroLength(json.hdb_user.username)) {
+        job_object.user = json.hdb_user.username;
+    }
+    let update_object = new UpdateObject(hdb_terms.OPERATIONS_ENUM.UPDATE, hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.JOB_TABLE_NAME, [job_object]);
+    // TODO: Make sure to add the record to the update object.
+    let update_result = await p_insert_update(update_object);
+    return update_result;
 }
 
 /**
@@ -123,19 +150,21 @@ async function createJob(job_type, user, job_body) {
  * @returns {Promise<*>}
  */
 async function addJob(json_body) {
-    let result = { message: '', error: '', success: false};
-    if(hdb_util.isEmptyOrZeroLength(json_body) || hdb_util.isEmptyOrZeroLength(json_body.job_type)) {
-        log.info(`job parameter is invalid`);
+    let result = { message: '', error: '', success: false, createdJob: undefined};
+    if(hdb_util.isEmptyOrZeroLength(json_body) || hdb_util.isEmptyOrZeroLength(json_body.operation)) {
+        let err_msg = `job parameter is invalid`
+        log.info(err_msg);
+        result.error = err_msg;
         return result;
 	}
 	
     // Check for valid job type.
-    if(!hdb_terms.JOB_TYPE_ENUM[json_body.job_type]) {
-        log.info(`invalid job type specified: ${json_body.job_type}.`);
+    if(!hdb_terms.JOB_TYPE_ENUM[json_body.operation]) {
+        log.info(`invalid job type specified: ${json_body.operation}.`);
         return result;
     }
 
-    let new_job = new JobObject(json_body.job_type, '', json_body.hdb_user);
+    let new_job = new JobObject(json_body.operation, '', json_body.hdb_user);
 	let search_obj = new Search_Object(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.JOB_TABLE_NAME, 'id', new_job.id, 'id', 'id');
 	
 	let found_job = undefined;
@@ -174,7 +203,7 @@ async function addJob(json_body) {
     try {
         insert_result = await p_insert(insert_object);
     } catch(e) {
-        log.error(`There was an error inserting a job for job type: ${json_body.job_type} -- ${e}`);
+        log.error(`There was an error inserting a job for job type: ${json_body.operation} -- ${e}`);
         result.success = false;
         return result;
     }
@@ -182,8 +211,11 @@ async function addJob(json_body) {
 	if(insert_result.inserted_hashes.length === 0) {
 		result.message = `Had a problem creating a job with type ${new_job.type} and id ${new_job.id}`;
 	} else {
-        result.message = `Created a job with type ${new_job.type} and id ${new_job.id}`;
+        let result_msg = `Created a job with type ${new_job.type} and id ${new_job.id}`
+        result.message = result_msg;
+        result.createdJob = new_job;
         result.success = true;
+        log.trace(result_msg);
     }
 	return result;
 }
@@ -198,10 +230,10 @@ async function getJobsInDateRange(json_body) {
 	let parsed_to_date = moment(json_body.to_date, moment.ISO_8601);
 
 	if(!parsed_from_date.isValid()) {
-        return hdb_util.errorizeMessage(`Invalid 'from' date, must be in ISO-8601 format (YYYY-MM-DD).`);
+        throw new Error(`Invalid 'from' date, must be in ISO-8601 format (YYYY-MM-DD).`);
     }
     if(!parsed_to_date.isValid()) {
-        return hdb_util.errorizeMessage(`Invalid 'to' date, must be in ISO-8601 format (YYYY-MM-DD)`);
+        throw new Error(`Invalid 'to' date, must be in ISO-8601 format (YYYY-MM-DD)`);
     }
 
     let job_search_sql = `select * from system.hdb_job where start_datetime > '${parsed_from_date.valueOf()}' and start_datetime < '${parsed_to_date.valueOf()}'`;
@@ -211,7 +243,7 @@ async function getJobsInDateRange(json_body) {
         return await p_sql_evaluate(sql_search_obj);
     } catch (e) {
         log.error(`there was a problem searching for jobs from date ${json_body.from_date} to date ${json_body.to_date} ${e}` );
-        return hdb_util.errorizeMessage(`there was an error searching for jobs.  Please check the log for details.`);
+        throw new Error(`there was an error searching for jobs.  Please check the log for details.`);
     }
 }
 

@@ -7,6 +7,10 @@ const csv=require('csvtojson'),
     validator = require('../validation/csvLoadValidator');
 
 const hdb_utils = require('../utility/common_utils');
+const {promisify} = require('util');
+
+// Promisify bulkLoad to avoid more of a refactor for now.
+const p_bulk_load = promisify(bulkLoad);
 
 module.exports = {
     csvDataLoad: csvDataLoad,
@@ -23,16 +27,23 @@ module.exports = {
  * @returns err - any errors found during the bulk load
  *
  */
-function csvDataLoad(csv_object, callback){
+async function csvDataLoad(csv_object){
+    let validation_msg = validator.dataObject(csv_object);
+    if (validation_msg) {
+        throw new Error(validation_msg);
+    }
+
+    let csv_records = [];
+    let bulk_load_result = undefined;
     try {
-        let validation_msg = validator.dataObject(csv_object);
-        if (validation_msg) {
-            return callback(validation_msg);
-        }
+        csv_records = await csv().fromString(csv_object.data);
+        bulk_load_result = await p_bulk_load(csv_records, csv_object.schema, csv_object.table, csv_object.action);
+    } catch(e) {
+        throw new Error(e);
+    }
 
-        let csv_records = [];
-
-        csv()
+    return `successfully loaded ${csv_records.length} records`;
+        /*csv()
             .fromString(csv_object.data)
             .on('json', (jsonObj, rowIndex) => {
                 csv_records.push(jsonObj);
@@ -48,10 +59,7 @@ function csvDataLoad(csv_object, callback){
                     }
                     return callback(null, `successfully loaded ${csv_records.length} records`);
                 });
-            });
-    } catch(e){
-        return callback(e);
-    }
+            }); */
 }
 
 /**
