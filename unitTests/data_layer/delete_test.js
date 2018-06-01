@@ -523,7 +523,7 @@ describe('Test deleteFilesBefore', function () {
         request.date = '2011-02-29';
         delete_rewire.deleteFilesBefore(request, function del(err, msg) {
             try {
-                assert.equal(err.message, 'Invalid date, must be in ISO-8601 format.');
+                assert.equal(err.message, 'Invalid date, must be in ISO-8601 format (YYYY-MM-DD).');
                 done();
             } catch(e) {
                 done(e);

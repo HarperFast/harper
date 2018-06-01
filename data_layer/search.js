@@ -126,7 +126,7 @@ function searchByValue (search_object, callback) {
                     return;
                 }
 
-                callback(null, data);
+                return callback(null, data);
             });
 
         });

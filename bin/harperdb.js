@@ -47,7 +47,7 @@ function harperDBService() {
                 register.register();
                 break;
             case "stop":
-                stop.stop();
+                stop.stop(function(){});
                 break;
             case "restart":
                 stop.stop(function () {

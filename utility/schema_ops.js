@@ -16,7 +16,7 @@ function addToQueue(ops_object, callback){
 
     let id = uuidV4();
     fs.writeFile(`${hdb_properties.get('HDB_ROOT')}/staging/schema_op_queue/${id}.hdb`,
-        ops_object, (err) => {
+        JSON.stringify(ops_object), (err) => {
             if (err) {
                 return callback(err);
 
