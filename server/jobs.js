@@ -13,6 +13,7 @@ const SQL_Search_Object = require('../data_layer/SqlSearchObject');
 const Delete_Object = require('../data_layer/DeleteObject');
 const hdb_terms = require('../utility/hdbTerms');
 const JobObject = require('./JobObject');
+const UpdateObject = require('../data_layer/UpdateObject');
 const log = require('../utility/logging/harper_logger');
 const Insert_Object = require('../data_layer/InsertObject');
 const hdb_util = require('../utility/common_utils');
@@ -26,10 +27,12 @@ const p_search_by_value = promisify(search.searchByValue);
 const p_insert = promisify(insert.insert);
 const p_sql_evaluate = promisify(hdb_sql.evaluateSQL);
 const p_delete = promisify(hdb_delete.delete);
+const p_insert_update = promisify(insert.update);
 
 module.exports = {
 	jobHandler: jobHandler,
-    addJob: addJob
+    addJob: addJob,
+    updateJob: updateJob
 };
 
 /**
@@ -253,4 +256,19 @@ async function deleteJobById(json_body) {
         delete_result.message = message;
     }
     return delete_result;
+}
+
+async function updateJob(job_object) {
+    //let job_object = new JobObject();
+    if(hdb_util.isEmptyOrZeroLength(job_object.id)) {
+        throw new Error('invalid ID passed to updateJob');
+    }
+
+    if(job_object.status === hdb_terms.JOB_STATUS_ENUM.COMPLETE || job_object.status === hdb_terms.JOB_STATUS_ENUM.ERROR) {
+        job_object.end_time = moment().valueOf();
+    }
+
+    let update_object = new UpdateObject(hdb_terms.OPERATIONS_ENUM.UPDATE, hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.JOB_TABLE_NAME, [job_object]);
+    let update_result = await p_insert_update(update_object);
+    return update_result;
 }

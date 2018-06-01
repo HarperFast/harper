@@ -1,3 +1,5 @@
+"use strict";
+
 const csv=require('csvtojson'),
     insert = require('./insert'),
     _ = require('lodash'),

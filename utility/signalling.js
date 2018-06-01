@@ -1,8 +1,8 @@
 const harper_logger = require('../utility/logging/harper_logger');
 const global_schema = require('../utility/globalSchema');
 const process = require('process');
+//const jobs = require('../server/jobs');
 //const job_runner = require('../server/jobRunner');
-const user_schema = require('../utility/user_schema');
 
 class JobAddedSignalObject {
     constructor(job_id, runner_message) {
@@ -42,11 +42,7 @@ function signalUserChange(message){
         if (process.send !== undefined) {
             process.send(message);
         } else {
-            user_schema.setUsersToGlobal((err) => {
-                if (err) {
-                    harper_logger.error(err);
-                }
-            });
+            //TODO: Can't call user schema directly, circular dependency.  FIX THIS,
         }
     } catch(e){
         harper_logger.error(e);
@@ -59,8 +55,7 @@ function signalJobAdded(job_added_signal_object){
         if (process.send !== undefined) {
             process.send(job_added_signal_object);
         } else {
-            //TODO: Can't call job runner directly as it creates a circular dependency.  Find a way around it.
-            //job_runner.parseMessage(job_added_signal_object);
+            //TODO: Can't call job runner or jobs directly as it creates a circular dependency.  Find a way around it.
         }
 
     } catch(e){
