@@ -4,12 +4,11 @@ const fs = require('fs'),
     cipher = crypto.createCipher('aes192', 'a password'),
 
     validation = require('../validation/license_key_object.js'),
-    moment = require('moment'),
-    PropertiesReader = require('properties-reader'),
-    hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
-    hdb_properties.append(hdb_properties.get('settings_path'));
+    moment = require('moment');
+const PropertiesReader = require('properties-reader');
 
-
+let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
+hdb_properties.append(hdb_properties.get('settings_path'));
 
 module.exports = {
     generateLicense: generateLicense,

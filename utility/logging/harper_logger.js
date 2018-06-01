@@ -15,8 +15,9 @@ const pino = require('pino');
 const fs = require('fs');
 
 // read environment settings to get preferred logger and default log level
-const PropertiesReader = require('properties-reader'),
-    hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
+const PropertiesReader = require('properties-reader');
+
+let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
 hdb_properties.append(hdb_properties.get('settings_path'));
 
 //Using numbers rather than strings for faster comparison
