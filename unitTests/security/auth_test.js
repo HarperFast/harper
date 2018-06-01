@@ -326,13 +326,13 @@ let super_user = {
     }
 }
 
-let checkSuper_userPermissionObject = {
+let check_super_user_permission_object = {
     schema: "dev",
     table: "dog",
     operation: "insert"
 }
 
-let permissionObjectNoRole = {
+let permission_object_no_role = {
     user: {
         role: {
         }
@@ -362,15 +362,15 @@ describe('Test checkPermissions function', function () {
     });
 
     it('no permission role in object should error ', function (done) {
-        auth.checkPermissions(permissionObjectNoRole, function (err, result) {
+        auth.checkPermissions(permission_object_no_role, function (err, result) {
             assert.equal(err, 'Invalid role', 'Invalid role');
             done();
         });
     });
 
     it('super_user permission can authorized', function (done) {        
-        checkSuper_userPermissionObject.user = super_user;
-        auth.checkPermissions(checkSuper_userPermissionObject, function (err, result) {
+        check_super_user_permission_object.user = super_user;
+        auth.checkPermissions(check_super_user_permission_object, function (err, result) {
             assert.equal(err, null, 'no error');
             assert.equal(result.authorized, true, "super user can has permission");
             done();
