@@ -267,26 +267,15 @@ function signalJob(json, callback) {
     let new_job_object = undefined;
     jobs.addJob(json).then( (result) => {
         new_job_object = result.createdJob;
-        let job_runner_message = new job_parser.ParserMessage(new_job_object, json);
-        signal.signalJobAdded({type: 'job', runnerMessage: job_runner_message});
+        let job_runner_message = new job_parser.RunnerMessage(new_job_object, json);
+        let job_signal_message = new signal.JobAddedSignalObject(new_job_object.id, job_runner_message);
+        signal.signalJobAdded(job_signal_message);
         return callback(null, `Starting job with id ${new_job_object.id}`);
     }).catch(function caughtError(err) {
         let message = `There was an error adding a job: ${err}`;
         harper_logger.error(message);
         return callback(message, null);
     });
-
-    /*
-    let response = undefined;
-    job_parser.parseMessage(job_parse_message).then((result) => {
-        response = result;
-    }).catch(function caughtError(err) {
-        let message = `There was an error parsing a job message: ${err}`;
-        harper_logger.error(message);
-        return callback(message, null);
-    });
-    */
-
 }
 
 function operationParameterValid(operation) {

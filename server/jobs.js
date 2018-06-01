@@ -20,18 +20,16 @@ const {promisify} = require('util');
 const moment = require('moment');
 const hdb_sql = require('../sqlTranslator/index');
 const hdb_delete = require('../data_layer/delete');
-const UpdateObject = require('../data_layer/UpdateObject');
 
 //Promisified functions
 const p_search_by_value = promisify(search.searchByValue);
 const p_insert = promisify(insert.insert);
 const p_sql_evaluate = promisify(hdb_sql.evaluateSQL);
 const p_delete = promisify(hdb_delete.delete);
-const p_insert_update = promisify(insert.update);
+
 module.exports = {
 	jobHandler: jobHandler,
-    addJob: addJob,
-    updateJob: updateJob
+    addJob: addJob
 };
 
 /**
@@ -102,46 +100,9 @@ function jobHandler(json_body, callback) {
                 return callback(message, null);
             });
 			break;
-        case 'update_job':
-            updateJob(json_body.id, null, null, null, json_body.hdb_user.username).then( (result) => {
-                log.trace(`Updateing for jobs from ${json_body.from_date} to ${json_body.to_date}`);
-                return callback(null, result);
-            }).catch(function caughtError(err) {
-                let message = `There was an error searching jobs by date: ${err}`;
-                log.error(message);
-                return callback(message, null);
-            });
-            break;
 		default:
             return callback('Invalid operation specified.', null);
 	}
-}
-
-async function updateJob(json) {
-    let job_object = new JobObject();
-    if(hdb_util.isEmptyOrZeroLength(json.id)) {
-        return hdb_util.errorizeMessage('invalid ID passed to updateJob');
-    }
-    job_object.id = json.id;
-    if(!hdb_util.isEmptyOrZeroLength(json.status)) {
-        job_object.status = json.job_status;
-    }
-    if(!hdb_util.isEmptyOrZeroLength(json.error)) {
-        job_object.error = json.error;
-    }
-    if(!hdb_util.isEmptyOrZeroLength(json.message)) {
-        job_object.message = json.message;
-    }
-    if(json.status === hdb_terms.JOB_STATUS_ENUM.COMPLETE || json.status === hdb_terms.JOB_STATUS_ENUM.ERROR) {
-        job_object.end_time = moment().valueOf();
-    }
-    if(!hdb_util.isEmptyOrZeroLength(json.hdb_user.username)) {
-        job_object.user = json.hdb_user.username;
-    }
-    let update_object = new UpdateObject(hdb_terms.OPERATIONS_ENUM.UPDATE, hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.JOB_TABLE_NAME, [job_object]);
-    // TODO: Make sure to add the record to the update object.
-    let update_result = await p_insert_update(update_object);
-    return update_result;
 }
 
 /**
@@ -164,7 +125,9 @@ async function addJob(json_body) {
         return result;
     }
 
-    let new_job = new JobObject(json_body.operation, '', json_body.hdb_user);
+    let new_job = new JobObject();
+    new_job.type = json_body.operation;
+    new_job.user = json_body.hdb_user.username;
 	let search_obj = new Search_Object(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.JOB_TABLE_NAME, 'id', new_job.id, 'id', 'id');
 	
 	let found_job = undefined;
@@ -209,7 +172,7 @@ async function addJob(json_body) {
     }
 
 	if(insert_result.inserted_hashes.length === 0) {
-		result.message = `Had a problem creating a job with type ${new_job.type} and id ${new_job.id}`;
+		result.message = `Had a problem creating a job with type ${new_job.operation} and id ${new_job.id}`;
 	} else {
         let result_msg = `Created a job with type ${new_job.type} and id ${new_job.id}`
         result.message = result_msg;

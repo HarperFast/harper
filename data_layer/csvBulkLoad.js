@@ -18,10 +18,9 @@ module.exports = {
     csvFileLoad: csvFileLoad
 };
 /**
- * Load a csv file.
+ * Load a csv values specified in the message 'data' field.
  *
  * @param csv_object - An object representing the CSV file.
- * @param callback
  * @returns validation_msg - Contains any validation errors found
  * @returns error - any errors found reading the csv file
  * @returns err - any errors found during the bulk load
@@ -42,24 +41,7 @@ async function csvDataLoad(csv_object){
         throw new Error(e);
     }
 
-    return `successfully loaded ${csv_records.length} records`;
-        /*csv()
-            .fromString(csv_object.data)
-            .on('json', (jsonObj, rowIndex) => {
-                csv_records.push(jsonObj);
-            })
-            .on('done', (error) => {
-                if (error) {
-                    return callback(error);
-                }
-
-                bulkLoad(csv_records, csv_object.schema, csv_object.table, csv_object.action, (err, data) => {
-                    if (err) {
-                        return callback(hdb_utils.errorizeMessage(err));
-                    }
-                    return callback(null, `successfully loaded ${csv_records.length} records`);
-                });
-            }); */
+    return `successfully loaded ${bulk_load_result.inserted_hashes.length} records`;
 }
 
 /**
