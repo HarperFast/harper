@@ -20,53 +20,53 @@ global.hdb_users = [
 ];
 
 
-var activeBasicRequest = {
+let activeBasicRequest = {
     headers: {
         authorization: 'Basic ' + Buffer.from("nook:1234!").toString('base64')
     }
 }
 
-var invalidPasswordBasicRequest = {
+let invalidPasswordBasicRequest = {
     headers: {
         authorization: 'Basic ' + Buffer.from("nook:1234").toString('base64')
     }
 }
 
-var unactiveBasicRequest = {
+let unactiveBasicRequest = {
     headers: {
         authorization: 'Basic ' + Buffer.from("unactivenook:1234!").toString('base64')
 
     }
 }
 
-var invalidBasicUser = {
+let invalidBasicUser = {
     headers: {
         authorization: 'Basic ' + Buffer.from("nonook:1234").toString('base64')
     }
 }
 
-var activeOtherRequest = {
+let activeOtherRequest = {
     body: {
         username: 'nook',
         password: '1234!'
     }
 }
 
-var invalidPasswordOtherRequest = {
+let invalidPasswordOtherRequest = {
     body: {
         username: 'nook',
         password: '1234'
     }
 }
 
-var unactiveOtherRequest = {
+let unactiveOtherRequest = {
     body: {
         username: 'unactivenook',
         password: '1234!'
     }
 }
 
-var invalidOtherUser = {
+let invalidOtherUser = {
     body: {
         username: 'nouser',
         password: '1234!'
@@ -137,7 +137,7 @@ describe('Test authorize function', function () {
 });
 
 
-var checkPermissionEmptyObject = {
+let checkPermissionEmptyObject = {
     user: {
     },
     schema: {
@@ -146,7 +146,7 @@ var checkPermissionEmptyObject = {
     }
 
 }
-var noSchemaUser = {
+let noSchemaUser = {
     role: {
         permission: JSON.stringify({
             super_user: false,
@@ -154,7 +154,7 @@ var noSchemaUser = {
     }
 }
 
-var noTableUser = {
+let noTableUser = {
     role: {
         permission: JSON.stringify({
             super_user: false,
@@ -166,7 +166,7 @@ var noTableUser = {
     }
 }
 
-var noInsertPermissionUser = {
+let noInsertPermissionUser = {
     role: {
         permission: JSON.stringify({
             super_user: false,
@@ -181,7 +181,7 @@ var noInsertPermissionUser = {
     }
 }
 
-var missingAttributeUser = {
+let missingAttributeUser = {
     role: {
         permission: JSON.stringify({
             super_user: false,
@@ -199,7 +199,7 @@ var missingAttributeUser = {
     }
 }
 
-var AttributeReadAllFalseUser = {
+let AttributeReadAllFalseUser = {
     role: {
         permission: JSON.stringify({
             super_user: false,
@@ -225,7 +225,7 @@ var AttributeReadAllFalseUser = {
     }
 }
 
-var AttributeReadSomeFalseUser = {
+let AttributeReadSomeFalseUser = {
     role: {
         permission: JSON.stringify({
             super_user: false,
@@ -251,7 +251,7 @@ var AttributeReadSomeFalseUser = {
     }
 }
 
-var user = {
+let user = {
     role: {
         permission: JSON.stringify({
             super_user: false,
@@ -277,7 +277,7 @@ var user = {
     }
 }
 
-var noRestrictAttributeUser = {
+let noRestrictAttributeUser = {
     role: {
         permission: JSON.stringify({
             super_user: false,
@@ -293,14 +293,14 @@ var noRestrictAttributeUser = {
     }
 }
 
-var checkPermissionNoattributesObject = {
+let checkPermissionNoattributesObject = {
     schema: "dev",
     table: "dog",
     operation: "insert",
     attributes: false
 }
 
-var checkPermissionObject = {
+let checkPermissionObject = {
 
     schema: "dev",
     table: "dog",
@@ -311,7 +311,7 @@ var checkPermissionObject = {
     ]
 }
 
-var super_user = {
+let super_user = {
     role: {
         permission: JSON.stringify({
             super_user: true,
@@ -326,13 +326,13 @@ var super_user = {
     }
 }
 
-var checkSuper_userPermissionObject = {
+let checkSuper_userPermissionObject = {
     schema: "dev",
     table: "dog",
     operation: "insert"
 }
 
-var permissionObjectNoRole = {
+let permissionObjectNoRole = {
     user: {
         role: {
         }
