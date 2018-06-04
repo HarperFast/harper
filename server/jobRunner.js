@@ -25,42 +25,42 @@ class RunnerMessage {
     }
 }
 
-async function parseMessage(message) {
+async function parseMessage(runner_message) {
     let response = new RunnerResponse(false,"","");
-    response.job_id = message.runner_message.job.id;
-    if(hdb_util.isEmptyOrZeroLength(message.runner_message.json.operation)) {
+    response.job_id = runner_message.runner_message.job.id;
+    if(hdb_util.isEmptyOrZeroLength(runner_message.runner_message.json.operation)) {
         throw new Error('Invalid operation');
     }
-    if(hdb_util.isEmptyOrZeroLength(message.runner_message.job.id)) {
+    if(hdb_util.isEmptyOrZeroLength(runner_message.runner_message.job.id)) {
         throw new Error('Empty job id specified');
     }
-    response.job_id = message.runner_message.job.id;
+    response.job_id = runner_message.runner_message.job.id;
     let result_message = undefined;
-    switch(message.runner_message.json.operation) {
+    switch(runner_message.runner_message.json.operation) {
         case hdb_terms.JOB_TYPE_ENUM.csv_file_upload:
             break;
         case hdb_terms.JOB_TYPE_ENUM.csv_url_load:
             break;
         case hdb_terms.JOB_TYPE_ENUM.csv_data_load:
             try {
-                message.runner_message.job.status = hdb_terms.JOB_STATUS_ENUM.IN_PROGRESS;
-                message.runner_message.job.start_datetime = moment().valueOf();
-                await jobs.updateJob(message.runner_message.job);
-                result_message = await csv_bulk_load.csvDataLoad(message.runner_message.json);
+                runner_message.runner_message.job.status = hdb_terms.JOB_STATUS_ENUM.IN_PROGRESS;
+                runner_message.runner_message.job.start_datetime = moment().valueOf();
+                await jobs.updateJob(runner_message.runner_message.job);
+                result_message = await csv_bulk_load.csvDataLoad(runner_message.runner_message.json);
                 log.info(`performed bulk load with result ${result_message}`);
             } catch(e) {
-                let err_message =`There was an error running csv_data_load job with id ${message.runner_message.job.id} - ${e}`;
+                let err_message =`There was an error running csv_data_load job with id ${runner_message.runner_message.job.id} - ${e}`;
                 log.error(err_message);
-                message.runner_message.job.message = err_message;
-                message.runner_message.job.status = hdb_terms.JOB_STATUS_ENUM.ERROR;
-                message.runner_message.job.end_datetime = moment().valueOf();
-                await jobs.updateJob(message.runner_message.job);
+                runner_message.runner_message.job.message = err_message;
+                runner_message.runner_message.job.status = hdb_terms.JOB_STATUS_ENUM.ERROR;
+                runner_message.runner_message.job.end_datetime = moment().valueOf();
+                await jobs.updateJob(runner_message.runner_message.job);
                 throw new Error(err_message + e);
             }
-            message.runner_message.job.status = hdb_terms.JOB_STATUS_ENUM.COMPLETE;
-            message.runner_message.job.status = result_message;
-            message.runner_message.job.end_datetime = moment().valueOf();
-            await jobs.updateJob(message.runner_message.job);
+            runner_message.runner_message.job.status = hdb_terms.JOB_STATUS_ENUM.COMPLETE;
+            runner_message.runner_message.job.status = result_message;
+            runner_message.runner_message.job.end_datetime = moment().valueOf();
+            await jobs.updateJob(runner_message.runner_message.job);
             response.message = result_message;
             response.success = true;
             break;
@@ -73,7 +73,7 @@ async function parseMessage(message) {
         case hdb_terms.JOB_TYPE_ENUM.delete_files_before:
             break;
         default:
-            response.error = `Invalid operation ${message.operation} specified`;
+            response.error = `Invalid operation ${runner_message.operation} specified`;
             break;
     }
     return response;

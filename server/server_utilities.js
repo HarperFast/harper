@@ -19,7 +19,7 @@ const JobObject = require('./JobObject');
 const hdb_terms = require('../utility/hdbTerms');
 const jobs = require('./jobs');
 const signal = require('../utility/signalling');
-const job_parser = require('./jobRunner');
+const job_runner = require('./jobRunner');
 
 const UNAUTH_RESPONSE = 403;
 const UNAUTHORIZED_TEXT = 'You are not authorized to perform the operation specified';
@@ -267,9 +267,14 @@ function signalJob(json, callback) {
     let new_job_object = undefined;
     jobs.addJob(json).then( (result) => {
         new_job_object = result.createdJob;
-        let job_runner_message = new job_parser.RunnerMessage(new_job_object, json);
+        let job_runner_message = new job_runner.RunnerMessage(new_job_object, json);
         let job_signal_message = new signal.JobAddedSignalObject(new_job_object.id, job_runner_message);
-        signal.signalJobAdded(job_signal_message);
+        if (process.send !== undefined) {
+            signal.signalJobAdded(job_signal_message);
+        } else {
+            job_runner.parseMessage(job_signal_message);
+        }
+
         return callback(null, `Starting job with id ${new_job_object.id}`);
     }).catch(function caughtError(err) {
         let message = `There was an error adding a job: ${err}`;

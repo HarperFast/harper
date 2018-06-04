@@ -1,8 +1,6 @@
 const harper_logger = require('../utility/logging/harper_logger');
 const global_schema = require('../utility/globalSchema');
 const process = require('process');
-//const jobs = require('../server/jobs');
-//const job_runner = require('../server/jobRunner');
 
 class JobAddedSignalObject {
     constructor(job_id, runner_message) {
@@ -55,7 +53,7 @@ function signalJobAdded(job_added_signal_object){
         if (process.send !== undefined) {
             process.send(job_added_signal_object);
         } else {
-            //TODO: Can't call job runner or jobs directly as it creates a circular dependency.  Find a way around it.
+            harper_logger.warn('Only 1 process is running, but a signal has been invoked.  Signals will be ignored when only 1 process is running.');
         }
 
     } catch(e){
