@@ -130,9 +130,6 @@ function checkPermissions(check_permission_obj, callback) {
         return;
     }
 
-    if (err) {
-        return callback(err);
-    }
 
 
     let authoriziation_obj = {
