@@ -64,6 +64,9 @@ sleep 10s
 
 #Check Clustering by adding schema, table, data, select.
 newman run https://api.getpostman.com/collections/4f5d17b0-e923-e7c0-feb9-f80dbcf1764a?apikey=fe1dfb2c3647474f8f3e9d836783e694 --environment https://api.getpostman.com/environments/e8201aee-1a99-7de7-4910-62c0e0e6b755?apikey=fe1dfb2c3647474f8f3e9d836783e694 --folder clustered
+sleep 2s
+#Let data distribute after adding data
+newman run https://api.getpostman.com/collections/4f5d17b0-e923-e7c0-feb9-f80dbcf1764a?apikey=fe1dfb2c3647474f8f3e9d836783e694 --environment https://api.getpostman.com/environments/e8201aee-1a99-7de7-4910-62c0e0e6b755?apikey=fe1dfb2c3647474f8f3e9d836783e694 --folder data_wait
 
 echo "DONE"
 }
