@@ -1,3 +1,5 @@
+"use strict";
+
 const turf = require('@turf/turf');
 
 module.exports = {
