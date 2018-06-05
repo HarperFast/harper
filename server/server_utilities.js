@@ -15,6 +15,7 @@ const auth = require('../security/auth');
 const harper_logger = require('../utility/logging/harper_logger');
 const export_ = require('../data_layer/export');
 const op_auth = require('../utility/operation_authorization');
+const jobs = require('./jobs');
 
 const UNAUTH_RESPONSE = 403;
 const UNAUTHORIZED_TEXT = 'You are not authorized to perform the operation specified';
@@ -227,6 +228,18 @@ function chooseOperation(json, callback) {
             break;
         case 'export_local':
             operation_function = export_.export_local;
+			break;
+		case 'add_job':
+            operation_function = jobs.jobHandler;
+            break;
+        case 'search_jobs_by_start_date':
+            operation_function = jobs.jobHandler;
+            break;
+        case 'search_jobs_by_id':
+            operation_function = jobs.jobHandler;
+            break;
+        case 'delete_job':
+            operation_function = jobs.jobHandler;
             break;
         default:
             break;

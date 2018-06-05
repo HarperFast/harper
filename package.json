@@ -5,7 +5,8 @@
   "main": "run.js",
   "bin": "./bin/run.js",
   "scripts": {
-    "test": "cd bin/ && nyc --reporter=html mocha ../unitTests --watch --recursive"
+    "test": "cd bin/ && nyc --reporter=html mocha ../unitTests --watch --recursive",
+    "hdb-check": "./utility/devops/hdb-check.sh"
   },
   "author": "HarperDB, Inc.",
   "license": "ISC",
@@ -44,7 +45,6 @@
     "moment": "^2.20.1",
     "net": "^1.0.2",
     "node-forge": "^0.7.1",
-    "node-ls": "0.0.4",
     "node-schedule": "^1.2.5",
     "nodejs-license-file": "^1.1.0",
     "optimist": "^0.6.1",
@@ -88,9 +88,9 @@
   },
   "devDependencies": {
     "assert": "^1.4.1",
-    "mocha": "^4.1.0",
-    "nyc": "^11.4.1",
-    "rewire": "^3.0.2",
-    "sinon": "^4.2.1"
+    "mocha": "^5.2.0",
+    "nyc": "^11.8.0",
+    "rewire": "^4.0.1",
+    "sinon": "^5.0.10"
   }
 }

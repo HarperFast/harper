@@ -53,8 +53,37 @@
   },
   "hdb_role":{
     "hash_attribute":"id",
-    "name":"hdb_user",
+    "name":"hdb_role",
     "schema":"system",
+    "residence":["*"]
+  },
+  "hdb_job":{
+    "hash_attribute":"id",
+    "name":"hdb_job",
+    "schema":"system",
+    "attributes":[
+      {
+        "attribute":"user"
+      },
+      {
+        "attribute":"type"
+      },
+      {
+        "attribute":"status"
+      },
+      {
+        "attribute":"start_datetime"
+      },
+      {
+        "attribute":"end_datetime"
+      },
+      {
+        "attribute":"job_body"
+      },
+      {
+        "attribute":"message"
+      }
+    ],
     "residence":["*"]
   },
   "hdb_license":{

@@ -5,22 +5,23 @@
  * it's own winston instance.
  */
 
-const prompt = require('prompt'),
-    spawn = require('child_process').spawn,
-    path = require('path'),
-    mount = require('./../mount_hdb'),
-    fs = require('fs.extra'),
-    colors = require("colors/safe"),
-    winston = require('winston'),
-    async = require('async'),
-    optimist = require('optimist'),
-    LOG_LOCATION = ('../install_log.log'),
-    forge = require('node-forge');
+const prompt = require('prompt');
+const spawn = require('child_process').spawn;
+const path = require('path');
+const mount = require('./../mount_hdb');
+const fs = require('fs.extra');
+const colors = require("colors/safe");
+const winston = require('winston');
+const async = require('async');
+const optimist = require('optimist');
+const forge = require('node-forge');
 const terms_address = 'http://legal.harperdb.io/Software+License+Subscription+Agreement+110317.pdf';
-PropertiesReader = require('properties-reader');
-let hdb_boot_properties = null,
-    hdb_properties = null;
+const PropertiesReader = require('properties-reader');
 
+let hdb_boot_properties = null;
+let hdb_properties = null;
+
+const LOG_LOCATION = ('../install_log.log');
 module.exports = {
     "install": run_install
 };
@@ -88,11 +89,10 @@ function termsAgreement(callback) {
     prompt.get(terms_schema, function (err, result) {
         if( err ) { return callback(err); }
         if(result.TC_AGREEMENT === 'yes' || result.TC_AGREEMENT === 'y') {
-            callback(null, true);
-        } else {
-            winston.error('Terms and Conditions agreement was refused.');
-            return callback('REFUSED', false);
+            return callback(null, true);
         }
+        winston.error('Terms and Conditions agreement was refused.');
+        return callback('REFUSED', false);
     });
 }
 
@@ -235,9 +235,10 @@ function wizard(err, callback) {
 }
 
 function createAdminUser(callback) {
+    // These need to be defined here since they use the hdb_boot_properties file, but it has not yet been created
+    // in the installer.
     const user_ops = require('../../security/user');
     const role_ops = require('../../security/role');
-
     let role = {};
     role.role = 'super_user';
     role.permission = {};
@@ -256,7 +257,7 @@ function createAdminUser(callback) {
         admin_user.role = result.id;
         admin_user.active = true;
 
-        user_ops.addUser(admin_user, function (err, result) {
+        user_ops.addUser(admin_user, function (err) {
             if (err) {
                 winston.error('user creation error' + err);
                 console.error('There was a problem creating the admin user.  Please check the install log for details.');
