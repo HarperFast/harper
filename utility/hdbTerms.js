@@ -35,11 +35,22 @@ const JOB_STATUS_ENUM = {
 	ERROR: 'ERROR'
 };
 
+//describes the Geo Conversion types
+const GEO_CONVERSION_ENUM = {
+    point: 'point',
+    lineString: 'lineString',
+    multiLineString: 'multiLineString',
+    multiPoint: 'multiPoint',
+    multiPolygon: 'multiPolygon',
+    polygon: 'polygon'
+};
+
 module.exports = {
     HDB_PROC_NAME,
     SYSTEM_SCHEMA_NAME,
     ROLE_TABLE_NAME,
     JOB_TABLE_NAME,
     JOB_TYPE_ENUM,
-    JOB_STATUS_ENUM
+    JOB_STATUS_ENUM,
+    GEO_CONVERSION_ENUM
 };
