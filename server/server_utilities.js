@@ -15,8 +15,6 @@ const auth = require('../security/auth');
 const harper_logger = require('../utility/logging/harper_logger');
 const export_ = require('../data_layer/export');
 const op_auth = require('../utility/operation_authorization');
-const JobObject = require('./JobObject');
-const hdb_terms = require('../utility/hdbTerms');
 const jobs = require('./jobs');
 const signal = require('../utility/signalling');
 const job_runner = require('./jobRunner');
@@ -271,8 +269,14 @@ function signalJob(json, callback) {
         let job_signal_message = new signal.JobAddedSignalObject(new_job_object.id, job_runner_message);
         if (process.send !== undefined) {
             signal.signalJobAdded(job_signal_message);
+            // purposefully not waiting for a response as we want to callback immediately.
         } else {
-            job_runner.parseMessage(job_signal_message);
+            try {
+                job_runner.parseMessage(job_signal_message.runner_message);
+            } catch(e) {
+                harper_logger.error(`Got an error trying to run a job with message ${job_runner_message}. ${e}`);
+            }
+            // purposefully not waiting for a response as we want to callback immediately.
         }
 
         return callback(null, `Starting job with id ${new_job_object.id}`);

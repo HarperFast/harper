@@ -115,8 +115,8 @@ function jobHandler(json_body, callback) {
  */
 async function addJob(json_body) {
     let result = { message: '', error: '', success: false, createdJob: undefined};
-    if(hdb_util.isEmptyOrZeroLength(json_body) || hdb_util.isEmptyOrZeroLength(json_body.operation)) {
-        let err_msg = `job parameter is invalid`
+    if(!json_body || Object.keys(json_body).length === 0 || hdb_util.isEmptyOrZeroLength(json_body.operation)) {
+        let err_msg = `job parameter is invalid`;
         log.info(err_msg);
         result.error = err_msg;
         return result;
@@ -177,7 +177,7 @@ async function addJob(json_body) {
 	if(insert_result.inserted_hashes.length === 0) {
 		result.message = `Had a problem creating a job with type ${new_job.operation} and id ${new_job.id}`;
 	} else {
-        let result_msg = `Created a job with type ${new_job.type} and id ${new_job.id}`
+        let result_msg = `Created a job with type ${new_job.type} and id ${new_job.id}`;
         result.message = result_msg;
         result.createdJob = new_job;
         result.success = true;
@@ -248,7 +248,7 @@ async function deleteJobById(json_body) {
     } catch(e) {
         let message = "";
         if(e.message.indexOf('not found') > 0) {
-            message = `Job ID ${json_body.id} was not found.`
+            message = `Job ID ${json_body.id} was not found.`;
         } else {
             message = `There was an error deleting a job by id: ${json_body.id} ${e}`;
         }
@@ -258,17 +258,29 @@ async function deleteJobById(json_body) {
     return delete_result;
 }
 
+/**
+ * Update the job record specified in the parameter.  If the status is COMPLETE or ERROR, the end_datetime field will be set to now().
+ * @param job_object - The object representing the desired record.
+ * @returns {Promise<*>}
+ */
 async function updateJob(job_object) {
-    //let job_object = new JobObject();
+    if(Object.keys(job_object).length === 0) {
+        throw new Error('invalid job object passed to updateJob');
+    }
     if(hdb_util.isEmptyOrZeroLength(job_object.id)) {
         throw new Error('invalid ID passed to updateJob');
     }
 
     if(job_object.status === hdb_terms.JOB_STATUS_ENUM.COMPLETE || job_object.status === hdb_terms.JOB_STATUS_ENUM.ERROR) {
-        job_object.end_time = moment().valueOf();
+        job_object.end_datetime = moment().valueOf();
     }
 
     let update_object = new UpdateObject(hdb_terms.OPERATIONS_ENUM.UPDATE, hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.JOB_TABLE_NAME, [job_object]);
-    let update_result = await p_insert_update(update_object);
+    let update_result = undefined;
+    try {
+        update_result = await p_insert_update(update_object);
+    } catch(e) {
+        throw new Error(e);
+    }
     return update_result;
 }

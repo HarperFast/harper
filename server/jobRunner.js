@@ -2,10 +2,8 @@
 
 const hdb_util = require('../utility/common_utils');
 const hdb_terms = require('../utility/hdbTerms');
-const JobObject = require('./JobObject');
 const moment = require('moment');
 const csv_bulk_load = require('../data_layer/csvBulkLoad');
-const {promisify} = require('util');
 const log = require('../utility/logging/harper_logger');
 const jobs = require('./jobs');
 
@@ -14,7 +12,6 @@ class RunnerResponse {
         this.success = success;
         this.message = message;
         this.error = error;
-        this.job_id;
     }
 }
 
@@ -25,42 +22,69 @@ class RunnerMessage {
     }
 }
 
+/**
+ * Parses a RunnerMessage and runs the specified job.
+ * @param runner_message
+ * @returns {Promise<RunnerResponse>}
+ * @throws Error
+ */
 async function parseMessage(runner_message) {
     let response = new RunnerResponse(false,"","");
-    response.job_id = runner_message.runner_message.job.id;
-    if(hdb_util.isEmptyOrZeroLength(runner_message.runner_message.json.operation)) {
+    response.job_id = runner_message.job.id;
+    if(Object.keys(runner_message).length === 0) {
+        throw new Error('Empty runner message passed to parseMessage');
+    }
+    if(Object.keys(runner_message.json).length === 0) {
+        throw new Error('Empty JSON passed to parseMessage');
+    }
+    if(Object.keys(runner_message.job).length === 0) {
+        throw new Error('Empty job passed to parseMessage');
+    }
+    if(hdb_util.isEmptyOrZeroLength(runner_message.json.operation)) {
         throw new Error('Invalid operation');
     }
-    if(hdb_util.isEmptyOrZeroLength(runner_message.runner_message.job.id)) {
+    if(hdb_util.isEmptyOrZeroLength(runner_message.job.id)) {
         throw new Error('Empty job id specified');
     }
-    response.job_id = runner_message.runner_message.job.id;
+
+    response.job_id = runner_message.job.id;
     let result_message = undefined;
-    switch(runner_message.runner_message.json.operation) {
+    switch(runner_message.json.operation) {
         case hdb_terms.JOB_TYPE_ENUM.csv_file_upload:
             break;
         case hdb_terms.JOB_TYPE_ENUM.csv_url_load:
             break;
         case hdb_terms.JOB_TYPE_ENUM.csv_data_load:
+            //TODO: Hopefully most of the work below can be moved into a common function to be shared among all cases.
             try {
-                runner_message.runner_message.job.status = hdb_terms.JOB_STATUS_ENUM.IN_PROGRESS;
-                runner_message.runner_message.job.start_datetime = moment().valueOf();
-                await jobs.updateJob(runner_message.runner_message.job);
-                result_message = await csv_bulk_load.csvDataLoad(runner_message.runner_message.json);
+                runner_message.job.status = hdb_terms.JOB_STATUS_ENUM.IN_PROGRESS;
+                runner_message.job.start_datetime = moment().valueOf();
+                await jobs.updateJob(runner_message.job);
+                result_message = await csv_bulk_load.csvDataLoad(runner_message.json);
                 log.info(`performed bulk load with result ${result_message}`);
             } catch(e) {
-                let err_message =`There was an error running csv_data_load job with id ${runner_message.runner_message.job.id} - ${e}`;
+                let err_message =`There was an error running csv_data_load job with id ${runner_message.job.id} - ${e}`;
                 log.error(err_message);
-                runner_message.runner_message.job.message = err_message;
-                runner_message.runner_message.job.status = hdb_terms.JOB_STATUS_ENUM.ERROR;
-                runner_message.runner_message.job.end_datetime = moment().valueOf();
-                await jobs.updateJob(runner_message.runner_message.job);
+                runner_message.job.message = err_message;
+                runner_message.job.status = hdb_terms.JOB_STATUS_ENUM.ERROR;
+                runner_message.job.end_datetime = moment().valueOf();
+                try {
+                    await jobs.updateJob(runner_message.job);
+                } catch(ex) {
+                    log.fatal(`Unable to update job with id ${response.job_id}.  Exiting.`);
+                    throw new Error(ex);
+                }
                 throw new Error(err_message + e);
             }
-            runner_message.runner_message.job.status = hdb_terms.JOB_STATUS_ENUM.COMPLETE;
-            runner_message.runner_message.job.status = result_message;
-            runner_message.runner_message.job.end_datetime = moment().valueOf();
-            await jobs.updateJob(runner_message.runner_message.job);
+            runner_message.job.status = hdb_terms.JOB_STATUS_ENUM.COMPLETE;
+            runner_message.job.message = result_message;
+            runner_message.job.end_datetime = moment().valueOf();
+            try {
+                await jobs.updateJob(runner_message.job);
+            } catch(e) {
+                log.error(e);
+                throw new Error(e);
+            }
             response.message = result_message;
             response.success = true;
             break;
@@ -83,4 +107,4 @@ module.exports = {
     RunnerResponse: RunnerResponse,
     parseMessage: parseMessage,
     RunnerMessage: RunnerMessage
-}
+};

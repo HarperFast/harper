@@ -8,6 +8,7 @@ const rewire = require('rewire');
 const jobs = rewire('../../server/jobs');
 const sinon = require('sinon');
 const hdb_term = require('../../utility/hdbTerms');
+const JobObject = require('../../server/JobObject');
 
 const INSERT_RESULT = {
     'message': 'inserted 1 of 1 records',
@@ -33,7 +34,15 @@ const ADD_JOB_SUCCESS =
     "message": "Created",
     "error": "",
     "success": true
-}
+};
+
+const UPDATE_RESULT = {
+    "message": "updated 1 of 1 records",
+    "update_hashes": [
+        "de769a7b-64a3-4561-b92b-7893511f3596"
+    ],
+    "skipped_hashes": []
+};
 
 describe('Test jobHandler', function() {
     let addJob_stub = undefined;
@@ -43,7 +52,7 @@ describe('Test jobHandler', function() {
 
     let sandbox = null;
     beforeEach(function() {
-        sandbox = sinon.sandbox.create();
+        sandbox = sinon.createSandbox();
     });
     afterEach(function() {
         sandbox.restore();
@@ -66,7 +75,7 @@ describe('Test jobHandler', function() {
                 done();
             });
         } catch(e) {
-        	done(e);
+            done(e);
 		}
     });
 
@@ -141,7 +150,7 @@ describe('Test jobHandler', function() {
         try {
             jobs.jobHandler(test_request, function (err, result) {
                 if(err) {
-                    throw (`expected success, got err ${err}`);
+                    done(`expected success, got err ${err}`);
                 }
                 assert.equal(result.length, 1, 'Got an error, expected success');
                 done();
@@ -199,7 +208,7 @@ describe('Test jobHandler', function() {
         test_request.hdb_user = 'test user';
         test_request.id = '2e358f82-523c-48b0-ab92-46ab52054419';
         try {
-            jobs.jobHandler(test_request, function (err) {
+            jobs.jobHandler(test_request, function () {
                 jobs.jobHandler(test_request, function (err) {
                     assert.ok(err.length > 0, 'Got success, expected an error.');
                     done();
@@ -217,7 +226,7 @@ describe('Test addJob', function() {
 	let sandbox = null;
     let addJob = jobs.__get__('addJob');
 	beforeEach(function() {
-		sandbox = sinon.sandbox.create();
+		sandbox = sinon.createSandbox();
 	});
 	afterEach(function() {
 		sandbox.restore();
@@ -230,7 +239,7 @@ describe('Test addJob', function() {
 	   jobs.__set__('p_search_by_value', search_stub);
 	   jobs.__set__('p_insert', insert_stub);
 	   let test_job = {};
-	   test_job.job_type = hdb_term.JOB_TYPE_ENUM.csv_file_upload;
+	   test_job.operation = hdb_term.JOB_TYPE_ENUM.csv_file_upload;
 	   test_job.hdb_user = 'test user';
 
 	   let add_result = await addJob(test_job);
@@ -242,7 +251,7 @@ describe('Test addJob', function() {
 		jobs.__set__('p_search_by_value', search_stub);
 		jobs.__set__('p_insert', insert_stub);
 		let test_job = {};
-		test_job.job_type = 'bad type';
+		test_job.operation = 'bad type';
 		test_job.hdb_user = 'test user';
 
 		let add_result = await addJob(test_job);
@@ -255,7 +264,7 @@ describe('Test addJob', function() {
 		jobs.__set__('p_search_by_value', search_stub);
 		jobs.__set__('p_insert', insert_stub);
 		let test_job = {};
-		test_job.job_type = hdb_term.JOB_TYPE_ENUM.csv_file_upload;
+		test_job.operation = hdb_term.JOB_TYPE_ENUM.csv_file_upload;
 		test_job.hdb_user = 'test user';
 
 		let add_result = await addJob(test_job);
@@ -267,7 +276,7 @@ describe('Test addJob', function() {
 		jobs.__set__('p_search_by_value', search_stub);
 		jobs.__set__('p_insert', insert_stub);
 		let test_job = {};
-		test_job.job_type = hdb_term.JOB_TYPE_ENUM.csv_file_upload;
+		test_job.operation = hdb_term.JOB_TYPE_ENUM.csv_file_upload;
 		test_job.hdb_user = 'test user';
 
 		let add_result = await addJob(test_job);
@@ -286,7 +295,7 @@ describe('Test getJobsInDateRange', function() {
     let sandbox = null;
     let getJobsInDateRange = jobs.__get__('getJobsInDateRange');
     beforeEach(function() {
-        sandbox = sinon.sandbox.create();
+        sandbox = sinon.createSandbox();
     });
     afterEach(function() {
         sandbox.restore();
@@ -303,7 +312,7 @@ describe('Test getJobsInDateRange', function() {
         let search_result = await getJobsInDateRange(test_job);
         assert.equal(search_result.length, 1, 'expected 1 result returned');
     }));
-    it('Search with invalid from date, expect error.', test_util.mochaAsyncWrapper(async function() {
+    it('Search with invalid from date, expect error.', async function() {
         sql_search_stub = sandbox.stub().returns([JOB_SEARCH_RESULT]);
         jobs.__set__('p_sql_evaluate', sql_search_stub);
         let test_job = {};
@@ -311,10 +320,14 @@ describe('Test getJobsInDateRange', function() {
         test_job.hdb_user = 'test user';
         test_job.from_date = 'aaaaa';
         test_job.to_date = '2018-07-07';
-        let search_result = await getJobsInDateRange(test_job);
-        assert.ok(search_result.message.length > 0, 'expected error message');
-    }));
-    it('Search with invalid to date, expect error.', test_util.mochaAsyncWrapper(async function() {
+        try {
+            await getJobsInDateRange(test_job);
+        } catch(e) {
+            assert.ok(e.message.length > 0, 'expected error message');
+        }
+
+    });
+    it('Search with invalid to date, expect error.', async function() {
         sql_search_stub = sandbox.stub().returns([JOB_SEARCH_RESULT]);
         jobs.__set__('p_sql_evaluate', sql_search_stub);
         let test_job = {};
@@ -322,9 +335,12 @@ describe('Test getJobsInDateRange', function() {
         test_job.hdb_user = 'test user';
         test_job.from_date = '2017-02-01';
         test_job.to_date = 'aaaaa';
-        let search_result = await getJobsInDateRange(test_job);
-        assert.ok(search_result.message.length > 0, 'expected error message');
-    }));
+        try {
+            await getJobsInDateRange(test_job);
+        } catch(e) {
+            assert.ok(e.message.length > 0, 'expected error message');
+        }
+    });
     it('Search valid input, no results expected.', test_util.mochaAsyncWrapper(async function() {
         sql_search_stub = sandbox.stub().returns([]);
         jobs.__set__('p_sql_evaluate', sql_search_stub);
@@ -343,7 +359,7 @@ describe('Test getJobById', function() {
     let sandbox = null;
     let getJobById = jobs.__get__('getJobById');
     beforeEach(function () {
-        sandbox = sinon.sandbox.create();
+        sandbox = sinon.createSandbox();
     });
     afterEach(function () {
         sandbox.restore();
@@ -381,7 +397,7 @@ describe('Test deleteJobById', function() {
     let sandbox = null;
     let deleteJobById = jobs.__get__('deleteJobById');
     beforeEach(function () {
-        sandbox = sinon.sandbox.create();
+        sandbox = sinon.createSandbox();
     });
     afterEach(function () {
         sandbox.restore();
@@ -426,4 +442,68 @@ describe('Test deleteJobById', function() {
         let delete_result = await deleteJobById(test_job);
         assert.ok(delete_result.message.indexOf('not found') === -1, 'Expected 1 result back');
     }));
+});
+
+describe('Test updateJob', function() {
+
+    let update_stub = undefined;
+    let sandbox = null;
+    let updateJob = jobs.__get__('updateJob');
+    beforeEach(function () {
+        sandbox = sinon.createSandbox();
+    });
+    afterEach(function () {
+        sandbox.restore();
+    });
+
+    it('Nominal case of updateJob', test_util.mochaAsyncWrapper(async function() {
+        update_stub = sandbox.stub().returns(UPDATE_RESULT);
+        jobs.__set__('p_insert_update', update_stub);
+        //
+
+        let job_object = new JobObject();
+        job_object.status = hdb_term.JOB_STATUS_ENUM.IN_PROGRESS;
+
+        let found = await updateJob(job_object);
+        assert.ok(found.update_hashes.length > 0, "Invalid response from update");
+        assert.ok(job_object.status === hdb_term.JOB_STATUS_ENUM.IN_PROGRESS, "Status changed but should not have");
+    }));
+    it('Nominal case of updateJob, check end time updated', test_util.mochaAsyncWrapper(async function() {
+        update_stub = sandbox.stub().returns(UPDATE_RESULT);
+        jobs.__set__('p_insert_update', update_stub);
+        //
+
+        let job_object = new JobObject();
+        job_object.status = hdb_term.JOB_STATUS_ENUM.COMPLETE;
+
+        let found = await updateJob(job_object);
+        assert.ok(found.update_hashes.length > 0, "Invalid response from update");
+        assert.ok(job_object.status === hdb_term.JOB_STATUS_ENUM.COMPLETE, "Status changed but should not have");
+        assert.ok(job_object.end_datetime !== undefined, "End time should have been updated");
+    }));
+    it('Test bad object check', async function() {
+        update_stub = sandbox.stub().returns(UPDATE_RESULT);
+        jobs.__set__('p_insert_update', update_stub);
+
+        let job_object = {};
+
+        try {
+            await updateJob(job_object);
+        } catch(e) {
+            assert.ok(e.message.length > 0, "Didn't get expected exception");
+        }
+    });
+    it('Test missing id check', async function() {
+        update_stub = sandbox.stub().returns(UPDATE_RESULT);
+        jobs.__set__('p_insert_update', update_stub);
+
+        let job_object = new JobObject();
+        job_object.id = null;
+
+        try {
+            await updateJob(job_object);
+        } catch(e) {
+            assert.ok(e.message.length > 0, "Didn't get expected exception");
+        }
+    });
 });
