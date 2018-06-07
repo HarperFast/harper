@@ -4,6 +4,7 @@
  * geo.js
  *
  * Module created as a wrapper for our implementation of turf.js into the sql parser
+ * turf.js has very robust internal validation as such we offload the validation to turf.js
  */
 
 const turf = require('@turf/turf');
@@ -29,6 +30,10 @@ module.exports = {
  * @returns {number}
  */
 function geoArea(geoJSON){
+    if(common_utils.isEmpty(geoJSON)){
+        throw 'geoJSON is required';
+    }
+
     return turf.area(geoJSON);
 }
 
@@ -39,6 +44,10 @@ function geoArea(geoJSON){
  * @returns {number}
  */
 function geoLength(geoJSON, units){
+    if(common_utils.isEmpty(geoJSON)){
+        throw 'geoJSON is required';
+    }
+
     return turf.length(geoJSON, {units:units ? units : "kilometers"});
 }
 
@@ -50,6 +59,14 @@ function geoLength(geoJSON, units){
  * @returns {Feature<Polygon>}
  */
 function geoCircle(point, radius, units){
+    if(common_utils.isEmpty(point)){
+        throw 'point is required';
+    }
+
+    if(common_utils.isEmpty(radius)){
+        throw 'radius is required';
+    }
+
     return turf.circle(point, radius, {units:units ? units : "kilometers"});
 }
 
@@ -60,6 +77,14 @@ function geoCircle(point, radius, units){
  * @returns {Feature<Polygon | MultiPolygon> | null}
  */
 function geoDifference(poly1, poly2){
+    if(common_utils.isEmpty(poly1)){
+        throw 'poly1 is required';
+    }
+
+    if(common_utils.isEmpty(poly2)){
+        throw 'poly2 is required';
+    }
+
     return turf.difference(poly1, poly2);
 }
 
@@ -71,6 +96,14 @@ function geoDifference(poly1, poly2){
  * @returns {number}
  */
 function geoDistance(point1, point2, units){
+    if(common_utils.isEmpty(point1)){
+        throw 'point1 is required';
+    }
+
+    if(common_utils.isEmpty(point2)){
+        throw 'point2 is required';
+    }
+
     return turf.distance(point1, point2, {units:units ? units : "kilometers"});
 }
 
@@ -83,6 +116,18 @@ function geoDistance(point1, point2, units){
  * @returns {boolean}
  */
 function geoNear(point1, point2, distance, units){
+    if(common_utils.isEmpty(point1)){
+        throw 'point1 is required';
+    }
+
+    if(common_utils.isEmpty(point2)){
+        throw 'point2 is required';
+    }
+
+    if(common_utils.isEmpty(distance)){
+        throw 'distance is required';
+    }
+
     let points_distance = distance(point1, point2, units);
     return points_distance <= distance;
 }
@@ -94,6 +139,15 @@ function geoNear(point1, point2, distance, units){
  * @returns {boolean}
  */
 function geoContains(geo1, geo2){
+    if(common_utils.isEmpty(geo1)){
+        throw 'geo1 is required';
+    }
+
+    if(common_utils.isEmpty(geo1)){
+        throw 'geo2 is required';
+    }
+
+
     return turf.booleanContains(geo1, geo2);
 }
 
@@ -104,6 +158,15 @@ function geoContains(geo1, geo2){
  * @returns {boolean}
  */
 function geoEqual(geo1, geo2){
+    if(common_utils.isEmpty(geo1)){
+        throw 'geo1 is required';
+    }
+
+    if(common_utils.isEmpty(geo1)){
+        throw 'geo2 is required';
+    }
+
+
     return turf.booleanEqual(geo1, geo2);
 }
 
@@ -114,31 +177,34 @@ function geoEqual(geo1, geo2){
  * @returns {boolean}
  */
 function geoCrosses(geo1, geo2){
-    //if()
+    if(common_utils.isEmpty(geo1)){
+        throw 'geo1 is required';
+    }
+
+    if(common_utils.isEmpty(geo1)){
+        throw 'geo2 is required';
+    }
+
     //need to do ! as this checks for non-intersections of geometries
     return !turf.booleanDisjoint(geo1, geo2);
 }
 
 /***
- * Converts a series of points into the desired type
- * @param points
+ * Converts a series of coordinates into the desired type
+ * @param coordinates
  * @param geo_type
  * @param properties
  * @returns {*}
  */
-function geoConvert(points, geo_type, properties){
-    if(common_utils.isEmpty(points)){
-        throw 'points is required';
-    }
-
+function geoConvert(coordinates, geo_type, properties){
     if(common_utils.isEmpty(geo_type)){
-        throw 'geo_type is required';
+        throw new Error('geo_type is required');
     }
 
     if(common_utils.isEmpty(hdb_terms.GEO_CONVERSION_ENUM[geo_type])){
-        throw `geo_type of ${geo_type} is invalid please use one of the following types: ${Object.keys(hdb_terms.GEO_CONVERSION_ENUM).join(',')}`;
+        throw new Error(`geo_type of ${geo_type} is invalid please use one of the following types: ${Object.keys(hdb_terms.GEO_CONVERSION_ENUM).join(',')}`);
     }
 
-    return turf[geo_type](points, properties);
+    return turf[geo_type](coordinates, properties);
 }
 
