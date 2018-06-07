@@ -112,7 +112,7 @@ function createReadStream(url, callback){
  *
  */
 async function csvFileLoad(csv_object) {
-    let validation_msg = validator.dataObject(csv_object);
+    let validation_msg = validator.fileObject(csv_object);
     if (validation_msg) {
         throw new Error(validation_msg);
     }
