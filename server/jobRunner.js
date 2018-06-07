@@ -50,7 +50,12 @@ async function parseMessage(runner_message) {
     response.job_id = runner_message.job.id;
     let result_message = undefined;
     switch(runner_message.json.operation) {
-        case hdb_terms.JOB_TYPE_ENUM.csv_file_upload:
+        case hdb_terms.JOB_TYPE_ENUM.csv_file_load:
+            try {
+                response = await runCSVJob(runner_message, csv_bulk_load.csvFileLoad, runner_message.json);
+            } catch(e) {
+                log.error(e);
+            }
             break;
         case hdb_terms.JOB_TYPE_ENUM.csv_url_load:
             break;
@@ -101,6 +106,44 @@ async function parseMessage(runner_message) {
             break;
     }
     return response;
+}
+
+async function runCSVJob(runner_message, operation, argument) {
+    let result_message = undefined;
+    let response = new RunnerResponse(false,"","");
+    try {
+        runner_message.job.status = hdb_terms.JOB_STATUS_ENUM.IN_PROGRESS;
+        runner_message.job.start_datetime = moment().valueOf();
+        await jobs.updateJob(runner_message.job);
+        //result_message = await csv_bulk_load.csvDataLoad(runner_message.json);
+        result_message = operation(runner_message.json);
+        log.info(`performed bulk load with result ${result_message}`);
+    } catch(e) {
+        let err_message =`There was an error running csv_data_load job with id ${runner_message.job.id} - ${e}`;
+        log.error(err_message);
+        runner_message.job.message = err_message;
+        runner_message.job.status = hdb_terms.JOB_STATUS_ENUM.ERROR;
+        runner_message.job.end_datetime = moment().valueOf();
+        try {
+            await jobs.updateJob(runner_message.job);
+        } catch(ex) {
+            log.fatal(`Unable to update job with id ${response.job_id}.  Exiting.`);
+            throw new Error(ex);
+        }
+        throw new Error(err_message + e);
+    }
+    runner_message.job.status = hdb_terms.JOB_STATUS_ENUM.COMPLETE;
+    runner_message.job.message = result_message;
+    runner_message.job.end_datetime = moment().valueOf();
+
+    try {
+        await jobs.updateJob(runner_message.job);
+    } catch(e) {
+        log.error(e);
+        throw new Error(e);
+    }
+    response.message = result_message;
+    response.success = true;
 }
 
 module.exports = {
