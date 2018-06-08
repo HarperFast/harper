@@ -27,6 +27,36 @@ const UPDATE_RESULT = {
     "skipped_hashes": []
 };
 
+const RUNNER_MSG = {
+    "job": {
+        "id": "ffbaecf6-f8d0-49a4-9673-e527471ca7f0",
+        "type": "csv_data_load",
+        "start_datetime": 1528477263488,
+        "created_datetime": 1528477263489,
+        "status": "CREATED",
+        "user": "eli",
+        "HDB_INTERNAL_PATH": "/Users/elipalmer/DevDB/schema/system/hdb_job/__hdb_hash/id/ffbaecf6-f8d0-49a4-9673-e527471ca7f0.hdb"
+    },
+    "json": {
+        "operation": "csv_data_load",
+        "schema": "dev",
+        "table": "breed",
+        "data": "id,name,section,country,image\n1,ENGLISH POINTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/001g07.jpg\n2,ENGLISH SETTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/002g07.jpg\n3,KERRY BLUE TERRIER,Large and medium sized Terriers,IRELAND,\n",
+        "hdb_user": {
+            "username": "eli",
+            "active": true,
+            "role": {
+                "id": "058671f6-fef6-438f-949f-339e1e7a449d",
+                "permission": {
+                    "super_user": true
+                },
+                "role": "super_user"
+            }
+        },
+        "hdb_auth_header": "Basic ZWxpOnBhc3M="
+    }
+};
+
 const BULK_LOAD_RESPONSE = 'successfully loaded 3 records';
 
 describe('Test parseMessage', function() {
@@ -56,24 +86,6 @@ describe('Test parseMessage', function() {
         assert.equal(runner_message.job.status, hdb_term.JOB_STATUS_ENUM.COMPLETE, 'Expected job status to be complete.');
         assert.ok(runner_message.job.message.length > 0, 'Expected job status to be complete.');
     }));
-    it('Throw exception during update to test error handling', async function() {
-        let runner_message = new jobs_runner.RunnerMessage();
-        let job_object = new JobObject();
-        runner_message.json = DATA_LOAD_MESSAGE;
-        runner_message.job = job_object;
-
-        update_stub = sandbox.stub(jobs, "updateJob").onFirstCall().throws(new Error("BAD UPDATE")).onSecondCall().returns(UPDATE_RESULT);
-        bulk_load_stub = sandbox.stub(csv_bulk_load, "csvDataLoad").returns(BULK_LOAD_RESPONSE);
-
-        try {
-            await parseMessage(runner_message);
-        } catch(e) {
-            assert.ok(e.message.length > 0, 'expected exception');
-            assert.ok(runner_message.job.end_datetime !== undefined, 'Expected end date time to be set');
-            assert.equal(runner_message.job.status, hdb_term.JOB_STATUS_ENUM.ERROR, 'Expected job status to be complete.');
-            assert.ok(runner_message.job.message.length > 0, 'Expected job status to be complete.');
-        }
-    });
     it('Invalid message json', async function() {
         let runner_message = new jobs_runner.RunnerMessage();
         let job_object = new JobObject();
@@ -124,6 +136,103 @@ describe('Test parseMessage', function() {
             assert.ok(e.message.length > 0, 'expected exception');
         }
     });
+});
+
+describe('Test runCSVJob', function() {
+    let sandbox = null;
+    let update_stub = undefined;
+    let bulk_load_stub = undefined;
+    let runCSVJob = jobs_runner.__get__('runCSVJob');
+    beforeEach(function () {
+        sandbox = sinon.createSandbox();
+    });
+    afterEach(function () {
+        sandbox.restore();
+    });
+
+    it('Nominal case, run stubbed dataload', async function() {
+        let runner_message = new jobs_runner.RunnerMessage();
+        let job_object = new JobObject();
+        runner_message.json = DATA_LOAD_MESSAGE;
+        runner_message.job = job_object;
+
+        update_stub = sandbox.stub(jobs, "updateJob").returns(UPDATE_RESULT);
+        bulk_load_stub = sandbox.stub(csv_bulk_load, "csvDataLoad").returns(BULK_LOAD_RESPONSE);
+
+        let result = await runCSVJob(runner_message, csv_bulk_load.csvDataLoad, runner_message.json);
+        assert.equal(result.success, true, 'expected success');
+        assert.ok(runner_message.job.end_datetime !== undefined, 'Expected end date time to be set');
+        assert.equal(runner_message.job.status, hdb_term.JOB_STATUS_ENUM.COMPLETE, 'Expected job status to be complete.');
+        assert.ok(runner_message.job.message.length > 0, 'Expected job status to be complete.');
+    });
+    it('Throw exception during update to test error handling', async function() {
+        let runner_message = new jobs_runner.RunnerMessage();
+        let job_object = new JobObject();
+        runner_message.json = DATA_LOAD_MESSAGE;
+        runner_message.job = job_object;
+
+        update_stub = sandbox.stub(jobs, "updateJob").onFirstCall().throws(new Error("BAD UPDATE")).onSecondCall().returns(UPDATE_RESULT);
+        bulk_load_stub = sandbox.stub(csv_bulk_load, "csvDataLoad").returns(BULK_LOAD_RESPONSE);
+
+        try {
+            await runCSVJob(runner_message, csv_bulk_load.csvDataLoad, runner_message.json);
+        } catch(e) {
+            assert.ok(e.message.length > 0, 'expected exception');
+            assert.ok(runner_message.job.end_datetime !== undefined, 'Expected end date time to be set');
+            assert.equal(runner_message.job.status, hdb_term.JOB_STATUS_ENUM.ERROR, 'Expected job status to be complete.');
+            assert.ok(runner_message.job.message.length > 0, 'Expected job status to be complete.');
+        }
+    });
+    it('Invalid message json', async function() {
+        let runner_message = new jobs_runner.RunnerMessage();
+        let job_object = new JobObject();
+        let data_load_msg_temp = test_util.deepClone(DATA_LOAD_MESSAGE);
+        data_load_msg_temp.operation = undefined;
+        runner_message.json = data_load_msg_temp;
+        runner_message.job = job_object;
+
+        try {
+            await runCSVJob(runner_message, csv_bulk_load.csvDataLoad, runner_message.json);
+        } catch(e) {
+            assert.ok(e.message.length > 0, 'expected exception');
+        }
+    });
+    it('Invalid job id', async function() {
+        let runner_message = new jobs_runner.RunnerMessage();
+        let job_object = new JobObject();
+        job_object.id = null;
+        runner_message.json = DATA_LOAD_MESSAGE;
+        runner_message.job = job_object;
+
+        try {
+            await runCSVJob(runner_message, csv_bulk_load.csvDataLoad, runner_message.json);
+        } catch(e) {
+            assert.ok(e.message.length > 0, 'expected exception');
+        }
+    });
+    it('Invalid job', async function() {
+        let runner_message = new jobs_runner.RunnerMessage();
+        runner_message.json = DATA_LOAD_MESSAGE;
+        runner_message.job = undefined;
+
+        try {
+            await runCSVJob(runner_message, csv_bulk_load.csvDataLoad, runner_message.json);
+        } catch(e) {
+            assert.ok(e.message.length > 0, 'expected exception');
+        }
+    });
+    it('Invalid json', async function() {
+        let runner_message = new jobs_runner.RunnerMessage();
+        let job_object = new JobObject();
+        runner_message.json = null;
+        runner_message.job = job_object;
+
+        try {
+            await runCSVJob(runner_message, csv_bulk_load.csvDataLoad, runner_message.json);
+        } catch(e) {
+            assert.ok(e.message.length > 0, 'expected exception');
+        }
+    });
     it('Throw exception during csv data load', async function() {
         let runner_message = new jobs_runner.RunnerMessage();
         let job_object = new JobObject();
@@ -134,7 +243,7 @@ describe('Test parseMessage', function() {
         bulk_load_stub = sandbox.stub(csv_bulk_load, "csvDataLoad").throws(new Error('bad csv load oh noes!'));
 
         try {
-            await parseMessage(runner_message);
+            await runCSVJob(runner_message, csv_bulk_load.csvDataLoad, runner_message.json);
         } catch(e) {
             assert.ok(e.message.length > 0, 'expected exception');
             assert.ok(runner_message.job.end_datetime !== undefined, 'Expected end date time to be set');

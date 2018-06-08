@@ -81,16 +81,32 @@ async function parseMessage(runner_message) {
 }
 
 async function runCSVJob(runner_message, operation, argument) {
+    if(Object.keys(runner_message).length === 0) {
+        throw new Error('Empty runner message passed to parseMessage');
+    }
+    if(Object.keys(runner_message.json).length === 0) {
+        throw new Error('Empty JSON passed to parseMessage');
+    }
+    if(Object.keys(runner_message.job).length === 0) {
+        throw new Error('Empty job passed to parseMessage');
+    }
+    if(hdb_util.isEmptyOrZeroLength(runner_message.json.operation)) {
+        throw new Error('Invalid operation');
+    }
+    if(hdb_util.isEmptyOrZeroLength(runner_message.job.id)) {
+        throw new Error('Empty job id specified');
+    }
+
     let result_message = undefined;
     let response = new RunnerResponse(false,"","");
     try {
         runner_message.job.status = hdb_terms.JOB_STATUS_ENUM.IN_PROGRESS;
         runner_message.job.start_datetime = moment().valueOf();
         await jobs.updateJob(runner_message.job);
-        result_message = operation(argument);
-        log.info(`performed bulk load with result ${result_message}`);
+        result_message = await operation(argument);
+        log.info(`performed ${operation} with result ${result_message}`);
     } catch(e) {
-        let err_message =`There was an error running csv_data_load job with id ${runner_message.job.id} - ${e}`;
+        let err_message =`There was an error running ${operation} job with id ${runner_message.job.id} - ${e}`;
         log.error(err_message);
         runner_message.job.message = err_message;
         runner_message.job.status = hdb_terms.JOB_STATUS_ENUM.ERROR;
