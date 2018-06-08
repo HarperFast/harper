@@ -52,34 +52,50 @@ function generateLicense(license_object, callback) {
 function validateLicense(license_key, company, callback) {
     let  decipher = crypto.createDecipher('aes192', 'a password');
     let license_validation_object = {};
-    let license_tokens = license_key.split(LICENSE_KEY_DELIMITER);
     license_validation_object.valid_date = true;
     license_validation_object.valid_license = true;
     license_validation_object.valid_machine = true;
-    let decrypted = decipher.update(license_tokens[0], 'hex', 'utf8');
-    decrypted += decipher.final('utf8');
+    let license_tokens = null;
+    let decrypted = null;
+    try {
+        license_tokens = license_key.split(LICENSE_KEY_DELIMITER);    
+        decrypted = decipher.update(license_tokens[0], 'hex', 'utf8');
+        decrypted += decipher.final('utf8');        
+    } catch (e) {
+        license_validation_object.valid_license = false;
+        callback('invalid license key format', license_validation_object);
+        return;
+    }
 
     if (decrypted < moment().unix()) {
         license_validation_object.valid_date = false;
     }
+    
+    fs.exists(FINGER_PRINT_FILE, function(is_exist){ 
+        if (is_exist) {
+            try {
+                fs.readFile(FINGER_PRINT_FILE, function (err, data) {            
+                //   var newHash = hashLicense(fingerPrint, company);337ff20ede0e3fce0ce842bf69e2d48fmofi25cu5zLuhyC47102d32d124087bdc502c7e02509c9a
+                // winston.info(`new hash: ${newHash}`)
+                    if (!password.validate(license_tokens[1], `${LICENSE_HASH_PREFIX}${data}${company}`)) {
+                        license_validation_object.valid_license = false;
+                    }
 
-    try {
-        fs.readFile(FINGER_PRINT_FILE, function (err, data) {
-            let fingerPrint = '' + data;
-         //   var newHash = hashLicense(fingerPrint, company);337ff20ede0e3fce0ce842bf69e2d48fmofi25cu5zLuhyC47102d32d124087bdc502c7e02509c9a
-           // winston.info(`new hash: ${newHash}`)
-            if (!password.validate(license_tokens[1], `${LICENSE_HASH_PREFIX}${data}${company}`)) {
-                license_validation_object.valid_license = false;
+                    callback(null, license_validation_object);
+                    return;
+                });
+            } catch (e) {
+                license_validation_object.valid_machine = false;
+                callback(null, license_validation_object);
+                return;
             }
-
+        } else {
+            license_validation_object.valid_license = false;
+            license_validation_object.valid_machine = false;
             callback(null, license_validation_object);
             return;
-        });
-    } catch (e) {
-        license_validation_object.valid_machine = false;
-        callback(null, license_validation_object);
-        return;
-    }
+        }
+    });    
 }
 
 function hashDate(expdate) {

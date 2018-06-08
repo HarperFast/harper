@@ -157,6 +157,7 @@ describe(`Test validateLicense`, function () {
             hdb_license.generateLicense(licenseKeyObject, function(error, license) {
                 // pass invalid license key to validate license
                 hdb_license.validateLicense('wrong_license', 'hdb', function(err, validation){
+                    assert.equal(err, 'invalid license key format');
                     assert.equal(validation.valid_date, true, 'date validation should valid');
                     assert.equal(validation.valid_license, false, 'license validation should not valid');
                     assert.equal(validation.valid_machine, true, 'machine validation should valid');
