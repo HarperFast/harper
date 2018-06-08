@@ -41,7 +41,8 @@ describe(`Test generateLicense`, function () {
         hdb_license.generateLicense(licenseKeyObject, function(error, license) {   
             assert.equal(error, null, 'generate license without error');   
             assert.notEqual(license, null, 'license should not be null');
-            assert.ok(license.length > 0, 'double check that license really has value');
+            assert.ok(license.length > 0, 'license should have value');
+            assert.ok(license.indexOf(hdb_license.__get__('LICENSE_KEY_DELIMITER')) > -1, 'license should contain license key delimiter');
             done();
         }); 
     });
