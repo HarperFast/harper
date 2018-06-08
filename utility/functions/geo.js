@@ -125,10 +125,14 @@ function geoNear(point1, point2, distance, units){
     }
 
     if(common_utils.isEmpty(distance)){
-        throw 'distance is required';
+        throw new Error('distance is required');
     }
 
-    let points_distance = distance(point1, point2, units);
+    if(isNaN(distance)){
+        throw new Error('distance must be a number');
+    }
+
+    let points_distance = geoDistance(point1, point2, units);
     return points_distance <= distance;
 }
 
