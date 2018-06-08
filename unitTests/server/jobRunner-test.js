@@ -27,36 +27,6 @@ const UPDATE_RESULT = {
     "skipped_hashes": []
 };
 
-const RUNNER_MSG = {
-    "job": {
-        "id": "ffbaecf6-f8d0-49a4-9673-e527471ca7f0",
-        "type": "csv_data_load",
-        "start_datetime": 1528477263488,
-        "created_datetime": 1528477263489,
-        "status": "CREATED",
-        "user": "eli",
-        "HDB_INTERNAL_PATH": "/Users/elipalmer/DevDB/schema/system/hdb_job/__hdb_hash/id/ffbaecf6-f8d0-49a4-9673-e527471ca7f0.hdb"
-    },
-    "json": {
-        "operation": "csv_data_load",
-        "schema": "dev",
-        "table": "breed",
-        "data": "id,name,section,country,image\n1,ENGLISH POINTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/001g07.jpg\n2,ENGLISH SETTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/002g07.jpg\n3,KERRY BLUE TERRIER,Large and medium sized Terriers,IRELAND,\n",
-        "hdb_user": {
-            "username": "eli",
-            "active": true,
-            "role": {
-                "id": "058671f6-fef6-438f-949f-339e1e7a449d",
-                "permission": {
-                    "super_user": true
-                },
-                "role": "super_user"
-            }
-        },
-        "hdb_auth_header": "Basic ZWxpOnBhc3M="
-    }
-};
-
 const BULK_LOAD_RESPONSE = 'successfully loaded 3 records';
 
 describe('Test parseMessage', function() {

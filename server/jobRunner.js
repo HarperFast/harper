@@ -80,6 +80,13 @@ async function parseMessage(runner_message) {
     return response;
 }
 
+/**
+ * Helper function to run the specified operation using the job update 'workflow'.
+ * @param runner_message - The RunnerMessage created by the signal flow
+ * @param operation - The operation to run.
+ * @param argument - Arguments to pass for the operation.
+ * @returns {Promise<RunnerResponse>}
+ */
 async function runCSVJob(runner_message, operation, argument) {
     if(Object.keys(runner_message).length === 0) {
         throw new Error('Empty runner message passed to parseMessage');
