@@ -160,7 +160,7 @@ function chooseOperation(json, callback) {
             operation_function = signalJob;
             break;
         case 'csv_url_load':
-            operation_function = csv.csvURLLoad;
+            operation_function = signalJob;
             break;
         case 'create_schema':
             operation_function = schema.createSchema;

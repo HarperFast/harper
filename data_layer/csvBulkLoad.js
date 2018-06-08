@@ -1,11 +1,13 @@
 "use strict";
 
-const csv=require('csvtojson'),
-    insert = require('./insert'),
-    _ = require('lodash'),
-    request=require('request'),
-    async = require('async'),
-    validator = require('../validation/csvLoadValidator');
+const csv=require('csvtojson');
+const insert = require('./insert');
+const _ = require('lodash');
+const request=require('request');
+const async = require('async');
+const validator = require('../validation/csvLoadValidator');
+const request_promise = require('request-promise-native');
+const hdb_terms = require('../utility/hdbTerms');
 
 const hdb_utils = require('../utility/common_utils');
 const {promisify} = require('util');
@@ -49,13 +51,29 @@ async function csvDataLoad(csv_object){
  * Load a csv file from a URL.
  *
  * @param csv_object - An object representing the CSV file via URL.
- * @param callback
  * @returns validation_msg - Contains any validation errors found
  * @returns error - any errors found reading the csv file
  * @returns err - any errors found during the bulk load
  *
  */
-function csvURLLoad(csv_object, callback){
+async function csvURLLoad(csv_object) {
+    let validation_msg = validator.urlObject(csv_object);
+    if (validation_msg) {
+        throw new Error(validation_msg);
+    }
+
+    let csv_records = [];
+    let bulk_load_result = undefined;
+    try {
+        let url_file = await createReadStream(csv_object.csv_url);
+        csv_records = await csv().fromString(url_file);
+        bulk_load_result = await p_bulk_load(csv_records, csv_object.schema, csv_object.table, csv_object.action);
+    } catch(e) {
+        throw new Error(e);
+    }
+
+    return `successfully loaded ${bulk_load_result.inserted_hashes.length} records`;
+    /*
     try {
         let validation_msg = validator.urlObject(csv_object);
         if (validation_msg) {
@@ -83,9 +101,22 @@ function csvURLLoad(csv_object, callback){
     } catch(e){
         callback(e);
     }
+    */
 }
 
-function createReadStream(url, callback){
+async function createReadStream(url) {
+    let response = await request_promise.get(url);
+    if (response.statusCode !== hdb_terms.HTTP_STATUS_CODES.OK || response.headers['content-type'].indexOf('text/csv') < 0) {
+        let return_object = {
+            message: `CSV Load failed from URL: ${url}`,
+            status_code: response.statusCode,
+            status_message: response.statusMessage,
+            content_type: response.headers['content-type']
+        };
+        return return_object;
+    }
+    return response;
+    /*
     request.get(url)
         .on('response', (response)=>{
             if (response.statusCode !== 200 || response.headers['content-type'].indexOf('text/csv') < 0) {
@@ -100,6 +131,7 @@ function createReadStream(url, callback){
 
             return callback(null, response);
         });
+        */
 }
 
 /**

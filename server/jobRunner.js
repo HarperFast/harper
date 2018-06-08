@@ -57,6 +57,11 @@ async function parseMessage(runner_message) {
             }
             break;
         case hdb_terms.JOB_TYPE_ENUM.csv_url_load:
+            try {
+                response = await runCSVJob(runner_message, csv_bulk_load.csvURLLoad, runner_message.json);
+            } catch(e) {
+                log.error(e);
+            }
             break;
         case hdb_terms.JOB_TYPE_ENUM.csv_data_load:
             try {
