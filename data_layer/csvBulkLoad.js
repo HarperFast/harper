@@ -3,7 +3,6 @@
 const csv=require('csvtojson');
 const insert = require('./insert');
 const _ = require('lodash');
-const request=require('request');
 const async = require('async');
 const validator = require('../validation/csvLoadValidator');
 const request_promise = require('request-promise-native');
@@ -12,6 +11,7 @@ const hdb_terms = require('../utility/hdbTerms');
 const hdb_utils = require('../utility/common_utils');
 const {promisify} = require('util');
 const RECORD_BATCH_SIZE = 1000;
+
 // Promisify bulkLoad to avoid more of a refactor for now.
 const p_bulk_load = promisify(bulkLoad);
 
@@ -66,46 +66,27 @@ async function csvURLLoad(csv_object) {
     let bulk_load_result = undefined;
     try {
         let url_file = await createReadStream(csv_object.csv_url);
-        csv_records = await csv().fromString(url_file);
+        csv_records = await csv().fromString(url_file.body);
         bulk_load_result = await p_bulk_load(csv_records, csv_object.schema, csv_object.table, csv_object.action);
     } catch(e) {
         throw new Error(e);
     }
 
     return `successfully loaded ${bulk_load_result.inserted_hashes.length} records`;
-    /*
-    try {
-        let validation_msg = validator.urlObject(csv_object);
-        if (validation_msg) {
-            return callback(validation_msg);
-        }
-
-        createReadStream(csv_object.csv_url, (err, response)=>{
-            if(err){
-                return callback(err);
-            }
-
-            let csv_records = [];
-            csv().fromStream(response).then(function(jsonArr){
-                csv_records = jsonArr;
-                bulkLoad(csv_records, csv_object.schema, csv_object.table, csv_object.action, (err, data) => {
-                    if (err) {
-                        return callback(err);
-                    }
-                    return callback(null, data);
-                });
-            },function(err){
-                return callback(err);
-            });
-        });
-    } catch(e){
-        callback(e);
-    }
-    */
 }
 
+/**
+ * Grab the file specified in the URL parameter.
+ * @param url - URL to file.
+ * @returns {Promise<*>}
+ */
 async function createReadStream(url) {
-    let response = await request_promise.get(url);
+    let options = {
+        method: 'GET',
+        uri: `${url}`,
+        resolveWithFullResponse: true
+    };
+    let response = await request_promise(options);
     if (response.statusCode !== hdb_terms.HTTP_STATUS_CODES.OK || response.headers['content-type'].indexOf('text/csv') < 0) {
         let return_object = {
             message: `CSV Load failed from URL: ${url}`,
@@ -116,22 +97,6 @@ async function createReadStream(url) {
         return return_object;
     }
     return response;
-    /*
-    request.get(url)
-        .on('response', (response)=>{
-            if (response.statusCode !== 200 || response.headers['content-type'].indexOf('text/csv') < 0) {
-                let return_object = {
-                    message: `CSV Load failed from URL: ${url}`,
-                    status_code: response.statusCode,
-                    status_message: response.statusMessage,
-                    content_type: response.headers['content-type']
-                };
-                return callback(return_object);
-            }
-
-            return callback(null, response);
-        });
-        */
 }
 
 /**
