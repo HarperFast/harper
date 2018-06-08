@@ -7,7 +7,6 @@ const assert = require('assert');
 const rewire = require('rewire');
 const fs = require('fs');
 const moment = require('moment');
-const password = require('../../utility/password');
 
 describe(`Test generateFingerPrint`, function () {
     it('Nominal, generate finger print with hash and write finger print file', function (done) {
