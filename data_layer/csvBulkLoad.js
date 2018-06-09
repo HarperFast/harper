@@ -1,10 +1,17 @@
+"use strict";
+
 const csv=require('csvtojson'),
     insert = require('./insert'),
     _ = require('lodash'),
     request=require('request'),
-    record_batch_size = 1000,
     async = require('async'),
     validator = require('../validation/csvLoadValidator');
+
+const hdb_utils = require('../utility/common_utils');
+const {promisify} = require('util');
+const RECORD_BATCH_SIZE = 1000;
+// Promisify bulkLoad to avoid more of a refactor for now.
+const p_bulk_load = promisify(bulkLoad);
 
 module.exports = {
     csvDataLoad: csvDataLoad,
@@ -12,46 +19,30 @@ module.exports = {
     csvFileLoad: csvFileLoad
 };
 /**
- * Load a csv file.
+ * Load a csv values specified in the message 'data' field.
  *
  * @param csv_object - An object representing the CSV file.
- * @param callback
  * @returns validation_msg - Contains any validation errors found
  * @returns error - any errors found reading the csv file
  * @returns err - any errors found during the bulk load
  *
  */
-function csvDataLoad(csv_object, callback){
-    try {
-        let validation_msg = validator.dataObject(csv_object);
-        if (validation_msg) {
-            return callback(validation_msg);
-        }
-
-        let csv_records = [];
-
-        csv()
-            .fromString(csv_object.data)
-            .on('json', (jsonObj, rowIndex) => {
-                csv_records.push(jsonObj);
-            })
-            .on('done', (error) => {
-                if (error) {
-                    callback(error);
-                    return;
-                }
-
-                bulkLoad(csv_records, csv_object.schema, csv_object.table, csv_object.action, (err, data) => {
-                    if (err) {
-                        callback(err);
-                        return;
-                    }
-                    callback(null, `successfully loaded ${csv_records.length} records`);
-                });
-            });
-    } catch(e){
-        callback(e);
+async function csvDataLoad(csv_object){
+    let validation_msg = validator.dataObject(csv_object);
+    if (validation_msg) {
+        throw new Error(validation_msg);
     }
+
+    let csv_records = [];
+    let bulk_load_result = undefined;
+    try {
+        csv_records = await csv().fromString(csv_object.data);
+        bulk_load_result = await p_bulk_load(csv_records, csv_object.schema, csv_object.table, csv_object.action);
+    } catch(e) {
+        throw new Error(e);
+    }
+
+    return `successfully loaded ${bulk_load_result.inserted_hashes.length} records`;
 }
 
 /**
@@ -77,29 +68,17 @@ function csvURLLoad(csv_object, callback){
             }
 
             let csv_records = [];
-
-            csv()
-                .fromStream(response)
-                .on('json', (jsonObj, rowIndex) => {
-                    csv_records.push(jsonObj);
-                })
-                .on('done', (error) => {
-                    if (error) {
-                        callback(error);
-                        return;
+            csv().fromStream(response).then(function(jsonArr){
+                csv_records = jsonArr;
+                bulkLoad(csv_records, csv_object.schema, csv_object.table, csv_object.action, (err, data) => {
+                    if (err) {
+                        return callback(err);
                     }
-
-                    bulkLoad(csv_records, csv_object.schema, csv_object.table, csv_object.action, (err, data) => {
-                        if (err) {
-                            callback(err);
-                            return;
-                        }
-                        callback(null, `successfully loaded ${csv_records.length} records`);
-                    });
-                })
-                .on('error', (err) => {
-                    return callback(err);
+                    return callback(null, data);
                 });
+            },function(err){
+                return callback(err);
+            });
         });
     } catch(e){
         callback(e);
@@ -140,26 +119,15 @@ function csvFileLoad(csv_object, callback){
         }
         let csv_records = [];
 
-        csv()
-            .fromFile(csv_object.file_path)
-            .on('json', (jsonObj, rowIndex) => {
-                csv_records.push(jsonObj);
-            })
-            .on('done', (error) => {
-                if (error) {
-                    return callback(error);
+        csv().fromFile(csv_object.file_path).then(function(jsonArr){
+            csv_records = jsonArr;
+            bulkLoad(csv_records, csv_object.schema, csv_object.table, csv_object.action, (err, data) => {
+                if (err) {
+                    return callback(err);
                 }
-
-                bulkLoad(csv_records, csv_object.schema, csv_object.table, csv_object.action, (err, data) => {
-                    if (err) {
-                        return callback(err);
-                    }
-                    return callback(null, data);
-                });
-            }).on('error', (err) => {
-                if(err.message && err.message === 'File not exists'){
-                    return callback(`file ${csv_object.file_path} not found`);
-                }
+                return callback(null, data);
+            });
+        },function(err){
             return callback(err);
         });
     } catch(e){
@@ -176,7 +144,7 @@ function csvFileLoad(csv_object, callback){
  * @param callback - The caller
  */
 function bulkLoad(records, schema, table, action, callback){
-    let chunks = _.chunk(records, record_batch_size);
+    let chunks = _.chunk(records, RECORD_BATCH_SIZE);
     let update_status = '';
     //TODO: Noone remember why we have this here.  We should refactor this when
     // we have more benchmarks for comparison.  Might be able to leverage cores once

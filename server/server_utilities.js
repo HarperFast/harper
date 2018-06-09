@@ -16,6 +16,8 @@ const harper_logger = require('../utility/logging/harper_logger');
 const export_ = require('../data_layer/export');
 const op_auth = require('../utility/operation_authorization');
 const jobs = require('./jobs');
+const signal = require('../utility/signalling');
+const job_runner = require('./jobRunner');
 
 const UNAUTH_RESPONSE = 403;
 const UNAUTHORIZED_TEXT = 'You are not authorized to perform the operation specified';
@@ -152,7 +154,7 @@ function chooseOperation(json, callback) {
             operation_function = sql;
             break;
         case 'csv_data_load':
-            operation_function = csv.csvDataLoad;
+            operation_function = signalJob;
             break;
         case 'csv_file_load':
             operation_function = csv.csvFileLoad;
@@ -229,9 +231,6 @@ function chooseOperation(json, callback) {
         case 'export_local':
             operation_function = export_.export_local;
 			break;
-		case 'add_job':
-            operation_function = jobs.jobHandler;
-            break;
         case 'search_jobs_by_start_date':
             operation_function = jobs.jobHandler;
             break;
@@ -240,6 +239,9 @@ function chooseOperation(json, callback) {
             break;
         case 'delete_job':
             operation_function = jobs.jobHandler;
+            break;
+        case 'update_job':
+            operation_function = jobs.updateJob;
             break;
         default:
             break;
@@ -257,6 +259,32 @@ function chooseOperation(json, callback) {
 
 function nullOperation(json, callback) {
     callback('Invalid operation');
+}
+
+function signalJob(json, callback) {
+    let new_job_object = undefined;
+    jobs.addJob(json).then( (result) => {
+        new_job_object = result.createdJob;
+        let job_runner_message = new job_runner.RunnerMessage(new_job_object, json);
+        let job_signal_message = new signal.JobAddedSignalObject(new_job_object.id, job_runner_message);
+        if (process.send !== undefined) {
+            signal.signalJobAdded(job_signal_message);
+            // purposefully not waiting for a response as we want to callback immediately.
+        } else {
+            try {
+                job_runner.parseMessage(job_signal_message.runner_message);
+            } catch(e) {
+                harper_logger.error(`Got an error trying to run a job with message ${job_runner_message}. ${e}`);
+            }
+            // purposefully not waiting for a response as we want to callback immediately.
+        }
+
+        return callback(null, `Starting job with id ${new_job_object.id}`);
+    }).catch(function caughtError(err) {
+        let message = `There was an error adding a job: ${err}`;
+        harper_logger.error(message);
+        return callback(message, null);
+    });
 }
 
 function operationParameterValid(operation) {

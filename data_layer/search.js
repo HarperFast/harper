@@ -1,11 +1,9 @@
 'use strict';
 const fs = require('graceful-fs'),
-    PropertiesReader = require('properties-reader'),
-    hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
-    hdb_properties.append(hdb_properties.get('settings_path'));
-const base_path = hdb_properties.get('HDB_ROOT') + "/schema/"
-    , search_validator = require('../validation/searchValidator.js')
-    , async = require('async'),
+    PropertiesReader = require('properties-reader');
+
+const search_validator = require('../validation/searchValidator.js'),
+    async = require('async'),
     winston = require('../utility/logging/winston_logger'),
     file_search = require('../lib/fileSystem/fileSearch'),
     FileSearch = require('../lib/fileSystem/SQLSearch'),
@@ -15,6 +13,10 @@ const base_path = hdb_properties.get('HDB_ROOT') + "/schema/"
     math = require('mathjs'),
     system_schema = require('../json/systemSchema.json'),
     SelectValidator = require('../sqlTranslator/SelectValidator');
+
+let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
+hdb_properties.append(hdb_properties.get('settings_path'));
+const base_path = hdb_properties.get('HDB_ROOT') + "/schema/";
 
 math.import([
     require('../utility/functions/math/count'),

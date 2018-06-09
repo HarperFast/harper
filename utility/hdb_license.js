@@ -4,14 +4,15 @@ const fs = require('fs'),
     cipher = crypto.createCipher('aes192', 'a password'),
 
     validation = require('../validation/license_key_object.js'),
-    moment = require('moment'),
-    PropertiesReader = require('properties-reader'),
-    hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
-    hdb_properties.append(hdb_properties.get('settings_path'));
+    moment = require('moment');
 
 const FINGER_PRINT_FILE = `${hdb_properties.get('PROJECT_DIR')}/utility/keys/060493.ks`;
 const LICENSE_HASH_PREFIX = '061183';
 const LICENSE_KEY_DELIMITER = 'mofi25';
+const PropertiesReader = require('properties-reader');
+
+let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
+hdb_properties.append(hdb_properties.get('settings_path'));
 
 module.exports = {
     generateLicense: generateLicense,

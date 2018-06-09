@@ -5,9 +5,9 @@ const os = require('os'),
     tar = require('tar-fs'),
     CLI = require('clui'),
     request = require("request");
-PropertiesReader = require('properties-reader'),
-    winston = require('winston');
-    let hdb_properties;
+const PropertiesReader = require('properties-reader');
+const winston = require('winston');
+let hdb_properties;
 
 try {
     hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
