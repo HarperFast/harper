@@ -22,7 +22,7 @@ module.exports = {
 function generateFingerPrint(callback) {
     const uuidV4 = require('uuid/v4');
     let hash = uuidV4(); // -> '110ec58a-a0f2-4ac4-8393-c866d813b8d1'
-    let hashed_hash = password.hash(hash)
+    let hashed_hash = password.hash(hash);
     fs.writeFile(FINGER_PRINT_FILE, hashed_hash, function (err, result) {
         if (err) {
             callback(err);
@@ -74,9 +74,7 @@ function validateLicense(license_key, company, callback) {
     fs.exists(FINGER_PRINT_FILE, function(is_exist){ 
         if (is_exist) {
             try {
-                fs.readFile(FINGER_PRINT_FILE, function (err, data) {            
-                //   var newHash = hashLicense(fingerPrint, company);337ff20ede0e3fce0ce842bf69e2d48fmofi25cu5zLuhyC47102d32d124087bdc502c7e02509c9a
-                // winston.info(`new hash: ${newHash}`)
+                fs.readFile(FINGER_PRINT_FILE, function (err, data) {
                     if (!password.validate(license_tokens[1], `${LICENSE_HASH_PREFIX}${data}${company}`)) {
                         license_validation_object.valid_license = false;
                     }
