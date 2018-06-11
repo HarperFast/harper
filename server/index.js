@@ -6,11 +6,11 @@ const
     max_data_size = 65536,
     net = require('net'),
     cluster = require('cluster'),
-    winston=require('winston'),
-    PropertiesReader = require('properties-reader'),
-    hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
-    hdb_properties.append(hdb_properties.get('settings_path'));
+    winston=require('winston');
+const PropertiesReader = require('properties-reader');
 
+let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
+hdb_properties.append(hdb_properties.get('settings_path'));
 
 winston.configure({
     transports: [

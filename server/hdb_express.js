@@ -6,6 +6,10 @@ const user_schema = require('../utility/user_schema');
 const async = require('async');
 const insert = require('../data_layer/insert');
 const os = require('os');
+const job_runner = require('./jobRunner');
+const hdb_util = require('../utility/common_utils');
+const guidePath = require('path');
+const hdb_terms = require('../utility/hdbTerms');
 
 const DEFAULT_SERVER_TIMEOUT = 120000;
 const PROPS_SERVER_TIMEOUT_KEY = 'SERVER_TIMEOUT_MS';
@@ -22,8 +26,8 @@ const ENV_PROD_VAL = 'production';
 const ENV_DEV_VAL = 'development';
 const TRUE_COMPARE_VAL = 'TRUE';
 
-PropertiesReader = require('properties-reader');
-hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
+const PropertiesReader = require('properties-reader');
+let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
 hdb_properties.append(hdb_properties.get('settings_path'));
 
 let node_env_value = hdb_properties.get(PROPS_ENV_KEY);
@@ -133,14 +137,36 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
             function messageHandler(msg) {
                 try {
                     if (msg.type === 'clustering_payload') {
-                        forkClusterMsgQueue[msg.id] = msg;
+                        global.forkClusterMsgQueue[msg.id] = msg;
                         cluster_utilities.payloadHandler(msg);
                     } else if (msg.type === 'delegate_thread_response') {
                         global.delegate_callback_queue[msg.id](msg.err, msg.data);
                     } else {
-                        forks.forEach((fork) => {
-                            fork.send(msg);
-                        });
+                        if(!hdb_util.isEmptyOrZeroLength(msg.target_process_id)) {
+                            // If a process is specified in the message, send this job to that process.
+                            let backup_process = undefined;
+                            let specified_process = undefined;
+                            for(let i = 0; i<global.forks.length; i++) {
+                                if(!backup_process && global.forks[i].process.pid !== msg.target_process_id) {
+                                    // Set a backup process to send the message to in case we don't find the specified process.
+                                    backup_process = global.forks[i];
+                                }
+                                if(global.forks[i].process.pid === msg.target_process_id) {
+                                    specified_process = global.forks[i];
+                                    specified_process.send(msg);
+                                    harper_logger.info(`Processing job on process: ${msg.target_process_id}`);
+                                    break;
+                                }
+                            }
+                            if(!specified_process && backup_process) {
+                                harper_logger.info(`The specified process ${msg.target_process_id} was not found, sending to process ${global.forks[i].pid} instead.`);
+                                backup_process.send(msg);
+                            }
+                        } else {
+                            forks.forEach((fork) => {
+                                fork.send(msg);
+                            });
+                        }
                     }
                 } catch(e) {
                     harper_logger.error(e);
@@ -178,10 +204,9 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
             let whitelist = props_cors_whitelist.split(',');
             cors_options.origin = (origin, callback) => {
                 if (whitelist.indexOf(origin) !== -1) {
-                    callback(null, true);
-                } else {
-                    callback(new Error(`domain ${origin} is not whitelisted`));
+                    return callback(null, true);
                 }
+                return callback(new Error(`domain ${origin} is not whitelisted`));
             };
         }
         app.use(cors(cors_options));
@@ -191,9 +216,9 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
     app.use(bodyParser.urlencoded({extended: true}));
     app.use(function (error, req, res, next) {
         if (error instanceof SyntaxError) {
-            res.status(400).send({error: 'invalid JSON: ' + error.message.replace('\n', '')});
+            res.status(hdb_terms.HTTP_STATUS_CODES.BAD_REQUEST).send({error: 'invalid JSON: ' + error.message.replace('\n', '')});
         } else if (error) {
-            res.status(400).send({error: error.message});
+            res.status(hdb_terms.HTTP_STATUS_CODES.BAD_REQUEST).send({error: error.message});
         } else {
             next();
         }
@@ -202,7 +227,6 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
     app.use(passport.initialize());
     app.get('/', function (req, res) {
         auth.authorize(req, res, function () {
-            let guidePath = require('path');
             res.sendFile(guidePath.resolve('../docs/user_guide.html'));
         });
     });
@@ -213,33 +237,33 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
         // Per the body-parser docs, any request which does not match the bodyParser.json middleware will be returned with
         // an empty body object.
         if(!req.body || Object.keys(req.body).length === 0) {
-            return res.status(400).send({error: "Invalid JSON."});
+            return res.status(hdb_terms.HTTP_STATUS_CODES.BAD_REQUEST).send({error: "Invalid JSON."});
         }
         let enterprise_operations = ['add_node'];
         if ((req.headers.harperdb_connection || enterprise_operations.indexOf(req.body.operation) > -1) && !enterprise) {
-            return res.status(401).json({"error": "This feature requires an enterprise license.  Please register or contact us at hello@harperdb.io for more info."});
+            return res.status(hdb_terms.HTTP_STATUS_CODES.UNAUTHORIZED).json({"error": "This feature requires an enterprise license.  Please register or contact us at hello@harperdb.io for more info."});
         }
         auth.authorize(req, res, function (err, user) {
             if (err) {
                 harper_logger.warn(`{"ip":"${req.connection.remoteAddress}", "error":"${err.stack}"`);
                 if (typeof err === 'string') {
-                    return res.status(401).send({error: err});
+                    return res.status(hdb_terms.HTTP_STATUS_CODES.UNAUTHORIZED).send({error: err});
                 }
-                return res.status(401).send(err);
+                return res.status(hdb_terms.HTTP_STATUS_CODES.UNAUTHORIZED).send(err);
             }
             req.body.hdb_user = user;
-            req.body.hdb_auth_header  = req.headers.authorization;
+            req.body.hdb_auth_header = req.headers.authorization;
 
             server_utilities.chooseOperation(req.body, (err, operation_function) => {
                 if (err) {
                     harper_logger.error(err);
                     if(err === server_utilities.UNAUTH_RESPONSE) {
-                        return res.status(403).send({error: server_utilities.UNAUTHORIZED_TEXT});
+                        return res.status(hdb_terms.HTTP_STATUS_CODES.FORBIDDEN).send({error: server_utilities.UNAUTHORIZED_TEXT});
                     } else {
                         if (typeof err === 'string') {
-                            return res.status(500).send({error: err});
+                            return res.status(hdb_terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send({error: err});
                         }
-                        return res.status(500).send(err);
+                        return res.status(hdb_terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send(err);
                     }
                 }
                 let localOnlyOperations = ['describe_all', 'describe_table', 'describe_schema', 'read_log']
@@ -271,7 +295,7 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                         global_schema.getTableSchema(req.body.schema, req.body.table, function (err, table) {
                             if (err) {
                                 harper_logger.error(err);
-                                return res.status(500).send(err);
+                                return res.status(hdb_terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send(err);
                             }
                             if (table.residence) {
                                 let residence = table.residence;
@@ -296,7 +320,7 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                                 if (residence.indexOf(hdb_properties.get('NODE_NAME')) > -1) {
                                     server_utilities.processLocalTransaction(req, res, operation_function, function () {
                                         if (residence.length > 1) {
-                                            for (node in residence) {
+                                            for (let node in residence) {
                                                 if (residence[node] != hdb_properties.get('NODE_NAME')) {
 
                                                     let id = uuidv1();
@@ -312,7 +336,7 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                                         }
                                     });
                                 } else {
-                                    for (node in residence) {
+                                    for (let node in residence) {
                                         if (residence[node] != hdb_properties.get('NODE_NAME')) {
                                             let id = uuidv1();
                                             global.clusterMsgQueue[id] = res;
@@ -359,7 +383,7 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                                         records: [item]
                                     };
 
-                                    insert.insert(insert_object, function (err, result) {
+                                    insert.insert(insert_object, function (err) {
                                         if (err) {
                                             harper_logger.error(err);
                                             return callback_(err);
@@ -368,9 +392,9 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                                     });
                                 }, function(err){
                                     if(err){
-                                        return res.status(501).send(err);
+                                        return res.status(hdb_terms.HTTP_STATUS_CODES.NOT_IMPLEMENTED).send(err);
                                     }
-                                    return res.status(201).send('{"message":"clustering is down. request has been queued and will be processed when clustering reestablishes.  "}');
+                                    return res.status(hdb_terms.HTTP_STATUS_CODES.CREATED).send('{"message":"clustering is down. request has been queued and will be processed when clustering reestablishes.  "}');
                                 });
                             } catch (e) {
                                 harper_logger.error(e);
@@ -401,6 +425,13 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                     }
                 });
                 break;
+            case 'job':
+                job_runner.parseMessage(msg.runner_message).then((result) => {
+                    harper_logger.info(`completed job with result ${result}`);
+                }).catch(function isError(e) {
+                    harper_logger.error(e);
+                });
+                break;
             case 'enterprise':
                 enterprise = msg.enterprise;
                 break;
@@ -410,12 +441,12 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
             case 'cluster_response':
                 if (global.clusterMsgQueue[msg.id]) {
                     if (msg.err) {
-                        global.clusterMsgQueue[msg.id].status(401).json({"error": msg.err});
+                        global.clusterMsgQueue[msg.id].status(hdb_terms.HTTP_STATUS_CODES.UNAUTHORIZED).json({"error": msg.err});
                         delete global.clusterMsgQueue[msg.id];
                         break;
                     }
 
-                    global.clusterMsgQueue[msg.id].status(200).json(msg.data);
+                    global.clusterMsgQueue[msg.id].status(hdb_terms.HTTP_STATUS_CODES.OK).json(msg.data);
                     delete global.clusterMsgQueue[msg.id];
                 }
                 break;
@@ -426,6 +457,9 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                     });
                 });
                 break;
+            default:
+                harper_logger.error(`Received unknown signaling message ${msg.type}, ignoring message`);
+                break;
         }
     });
 
@@ -434,7 +468,7 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
         let message = `Found an uncaught exception with message: os.EOL ${err.message}.  Stack: ${err.stack} ${os.EOL} Terminating HDB.`;
         console.error(message);
         harper_logger.fatal(message);
-        process.exit(1)
+        process.exit(1);
     });
 
     try {

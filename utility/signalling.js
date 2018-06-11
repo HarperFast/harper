@@ -1,10 +1,16 @@
-const winston = require('../utility/logging/winston_logger');
-
-module.exports = {
-    signalSchemaChange,
-    signalUserChange
-};
+const harper_logger = require('../utility/logging/harper_logger');
 const global_schema = require('../utility/globalSchema');
+const process = require('process');
+
+class JobAddedSignalObject {
+    constructor(job_id, runner_message) {
+        this.runner_message = runner_message;
+        this.type = 'job';
+        // For now we want to target the creating process to handle this job.  At some point this can
+        // be made smarter to delegate to a different process.
+        this.target_process_id = process.pid;
+    }
+}
 
 function signalSchemaChange(message){
     try {
@@ -12,17 +18,17 @@ function signalSchemaChange(message){
         if (process.send === undefined) {
             global_schema.schemaSignal((err) => {
                 if (err) {
-                    winston.error(err);
+                    harper_logger.error(err);
                 }
             });
         } else {
             process.send(message);
         }
     }catch(e){
-        winston.error(e);
+        harper_logger.error(e);
         global_schema.schemaSignal((err) => {
             if (err) {
-                winston.error(err);
+                harper_logger.error(err);
             }
         });
     }
@@ -33,8 +39,31 @@ function signalUserChange(message){
         // if process.send is undefined we are running a single instance of the process.
         if (process.send !== undefined) {
             process.send(message);
+        } else {
+            //TODO: Can't call user schema directly, circular dependency.  FIX THIS,
         }
     } catch(e){
-        winston.error(e);
+        harper_logger.error(e);
     }
 }
+
+function signalJobAdded(job_added_signal_object){
+    try {
+        // if process.send is undefined we are running a single instance of the process.
+        if (process.send !== undefined) {
+            process.send(job_added_signal_object);
+        } else {
+            harper_logger.warn('Only 1 process is running, but a signal has been invoked.  Signals will be ignored when only 1 process is running.');
+        }
+
+    } catch(e){
+        harper_logger.error(e);
+    }
+}
+
+module.exports = {
+    signalSchemaChange,
+    signalUserChange,
+    signalJobAdded: signalJobAdded,
+    JobAddedSignalObject: JobAddedSignalObject
+};

@@ -1,11 +1,13 @@
-const file_search = require('../lib/fileSystem/fileSearch'),
-    path = require('path'),
-    PropertiesReader = require('properties-reader'),
-    hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`),
-patterns = require('../sqlTranslator/conditionPatterns'),
-async=require('async'),
-_ = require('lodash'),
-fs = require('fs');
+const file_search = require('../lib/fileSystem/fileSearch');
+const path = require('path');
+
+const PropertiesReader = require('properties-reader');
+const patterns = require('../sqlTranslator/conditionPatterns');
+const async=require('async');
+const _ = require('lodash');
+const fs = require('fs');
+
+let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
 hdb_properties.append(hdb_properties.get('settings_path'));
 
 const hdb_path = path.join(hdb_properties.get('HDB_ROOT'), '/schema/');
