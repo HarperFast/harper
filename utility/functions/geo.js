@@ -34,6 +34,10 @@ function geoArea(geoJSON){
         throw 'geoJSON is required';
     }
 
+    if(typeof geoJSON === 'string') {
+        geoJSON = common_utils.autoCast(geoJSON);
+    }
+
     return turf.area(geoJSON);
 }
 
@@ -46,6 +50,10 @@ function geoArea(geoJSON){
 function geoLength(geoJSON, units){
     if(common_utils.isEmpty(geoJSON)){
         throw 'geoJSON is required';
+    }
+
+    if(typeof geoJSON === 'string') {
+        geoJSON = common_utils.autoCast(geoJSON);
     }
 
     return turf.length(geoJSON, {units:units ? units : "kilometers"});
@@ -67,6 +75,10 @@ function geoCircle(point, radius, units){
         throw 'radius is required';
     }
 
+    if(typeof point === 'string') {
+        point = common_utils.autoCast(point);
+    }
+
     return turf.circle(point, radius, {units:units ? units : "kilometers"});
 }
 
@@ -83,6 +95,14 @@ function geoDifference(poly1, poly2){
 
     if(common_utils.isEmpty(poly2)){
         throw 'poly2 is required';
+    }
+
+    if(typeof poly1 === 'string') {
+        poly1 = common_utils.autoCast(poly1);
+    }
+
+    if(typeof poly2 === 'string') {
+        poly2 = common_utils.autoCast(poly2);
     }
 
     return turf.difference(poly1, poly2);
@@ -102,6 +122,13 @@ function geoDistance(point1, point2, units){
 
     if(common_utils.isEmpty(point2)){
         throw 'point2 is required';
+    }
+
+    if(typeof point1 === 'string') {
+        point1 = common_utils.autoCast(point1);
+    }
+    if(typeof point2 === 'string') {
+        point2 = common_utils.autoCast(point2);
     }
 
     return turf.distance(point1, point2, {units:units ? units : "kilometers"});
@@ -128,6 +155,13 @@ function geoNear(point1, point2, distance, units){
         throw new Error('distance is required');
     }
 
+    if(typeof point1 === 'string') {
+        point1 = common_utils.autoCast(point1);
+    }
+    if(typeof point2 === 'string') {
+        point2 = common_utils.autoCast(point2);
+    }
+
     if(isNaN(distance)){
         throw new Error('distance must be a number');
     }
@@ -151,6 +185,12 @@ function geoContains(geo1, geo2){
         throw 'geo2 is required';
     }
 
+    if(typeof geo1 === 'string') {
+        geo1 = common_utils.autoCast(geo1);
+    }
+    if(typeof geo2 === 'string') {
+        geo2 = common_utils.autoCast(geo2);
+    }
 
     return turf.booleanContains(geo1, geo2);
 }
@@ -170,6 +210,12 @@ function geoEqual(geo1, geo2){
         throw 'geo2 is required';
     }
 
+    if(typeof geo1 === 'string') {
+        geo1 = common_utils.autoCast(geo1);
+    }
+    if(typeof geo2 === 'string') {
+        geo2 = common_utils.autoCast(geo2);
+    }
 
     return turf.booleanEqual(geo1, geo2);
 }
@@ -187,6 +233,13 @@ function geoCrosses(geo1, geo2){
 
     if(common_utils.isEmpty(geo1)){
         throw 'geo2 is required';
+    }
+
+    if(typeof geo1 === 'string') {
+        geo1 = common_utils.autoCast(geo1);
+    }
+    if(typeof geo2 === 'string') {
+        geo2 = common_utils.autoCast(geo2);
     }
 
     //need to do ! as this checks for non-intersections of geometries

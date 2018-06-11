@@ -62,6 +62,16 @@ const OPERATIONS_ENUM = {
     UPDATE: 'update'
 };
 
+//describes the Geo Conversion types
+const GEO_CONVERSION_ENUM = {
+    point: 'point',
+    lineString: 'lineString',
+    multiLineString: 'multiLineString',
+    multiPoint: 'multiPoint',
+    multiPolygon: 'multiPolygon',
+    polygon: 'polygon'
+};
+
 module.exports = {
     HDB_PROC_NAME,
     SYSTEM_SCHEMA_NAME,
@@ -70,6 +80,7 @@ module.exports = {
     JOB_TYPE_ENUM,
     JOB_STATUS_ENUM,
     OPERATIONS_ENUM,
-    HTTP_STATUS_CODES
+    HTTP_STATUS_CODES,
+    GEO_CONVERSION_ENUM
 };
 
