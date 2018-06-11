@@ -39,6 +39,7 @@ describe('Test parseMessage', function() {
     });
     afterEach(function () {
         sandbox.restore();
+        bulk_load_stub.restore();
     });
 
     it('Nominal case, parse with no errors', test_util.mochaAsyncWrapper(async function() {
@@ -68,6 +69,21 @@ describe('Test parseMessage', function() {
             await parseMessage(runner_message);
         } catch(e) {
             assert.ok(e.message.length > 0, 'expected exception');
+        }
+    });
+    it('Invalid operation specified', async function() {
+        let runner_message = new jobs_runner.RunnerMessage();
+        let job_object = new JobObject();
+        let data_load_msg_temp = test_util.deepClone(DATA_LOAD_MESSAGE);
+        data_load_msg_temp.operation = 'GoatBoy';
+        runner_message.json = data_load_msg_temp;
+        runner_message.job = job_object;
+
+        try {
+            let response = await parseMessage(runner_message);
+            assert.ok(response.error.lastIndexOf('Invalid operation') >= 0, 'expected exception');
+        } catch(e) {
+            throw(e);
         }
     });
     it('Invalid job id', async function() {
@@ -100,6 +116,14 @@ describe('Test parseMessage', function() {
         runner_message.json = null;
         runner_message.job = job_object;
 
+        try {
+            await parseMessage(runner_message);
+        } catch(e) {
+            assert.ok(e.message.length > 0, 'expected exception');
+        }
+    });
+    it('Invalid runner message', async function() {
+        let runner_message = {};
         try {
             await parseMessage(runner_message);
         } catch(e) {
@@ -197,6 +221,14 @@ describe('Test runCSVJob', function() {
         runner_message.json = null;
         runner_message.job = job_object;
 
+        try {
+            await runCSVJob(runner_message, csv_bulk_load.csvDataLoad, runner_message.json);
+        } catch(e) {
+            assert.ok(e.message.length > 0, 'expected exception');
+        }
+    });
+    it('Invalid runner message', async function() {
+        let runner_message = {};
         try {
             await runCSVJob(runner_message, csv_bulk_load.csvDataLoad, runner_message.json);
         } catch(e) {
