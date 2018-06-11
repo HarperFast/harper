@@ -27,7 +27,7 @@ module.exports = {
  * @param callback
  */
 function export_local(export_object, callback) {
-    hdb_logger.trace("export_local request: " + JSON.stringify(export_object));
+    hdb_logger.trace(`export_local request to path: ${export_object.path}, filename: ${export_object.filename}, format: ${export_object.format}`);
     let error_message = exportCoreValidation(export_object);
     if(!hdb_utils.isEmpty(error_message)){
         hdb_logger.error(error_message);
@@ -115,7 +115,7 @@ function saveToLocal(file_path, format, data, callback) {
             hdb_logger.error(err);
             return callback(err);
         }
-
+        hdb_logger.info(`Completed writing file ${file_path}`);
         return callback();
     });
 }

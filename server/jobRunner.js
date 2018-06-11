@@ -74,6 +74,11 @@ async function parseMessage(runner_message) {
         case hdb_terms.JOB_TYPE_ENUM.empty_trash:
             break;
         case hdb_terms.JOB_TYPE_ENUM.export_local:
+            try {
+                response = await runCSVJob(runner_message, hdb_export.export_local, runner_message.json);
+            } catch(e) {
+                log.error(e);
+            }
             break;
         case hdb_terms.JOB_TYPE_ENUM.export_to_s3:
             try {
@@ -124,7 +129,6 @@ async function runCSVJob(runner_message, operation, argument) {
         await jobs.updateJob(runner_message.job);
         // Run the operation.
         result_message = await operation(argument);
-        log.info(`performed ${operation} with result ${result_message}`);
     } catch(e) {
         let err_message =`There was an error running ${operation} job with id ${runner_message.job.id} - ${e}`;
         log.error(err_message);
