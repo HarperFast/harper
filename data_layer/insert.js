@@ -19,9 +19,10 @@ const insert_validator = require('../validation/insertValidator.js'),
     truncate = require('truncate-utf8-bytes'),
     PropertiesReader = require('properties-reader'),
     autocast = require('autocast'),
-    signalling = require('../utility/signalling'),
-    hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
-    hdb_properties.append(hdb_properties.get('settings_path'));
+    signalling = require('../utility/signalling');
+
+let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
+hdb_properties.append(hdb_properties.get('settings_path'));
 
 
 const hdb_path = path.join(hdb_properties.get('HDB_ROOT'), '/schema');
@@ -180,7 +181,7 @@ function insertData(insert_object, callback){
 function updateData(update_object, callback){
     try {
         if (update_object.operation !== 'update') {
-            callback('invalid operation, must be update');
+            return callback('invalid operation, must be update');
         }
         let tracker = {
             all_ids:[],

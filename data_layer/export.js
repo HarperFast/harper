@@ -12,7 +12,7 @@ const hdb_logger = require('../utility/logging/harper_logger');
 
 const VALID_SEARCH_OPERATIONS = ['search_by_value', 'search_by_hash', 'sql'];
 const VALID_EXPORT_FORMATS = ['json', 'csv'];
-const JSON = 'json';
+const JSON_TEXT = 'json';
 const CSV = 'csv';
 
 module.exports = {
@@ -106,7 +106,7 @@ function confirmPath(path, callback){
  */
 function saveToLocal(file_path, format, data, callback) {
     hdb_logger.trace("in saveToLocal");
-    if(format === JSON){
+    if(format === JSON_TEXT){
         data = JSON.stringify(data);
     }
 
@@ -121,13 +121,13 @@ function saveToLocal(file_path, format, data, callback) {
 }
 
 /**
- *allows for exportinhg a result to s3
+ *allows for exporting a result to s3
  * @param export_object
  * @param callback
  * @returns {*}
  */
 function export_to_s3(export_object, callback) {
-    hdb_logger.trace("export_to_s3: " + JSON.stringify(export_object));
+    hdb_logger.trace(`called export_to_s3 to bucket: ${export_object.s3.bucket} and query ${export_object.search_operation.sql}`);
     let error_message = exportCoreValidation(export_object);
 
     if(!hdb_utils.isEmpty(error_message)){
@@ -165,7 +165,7 @@ function export_to_s3(export_object, callback) {
         if(export_object.format === CSV){
             s3_data = data;
             s3_name = export_object.s3.key + ".csv";
-        } else if(export_object.format === JSON){
+        } else if(export_object.format === JSON_TEXT){
             s3_data = JSON.stringify(data);
             s3_name = export_object.s3.key + ".json";
         } else {
@@ -240,7 +240,7 @@ function searchAndConvert(export_object, callback){
             return callback(err);
         }
 
-        if(export_object.format === JSON){
+        if(export_object.format === JSON_TEXT){
             return callback(null, results);
         } else if (export_object.format === CSV) {
             let fields = [];
