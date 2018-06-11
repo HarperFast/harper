@@ -2,17 +2,17 @@ const fs = require('fs'),
     password = require('./password'),
     crypto = require('crypto'),
     cipher = crypto.createCipher('aes192', 'a password'),
-
     validation = require('../validation/license_key_object.js'),
     moment = require('moment');
 
-const FINGER_PRINT_FILE = `${hdb_properties.get('PROJECT_DIR')}/utility/keys/060493.ks`;
 const LICENSE_HASH_PREFIX = '061183';
 const LICENSE_KEY_DELIMITER = 'mofi25';
 const PropertiesReader = require('properties-reader');
 
 let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
 hdb_properties.append(hdb_properties.get('settings_path'));
+
+const FINGER_PRINT_FILE = `${hdb_properties.get('PROJECT_DIR')}/utility/keys/060493.ks`;
 
 module.exports = {
     generateLicense: generateLicense,
@@ -22,7 +22,7 @@ module.exports = {
 
 function generateFingerPrint(callback) {
     const uuidV4 = require('uuid/v4');
-    let hash = uuidV4(); // -> '110ec58a-a0f2-4ac4-8393-c866d813b8d1'
+    let hash = uuidV4();
     let hashed_hash = password.hash(hash);
     fs.writeFile(FINGER_PRINT_FILE, hashed_hash, function (err, result) {
         if (err) {
@@ -30,7 +30,7 @@ function generateFingerPrint(callback) {
             return;
         }
         callback(null, hashed_hash);
-    })
+    });
 }
 
 function generateLicense(license_object, callback) {
@@ -104,8 +104,5 @@ function hashDate(expdate) {
 }
 
 function hashLicense(fingerprint, company) {
-  //  let hmac = crypto.createHmac('sha256', 'a secret')
-   // hmac.update(`061183${fingerprint}${company}`);
-   // return hmac.digest('hex');
     return password.hash(`${LICENSE_HASH_PREFIX}${fingerprint}${company}`);
 }
