@@ -19,7 +19,7 @@ const JOB_TABLE_NAME = 'hdb_job';
 
 // Describes all available job types
 const JOB_TYPE_ENUM = {
-    csv_file_upload: 'csv_file_upload',
+    csv_file_load: 'csv_file_load',
     empty_trash: 'empty_trash',
     csv_url_load: 'csv_url_load',
     csv_data_load: 'csv_data_load',

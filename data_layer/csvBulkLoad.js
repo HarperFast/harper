@@ -103,36 +103,30 @@ function createReadStream(url, callback){
 }
 
 /**
- *
+ * Parse and load CSV values.
+ * 
  * @param csv_object - An object representing the CSV file.
- * @param callback
  * @returns validation_msg - Contains any validation errors found
  * @returns error - any errors found reading the csv file
  * @return err - any errors found during the bulk load
  *
  */
-function csvFileLoad(csv_object, callback){
-    try {
-        let validation_msg = validator.fileObject(csv_object);
-        if (validation_msg) {
-            return callback(validation_msg);
-        }
-        let csv_records = [];
-
-        csv().fromFile(csv_object.file_path).then(function(jsonArr){
-            csv_records = jsonArr;
-            bulkLoad(csv_records, csv_object.schema, csv_object.table, csv_object.action, (err, data) => {
-                if (err) {
-                    return callback(err);
-                }
-                return callback(null, data);
-            });
-        },function(err){
-            return callback(err);
-        });
-    } catch(e){
-        callback(e);
+async function csvFileLoad(csv_object) {
+    let validation_msg = validator.fileObject(csv_object);
+    if (validation_msg) {
+        throw new Error(validation_msg);
     }
+
+    let csv_records = [];
+    let bulk_load_result = undefined;
+    try {
+        csv_records = await csv().fromFile(csv_object.file_path);
+        bulk_load_result = await p_bulk_load(csv_records, csv_object.schema, csv_object.table, csv_object.action);
+    } catch(e) {
+        throw new Error(e);
+    }
+
+    return `successfully loaded ${bulk_load_result.inserted_hashes.length} records`;
 }
 
 /**

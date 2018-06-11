@@ -427,7 +427,7 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                 break;
             case 'job':
                 job_runner.parseMessage(msg.runner_message).then((result) => {
-                    harper_logger.info(`Finished job with id: ${result.job_id}`);
+                    harper_logger.info(`completed job with result ${result}`);
                 }).catch(function isError(e) {
                     harper_logger.error(e);
                 });

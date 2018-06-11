@@ -157,7 +157,7 @@ function chooseOperation(json, callback) {
             operation_function = signalJob;
             break;
         case 'csv_file_load':
-            operation_function = csv.csvFileLoad;
+            operation_function = signalJob;
             break;
         case 'csv_url_load':
             operation_function = csv.csvURLLoad;

@@ -239,7 +239,7 @@ describe('Test addJob', function() {
 	   jobs.__set__('p_search_by_value', search_stub);
 	   jobs.__set__('p_insert', insert_stub);
 	   let test_job = {};
-	   test_job.operation = hdb_term.JOB_TYPE_ENUM.csv_file_upload;
+	   test_job.operation = hdb_term.JOB_TYPE_ENUM.csv_file_load;
 	   test_job.hdb_user = 'test user';
 
 	   let add_result = await addJob(test_job);
@@ -264,7 +264,7 @@ describe('Test addJob', function() {
 		jobs.__set__('p_search_by_value', search_stub);
 		jobs.__set__('p_insert', insert_stub);
 		let test_job = {};
-		test_job.operation = hdb_term.JOB_TYPE_ENUM.csv_file_upload;
+		test_job.operation = hdb_term.JOB_TYPE_ENUM.csv_file_load;
 		test_job.hdb_user = 'test user';
 
 		let add_result = await addJob(test_job);
@@ -276,7 +276,7 @@ describe('Test addJob', function() {
 		jobs.__set__('p_search_by_value', search_stub);
 		jobs.__set__('p_insert', insert_stub);
 		let test_job = {};
-		test_job.operation = hdb_term.JOB_TYPE_ENUM.csv_file_upload;
+		test_job.operation = hdb_term.JOB_TYPE_ENUM.csv_file_load;
 		test_job.hdb_user = 'test user';
 
 		let add_result = await addJob(test_job);
