@@ -223,7 +223,7 @@ function chooseOperation(json, callback) {
             operation_function = cluster_utilities.addNode;
             break;
         case 'export_to_s3':
-            operation_function = export_.export_to_s3;
+            operation_function = signalJob;
             break;
         case 'delete_files_before':
             operation_function = delete_.deleteFilesBefore;

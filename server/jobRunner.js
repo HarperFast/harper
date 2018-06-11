@@ -6,6 +6,7 @@ const moment = require('moment');
 const csv_bulk_load = require('../data_layer/csvBulkLoad');
 const log = require('../utility/logging/harper_logger');
 const jobs = require('./jobs');
+const hdb_export = require('../data_layer/export');
 
 class RunnerResponse {
     constructor(success, message, error) {
@@ -75,6 +76,11 @@ async function parseMessage(runner_message) {
         case hdb_terms.JOB_TYPE_ENUM.export_local:
             break;
         case hdb_terms.JOB_TYPE_ENUM.export_to_s3:
+            try {
+                response = await runCSVJob(runner_message, hdb_export.export_to_s3, runner_message.json);
+            } catch(e) {
+                log.error(e);
+            }
             break;
         case hdb_terms.JOB_TYPE_ENUM.delete_files_before:
             break;
