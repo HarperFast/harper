@@ -31,7 +31,7 @@ module.exports = {
  */
 function geoArea(geoJSON){
     if(common_utils.isEmpty(geoJSON)){
-        throw 'geoJSON is required';
+        throw new Error('geoJSON is required');
     }
 
     if(typeof geoJSON === 'string') {
@@ -49,7 +49,7 @@ function geoArea(geoJSON){
  */
 function geoLength(geoJSON, units){
     if(common_utils.isEmpty(geoJSON)){
-        throw 'geoJSON is required';
+        throw new Error('geoJSON is required');
     }
 
     if(typeof geoJSON === 'string') {
@@ -68,11 +68,11 @@ function geoLength(geoJSON, units){
  */
 function geoCircle(point, radius, units){
     if(common_utils.isEmpty(point)){
-        throw 'point is required';
+        throw new Error('point is required');
     }
 
     if(common_utils.isEmpty(radius)){
-        throw 'radius is required';
+        throw new Error('radius is required');
     }
 
     if(typeof point === 'string') {
@@ -90,11 +90,11 @@ function geoCircle(point, radius, units){
  */
 function geoDifference(poly1, poly2){
     if(common_utils.isEmpty(poly1)){
-        throw 'poly1 is required';
+        throw new Error('poly1 is required');
     }
 
     if(common_utils.isEmpty(poly2)){
-        throw 'poly2 is required';
+        throw new Error('poly2 is required');
     }
 
     if(typeof poly1 === 'string') {
@@ -117,11 +117,11 @@ function geoDifference(poly1, poly2){
  */
 function geoDistance(point1, point2, units){
     if(common_utils.isEmpty(point1)){
-        throw 'point1 is required';
+        throw new Error('point1 is required');
     }
 
     if(common_utils.isEmpty(point2)){
-        throw 'point2 is required';
+        throw new Error('point2 is required');
     }
 
     if(typeof point1 === 'string') {
@@ -144,11 +144,11 @@ function geoDistance(point1, point2, units){
  */
 function geoNear(point1, point2, distance, units){
     if(common_utils.isEmpty(point1)){
-        throw 'point1 is required';
+        throw new Error('point1 is required');
     }
 
     if(common_utils.isEmpty(point2)){
-        throw 'point2 is required';
+        throw new Error('point2 is required');
     }
 
     if(common_utils.isEmpty(distance)){
@@ -178,11 +178,11 @@ function geoNear(point1, point2, distance, units){
  */
 function geoContains(geo1, geo2){
     if(common_utils.isEmpty(geo1)){
-        throw 'geo1 is required';
+        throw new Error('geo1 is required');
     }
 
     if(common_utils.isEmpty(geo1)){
-        throw 'geo2 is required';
+        throw new Error('geo2 is required');
     }
 
     if(typeof geo1 === 'string') {
@@ -203,11 +203,11 @@ function geoContains(geo1, geo2){
  */
 function geoEqual(geo1, geo2){
     if(common_utils.isEmpty(geo1)){
-        throw 'geo1 is required';
+        throw new Error('geo1 is required');
     }
 
     if(common_utils.isEmpty(geo1)){
-        throw 'geo2 is required';
+        throw new Error('geo2 is required');
     }
 
     if(typeof geo1 === 'string') {
@@ -228,11 +228,11 @@ function geoEqual(geo1, geo2){
  */
 function geoCrosses(geo1, geo2){
     if(common_utils.isEmpty(geo1)){
-        throw 'geo1 is required';
+        throw new Error('geo1 is required');
     }
 
     if(common_utils.isEmpty(geo1)){
-        throw 'geo2 is required';
+        throw new Error('geo2 is required');
     }
 
     if(typeof geo1 === 'string') {
