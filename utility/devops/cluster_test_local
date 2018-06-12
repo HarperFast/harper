@@ -30,7 +30,7 @@ node harperdb install --TC_AGREEMENT yes --HDB_ROOT $target_dir/node_$node_count
 printf  "\nCLUSTERING = TRUE\nCLUSTERING_PORT = %s\nNODE_NAME = node_%s" "$cluster_port" "$node_count" >> $target_dir/node_$node_count/data/hdb/config/settings.js
 
 #License register
-/opt/harperdb/utility/devops/script_register_local.exp $target_dir/node_$node_count/harperdb
+$working_dir/utility/devops/script_register_local.exp $target_dir/node_$node_count/harperdb
 
 #KILL only this node
 kill $(ps -ef | grep $(cd .. && pwd) | awk '{print $2}')
@@ -64,6 +64,9 @@ sleep 10s
 
 #Check Clustering by adding schema, table, data, select.
 newman run https://api.getpostman.com/collections/4f5d17b0-e923-e7c0-feb9-f80dbcf1764a?apikey=fe1dfb2c3647474f8f3e9d836783e694 --environment https://api.getpostman.com/environments/e8201aee-1a99-7de7-4910-62c0e0e6b755?apikey=fe1dfb2c3647474f8f3e9d836783e694 --folder clustered
+sleep 2s
+#Let data distribute after adding data
+newman run https://api.getpostman.com/collections/4f5d17b0-e923-e7c0-feb9-f80dbcf1764a?apikey=fe1dfb2c3647474f8f3e9d836783e694 --environment https://api.getpostman.com/environments/e8201aee-1a99-7de7-4910-62c0e0e6b755?apikey=fe1dfb2c3647474f8f3e9d836783e694 --folder data_wait
 
 echo "DONE"
 }

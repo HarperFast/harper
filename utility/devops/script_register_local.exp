@@ -68,7 +68,7 @@ puts "\n****DOES THIS MATCH GENERATED Finger Print above:   $env(FingerPrint)***
 puts "\nSpawn ID  $spawn_id\n"
 
 
-set theLic [exec bash -c "curl --silent -X POST http://192.168.1.92:7777/register -H 'authorization: Basic aGRiX2xtczpWQFRHVTN3TUxBSEFFNiluVmJCcWdLb25CYnd5S05eOQ==' -H 'cache-control: no-cache' -H 'content-type: application/json' -H 'postman-token: ddc42364-f4c8-4597-1f11-0960064b2bf6' -d '{\"fingerprint\": \"$env(FingerPrint)\",\"company\":\"harperdb.io\",\"exp_date\":\"2018-09-11\"}'"]
+set theLic [exec bash -c "curl --silent -X POST http://dev.harperdb.io:7777/register -H 'authorization: Basic aGRiX2xtczpWQFRHVTN3TUxBSEFFNiluVmJCcWdLb25CYnd5S05eOQ==' -H 'cache-control: no-cache' -H 'content-type: application/json' -H 'postman-token: ddc42364-f4c8-4597-1f11-0960064b2bf6' -d '{\"fingerprint\": \"$env(FingerPrint)\",\"company\":\"harperdb.io\",\"exp_date\":\"2018-09-11\"}'"]
 
 puts "lic: $theLic"
 #expect -re "\[a-zA-Z0-9]{79}"

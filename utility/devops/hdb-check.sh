@@ -1,5 +1,11 @@
 #!/bin/bash
 hdb_data=$(pwd)
+
+#registration test function to be called ************MUST HAVE expect installed locally ********apt-get install expect
+function registration_test()
+{
+   ../utility/devops/script_register_local.exp $hdb_data
+}
     
 	hdb_express_route=$(pwd)
 	cd ./bin/
@@ -17,10 +23,13 @@ hdb_data=$(pwd)
 	if [ "$theProc" ]; then
 		 					
 		echo "HarperDB started"
-		echo "Stopping"
-	
+		echo "***  REGISTRATION TEST ***"
+#Test registration
+                registration_test	
+             
+                echo "Stopping Harperdb"
 		node harperdb stop
-	    
+
 		stopped=$(ps -ef | grep $hdb_express_route/server/hdb_express | grep -v grep)
 #Check variable stop is empty		
 		if [ -z "$stopped" ]; then
