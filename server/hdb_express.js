@@ -50,7 +50,7 @@ if(DEBUG){
     numCPUs = 1;
 }
 
-if (cluster.isMaster &&( numCPUs > 0 || DEBUG )) {
+if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
     const search = require('../data_layer/search');
     const cluster_utilities = require('./clustering/cluster_utilities');
     const enterprise_util = require('../utility/enterprise_initialization');
