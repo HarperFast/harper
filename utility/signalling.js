@@ -1,6 +1,5 @@
 const harper_logger = require('../utility/logging/harper_logger');
 const global_schema = require('../utility/globalSchema');
-const process = require('process');
 
 class JobAddedSignalObject {
     constructor(job_id, runner_message) {
