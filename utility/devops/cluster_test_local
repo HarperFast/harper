@@ -30,7 +30,7 @@ node harperdb install --TC_AGREEMENT yes --HDB_ROOT $target_dir/node_$node_count
 printf  "\nCLUSTERING = TRUE\nCLUSTERING_PORT = %s\nNODE_NAME = node_%s" "$cluster_port" "$node_count" >> $target_dir/node_$node_count/data/hdb/config/settings.js
 
 #License register
-/opt/harperdb/utility/devops/script_register_local.exp $target_dir/node_$node_count/harperdb
+$working_dir/utility/devops/script_register_local.exp $target_dir/node_$node_count/harperdb
 
 #KILL only this node
 kill $(ps -ef | grep $(cd .. && pwd) | awk '{print $2}')
