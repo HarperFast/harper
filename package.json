@@ -11,6 +11,7 @@
   "author": "HarperDB, Inc.",
   "license": "ISC",
   "dependencies": {
+    "@turf/turf": "^5.1.6",
     "alasql": "^0.4.5",
     "async": "^2.6.1",
     "autocast": "0.0.4",
