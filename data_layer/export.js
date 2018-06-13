@@ -9,6 +9,7 @@ const fs = require('graceful-fs');
 const path =  require('path');
 const hdb_logger = require('../utility/logging/harper_logger');
 const {promisify} = require('util');
+const hdb_common = require('../utility/common_utils');
 
 const VALID_SEARCH_OPERATIONS = ['search_by_value', 'search_by_hash', 'sql'];
 const VALID_EXPORT_FORMATS = ['json', 'csv'];
@@ -40,9 +41,9 @@ async function export_local(export_object) {
         throw new Error(error_message);
     }
 
-    if(hdb_utils.isEmpty(export_object.path)){
+    if(hdb_utils.isEmpty(export_object.path)) {
         hdb_logger.error("path is missing");
-        throw new Error(error_message);
+        throw new Error("path parameter is invalid");
     }
 
     //we will allow for a missing filename and autogen one based on the epoch
@@ -70,6 +71,9 @@ async function export_local(export_object) {
  */
 async function confirmPath(path) {
     hdb_logger.trace("in confirmPath");
+    if(hdb_utils.isEmptyOrZeroLength(path)) {
+        throw new Error(`Invalid path: ${path}`);
+    }
     let stats = undefined;
     try {
         stats = await p_fs_stat(path);
@@ -83,7 +87,7 @@ async function confirmPath(path) {
             error_message = err.message;
         }
         hdb_logger.error(error_message);
-        throw new Error(err);
+        throw new Error(error_message);
     }
     if (!stats.isDirectory()) {
         let err = `path '${path}' is not a directory, please supply a valid folder path`;
@@ -94,15 +98,23 @@ async function confirmPath(path) {
 }
 
 /**
- * takes the data and saves it tgo the file system
+ * takes the data and saves it to the file system
  * @param file_path
- * @param format
+ * @param source_data_format
  * @param data
- * @param callback
  */
-async function saveToLocal(file_path, format, data) {
+async function saveToLocal(file_path, source_data_format, data) {
     hdb_logger.trace("in saveToLocal");
-    if(format === JSON_TEXT){
+    if(hdb_common.isEmptyOrZeroLength(file_path)) {
+        throw new Error('file_path parameter is invalid.');
+    }
+    if(hdb_common.isEmptyOrZeroLength(source_data_format)) {
+        throw new Error('Invalid source format');
+    }
+    if(hdb_common.isEmpty(data)) {
+        throw new Error('Data not found.');
+    }
+    if(source_data_format === JSON_TEXT) {
         data = JSON.stringify(data);
     }
     try {
@@ -117,68 +129,67 @@ async function saveToLocal(file_path, format, data) {
 /**
  *allows for exporting a result to s3
  * @param export_object
- * @param callback
  * @returns {*}
  */
-function export_to_s3(export_object, callback) {
-    hdb_logger.trace(`called export_to_s3 to bucket: ${export_object.s3.bucket} and query ${export_object.search_operation.sql}`);
+async function export_to_s3(export_object) {
+    if (!export_object.s3 || Object.keys(export_object.s3).length === 0) {
+        throw new Error("S3 object missing");
+    }
+
+    if (hdb_utils.isEmptyOrZeroLength(export_object.s3.aws_access_key_id)) {
+        throw new Error("S3.aws_access_key_id missing");
+    }
+
+    if (hdb_utils.isEmptyOrZeroLength(export_object.s3.aws_secret_access_key)) {
+        throw new Error("S3.aws_secret_access_key missing");
+    }
+
+    if (hdb_utils.isEmptyOrZeroLength(export_object.s3.bucket)) {
+        throw new Error("S3.bucket missing");
+    }
+
+    if (hdb_utils.isEmptyOrZeroLength(export_object.s3.key)) {
+        throw new Error("S3.key missing");
+    }
+
     let error_message = exportCoreValidation(export_object);
-
     if(!hdb_utils.isEmpty(error_message)){
-        return callback(error_message);
+        throw new Error(error_message);
     }
-
-    if (hdb_utils.isEmpty(export_object.s3)) {
-        return callback("S3 object missing");
-    }
-
-    if (hdb_utils.isEmpty(export_object.s3.aws_access_key_id)) {
-        return callback("S3.aws_access_key_id missing");
-    }
-
-    if (hdb_utils.isEmpty(export_object.s3.aws_secret_access_key)) {
-        return callback("S3.aws_secret_access_key missing");
-    }
-
-    if (hdb_utils.isEmpty(export_object.s3.bucket)) {
-        return callback("S3.bucket missing");
-    }
-
-    if (hdb_utils.isEmpty(export_object.s3.key)) {
-        return callback("S3.key missing");
-    }
-
-    searchAndConvert(export_object, function handleResults(err, data){
-        AWS.config.update({
-            accessKeyId: export_object.s3.aws_access_key_id,
-            secretAccessKey: export_object.s3.aws_secret_access_key
-        });
-
-        let s3_data;
-        let s3_name;
-        if(export_object.format === CSV){
-            s3_data = data;
-            s3_name = export_object.s3.key + ".csv";
-        } else if(export_object.format === JSON_TEXT){
-            s3_data = JSON.stringify(data);
-            s3_name = export_object.s3.key + ".json";
-        } else {
-            return callback("an unexpected exception has occurred, please check your request and try again.");
-        }
-
-        let s3 = new AWS.S3();
-        let params = {Bucket: export_object.s3.bucket, Key: s3_name, Body: s3_data};
-        s3.putObject(params, function (err, data) {
-            hdb_logger.trace("send to S3");
-            if (err) {
-                hdb_logger.error(err);
-                return callback(err);
-            }
-
-            return callback(null, data);
-        });
-
+    hdb_logger.trace(`called export_to_s3 to bucket: ${export_object.s3.bucket} and query ${export_object.search_operation.sql}`);
+    let data = await searchAndConvert(export_object).catch( (err) => {
+        hdb_logger.error(err);
+        throw err;
     });
+
+    AWS.config.update({
+        accessKeyId: export_object.s3.aws_access_key_id,
+        secretAccessKey: export_object.s3.aws_secret_access_key
+    });
+
+    let s3_data;
+    let s3_name;
+    if(export_object.format === CSV){
+        s3_data = data;
+        s3_name = export_object.s3.key + ".csv";
+    } else if(export_object.format === JSON_TEXT){
+        s3_data = JSON.stringify(data);
+        s3_name = export_object.s3.key + ".json";
+    } else {
+        throw new Error("an unexpected exception has occurred, please check your request and try again.");
+    }
+
+    let s3 = new AWS.S3();
+    let params = {Bucket: export_object.s3.bucket, Key: s3_name, Body: s3_data};
+    let put_results = undefined;
+    try {
+        // The AWS API supports promises with the promise() ending.
+        put_results = await s3.putObject(params).promise();
+    } catch(err) {
+        hdb_logger.error(err);
+        throw err;
+    }
+    return put_results;
 }
 
 /**
@@ -202,19 +213,21 @@ function exportCoreValidation(export_object){
     }
 
     if(VALID_SEARCH_OPERATIONS.indexOf(search_operation) < 0 ){
-        return `search_operation.operation must be one of the following values: ${VALID_SEARCH_OPERATIONS.join(', ')}`
+        return `search_operation.operation must be one of the following values: ${VALID_SEARCH_OPERATIONS.join(', ')}`;
     }
 }
 
 /**
  * determines which search operation to perform, executes it then converts the data to the correct format
  * @param export_object
- * @param callback
  */
 async function searchAndConvert(export_object){
     hdb_logger.trace("in searchAndConvert");
     let operation;
     let err_msg = undefined;
+    if(hdb_common.isEmpty(export_object.search_operation) || hdb_common.isEmptyOrZeroLength(export_object.search_operation.operation)) {
+        throw new Error('Invalid Search operation specified');
+    }
     switch (export_object.search_operation.operation) {
         case 'search_by_value':
             operation = p_search_by_value;
