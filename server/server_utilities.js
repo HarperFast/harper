@@ -229,7 +229,7 @@ function chooseOperation(json, callback) {
             operation_function = delete_.deleteFilesBefore;
             break;
         case 'export_local':
-            operation_function = export_.export_local;
+            operation_function = signalJob;
 			break;
         case 'search_jobs_by_start_date':
             operation_function = jobs.jobHandler;
