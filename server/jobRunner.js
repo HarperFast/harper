@@ -7,6 +7,7 @@ const csv_bulk_load = require('../data_layer/csvBulkLoad');
 const log = require('../utility/logging/harper_logger');
 const jobs = require('./jobs');
 const hdb_export = require('../data_layer/export');
+const hdb_delete = require('../data_layer/delete');
 
 class RunnerResponse {
     constructor(success, message, error) {
@@ -88,6 +89,11 @@ async function parseMessage(runner_message) {
             }
             break;
         case hdb_terms.JOB_TYPE_ENUM.delete_files_before:
+            try {
+                response = await runCSVJob(runner_message, hdb_delete.deleteFilesBefore, runner_message.json);
+            } catch(e) {
+                log.error(e);
+            }
             break;
         default:
             response.error = `Invalid operation ${runner_message.json.operation} specified`;
