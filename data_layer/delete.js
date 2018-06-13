@@ -67,12 +67,11 @@ async function deleteFilesBefore(json_body) {
     let table = json_body.table;
     let dir_path = common_utils.buildFolderPath(BASE_PATH, schema, table);
 
-    deleteFilesInPath(schema, table, dir_path, parsed_date).then( () => {
-        harper_logger.info(`Finished deleting files before ${json_body.date}`);
-    }).catch(function caughtError(err) {
+    await deleteFilesInPath(schema, table, dir_path, parsed_date).catch(function caughtError(err) {
         harper_logger.error(`There was an error deleting files by date: ${err}`);
         throw new Error(`There was an error deleting files by date: ${err}`);
     });
+    harper_logger.info(`Finished deleting files before ${json_body.date}`);
 }
 
 /**
