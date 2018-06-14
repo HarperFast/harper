@@ -18,7 +18,7 @@ mkdir -p $target_dir/node_$node_count/harperdb
 mkdir -p $target_dir/node_$node_count/data
 cp -R $working_dir/* $target_dir/node_$node_count/harperdb/
 
-#sed -i "/HDB_PROC_NAME/ s/ =.*/ = 'no_oneis_here';/" $target_dir/node_$node_count/harperdb/bin/run.js
+sed -i "/HDB_PROC_NAME/ s/ =.*/ = 'no_oneis_here';/" $target_dir/node_$node_count/harperdb/bin/run.js
 
 cd $target_dir/node_$node_count/harperdb/bin
 
@@ -28,11 +28,14 @@ cd $target_dir/node_$node_count/harperdb/bin
 #Update hdb/config/settings.js
 printf  "\nCLUSTERING = TRUE\nCLUSTERING_PORT = %s\nNODE_NAME = node_%s" "$cluster_port" "$node_count" >> $target_dir/node_$node_count/data/hdb/config/settings.js
 
+#Set Log LEVeL TO INFO
+sed -i 's/LOG_LEVEL = error/LOG_LEVEL = info/' $target_dir/node_$node_count/data/hdb/config/settings.js
+
 #License register
 /opt/harperdb/utility/devops/script_register.exp $target_dir/node_$node_count/harperdb
 
 #KILL only this node
-kill $(ps -ef | grep $(cd .. && pwd) | awk '{print $2}')
+kill $(ps -ef | grep "$target_dir/node_$node_count" | awk '{print $2}')
 
 ./linux-harperdb run
 sleep 7s
@@ -41,7 +44,7 @@ sleep 7s
 newman run https://api.getpostman.com/collections/4f5d17b0-e923-e7c0-feb9-f80dbcf1764a?apikey=fe1dfb2c3647474f8f3e9d836783e694 --environment https://api.getpostman.com/environments/e8201aee-1a99-7de7-4910-62c0e0e6b755?apikey=fe1dfb2c3647474f8f3e9d836783e694 --folder add_node$node_count
 
 #Kill only this node
-kill $(ps -ef | grep $(cd .. && pwd) | awk '{print $2}')
+kill $(ps -ef | grep "$target_dir/node_$node_count" | awk '{print $2}')
 
 #sleep 10s
 #./linux-harperdb run
