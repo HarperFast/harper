@@ -16,13 +16,13 @@
     },
     {
       "key": "username",
-      "value": "eli",
+      "value": "HDB_ADMIN",
       "enabled": true,
       "type": "text"
     },
     {
       "key": "password",
-      "value": "pass",
+      "value": "Abc1234!",
       "enabled": true,
       "type": "text"
     },
