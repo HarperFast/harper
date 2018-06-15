@@ -4129,396 +4129,6 @@
       ]
     },
     {
-      "_postman_id": "eb631113-cfc9-4a8f-9194-cef6befd5137",
-      "name": "7. Delete Tests",
-      "description": null,
-      "item": [
-        {
-          "_postman_id": "fe50288a-97d7-4da4-a49e-36a02e059d99",
-          "name": "Insert new Employees",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "id": "117c3953-8685-4758-8769-4358a812df0e",
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test(\"Insert employee id 924 - 927 address\", function () {",
-                  "    var jsonData = pm.response.json();",
-                  "    pm.expect(jsonData.inserted_hashes.length).to.eql(4);",
-                  "});",
-                  "",
-                  "pm.test(\"Status code is 200\", function () {",
-                  "    pm.response.to.have.status(200);",
-                  "});"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "auth": {
-              "type": "basic",
-              "basic": {
-                "username": "{{username}}",
-                "password": "{{password}}",
-                "showPassword": false
-              }
-            },
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "Authorization",
-                "value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n\"operation\":\"insert\",\n\"schema\":\"{{schema}}\",\n\"table\":\"{{emps_tb}}\",\n\"records\": [\n  {\n    \"employeeid\": 924,\n    \"address\": \"194 Greenbrook Drive\"\n  },\n  {\n    \"employeeid\": 925,\n    \"address\": \"195 Greenbrook Lane\"\n  },\n  {\n    \"employeeid\": 926,\n    \"address\": \"196 Greenbrook Lane\"\n  },\n  {\n    \"employeeid\": 927,\n    \"address\": \"197 Greenbrook Drive\"\n  }\n]\n\n}"
-            },
-            "url": "{{host}}:{{port}}"
-          },
-          "response": []
-        },
-        {
-          "_postman_id": "3721852c-fad8-43fc-9efa-4a74c1e80969",
-          "name": "Delete records ending in Lane",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "id": "b053fde5-fab4-4952-a272-47fef8043499",
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test(\"Status code is 200\", function () {",
-                  "    pm.response.to.have.status(200);",
-                  "});"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "auth": {
-              "type": "basic",
-              "basic": {
-                "username": "{{username}}",
-                "password": "{{password}}",
-                "showPassword": false
-              }
-            },
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "Authorization",
-                "value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"delete from {{schema}}.{{emps_tb}} where address like '%Lane'\"\n}"
-            },
-            "url": "{{host}}:{{port}}"
-          },
-          "response": []
-        },
-        {
-          "_postman_id": "f757462a-64f6-4369-b0b0-31de420d16e2",
-          "name": "Verify records are deleted",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "id": "e9db46bc-0d03-4293-a672-e21e5d7dfb5d",
-                "type": "text/javascript",
-                "exec": [
-                  "//we want to test that the returned result is an empty array\"",
-                  "pm.test(\"Verify records deleted\", function(){",
-                  "    let jsonData = pm.response.json();",
-                  "    pm.expect(Array.isArray(jsonData) && jsonData.length === 0);",
-                  "});",
-                  "",
-                  "pm.test(\"Status code is 200\", function () {",
-                  "    pm.response.to.have.status(200);",
-                  "});"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "auth": {
-              "type": "basic",
-              "basic": {
-                "username": "{{username}}",
-                "password": "{{password}}",
-                "showPassword": false
-              }
-            },
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "Authorization",
-                "value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"SELECT * from {{schema}}.{{emps_tb}} where address like '%Lane'\"\n}"
-            },
-            "url": "{{host}}:{{port}}"
-          },
-          "response": []
-        },
-        {
-          "_postman_id": "cfb745ee-899f-4635-b491-e0b058c533c1",
-          "name": "NoSQL Delete",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "id": "b053fde5-fab4-4952-a272-47fef8043499",
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test(\"Status code is 200\", function () {",
-                  "    pm.response.to.have.status(200);",
-                  "});"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "auth": {
-              "type": "basic",
-              "basic": {
-                "username": "{{username}}",
-                "password": "{{password}}",
-                "showPassword": false
-              }
-            },
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "Authorization",
-                "value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"operation\":\"delete\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{emps_tb}}\",\n  \"hash_values\":[924,927]\n}"
-            },
-            "url": "{{host}}:{{port}}"
-          },
-          "response": []
-        },
-        {
-          "_postman_id": "8aad4b8a-1aba-44ef-802d-dce689429371",
-          "name": "NoSQL Verify records are deleted",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "id": "e9db46bc-0d03-4293-a672-e21e5d7dfb5d",
-                "type": "text/javascript",
-                "exec": [
-                  "//we want to test that the returned result is an empty array\"",
-                  "pm.test(\"Verify records deleted\", function(){",
-                  "    let jsonData = pm.response.json();",
-                  "    pm.expect(Array.isArray(jsonData) && jsonData.length === 0);",
-                  "});",
-                  "",
-                  "pm.test(\"Status code is 200\", function () {",
-                  "    pm.response.to.have.status(200);",
-                  "});"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "auth": {
-              "type": "basic",
-              "basic": {
-                "username": "{{username}}",
-                "password": "{{password}}",
-                "showPassword": false
-              }
-            },
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "Authorization",
-                "value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n\t\"operation\":\"search_by_hash\",\n\t\"schema\":\"{{schema}}\",\n\t\"table\":\"{{emps_tb}}\",\n\t\"hash_values\":[924,925,926,927],\n\t\"get_attributes\":[\"*\"]\n}"
-            },
-            "url": "{{host}}:{{port}}"
-          },
-          "response": []
-        }
-      ]
-    },
-    {
-      "_postman_id": "b75b90e8-12cb-476b-a18b-490b1fb7c4d9",
-      "name": "8. Environment Clean Up",
-      "description": null,
-      "item": [
-        {
-          "_postman_id": "0dbc93ba-26ff-488e-8d08-6f70de4b535d",
-          "name": "sql delete schema",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "tests[\"Delete Schema\"] = responseBody.has(\"successfully delete\");\r",
-                  "\r",
-                  "\r",
-                  ""
-                ]
-              }
-            }
-          ],
-          "request": {
-            "auth": {
-              "type": "basic",
-              "basic": {
-                "username": "{{username}}",
-                "password": "{{password}}",
-                "showPassword": false
-              }
-            },
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "Authorization",
-                "value": "Basic SERCX0FETUlOOnJvb3Q="
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n     \"operation\": \"drop_schema\",\n     \"schema\": \"northnwd\"\n}"
-            },
-            "url": "{{host}}:{{port}}",
-            "description": "This method is used to create a schema.  It like all other functions requires basic auth.  \n\nAttributes:\n\noperation (required) - must always be create_schema\n\nschema (required) - name of the schema you are creating"
-          },
-          "response": []
-        },
-        {
-          "_postman_id": "8d17ceaf-5ae7-43b5-b46c-97d2b24106e0",
-          "name": "VALIDATION Check Schema not found.",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test(\"Validation Check Schema Not found\", function () {",
-                  "    var jsonData = pm.response.json();",
-                  "    pm.expect(jsonData.error).to.eql(\"schema not found\");",
-                  "});",
-                  ""
-                ]
-              }
-            }
-          ],
-          "request": {
-            "auth": {
-              "type": "basic",
-              "basic": {
-                "username": "{{username}}",
-                "password": "{{password}}",
-                "showPassword": false
-              }
-            },
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"operation\":\"describe_schema\",\n  \"schema\":\"northnwd\"\n}"
-            },
-            "url": "{{host}}:{{port}}"
-          },
-          "response": []
-        },
-        {
-          "_postman_id": "3ef7e362-619b-4e27-814f-a9d1fc3fad8d",
-          "name": "sql delete schema dev",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "tests[\"Delete Schema\"] = responseBody.has(\"successfully delete\");\r",
-                  "\r",
-                  "\r",
-                  ""
-                ]
-              }
-            }
-          ],
-          "request": {
-            "auth": {
-              "type": "basic",
-              "basic": {
-                "username": "{{username}}",
-                "password": "{{password}}",
-                "showPassword": false
-              }
-            },
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "Authorization",
-                "value": "Basic SERCX0FETUlOOnJvb3Q="
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n     \"operation\": \"drop_schema\",\n     \"schema\": \"dev\"\n}"
-            },
-            "url": "{{host}}:{{port}}",
-            "description": "This method is used to create a schema.  It like all other functions requires basic auth.  \n\nAttributes:\n\noperation (required) - must always be create_schema\n\nschema (required) - name of the schema you are creating"
-          },
-          "response": []
-        }
-      ]
-    },
-    {
       "_postman_id": "e7115375-03bc-46f6-86d9-7b255f10874f",
       "name": "3. Jobs & Job Role Testing",
       "description": "",
@@ -5453,6 +5063,396 @@
               ""
             ]
           }
+        }
+      ]
+    },
+    {
+      "_postman_id": "eb631113-cfc9-4a8f-9194-cef6befd5137",
+      "name": "7. Delete Tests",
+      "description": null,
+      "item": [
+        {
+          "_postman_id": "fe50288a-97d7-4da4-a49e-36a02e059d99",
+          "name": "Insert new Employees",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "id": "117c3953-8685-4758-8769-4358a812df0e",
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Insert employee id 924 - 927 address\", function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.inserted_hashes.length).to.eql(4);",
+                  "});",
+                  "",
+                  "pm.test(\"Status code is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "basic",
+              "basic": {
+                "username": "{{username}}",
+                "password": "{{password}}",
+                "showPassword": false
+              }
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n\"operation\":\"insert\",\n\"schema\":\"{{schema}}\",\n\"table\":\"{{emps_tb}}\",\n\"records\": [\n  {\n    \"employeeid\": 924,\n    \"address\": \"194 Greenbrook Drive\"\n  },\n  {\n    \"employeeid\": 925,\n    \"address\": \"195 Greenbrook Lane\"\n  },\n  {\n    \"employeeid\": 926,\n    \"address\": \"196 Greenbrook Lane\"\n  },\n  {\n    \"employeeid\": 927,\n    \"address\": \"197 Greenbrook Drive\"\n  }\n]\n\n}"
+            },
+            "url": "{{host}}:{{port}}"
+          },
+          "response": []
+        },
+        {
+          "_postman_id": "3721852c-fad8-43fc-9efa-4a74c1e80969",
+          "name": "Delete records ending in Lane",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "id": "b053fde5-fab4-4952-a272-47fef8043499",
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "basic",
+              "basic": {
+                "username": "{{username}}",
+                "password": "{{password}}",
+                "showPassword": false
+              }
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"delete from {{schema}}.{{emps_tb}} where address like '%Lane'\"\n}"
+            },
+            "url": "{{host}}:{{port}}"
+          },
+          "response": []
+        },
+        {
+          "_postman_id": "f757462a-64f6-4369-b0b0-31de420d16e2",
+          "name": "Verify records are deleted",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "id": "e9db46bc-0d03-4293-a672-e21e5d7dfb5d",
+                "type": "text/javascript",
+                "exec": [
+                  "//we want to test that the returned result is an empty array\"",
+                  "pm.test(\"Verify records deleted\", function(){",
+                  "    let jsonData = pm.response.json();",
+                  "    pm.expect(Array.isArray(jsonData) && jsonData.length === 0);",
+                  "});",
+                  "",
+                  "pm.test(\"Status code is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "basic",
+              "basic": {
+                "username": "{{username}}",
+                "password": "{{password}}",
+                "showPassword": false
+              }
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"SELECT * from {{schema}}.{{emps_tb}} where address like '%Lane'\"\n}"
+            },
+            "url": "{{host}}:{{port}}"
+          },
+          "response": []
+        },
+        {
+          "_postman_id": "cfb745ee-899f-4635-b491-e0b058c533c1",
+          "name": "NoSQL Delete",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "id": "b053fde5-fab4-4952-a272-47fef8043499",
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "basic",
+              "basic": {
+                "username": "{{username}}",
+                "password": "{{password}}",
+                "showPassword": false
+              }
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"operation\":\"delete\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{emps_tb}}\",\n  \"hash_values\":[924,927]\n}"
+            },
+            "url": "{{host}}:{{port}}"
+          },
+          "response": []
+        },
+        {
+          "_postman_id": "8aad4b8a-1aba-44ef-802d-dce689429371",
+          "name": "NoSQL Verify records are deleted",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "id": "e9db46bc-0d03-4293-a672-e21e5d7dfb5d",
+                "type": "text/javascript",
+                "exec": [
+                  "//we want to test that the returned result is an empty array\"",
+                  "pm.test(\"Verify records deleted\", function(){",
+                  "    let jsonData = pm.response.json();",
+                  "    pm.expect(Array.isArray(jsonData) && jsonData.length === 0);",
+                  "});",
+                  "",
+                  "pm.test(\"Status code is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "basic",
+              "basic": {
+                "username": "{{username}}",
+                "password": "{{password}}",
+                "showPassword": false
+              }
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n\t\"operation\":\"search_by_hash\",\n\t\"schema\":\"{{schema}}\",\n\t\"table\":\"{{emps_tb}}\",\n\t\"hash_values\":[924,925,926,927],\n\t\"get_attributes\":[\"*\"]\n}"
+            },
+            "url": "{{host}}:{{port}}"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "_postman_id": "b75b90e8-12cb-476b-a18b-490b1fb7c4d9",
+      "name": "8. Environment Clean Up",
+      "description": null,
+      "item": [
+        {
+          "_postman_id": "0dbc93ba-26ff-488e-8d08-6f70de4b535d",
+          "name": "sql delete schema",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "tests[\"Delete Schema\"] = responseBody.has(\"successfully delete\");\r",
+                  "\r",
+                  "\r",
+                  ""
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "basic",
+              "basic": {
+                "username": "{{username}}",
+                "password": "{{password}}",
+                "showPassword": false
+              }
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Basic SERCX0FETUlOOnJvb3Q="
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n     \"operation\": \"drop_schema\",\n     \"schema\": \"northnwd\"\n}"
+            },
+            "url": "{{host}}:{{port}}",
+            "description": "This method is used to create a schema.  It like all other functions requires basic auth.  \n\nAttributes:\n\noperation (required) - must always be create_schema\n\nschema (required) - name of the schema you are creating"
+          },
+          "response": []
+        },
+        {
+          "_postman_id": "8d17ceaf-5ae7-43b5-b46c-97d2b24106e0",
+          "name": "VALIDATION Check Schema not found.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Validation Check Schema Not found\", function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.error).to.eql(\"schema not found\");",
+                  "});",
+                  ""
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "basic",
+              "basic": {
+                "username": "{{username}}",
+                "password": "{{password}}",
+                "showPassword": false
+              }
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"operation\":\"describe_schema\",\n  \"schema\":\"northnwd\"\n}"
+            },
+            "url": "{{host}}:{{port}}"
+          },
+          "response": []
+        },
+        {
+          "_postman_id": "3ef7e362-619b-4e27-814f-a9d1fc3fad8d",
+          "name": "sql delete schema dev",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "tests[\"Delete Schema\"] = responseBody.has(\"successfully delete\");\r",
+                  "\r",
+                  "\r",
+                  ""
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "basic",
+              "basic": {
+                "username": "{{username}}",
+                "password": "{{password}}",
+                "showPassword": false
+              }
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Basic SERCX0FETUlOOnJvb3Q="
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n     \"operation\": \"drop_schema\",\n     \"schema\": \"dev\"\n}"
+            },
+            "url": "{{host}}:{{port}}",
+            "description": "This method is used to create a schema.  It like all other functions requires basic auth.  \n\nAttributes:\n\noperation (required) - must always be create_schema\n\nschema (required) - name of the schema you are creating"
+          },
+          "response": []
         }
       ]
     }
