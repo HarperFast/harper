@@ -4608,7 +4608,7 @@
         },
         {
           "_postman_id": "68b55f94-cbb4-49c3-8fec-fb4e22479c99",
-          "name": "Bulk CSV load into restricted region table as su",
+          "name": "Jobs - Bulk CSV load into restricted region table as su",
           "event": [
             {
               "listen": "test",
