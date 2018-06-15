@@ -16,13 +16,13 @@
     },
     {
       "key": "username",
-      "value": "eli",
+      "value": "admin",
       "enabled": true,
       "type": "text"
     },
     {
       "key": "password",
-      "value": "pass",
+      "value": "Abc1234!",
       "enabled": true,
       "type": "text"
     },
@@ -34,7 +34,7 @@
     },
     {
       "key": "files_location",
-      "value": "/opt/mycos_csv/",
+      "value": "/home/harperdb/mycos_csv/",
       "enabled": true,
       "type": "text"
     },

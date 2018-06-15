@@ -226,7 +226,7 @@ function chooseOperation(json, callback) {
             operation_function = signalJob;
             break;
         case 'delete_files_before':
-            operation_function = delete_.deleteFilesBefore;
+            operation_function = signalJob;
             break;
         case 'export_local':
             operation_function = signalJob;
