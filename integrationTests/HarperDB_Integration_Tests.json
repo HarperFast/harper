@@ -4326,12 +4326,22 @@
             {
               "listen": "test",
               "script": {
-                "id": "8bc25e1a-10dc-45a5-8491-d5560c59a2a7",
+                "id": "7c853e84-837c-4033-a1be-5d1ee8ad98c7",
                 "type": "text/javascript",
                 "exec": [
                   "pm.test(\"Status code is 200\", function () {",
                   "    pm.response.to.have.status(200);",
-                  "});"
+                  "});",
+                  "",
+                  "function pausecomp(millis)",
+                  " {",
+                  "  var date = new Date();",
+                  "  var curDate = null;",
+                  "  do { curDate = new Date(); }",
+                  "  while(curDate-date < millis);",
+                  "}",
+                  "",
+                  "pausecomp(100);"
                 ]
               }
             }
