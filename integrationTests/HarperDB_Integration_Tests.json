@@ -4229,7 +4229,7 @@
         },
         {
           "_postman_id": "96f4d252-f707-4768-86c5-a3cd64f34441",
-          "name": "Add jobs test schema",
+          "name": "Jobs - Add jobs test schema",
           "event": [
             {
               "listen": "test",
