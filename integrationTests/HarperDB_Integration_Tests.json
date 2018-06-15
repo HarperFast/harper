@@ -5041,6 +5041,52 @@
             "description": "This method is used to create a schema.  It like all other functions requires basic auth.  \n\nAttributes:\n\noperation (required) - must always be create_schema\n\nschema (required) - name of the schema you are creating"
           },
           "response": []
+        },
+        {
+          "_postman_id": "e8e69f3c-ba51-426d-ab0b-719299632c65",
+          "name": "Jobs - Delete Jobs_test schema Copy",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "tests[\"Delete Schema\"] = responseBody.has(\"successfully delete\");\r",
+                  "\r",
+                  "\r",
+                  ""
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "basic",
+              "basic": {
+                "username": "{{username}}",
+                "password": "{{password}}",
+                "showPassword": false
+              }
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Basic SERCX0FETUlOOnJvb3Q="
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n     \"operation\": \"drop_schema\",\n     \"schema\": \"test_job\"\n}"
+            },
+            "url": "{{host}}:{{port}}",
+            "description": "This method is used to create a schema.  It like all other functions requires basic auth.  \n\nAttributes:\n\noperation (required) - must always be create_schema\n\nschema (required) - name of the schema you are creating"
+          },
+          "response": []
         }
       ],
       "event": [
