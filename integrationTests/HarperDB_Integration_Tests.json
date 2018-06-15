@@ -4326,7 +4326,7 @@
             {
               "listen": "test",
               "script": {
-                "id": "e4c464b3-b360-4a2d-9a68-4466c9691ce6",
+                "id": "444cd3b8-afa8-45a7-9d1a-4ed96759b3a4",
                 "type": "text/javascript",
                 "exec": [
                   "pm.test(\"Status code is 200\", function () {",
@@ -4341,7 +4341,7 @@
                   "  while(curDate-date < millis);",
                   "}",
                   "",
-                  "pausecomp(25);"
+                  "pausecomp(50);"
                 ]
               }
             }
