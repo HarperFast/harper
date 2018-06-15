@@ -4275,7 +4275,7 @@
         },
         {
           "_postman_id": "0a349ecf-8a62-4a8b-aa9d-3953593ab8d1",
-          "name": "Add runner table",
+          "name": "Jobs - Add runner table",
           "event": [
             {
               "listen": "test",
