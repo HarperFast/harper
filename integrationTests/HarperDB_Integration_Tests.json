@@ -4274,52 +4274,6 @@
           "response": []
         },
         {
-          "_postman_id": "b5352674-a1fc-4998-87b2-8d232ef42c26",
-          "name": "Jobs - Add jobs test schema Copy",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "id": "8bc25e1a-10dc-45a5-8491-d5560c59a2a7",
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test(\"Status code is 200\", function () {",
-                  "    pm.response.to.have.status(200);",
-                  "});"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "auth": {
-              "type": "basic",
-              "basic": {
-                "password": "{{password}}",
-                "username": "{{username}}",
-                "showPassword": false
-              }
-            },
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "Authorization",
-                "value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"operation\":\"create_schema\",\n  \"schema\": \"test_job\"\n}"
-            },
-            "url": "http://localhost:9925/",
-            "description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
-          },
-          "response": []
-        },
-        {
           "_postman_id": "0a349ecf-8a62-4a8b-aa9d-3953593ab8d1",
           "name": "Jobs - Add runner table",
           "event": [
