@@ -4865,7 +4865,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n\t\"operation\":\"export_local\",\n\t\"path\":\"./\",\n\t\"filename\":\"test_export.json\",\n\t\"format\":\"json\",\n\t\"search_operation\": {\n\t  \"operation\":\"search_by_hash\",\n\t  \"schema\":\"{{schema}}\",\n\t  \"table\":\"{{ship_tb}}\",\n\t  \"hash_attribute\": \"{{ship_id}}\",\n\t  \"hash_values\":[1],\n\t  \"get_attributes\": [\"{{ship_id}}\"]\n\t}\n}"
+              "raw": "{\n\t\"operation\":\"export_local\",\n\t\"path\":\"./\",\n\t\"filename\":\"test_export\",\n\t\"format\":\"json\",\n\t\"search_operation\": {\n\t  \"operation\":\"search_by_hash\",\n\t  \"schema\":\"{{schema}}\",\n\t  \"table\":\"{{supp_tb}}\",\n\t  \"hash_attribute\": \"{{supp_id}}\",\n\t  \"hash_values\":[1],\n\t  \"get_attributes\": [\"{{supp_id}}\"]\n\t}\n}"
             },
             "url": "http://localhost:9925/",
             "description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
