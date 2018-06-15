@@ -4183,7 +4183,7 @@
         },
         {
           "_postman_id": "daecf873-54be-40eb-bdde-f06f88536879",
-          "name": "SQL Add User with new Role",
+          "name": "Jobs - SQL Add User with new Role",
           "event": [
             {
               "listen": "test",
