@@ -4943,7 +4943,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": ""
+              "raw": "{\n  \"operation\":\"drop_user\",\n  \"username\":\"test_user\"\n}"
             },
             "url": "http://localhost:9925",
             "description": "This method is used for dropping a role.  \n\n<i>You cannot drop a role with associated users.  </i>\n\n<ul>\n<li><b>operation </b><i>(required)</i> - this must always be drop_role </li>\n<li><b>id </b><i>(required) </i> - this is the id of the role you are dropping\n</ul>"
