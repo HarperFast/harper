@@ -34,7 +34,7 @@
     },
     {
       "key": "files_location",
-      "value": "/opt/mycos_csv/",
+      "value": "/home/harperdb/mycos_csv/",
       "enabled": true,
       "type": "text"
     },
