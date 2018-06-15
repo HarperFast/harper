@@ -4998,7 +4998,7 @@
         },
         {
           "_postman_id": "a233a99a-4343-4508-9ad1-e9e68253c12d",
-          "name": "Delete Jobs_test schema",
+          "name": "Jobs - Delete Jobs_test schema",
           "event": [
             {
               "listen": "test",
