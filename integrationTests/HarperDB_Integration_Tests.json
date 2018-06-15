@@ -4135,7 +4135,7 @@
       "item": [
         {
           "_postman_id": "d44b7a3c-f9de-4bde-96f5-78310a761983",
-          "name": "SQL Add non SU role",
+          "name": "Jobs - Add non SU role",
           "event": [
             {
               "listen": "test",
