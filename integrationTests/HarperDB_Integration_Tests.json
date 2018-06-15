@@ -5035,7 +5035,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n     \"operation\": \"drop_schema\",\n     \"schema\": \"jobs_test\"\n}"
+              "raw": "{\n     \"operation\": \"drop_schema\",\n     \"schema\": \"test_job\"\n}"
             },
             "url": "{{host}}:{{port}}",
             "description": "This method is used to create a schema.  It like all other functions requires basic auth.  \n\nAttributes:\n\noperation (required) - must always be create_schema\n\nschema (required) - name of the schema you are creating"
