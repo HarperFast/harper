@@ -4562,7 +4562,7 @@
         },
         {
           "_postman_id": "fdf3a42c-6049-49ad-9fa6-113cb2fbfca5",
-          "name": "Bulk CSV load into restricted region table as test_user",
+          "name": "Jobs - Bulk CSV load into restricted region table as test_user",
           "event": [
             {
               "listen": "test",
