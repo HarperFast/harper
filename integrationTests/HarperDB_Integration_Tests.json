@@ -4367,7 +4367,7 @@
         },
         {
           "_postman_id": "8ccad35b-ba94-4411-8edd-7e0cfffdde30",
-          "name": "Validate 1 entry in runners table",
+          "name": "Jobs - Validate 1 entry in runners table",
           "event": [
             {
               "listen": "test",
