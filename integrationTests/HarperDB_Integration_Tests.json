@@ -4372,7 +4372,7 @@
             {
               "listen": "test",
               "script": {
-                "id": "e2967227-52ae-4be2-875f-385cd9e6ef1c",
+                "id": "3776cf8c-9fe8-4bc2-8687-0fc1f9b13fd7",
                 "type": "text/javascript",
                 "exec": [
                   "pm.test(\"Status code is 200\", function () {",
@@ -4381,7 +4381,7 @@
                   "",
                   "pm.test(\"test 1 runner\", function () {",
                   "    var jsonData = pm.response.json();",
-                  "    pm.expect(jsonData[0].runner_id).to.eql(1);",
+                  "    pm.expect(jsonData.length).to.eql(1);",
                   "});"
                 ]
               }
