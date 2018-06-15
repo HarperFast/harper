@@ -4654,7 +4654,7 @@
         },
         {
           "_postman_id": "d3147257-700b-4d05-8586-564d9cea5fd7",
-          "name": "Bulk CSV Try to insert shippers table unrestricted attribute as test_user",
+          "name": "Jobs - Bulk CSV Try to insert shippers table unrestricted attribute as test_user",
           "event": [
             {
               "listen": "test",
