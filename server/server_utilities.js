@@ -152,7 +152,7 @@ function chooseOperation(json, callback) {
             operation_function = search.search;
             break;
         case 'sql':
-            operation_function = sql;
+            operation_function = sql.evaluateSQL;
             break;
         case 'csv_data_load':
             operation_function = signalJob;
@@ -256,7 +256,7 @@ function chooseOperation(json, callback) {
     // Here there is a SQL statement in either the operation or the search_operation (from jobs like export_local).  Need to check the perms
     // on all affected tables/attributes.
     if(json.operation === 'sql' || (json.search_operation && json.search_operation.operation === 'sql')) {
-        let sql_statement = (operation_function === 'sql' ? json.sql : json.search_operation.sql);
+        let sql_statement = (json.operation === 'sql' ? json.sql : json.search_operation.sql);
         let parsed_sql_object = sql.convertSQLToAST(sql_statement);
         json.parsed_sql_object = parsed_sql_object;
         if(!sql.checkASTPermissions(json, parsed_sql_object)) {
