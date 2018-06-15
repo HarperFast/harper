@@ -136,7 +136,7 @@ async function runCSVJob(runner_message, operation, argument) {
         // Run the operation.
         result_message = await operation(argument);
     } catch(e) {
-        let err_message =`There was an error running ${operation} job with id ${runner_message.job.id} - ${e}`;
+        let err_message =`There was an error running ${operation.name} job with id ${runner_message.job.id} - ${e}`;
         log.error(err_message);
         runner_message.job.message = err_message;
         runner_message.job.status = hdb_terms.JOB_STATUS_ENUM.ERROR;
