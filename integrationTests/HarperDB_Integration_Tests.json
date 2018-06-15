@@ -4512,7 +4512,7 @@
         },
         {
           "_postman_id": "7e8c4fed-db3a-4a7c-9e2c-f71d6aa801c3",
-          "name": "Validate 0 entry in runners table",
+          "name": "Jobs - Validate 0 entry in runners table",
           "event": [
             {
               "listen": "test",
