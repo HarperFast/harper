@@ -4517,6 +4517,944 @@
           "response": []
         }
       ]
+    },
+    {
+      "_postman_id": "e7115375-03bc-46f6-86d9-7b255f10874f",
+      "name": "3. Jobs & Job Role Testing",
+      "description": "",
+      "item": [
+        {
+          "_postman_id": "d44b7a3c-f9de-4bde-96f5-78310a761983",
+          "name": "SQL Add non SU role",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "id": "6d42cf23-2901-455c-9d6a-a3742af81cd4",
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "responseData = JSON.parse(responseBody);",
+                  "postman.setEnvironmentVariable(\"role_id\", responseData.id)"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "basic",
+              "basic": {
+                "username": "{{username}}",
+                "password": "{{password}}",
+                "showPassword": false
+              }
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n\"operation\":\"add_role\",\n\"role\":\"developer_test_5\",\n\"permission\":{\n  \"super_user\": false,\n  \"northnwd\":{\n\n   \"tables\": {\n     \"customers\": {\n         \"read\":true,\n         \"insert\":true,\n         \"update\":true,\n         \"delete\":true,\n         \"attribute_restrictions\":[]\n      },\n      \"suppliers\": {\n         \"read\":false,\n         \"insert\":false,\n         \"update\":false,\n         \"delete\":false,\n         \"attribute_restrictions\":[]\n      },\n      \"region\": {\n         \"read\":true,\n         \"insert\":false,\n         \"update\":false,\n         \"delete\":false,\n         \"attribute_restrictions\":[{\n               \"attribute_name\": \"regiondescription\",\n               \"read\":true,\n               \"insert\":false,\n               \"update\":false,\n               \"delete\":false\n            }]\n      },\n      \"territories\": {\n         \"read\":true,\n         \"insert\":true,\n         \"update\":false,\n         \"delete\":false,\n         \"attribute_restrictions\":[\n         \t{\n               \"attribute_name\": \"territorydescription\",\n               \"read\":true,\n               \"insert\":true,\n               \"update\":false,\n               \"delete\":false\n            }\n         \t]\n      },\n      \"categories\": {\n         \"read\":true,\n         \"insert\":true,\n         \"update\":true,\n         \"delete\":false,\n         \"attribute_restrictions\":[\n         \t{\n               \"attribute_name\": \"description\",\n               \"read\":true,\n               \"insert\":true,\n               \"update\":true,\n               \"delete\":false\n            }\n         \t]\n      },\n      \"shippers\": {\n         \"read\":true,\n         \"insert\":true,\n         \"update\":true,\n         \"delete\":true,\n         \"attribute_restrictions\":[\n         \t{\n               \"attribute_name\": \"companyname\",\n               \"read\":false,\n               \"insert\":false,\n               \"update\":false,\n               \"delete\":false\n            }\n         \t]\n      }\n   }\n}\n  }\n\n}"
+            },
+            "url": "{{host}}:{{port}}"
+          },
+          "response": []
+        },
+        {
+          "_postman_id": "daecf873-54be-40eb-bdde-f06f88536879",
+          "name": "SQL Add User with new Role",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "id": "8bc25e1a-10dc-45a5-8491-d5560c59a2a7",
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "basic",
+              "basic": {
+                "password": "{{password}}",
+                "username": "{{username}}",
+                "showPassword": false
+              }
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n\"operation\":\"add_user\",\n\"role\":\"{{role_id}}\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":\"true\"\n\n}"
+            },
+            "url": "http://localhost:9925/",
+            "description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+          },
+          "response": []
+        },
+        {
+          "_postman_id": "96f4d252-f707-4768-86c5-a3cd64f34441",
+          "name": "Add jobs test schema",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "id": "8bc25e1a-10dc-45a5-8491-d5560c59a2a7",
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "basic",
+              "basic": {
+                "password": "{{password}}",
+                "username": "{{username}}",
+                "showPassword": false
+              }
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"operation\":\"create_schema\",\n  \"schema\": \"test_job\"\n}"
+            },
+            "url": "http://localhost:9925/",
+            "description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+          },
+          "response": []
+        },
+        {
+          "_postman_id": "0a349ecf-8a62-4a8b-aa9d-3953593ab8d1",
+          "name": "Add runner table",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "id": "8bc25e1a-10dc-45a5-8491-d5560c59a2a7",
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "basic",
+              "basic": {
+                "password": "{{password}}",
+                "username": "{{username}}",
+                "showPassword": false
+              }
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"test_job\",\n  \"table\":\"runner\",\n  \"hash_attribute\": \"runner_id\"\n}"
+            },
+            "url": "http://localhost:9925/",
+            "description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+          },
+          "response": []
+        },
+        {
+          "_postman_id": "c25472c0-a5a8-4d00-928c-fca4f13d978e",
+          "name": "Insert into runners table",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "id": "8bc25e1a-10dc-45a5-8491-d5560c59a2a7",
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "basic",
+              "basic": {
+                "password": "{{password}}",
+                "username": "{{username}}",
+                "showPassword": false
+              }
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n\"operation\":\"insert\",\n\"schema\":\"test_job\",\n\"table\":\"runner\",\n\"records\": [\n  {\n    \"name\":\"Harper\",\n    \"shoes\":\"Nike\",\n    \"runner_id\":\"1\",\n    \"age\":55\n  }\n]\n\n}"
+            },
+            "url": "http://localhost:9925/",
+            "description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+          },
+          "response": []
+        },
+        {
+          "_postman_id": "8ccad35b-ba94-4411-8edd-7e0cfffdde30",
+          "name": "Validate 1 entry in runners table",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "id": "e2967227-52ae-4be2-875f-385cd9e6ef1c",
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test(\"test 1 runner\", function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData[0].runner_id).to.eql(1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "basic",
+              "basic": {
+                "password": "{{password}}",
+                "username": "{{username}}",
+                "showPassword": false
+              }
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from test_job.runner\"\n}"
+            },
+            "url": "http://localhost:9925/",
+            "description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+          },
+          "response": []
+        },
+        {
+          "_postman_id": "db5c3c53-b828-49df-8165-b66d358155d5",
+          "name": "Test Remove Files Before with test_user",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "id": "c84e1a59-f1b7-4cf5-b656-81eb556f324e",
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 403\", function () {",
+                  "    pm.response.to.have.status(403);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "basic",
+              "basic": {
+                "username": "{{test_user_name}}",
+                "password": "{{password}}",
+                "showPassword": false
+              }
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n\t\"operation\":\"delete_files_before\",\n\t\"date\":\"2018-06-14\",\n\t\"schema\":\"dev\",\n\t\"schema\":\"dog\"\n}"
+            },
+            "url": "http://localhost:9925/",
+            "description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+          },
+          "response": []
+        },
+        {
+          "_postman_id": "21debdf0-3390-41e6-8235-4357f1c0d214",
+          "name": "Test Remove Files Before with su",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "id": "a7b87e2c-bcf3-4da8-b895-9e606fabb990",
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "id": "cb908ac7-0953-44a2-8ae9-76c48f4e7d85",
+                "type": "text/javascript",
+                "exec": [
+                  "pm.environment.set(\"date_tomorrow\", (new Date(new Date().getTime() + 86400000)).toISOString());"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "basic",
+              "basic": {
+                "username": "{{username}}",
+                "password": "{{password}}",
+                "showPassword": false
+              }
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n\t\"operation\":\"delete_files_before\",\n\t\"date\":\"{{date_tomorrow}}\",\n\t\"schema\":\"test_job\",\n\t\"table\":\"runner\"\n}"
+            },
+            "url": "http://localhost:9925/",
+            "description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+          },
+          "response": []
+        },
+        {
+          "_postman_id": "7e8c4fed-db3a-4a7c-9e2c-f71d6aa801c3",
+          "name": "Validate 0 entry in runners table",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "id": "e8029eef-8f76-47c8-b9db-ac468e42c6d7",
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test(\"test 0 runners\", function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.length).to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "basic",
+              "basic": {
+                "password": "{{password}}",
+                "username": "{{username}}",
+                "showPassword": false
+              }
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from test_job.runner\"\n}"
+            },
+            "url": "http://localhost:9925/"
+          },
+          "response": []
+        },
+        {
+          "_postman_id": "fdf3a42c-6049-49ad-9fa6-113cb2fbfca5",
+          "name": "Bulk CSV load into restricted region table as test_user",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "id": "90d5aac9-4bf6-4e4f-bbfa-5d1bb4e8f52d",
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 403\", function () {",
+                  "    pm.response.to.have.status(403);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "basic",
+              "basic": {
+                "username": "{{test_user_name}}",
+                "password": "{{password}}",
+                "showPassword": false
+              }
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"operation\":\"csv_data_load\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{regi_tb}}\",\n  \"data\":\"regionid, regiondescription\\n'17', 'test description'\\n\"\n}"
+            },
+            "url": "http://localhost:9925/",
+            "description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+          },
+          "response": []
+        },
+        {
+          "_postman_id": "68b55f94-cbb4-49c3-8fec-fb4e22479c99",
+          "name": "Bulk CSV load into restricted region table as su",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "id": "7285bf5a-5d6f-42c3-b557-a99e543e9799",
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "basic",
+              "basic": {
+                "username": "{{username}}",
+                "password": "{{password}}",
+                "showPassword": false
+              }
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"operation\":\"csv_data_load\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{regi_tb}}\",\n  \"data\":\"regionid, regiondescription\\n'17', 'test description'\\n\"\n}"
+            },
+            "url": "http://localhost:9925/",
+            "description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+          },
+          "response": []
+        },
+        {
+          "_postman_id": "d3147257-700b-4d05-8586-564d9cea5fd7",
+          "name": "Bulk CSV Try to insert shippers table unrestricted attribute as test_user",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "id": "5b38ab5c-4267-4cf5-90cb-cbae448a416b",
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "basic",
+              "basic": {
+                "username": "{{test_user_name}}",
+                "password": "{{password}}",
+                "showPassword": false
+              }
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"operation\":\"csv_file_load\",\n  \"action\":\"insert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{ship_tb}}\",\n  \"file_path\":\"{{files_location}}Shippers.csv\"\n}"
+            },
+            "url": "http://localhost:9925/",
+            "description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+          },
+          "response": []
+        },
+        {
+          "_postman_id": "54b09cf7-7387-48a8-a390-af6e1f934405",
+          "name": "Bulk CSV Try to insert suppliers table restricted attribute as test_user Copy",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "id": "c65e069e-8344-4eae-8dfa-83813aeb1d61",
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 403\", function () {",
+                  "    pm.response.to.have.status(403);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "basic",
+              "basic": {
+                "username": "{{test_user_name}}",
+                "password": "{{password}}",
+                "showPassword": false
+              }
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"operation\":\"csv_file_load\",\n  \"action\":\"insert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{supp_tb}}\",\n  \"file_path\":\"{{files_location}}Suppliers.csv\"\n}"
+            },
+            "url": "http://localhost:9925/",
+            "description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+          },
+          "response": []
+        },
+        {
+          "_postman_id": "61d2aef2-2eda-4733-8d6c-2e655753a787",
+          "name": "Jobs Test Export To Local using SQL as su",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "id": "5b38ab5c-4267-4cf5-90cb-cbae448a416b",
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "basic",
+              "basic": {
+                "username": "{{username}}",
+                "password": "{{password}}",
+                "showPassword": false
+              }
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n\t\"operation\":\"export_local\",\n\t\"path\":\"./\",\n\t\"filename\":\"test_export.json\",\n\t\"format\":\"json\",\n\t\"search_operation\": {\n        \"operation\":\"sql\",\n        \"sql\":\"select * from {{schema}}.{{ship_tb}}\"\n    }\n}"
+            },
+            "url": "http://localhost:9925/",
+            "description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+          },
+          "response": []
+        },
+        {
+          "_postman_id": "627e06b0-3e3f-4071-af0c-d040cc2f7f4f",
+          "name": "Jobs Test Export To Local using NoSQL as su",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "id": "5b38ab5c-4267-4cf5-90cb-cbae448a416b",
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "basic",
+              "basic": {
+                "username": "{{username}}",
+                "password": "{{password}}",
+                "showPassword": false
+              }
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n\t\"operation\":\"export_local\",\n\t\"path\":\"./\",\n\t\"filename\":\"test_export.json\",\n\t\"format\":\"json\",\n\t\"search_operation\": {\n\t  \"operation\":\"search_by_hash\",\n\t  \"schema\":\"{{schema}}\",\n\t  \"table\":\"{{ship_tb}}\",\n\t  \"hash_attribute\": \"{{ship_id}}\",\n\t  \"hash_values\":[1],\n\t  \"get_attributes\": [\"companyname\"]\n\t}\n}"
+            },
+            "url": "http://localhost:9925/",
+            "description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+          },
+          "response": []
+        },
+        {
+          "_postman_id": "229dde25-57a6-48a5-9496-8b50a3c5d02c",
+          "name": "Jobs Test Export To Local using SQL as test_user",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "id": "900450d7-8f70-4887-a8ce-6795507936f4",
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 403\", function () {",
+                  "    pm.response.to.have.status(403);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "basic",
+              "basic": {
+                "username": "{{test_user_name}}",
+                "password": "{{password}}",
+                "showPassword": false
+              }
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n\t\"operation\":\"export_local\",\n\t\"path\":\"./\",\n\t\"filename\":\"test_export.json\",\n\t\"format\":\"json\",\n\t\"search_operation\": {\n        \"operation\":\"sql\",\n        \"sql\":\"select * from {{schema}}.{{ship_tb}}\"\n    }\n}"
+            },
+            "url": "http://localhost:9925/",
+            "description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+          },
+          "response": []
+        },
+        {
+          "_postman_id": "511cbc70-9800-4028-9d54-96efde4be9ba",
+          "name": "Jobs Test Export To Local using NoSQL as test_user",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "id": "e5beca01-8d04-4193-9759-a0f4eee30257",
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 403\", function () {",
+                  "    pm.response.to.have.status(403);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "basic",
+              "basic": {
+                "username": "{{test_user_name}}",
+                "password": "{{password}}",
+                "showPassword": false
+              }
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n\t\"operation\":\"export_local\",\n\t\"path\":\"./\",\n\t\"filename\":\"test_export.json\",\n\t\"format\":\"json\",\n\t\"search_operation\": {\n\t  \"operation\":\"search_by_hash\",\n\t  \"schema\":\"{{schema}}\",\n\t  \"table\":\"{{ship_tb}}\",\n\t  \"hash_attribute\": \"{{ship_id}}\",\n\t  \"hash_values\":[1],\n\t  \"get_attributes\": [\"{{ship_id}}\"]\n\t}\n}"
+            },
+            "url": "http://localhost:9925/",
+            "description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+          },
+          "response": []
+        },
+        {
+          "_postman_id": "d038af4d-1066-4fcc-aa1e-f64c596687ad",
+          "name": "SQL drop test user",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "id": "43e34308-05a8-433b-be7d-964fccf09f03",
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "basic",
+              "basic": {
+                "password": "{{password}}",
+                "username": "{{username}}",
+                "showPassword": false
+              }
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Basic YWRtaW46cGFzc3dvcmQ="
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": ""
+            },
+            "url": "http://localhost:9925",
+            "description": "This method is used for dropping a role.  \n\n<i>You cannot drop a role with associated users.  </i>\n\n<ul>\n<li><b>operation </b><i>(required)</i> - this must always be drop_role </li>\n<li><b>id </b><i>(required) </i> - this is the id of the role you are dropping\n</ul>"
+          },
+          "response": []
+        },
+        {
+          "_postman_id": "f8b28c53-6f9f-49b4-a10d-42a82457b093",
+          "name": "SQL drop_role",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "id": "43e34308-05a8-433b-be7d-964fccf09f03",
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "basic",
+              "basic": {
+                "password": "{{password}}",
+                "username": "{{username}}",
+                "showPassword": false
+              }
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Basic YWRtaW46cGFzc3dvcmQ="
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": ""
+            },
+            "url": "http://localhost:9925",
+            "description": "This method is used for dropping a role.  \n\n<i>You cannot drop a role with associated users.  </i>\n\n<ul>\n<li><b>operation </b><i>(required)</i> - this must always be drop_role </li>\n<li><b>id </b><i>(required) </i> - this is the id of the role you are dropping\n</ul>"
+          },
+          "response": []
+        },
+        {
+          "_postman_id": "a233a99a-4343-4508-9ad1-e9e68253c12d",
+          "name": "Delete Jobs_test schema",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "tests[\"Delete Schema\"] = responseBody.has(\"successfully delete\");\r",
+                  "\r",
+                  "\r",
+                  ""
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "basic",
+              "basic": {
+                "username": "{{username}}",
+                "password": "{{password}}",
+                "showPassword": false
+              }
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Basic SERCX0FETUlOOnJvb3Q="
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n     \"operation\": \"drop_schema\",\n     \"schema\": \"jobs_test\"\n}"
+            },
+            "url": "{{host}}:{{port}}",
+            "description": "This method is used to create a schema.  It like all other functions requires basic auth.  \n\nAttributes:\n\noperation (required) - must always be create_schema\n\nschema (required) - name of the schema you are creating"
+          },
+          "response": []
+        }
+      ],
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "id": "d7bde32e-925a-45d1-8c45-8ed78b2fc4cf",
+            "type": "text/javascript",
+            "exec": [
+              ""
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "id": "e6ab106c-0c59-45bc-a199-b9d9e99b72d3",
+            "type": "text/javascript",
+            "exec": [
+              ""
+            ]
+          }
+        }
+      ]
     }
   ]
 }
