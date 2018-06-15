@@ -4663,48 +4663,6 @@
           "response": []
         },
         {
-          "_postman_id": "d3147257-700b-4d05-8586-564d9cea5fd7",
-          "name": "Jobs - Bulk CSV Try to insert shippers table unrestricted attribute as test_user",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "id": "5b38ab5c-4267-4cf5-90cb-cbae448a416b",
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test(\"Status code is 200\", function () {",
-                  "    pm.response.to.have.status(200);",
-                  "});"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "auth": {
-              "type": "basic",
-              "basic": {
-                "username": "{{test_user_name}}",
-                "password": "{{password}}",
-                "showPassword": false
-              }
-            },
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"operation\":\"csv_file_load\",\n  \"action\":\"insert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{ship_tb}}\",\n  \"file_path\":\"{{files_location}}Shippers.csv\"\n}"
-            },
-            "url": "http://localhost:9925/",
-            "description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
-          },
-          "response": []
-        },
-        {
           "_postman_id": "54b09cf7-7387-48a8-a390-af6e1f934405",
           "name": "Jobs - Bulk CSV Try to insert suppliers table restricted attribute as test_user Copy",
           "event": [
