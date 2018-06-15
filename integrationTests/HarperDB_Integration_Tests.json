@@ -4696,7 +4696,7 @@
         },
         {
           "_postman_id": "54b09cf7-7387-48a8-a390-af6e1f934405",
-          "name": "Bulk CSV Try to insert suppliers table restricted attribute as test_user Copy",
+          "name": "Jobs - Bulk CSV Try to insert suppliers table restricted attribute as test_user Copy",
           "event": [
             {
               "listen": "test",
