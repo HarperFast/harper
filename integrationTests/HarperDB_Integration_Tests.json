@@ -4906,7 +4906,7 @@
         },
         {
           "_postman_id": "d038af4d-1066-4fcc-aa1e-f64c596687ad",
-          "name": "SQL drop test user",
+          "name": "Jobs - drop test user",
           "event": [
             {
               "listen": "test",
