@@ -16,7 +16,7 @@
     },
     {
       "key": "username",
-      "value": "HDB_ADMIN",
+      "value": "admin",
       "enabled": true,
       "type": "text"
     },
