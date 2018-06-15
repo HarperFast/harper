@@ -269,20 +269,11 @@ function chooseOperation(json, callback) {
         if(!operation_json.hdb_user) {
             operation_json.hdb_user = json.hdb_user;
         }
-        if (!op_auth.verifyPerms(operation_json, function_to_check) === false) {
+        if (!op_auth.verifyPerms(operation_json, function_to_check)) {
             harper_logger.error(UNAUTH_RESPONSE);
             return callback(UNAUTH_RESPONSE, null);
         }
     }
-    /*
-    if(operation_function !== sql) {
-        // If we have a job function, we need to verify perms on the actual function.
-        let function_to_check = (job_operation_function === undefined ? operation_function : job_operation_function);
-        if (op_auth.verifyPerms(json, function_to_check) === false) {
-            harper_logger.error(UNAUTH_RESPONSE);
-            return callback(UNAUTH_RESPONSE, null);
-        }
-    }*/
     return callback(null, operation_function);
 }
 
