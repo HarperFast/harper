@@ -4952,7 +4952,7 @@
         },
         {
           "_postman_id": "f8b28c53-6f9f-49b4-a10d-42a82457b093",
-          "name": "SQL drop_role",
+          "name": "Jobs -  drop_role",
           "event": [
             {
               "listen": "test",
