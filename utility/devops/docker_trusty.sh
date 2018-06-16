@@ -76,7 +76,7 @@ harperdb_run()
                apiKey="fe1dfb2c3647474f8f3e9d836783e694"
 
                #POSTMAN: HarperDB Integration Tests
-               collection_id="3dc9bad4-94bc-4232-8578-c27471815dc3"
+               collection_id=""01f193d-9ed4-4ceb-b1eb-47fd9ae46b4d
                #eli Collection ENV ARM
                # environment_id=0e9e6428-313b-403e-acb7-75e9ba1efdfd
                #POSTMAN: zachary Harper Integration Tests Env Vars
@@ -91,7 +91,6 @@ harperdb_run()
            #clean Up install artifacts.
                 rm -f ../hdb_* ../install_*
                 rm -r $hdb_data/*
-                echo "WTF am I: $hdb_data"
            exit 1;
         fi
 exit 0
