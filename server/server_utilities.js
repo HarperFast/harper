@@ -3,7 +3,7 @@
 const write = require('../data_layer/insert');
 const uuidv1 = require('uuid/v1');
 const search = require('../data_layer/search');
-const sql = require('../sqlTranslator/index').evaluateSQL;
+const sql = require('../sqlTranslator/index');
 const csv = require('../data_layer/csvBulkLoad');
 const schema = require('../data_layer/schema');
 const delete_ = require('../data_layer/delete');
@@ -133,6 +133,7 @@ function chooseOperation(json, callback) {
         return nullOperation(json, callback);
     }
     let operation_function = nullOperation;
+    let job_operation_function = undefined;
 
     switch (json.operation) {
         case 'insert':
@@ -151,16 +152,19 @@ function chooseOperation(json, callback) {
             operation_function = search.search;
             break;
         case 'sql':
-            operation_function = sql;
+            operation_function = sql.evaluateSQL;
             break;
         case 'csv_data_load':
             operation_function = signalJob;
+            job_operation_function = csv.csvDataLoad;
             break;
         case 'csv_file_load':
             operation_function = signalJob;
+            job_operation_function = csv.csvFileLoad;
             break;
         case 'csv_url_load':
             operation_function = signalJob;
+            job_operation_function = csv.csvURLLoad;
             break;
         case 'create_schema':
             operation_function = schema.createSchema;
@@ -224,12 +228,15 @@ function chooseOperation(json, callback) {
             break;
         case 'export_to_s3':
             operation_function = signalJob;
+            job_operation_function = export_.export_to_s3;
             break;
         case 'delete_files_before':
             operation_function = signalJob;
+            job_operation_function = delete_.deleteFilesBefore;
             break;
         case 'export_local':
             operation_function = signalJob;
+            job_operation_function = export_.export_local;
 			break;
         case 'search_jobs_by_start_date':
             operation_function = jobs.jobHandler;
@@ -246,15 +253,28 @@ function chooseOperation(json, callback) {
         default:
             break;
     }
-    // We need to do something different for sql operations as we don't want to parse
-    // the SQL command twice.
-    if(operation_function !== sql) {
-        if (op_auth.verifyPerms(json, operation_function) === false) {
+    // Here there is a SQL statement in either the operation or the search_operation (from jobs like export_local).  Need to check the perms
+    // on all affected tables/attributes.
+    if(json.operation === 'sql' || (json.search_operation && json.search_operation.operation === 'sql')) {
+        let sql_statement = (json.operation === 'sql' ? json.sql : json.search_operation.sql);
+        let parsed_sql_object = sql.convertSQLToAST(sql_statement);
+        json.parsed_sql_object = parsed_sql_object;
+        if(!sql.checkASTPermissions(json, parsed_sql_object)) {
+            harper_logger.error(UNAUTH_RESPONSE);
+            return callback(UNAUTH_RESPONSE, null);
+        }
+    } else {
+        let function_to_check = (job_operation_function === undefined ? operation_function : job_operation_function);
+        let operation_json = ((json.search_operation) ? json.search_operation : json);
+        if(!operation_json.hdb_user) {
+            operation_json.hdb_user = json.hdb_user;
+        }
+        if (!op_auth.verifyPerms(operation_json, function_to_check)) {
             harper_logger.error(UNAUTH_RESPONSE);
             return callback(UNAUTH_RESPONSE, null);
         }
     }
-    callback(null, operation_function);
+    return callback(null, operation_function);
 }
 
 function nullOperation(json, callback) {

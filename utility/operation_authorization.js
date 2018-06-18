@@ -78,8 +78,8 @@ required_permissions.set(role.dropRole.name, new permission(true, []));
 required_permissions.set(user.userInfo.name, new permission(true, []));
 required_permissions.set(read_log.read_log.name, new permission(true, []));
 required_permissions.set(cluster_utilities.addNode.name, new permission(true, []));
-required_permissions.set(data_export.export_to_s3, new permission(false, [READ_PERM]));
-required_permissions.set(data_export.export_local, new permission(false, [READ_PERM]));
+required_permissions.set(data_export.export_to_s3.name, new permission(false, [READ_PERM]));
+required_permissions.set(data_export.export_local.name, new permission(false, [READ_PERM]));
 required_permissions.set(delete_.deleteFilesBefore.name, new permission(true, []));
 
 // SQL operations are distinct from operations above, so we need to store required perms for both.

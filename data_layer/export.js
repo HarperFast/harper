@@ -1,7 +1,7 @@
 "use strict";
 
 const search = require('./search');
-const sql = require('../sqlTranslator/index').evaluateSQL;
+const sql = require('../sqlTranslator/index');
 const AWS = require('aws-sdk');
 const Json2csvParser = require('json2csv').Parser;
 const hdb_utils = require('../utility/common_utils');
@@ -21,7 +21,7 @@ const p_fs_stat = promisify(fs.stat);
 const p_fs_writefile = promisify(fs.writeFile);
 const p_search_by_hash = promisify(search.searchByHash);
 const p_search_by_value = promisify(search.searchByValue);
-const p_sql = promisify(sql);
+const p_sql = promisify(sql.evaluateSQL);
 
 module.exports = {
     export_to_s3: export_to_s3,
