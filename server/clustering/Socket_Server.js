@@ -1,5 +1,5 @@
 const
-    winston = require('../../utility/logging/winston_logger'),
+    harper_logger = require('../../utility/logging/harper_logger'),
     search = require('../../data_layer/search'),
     insert = require('../../data_layer/insert'),
     delete_ = require('../../data_layer/delete'),
@@ -12,9 +12,10 @@ class Socket_Server {
         this.name = node.name;
         this.port = node.port;
         this.other_nodes = node.other_nodes;
+        this.io = null;
         global.msg_queue = [];
         global.o_nodes = [];
-        global.cluster_queue = [];
+        global.cluster_queue = {};
     }
 
     init(next) {
@@ -27,7 +28,7 @@ class Socket_Server {
                 socket.on("identify", function (msg, callback) {
                     socket.join(msg, () => {
 
-                        winston.info(node.name + ' joined room ' + msg);
+                        harper_logger.info(node.name + ' joined room ' + msg);
                         // retrive the queue and send to this node.
 
                         getFromDisk({"name": msg}, function (err, disk_catch_up) {
@@ -38,6 +39,7 @@ class Socket_Server {
 
                                 for (let item in disk_catch_up) {
                                     if (!global.cluster_queue[msg][disk_catch_up[item].id]) {
+                                        global.forkClusterMsgQueue[disk_catch_up[item].id] = disk_catch_up[item].payload;
                                         global.cluster_queue[msg][disk_catch_up[item].id] = disk_catch_up[item].payload;
                                     }
 
@@ -48,8 +50,8 @@ class Socket_Server {
 
                             if (global.cluster_queue
                                 && global.cluster_queue[msg]) {
-                                winston.info('sent msg');
-                                winston.info(global.cluster_queue[msg]);
+                                harper_logger.info('sent msg');
+                                harper_logger.info(global.cluster_queue[msg]);
 
                                 let catchup_payload = JSON.stringify(global.cluster_queue[msg]);
                                 socket.emit('catchup', catchup_payload);
@@ -60,7 +62,7 @@ class Socket_Server {
 
 
                 socket.on('confirm_msg', function (msg) {
-                    winston.info(msg);
+                    harper_logger.info(msg);
                     msg.type = 'cluster_response';
                     let queded_msg = global.forkClusterMsgQueue[msg.id];
                     if (queded_msg) {
@@ -72,6 +74,7 @@ class Socket_Server {
 
                         // delete from memory
                         delete global.cluster_queue[msg.node.name][msg.id];
+                        delete global.forkClusterMsgQueue[msg.id];
                         // delete from disk
                         let delete_obj = {
                             "table": "hdb_queue",
@@ -79,10 +82,10 @@ class Socket_Server {
                             "hash_values": [msg.id]
 
                         }
-                        winston.info("delete_obj === " + JSON.stringify(delete_obj));
+                        harper_logger.info("delete_obj === " + JSON.stringify(delete_obj));
                         delete_.delete(delete_obj, function (err, result) {
                             if (err) {
-                                winston.error(err);
+                                harper_logger.error(err);
                             }
                         });
 
@@ -92,22 +95,22 @@ class Socket_Server {
                 });
 
                 socket.on("msg", function (msg, callback) {
-                    winston.info(`${this_node.name} says ${msg}`);
+                    harper_logger.info(`${this.node.name} says ${msg}`);
                 });
 
                 socket.on('error', function (error) {
-                    winston.error(error);
+                    harper_logger.error(error);
                 });
 
                 socket.on('disconnect', function (error) {
-                    if (error != 'transport close')
-                        winston.error(error);
+                    if (error !== 'transport close')
+                        harper_logger.error(error);
                 });
 
                 socket.on('schema_update_request', function(error){
                     schema.describeAll({}, function(err, schema){
                         if(err){
-                            return winston.error(err);
+                            return harper_logger.error(err);
                         }
                         socket.emit('schema_update_response', schema);
                     });
@@ -119,7 +122,7 @@ class Socket_Server {
             next();
 
         } catch (e) {
-            winston.error(e);
+            harper_logger.error(e);
             next(e);
         }
     }
@@ -157,7 +160,7 @@ class Socket_Server {
 
         } catch (e) {
             //save the queue to disk for all nodes.
-            winston.error(e);
+            harper_logger.error(e);
         }
     }
 
@@ -174,7 +177,7 @@ function saveToDisk(item, callback) {
 
         insert.insert(insert_object, function (err, result) {
             if (err) {
-                winston.error(err);
+                harper_logger.error(err);
                 return callback(err);
             }
             callback(null, result);
@@ -182,7 +185,7 @@ function saveToDisk(item, callback) {
 
         });
     } catch (e) {
-        winston.error(e);
+        harper_logger.error(e);
     }
 }
 

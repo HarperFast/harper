@@ -695,12 +695,18 @@ function createAttribute(create_attribute_object, callback) {
                 create_attribute_object.operation = 'create_attribute';
                 create_attribute_object.id = success.id;
 
-                process.send({
+                let payload = {
                     "type": "clustering_payload", "pid": process.pid,
                     "clustering_type": "broadcast",
                     "id": success.id,
                     "body": create_attribute_object
-                });
+                };
+
+                if(process.send === undefined){
+                    winston.debug('trying to send payload: ' + JSON.stringify(payload) + ' but there is no process.send for pid ');
+                } else {
+                    process.send(payload);
+                }
 
                 signalling.signalSchemaChange({type: 'schema'});
                 return callback(null, success);

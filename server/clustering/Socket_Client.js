@@ -21,10 +21,10 @@ class Socket_Client {
             async.each(node.other_nodes, function (o_node, caller) {
                 global.cluster_server.connectToNode(node, o_node, function (err) {
                     if (err) {
-                       return caller(err);
+                        return caller(err);
                     }
 
-                   return caller();
+                    return caller();
 
                 });
             }, function (err) {

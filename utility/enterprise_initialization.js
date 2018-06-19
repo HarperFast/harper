@@ -31,22 +31,13 @@ function kickOffEnterprise(callback){
 
             if (nodes) {
                 node.other_nodes = nodes;
-                global.cluster_server = new ClusterServer(node);
+                global.cluster_server = new ClusterServer(node, nodes);
 
                 global.cluster_server.init(function (err) {
                     if (err) {
                         return winston.error(err);
                     }
-                    global.cluster_server.establishConnections(function (err) {
-                        if (err) {
-                            return winston.error(err);
-                        }
-
-
-                        winston.info('clustering established');
-                        return callback({"clustering":true});
-
-                    })
+                    return callback({"clustering":true});
 
                 });
 
@@ -60,5 +51,5 @@ function kickOffEnterprise(callback){
 }
 
 module.exports = {
-    kickOffEnterprise:
-kickOffEnterprise}
+    kickOffEnterprise: kickOffEnterprise
+};
