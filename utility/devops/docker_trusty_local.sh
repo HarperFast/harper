@@ -32,7 +32,7 @@ cp -R $working_dir/* $mirrored_dir
 cd $mirrored_dir
 
 #clean up unwanted directories for executable only
-rm -rf ./docs ./integrationTest ./test ./unitTest ./utility/devopa ./user_guide.html ./bash ./npm_build ./utility/keys ./package-lock.json
+rm -rf ./docs ./integrationTests ./test ./unitTest ./user_guide.html ./bash ./npm_build ./utility/keys ./package-lock.json
 ############################
 
 cd $working_dir
