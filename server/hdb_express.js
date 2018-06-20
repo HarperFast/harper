@@ -122,7 +122,6 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                     enterprise_util.kickOffEnterprise(function (enterprise_msg) {
                         if (enterprise_msg.clustering) {
                             global.clustering_on = true;
-                            //messageHandler({"type": "clustering"});
                             forks.forEach((fork) => {
                                 fork.send({"type": "clustering"});
                             });

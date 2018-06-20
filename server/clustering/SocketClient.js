@@ -1,7 +1,6 @@
 "use strict";
 const server_utilities = require('../serverUtilities');
 const harper_logger = require('../../utility/logging/harper_logger');
-const retry = require('retry-as-promised');
 const ioc = require('socket.io-client');
 const schema = require('../../data_layer/schema');
 const _ = require('lodash');
@@ -10,6 +9,7 @@ const auth = require('../../security/auth');
 const common_utils = require('../../utility/common_utils');
 
 const WHITELISTED_ERRORS = ['attribute already exists'];
+const ERROR_NO_HDB_USER = 'there is no hdb_user';
 
 class SocketClient {
     constructor(node, other_node) {
@@ -27,7 +27,7 @@ class SocketClient {
     }
 
     onConnectErrorHandler(error){
-        harper_logger.info('cannot connect to ' + this.other_node.name + ' due to ' + error);
+        harper_logger.error('cannot connect to ' + this.other_node.name + ' due to ' + error);
     }
 
     onCatchupHandler(queue_string) {
@@ -40,29 +40,36 @@ class SocketClient {
             let the_node = this.node;
             authHeaderToUser(json, (error)=> {
                 if (error) {
+                    queue[item].err = error;
+                    the_client.emit('error', queue[item]);
                     return harper_logger.error(error);
                 }
 
                 if(!queue[item].body.hdb_user){
-                    harper_logger.info('there is no hdb_user: ' + JSON.stringify(json));
-                }
+                    queue[item].err = ERROR_NO_HDB_USER;
+                    harper_logger.error(`${ERROR_NO_HDB_USER}: ` + JSON.stringify(json));
+                    the_client.emit('error', queue[item]);
+                } else {
 
-                server_utilities.chooseOperation(json, function (err, operation_function) {
-                    if (err) {
-                        return harper_logger.error(err);
-                    }
-
-                    server_utilities.proccessDelegatedTransaction(json, operation_function, function (err, result) {
-                        queue[item].node = the_node;
-                        if (err && !checkWhitelistedErrors(err)) {
+                    server_utilities.chooseOperation(json, function (err, operation_function) {
+                        if (err) {
                             queue[item].err = err;
                             the_client.emit('error', queue[item]);
                             return harper_logger.error(err);
                         }
 
-                        the_client.emit('confirm_msg', queue[item]);
+                        server_utilities.proccessDelegatedTransaction(json, operation_function, function (err, result) {
+                            queue[item].node = the_node;
+                            if (err && !checkWhitelistedErrors(err)) {
+                                queue[item].err = err;
+                                the_client.emit('error', queue[item]);
+                                return harper_logger.error(err);
+                            }
+
+                            the_client.emit('confirm_msg', queue[item]);
+                        });
                     });
-                });
+                }
             });
         }
     }
@@ -131,16 +138,16 @@ class SocketClient {
 
             createMissingSchemas(missing_schemas, function(err, result){
                 if(err){
-                    return console.error(err);
+                    return harper_logger.error(err);
                 }
                 createMissingTables(missing_tables, function(err, result){
                     if(err){
-                        return console.error(err);
+                        return harper_logger.error(err);
                     }
 
                     createMissingAttributes(missing_attributes, function(err, result){
                         if(err){
-                            return console.error(err);
+                            return harper_logger.error(err);
                         }
                     });
                 });
@@ -149,7 +156,6 @@ class SocketClient {
             function createMissingSchemas(missing_schemas, callback2){
                 async.each(missing_schemas, function(this_schema, schema_callback) {
                     schema.createSchema({"schema": this_schema}, function(err, result){
-                        //TODO check if this error is valid
                         if(err && err !== 'schema already exists'){
                             return schema_callback(err);
                         }
@@ -176,7 +182,6 @@ class SocketClient {
                         table_create_object.residence = residence_table_map[tokens[0] + "." + tokens[1]];
                     }
                     schema.createTable(table_create_object, function(err, result){
-                        //TODO check if this error is still valid
                         if(err && err !== `table ${table_create_object.table} already exists in schema ${table_create_object.schema}`){
                             return table_callback(err);
                         }
@@ -205,7 +210,7 @@ class SocketClient {
                     schema.createAttribute(attr_create_object, function(err, result){
                         attr_callback(err, result);
 
-                    })
+                    });
 
 
                 }, function(err) {
@@ -253,14 +258,12 @@ class SocketClient {
 
     onDisconnectHandler(reason) {
         this.other_node.status = 'disconnected';
-        //global.o_nodes[o_node.name] = o_node;
         harper_logger.info(`server ${this.other_node.name} down`);
     }
 
     connectToNode() {
         if (this.node.port === this.other_node.port && this.other_node.host === this.node.host) {
             harper_logger.debug("cannot connect to thyself");
-            //callback("cannot connect to thyself. ");
         }
         //TODO needs to be HTTPS
         harper_logger.info(`${this.node.name} is attempting to connect to ${this.other_node.name} at ${this.other_node.host}:${this.other_node.port}`);
