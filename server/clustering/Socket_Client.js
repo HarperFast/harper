@@ -1,10 +1,10 @@
 "use strict";
-const server_utilities = require('../server_utilities'),
-    harper_logger = require('../../utility/logging/harper_logger'),
-    retry = require('retry-as-promised'),
-    ioc = require('socket.io-client'),
-    schema = require('../../data_layer/schema'),
-    _ = require('lodash');
+const server_utilities = require('../server_utilities');
+const harper_logger = require('../../utility/logging/harper_logger');
+const retry = require('retry-as-promised');
+const ioc = require('socket.io-client');
+const schema = require('../../data_layer/schema');
+const _ = require('lodash');
 const async = require('async');
 const auth = require('../../security/auth');
 const common_utils = require('../../utility/common_utils');
@@ -17,35 +17,9 @@ class Socket_Client {
         this.other_node = other_node;
         this.client = null;
     }
-    /*
-        establishConnections(next) {
-            try {
-                let node = this.node;
-
-                async.each(node.other_nodes, function (o_node, caller) {
-                    global.cluster_server.connectToNode(node, o_node, function (err) {
-                        if (err) {
-                           return caller(err);
-                        }
-
-                       return caller();
-
-                    });
-                }, function (err) {
-                    if (err)
-                        return next(err);
-
-                    return next();
-                });
-            } catch (e) {
-                winston.error(e);
-                next(e)
-            }
-        }*/
 
     onConnectHandler(){
         this.other_node.status = 'connected';
-        //global.o_nodes[o_node.name] = o_node;
 
         harper_logger.info('Client: Connected to port ' + this.other_node.port);
         this.client.emit('identify', this.node.name);
@@ -197,7 +171,7 @@ class Socket_Client {
                         "schema": tokens[0],
                         "table":tokens[1],
                         "hash_attribute":tokens[2]
-                    }
+                    };
                     if(residence_table_map[tokens[0] + "." + tokens[1]]){
                         table_create_object.residence = residence_table_map[tokens[0] + "." + tokens[1]];
                     }
@@ -226,7 +200,7 @@ class Socket_Client {
                         "schema": tokens[0],
                         "table":tokens[1],
                         "attribute":tokens[2]
-                    }
+                    };
 
                     schema.createAttribute(attr_create_object, function(err, result){
                         attr_callback(err, result);
@@ -250,7 +224,7 @@ class Socket_Client {
 
     }
 
-    onMsgHandler(msg, fn) {
+    onMsgHandler(msg) {
         harper_logger.info(`received by ${this.node.name} : msg = ${JSON.stringify(msg)}`);
         let the_client = this.client;
         let this_node = this.node;

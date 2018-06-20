@@ -286,7 +286,7 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                         return res.status(hdb_terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send(err);
                     }
                 }
-                let localOnlyOperations = ['describe_all', 'describe_table', 'describe_schema', 'read_log']
+                let localOnlyOperations = ['describe_all', 'describe_table', 'describe_schema', 'read_log'];
 
                 if (global.clustering_on && req.body.operation !== 'sql') {
                     if (!req.body.schema
@@ -346,7 +346,7 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                                     server_utilities.processLocalTransaction(req, res, operation_function, function (err) {
                                         if (residence.length > 1) {
                                             for (let node in residence) {
-                                                if (residence[node] != hdb_properties.get('NODE_NAME')) {
+                                                if (residence[node] !== hdb_properties.get('NODE_NAME')) {
 
                                                     let id = uuidv1();
                                                     process.send({
@@ -362,7 +362,7 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                                     });
                                 } else {
                                     for (let node in residence) {
-                                        if (residence[node] != hdb_properties.get('NODE_NAME')) {
+                                        if (residence[node] !== hdb_properties.get('NODE_NAME')) {
                                             let id = uuidv1();
                                             global.clusterMsgQueue[id] = res;
                                             process.send({
@@ -383,7 +383,7 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                         });
                     }
                 } else if(req.body.schema && req.body.table
-                    && req.body.operation !== 'create_table' && req.body.operation !='drop_table' && !localOnlyOperations.includes(req.body.operation) ) {
+                    && req.body.operation !== 'create_table' && req.body.operation !=='drop_table' && !localOnlyOperations.includes(req.body.operation) ) {
 
                     global_schema.getTableSchema(req.body.schema, req.body.table, function (err, table) {
 

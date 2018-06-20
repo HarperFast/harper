@@ -1,17 +1,15 @@
-const Socket_Server = require('./Socket_Server'),
-    Socket_Client = require('./Socket_Client'),
-    insert = require('../../data_layer/insert'),
-    clone = require('clone'),
-    harper_logger = require('../../utility/logging/harper_logger');
-server_utilities = require('../server_utilities');
+"use strict";
 
+const Socket_Server = require('./Socket_Server');
+const Socket_Client = require('./Socket_Client');
+const clone = require('clone');
+const harper_logger = require('../../utility/logging/harper_logger');
 
 class ClusterServer {
     constructor(node, nodes) {
         this.node = node;
         this.other_nodes = nodes;
         this.socket_server = new Socket_Server(node);
-        //this.socket_client = new Socket_Client(node);
         this.socket_client = [];
 
     }
@@ -30,10 +28,6 @@ class ClusterServer {
         });
     }
 
-    /*establishConnections(next) {
-        this.socket_client.establishConnections(next);
-    }*/
-
     send(msg, res) {
         harper_logger.debug('node cluster msg out: ' + JSON.stringify(msg));
         let payload = {};
@@ -46,7 +40,7 @@ class ClusterServer {
 
     broadCast(msg) {
         harper_logger.debug('broadcast msg out: ' + JSON.stringify(msg));
-        var operation = clone(msg.body.operation);
+        let operation = clone(msg.body.operation);
         for (let o_node in this.other_nodes) {
             let payload = {};
             payload.body = msg.body;

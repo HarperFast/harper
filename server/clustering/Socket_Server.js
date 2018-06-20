@@ -1,10 +1,11 @@
-const
-    harper_logger = require('../../utility/logging/harper_logger'),
-    search = require('../../data_layer/search'),
-    insert = require('../../data_layer/insert'),
-    delete_ = require('../../data_layer/delete'),
-    schema = require('../../data_layer/schema'),
-    uuidv4 = require('uuid/v1');
+"use strict";
+
+const harper_logger = require('../../utility/logging/harper_logger');
+const search = require('../../data_layer/search');
+const insert = require('../../data_layer/insert');
+const delete_ = require('../../data_layer/delete');
+const schema = require('../../data_layer/schema');
+const uuidv4 = require('uuid/v1');
 
 class Socket_Server {
     constructor(node) {
@@ -21,7 +22,7 @@ class Socket_Server {
     init(next) {
         try {
             // TODO probably need to make this https
-            var server = require('http').createServer().listen(this.port, function () {});
+            let server = require('http').createServer().listen(this.port, function () {});
             let node = this.node;
             this.io = require('socket.io').listen(server);
             this.io.sockets.on("connection", function (socket) {
@@ -48,8 +49,7 @@ class Socket_Server {
 
                             socket.emit('confirm_identity');
 
-                            if (global.cluster_queue
-                                && global.cluster_queue[msg]) {
+                            if (global.cluster_queue && global.cluster_queue[msg]) {
                                 harper_logger.info('sent msg');
                                 harper_logger.info(global.cluster_queue[msg]);
 
@@ -81,7 +81,7 @@ class Socket_Server {
                             "schema": "system",
                             "hash_values": [msg.id]
 
-                        }
+                        };
                         harper_logger.info("delete_obj === " + JSON.stringify(delete_obj));
                         delete_.delete(delete_obj, function (err, result) {
                             if (err) {
@@ -94,7 +94,7 @@ class Socket_Server {
 
                 });
 
-                socket.on("msg", function (msg, callback) {
+                socket.on("msg", function (msg) {
                     harper_logger.info(`${this.node.name} says ${msg}`);
                 });
 
@@ -190,7 +190,7 @@ function saveToDisk(item, callback) {
 }
 
 function getFromDisk(node, callback) {
-    var search_obj = {};
+    let search_obj = {};
     search_obj.schema = 'system';
     search_obj.table = 'hdb_queue';
     search_obj.hash_attribute = 'id';
