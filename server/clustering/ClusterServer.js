@@ -1,7 +1,7 @@
 "use strict";
 
-const Socket_Server = require('./Socket_Server');
-const Socket_Client = require('./Socket_Client');
+const SocketServer = require('./SocketServer');
+const SocketClient = require('./SocketClient');
 const clone = require('clone');
 const harper_logger = require('../../utility/logging/harper_logger');
 
@@ -9,7 +9,7 @@ class ClusterServer {
     constructor(node, nodes) {
         this.node = node;
         this.other_nodes = nodes;
-        this.socket_server = new Socket_Server(node);
+        this.socket_server = new SocketServer(node);
         this.socket_client = [];
 
     }
@@ -21,7 +21,7 @@ class ClusterServer {
 
     establishConnections(){
         this.other_nodes.forEach((o_node)=>{
-            let new_client = new Socket_Client(this.node, o_node);
+            let new_client = new SocketClient(this.node, o_node);
             this.socket_client.push(new_client);
             new_client.connectToNode();
             new_client.createClientMessageHandlers();

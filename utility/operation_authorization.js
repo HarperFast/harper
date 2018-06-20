@@ -21,7 +21,7 @@ const read_log = require('../utility/logging/read_logs');
 const harper_logger = require('../utility/logging/harper_logger');
 const common_utils = require('./common_utils.js');
 const bucket = require('../sqlTranslator/sql_statement_bucket');
-const cluster_utilities = require('../server/clustering/cluster_utilities');
+const cluster_utilities = require('../server/clustering/clusterUtilities');
 const data_export = require('../data_layer/export');
 
 const required_permissions = new Map();

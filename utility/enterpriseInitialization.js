@@ -4,7 +4,7 @@ const search = require('../data_layer/search');
 const harper_logger = require('../utility/logging/harper_logger');
 const PropertiesReader = require('properties-reader');
 let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
-const ClusterServer = require('../server/clustering/cluster_server');
+const ClusterServer = require('../server/clustering/ClusterServer');
 
 hdb_properties.append(hdb_properties.get('settings_path'));
 

@@ -7,7 +7,7 @@ const delete_ = require('../../data_layer/delete');
 const schema = require('../../data_layer/schema');
 const uuidv4 = require('uuid/v1');
 
-class Socket_Server {
+class SocketServer {
     constructor(node) {
         this.node = node;
         this.name = node.name;
@@ -211,4 +211,4 @@ function getFromDisk(node, callback) {
     });
 };
 
-module.exports = Socket_Server;
+module.exports = SocketServer;

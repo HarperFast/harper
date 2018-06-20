@@ -1,5 +1,5 @@
 "use strict";
-const server_utilities = require('../server_utilities');
+const server_utilities = require('../serverUtilities');
 const harper_logger = require('../../utility/logging/harper_logger');
 const retry = require('retry-as-promised');
 const ioc = require('socket.io-client');
@@ -11,7 +11,7 @@ const common_utils = require('../../utility/common_utils');
 
 const WHITELISTED_ERRORS = ['attribute already exists'];
 
-class Socket_Client {
+class SocketClient {
     constructor(node, other_node) {
         this.node = node;
         this.other_node = other_node;
@@ -329,4 +329,4 @@ function checkWhitelistedErrors(error){
 }
 
 
-module.exports = Socket_Client;
+module.exports = SocketClient;

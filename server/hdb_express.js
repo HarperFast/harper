@@ -53,8 +53,8 @@ if(DEBUG){
 
 if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
     const search = require('../data_layer/search');
-    const cluster_utilities = require('./clustering/cluster_utilities');
-    const enterprise_util = require('../utility/enterprise_initialization');
+    const cluster_utilities = require('./clustering/clusterUtilities');
+    const enterprise_util = require('../utility/enterpriseInitialization');
 
     process.on('uncaughtException', function (err) {
         let os = require('os');
@@ -159,9 +159,6 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                             global.delegate_callback_queue[msg.id](msg.err, msg.data);
                         }else if (msg.type === 'clustering') {
                             global.clustering_on = true;
-                            /*forks.forEach((fork) => {
-                                fork.send(msg);
-                            });*/
                         }else if (msg.type === 'schema') {
                             forks.forEach((fork) => {
                                 fork.send(msg);
@@ -203,7 +200,7 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
     const auth = require('../security/auth');
     const passport = require('passport');
     const pjson = require('../package.json');
-    const server_utilities = require('./server_utilities');
+    const server_utilities = require('./serverUtilities');
     const cors = require('cors');
 
     const app = express();
@@ -297,15 +294,16 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                         if (localOnlyOperations.includes(req.body.operation)) {
                             harper_logger.info('local only operation: ' + req.body.operation);
                             server_utilities.processLocalTransaction(req, res, operation_function, function (err) {
-                                harper_logger.error(err);
+                                if(err){
+                                    harper_logger.error(err);
+                                }
                             });
                         } else {
                             harper_logger.info('local & delegated operation: ' + req.body.operation);
                             server_utilities.processLocalTransaction(req, res, operation_function, function (err) {
                                 if(err){
                                     harper_logger.error('error from local & delegated: ' + err);
-                                }
-                                if (!err) {
+                                }else {
                                     let id = uuidv1();
                                     process.send({
                                         "type": "clustering_payload", "pid": process.pid,

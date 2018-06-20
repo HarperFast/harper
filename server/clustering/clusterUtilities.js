@@ -1,5 +1,5 @@
-const insert = require('../../data_layer/insert'),
-    node_Validator = require('../../validation/nodeValidator');
+const insert = require('../../data_layer/insert');
+const node_Validator = require('../../validation/nodeValidator');
 
 
 function addNode(new_node, callback){
