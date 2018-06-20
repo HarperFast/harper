@@ -10,6 +10,7 @@ const job_runner = require('./jobRunner');
 const hdb_util = require('../utility/common_utils');
 const guidePath = require('path');
 const hdb_terms = require('../utility/hdbTerms');
+const fs = require('fs');
 
 const DEFAULT_SERVER_TIMEOUT = 120000;
 const PROPS_SERVER_TIMEOUT_KEY = 'SERVER_TIMEOUT_MS';
@@ -477,7 +478,7 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
 
         const privateKey = hdb_properties.get(PROPS_PRIVATE_KEY);
         const certificate = hdb_properties.get(PROPS_CERT_KEY);
-        const credentials = {key: privateKey, cert: certificate};
+        const credentials = {key: fs.readFileSync(`${privateKey}`), cert: fs.readFileSync(`${certificate}`)};
         const server_timeout = hdb_properties.get(PROPS_SERVER_TIMEOUT_KEY);
         const props_http_secure_on = hdb_properties.get(PROPS_HTTP_SECURE_ON_KEY);
         const props_http_on = hdb_properties.get(PROPS_HTTP_ON_KEY);
