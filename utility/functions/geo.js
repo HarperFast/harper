@@ -7,7 +7,15 @@
  * turf.js has very robust internal validation as such we offload the validation to turf.js
  */
 
-const turf = require('@turf/turf');
+const turf_area = require('@turf/area');
+const turf_length = require('@turf/length');
+const turf_circle = require('@turf/circle');
+const turf_difference = require('@turf/difference');
+const turf_distance = require('@turf/distance');
+const turf_booleanContains = require('@turf/boolean-contains');
+const turf_booleanEqual = require('@turf/boolean-equal');
+const turf_booleanDisjoint = require('@turf/boolean-disjoint');
+const turf_helpers = require('@turf/helpers');
 const hdb_terms = require('../hdbTerms');
 const common_utils = require('../common_utils');
 
@@ -38,7 +46,7 @@ function geoArea(geoJSON){
         geoJSON = common_utils.autoCast(geoJSON);
     }
 
-    return turf.area(geoJSON);
+    return turf_area.default(geoJSON);
 }
 
 /***
@@ -56,7 +64,7 @@ function geoLength(geoJSON, units){
         geoJSON = common_utils.autoCast(geoJSON);
     }
 
-    return turf.length(geoJSON, {units:units ? units : "kilometers"});
+    return turf_length.default(geoJSON, {units:units ? units : "kilometers"});
 }
 
 /***
@@ -79,7 +87,7 @@ function geoCircle(point, radius, units){
         point = common_utils.autoCast(point);
     }
 
-    return turf.circle(point, radius, {units:units ? units : "kilometers"});
+    return turf_circle.default(point, radius, {units:units ? units : "kilometers"});
 }
 
 /***
@@ -105,7 +113,7 @@ function geoDifference(poly1, poly2){
         poly2 = common_utils.autoCast(poly2);
     }
 
-    return turf.difference(poly1, poly2);
+    return turf_difference(poly1, poly2);
 }
 
 /***
@@ -131,7 +139,7 @@ function geoDistance(point1, point2, units){
         point2 = common_utils.autoCast(point2);
     }
 
-    return turf.distance(point1, point2, {units:units ? units : "kilometers"});
+    return turf_distance.default(point1, point2, {units:units ? units : "kilometers"});
 }
 
 /***
@@ -192,7 +200,7 @@ function geoContains(geo1, geo2){
         geo2 = common_utils.autoCast(geo2);
     }
 
-    return turf.booleanContains(geo1, geo2);
+    return turf_booleanContains.default(geo1, geo2);
 }
 
 /***
@@ -217,7 +225,7 @@ function geoEqual(geo1, geo2){
         geo2 = common_utils.autoCast(geo2);
     }
 
-    return turf.booleanEqual(geo1, geo2);
+    return turf_booleanEqual.default(geo1, geo2);
 }
 
 /***
@@ -243,7 +251,7 @@ function geoCrosses(geo1, geo2){
     }
 
     //need to do ! as this checks for non-intersections of geometries
-    return !turf.booleanDisjoint(geo1, geo2);
+    return !turf_booleanDisjoint.default(geo1, geo2);
 }
 
 /***
@@ -254,6 +262,10 @@ function geoCrosses(geo1, geo2){
  * @returns {*}
  */
 function geoConvert(coordinates, geo_type, properties){
+    if(common_utils.isEmptyOrZeroLength(coordinates)){
+        throw new Error('coordinates is required');
+    }
+
     if(common_utils.isEmpty(geo_type)){
         throw new Error('geo_type is required');
     }
@@ -262,6 +274,6 @@ function geoConvert(coordinates, geo_type, properties){
         throw new Error(`geo_type of ${geo_type} is invalid please use one of the following types: ${Object.keys(hdb_terms.GEO_CONVERSION_ENUM).join(',')}`);
     }
 
-    return turf[geo_type](coordinates, properties);
+    return turf_helpers[geo_type](coordinates, properties);
 }
 
