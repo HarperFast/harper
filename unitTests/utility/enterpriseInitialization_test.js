@@ -7,11 +7,7 @@ const assert = require('assert');
 const rewire = require('rewire');
 const sinon = require('sinon');
 const search = require('../../data_layer/search');
-const ClusterServer = rewire('../../server/clustering/cluster_server');
-//const fs = require('fs');
-//const enterprise_initialization = rewire('../../utility/enterprise_initialization');
-
-//const hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
+const ClusterServer = rewire('../../server/clustering/ClusterServer');
 
 const SEARCH_RESULT_OBJECT = [
     {
@@ -94,7 +90,7 @@ describe(`Test kickOffEnterprise`, function () {
     let enterprise_initialization = undefined;
 
     beforeEach( function() {
-        enterprise_initialization = rewire('../../utility/enterprise_initialization');
+        enterprise_initialization = rewire('../../utility/enterpriseInitialization');
          // stub ClusterServer class as we don't want to test its functionalities here
         ClusterServerStub = sinon.spy(sinon.stub().withArgs(null));  
         enterprise_initialization.__set__('ClusterServer', ClusterServerStub);
@@ -179,7 +175,7 @@ describe(`Test kickOffEnterprise`, function () {
         hdb_properties.set('CLUSTERING', 'FALSE');
         hdb_properties.set('CLUSTERING_PORT', '1115');
         hdb_properties.set('NODE_NAME', 'node_1');
-        
+
         enterprise_initialization.kickOffEnterprise(function(result){
             assert.deepEqual(ClusterServerStub.calledWithNew(), false, 'new ClusterServer(...) should have not been called');                
             assert.deepEqual(null, global.cluster_server, 'global.cluster_server should not be set');

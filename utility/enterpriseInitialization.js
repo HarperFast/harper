@@ -1,8 +1,10 @@
-const search = require('../data_layer/search'),
-      winston = require('../utility/logging/winston_logger');
+"use strict";
+
+const search = require('../data_layer/search');
+const harper_logger = require('../utility/logging/harper_logger');
 const PropertiesReader = require('properties-reader');
 let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
-const ClusterServer = require('../server/clustering/cluster_server');
+const ClusterServer = require('../server/clustering/ClusterServer');
 
 hdb_properties.append(hdb_properties.get('settings_path'));
 
@@ -25,26 +27,26 @@ function kickOffEnterprise(callback){
         };
         search.searchByValue(search_obj, function (err, nodes) {
             if (err) {
-                winston.error(err);
+                harper_logger.error(err);
                 return callback({"clustering":false});
             }
 
             if (nodes && nodes.length) {
                 node.other_nodes = nodes;
-                global.cluster_server = new ClusterServer(node);
+                global.cluster_server = new ClusterServer(node, nodes);
 
                 global.cluster_server.init(function (err) {
                     if (err) {
-                        winston.error(err);
+                        harper_logger.error(err);
                         return callback({"clustering":false});
                     }
                     global.cluster_server.establishConnections(function (err) {
                         if (err) {
-                            winston.error(err);
+                            harper_logger.error(err);
                             return callback({"clustering":false});
                         }
 
-                        winston.info('clustering established');
+                        harper_logger.info('clustering established');
                         return callback({"clustering":true});
                     });
                 });
@@ -58,5 +60,5 @@ function kickOffEnterprise(callback){
 }
 
 module.exports = {
-    kickOffEnterprise:kickOffEnterprise
+    kickOffEnterprise: kickOffEnterprise
 };
