@@ -7,14 +7,13 @@ const ClusterServer = require('../server/clustering/cluster_server');
 hdb_properties.append(hdb_properties.get('settings_path'));
 
 function kickOffEnterprise(callback){
-    if (hdb_properties.get('CLUSTERING')) {
-        var node = {
+    let is_clustering = hdb_properties.get('CLUSTERING');
+    // check with all possible values of TRUE, FALSE, true, false, 1, 0, null, undefined
+    if (is_clustering && Boolean(typeof is_clustering === 'string'? is_clustering.toLowerCase() === 'true': is_clustering)) {
+        let node = {
             "name": hdb_properties.get('NODE_NAME'),
-            "port": hdb_properties.get('CLUSTERING_PORT'),
-
-        }
-
-
+            "port": hdb_properties.get('CLUSTERING_PORT')
+        };
 
         let search_obj = {
             "table": "hdb_nodes",
@@ -23,42 +22,41 @@ function kickOffEnterprise(callback){
             "hash_attribute": "name",
             "search_value": "*",
             "get_attributes": ["*"]
-        }
+        };
         search.searchByValue(search_obj, function (err, nodes) {
             if (err) {
                 winston.error(err);
+                return callback({"clustering":false});
             }
 
-            if (nodes) {
+            if (nodes && nodes.length) {
                 node.other_nodes = nodes;
                 global.cluster_server = new ClusterServer(node);
 
                 global.cluster_server.init(function (err) {
                     if (err) {
-                        return winston.error(err);
+                        winston.error(err);
+                        return callback({"clustering":false});
                     }
                     global.cluster_server.establishConnections(function (err) {
                         if (err) {
-                            return winston.error(err);
+                            winston.error(err);
+                            return callback({"clustering":false});
                         }
-
 
                         winston.info('clustering established');
                         return callback({"clustering":true});
-
-                    })
-
+                    });
                 });
-
+            } else {
+                return callback({"clustering":false});
             }
-
         });
-
-
+    } else {
+        return callback({"clustering":false});
     }
-
 }
 
 module.exports = {
-    kickOffEnterprise:
-kickOffEnterprise}
+    kickOffEnterprise:kickOffEnterprise
+};
