@@ -29,20 +29,23 @@ node harperdb install --TC_AGREEMENT yes --HDB_ROOT $target_dir/node_$node_count
 #Update hdb/config/settings.js
 printf  "\nCLUSTERING = TRUE\nCLUSTERING_PORT = %s\nNODE_NAME = node_%s" "$cluster_port" "$node_count" >> $target_dir/node_$node_count/data/hdb/config/settings.js
 
+sed -i 's/LOG_LEVEL = error/LOG_LEVEL = info/' $target_dir/node_$node_count/data/hdb/config/settings.js
 #License register
 $working_dir/utility/devops/script_register_local.exp $target_dir/node_$node_count/harperdb
 
 #KILL only this node
-kill $(ps -ef | grep $(cd .. && pwd) | awk '{print $2}')
+kill $(ps -ef | grep "$target_dir/node_$node_count" | awk '{print $2}')
 
 node harperdb run
-sleep 7s
+sleep 10s
 
 #Add Node
 newman run https://api.getpostman.com/collections/4f5d17b0-e923-e7c0-feb9-f80dbcf1764a?apikey=fe1dfb2c3647474f8f3e9d836783e694 --environment https://api.getpostman.com/environments/e8201aee-1a99-7de7-4910-62c0e0e6b755?apikey=fe1dfb2c3647474f8f3e9d836783e694 --folder add_node$node_count
 
+sleep 5s
+echo "*********************$target_dir/node_$node_count"
 #Kill only this node
-kill $(ps -ef | grep $(cd .. && pwd) | awk '{print $2}')
+kill $(ps -ef | grep "$target_dir/node_$node_count" | awk '{print $2}')
 
 
 node_count=$(($node_count - 1));
@@ -51,6 +54,7 @@ cluster_port=$(($cluster_port + $port_offset));
 
 done
 echo "CLUSTER BUILT NOTHING SHOULD BE RUNNING: $(ps -ef | grep $target_dir)"
+kill $(ps -ef | grep "harperdb_cluster" | awk '{print $2}')
 
 cd $target_dir/node_1/harperdb/bin/
 node harperdb run
@@ -61,12 +65,27 @@ cd $target_dir/node_2/harperdb/bin/
 node harperdb run
 
 sleep 10s
+###########  this was to make sure all the processes were up whn dooing cluster testing among KB and Z. Maybe get rid of this?
+################
+#procs=$(ps -ef | grep [h]arperdb_cluster| wc -l)
+#echo "number of processes $procs"
+#while [ "$procs" -lt 34 ] 
+#do
+#echo "waiting"
+#procs=$(ps -ef | grep [h]arperdb_cluster| wc -l)
+#echo "****************$procs ****************"
+#sleep 5s
+#done
 
-#Check Clustering by adding schema, table, data, select.
-newman run https://api.getpostman.com/collections/4f5d17b0-e923-e7c0-feb9-f80dbcf1764a?apikey=fe1dfb2c3647474f8f3e9d836783e694 --environment https://api.getpostman.com/environments/e8201aee-1a99-7de7-4910-62c0e0e6b755?apikey=fe1dfb2c3647474f8f3e9d836783e694 --folder clustered
+#Add Schema
+newman run https://api.getpostman.com/collections/4f5d17b0-e923-e7c0-feb9-f80dbcf1764a?apikey=fe1dfb2c3647474f8f3e9d836783e694 --environment https://api.getpostman.com/environments/e8201aee-1a99-7de7-4910-62c0e0e6b755?apikey=fe1dfb2c3647474f8f3e9d836783e694 --folder create_schema
 sleep 2s
-#Let data distribute after adding data
-newman run https://api.getpostman.com/collections/4f5d17b0-e923-e7c0-feb9-f80dbcf1764a?apikey=fe1dfb2c3647474f8f3e9d836783e694 --environment https://api.getpostman.com/environments/e8201aee-1a99-7de7-4910-62c0e0e6b755?apikey=fe1dfb2c3647474f8f3e9d836783e694 --folder data_wait
+#create table and delay request 1000ms btween checking and adding data
+newman run https://api.getpostman.com/collections/4f5d17b0-e923-e7c0-feb9-f80dbcf1764a?apikey=fe1dfb2c3647474f8f3e9d836783e694 --environment https://api.getpostman.com/environments/e8201aee-1a99-7de7-4910-62c0e0e6b755?apikey=fe1dfb2c3647474f8f3e9d836783e694 --folder create_table --delay-request 1000
+#check data select by hash
+newman run https://api.getpostman.com/collections/4f5d17b0-e923-e7c0-feb9-f80dbcf1764a?apikey=fe1dfb2c3647474f8f3e9d836783e694 --environment https://api.getpostman.com/environments/e8201aee-1a99-7de7-4910-62c0e0e6b755?apikey=fe1dfb2c3647474f8f3e9d836783e694 --folder data_wait --delay-request 500
+
+
 
 echo "DONE"
 }

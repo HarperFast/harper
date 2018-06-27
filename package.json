@@ -76,7 +76,8 @@
       "./utility/**/*.js",
       "./sqlTranslator/*.js",
       "./lib/**/*.js",
-      "./validation/*.js"
+      "./validation/*.js",
+      "./bin/*.js"
     ]
   },
   "devDependencies": {
