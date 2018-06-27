@@ -113,23 +113,32 @@ function dropRole(role, callback){
         get_attributes: ['username']
     };
 
-    search.searchByConditions(search_for_users, function(err, users){
-        if(users && users.length > 0){
-            return callback(`Cannot drop role ${role.role} ${users.length} users are tied to this role`);
-        }
-        let delete_object = {
-            table:"hdb_role",
-            schema:"system",
-            hash_values: [role.id]
-        };
+    let search_for_role_name = {
+        schema:'system',
+        table : 'hdb_role',
+        conditions: [{"and":{"=":["id",role.id]}}],
+        get_attributes: ['role']
+    };
 
-        delete_.delete(delete_object, function(err, success){
-            if(err){
-                callback(err);
-                return;
+    search.searchByConditions(search_for_role_name, function(err, role_name){
+        search.searchByConditions(search_for_users, function(err, users){
+            if(users && users.length > 0){
+                return callback(`Cannot drop role ${role_name[0].role} ${users.length} users are tied to this role`);
             }
-            signalling.signalUserChange({type: 'user'});
-            callback(null, `${role.rolename} successfully deleted`);
+            let delete_object = {
+                table:"hdb_role",
+                schema:"system",
+                hash_values: [role.id]
+            };
+                        
+            delete_.delete(delete_object, function(err, success){
+                if(err){
+                    callback(err);
+                    return;
+                }
+                signalling.signalUserChange({type: 'user'});
+                    callback(null, `${role_name[0].role} successfully deleted`);
+            });
         });
     });
 }
