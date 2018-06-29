@@ -154,9 +154,10 @@ module.exports = function (search_object, type) {
             }
             let all_table_attributes = global.hdb_schema[search_object.schema][search_object.table].attributes;
             let unknown_attributes =  _.filter(search_object.get_attributes, (attribute)=> {
-                return !_.some(all_table_attributes, (table_attribute)=> {
-                    return table_attribute === attribute || table_attribute.attribute === attribute;
-                });
+                return attribute !== '*' && attribute.attribute !== '*' && 
+                    !_.some(all_table_attributes, (table_attribute)=> {
+                        return table_attribute === attribute || table_attribute.attribute === attribute;
+                    });
             });
             if (unknown_attributes && unknown_attributes.length > 0) {     
                 return new Error(`unknown attribute ${unknown_attributes.join(', ')}`);
