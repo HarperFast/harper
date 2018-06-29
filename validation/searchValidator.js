@@ -135,12 +135,16 @@ module.exports = function (search_object, type) {
     switch (type) {
         case 'hash':
             validation_error = validator.validateObject(search_object, search_by_hash_constraints);
+            break;
         case 'value':
             validation_error = validator.validateObject(search_object, search_by_value_constraints);
+            break;
         case 'hashes':
             validation_error = validator.validateObject(search_object, search_by_hashes_constraints);
+            break;
         case 'conditions':
             validation_error = validator.validateObject(search_object, search_by_conditions);
+            break;
     }
 
     if (!validation_error) {
