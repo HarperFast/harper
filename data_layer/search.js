@@ -337,7 +337,7 @@ function readAttributeFiles(table_path, attribute, hash_files, callback){
         fs.readFile(`${table_path}__hdb_hash/${attribute}/${file}.hdb`, 'utf-8', (error, data)=>{
             if(error){
                 if(error.code === 'ENOENT'){
-                    caller(`unknown attribute ${attribute}`);
+                    caller(null, null);
                 } else {
                     caller(error);
                 }
