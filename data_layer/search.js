@@ -38,25 +38,7 @@ function searchByHash(search_object, callback){
             callback(validation_error, null);
             return;
         }
-
-        // if(search_object.schema !== 'system' && (!global.hdb_schema[search_object.schema] || !global.hdb_schema[search_object.schema][search_object.table])){
-        //     return callback(`invalid table ${search_object.schema}.${search_object.table}`);
-        // }
-        // if (search_object.schema !== 'system') {
-        //     try {
-        //         let all_table_attributes = global.hdb_schema[search_object.schema][search_object.table].attributes;
-        //         let unknown_attributes =  _.filter(search_object.get_attributes, (attribute)=> {
-        //             return !_.some(all_table_attributes, (table_attribute)=> {
-        //                 return table_attribute === attribute || table_attribute.attribute === attribute;
-        //             });
-        //         });
-        //         if (unknown_attributes && unknown_attributes.length > 0) {     
-        //             return callback(`unknown attribute ${unknown_attributes.join(', ')}`);
-        //         }
-        //     } catch(ex) {
-        //         return callback(ex);
-        //     }
-        // }
+        
         let table_path = `${base_path}${search_object.schema}/${search_object.table}/`;
         evaluateTableAttributes(search_object.get_attributes, search_object, (error, attributes) => {
             if (error) {
@@ -120,10 +102,6 @@ function searchByValue (search_object, callback) {
             hash_attribute: hash_attribute
         }, base_path);
 
-        // if(search_object.schema !== 'system' && (!global.hdb_schema[search_object.schema] || !global.hdb_schema[search_object.schema][search_object.table])){
-        //     return callback(`invalid table ${search_object.schema}.${search_object.table}`);
-        // }
-
         evaluateTableAttributes(search_object.get_attributes, search_object, (err, attributes) => {
             if (err) {
                 callback(err);
@@ -160,10 +138,6 @@ function searchByConditions(search_object, callback){
             callback(validation_error);
             return;
         }
-
-        // if(search_object.schema !== 'system' && (!global.hdb_schema[search_object.schema] || !global.hdb_schema[search_object.schema][search_object.table])){
-        //     return callback(`invalid table ${search_object.schema}.${search_object.table}`);
-        // }
 
         let table_schema = global.hdb_schema[search_object.schema][search_object.table];
 

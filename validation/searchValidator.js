@@ -147,20 +147,24 @@ module.exports = function (search_object, type) {
             break;
     }
 
+    // validate table and attribute if format valition is valid
     if (!validation_error) {
-        if (search_object.schema !== 'system') {
+        if (search_object.schema !== 'system') { // skip validation for system schema
             if (!global.hdb_schema[search_object.schema] || !global.hdb_schema[search_object.schema][search_object.table]) {
                 return new Error(`invalid table ${search_object.schema}.${search_object.table}`);
             }
             let all_table_attributes = global.hdb_schema[search_object.schema][search_object.table].attributes;
             let unknown_attributes =  _.filter(search_object.get_attributes, (attribute)=> {
-                return attribute !== '*' && attribute.attribute !== '*' && 
-                    !_.some(all_table_attributes, (table_attribute)=> {
+                return attribute !== '*' && attribute.attribute !== '*' && // skip check for asterik attribute
+                    !_.some(all_table_attributes, (table_attribute)=> { // attribute should match one of the attribute in global
                         return table_attribute === attribute || table_attribute.attribute === attribute;
                     });
             });
-            if (unknown_attributes && unknown_attributes.length > 0) {     
-                return new Error(`unknown attribute ${unknown_attributes.join(', ')}`);
+            if (unknown_attributes && unknown_attributes.length > 0) {
+                // return error with proper message - replace last comma with and
+                let error_msg = unknown_attributes.join(', ');
+                error_msg = error_msg.replace(/,([^,]*)$/, ' and$1');
+                return new Error(`unknown attribute ${error_msg}`);
             }
         }
     }
