@@ -34,8 +34,16 @@ module.exports = {
 
 function processLocalTransaction(req, res, operation_function, callback) {
     try {
-        if (req.body.operation !== 'read_log')
-            harper_logger.info(JSON.stringify(req.body));
+        if (req.body.operation !== 'read_log') {
+            if(harper_logger.log_level === harper_logger.INFO ||
+            harper_logger.log_level === harper_logger.DEBUG ||
+            harper_logger.log_level === harper_logger.TRACE) {
+                // Need to remove auth variables, but we don't want to create an object unless
+                // the logging is actually going to happen.
+                const { hdb_user, hdb_auth_header, ...clean_body } = req.body;
+                harper_logger.info(JSON.stringify(clean_body));
+            }
+        }
     } catch (e) {
         harper_logger.error(e);
         callback(e);
@@ -120,10 +128,7 @@ function proccessDelegatedTransaction(operation, operation_function, callback) {
         };
         global.delegate_callback_queue[payload.id] = callback;
         global.forks[f].send(payload);
-
     });
-
-
 }
 
 // TODO: This doesn't really need a callback, should simplify it to a return statement.
