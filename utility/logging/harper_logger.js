@@ -1,4 +1,4 @@
-"use strict"
+'use strict';
 /**
  * This module decouples a logging call from any specific logging implementation or module (e.g. Winston).  It currently
  * support Winston and Pino though it should be easy to add additional supported loggers if needed.  The logging levels
@@ -25,9 +25,9 @@ const WIN = 1;
 const PIN = 2;
 
 // read environment settings to get log level
-let log_level  = hdb_properties.get('LOG_LEVEL');
-let log_type  = hdb_properties.get('LOGGER');
-let log_location  = hdb_properties.get('LOG_PATH');
+let log_level = hdb_properties.get('LOG_LEVEL');
+let log_type = hdb_properties.get('LOGGER');
+let log_location = hdb_properties.get('LOG_PATH');
 
 //if log location isn't defined, assume HDB_ROOT/log/hdb_log.log
 if(log_location === undefined || log_location === 0 || log_location === null) {
@@ -76,6 +76,7 @@ module.exports = {
     fatal:fatal,
     setLogLevel:setLogLevel,
     setLogType:setLogType,
+    log_level,
     FATAL,
     ERR,
     WARN,
@@ -111,7 +112,7 @@ function initWinstonLogger() {
  */
 function initPinoLogger() {
     pin_logger = pino({
-        name: `harperDB`,
+        name: 'harperDB',
         level: log_level,
     },pino_write_stream);
 }
@@ -146,6 +147,14 @@ function write_log(level, message) {
                 trace(`initialized winston logger writing to ${log_location}`);
             }
             pin_logger[level](message);
+            break;
+        default:
+            //WINSTON is default
+            if(!win_logger) {
+                initWinstonLogger();
+                trace(`initialized winston logger writing to ${log_location}`);
+            }
+            win_logger.log(level, message);
             break;
     }
 }
@@ -184,7 +193,7 @@ function fatal(message) {
 
 /**
  * Writes a debug message to the log.
- * @param {string} message- The string message to write to the log
+ * @param {string} message - The string message to write to the log
  */
 function debug(message) {
     write_log(DEBUG, message);
@@ -192,7 +201,7 @@ function debug(message) {
 
 /**
  * Writes a warn message to the log.
- * @param {string} message- The string message to write to the log
+ * @param {string} message - The string message to write to the log
  */
 function warn(message) {
     write_log(WARN, message);
@@ -228,6 +237,18 @@ function setLogLevel(level) {
                 }
                 pin_logger.level = level;
                 break;
+            default:
+                //WINSTON is default
+                if(win_logger === undefined) {
+                    log_level = level;
+                    global.log_level = level;
+                    return;
+                }
+                //Winston is strange, it has a log level at the logger level, the transport level, and each individual transport.
+                win_logger.level = level;
+                win_logger.transports.level = level;
+                win_logger.transports.file.level = level;
+                break;
         }
         log_level = level;
         global.log_level = level;
@@ -242,7 +263,7 @@ function setLogLevel(level) {
  * will be ignored with an error logged.
  */
 function setLogType(type) {
-    if( type > 2 || type < 1) {
+    if( type > PIN || type < WIN) {
         write_log(ERR, `logger type ${type} is invalid`);
         return;
     }
