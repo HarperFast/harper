@@ -6205,7 +6205,7 @@
 									"  while(curDate-date < millis);",
 									"}",
 									"",
-									"pausecomp(50);"
+									"pausecomp(100);"
 								]
 							}
 						}
@@ -6583,12 +6583,12 @@
 							"basic": [
 								{
 									"key": "password",
-									"value": "pass",
+									"value": "{{password}}",
 									"type": "string"
 								},
 								{
 									"key": "username",
-									"value": "eli",
+									"value": "{{username}}",
 									"type": "string"
 								},
 								{
@@ -6652,12 +6652,12 @@
 							"basic": [
 								{
 									"key": "password",
-									"value": "pass",
+									"value": "{{password}}",
 									"type": "string"
 								},
 								{
 									"key": "username",
-									"value": "eli",
+									"value": "{{username}}",
 									"type": "string"
 								},
 								{
@@ -6702,12 +6702,12 @@
 							"basic": [
 								{
 									"key": "password",
-									"value": "pass",
+									"value": "{{password}}",
 									"type": "string"
 								},
 								{
 									"key": "username",
-									"value": "eli",
+									"value": "{{username}}",
 									"type": "string"
 								},
 								{
@@ -6771,12 +6771,12 @@
 							"basic": [
 								{
 									"key": "password",
-									"value": "pass",
+									"value": "{{password}}",
 									"type": "string"
 								},
 								{
 									"key": "username",
-									"value": "eli",
+									"value": "{{username}}",
 									"type": "string"
 								},
 								{
