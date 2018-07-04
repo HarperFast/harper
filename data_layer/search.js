@@ -4,7 +4,7 @@ const fs = require('graceful-fs'),
 
 const search_validator = require('../validation/searchValidator.js'),
     async = require('async'),
-    winston = require('../utility/logging/winston_logger'),
+    logger = require('../utility/logging/harper_logger'),
     file_search = require('../lib/fileSystem/fileSearch'),
     FileSearch = require('../lib/fileSystem/SQLSearch'),
     _ = require('lodash'),
@@ -201,7 +201,7 @@ function multiConditionSearch(conditions, table_schema, callback){
 
             file_search.findIDsByRegex(pattern.folder_search_path, pattern.folder_search, pattern.blob_search, (err, results) => {
                 if (err) {
-                    winston.error(err);
+                    logger.error(err);
                 } else {
                     all_ids[key].ids = results;
                 }

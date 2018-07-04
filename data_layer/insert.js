@@ -14,7 +14,7 @@ const insert_validator = require('../validation/insertValidator.js'),
     mkdirp = require('mkdirp'),
     h_utils = require('../utility/common_utils'),
     search = require('./search'),
-    winston = require('../utility/logging/winston_logger'),
+    logger = require('../utility/logging/harper_logger'),
     _ = require('lodash'),
     truncate = require('truncate-utf8-bytes'),
     PropertiesReader = require('properties-reader'),
@@ -323,7 +323,7 @@ function unlinkFiles(unlink_paths, update_objects, callback) {
                 if(err.code === 'ENOENT'){
                     return caller();
                 }
-                winston.error(err);
+                logger.error(err);
             }
             caller();
         });
@@ -624,7 +624,7 @@ function createNewAttribute(data_wrapper,folder, callback) {
 
     schema.createAttribute(attribute_object, (err, data)=> {
         if(err) {
-            winston.error(err);
+            logger.error(err);
         }
 
         callback();

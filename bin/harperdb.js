@@ -4,7 +4,8 @@ const run = require('./run'),
     register = require('./register'),
     version = require('./version'),
     upgrade = require('./upgrade'),
-    fs = require('fs');
+    fs = require('fs'),
+    logger = require('../utility/logging/harper_logger');
 
 harperDBService();
 
@@ -14,11 +15,11 @@ function harperDBService() {
     if (currentDir_tokens[currentDir_tokens.length - 1] != 'bin') {
         return console.error('You must run harperdb from HDB_HOME/bin');
     }
-
+    
     let inBin = false;
     fs.readdir(process.cwd(), (err, files) => {
         if (err) {
-            return winston.error(err);
+            return logger.error(err);
         }
 
         for (f in files) {
