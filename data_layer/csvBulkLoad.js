@@ -72,7 +72,7 @@ async function csvURLLoad(csv_object) {
         throw new Error(e);
     }
 
-    return `successfully loaded ${bulk_load_result.inserted_hashes.length} records`;
+    return bulk_load_result.message;
 }
 
 /**
@@ -123,7 +123,7 @@ async function csvFileLoad(csv_object) {
         throw new Error(e);
     }
 
-    return `successfully loaded ${bulk_load_result.inserted_hashes.length} records`;
+    return bulk_load_result.message;
 }
 
 /**
@@ -136,7 +136,7 @@ async function csvFileLoad(csv_object) {
  */
 function bulkLoad(records, schema, table, action, callback){
     let chunks = _.chunk(records, RECORD_BATCH_SIZE);
-    let update_status = '';
+    let write_hashes = 0;
     //TODO: Noone remember why we have this here.  We should refactor this when
     // we have more benchmarks for comparison.  Might be able to leverage cores once
     // the process pool is ready.
@@ -157,7 +157,10 @@ function bulkLoad(records, schema, table, action, callback){
                         caller(err);
                         return;
                     }
-                    update_status = data;
+                    if(!hdb_utils.isEmptyOrZeroLength(data.inserted_hashes)) {
+                        write_hashes += data.inserted_hashes.length;
+                    }
+
                     caller(null, data);
                 });
                 break;
@@ -168,7 +171,10 @@ function bulkLoad(records, schema, table, action, callback){
                         caller(err);
                         return;
                     }
-                    update_status = data;
+                    if(!hdb_utils.isEmptyOrZeroLength(data.update_hashes)) {
+                        write_hashes += data.update_hashes.length;
+                    }
+
                     caller(null, data);
                 });
                 break;
@@ -179,9 +185,10 @@ function bulkLoad(records, schema, table, action, callback){
             callback(err);
             return;
         }
-        if( update_status.length === 0) {
-            callback('There was a problem with this operation.  Please check the input file.')
-        }
+
+        let update_status = {
+            message: `successfully loaded ${write_hashes} of ${records.length} records`
+        };
         callback(null,update_status);
     });
 }
