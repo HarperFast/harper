@@ -6,7 +6,7 @@ const run = require('./run'),
     upgrade = require('./upgrade'),
     fs = require('fs'),
     logger = require('../utility/logging/harper_logger');
-
+    
 harperDBService();
 
 function harperDBService() {
@@ -41,7 +41,7 @@ function harperDBService() {
             case "run":
                 result = run.run();
                 break;
-            case "install":
+            case "install":            
                 install.install();
                 break;
             case "register":

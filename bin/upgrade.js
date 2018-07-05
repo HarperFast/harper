@@ -6,7 +6,7 @@ const os = require('os'),
     CLI = require('clui'),
     request = require("request");
 const PropertiesReader = require('properties-reader');
-const winston = require('winston');
+const logger = require('../utility/logging/harper_logger');
 let hdb_properties;
 
 try {
@@ -16,13 +16,6 @@ try {
     // Intentionally blank
 }
 
-
-winston.configure({
-    transports: [
-        new (winston.transports.File)({filename: 'error.log'})
-    ]
-});
-
 module.exports = {
     upgrade: upgrade
 };
@@ -30,19 +23,16 @@ module.exports = {
 const versions_url = 'http://products.harperdb.io:9925/',
       versions_auth ='Basic dXBncmFkZV91c2VyOl43Snk3JCgmIW45TWpsIV4oSDAzMCUhU3ZFOFU2c1RY';
 
-
-
 function upgrade() {
+    logger.error('test log from upgrade');
     if(hdb_properties === undefined) {
-        winston.error('the hdb_boot_properties file was not found.  Please install HDB.');
+        logger.error('the hdb_boot_properties file was not found.  Please install HDB.');
         console.error('the hdb_boot_properties file was not found.  Please install HDB.');
         return;
     }
     let os = findOs();
     if (!os) {
         return console.error('You are attempting to upgrade HarperDB on an unsupported operating system');
-
-
     }
 
     getBuild(os, function (err, build) {
@@ -51,7 +41,7 @@ function upgrade() {
         }
         fs.readFile(hdb_properties.get('PROJECT_DIR') + '/package.json', 'utf8', function (err, package_json) {
             if (err) {
-                winston.error(err);
+                logger.error(err);
                 return console.error(err);
             }
 
@@ -93,7 +83,7 @@ function getBuild(os, callback) {
 
     request(options, function (error, response, body) {
         if (error) {
-            winston.error(error);
+            logger.error(error);
             return callback(error);
         }
         return callback(null, body);
@@ -161,28 +151,28 @@ function executeUpgrade(build) {
             let stream = fs.createReadStream(upgradeFolder + '' + path);
             stream.pipe(tar.extract(upgradeFolder));
             stream.on('error', function (err) {
-                winston.error(err);
+                logger.error(err);
                 return console.error(err);
             });
             stream.on('close', function () {
                 fs.unlink(hdb_properties.get('PROJECT_DIR') + '/bin/harperdb', function (err) {
                     if (err) {
-                        winston.error(err);
+                        logger.error(err);
                         return console.error(err);
                     }
                     fs.rename(upgradeFolder + 'HarperDB/bin/harperdb', hdb_properties.get('PROJECT_DIR') + '/bin/harperdb', function (err) {
                         if (err) {
-                            winston.error(err);
+                            logger.error(err);
                             return console.error(err);
                         }
                         fs.rename(upgradeFolder + 'HarperDB/package.json', hdb_properties.get('PROJECT_DIR') + '/package.json', function (err) {
                             if (err) {
-                                winston.error(err);
+                                logger.error(err);
                                 return console.error(err);
                             }
                             fs.rename(upgradeFolder + 'HarperDB/user_guide.html', hdb_properties.get('PROJECT_DIR') + '/user_guide.html', function (err) {
                                 if (err) {
-                                    winston.error(err);
+                                    logger.error(err);
                                     return console.error(err);
                                 }
                                 countdown.stop();
