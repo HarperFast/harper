@@ -1,8 +1,9 @@
 "use strict";
 
-const RecursiveIterator = require('recursive-iterator'),
-    alasql = require('alasql'),
-    clone = require('clone');
+const RecursiveIterator = require('recursive-iterator');
+const alasql = require('alasql');
+const clone = require('clone');
+const common_utils = require('../utility/common_utils');
 
 //exclusion list for validation on group bys
 const custom_aggregators = ['DISTINCT_ARRAY'];
@@ -19,6 +20,8 @@ const validateTables = Symbol('validateTables'),
     checkColumnsForAsterisk = Symbol('checkColumnsForAsterisk'),
     validateGroupBy = Symbol('validateGroupBy'),
     hasColumns = Symbol('hasColumns');
+
+const BETWEEN = 'BETWEEN';
 
 /**
  * Validates the tables and attributes against the actual schema
@@ -180,11 +183,16 @@ class SelectValidator{
         let iterator = new RecursiveIterator(segment);
         let attributes = [];
         for(let {node, path} of iterator) {
-            if(node && node.columnid && node.columnid !== '*'){
-                if(is_order_by) {
-                    this[validateOrderBy](node);
-                } else {
-                    attributes.push(this[validateColumn](node));
+            if (!common_utils.isEmpty(node)) {
+                if (!common_utils.isEmpty(node.op) && node.op === BETWEEN) {
+                    throw new Error('BETWEEN is not currently supported.  Please use >= <= for your range query.');
+                }
+                if (!common_utils.isEmpty(node.columnid) && node.columnid !== '*') {
+                    if (is_order_by) {
+                        this[validateOrderBy](node);
+                    } else {
+                        attributes.push(this[validateColumn](node));
+                    }
                 }
             }
         }
