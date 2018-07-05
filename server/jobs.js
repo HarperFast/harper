@@ -73,7 +73,7 @@ function jobHandler(json_body, callback) {
                 return callback(message, null);
             });
 			break;
-		case 'search_jobs_by_id':
+		case 'get_job':
                 getJobById(json_body).then( (result) => {
                     log.trace(`Searching for jobs from ${json_body.from_date} to ${json_body.to_date}`);
                     if(result && result.length > 0) {

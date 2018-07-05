@@ -6680,7 +6680,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_jobs_by_id\",\n\t\"id\": \"{{job_id}}\"\n}"
+							"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
 						},
 						"url": {
 							"raw": "http://localhost:9925",
@@ -6799,7 +6799,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_jobs_by_id\",\n\t\"id\": \"{{job_id}}\"\n}"
+							"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
 						},
 						"url": {
 							"raw": "http://localhost:9925",
