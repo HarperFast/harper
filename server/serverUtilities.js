@@ -246,7 +246,7 @@ function chooseOperation(json, callback) {
         case 'search_jobs_by_start_date':
             operation_function = jobs.jobHandler;
             break;
-        case 'search_jobs_by_id':
+        case 'get_job':
             operation_function = jobs.jobHandler;
             break;
         case 'delete_job':
