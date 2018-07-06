@@ -61,6 +61,7 @@ function validateLicense(license_key, company, callback) {
     try {
         license_tokens = license_key.split(LICENSE_KEY_DELIMITER);    
         decrypted = decipher.update(license_tokens[0], 'hex', 'utf8');
+        decrypted.trim();
         decrypted += decipher.final('utf8');        
     } catch (e) {
         license_validation_object.valid_license = false;
