@@ -159,6 +159,9 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                             global.delegate_callback_queue[msg.id](msg.err, msg.data);
                         }else if (msg.type === 'clustering') {
                             global.clustering_on = true;
+                            forks.forEach((fork) => {
+                                fork.send(msg);
+                            });
                         }else if (msg.type === 'schema') {
                             forks.forEach((fork) => {
                                 fork.send(msg);
