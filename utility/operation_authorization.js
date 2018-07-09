@@ -42,6 +42,7 @@ const SQL_INSERT = 'insert';
 const SQL_UPDATE = 'update';
 
 const WILDCARD = '*';
+const ERR_PROCESSING = 'There was an error processing your request.  Please check the logs and try again.';
 
 class permission {
     constructor(requires_su, perms) {
@@ -104,16 +105,16 @@ module.exports = {
  */
 function verifyPermsAst(ast, user, operation) {
     if(common_utils.isEmptyOrZeroLength(ast)) {
-        harper_logger.info(`verify_perms_ast has an empty 'user' parameter`);
-        return false;
+        harper_logger.info('verify_perms_ast has an empty user parameter');
+        throw new Error(ERR_PROCESSING);
     }
     if(common_utils.isEmptyOrZeroLength(user)) {
-        harper_logger.info(`verify_perms_ast has an empty user parameter`);
-        return false;
+        harper_logger.info('verify_perms_ast has an empty user parameter');
+        throw new Error(ERR_PROCESSING);
     }
     if(common_utils.isEmptyOrZeroLength(operation)) {
-        harper_logger.info(`verify_perms_ast has a null operation parameter`);
-        return false;
+        harper_logger.info('verify_perms_ast has a null operation parameter');
+        throw new Error(ERR_PROCESSING);
     }
     try {
         let parsed_ast = new bucket(ast);
@@ -124,7 +125,7 @@ function verifyPermsAst(ast, user, operation) {
         // This is defined so we can do calc selects like : SELECT ABS(-12)
         if((!schemas || schemas.length === 0) && (parsed_ast.affected_attributes && parsed_ast.affected_attributes.size > 0) ) {
             harper_logger.info(`No schemas defined in verifyPermsAst(), will not continue.`);
-            return false;
+            throw new Error(ERR_PROCESSING);
         }
         if(user.role.permission.super_user) {
             //admins can do anything through the hole in sheet!
@@ -148,7 +149,7 @@ function verifyPermsAst(ast, user, operation) {
         return true;
     } catch(e) {
         harper_logger.info(e);
-        return false;
+        throw new Error(ERR_PROCESSING);
     }
 }
 
@@ -162,7 +163,7 @@ function verifyPermsAst(ast, user, operation) {
 function hasPermissions(user, op, schema_table_map ) {
     if(common_utils.arrayHasEmptyOrZeroLengthValues([user,op,schema_table_map])) {
         harper_logger.info(`hasPermissions has an invalid parameter`);
-        return false;
+        throw new Error(ERR_PROCESSING);
     }
     if(user.role.permission.super_user) {
          //admins can do anything through the hole in sheet!
@@ -171,7 +172,7 @@ function hasPermissions(user, op, schema_table_map ) {
     if(!required_permissions.get(op) || (required_permissions.get(op) && required_permissions.get(op).requires_su)) {
         // still here after the su check above but this operation require su, so fail.
         harper_logger.info(`operation ${op} not found or requires SU permissions.`);
-        return false;
+        throw new Error(ERR_PROCESSING);
     }
     for(let schema of schema_table_map.keys()) {
         //ASSUME ALL TABLES AND SCHEMAS ARE WIDE OPEN
@@ -240,9 +241,8 @@ function verifyPerms(request_json, operation) {
     // go
     if(hasPermissions(request_json.hdb_user, op, schema_table_map)) {
         return checkAttributePerms(getRecordAttributes(request_json), getAttributeRestrictions(request_json.hdb_user, schema, table),op);
-    } else {
-        return false;
     }
+    return false;
 }
 
 /**
@@ -256,7 +256,7 @@ function verifyPerms(request_json, operation) {
 function checkAttributePerms(record_attributes, role_attribute_restrictions, operation) {
     if(!record_attributes || !role_attribute_restrictions) {
         harper_logger.info(`no attributes specified in checkAttributePerms.`);
-        return false;
+        throw new Error(ERR_PROCESSING);
     }
     // check each attribute with role permissions.  Required perm should match the per in the operation
     let needed_perm = required_permissions.get(operation);
@@ -264,7 +264,7 @@ function checkAttributePerms(record_attributes, role_attribute_restrictions, ope
         // We should never get in here since all of our operations should have a perm, but just in case we should fail
         // any operation that doesn't have perms.
         harper_logger.info(`no permissions found for ${operation} in checkAttributePerms().`);
-        return false;
+        throw new Error(ERR_PROCESSING);
     }
 
     //TODO: Replace with common utils empty check when it is merged

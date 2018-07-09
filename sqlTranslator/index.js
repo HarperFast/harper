@@ -46,7 +46,13 @@ function evaluateSQL(json_message, callback) {
  * @returns {boolean} - False if permissions check denys the statement.
  */
 function checkASTPermissions(json_message, parsed_sql_object) {
-    if(!op_auth.verifyPermsAst(parsed_sql_object.ast.statements[0], json_message.hdb_user, parsed_sql_object.variant)) {
+    let verify_result = undefined;
+    try {
+        verify_result = op_auth.verifyPermsAst(parsed_sql_object.ast.statements[0], json_message.hdb_user, parsed_sql_object.variant);
+    } catch(e) {
+        throw e;
+    }
+    if(!verify_result) {
         parsed_sql_object.permissions_checked = true;
         return false;
     }
