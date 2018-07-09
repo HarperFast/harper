@@ -44,7 +44,7 @@ async function csvDataLoad(csv_object){
         throw new Error(e);
     }
 
-    return `successfully loaded ${bulk_load_result.inserted_hashes.length} records`;
+    return bulk_load_result.message;
 }
 
 /**
