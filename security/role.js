@@ -21,7 +21,7 @@ function addRole(role, callback){
 
     delete role.hdb_user;
     delete role.operation;
-
+     
     let search_obj = {
         schema: 'system',
         table : 'hdb_role',
@@ -56,6 +56,8 @@ function addRole(role, callback){
                 return;
             }
             signalling.signalUserChange({type: 'user'});
+            delete role.hdb_auth_header;
+            delete role.HDB_INTERNAL_PATH;
             callback(null, role);
         });
     })

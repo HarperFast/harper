@@ -144,7 +144,7 @@ describe('Test jobHandler', function() {
         jobs.__set__('getJobById', getJobById_stub);
 
         let test_request = {};
-        test_request.operation = 'search_jobs_by_id';
+        test_request.operation = 'get_job';
         test_request.hdb_user = 'test user';
         test_request.id = null;
         try {
@@ -165,7 +165,7 @@ describe('Test jobHandler', function() {
         jobs.__set__('getJobById', getJobById_stub);
 
         let test_request = {};
-        test_request.operation = 'search_jobs_by_id';
+        test_request.operation = 'get_job';
         test_request.hdb_user = 'test user';
         test_request.id = null;
         try {
@@ -371,7 +371,7 @@ describe('Test getJobById', function() {
         jobs.__set__('p_search_by_value', search_stub);
 
         let test_job = {};
-        test_job.operation = 'search_jobs_by_id';
+        test_job.operation = 'get_job';
         test_job.hdb_user = 'test user';
         test_job.id = '2e358f82-523c-48b0-ab92-46ab52054419';
 
@@ -383,7 +383,7 @@ describe('Test getJobById', function() {
         jobs.__set__('p_search_by_value', search_stub);
 
         let test_job = {};
-        test_job.operation = 'search_jobs_by_id';
+        test_job.operation = 'get_job';
         test_job.hdb_user = 'test user';
         test_job.id = null;
 
