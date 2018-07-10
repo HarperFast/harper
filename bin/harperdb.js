@@ -1,11 +1,11 @@
-const run = require('./run'),
-    install = require('./install'),
-    stop = require('./stop'),
-    register = require('./register'),
-    version = require('./version'),
-    upgrade = require('./upgrade'),
-    fs = require('fs'),
-    logger = require('../utility/logging/harper_logger');
+const run = require('./run');
+const install = require('./install');
+const stop = require('./stop');
+const register = require('./register');
+const version = require('./version');
+const upgrade = require('./upgrade');
+const fs = require('fs');
+const logger = require('../utility/logging/harper_logger');
     
 harperDBService();
 

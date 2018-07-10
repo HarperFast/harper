@@ -1,5 +1,5 @@
-const installer = require('../utility/install/installer'),
-    logger = require('../utility/logging/harper_logger');
+const installer = require('../utility/install/installer');
+const logger = require('../utility/logging/harper_logger');
 
 function install (callback) {    
     installer.install(function(err) {

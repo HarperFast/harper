@@ -1,5 +1,5 @@
-const registerationHandler = require('../utility/registrationHandler'),
-        logger = require('../utility/logging/harper_logger');
+const registerationHandler = require('../utility/registrationHandler');
+const logger = require('../utility/logging/harper_logger');
 
 function register() {
     registerationHandler.register(null, function (err, result) {

@@ -1,21 +1,21 @@
 #!/usr/bin/env node
 "use strict";
-const fs = require('fs'),
-    util = require('util'),
-    path = require('path'),
-    net = require('net'),
-    ps = require('find-process'),
-    install = require('../utility/install/installer.js'),
-    colors = require("colors/safe"),
-    logger = require('../utility/logging/harper_logger'),
-    PropertiesReader = require('properties-reader'),
-    async = require('async'),
-    pjson = require('../package.json'),
-    HTTPSECURE_PORT_KEY = 'HTTPS_PORT',
-    HTTP_PORT_KEY = 'HTTP_PORT',
-    HTTPSECURE_ON_KEY = 'HTTPS_ON',
-    HTTP_ON_KEY = 'HTTP_ON',
-    HDB_PROC_NAME = 'hdb_express.js';
+const fs = require('fs');
+const util = require('util');
+const path = require('path');
+const net = require('net');
+const ps = require('find-process');
+const install = require('../utility/install/installer.js');
+const colors = require("colors/safe");
+const logger = require('../utility/logging/harper_logger');
+const PropertiesReader = require('properties-reader');
+const async = require('async');
+const pjson = require('../package.json');
+const HTTPSECURE_PORT_KEY = 'HTTPS_PORT';
+const HTTP_PORT_KEY = 'HTTP_PORT';
+const HTTPSECURE_ON_KEY = 'HTTPS_ON';
+const HTTP_ON_KEY = 'HTTP_ON';
+const HDB_PROC_NAME = 'hdb_express.js';
 
 const stop = require('./stop');
 

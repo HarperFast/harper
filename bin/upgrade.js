@@ -1,10 +1,10 @@
-const os = require('os'),
-    mkdirp = require('mkdirp'),
-    fs = require('fs'),
-    http = require('http'),
-    tar = require('tar-fs'),
-    CLI = require('clui'),
-    request = require("request");
+const os = require('os');
+const mkdirp = require('mkdirp');
+const fs = require('fs');
+const http = require('http');
+const tar = require('tar-fs');
+const CLI = require('clui');
+const request = require("request");
 const PropertiesReader = require('properties-reader');
 const logger = require('../utility/logging/harper_logger');
 let hdb_properties;
