@@ -160,6 +160,8 @@ module.exports = function (search_object, type) {
                         return table_attribute === attribute || table_attribute.attribute === attribute;
                     });
             });
+            // if any unknown attributes present in the search request then list all indicated as unknown attribute to error message at once split in well format
+            // for instance "unknown attribute a, b and c" or "unknown attribute a"
             if (unknown_attributes && unknown_attributes.length > 0) {
                 // return error with proper message - replace last comma with and
                 let error_msg = unknown_attributes.join(', ');
