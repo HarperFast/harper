@@ -120,7 +120,12 @@ function dropRole(role, callback){
         get_attributes: ['role']
     };
 
-    search.searchByConditions(search_for_role_name, function(err, role_name){
+    search.searchByConditions(search_for_role_name, function(err, role_name){        
+        if(err)
+            return callback(`${err}`);
+        if(role_name.length == 0)
+            return callback(`Role not found`);
+        
         search.searchByConditions(search_for_users, function(err, users){
             if(users && users.length > 0){
                 return callback(`Cannot drop role ${role_name[0].role} ${users.length} users are tied to this role`);
