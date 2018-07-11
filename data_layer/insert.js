@@ -360,6 +360,7 @@ function filterHDBValues(key, value) {
  */
 function checkAttributeSchema(insert_object, callerback) {
     if(!insert_object) { return callback("Empty Object", null); }
+    console.time('parse');
     let table_schema = global.hdb_schema[insert_object.schema][insert_object.table];
     let hash_attribute = table_schema.hash_attribute;
     let epoch = new Date().valueOf();
@@ -372,14 +373,12 @@ function checkAttributeSchema(insert_object, callerback) {
     let hash_paths = {};
     let base_path = hdb_path + '/' + insert_object.schema + '/' + insert_object.table + '/';
     let operation = insert_object.operation;
-
-    async.each(insert_object.records, function (record, callback) {
-        //Update function does not set base path, so we should not exit if this is an update and path is undefined.
+    insert_object.records.forEach((record)=>{
         if(record[HDB_PATH_KEY] === undefined && operation !== 'update') {
             return callback();
         }
-        let attribute_objects = [];
-        let link_objects = [];
+        //let attribute_objects = [];
+        //let link_objects = [];
         hash_paths[`${base_path}__hdb_hash/${hash_attribute}/${record[hash_attribute]}.hdb`] = '';
         for (let property in record) {
             if(record[property] === null || record[property] === undefined || record[property] === '' || property === HDB_PATH_KEY){
@@ -393,49 +392,44 @@ function checkAttributeSchema(insert_object, callerback) {
             let attribute_path = base_path + property + '/' + value_path;
 
             hash_folders[`${base_path}__hdb_hash/${property}`] = "";
-            attribute_objects.push({
+            insert_objects.push({
                 file_name: `${base_path}__hdb_hash/${property}/${attribute_file_name}`,
                 value: value
             });
             if (property !== hash_attribute) {
                 folders[attribute_path] = "";
 
-                link_objects.push({
+                symbolic_links.push({
                     link: `${base_path}__hdb_hash/${property}/${attribute_file_name}`,
                     file_name: `${attribute_path}/${attribute_file_name}`
                 });
             } else {
                 hash_folders[attribute_path] = "";
-                attribute_objects.push({
+                insert_objects.push({
                     file_name: `${attribute_path}/${epoch}.hdb`,
                     // Need to use the filter to remove the HDB_INTERNAL_PATH from the record before it is added to a file.
                     value: JSON.stringify(record, filterHDBValues)
                 });
             }
         }
-        insert_objects = insert_objects.concat(attribute_objects);
-        symbolic_links = symbolic_links.concat(link_objects);
-        callback();
-    }, function (err) {
-        if (err) {
-            callerback(err);
-            return;
-        }
-        let data_wrapper = {
-            data_folders: Object.keys(hash_folders),
-            data: insert_objects,
-            link_folders: Object.keys(folders),
-            links: symbolic_links,
-            hash_paths: hash_paths,
-            operation: insert_object.operation
-        };
-
-        if( insert_object.hdb_auth_header){
-            data_wrapper.hdb_auth_header = insert_object.hdb_auth_header;
-        }
-
-        return callerback(null, data_wrapper);
+        //insert_objects.push(...attribute_objects);
+        //symbolic_links.push(...link_objects);
     });
+
+    let data_wrapper = {
+        data_folders: Object.keys(hash_folders),
+        data: insert_objects,
+        link_folders: Object.keys(folders),
+        links: symbolic_links,
+        hash_paths: hash_paths,
+        operation: insert_object.operation
+    };
+
+    if( insert_object.hdb_auth_header){
+        data_wrapper.hdb_auth_header = insert_object.hdb_auth_header;
+    }
+    console.timeEnd('parse');
+    return callerback(null, data_wrapper);
 }
 
 /**
@@ -471,10 +465,12 @@ function checkRecordsExist(insert_object, skipped_records, inserted_records, cal
  * @param callback
  */
 function processData(data_wrapper, callback) {
+    console.time('processData');
     async.waterfall([
         writeRawData.bind(null, data_wrapper),
         writeLinks.bind(null, data_wrapper),
     ], (err, results) => {
+        console.timeEnd('processData');
         if (err) {
             callback(err);
             return;
@@ -490,10 +486,12 @@ function processData(data_wrapper, callback) {
  * @param callback
  */
 function writeRawData(data_wrapper, callback) {
+    console.time('writeRawData');
     async.waterfall([
         createFolders.bind(null, data_wrapper, data_wrapper.data_folders),
         writeRawDataFiles.bind(null, data_wrapper.data)
     ], (err, results) => {
+        console.timeEnd('writeRawData');
         if (err) {
             callback(err);
             return;
@@ -532,10 +530,12 @@ function writeRawDataFiles(data, callback) {
  * @param callback
  */
 function writeLinks(data_wrapper, callback) {
+    console.time('writeLinks');
     async.waterfall([
         createFolders.bind(null, data_wrapper, data_wrapper.link_folders),
         writeLinkFiles.bind(null, data_wrapper.links)
     ], (err, results) => {
+        console.timeEnd('writeLinks');
         if (err) {
             callback(err);
             return;
