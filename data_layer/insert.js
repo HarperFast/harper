@@ -507,7 +507,7 @@ function writeRawData(data_wrapper, callback) {
  */
 function writeRawDataFiles(data, callback) {
     console.time('writeRawDataFiles');
-    async.each(data, (attribute, caller) => {
+    async.eachLimit(data, 1000, (attribute, caller) => {
         fs.writeFile(attribute.file_name, attribute.value, (err) => {
             if (err) {
                 caller(err);
@@ -584,15 +584,15 @@ console.time('createFolders');
                 return;
             }
 
-            if(folder.indexOf('/__hdb_hash/') >= 0 && created_folder) {
+            /*if(folder.indexOf('/__hdb_hash/') >= 0 && created_folder) {
                 folder_created_flag = true;
 
                 createNewAttribute(data_wrapper,folder, (error)=>{
                     return caller();
                 });
-            } else {
+            } else {*/
                 return caller();
-            }
+            //}
         });
     }, function (err) {
         if (err) {
