@@ -366,7 +366,7 @@ function checkAttributeSchema(insert_object, callerback) {
     let epoch = new Date().valueOf();
 
     let insert_objects = [];
-    let symbolic_links = [];
+    //let symbolic_links = [];
 
     let folders = {};
     //let hash_folders = {};
@@ -377,6 +377,11 @@ function checkAttributeSchema(insert_object, callerback) {
         if(record[HDB_PATH_KEY] === undefined && operation !== 'update') {
             return callback();
         }
+
+        let exploded_row = {
+            raw_data: [],
+            links: []
+        };
         //let attribute_objects = [];
         //let link_objects = [];
         hash_paths[`${base_path}__hdb_hash/${hash_attribute}/${record[hash_attribute]}.hdb`] = '';
@@ -392,35 +397,33 @@ function checkAttributeSchema(insert_object, callerback) {
             let attribute_path = base_path + property + '/' + value_path;
 
             folders[`${base_path}__hdb_hash/${property}`] = "";
-            insert_objects.push({
+            exploded_row.raw_data.push({
                 file_name: `${base_path}__hdb_hash/${property}/${attribute_file_name}`,
                 value: value
             });
             if (property !== hash_attribute) {
                 folders[attribute_path] = "";
 
-                symbolic_links.push({
+                exploded_row.links.push({
                     link: `${base_path}__hdb_hash/${property}/${attribute_file_name}`,
                     file_name: `${attribute_path}/${attribute_file_name}`
                 });
             } else {
                 folders[attribute_path] = "";
-                insert_objects.push({
+                exploded_row.raw_data.push({
                     file_name: `${attribute_path}/${epoch}.hdb`,
                     // Need to use the filter to remove the HDB_INTERNAL_PATH from the record before it is added to a file.
                     value: JSON.stringify(record, filterHDBValues)
                 });
             }
         }
-        //insert_objects.push(...attribute_objects);
+        insert_objects.push(exploded_row);
         //symbolic_links.push(...link_objects);
     });
 
     let data_wrapper = {
         data_folders: Object.keys(folders),
         data: insert_objects,
-        //link_folders: Object.keys(folders),
-        links: symbolic_links,
         hash_paths: hash_paths,
         operation: insert_object.operation
     };
@@ -465,7 +468,18 @@ function checkRecordsExist(insert_object, skipped_records, inserted_records, cal
  * @param callback
  */
 function processData(data_wrapper, callback) {
-    console.time('processData');
+    async.waterfall([
+        createFolders.bind(null, data_wrapper, data_wrapper.data_folders),
+        writeRecords.bind(null, data_wrapper.data)
+    ], (err, results) => {
+        console.timeEnd('processData');
+        if (err) {
+            callback(err);
+            return;
+        }
+        callback();
+    });
+    /*console.time('processData');
     async.waterfall([
         writeRawData.bind(null, data_wrapper),
         writeLinks.bind(null, data_wrapper),
@@ -475,6 +489,21 @@ function processData(data_wrapper, callback) {
             callback(err);
             return;
         }
+        callback();
+    });*/
+}
+
+function writeRecords(data, callback){
+    console.time('writeRecords');
+    async.eachLimit(data, 2500, (record, callback2)=>{
+        async.waterfall([
+            writeRawDataFiles.bind(null, record.raw_data),
+            writeLinkFiles.bind(null, record.links)
+        ], (err)=>{
+            callback2();
+        });
+    }, (error)=>{
+        console.timeEnd('writeRecords');
         callback();
     });
 }
@@ -486,12 +515,12 @@ function processData(data_wrapper, callback) {
  * @param callback
  */
 function writeRawData(data_wrapper, callback) {
-    console.time('writeRawData');
+   // console.time('writeRawData');
     async.waterfall([
         createFolders.bind(null, data_wrapper, data_wrapper.data_folders),
         writeRawDataFiles.bind(null, data_wrapper.data)
     ], (err, results) => {
-        console.timeEnd('writeRawData');
+        //console.timeEnd('writeRawData');
         if (err) {
             callback(err);
             return;
@@ -506,8 +535,8 @@ function writeRawData(data_wrapper, callback) {
  * @param callback
  */
 function writeRawDataFiles(data, callback) {
-    console.time('writeRawDataFiles');
-    async.eachLimit(data, 1000, (attribute, caller) => {
+    //console.time('writeRawDataFiles');
+    async.each(data, (attribute, caller) => {
         fs.writeFile(attribute.file_name, attribute.value, (err) => {
             if (err) {
                 caller(err);
@@ -516,7 +545,7 @@ function writeRawDataFiles(data, callback) {
             caller();
         });
     }, function (err) {
-        console.timeEnd('writeRawDataFiles');
+       // console.timeEnd('writeRawDataFiles');
         if (err) {
             callback(err);
             return;
@@ -532,12 +561,12 @@ function writeRawDataFiles(data, callback) {
  * @param callback
  */
 function writeLinks(data_wrapper, callback) {
-    console.time('writeLinks');
+   // console.time('writeLinks');
     async.waterfall([
         //createFolders.bind(null, data_wrapper, data_wrapper.link_folders),
         writeLinkFiles.bind(null, data_wrapper.links)
     ], (err, results) => {
-        console.timeEnd('writeLinks');
+      //  console.timeEnd('writeLinks');
         if (err) {
             callback(err);
             return;
@@ -577,22 +606,22 @@ function writeLinkFiles(links, callback) {
 function createFolders(data_wrapper,folders, callback) {
 console.time('createFolders');
     let folder_created_flag = false;
-    async.each(folders, (folder, caller) => {
+    async.eachLimit(folders, 2000, (folder, caller) => {
         mkdirp(folder, (err, created_folder) => {
             if (err) {
                 caller(err);
                 return;
             }
 
-            /*if(folder.indexOf('/__hdb_hash/') >= 0 && created_folder) {
+            if(folder.indexOf('/__hdb_hash/') >= 0 && created_folder) {
                 folder_created_flag = true;
 
                 createNewAttribute(data_wrapper,folder, (error)=>{
                     return caller();
                 });
-            } else {*/
+            } else {
                 return caller();
-            //}
+            }
         });
     }, function (err) {
         if (err) {
