@@ -30,8 +30,7 @@ const search = require('../data_layer/search');
 const signalling  = require('../utility/signalling');
 const hdb_utility = require('../utility/common_utils');
 const validate = require('validate.js');
-
-
+const logger = require('../utility/logging/harper_logger');
 
 const USER_ATTRIBUTE_WHITELIST = {
     username: true,
@@ -77,7 +76,7 @@ function addUser(user, callback){
             }
             setUsersToGlobal((err) => {
                 if (err) {
-                    winston.error(err);
+                    logger.error(err);
                 }
                 signalling.signalUserChange({type: 'user'});
                 callback(null, `${clean_user.username} successfully added`);
@@ -129,7 +128,7 @@ function alterUser(user, callback){
         }
         setUsersToGlobal((err) => {
             if (err) {
-                winston.error(err);
+                logger.error(err);
             }
             signalling.signalUserChange({type: 'user'});
             callback(null, success);
@@ -156,7 +155,7 @@ function dropUser(user, callback){
         }
         setUsersToGlobal((err) => {
             if (err) {
-                winston.error(err);
+                logger.error(err);
             }
             signalling.signalUserChange({type: 'user'});
             callback(null, `${user.username} successfully deleted`);
@@ -257,7 +256,7 @@ function list_users(body, callback){
 function setUsersToGlobal(callback){
     list_users(null, (err, users)=>{
         if(err){
-            return winston.error(err);
+            return logger.error(err);
         }
         global.hdb_users = users;
         callback();

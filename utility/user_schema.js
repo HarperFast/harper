@@ -1,5 +1,5 @@
 "use strict"
-const winston = require('../utility/logging/winston_logger');
+const logger = require('../utility/logging/harper_logger');
 const user = require('../security/user');
 
 module.exports = {
@@ -9,7 +9,7 @@ module.exports = {
 function setUsersToGlobal(callback) {
     user.listUsers(null, (err, users)=>{
         if(err){
-            return winston.error(err);
+            return logger.error(err);
         }
         global.hdb_users = users;
         callback();

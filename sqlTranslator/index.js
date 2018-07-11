@@ -13,7 +13,7 @@ const update = require('../data_layer/update').update;
 const delete_translator = require('./deleteTranslator').convertDelete;
 const alasql = require('alasql');
 const op_auth = require('../utility/operation_authorization');
-const winston = require('../utility/logging/winston_logger');
+const logger = require('../utility/logging/harper_logger');
 const alasql_function_importer = require('./alasqlFunctionImporter');
 //here we call to define and import custom functions to alasql
 alasql_function_importer(alasql);
@@ -65,7 +65,7 @@ function convertSQLToAST(sql) {
         ast_response.ast = ast;
         ast_response.variant = variant;
     } catch(e) {
-        winston.error(`Error parsing SQL statement: ${e}`);
+        logger.error(`Error parsing SQL statement: ${e}`);
     }
 
     return ast_response;
@@ -113,7 +113,7 @@ function processAST(json_message, parsed_sql_object, callback){
 }
 
 function nullFunction(sql, callback) {
-    winston.info(sql);
+    logger.info(sql);
     callback('unknown sql statement');
 }
 

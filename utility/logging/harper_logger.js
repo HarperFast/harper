@@ -14,27 +14,33 @@ const winston = require('winston');
 const pino = require('pino');
 const fs = require('fs');
 
-// read environment settings to get preferred logger and default log level
-const PropertiesReader = require('properties-reader');
-
-let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
-hdb_properties.append(hdb_properties.get('settings_path'));
-
 //Using numbers rather than strings for faster comparison
 const WIN = 1;
 const PIN = 2;
 
-// read environment settings to get log level
-let log_level = hdb_properties.get('LOG_LEVEL');
-let log_type = hdb_properties.get('LOGGER');
-let log_location = hdb_properties.get('LOG_PATH');
+let log_level = undefined;
+let log_type = undefined;
+let log_location = undefined;
 
-//if log location isn't defined, assume HDB_ROOT/log/hdb_log.log
-if(log_location === undefined || log_location === 0 || log_location === null) {
-    log_location = (hdb_properties.get('HDB_ROOT') + '/log/hdb_log.log');
+// read environment settings to get preferred logger and default log level
+const PropertiesReader = require('properties-reader');
+
+try {
+    let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
+    hdb_properties.append(hdb_properties.get('settings_path'));
+
+    // read environment settings to get log level
+    log_level = hdb_properties.get('LOG_LEVEL');
+    log_type = hdb_properties.get('LOGGER');
+    log_location = hdb_properties.get('LOG_PATH');
+
+    //if log location isn't defined, assume HDB_ROOT/log/hdb_log.log
+    if(log_location === undefined || log_location === 0 || log_location === null) {
+        log_location = (hdb_properties.get('HDB_ROOT') + '/log/hdb_log.log');
+    }
+} catch (e) {
+    // in early stage like install or run, settings file and folder is not available yet so let it takes default settings below
 }
-
-let pino_write_stream = fs.createWriteStream(log_location, {'flags': 'a'});
 
 //  RFC5424: severity of all levels is assumed to be numerically ascending from most important to least important
 const winston_log_levels = {
@@ -63,9 +69,16 @@ if(log_type === undefined || log_type === 0 || log_type === null) {
     log_type = WIN;
 }
 
+//TODO: All of this should be happening in an env variable module (yet to be written).
+if(log_location === undefined || log_location === null) {
+    log_location = '../run_log.log';
+}
+
 //TODO: not sure if this set to global is needed or useful.  This should be happening in a module.
 global.log_level = log_level;
 global.log_location = log_location;
+
+let pino_write_stream = fs.createWriteStream(log_location, {'flags': 'a'});
 
 module.exports = {
     trace:trace,

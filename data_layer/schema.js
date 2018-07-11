@@ -3,7 +3,7 @@ const fs = require('fs.extra')
     , async = require('async')
     , validation = require('../validation/schema_validator.js')
     , search = require('./search.js')
-    , winston = require('../utility/logging/winston_logger')
+    , logger = require('../utility/logging/harper_logger')
     , uuidV4 = require('uuid/v4')
     , delete_ = require('../data_layer/delete')
     //this is to avoid a circular dependency with insert.
@@ -171,7 +171,7 @@ function createTableStructure(create_table_object, callback) {
 
                 search.searchByHash(search_obj, function(err, data){
                    if(err){
-                      winston.error(err);
+                      logger.error(err);
                       return callback(err)
                    }
                     let residence_nodes = [hdb_properties.get('NODE_NAME')];
@@ -271,14 +271,14 @@ function moveSchemaStructureToTrash(drop_schema_object, callback) {
             function(err, data) {
                 if( err) {
                     console.error(`There was a problem deleting ${schema}.  Please check the logs for more info`);
-                    winston.error(err);
+                    logger.error(err);
                     return callback(err);
                 } else {
                     callback(null, `successfully deleted schema ${schema}`);
                 }
             });
     } catch (e) {
-        winston.error(e);
+        logger.error(e);
         return callback(e);
     }
 }
@@ -313,7 +313,7 @@ function moveTableStructureToTrash(drop_table_object, callback) {
         ], function(err, result) {
             if( err) {
                 console.error(`There was a problem deleting ${schema}.  Please check the logs for more info`);
-                winston.error(err);
+                logger.error(err);
                 return callback(err);
             } else {
                 callback(null, result);
@@ -337,7 +337,7 @@ function dropSchema(drop_schema_object, callback) {
             return callback(null, success);
         });
     } catch (e) {
-        winston.error(e);
+        logger.error(e);
         return callback(e);
     }
 }
@@ -617,10 +617,10 @@ function createAttributeStructure(create_attribute_object, callback) {
                 hash_attribute: 'id',
                 records: [record]
             };
-            winston.info("insert object:" + JSON.stringify(insertObject));
+            logger.info("insert object:" + JSON.stringify(insertObject));
             insert.insert(insertObject, function (err, result) {
-                winston.info('attribute:' + record.attribute);
-                winston.info(result);
+                logger.info('attribute:' + record.attribute);
+                logger.info(result);
                 callback(err, result);
             });
 
@@ -703,7 +703,7 @@ function createAttribute(create_attribute_object, callback) {
                 };
 
                 if(process.send === undefined){
-                    winston.debug('trying to send payload: ' + JSON.stringify(payload) + ' but there is no process.send for pid ');
+                    logger.debug('trying to send payload: ' + JSON.stringify(payload) + ' but there is no process.send for pid ');
                 } else {
                     process.send(payload);
                 }

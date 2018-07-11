@@ -1,21 +1,21 @@
 #!/usr/bin/env node
 "use strict";
-const fs = require('fs'),
-    util = require('util'),
-    path = require('path'),
-    net = require('net'),
-    ps = require('find-process'),
-    install = require('../utility/install/installer.js'),
-    colors = require("colors/safe"),
-    basic_winston  = require('winston'),
-    PropertiesReader = require('properties-reader'),
-    async = require('async'),
-    pjson = require('../package.json'),
-    HTTPSECURE_PORT_KEY = 'HTTPS_PORT',
-    HTTP_PORT_KEY = 'HTTP_PORT',
-    HTTPSECURE_ON_KEY = 'HTTPS_ON',
-    HTTP_ON_KEY = 'HTTP_ON',
-    HDB_PROC_NAME = 'hdb_express.js';
+const fs = require('fs');
+const util = require('util');
+const path = require('path');
+const net = require('net');
+const ps = require('find-process');
+const install = require('../utility/install/installer.js');
+const colors = require("colors/safe");
+const logger = require('../utility/logging/harper_logger');
+const PropertiesReader = require('properties-reader');
+const async = require('async');
+const pjson = require('../package.json');
+const HTTPSECURE_PORT_KEY = 'HTTPS_PORT';
+const HTTP_PORT_KEY = 'HTTP_PORT';
+const HTTPSECURE_ON_KEY = 'HTTPS_ON';
+const HTTP_ON_KEY = 'HTTP_ON';
+const HDB_PROC_NAME = 'hdb_express.js';
 
 const stop = require('./stop');
 
@@ -30,19 +30,15 @@ let fork = require('child_process').fork;
  * start.  If the hdb_boot_props file is not found, it is assumed an install needs to be performed.
  */
 function run() {
-    basic_winston.configure({
-        transports: [
-            new (basic_winston.transports.File)({ filename: '../run_log.log',  level: 'verbose', handleExceptions: true,
-                prettyPrint:true })
-        ],exitOnError:false
-    });
+
+    logger.setLogLevel('info');
 
     ps('name', HDB_PROC_NAME).then(function (list) {
         if( list.length === 0 ) {
             arePortsInUse( (err) => {
               if(err) {
                   console.log(err);
-                  basic_winston.info(err);
+                  logger.info(err);
                   return;
               }
               startHarper();
@@ -51,11 +47,11 @@ function run() {
         else {
             let run_err = 'HarperDB is already running.';
             console.log(run_err);
-            basic_winston.info(run_err);
+            logger.info(run_err);
         }
     }, function (err) {
         console.log(err.stack || err);
-        basic_winston.error(err.stack || err);
+        logger.error(err.stack || err);
     })
 }
 
@@ -75,19 +71,19 @@ function arePortsInUse(callback) {
         http_port = hdb_properties.get(HTTP_PORT_KEY);
         httpsecure_port = hdb_properties.get(HTTPSECURE_PORT_KEY);
     } catch (e) {
-        basic_winston.info('hdb_boot_props file not found, starting install.');
+        logger.info('hdb_boot_props file not found, starting install.');
         startHarper();
     }
 
     if(http_on === 'FALSE' && httpsecure_on === 'FALSE') {
         let flag_err = 'http and https flags are both disabled.  Please check your settings file.';
-        basic_winston.error(flag_err);
+        logger.error(flag_err);
         return callback(flag_err)
     }
 
     if(!http_port && !httpsecure_port) {
         let port_err = 'http and https ports are both undefined.  Please check your settings file.';
-        basic_winston.error(port_err);
+        logger.error(port_err);
         return callback(port_err);
     }
 
@@ -137,7 +133,7 @@ function startHarper() {
             if(err.errno === -2) {
                 install.install(function (err) {
                     if (err) {
-                        basic_winston.error(err);
+                        logger.error(err);
                         return;
                     }
                     hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
@@ -145,7 +141,7 @@ function startHarper() {
                     return;
                 });
             } else {
-                basic_winston.error(`start fail: ${err}`);
+                logger.error(`start fail: ${err}`);
                 return;
             }
         } else {
@@ -156,7 +152,7 @@ function startHarper() {
                         if (err.errno === -2) {
                             install.install(function (err) {
                                 if (err) {
-                                    basic_winston.error(err);
+                                    logger.error(err);
                                     return;
                                 }
                                 hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
@@ -164,7 +160,7 @@ function startHarper() {
                                 return;
                             });
                         } else {
-                            basic_winston.error(`HarperDB ${pjson.version} start fail: ${err}`);
+                            logger.error(`HarperDB ${pjson.version} start fail: ${err}`);
                             return;
                         }
                     } else {
@@ -174,7 +170,7 @@ function startHarper() {
                 });
             } catch (e) {
                 console.error('There was a problem reading the boot properties file.  Please check the install logs.');
-                basic_winston.error('There was a problem reading the boot properties file. ' + e);
+                logger.error('There was a problem reading the boot properties file. ' + e);
             }
         }
     });
@@ -281,21 +277,21 @@ function increaseMemory(callback){
             const node = spawn('node', [`--max-old-space-size=${hdb_properties.get('MAX_MEMORY')}`, `${hdb_properties.get('PROJECT_DIR')}/server/hdb_express.js`]);
 
             node.stdout.on('data', (data) => {
-                basic_winston.info(`stdout: ${data}`);
+                logger.info(`stdout: ${data}`);
             });
 
             node.stderr.on('data', (data) => {
-                basic_winston.error(`stderr: ${data}`);
+                logger.error(`stderr: ${data}`);
             });
 
             node.on('close', (code) => {
-                basic_winston.log(`child process exited with code ${code}`);
+                logger.log(`child process exited with code ${code}`);
             });
         } else {
             callback();
         }
     }catch(e){
-        basic_winston.error(e);
+        logger.error(e);
     }
 }
 

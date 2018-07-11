@@ -1,19 +1,11 @@
-
-
-
-
-module.exports ={
+module.exports = {
     register: register
-
 }
-
-
-
 
 function register(prompt, callback) {
     const hdb_license = require('./hdb_license'),
         colors = require("colors/safe"),
-        winston = require('../utility/logging/winston_logger'),
+        logger = require('../utility/logging/harper_logger'),
         check_permisison = require('../utility/check_permissions');
 
     check_permisison.checkPermission(function(err){
@@ -36,8 +28,6 @@ function register(prompt, callback) {
                 }
             }
 
-
-
             if(!prompt){
                 prompt = require('prompt');
                 prompt.start();
@@ -49,7 +39,7 @@ function register(prompt, callback) {
                 if(data.HDB_LICENSE && data.CUSTOMER_COMPANY) {
                     hdb_license.validateLicense(data.HDB_LICENSE, data.CUSTOMER_COMPANY, function (err, validation) {
                         if (err) {
-                            winston.error(err);
+                            logger.error(err);
                             callback(err);
                             return;
                         }
@@ -63,7 +53,6 @@ function register(prompt, callback) {
                             callback('License expired!');
                             return;
                         }
-
 
                         if (!validation.valid_machine) {
                             callback('This license is in use on another machine!');
@@ -81,20 +70,15 @@ function register(prompt, callback) {
 
                         insert.insert(insert_object, function (err, data) {
                             if (err) {
-                                winston.error(err);
+                                logger.error(err);
                                 return;
                             }
 
                             callback(null, 'Successfully registered');
                         });
-
-
                     });
                 }
             });
-
         });
     });
-
-
 }
