@@ -369,7 +369,7 @@ function checkAttributeSchema(insert_object, callerback) {
     let symbolic_links = [];
 
     let folders = {};
-    let hash_folders = {};
+    //let hash_folders = {};
     let hash_paths = {};
     let base_path = hdb_path + '/' + insert_object.schema + '/' + insert_object.table + '/';
     let operation = insert_object.operation;
@@ -391,7 +391,7 @@ function checkAttributeSchema(insert_object, callerback) {
             let attribute_file_name = record[hash_attribute] + '.hdb';
             let attribute_path = base_path + property + '/' + value_path;
 
-            hash_folders[`${base_path}__hdb_hash/${property}`] = "";
+            folders[`${base_path}__hdb_hash/${property}`] = "";
             insert_objects.push({
                 file_name: `${base_path}__hdb_hash/${property}/${attribute_file_name}`,
                 value: value
@@ -404,7 +404,7 @@ function checkAttributeSchema(insert_object, callerback) {
                     file_name: `${attribute_path}/${attribute_file_name}`
                 });
             } else {
-                hash_folders[attribute_path] = "";
+                folders[attribute_path] = "";
                 insert_objects.push({
                     file_name: `${attribute_path}/${epoch}.hdb`,
                     // Need to use the filter to remove the HDB_INTERNAL_PATH from the record before it is added to a file.
@@ -417,9 +417,9 @@ function checkAttributeSchema(insert_object, callerback) {
     });
 
     let data_wrapper = {
-        data_folders: Object.keys(hash_folders),
+        data_folders: Object.keys(folders),
         data: insert_objects,
-        link_folders: Object.keys(folders),
+        //link_folders: Object.keys(folders),
         links: symbolic_links,
         hash_paths: hash_paths,
         operation: insert_object.operation
@@ -506,6 +506,7 @@ function writeRawData(data_wrapper, callback) {
  * @param callback
  */
 function writeRawDataFiles(data, callback) {
+    console.time('writeRawDataFiles');
     async.each(data, (attribute, caller) => {
         fs.writeFile(attribute.file_name, attribute.value, (err) => {
             if (err) {
@@ -515,6 +516,7 @@ function writeRawDataFiles(data, callback) {
             caller();
         });
     }, function (err) {
+        console.timeEnd('writeRawDataFiles');
         if (err) {
             callback(err);
             return;
@@ -532,7 +534,7 @@ function writeRawDataFiles(data, callback) {
 function writeLinks(data_wrapper, callback) {
     console.time('writeLinks');
     async.waterfall([
-        createFolders.bind(null, data_wrapper, data_wrapper.link_folders),
+        //createFolders.bind(null, data_wrapper, data_wrapper.link_folders),
         writeLinkFiles.bind(null, data_wrapper.links)
     ], (err, results) => {
         console.timeEnd('writeLinks');
@@ -573,7 +575,7 @@ function writeLinkFiles(links, callback) {
  * @param callback
  */
 function createFolders(data_wrapper,folders, callback) {
-
+console.time('createFolders');
     let folder_created_flag = false;
     async.each(folders, (folder, caller) => {
         mkdirp(folder, (err, created_folder) => {
@@ -597,9 +599,11 @@ function createFolders(data_wrapper,folders, callback) {
             callback(err);
             return;
         }
+        console.timeEnd('createFolders');
         if( folder_created_flag ) {
             signalling.signalSchemaChange({type: 'schema'});
         }
+
         callback();
     });
 }
