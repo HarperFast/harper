@@ -123,7 +123,7 @@ function dropRole(role, callback){
     search.searchByConditions(search_for_role_name, function(err, role_name){        
         if(err)
             return callback(`${err}`);
-        if(role_name.length == 0)
+        if(role_name.length === 0)
             return callback(`Role not found`);
         
         search.searchByConditions(search_for_users, function(err, users){
