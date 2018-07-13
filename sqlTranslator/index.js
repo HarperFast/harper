@@ -43,7 +43,7 @@ function evaluateSQL(json_message, callback) {
     } else if (statement instanceof alasql.yy.Delete) {
         schema = statement.table.databaseid;
     } else {
-        winston.error(`AST in getRecordAttributesAST() is not a valid SQL type.`);
+        winston.error(`AST in evaluateSQL is not a valid SQL type.`);
     }
     if(hdb_utils.isEmptyOrZeroLength(schema)) {
         return callback('No schema specified', null);
