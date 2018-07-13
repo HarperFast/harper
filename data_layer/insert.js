@@ -30,6 +30,9 @@ const regex = /\//g,
     hash_regex = /^[a-zA-Z0-9-_]+$/,
     unicode_slash = 'U+002F';
 
+const WRITE_RECORDS_ASYNC_EACH_LIMIT = 2500;
+const CREATE_FOLDERS_ASYNC_EACH_LIMIT = 2000;
+
 //TODO: This is ugly and string compare is slow.  Refactor this when we bring in promises.
 const NO_RESULTS = 'NR';
 //This is an internal value that should not be written to the DB.
@@ -359,7 +362,7 @@ function filterHDBValues(key, value) {
  * @param callerback
  */
 function checkAttributeSchema(insert_object, callerback) {
-    if(!insert_object) { return callback("Empty Object", null); }
+    if(!insert_object) { return callerback("Empty Object", null); }
 
     try {
         let table_schema = global.hdb_schema[insert_object.schema][insert_object.table];
@@ -375,50 +378,48 @@ function checkAttributeSchema(insert_object, callerback) {
         insert_object.records.forEach((record) => {
             if (record[HDB_PATH_KEY] === undefined && operation !== 'update') {
                 return;
-            } else {
-
-                let exploded_row = {
-                    hash_value: null,
-                    raw_data: [],
-                    links: []
-                };
-
-                hash_paths[`${base_path}__hdb_hash/${hash_attribute}/${record[hash_attribute]}.hdb`] = '';
-                for (let property in record) {
-                    if (record[property] === null || record[property] === undefined || record[property] === '' || property === HDB_PATH_KEY) {
-                        continue;
-                    }
-
-                    let value = typeof record[property] === 'object' ? JSON.stringify(record[property]) : record[property];
-                    let value_stripped = String(value).replace(regex, 'U+002F');
-                    let value_path = Buffer.byteLength(value_stripped) > 255 ? truncate(value_stripped, 255) + '/blob' : value_stripped;
-                    let attribute_file_name = record[hash_attribute] + '.hdb';
-                    let attribute_path = base_path + property + '/' + value_path;
-
-                    folders[`${base_path}__hdb_hash/${property}`] = "";
-                    exploded_row.raw_data.push({
-                        file_name: `${base_path}__hdb_hash/${property}/${attribute_file_name}`,
-                        value: value
-                    });
-                    if (property !== hash_attribute) {
-                        folders[attribute_path] = "";
-
-                        exploded_row.links.push({
-                            link: `${base_path}__hdb_hash/${property}/${attribute_file_name}`,
-                            file_name: `${attribute_path}/${attribute_file_name}`
-                        });
-                    } else {
-                        folders[attribute_path] = "";
-                        exploded_row.hash_value = value;
-                        exploded_row.raw_data.push({
-                            file_name: `${attribute_path}/${epoch}.hdb`,
-                            // Need to use the filter to remove the HDB_INTERNAL_PATH from the record before it is added to a file.
-                            value: JSON.stringify(record, filterHDBValues)
-                        });
-                    }
-                }
-                insert_objects.push(exploded_row);
             }
+            let exploded_row = {
+                hash_value: null,
+                raw_data: [],
+                links: []
+            };
+
+            hash_paths[`${base_path}__hdb_hash/${hash_attribute}/${record[hash_attribute]}.hdb`] = '';
+            for (let property in record) {
+                if (record[property] === null || record[property] === undefined || record[property] === '' || property === HDB_PATH_KEY) {
+                    continue;
+                }
+
+                let value = typeof record[property] === 'object' ? JSON.stringify(record[property]) : record[property];
+                let value_stripped = String(value).replace(regex, 'U+002F');
+                let value_path = Buffer.byteLength(value_stripped) > 255 ? truncate(value_stripped, 255) + '/blob' : value_stripped;
+                let attribute_file_name = record[hash_attribute] + '.hdb';
+                let attribute_path = base_path + property + '/' + value_path;
+
+                folders[`${base_path}__hdb_hash/${property}`] = "";
+                exploded_row.raw_data.push({
+                    file_name: `${base_path}__hdb_hash/${property}/${attribute_file_name}`,
+                    value: value
+                });
+                if (property !== hash_attribute) {
+                    folders[attribute_path] = "";
+
+                    exploded_row.links.push({
+                        link: `${base_path}__hdb_hash/${property}/${attribute_file_name}`,
+                        file_name: `${attribute_path}/${attribute_file_name}`
+                    });
+                } else {
+                    folders[attribute_path] = "";
+                    exploded_row.hash_value = value;
+                    exploded_row.raw_data.push({
+                        file_name: `${attribute_path}/${epoch}.hdb`,
+                        // Need to use the filter to remove the HDB_INTERNAL_PATH from the record before it is added to a file.
+                        value: JSON.stringify(record, filterHDBValues)
+                    });
+                }
+            }
+            insert_objects.push(exploded_row);
         });
 
         let data_wrapper = {
@@ -488,7 +489,7 @@ function processData(data_wrapper, callback) {
  * @param callback
  */
 function writeRecords(data, callback){
-    async.eachLimit(data, 2500, (record, callback2)=>{
+    async.eachLimit(data, WRITE_RECORDS_ASYNC_EACH_LIMIT, (record, callback2)=>{
         async.waterfall([
             writeRawDataFiles.bind(null, record.raw_data),
             writeLinkFiles.bind(null, record.links)
@@ -499,6 +500,10 @@ function writeRecords(data, callback){
             callback2();
         });
     }, (error)=>{
+        if(error){
+            return callback(error);
+        }
+
         callback();
     });
 }
@@ -557,7 +562,7 @@ function writeLinkFiles(links, callback) {
 function createFolders(data_wrapper,folders, callback) {
 
     let folder_created_flag = false;
-    async.eachLimit(folders, 2000, (folder, caller) => {
+    async.eachLimit(folders, CREATE_FOLDERS_ASYNC_EACH_LIMIT, (folder, caller) => {
         mkdirp(folder, (err, created_folder) => {
             if (err) {
                 caller(err);
