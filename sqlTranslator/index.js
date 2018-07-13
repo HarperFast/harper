@@ -15,6 +15,7 @@ const alasql = require('alasql');
 const op_auth = require('../utility/operation_authorization');
 const logger = require('../utility/logging/harper_logger');
 const alasql_function_importer = require('./alasqlFunctionImporter');
+const hdb_utils = require('../utility/common_utils');
 //here we call to define and import custom functions to alasql
 alasql_function_importer(alasql);
 
@@ -30,6 +31,23 @@ class ParsedSQLObject {
 
 function evaluateSQL(json_message, callback) {
     let parsed_sql = convertSQLToAST(json_message.sql);
+    //TODO; This is a temporary check and should be removed once validation is integrated.
+    let schema = undefined;
+    let statement = parsed_sql.ast.statements[0];
+    if(statement instanceof alasql.yy.Insert) {
+        schema = statement.into.databaseid;
+    } else if (statement instanceof alasql.yy.Select) {
+        schema = statement.from[0].databaseid;
+    } else if (statement instanceof alasql.yy.Update) {
+        schema = statement.table.databaseid;
+    } else if (statement instanceof alasql.yy.Delete) {
+        schema = statement.table.databaseid;
+    } else {
+        winston.error(`AST in evaluateSQL is not a valid SQL type.`);
+    }
+    if(hdb_utils.isEmptyOrZeroLength(schema)) {
+        return callback('No schema specified', null);
+    }
     processAST(json_message, parsed_sql, (error, results)=>{
         if(error){
             return callback(error);
@@ -46,7 +64,13 @@ function evaluateSQL(json_message, callback) {
  * @returns {boolean} - False if permissions check denys the statement.
  */
 function checkASTPermissions(json_message, parsed_sql_object) {
-    if(!op_auth.verifyPermsAst(parsed_sql_object.ast.statements[0], json_message.hdb_user, parsed_sql_object.variant)) {
+    let verify_result = undefined;
+    try {
+        verify_result = op_auth.verifyPermsAst(parsed_sql_object.ast.statements[0], json_message.hdb_user, parsed_sql_object.variant);
+    } catch(e) {
+        throw e;
+    }
+    if(!verify_result) {
         parsed_sql_object.permissions_checked = true;
         return false;
     }

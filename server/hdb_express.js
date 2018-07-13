@@ -279,12 +279,11 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                     harper_logger.error(err);
                     if(err === server_utilities.UNAUTH_RESPONSE) {
                         return res.status(hdb_terms.HTTP_STATUS_CODES.FORBIDDEN).send({error: server_utilities.UNAUTHORIZED_TEXT});
-                    } else {
-                        if (typeof err === 'string') {
-                            return res.status(hdb_terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send({error: err});
-                        }
-                        return res.status(hdb_terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send(err);
                     }
+                    if (typeof err === 'string') {
+                        return res.status(hdb_terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send({error: err});
+                    }
+                    return res.status(hdb_terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send(err);
                 }
                 let localOnlyOperations = ['describe_all', 'describe_table', 'describe_schema', 'read_log'];
 

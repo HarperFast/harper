@@ -7,7 +7,7 @@
 const alasql = require('alasql');
 const RecursiveIterator = require('recursive-iterator');
 const harper_logger = require('../utility/logging/harper_logger');
-
+const hdb_utils = require('../utility/common_utils');
 
 class sql_statement_bucket {
     constructor(ast) {
@@ -153,6 +153,10 @@ function getSelectAttributes(ast, affected_attributes, table_lookup) {
         return;
     }
     let schema = ast.from[0].databaseid;
+    if(hdb_utils.isEmptyOrZeroLength(schema)) {
+        harper_logger.error('No schema specified');
+        return;
+    }
     ast.from.forEach((from)=>{
         addSchemaTableToMap(from, affected_attributes, table_lookup);
     });
@@ -171,6 +175,7 @@ function getSelectAttributes(ast, affected_attributes, table_lookup) {
         if(!table_name) {
             table_name = ast.from[0].tableid;
         }
+
         if(!affected_attributes.get(schema).has(table_name)) {
             if(!table_lookup.has(table_name)) {
                 harper_logger.info(`table specified as ${table_name} not found.`);
