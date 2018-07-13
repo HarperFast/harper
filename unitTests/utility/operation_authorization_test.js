@@ -2,7 +2,8 @@
 /**
  * Test the operation_authorization module.
  */
-
+const test_utils = require('../test_utils');
+test_utils.preTestPrep();
 const assert = require('assert');
 const rewire = require('rewire');
 const op_auth = require('../../utility/operation_authorization');
@@ -337,7 +338,7 @@ describe(`Test verifyPermsAst`, function () {
         let att_base = clone(ATTRIBUTE_RESTRICTION_BASE);
         att_base.attribute_restrictions[0].insert = true;
         perms_user.hdb_user.role.permission.dev.tables.dog.attribute_restrictions.push(att_base.attribute_restrictions[0]);
-        assert.equal(op_auth.verifyPermsAst(temp_insert, perms_user.hdb_user, 'fart'), false);
+        assert.throws(function() {op_auth.verifyPermsAst(temp_insert, perms_user.hdb_user, 'fart');}, Error);
     });
     it(`Test select wildcard with proper perms, expect true`, function () {
         let test_json = clone(TEST_SELECT_WILDCARD_JSON);
@@ -376,13 +377,11 @@ describe(`Test checkAttributePerms`, function () {
     });
     it('Pass invalid operation.  Expect false.', function () {
         let checkAttributePerms = op_auth_rewire.__get__('checkAttributePerms');
-        let result = checkAttributePerms(AFFECTED_ATTRIBUTES_SET, ROLE_ATTRIBUTE_RESTRICTIONS, 'derp');
-        assert.equal(result, false);
+        assert.throws(function() {checkAttributePerms(AFFECTED_ATTRIBUTES_SET, ROLE_ATTRIBUTE_RESTRICTIONS, 'derp');}, Error);
     });
     it('Pass invalid json.  Expect false.', function () {
         let checkAttributePerms = op_auth_rewire.__get__('checkAttributePerms');
-        let result = checkAttributePerms(null, null, write.insert.name);
-        assert.equal(result, false);
+        assert.throws(function() {checkAttributePerms(null, null, write.insert.name);}, Error);
     });
 });
 
@@ -475,7 +474,7 @@ describe(`Test hasPermissions`, function () {
 
     it('Test invalid parameter', function () {
         let hasPermissions = op_auth_rewire.__get__('hasPermissions');
-        assert.equal(hasPermissions(null, write.insert.name, new Map()), false);
+        assert.throws(function() {hasPermissions(null, write.insert.name, new Map());}, Error);
     });
 
     it('Test nominal path, insert required.  Expect true', function () {
