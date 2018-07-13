@@ -172,7 +172,7 @@ function hasPermissions(user, op, schema_table_map ) {
     if(!required_permissions.get(op) || (required_permissions.get(op) && required_permissions.get(op).requires_su)) {
         // still here after the su check above but this operation require su, so fail.
         harper_logger.info(`operation ${op} not found or requires SU permissions.`);
-        throw new Error(ERR_PROCESSING);
+        return false;
     }
     for(let schema of schema_table_map.keys()) {
         //ASSUME ALL TABLES AND SCHEMAS ARE WIDE OPEN
