@@ -30,6 +30,9 @@ const regex = /\//g,
     hash_regex = /^[a-zA-Z0-9-_]+$/,
     unicode_slash = 'U+002F';
 
+const WRITE_RECORDS_ASYNC_EACH_LIMIT = 2500;
+const CREATE_FOLDERS_ASYNC_EACH_LIMIT = 2000;
+
 //TODO: This is ugly and string compare is slow.  Refactor this when we bring in promises.
 const NO_RESULTS = 'NR';
 //This is an internal value that should not be written to the DB.
@@ -354,92 +357,89 @@ function filterHDBValues(key, value) {
 
 
 /**
- *
+ * This function takes every row, explodes it by attribute and sends the data on to be written to disk
  * @param insert_object
  * @param callerback
  */
 function checkAttributeSchema(insert_object, callerback) {
-    if(!insert_object) { return callback("Empty Object", null); }
-    let table_schema = global.hdb_schema[insert_object.schema][insert_object.table];
-    let hash_attribute = table_schema.hash_attribute;
-    let epoch = new Date().valueOf();
+    if(!insert_object) { return callerback("Empty Object", null); }
 
-    let insert_objects = [];
-    let symbolic_links = [];
+    try {
+        let table_schema = global.hdb_schema[insert_object.schema][insert_object.table];
+        let hash_attribute = table_schema.hash_attribute;
+        let epoch = new Date().valueOf();
 
-    let folders = {};
-    let hash_folders = {};
-    let hash_paths = {};
-    let base_path = hdb_path + '/' + insert_object.schema + '/' + insert_object.table + '/';
-    let operation = insert_object.operation;
+        let insert_objects = [];
 
-    async.each(insert_object.records, function (record, callback) {
-        //Update function does not set base path, so we should not exit if this is an update and path is undefined.
-        if(record[HDB_PATH_KEY] === undefined && operation !== 'update') {
-            return callback();
-        }
-        let attribute_objects = [];
-        let link_objects = [];
-        hash_paths[`${base_path}__hdb_hash/${hash_attribute}/${record[hash_attribute]}.hdb`] = '';
-        for (let property in record) {
-            if(record[property] === null || record[property] === undefined || record[property] === '' || property === HDB_PATH_KEY){
-                continue;
+        let folders = {};
+        let hash_paths = {};
+        let base_path = hdb_path + '/' + insert_object.schema + '/' + insert_object.table + '/';
+        let operation = insert_object.operation;
+        insert_object.records.forEach((record) => {
+            if (record[HDB_PATH_KEY] === undefined && operation !== 'update') {
+                return;
             }
+            let exploded_row = {
+                hash_value: null,
+                raw_data: [],
+                links: []
+            };
 
-            let value = typeof record[property] === 'object' ? JSON.stringify(record[property]) : record[property];
-            let value_stripped = String(value).replace(regex, 'U+002F');
-            let value_path = Buffer.byteLength(value_stripped) > 255 ? truncate(value_stripped, 255) + '/blob' : value_stripped;
-            let attribute_file_name = record[hash_attribute] + '.hdb';
-            let attribute_path = base_path + property + '/' + value_path;
+            hash_paths[`${base_path}__hdb_hash/${hash_attribute}/${record[hash_attribute]}.hdb`] = '';
+            for (let property in record) {
+                if (record[property] === null || record[property] === undefined || record[property] === '' || property === HDB_PATH_KEY) {
+                    continue;
+                }
 
-            hash_folders[`${base_path}__hdb_hash/${property}`] = "";
-            attribute_objects.push({
-                file_name: `${base_path}__hdb_hash/${property}/${attribute_file_name}`,
-                value: value
-            });
-            if (property !== hash_attribute) {
-                folders[attribute_path] = "";
+                let value = typeof record[property] === 'object' ? JSON.stringify(record[property]) : record[property];
+                let value_stripped = String(value).replace(regex, 'U+002F');
+                let value_path = Buffer.byteLength(value_stripped) > 255 ? truncate(value_stripped, 255) + '/blob' : value_stripped;
+                let attribute_file_name = record[hash_attribute] + '.hdb';
+                let attribute_path = base_path + property + '/' + value_path;
 
-                link_objects.push({
-                    link: `${base_path}__hdb_hash/${property}/${attribute_file_name}`,
-                    file_name: `${attribute_path}/${attribute_file_name}`
+                folders[`${base_path}__hdb_hash/${property}`] = "";
+                exploded_row.raw_data.push({
+                    file_name: `${base_path}__hdb_hash/${property}/${attribute_file_name}`,
+                    value: value
                 });
-            } else {
-                hash_folders[attribute_path] = "";
-                attribute_objects.push({
-                    file_name: `${attribute_path}/${epoch}.hdb`,
-                    // Need to use the filter to remove the HDB_INTERNAL_PATH from the record before it is added to a file.
-                    value: JSON.stringify(record, filterHDBValues)
-                });
+                if (property !== hash_attribute) {
+                    folders[attribute_path] = "";
+
+                    exploded_row.links.push({
+                        link: `${base_path}__hdb_hash/${property}/${attribute_file_name}`,
+                        file_name: `${attribute_path}/${attribute_file_name}`
+                    });
+                } else {
+                    folders[attribute_path] = "";
+                    exploded_row.hash_value = value;
+                    exploded_row.raw_data.push({
+                        file_name: `${attribute_path}/${epoch}.hdb`,
+                        // Need to use the filter to remove the HDB_INTERNAL_PATH from the record before it is added to a file.
+                        value: JSON.stringify(record, filterHDBValues)
+                    });
+                }
             }
-        }
-        insert_objects = insert_objects.concat(attribute_objects);
-        symbolic_links = symbolic_links.concat(link_objects);
-        callback();
-    }, function (err) {
-        if (err) {
-            callerback(err);
-            return;
-        }
+            insert_objects.push(exploded_row);
+        });
+
         let data_wrapper = {
-            data_folders: Object.keys(hash_folders),
+            data_folders: Object.keys(folders),
             data: insert_objects,
-            link_folders: Object.keys(folders),
-            links: symbolic_links,
             hash_paths: hash_paths,
             operation: insert_object.operation
         };
 
-        if( insert_object.hdb_auth_header){
+        if (insert_object.hdb_auth_header) {
             data_wrapper.hdb_auth_header = insert_object.hdb_auth_header;
         }
-
         return callerback(null, data_wrapper);
-    });
+    } catch(e){
+        return callerback(e);
+    }
 }
 
 /**
- *
+ * Checks to verify which records already exist in the database
  * @param hash_paths
  * @param callback
  */
@@ -466,15 +466,15 @@ function checkRecordsExist(insert_object, skipped_records, inserted_records, cal
 }
 
 /**
- *
+ * wrapper function that orchestrates the record creattion on disk
  * @param data_wrapper
  * @param callback
  */
 function processData(data_wrapper, callback) {
     async.waterfall([
-        writeRawData.bind(null, data_wrapper),
-        writeLinks.bind(null, data_wrapper),
-    ], (err, results) => {
+        createFolders.bind(null, data_wrapper, data_wrapper.data_folders),
+        writeRecords.bind(null, data_wrapper.data)
+    ], (err) => {
         if (err) {
             callback(err);
             return;
@@ -484,26 +484,32 @@ function processData(data_wrapper, callback) {
 }
 
 /**
- *
- * @param folders
+ * Iterates the rows and row by row writes the raw data plust the associated hard links.  The limit is set manage the event loop.  on large batches the event loop will get bogged down.
  * @param data
  * @param callback
  */
-function writeRawData(data_wrapper, callback) {
-    async.waterfall([
-        createFolders.bind(null, data_wrapper, data_wrapper.data_folders),
-        writeRawDataFiles.bind(null, data_wrapper.data)
-    ], (err, results) => {
-        if (err) {
-            callback(err);
-            return;
+function writeRecords(data, callback){
+    async.eachLimit(data, WRITE_RECORDS_ASYNC_EACH_LIMIT, (record, callback2)=>{
+        async.waterfall([
+            writeRawDataFiles.bind(null, record.raw_data),
+            writeLinkFiles.bind(null, record.links)
+        ], (err)=>{
+            if(err){
+                winston.error(err);
+            }
+            callback2();
+        });
+    }, (error)=>{
+        if(error){
+            return callback(error);
         }
+
         callback();
     });
 }
 
 /**
- *
+ * writes the raw data files to disk
  * @param data
  * @param callback
  */
@@ -526,26 +532,7 @@ function writeRawDataFiles(data, callback) {
 }
 
 /**
- *
- * @param folders
- * @param links
- * @param callback
- */
-function writeLinks(data_wrapper, callback) {
-    async.waterfall([
-        createFolders.bind(null, data_wrapper, data_wrapper.link_folders),
-        writeLinkFiles.bind(null, data_wrapper.links)
-    ], (err, results) => {
-        if (err) {
-            callback(err);
-            return;
-        }
-        callback();
-    });
-}
-
-/**
- *
+ * creates the hard links to the raw data files
  * @param links
  * @param callback
  */
@@ -568,14 +555,14 @@ function writeLinkFiles(links, callback) {
 }
 
 /**
- *
+ * creates all of the folders necessary to hold the raw files and hard links
  * @param folders
  * @param callback
  */
 function createFolders(data_wrapper,folders, callback) {
 
     let folder_created_flag = false;
-    async.each(folders, (folder, caller) => {
+    async.eachLimit(folders, CREATE_FOLDERS_ASYNC_EACH_LIMIT, (folder, caller) => {
         mkdirp(folder, (err, created_folder) => {
             if (err) {
                 caller(err);
@@ -597,9 +584,11 @@ function createFolders(data_wrapper,folders, callback) {
             callback(err);
             return;
         }
+
         if( folder_created_flag ) {
             signalling.signalSchemaChange({type: 'schema'});
         }
+
         callback();
     });
 }
