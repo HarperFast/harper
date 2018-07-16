@@ -13,6 +13,8 @@ const RECORD_BATCH_SIZE = 1000;
 
 const alasql = require('alasql');
 
+const unix_filename_regex = new RegExp(/[^-_.A-Za-z0-9]/);
+
 // Promisify bulkLoad to avoid more of a refactor for now.
 const p_bulk_load = promisify(bulkLoad);
 
@@ -40,7 +42,9 @@ async function csvDataLoad(csv_object){
     let bulk_load_result = undefined;
     try {
         csv_records = await alasql.promise('SELECT * FROM CSV(?, {headers:true, separator:","})', [csv_object.data]);
-        bulk_load_result = await p_bulk_load(csv_records, csv_object.schema, csv_object.table, csv_object.action);
+        if(csv_records && csv_records.length > 0 && validateColumnNames(csv_records[0])) {
+            bulk_load_result = await p_bulk_load(csv_records, csv_object.schema, csv_object.table, csv_object.action);
+        }
     } catch(e) {
         throw new Error(e);
     }
@@ -124,6 +128,22 @@ async function csvFileLoad(csv_object) {
     }
 
     return bulk_load_result.message;
+}
+
+/**
+ * Validate all filenames of objects about to be created are valid unix filenames.  Returns true if valid, throws an exception
+ * if not.
+ * @param created_record - A single instance of a record created during csv load.
+ * @returns {boolean} - True if valid, throws exception if not.
+ */
+function validateColumnNames(created_record) {
+    let column_names = Object.keys(created_record);
+    for(let key of column_names) {
+        if(unix_filename_regex.test(key)) {
+            throw new Error(`Invalid column name ${key}, cancelling load operation`);
+        }
+    }
+    return true;
 }
 
 /**

@@ -17,12 +17,16 @@ const ROLE_TABLE_NAME = 'hdb_role';
 // Job table name
 const JOB_TABLE_NAME = 'hdb_job';
 
+const OPERATION_NAMES = {
+    csv_data_load: 'csv_data_load'
+};
+
 // Describes all available job types
 const JOB_TYPE_ENUM = {
     csv_file_load: 'csv_file_load',
     empty_trash: 'empty_trash',
     csv_url_load: 'csv_url_load',
-    csv_data_load: 'csv_data_load',
+    csv_data_load: OPERATION_NAMES.csv_data_load,
     export_to_s3: 'export_to_s3',
     export_local: 'export_local',
 	delete_files_before: 'delete_files_before'
@@ -81,6 +85,7 @@ module.exports = {
     JOB_STATUS_ENUM,
     OPERATIONS_ENUM,
     HTTP_STATUS_CODES,
-    GEO_CONVERSION_ENUM
+    GEO_CONVERSION_ENUM,
+    OPERATION_NAMES
 };
 
