@@ -6,13 +6,13 @@ const async = require('async');
 const validator = require('../validation/csvLoadValidator');
 const request_promise = require('request-promise-native');
 const hdb_terms = require('../utility/hdbTerms');
-
 const hdb_utils = require('../utility/common_utils');
 const {promisify} = require('util');
-const RECORD_BATCH_SIZE = 1000;
-
 const alasql = require('alasql');
+const logger = require('../utility/logging/harper_logger');
 
+const RECORD_BATCH_SIZE = 1000;
+const NEWLINE = '\n';
 const unix_filename_regex = new RegExp(/[^-_.A-Za-z0-9]/);
 
 // Promisify bulkLoad to avoid more of a refactor for now.
@@ -24,26 +24,34 @@ module.exports = {
     csvFileLoad: csvFileLoad
 };
 /**
- * Load a csv values specified in the message 'data' field.
+ * Load csv values specified as a string in the message 'data' field.
  *
- * @param csv_object - An object representing the CSV file.
+ * @param json_message - An object representing the CSV file.
  * @returns validation_msg - Contains any validation errors found
  * @returns error - any errors found reading the csv file
  * @returns err - any errors found during the bulk load
  *
  */
-async function csvDataLoad(csv_object){
-    let validation_msg = validator.dataObject(csv_object);
+async function csvDataLoad(json_message){
+    let validation_msg = validator.dataObject(json_message);
     if (validation_msg) {
         throw new Error(validation_msg);
     }
 
     let csv_records = [];
-    let bulk_load_result = undefined;
+    let bulk_load_result = {};
+    // alasql csv parsing looks for the existence of at least 1 newline.  if not found, it will try to load a file which
+    // results in a swallowed error written to the console, so we cram a newline at the end to avoid that error.
+    if(json_message.data.indexOf(NEWLINE) < 0) {
+        json_message.data = json_message.data + NEWLINE;
+    }
     try {
-        csv_records = await alasql.promise('SELECT * FROM CSV(?, {headers:true, separator:","})', [csv_object.data]);
+        csv_records = await alasql.promise('SELECT * FROM CSV(?, {headers:true, separator:","})', [json_message.data]);
         if(csv_records && csv_records.length > 0 && validateColumnNames(csv_records[0])) {
-            bulk_load_result = await p_bulk_load(csv_records, csv_object.schema, csv_object.table, csv_object.action);
+            bulk_load_result = await p_bulk_load(csv_records, json_message.schema, json_message.table, json_message.action);
+        } else {
+            bulk_load_result.message = 'No records parsed from csv file.';
+            logger.info(bulk_load_result.message);
         }
     } catch(e) {
         throw new Error(e);
@@ -55,14 +63,14 @@ async function csvDataLoad(csv_object){
 /**
  * Load a csv file from a URL.
  *
- * @param csv_object - An object representing the CSV file via URL.
+ * @param json_message - An object representing the CSV file via URL.
  * @returns validation_msg - Contains any validation errors found
  * @returns error - any errors found reading the csv file
  * @returns err - any errors found during the bulk load
  *
  */
-async function csvURLLoad(csv_object) {
-    let validation_msg = validator.urlObject(csv_object);
+async function csvURLLoad(json_message) {
+    let validation_msg = validator.urlObject(json_message);
     if (validation_msg) {
         throw new Error(validation_msg);
     }
@@ -70,8 +78,8 @@ async function csvURLLoad(csv_object) {
     let csv_records = [];
     let bulk_load_result = undefined;
     try {
-        csv_records = await alasql.promise('SELECT * FROM CSV(?, {headers:true, separator:","})', [csv_object.csv_url]);
-        bulk_load_result = await p_bulk_load(csv_records, csv_object.schema, csv_object.table, csv_object.action);
+        csv_records = await alasql.promise('SELECT * FROM CSV(?, {headers:true, separator:","})', [json_message.csv_url]);
+        bulk_load_result = await p_bulk_load(csv_records, json_message.schema, json_message.table, json_message.action);
     } catch(e) {
         throw new Error(e);
     }
@@ -106,14 +114,14 @@ async function createReadStream(url) {
 /**
  * Parse and load CSV values.
  * 
- * @param csv_object - An object representing the CSV file.
+ * @param json_message - An object representing the CSV file.
  * @returns validation_msg - Contains any validation errors found
  * @returns error - any errors found reading the csv file
  * @return err - any errors found during the bulk load
  *
  */
-async function csvFileLoad(csv_object) {
-    let validation_msg = validator.fileObject(csv_object);
+async function csvFileLoad(json_message) {
+    let validation_msg = validator.fileObject(json_message);
     if (validation_msg) {
         throw new Error(validation_msg);
     }
@@ -121,8 +129,8 @@ async function csvFileLoad(csv_object) {
     let csv_records = [];
     let bulk_load_result = undefined;
     try {
-        csv_records = await alasql.promise('SELECT * FROM CSV(?, {headers:true, separator:","})', csv_object.file_path);
-        bulk_load_result = await p_bulk_load(csv_records, csv_object.schema, csv_object.table, csv_object.action);
+        csv_records = await alasql.promise('SELECT * FROM CSV(?, {headers:true, separator:","})', json_message.file_path);
+        bulk_load_result = await p_bulk_load(csv_records, json_message.schema, json_message.table, json_message.action);
     } catch(e) {
         throw new Error(e);
     }
