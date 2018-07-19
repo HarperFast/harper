@@ -10,6 +10,7 @@ const hdb_utils = require('../utility/common_utils');
 const {promisify} = require('util');
 const alasql = require('alasql');
 const logger = require('../utility/logging/harper_logger');
+const url = require('url');
 
 const RECORD_BATCH_SIZE = 1000;
 const NEWLINE = '\n';
@@ -77,9 +78,23 @@ async function csvURLLoad(json_message) {
 
     let csv_records = [];
     let bulk_load_result = undefined;
+
+    // check passed url to see if its live and valid data
+    let url_response = undefined;
     try {
-        csv_records = await alasql.promise('SELECT * FROM CSV(?, {headers:true, separator:","})', [json_message.csv_url]);
-        bulk_load_result = await p_bulk_load(csv_records, json_message.schema, json_message.table, json_message.action);
+        url_response = await createReadStreamFromURL(json_message.csv_url);
+    } catch (e) {
+        logger.error(`invalid bulk load url ${json_message.csv_url}, response ${url_response.statusMessage}`);
+        throw e;
+    }
+    try {
+        csv_records = await alasql.promise('SELECT * FROM CSV(?, {headers:true, separator:","})', [url_response.body]);
+        if(csv_records && csv_records.length > 0 && validateColumnNames(csv_records[0])) {
+            bulk_load_result = await p_bulk_load(csv_records, json_message.schema, json_message.table, json_message.action);
+        } else {
+            bulk_load_result.message = 'No records parsed from csv file.';
+            logger.info(bulk_load_result.message);
+        }
     } catch(e) {
         throw new Error(e);
     }
@@ -92,7 +107,7 @@ async function csvURLLoad(json_message) {
  * @param url - URL to file.
  * @returns {Promise<*>}
  */
-async function createReadStream(url) {
+async function createReadStreamFromURL(url) {
     let options = {
         method: 'GET',
         uri: `${url}`,
@@ -130,7 +145,12 @@ async function csvFileLoad(json_message) {
     let bulk_load_result = undefined;
     try {
         csv_records = await alasql.promise('SELECT * FROM CSV(?, {headers:true, separator:","})', json_message.file_path);
-        bulk_load_result = await p_bulk_load(csv_records, json_message.schema, json_message.table, json_message.action);
+        if(csv_records && csv_records.length > 0 && validateColumnNames(csv_records[0])) {
+            bulk_load_result = await p_bulk_load(csv_records, json_message.schema, json_message.table, json_message.action);
+        } else {
+            bulk_load_result.message = 'No records parsed from csv file.';
+            logger.info(bulk_load_result.message);
+        }
     } catch(e) {
         throw new Error(e);
     }

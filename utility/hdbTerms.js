@@ -18,14 +18,15 @@ const ROLE_TABLE_NAME = 'hdb_role';
 const JOB_TABLE_NAME = 'hdb_job';
 
 const OPERATION_NAMES = {
-    csv_data_load: 'csv_data_load'
+    csv_data_load: 'csv_data_load',
+    csv_url_load: 'csv_url_load'
 };
 
 // Describes all available job types
 const JOB_TYPE_ENUM = {
     csv_file_load: 'csv_file_load',
     empty_trash: 'empty_trash',
-    csv_url_load: 'csv_url_load',
+    csv_url_load: OPERATION_NAMES.csv_url_load,
     csv_data_load: OPERATION_NAMES.csv_data_load,
     export_to_s3: 'export_to_s3',
     export_local: 'export_local',
