@@ -10,7 +10,7 @@ const hdb_utils = require('../utility/common_utils');
 const {promisify} = require('util');
 const alasql = require('alasql');
 const logger = require('../utility/logging/harper_logger');
-const url = require('url');
+const fs = require('fs');
 
 const RECORD_BATCH_SIZE = 1000;
 const NEWLINE = '\n';
@@ -18,6 +18,7 @@ const unix_filename_regex = new RegExp(/[^-_.A-Za-z0-9]/);
 
 // Promisify bulkLoad to avoid more of a refactor for now.
 const p_bulk_load = promisify(bulkLoad);
+const p_fs_access = promisify(fs.access);
 
 module.exports = {
     csvDataLoad: csvDataLoad,
@@ -142,8 +143,10 @@ async function csvFileLoad(json_message) {
     }
 
     let csv_records = [];
-    let bulk_load_result = undefined;
+    let bulk_load_result = {};
     try {
+        // check file exists and have perms to read, throws exception if fails
+        await p_fs_access(json_message.file_path, fs.constants.R_OK | fs.constants.F_OK);
         csv_records = await alasql.promise('SELECT * FROM CSV(?, {headers:true, separator:","})', json_message.file_path);
         if(csv_records && csv_records.length > 0 && validateColumnNames(csv_records[0])) {
             bulk_load_result = await p_bulk_load(csv_records, json_message.schema, json_message.table, json_message.action);

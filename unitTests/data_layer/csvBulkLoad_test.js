@@ -12,16 +12,15 @@ const fs = require('fs');
 
 const VALID_CSV_DATA = "id,name,section,country,image\n1,ENGLISH POINTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/001g07.jpg\n2,ENGLISH SETTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/002g07.jpg\n3,KERRY BLUE TERRIER,Large and medium sized Terriers,IRELAND,\n";
 const INVALID_CSV_ID_COLUMN_NAME = "id/,name,section,country,image\n1,ENGLISH POINTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/001g07.jpg\n2,ENGLISH SETTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/002g07.jpg\n3,KERRY BLUE TERRIER,Large and medium sized Terriers,IRELAND,\n";
-const INVALID_CSV_SECTION_COLUMN_NAME = "id,name,sect ion,country,image\n1,ENGLISH POINTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/001g07.jpg\n2,ENGLISH SETTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/002g07.jpg\n3,KERRY BLUE TERRIER,Large and medium sized Terriers,IRELAND,\n";
 const VALID_CSV_PATH = '/tmp/csv_input_valid.csv';
 const INVALID_CSV_PATH = '/tmp/csv_input_invalid_id.csv';
+const EMPTY_FILE_PATH = '/tmp/empty.csv';
 const HOSTED_CSV_FILE_URL = 'https://s3.amazonaws.com/complimentarydata/breeds.csv';
 
 const BULK_LOAD_RESPONSE = {
     message: 'successfully loaded 3 of 3 records'
 };
 
-const BULK_LOAD_ORIG = csv_rewire.__get__('p_bulk_load');
 const DATA_LOAD_MESSAGE = {
     "operation":"",
     "schema":"dev",
@@ -129,6 +128,7 @@ describe('Test createReadStreamFromURL', function () {
     let createReadStreamFromURL = csv_rewire.__get__('createReadStreamFromURL');
 
     // TODO: Expand these tests once we can get some additional invalid csv files hosted on the intranet.
+    // https://harperdb.atlassian.net/browse/OPS-27
     beforeEach(function () {
 
     });
@@ -149,6 +149,7 @@ describe('Test csvFileLoad', function () {
     before(function() {
         fs.writeFileSync(VALID_CSV_PATH, VALID_CSV_DATA);
         fs.writeFileSync(INVALID_CSV_PATH, INVALID_CSV_ID_COLUMN_NAME);
+        fs.writeFileSync(EMPTY_FILE_PATH, '');
     });
     // TODO: Expand these tests once we can get some additional invalid csv files hosted on the intranet.
     beforeEach(function () {
@@ -188,5 +189,13 @@ describe('Test csvFileLoad', function () {
             response = e;
         });
         assert.ok((response instanceof Error) === true, 'Did not get expected exception');
+    });
+    it('Test csvDataLoad file path to empty file, expect exception', async function() {
+        test_msg.file_path = EMPTY_FILE_PATH;
+        let response = undefined;
+        let result = await csv_rewire.csvFileLoad(test_msg).catch( (e) => {
+            response = e;
+        });
+        assert.equal(result, 'No records parsed from csv file.', 'Got incorrect response');
     });
 });
