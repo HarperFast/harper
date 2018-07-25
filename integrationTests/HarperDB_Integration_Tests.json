@@ -195,8 +195,7 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
@@ -256,8 +255,7 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
@@ -321,8 +319,7 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
@@ -386,8 +383,7 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
@@ -461,8 +457,7 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
@@ -526,8 +521,7 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
@@ -591,8 +585,7 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
@@ -656,8 +649,7 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
@@ -721,8 +713,7 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
@@ -786,8 +777,7 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
@@ -851,8 +841,7 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
@@ -916,8 +905,7 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
@@ -977,8 +965,7 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
@@ -1049,8 +1036,7 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				}
@@ -1119,8 +1105,7 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
@@ -1183,8 +1168,7 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
@@ -1247,8 +1231,7 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
@@ -1311,8 +1294,7 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
@@ -1375,8 +1357,7 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
@@ -1439,8 +1420,7 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
@@ -1503,8 +1483,7 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
@@ -1567,8 +1546,7 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
@@ -1631,8 +1609,7 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
@@ -1695,8 +1672,7 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
@@ -1759,8 +1735,7 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
@@ -1977,7 +1952,7 @@
 								"exec": [
 									"pm.test(\"sql test most buyer\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData[0].companyname).to.eql(\"Berglunds snabbk�p\");",
+									"    pm.expect(jsonData[0].companyname).to.eql(\"Berglunds snabbköp\");",
 									"    pm.expect(jsonData[1].companyname).to.eql(\"Hanari Carnes\");",
 									"});",
 									""
@@ -2722,8 +2697,7 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
@@ -2789,8 +2763,7 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
@@ -2861,8 +2834,7 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
@@ -2933,8 +2905,7 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				}
@@ -3006,13 +2977,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
-					"name": "NoSQL  search by hash",
+					"name": "NoSQL search by hash",
 					"event": [
 						{
 							"listen": "test",
@@ -3076,8 +3046,76 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL search by hash with unknown attribute",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status code is 500\", function () {",
+									"    pm.response.to.have.status(500);",
+									"});",
+									"",
+									"pm.test(\"verify proper error message is given\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.eql('unknown attribute attr1, attr3 and attr4');",
+									"});",
+									"",
+									"",
+									""
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
 						},
-						"description": null
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{emps_tb}}\",\n  \"hash_attribute\": \"{{emps_id}}\",\n  \"hash_values\":[1],\n  \"get_attributes\": [\"attr1\", \"address\", \"attr3\", \"attr4\"]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
 					},
 					"response": []
 				}
@@ -3148,8 +3186,7 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
@@ -4554,8 +4591,7 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
@@ -5978,8 +6014,7 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
@@ -6620,8 +6655,7 @@
 								"localhost"
 							],
 							"port": "9925"
-						},
-						"description": ""
+						}
 					},
 					"response": []
 				},
@@ -6689,13 +6723,27 @@
 								"localhost"
 							],
 							"port": "9925"
-						},
-						"description": ""
+						}
 					},
 					"response": []
 				},
 				{
 					"name": "Delete Job by job_id",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "cdd3336d-83fb-49ba-aef9-0d589dc23374",
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									""
+								]
+							}
+						}
+					],
 					"request": {
 						"auth": {
 							"type": "basic",
@@ -6770,13 +6818,13 @@
 							"type": "basic",
 							"basic": [
 								{
-									"key": "password",
-									"value": "{{password}}",
+									"key": "username",
+									"value": "{{username}}",
 									"type": "string"
 								},
 								{
-									"key": "username",
-									"value": "{{username}}",
+									"key": "password",
+									"value": "{{password}}",
 									"type": "string"
 								},
 								{
@@ -6808,8 +6856,7 @@
 								"localhost"
 							],
 							"port": "9925"
-						},
-						"description": ""
+						}
 					},
 					"response": []
 				},
@@ -7544,8 +7591,7 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
@@ -7607,8 +7653,7 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
@@ -7676,8 +7721,7 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
@@ -7739,8 +7783,7 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
@@ -7808,8 +7851,7 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				}
@@ -7937,8 +7979,7 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
