@@ -1,8 +1,7 @@
 'use strict';
 
 const insert = require('../data_layer/insert.js'),
-    randomstring = require('randomstring'),
-    winston = require('../utility/logging/winston_logger');
+    randomstring = require('randomstring');
 
 
 

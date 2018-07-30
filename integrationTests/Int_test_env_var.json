@@ -1,0 +1,195 @@
+{
+  "id": "5070d71a-dc1f-459e-aa51-44389d0e042b",
+  "name": "HarperDB Integration Tests Environment Variables",
+  "values": [
+    {
+      "key": "host",
+      "value": "http://localhost",
+      "enabled": true,
+      "type": "text"
+    },
+    {
+      "key": "port",
+      "value": "9925",
+      "enabled": true,
+      "type": "text"
+    },
+    {
+      "key": "username",
+      "value": "admin",
+      "enabled": true,
+      "type": "text"
+    },
+    {
+      "key": "password",
+      "value": "Abc1234!",
+      "enabled": true,
+      "type": "text"
+    },
+    {
+      "key": "schema",
+      "value": "northnwd",
+      "enabled": true,
+      "type": "text"
+    },
+    {
+      "key": "files_location",
+      "value": "/home/harperdb/mycos_csv/",
+      "enabled": true,
+      "type": "text"
+    },
+    {
+      "key": "emps_tb",
+      "value": "employees",
+      "enabled": true,
+      "type": "text"
+    },
+    {
+      "key": "emps_id",
+      "value": "employeeid",
+      "enabled": true,
+      "type": "text"
+    },
+    {
+      "key": "ords_tb",
+      "value": "orders",
+      "enabled": true,
+      "type": "text"
+    },
+    {
+      "key": "ords_id",
+      "value": "orderid",
+      "enabled": true,
+      "type": "text"
+    },
+    {
+      "key": "ordd_tb",
+      "value": "order_details",
+      "enabled": true,
+      "type": "text"
+    },
+    {
+      "key": "ordd_id",
+      "value": "orderid",
+      "enabled": true,
+      "type": "text"
+    },
+    {
+      "key": "prod_tb",
+      "value": "products",
+      "enabled": true,
+      "type": "text"
+    },
+    {
+      "key": "prod_id",
+      "value": "productid",
+      "enabled": true,
+      "type": "text"
+    },
+    {
+      "key": "cust_tb",
+      "value": "customers",
+      "enabled": true,
+      "type": "text"
+    },
+    {
+      "key": "cust_id",
+      "value": "customerid",
+      "enabled": true,
+      "type": "text"
+    },
+    {
+      "key": "cate_tb",
+      "value": "categories",
+      "enabled": true,
+      "type": "text"
+    },
+    {
+      "key": "cate_id",
+      "value": "categoryid",
+      "enabled": true,
+      "type": "text"
+    },
+    {
+      "key": "supp_tb",
+      "value": "suppliers",
+      "enabled": true,
+      "type": "text"
+    },
+    {
+      "key": "supp_id",
+      "value": "supplierid",
+      "enabled": true,
+      "type": "text"
+    },
+    {
+      "key": "ship_tb",
+      "value": "shippers",
+      "enabled": true,
+      "type": "text"
+    },
+    {
+      "key": "ship_id",
+      "value": "shipperid",
+      "enabled": true,
+      "type": "text"
+    },
+    {
+      "key": "empt_tb",
+      "value": "employeeterritories",
+      "enabled": true,
+      "type": "text"
+    },
+    {
+      "key": "empt_id",
+      "value": "employeeid",
+      "enabled": true,
+      "type": "text"
+    },
+    {
+      "key": "terr_tb",
+      "value": "territories",
+      "enabled": true,
+      "type": "text"
+    },
+    {
+      "key": "terr_id",
+      "value": "territoryid",
+      "enabled": true,
+      "type": "text"
+    },
+    {
+      "key": "regi_tb",
+      "value": "region",
+      "enabled": true,
+      "type": "text"
+    },
+    {
+      "key": "regi_id",
+      "value": "regionid",
+      "enabled": true,
+      "type": "text"
+    },
+    {
+      "key": "user_id",
+      "value": "",
+      "enabled": true,
+      "type": "text"
+    },
+    {
+      "key": "test_user_name",
+      "value": "test_user",
+      "enabled": true,
+      "type": "text"
+    },
+    {
+      "key": "role_id",
+      "value": "fa05a5b8-b505-4bef-83e5-873ff53e6f67",
+      "enabled": true,
+      "type": "text"
+    }
+  ],
+  "_postman_variable_scope": "environment",
+  "_postman_exported_at": "2018-06-13T18:23:12.397Z",
+  "_postman_exported_using": "Postman/6.1.3"
+}

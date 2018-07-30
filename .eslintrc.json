@@ -1,0 +1,52 @@
+{
+  "env": {
+    "es6": true,
+    "node": true
+  },
+  "extends": "eslint:recommended",
+  "parserOptions": {
+    "sourceType": "module",
+    "ecmaVersion": 2017
+  },
+  "rules": {
+    "linebreak-style": [
+      "error",
+      "unix"
+    ],
+    "quotes": [
+      "warn",
+      "single"
+    ],
+    "semi": [
+      "error",
+      "always"
+    ],
+    "no-undef": [
+      "error"
+    ],
+    "no-use-before-define": ["error", { "functions": false, "classes": true, "variables":true }],
+    "consistent-return": ["error"],
+    "default-case": ["error"],
+    "block-scoped-var": ["error"],
+    "no-eval":"error",
+    "no-else-return":"error",
+    "no-magic-numbers": ["error", { "ignore": [-1, 0, 1] }],
+    "no-sequences":"error",
+    "no-useless-return":"error",
+    "require-await":"error",
+    "callback-return":"error",
+    "global-require":"error",
+    "no-mixed-requires":"error",
+    "no-multiple-empty-lines":"error",
+    "no-multi-spaces":"error",
+    "no-unreachable":"error",
+    "no-unexpected-multiline":"error",
+    "no-extra-semi":"error",
+    "arrow-body-style":"error",
+    "no-confusing-arrow":"error",
+    "no-const-assign":"error",
+    "no-var":"error",
+    "no-console":"off",
+    "no-mixed-spaces-and-tabs": "off"
+  }
+}

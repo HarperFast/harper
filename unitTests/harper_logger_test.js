@@ -49,9 +49,7 @@ function printLogs() {
 
 function zeroizeOutputFile() {
     if(ZEROIZE_OUTPUT_FILE) {
-        fs.truncate(output_file_name, 0, function () {
-            //no-op
-        });
+        fs.truncateSync(output_file_name, 0);
     }
 }
 
@@ -69,6 +67,7 @@ function log_something(level, done) {
             let start_index = data.indexOf(LOG_DELIMITER+level);
             let end_index = data.lastIndexOf(LOG_DELIMITER+level);
             let logged_message = data.slice(start_index, end_index);
+
             assert.notEqual(-1, end_index, 'last message delimiter not found');
             assert.notEqual(-1, start_index, 'first message delimiter not found');
             assert.ok(end_index > start_index);

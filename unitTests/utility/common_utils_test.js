@@ -172,3 +172,53 @@ describe(`Test isBoolean`, function(){
         assert.equal(cu.isBoolean(2>1), true);
     });
 });
+
+describe(`Test autoCast`, function(){
+    it(`Pass in null, expect null`, function(){
+        assert.equal(cu.autoCast(null), null);
+    });
+
+    it(`Pass in undefined, expect undefined`, function(){
+        assert.equal(cu.autoCast(undefined), undefined);
+    });
+
+    it(`Pass in empty string, expect empty string`, function(){
+        assert.equal(cu.autoCast(""), "");
+    });
+
+    it(`Pass in spaces, expect spaces`, function(){
+        assert.equal(cu.autoCast("   "), "   ");
+    });
+
+    it(`Pass in string of null, expect null`, function(){
+        assert.equal(cu.autoCast("null"), null);
+    });
+
+    it(`Pass in string of undefined, expect undefined`, function(){
+        assert.equal(cu.autoCast("undefined"), undefined);
+    });
+
+    it(`Pass in string of true, expect boolean true`, function(){
+        assert.equal(cu.autoCast("true"), true);
+    });
+
+    it(`Pass in string of 42, expect number 42`, function(){
+        assert.equal(cu.autoCast("42"), 42);
+    });
+
+    it(`Pass in string of 42.42, expect number 42.42`, function(){
+        assert.equal(cu.autoCast("42.42"), 42.42);
+    });
+
+    it(`Pass in string of number array, expect real array`, function(){
+        assert.deepEqual(cu.autoCast("[1,2,3]"), [1,2,3]);
+    });
+
+    it(`Pass in string surrounded by brackets, expect string surrounded by brackets`, function(){
+        assert.equal(cu.autoCast("[1 2 3]"), "[1 2 3]");
+    });
+
+    it(`Pass in string of json object, expect json object`, function(){
+        assert.deepEqual(cu.autoCast('{"id":1, "name":"test"}'), {"id":1, "name":"test"});
+    });
+});

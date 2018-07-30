@@ -174,6 +174,8 @@ function executeUpgrade(build) {
                     log.error(err);
                     return console.error(err);
                 });
+                countdown.stop();
+                console.log('HarperDB has been upgraded to ' + build.product_version);
             });
         });
     });

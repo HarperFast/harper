@@ -3,18 +3,21 @@
 const write = require('../data_layer/insert');
 const uuidv1 = require('uuid/v1');
 const search = require('../data_layer/search');
-const sql = require('../sqlTranslator/index').evaluateSQL;
+const sql = require('../sqlTranslator/index');
 const csv = require('../data_layer/csvBulkLoad');
 const schema = require('../data_layer/schema');
 const delete_ = require('../data_layer/delete');
 const user = require('../security/user');
 const role = require('../security/role');
 const read_log = require('../utility/logging/read_logs');
-const cluster_utilities = require('./clustering/cluster_utilities');
+const cluster_utilities = require('./clustering/clusterUtilities');
 const auth = require('../security/auth');
 const harper_logger = require('../utility/logging/harper_logger');
 const export_ = require('../data_layer/export');
 const op_auth = require('../utility/operation_authorization');
+const jobs = require('./jobs');
+const signal = require('../utility/signalling');
+const job_runner = require('./jobRunner');
 
 const UNAUTH_RESPONSE = 403;
 const UNAUTHORIZED_TEXT = 'You are not authorized to perform the operation specified';
@@ -31,8 +34,16 @@ module.exports = {
 
 function processLocalTransaction(req, res, operation_function, callback) {
     try {
-        if (req.body.operation !== 'read_log')
-            harper_logger.info(JSON.stringify(req.body));
+        if (req.body.operation !== 'read_log') {
+            if(harper_logger.log_level === harper_logger.INFO ||
+            harper_logger.log_level === harper_logger.DEBUG ||
+            harper_logger.log_level === harper_logger.TRACE) {
+                // Need to remove auth variables, but we don't want to create an object unless
+                // the logging is actually going to happen.
+                const { hdb_user, hdb_auth_header, ...clean_body } = req.body;
+                harper_logger.info(JSON.stringify(clean_body));
+            }
+        }
     } catch (e) {
         harper_logger.error(e);
         callback(e);
@@ -117,10 +128,7 @@ function proccessDelegatedTransaction(operation, operation_function, callback) {
         };
         global.delegate_callback_queue[payload.id] = callback;
         global.forks[f].send(payload);
-
     });
-
-
 }
 
 // TODO: This doesn't really need a callback, should simplify it to a return statement.
@@ -130,6 +138,7 @@ function chooseOperation(json, callback) {
         return nullOperation(json, callback);
     }
     let operation_function = nullOperation;
+    let job_operation_function = undefined;
 
     switch (json.operation) {
         case 'insert':
@@ -148,16 +157,19 @@ function chooseOperation(json, callback) {
             operation_function = search.search;
             break;
         case 'sql':
-            operation_function = sql;
+            operation_function = sql.evaluateSQL;
             break;
         case 'csv_data_load':
-            operation_function = csv.csvDataLoad;
+            operation_function = signalJob;
+            job_operation_function = csv.csvDataLoad;
             break;
         case 'csv_file_load':
-            operation_function = csv.csvFileLoad;
+            operation_function = signalJob;
+            job_operation_function = csv.csvFileLoad;
             break;
         case 'csv_url_load':
-            operation_function = csv.csvURLLoad;
+            operation_function = signalJob;
+            job_operation_function = csv.csvURLLoad;
             break;
         case 'create_schema':
             operation_function = schema.createSchema;
@@ -220,30 +232,89 @@ function chooseOperation(json, callback) {
             operation_function = cluster_utilities.addNode;
             break;
         case 'export_to_s3':
-            operation_function = export_.export_to_s3;
+            operation_function = signalJob;
+            job_operation_function = export_.export_to_s3;
             break;
         case 'delete_files_before':
-            operation_function = delete_.deleteFilesBefore;
+            operation_function = signalJob;
+            job_operation_function = delete_.deleteFilesBefore;
             break;
         case 'export_local':
-            operation_function = export_.export_local;
+            operation_function = signalJob;
+            job_operation_function = export_.export_local;
+			break;
+        case 'search_jobs_by_start_date':
+            operation_function = jobs.jobHandler;
+            break;
+        case 'get_job':
+            operation_function = jobs.jobHandler;
+            break;
+        case 'delete_job':
+            operation_function = jobs.jobHandler;
+            break;
+        case 'update_job':
+            operation_function = jobs.updateJob;
             break;
         default:
             break;
     }
-    // We need to do something different for sql operations as we don't want to parse
-    // the SQL command twice.
-    if(operation_function !== sql) {
-        if (op_auth.verifyPerms(json, operation_function) === false) {
-            harper_logger.error(UNAUTH_RESPONSE);
-            return callback(UNAUTH_RESPONSE, null);
+    // Here there is a SQL statement in either the operation or the search_operation (from jobs like export_local).  Need to check the perms
+    // on all affected tables/attributes.
+    try {
+        if (json.operation === 'sql' || (json.search_operation && json.search_operation.operation === 'sql')) {
+            let sql_statement = (json.operation === 'sql' ? json.sql : json.search_operation.sql);
+            let parsed_sql_object = sql.convertSQLToAST(sql_statement);
+            json.parsed_sql_object = parsed_sql_object;
+            if (!sql.checkASTPermissions(json, parsed_sql_object)) {
+                harper_logger.error(`${UNAUTH_RESPONSE} from operation ${json.search_operation}`);
+                return callback(UNAUTH_RESPONSE, null);
+            }
+        } else {
+            let function_to_check = (job_operation_function === undefined ? operation_function : job_operation_function);
+            let operation_json = ((json.search_operation) ? json.search_operation : json);
+            if (!operation_json.hdb_user) {
+                operation_json.hdb_user = json.hdb_user;
+            }
+            if (!op_auth.verifyPerms(operation_json, function_to_check)) {
+                harper_logger.error(`${UNAUTH_RESPONSE} from operation ${json.search_operation}`);
+                return callback(UNAUTH_RESPONSE, null);
+            }
         }
+    } catch (e) {
+        // This should catch all non auth related processing errors and return the message
+        return callback(e.message, null);
     }
-    callback(null, operation_function);
+    return callback(null, operation_function);
 }
 
 function nullOperation(json, callback) {
     callback('Invalid operation');
+}
+
+function signalJob(json, callback) {
+    let new_job_object = undefined;
+    jobs.addJob(json).then( (result) => {
+        new_job_object = result.createdJob;
+        let job_runner_message = new job_runner.RunnerMessage(new_job_object, json);
+        let job_signal_message = new signal.JobAddedSignalObject(new_job_object.id, job_runner_message);
+        if (process.send !== undefined) {
+            signal.signalJobAdded(job_signal_message);
+            // purposefully not waiting for a response as we want to callback immediately.
+        } else {
+            try {
+                job_runner.parseMessage(job_signal_message.runner_message);
+            } catch(e) {
+                harper_logger.error(`Got an error trying to run a job with message ${job_runner_message}. ${e}`);
+            }
+            // purposefully not waiting for a response as we want to callback immediately.
+        }
+
+        return callback(null, `Starting job with id ${new_job_object.id}`);
+    }).catch(function caughtError(err) {
+        let message = `There was an error adding a job: ${err}`;
+        harper_logger.error(message);
+        return callback(message, null);
+    });
 }
 
 function operationParameterValid(operation) {

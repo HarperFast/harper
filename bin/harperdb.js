@@ -1,12 +1,12 @@
-const harper_logger = require('../utility/logging/harper_logger');
-const run = require('./run'),
-    install = require('./install'),
-    stop = require('./stop'),
-    register = require('./register'),
-    version = require('./version'),
-    upgrade = require('./upgrade'),
-    fs = require('fs');
-
+const run = require('./run');
+const install = require('./install');
+const stop = require('./stop');
+const register = require('./register');
+const version = require('./version');
+const upgrade = require('./upgrade');
+const fs = require('fs');
+const logger = require('../utility/logging/harper_logger');
+    
 harperDBService();
 
 function harperDBService() {
@@ -15,11 +15,11 @@ function harperDBService() {
     if (currentDir_tokens[currentDir_tokens.length - 1] != 'bin') {
         return console.error('You must run harperdb from HDB_HOME/bin');
     }
-
+    
     let inBin = false;
     fs.readdir(process.cwd(), (err, files) => {
         if (err) {
-            return harper_logger.error(err);
+            return logger.error(err);
         }
 
         for (f in files) {
@@ -37,50 +37,33 @@ function harperDBService() {
         }
 
         let result = undefined;
-        try {
-            switch (service) {
-                case "run":
-                    result = run.run();
-                    break;
-                case "install":
-                    install.install();
-                    break;
-                case "register":
-                    register.register();
-                    break;
-                case "stop":
-                    stop.stop(function stopDone(err) {
-                        if(err) {
-                            console.err(err);
-                        }
-                    });
-                    break;
-                case "restart":
-                    stop.stop(function () {
-                        run.run();
-                    });
-                    break;
-                case "version":
-                    version.version();
-                    break;
-                case "upgrade":
-                    upgrade.upgrade();
-                    break;
-                default:
+        switch (service) {
+            case "run":
+                result = run.run();
+                break;
+            case "install":            
+                install.install();
+                break;
+            case "register":
+                register.register();
+                break;
+            case "stop":
+                stop.stop(function(){});
+                break;
+            case "restart":
+                stop.stop(function () {
                     run.run();
-                    break
-            }
-        } catch(e) {
-            console.error(e);
-            harper_logger.fatal(e);
+                });
+                break;
+            case "version":
+                version.version();
+                break;
+            case "upgrade":
+                upgrade.upgrade();
+                break;
+            default:
+                run.run();
+                break
         }
     });
 }
-
-process.on('uncaughtException', function (err) {
-    let os = require('os');
-    let message = `Found an uncaught exception with message: ${os.EOL} ${err.message}.  Stack: ${err.stack} ${os.EOL} Terminating HDB.`;
-    console.error(message);
-    harper_logger.fatal(message);
-    process.exit(1)
-});

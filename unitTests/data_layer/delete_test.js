@@ -349,10 +349,6 @@ function tearDown(target_path) {
 
 
 describe('Test deleteFilesBefore', function () {
-    // deleteFilesBefore returns immediately, so for each test we need to use setTimeout to give it time to complete.
-    // deleteFilesBefore is a callback style method in order to remain consistent with other functions
-    // called from chooseOperation so we want to test it as it will be used.  That means no promisifying
-    // involved even though that would be easier.
     let delete_search_result = [];
     let test_data_instance = undefined;
         beforeEach(function () {
@@ -373,8 +369,7 @@ describe('Test deleteFilesBefore', function () {
             console.error(e);
         }
     });
-    it('deleteFilesBefore with yesterday as a time stamp', function (done) {
-        // Read the describe level comments regarding the wonkiness of these tests.
+    it('deleteFilesBefore with yesterday as a time stamp, expect no files removed', async function () {
         delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
         let request = test_utils.deepClone(TEST_DELETE_BEFORE_REQUEST);
         request.date = YESTERDAY_TIME.format(ISO_8601_FORMAT);
@@ -382,18 +377,17 @@ describe('Test deleteFilesBefore', function () {
         delete_search_result.push(TEST_DATA[0]);
         search_stub.restore();
         search_stub = sinon.stub(search, "searchByHash").yields(null, delete_search_result);
-        delete_rewire.deleteFilesBefore(request, function del(err, msg) {
+        try {
+            await delete_rewire.deleteFilesBefore(request);
             let files_to_check = [...test_data_instance[0].file_paths];
-            setTimeout( () => {
-                for(let i = 0; i < files_to_check.length; i++) {
-                    assert.equal(fs.existsSync(files_to_check[i]), true, `FAILURE: file ${files_to_check[i]} does not exist.`);
-                }
-                done();
-            }, TIMEOUT_VALUE_MS);
-        });
+            for(let i = 0; i < files_to_check.length; i++) {
+                assert.equal(fs.existsSync(files_to_check[i]), true, `FAILURE: file ${files_to_check[i]} does not exist.`);
+            }
+        } catch(e) {
+            throw e;
+        }
     });
-    it('Nominal path of deleteFilesBefore with 1 directory', function (done) {
-        // Read the describe level comments regarding the wonkiness of these tests.
+    it('Nominal path of deleteFilesBefore with 1 directory', async function () {
         delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
         let request = test_utils.deepClone(TEST_DELETE_BEFORE_REQUEST);
         request.table = TEST_TABLE_CAT;
@@ -402,18 +396,17 @@ describe('Test deleteFilesBefore', function () {
         delete_search_result.push(TEST_DATA[2]);
         search_stub.restore();
         search_stub = sinon.stub(search, "searchByHash").yields(null, delete_search_result);
-        delete_rewire.deleteFilesBefore(request, function del(err, msg) {
-            let files_to_check = [...test_data_instance[2].file_paths];
-            setTimeout( () => {
-                for(let i = 0; i < files_to_check.length; i++) {
-                    assert.equal(fs.existsSync(files_to_check[i]), false, `FAILURE: file ${files_to_check[i]} still exists.`);
-                }
-                done();
-            }, TIMEOUT_VALUE_MS);
-        });
+        try {
+            await delete_rewire.deleteFilesBefore(request);
+            let files_to_check =[...test_data_instance[2].file_paths];
+            for(let i = 0; i < files_to_check.length; i++) {
+                assert.equal(fs.existsSync(files_to_check[i]), false, `FAILURE: file ${files_to_check[i]} exists but shouldnt.`);
+            }
+        } catch(e) {
+            throw e;
+        }
     });
-    it('Nominal path of deleteFilesBefore on the dog table', function (done) {
-        // Read the describe level comments regarding the wonkiness of these tests.
+    it('Nominal path of deleteFilesBefore on the dog table', async function () {
         delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
         let request = test_utils.deepClone(TEST_DELETE_BEFORE_REQUEST);
         request.date = TOMORROW_TIME.format(ISO_8601_FORMAT);
@@ -422,61 +415,55 @@ describe('Test deleteFilesBefore', function () {
         delete_search_result.push(TEST_DATA[1]);
         search_stub.restore();
         search_stub = sinon.stub(search, "searchByHash").yields(null, delete_search_result);
-        delete_rewire.deleteFilesBefore(request, function del(err, msg) {
+
+        try {
+            await delete_rewire.deleteFilesBefore(request);
             let files_to_check = [...test_data_instance[0].file_paths, ...test_data_instance[1].file_paths];
-            setTimeout( () => {
-                for(let i = 0; i < files_to_check.length; i++) {
-                    assert.equal(fs.existsSync(files_to_check[i]), false, `FAILURE: file ${files_to_check[i]} still exists.`);
-                }
-                done();
-            }, TIMEOUT_VALUE_MS);
-        });
+            for(let i = 0; i < files_to_check.length; i++) {
+                assert.equal(fs.existsSync(files_to_check[i]), false, `FAILURE: file ${files_to_check[i]} exists but shouldnt.`);
+            }
+        } catch(e) {
+            throw e;
+        }
     });
-    it('Call deleteFilesBefore with null date', function (done) {
-        // Read the describe level comments regarding the wonkiness of these tests.
+    it('Call deleteFilesBefore with null date', async function () {
         delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
         let request = test_utils.deepClone(TEST_DELETE_BEFORE_REQUEST);
         request.date = null;
-        delete_rewire.deleteFilesBefore(request, function del(err, msg) {
-            try {
-                assert.equal(err.message, 'Invalid date.');
-                done();
-            } catch(e) {
-                done(e);
-            }
-        });
+        let err = undefined;
+        try {
+            await delete_rewire.deleteFilesBefore(request);
+        } catch(e) {
+            err = e;
+        }
+        assert.equal(err.message, 'Invalid date.');
     });
 
-    it(`Call deleteFileBefore with null schema`, function(done) {
-        // Read the describe level comments regarding the wonkiness of these tests.
+    it(`Call deleteFileBefore with null schema`, async function() {
         let request = test_utils.deepClone(TEST_DELETE_BEFORE_REQUEST);
         request.schema = null;
-        delete_rewire.deleteFilesBefore(request, function del(err, msg) {
-            try {
-                assert.equal(err.message, "Invalid schema.");
-                done();
-            } catch(e) {
-                done(e);
-            }
-        });
+        let err = undefined;
+        try {
+            await delete_rewire.deleteFilesBefore(request);
+        } catch(e) {
+            err = e;
+        }
+        assert.equal(err.message, "Invalid schema.");
     });
 
-    it(`Call deleteFileBefore with null table`, function(done) {
-        // Read the describe level comments regarding the wonkiness of these tests.
+    it(`Call deleteFileBefore with null table`, async function() {
         let request = test_utils.deepClone(TEST_DELETE_BEFORE_REQUEST);
         request.table = null;
-        delete_rewire.deleteFilesBefore(request, function del(err, msg) {
-            try {
-                assert.equal(err.message, "Invalid table.");
-                done();
-            } catch(e) {
-                done(e);
-            }
-        });
+        let err = undefined;
+        try {
+            await delete_rewire.deleteFilesBefore(request);
+        } catch(e) {
+            err = e;
+        }
+        assert.equal(err.message, "Invalid table.");
     });
 
-    it('Call deleteFilesBefore with valid date strings, nothing removed', function(done) {
-        // Read the describe level comments regarding the wonkiness of these tests.
+    it('Call deleteFilesBefore with valid date strings, nothing removed', async function() {
         delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
         let request = test_utils.deepClone(TEST_DELETE_BEFORE_REQUEST);
         request.date = '2011-01-11';
@@ -485,19 +472,19 @@ describe('Test deleteFilesBefore', function () {
         delete_search_result.push(TEST_DATA[1]);
         search_stub.restore();
         search_stub = sinon.stub(search, "searchByHash").yields(null, delete_search_result);
-        delete_rewire.deleteFilesBefore(request, function del(err, msg) {
+
+        try {
+            await delete_rewire.deleteFilesBefore(request);
             let files_to_check = [...test_data_instance[0].file_paths, ...test_data_instance[1].file_paths];
-            setTimeout( () => {
-                for(let i = 0; i < files_to_check.length; i++) {
-                    assert.equal(fs.existsSync(files_to_check[i]), true, `FAILURE: file ${files_to_check[i]} does not exist.`);
-                }
-                done();
-            }, TIMEOUT_VALUE_MS);
-        });
+            for(let i = 0; i < files_to_check.length; i++) {
+                assert.equal(fs.existsSync(files_to_check[i]), true, `FAILURE: file ${files_to_check[i]} was deleted.`);
+            }
+        } catch(e) {
+            throw e;
+        }
     });
     // Test date with Times included
-    it('Call with valid date/time, nothing removed', function(done) {
-        // Read the describe level comments regarding the wonkiness of these tests.
+    it('Call with valid date/time, nothing removed', async function() {
         delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
         let request = test_utils.deepClone(TEST_DELETE_BEFORE_REQUEST);
         request.date = '2011-01-11T17:45:55+00:00';
@@ -506,33 +493,32 @@ describe('Test deleteFilesBefore', function () {
         delete_search_result.push(TEST_DATA[1]);
         search_stub.restore();
         search_stub = sinon.stub(search, "searchByHash").yields(null, delete_search_result);
-        delete_rewire.deleteFilesBefore(request, function del(err, msg) {
+
+        try {
+            await delete_rewire.deleteFilesBefore(request);
             let files_to_check = [...test_data_instance[0].file_paths, ...test_data_instance[1].file_paths];
-            setTimeout( () => {
-                for(let i = 0; i < files_to_check.length; i++) {
-                    assert.equal(fs.existsSync(files_to_check[i]), true, `FAILURE: file ${files_to_check[i]} does not exist.`);
-                }
-                done();
-            }, TIMEOUT_VALUE_MS);
-        });
+            for(let i = 0; i < files_to_check.length; i++) {
+                assert.equal(fs.existsSync(files_to_check[i]), true, `FAILURE: file ${files_to_check[i]} was deleted.`);
+            }
+        } catch(e) {
+            throw e;
+        }
     });
     // Test leap year silliness
-    it('Call with invalid leap year', function(done) {
-        // Read the describe level comments regarding the wonkiness of these tests.
+    it('Call with invalid leap year', async function() {
         let request = test_utils.deepClone(TEST_DELETE_BEFORE_REQUEST);
         request.date = '2011-02-29';
-        delete_rewire.deleteFilesBefore(request, function del(err, msg) {
-            try {
-                assert.equal(err.message, 'Invalid date, must be in ISO-8601 format.');
-                done();
-            } catch(e) {
-                done(e);
-            }
-        });
+
+        let err = undefined;
+        try {
+            await delete_rewire.deleteFilesBefore(request);
+        } catch(e) {
+            err = e;
+        }
+        assert.equal(err.message, 'Invalid date, must be in ISO-8601 format (YYYY-MM-DD).');
     });
     //Test Epoc
-    it('Call with Epoc', function(done) {
-        // Read the describe level comments regarding the wonkiness of these tests.
+    it('Call with Epoc', async function() {
         delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
         let request = test_utils.deepClone(TEST_DELETE_BEFORE_REQUEST);
         request.date = '1969-01-01';
@@ -541,15 +527,16 @@ describe('Test deleteFilesBefore', function () {
         delete_search_result.push(TEST_DATA[1]);
         search_stub.restore();
         search_stub = sinon.stub(search, "searchByHash").yields(null, delete_search_result);
-        delete_rewire.deleteFilesBefore(request, function del(err, msg) {
+
+        try {
+            await delete_rewire.deleteFilesBefore(request);
             let files_to_check = [...test_data_instance[0].file_paths, ...test_data_instance[1].file_paths];
-            setTimeout( () => {
-                for(let i = 0; i < files_to_check.length; i++) {
-                    assert.equal(fs.existsSync(files_to_check[i]), true, `FAILURE: file ${files_to_check[i]} does not exist.`);
-                }
-                done();
-            }, TIMEOUT_VALUE_MS);
-        });
+            for(let i = 0; i < files_to_check.length; i++) {
+                assert.equal(fs.existsSync(files_to_check[i]), true, `FAILURE: file ${files_to_check[i]} exists but shouldnt.`);
+            }
+        } catch(e) {
+            throw e;
+        }
     });
 });
 
@@ -876,8 +863,8 @@ describe('Test removeFiles', function() {
         delete_search_result.push(TEST_DATA[0], TEST_DATA[1]);
         search_stub.restore();
         search_stub = sinon.stub(search, "searchByHash").yields(null, delete_search_result);
-        let entry_1_id_path = path.join(TEST_TABLE_DOG_PATH, HASH_ATTRIBUTE_NAME, test_data_instance[0].id);
-        let entry_2_id_path = path.join(TEST_TABLE_DOG_PATH, HASH_ATTRIBUTE_NAME, test_data_instance[1].id);
+        let entry_1_id_path = test_data_instance[0].id;
+        let entry_2_id_path = test_data_instance[1].id;
         let id_files_to_remove = [];
         id_files_to_remove.push(entry_1_id_path);
         id_files_to_remove.push(entry_2_id_path);
@@ -944,7 +931,8 @@ describe('Test removeIDFiles', function() {
     });
     it('Nominal path of removeIDFiles against dog table.', test_utils.mochaAsyncWrapper(async () => {
         let journal_files = [...test_values[0].journal_paths, ...test_values[1].journal_paths];
-        await removeIDFiles(TEST_SCHEMA, TEST_TABLE_DOG, journal_files);
+        let ids = test_values.map(a => a.id);
+        await removeIDFiles(TEST_SCHEMA, TEST_TABLE_DOG, HASH_ATTRIBUTE_NAME, ids);
         await p_set_timeout(TIMEOUT_VALUE_MS)
             .catch(e => {
                 console.error(e);

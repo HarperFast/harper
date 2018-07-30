@@ -15,7 +15,7 @@ const { promisify } = require('util');
 
 let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
 hdb_properties.append(hdb_properties.get('settings_path'));
-const slash_regex =  /\//g;
+const slash_regex = /\//g;
 const BASE_PATH = common_utils.buildFolderPath(hdb_properties.get('HDB_ROOT'), "schema");
 const HDB_HASH_FOLDER_NAME = '__hdb_hash';
 const BLOB_FOLDER_NAME = 'blob';
@@ -48,33 +48,30 @@ module.exports = {
  * @param json_body - the request passed from chooseOperation.
  * @param callback
  */
-function deleteFilesBefore(json_body, callback) {
+async function deleteFilesBefore(json_body) {
 
     if(common_utils.isEmptyOrZeroLength(json_body.date)) {
-        return callback(common_utils.errorizeMessage("Invalid date."), null);
+        throw new Error("Invalid date.");
     }
     let parsed_date = moment(json_body.date, moment.ISO_8601);
     if(!parsed_date.isValid()) {
-        return callback(common_utils.errorizeMessage("Invalid date, must be in ISO-8601 format (YYYY-MM-DD)."));
+        throw new Error("Invalid date, must be in ISO-8601 format (YYYY-MM-DD).");
     }
     if(common_utils.isEmptyOrZeroLength(json_body.schema)) {
-        return callback(common_utils.errorizeMessage("Invalid schema."), null);
+        throw new Error("Invalid schema.");
     }
     let schema = json_body.schema;
     if(common_utils.isEmptyOrZeroLength(json_body.table)) {
-        return callback(common_utils.errorizeMessage("Invalid table."), null);
+        throw new Error("Invalid table.");
     }
     let table = json_body.table;
-
     let dir_path = common_utils.buildFolderPath(BASE_PATH, schema, table);
-    let deleted_file_count = 0;
 
-    callback(null, `Deleting all files before ${json_body.date}, this may take some time.  Note this operation will not propagate deletions to the cluster.`);
-    deleteFilesInPath(schema, table, dir_path, parsed_date).then( () => {
-        harper_logger.info(`Finished deleting files before ${json_body.date}`);
-    }).catch(function caughtError(err) {
+    await deleteFilesInPath(schema, table, dir_path, parsed_date).catch(function caughtError(err) {
         harper_logger.error(`There was an error deleting files by date: ${err}`);
+        throw new Error(`There was an error deleting files by date: ${err}`);
     });
+    harper_logger.info(`Finished deleting files before ${json_body.date}`);
 }
 
 /**
@@ -159,18 +156,18 @@ async function doesDirectoryExist(dir_path) {
  * @param schema - The schema to remove files in .
  * @param table - The table to remove files in.
  * @param hash_attribute - The hash attribute of the table.
- * @param hashes_to_remove - Array that contains the path to the IDs of the records that should be remove in the schema/table.
+ * @param ids_to_remove - Array that contains the IDs of the records that should be removed in the schema/table.
  */
-async function removeFiles(schema, table, hash_attribute, hashes_to_remove) {
+async function removeFiles(schema, table, hash_attribute, ids_to_remove) {
     let records_to_remove = {"operation": "delete",
         "table": `${table}`,
         "schema": `${schema}`,
-        "hash_values": hashes_to_remove
+        "hash_values": ids_to_remove
     };
 
     try {
         await p_delete_record(records_to_remove);
-        await removeIDFiles(schema, table, hashes_to_remove);
+        await removeIDFiles(schema, table, hash_attribute, ids_to_remove);
     } catch (e) {
         harper_logger.info(`There was a problem deleting records: ${e}`);
         return common_utils.errorizeMessage(e);
@@ -178,14 +175,14 @@ async function removeFiles(schema, table, hash_attribute, hashes_to_remove) {
 }
 
 /**
- * Removes all id files specified in the hash_id_paths parameter.  The remove workflow leaves these files as part of
+ * Removes all id files specified in the hash_ids parameter.  The remove workflow leaves these files as part of
  * the journal.  Time To Live requires us to remove these files.
  * @param schema - The schema to remove the files from.
  * @param table - The table to remove the files from.
- * @param hash_id_paths - An array containing the full path to hash directories that need to be removed.
+ * @param hash_ids - An array containing the ids for hash directories that need to be removed.
  * @returns {Promise<void>}
  */
-async function removeIDFiles(schema, table, hash_id_paths) {
+async function removeIDFiles(schema, table, hash_attribute, hash_ids) {
     if(common_utils.isEmptyOrZeroLength(schema) || schema === SYSTEM_SCHEMA_NAME) {
         harper_logger.info(`Invalid schema name.`);
         return;
@@ -194,13 +191,14 @@ async function removeIDFiles(schema, table, hash_id_paths) {
         harper_logger.info(`Invalid table name.`);
         return;
     }
-    if(common_utils.isEmptyOrZeroLength(hash_id_paths)) {
+    if(common_utils.isEmptyOrZeroLength(hash_ids)) {
         return;
     }
-    for(let i = 0; i<hash_id_paths.length; i++) {
-        let curr_id_path = hash_id_paths[i];
+    for(let i = 0; i<hash_ids.length; i++) {
+        let curr_id_path = undefined;
         let files_in_dir = [];
         try {
+            curr_id_path = path.join(BASE_PATH, schema, table, hash_attribute, hash_ids[i]);
             files_in_dir = await p_fs_readdir(curr_id_path);
         } catch(e) {
             harper_logger.error(`There was a problem reading dir ${curr_id_path}.  ${e}`);
@@ -277,7 +275,10 @@ async function inspectHashAttributeDir(date_unix_ms, dir_path, hash_attributes_t
             }
         }
         if(!common_utils.isEmptyOrZeroLength(latest_file) && isFileTimeBeforeParameterTime(date_unix_ms, latest_file)) {
-            hash_attributes_to_remove.push(found_dirs[curr_dir]);
+            // The ID of the record should be the last /<TEXT> part of the path.  Pull the ID and remove the file.
+            let dir_path = (found_dirs[curr_dir]);
+            let id = dir_path.substring(dir_path.lastIndexOf('/')+1, dir_path.length);
+            hash_attributes_to_remove.push(id);
         }
     }
 }

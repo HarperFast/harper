@@ -3,8 +3,7 @@
 const insert = require('../data_layer/insert.js'),
     first_names = require('./data/firstNames'),
     last_names = require('./data/lastNames'),
-    randomstring = require('randomstring'),
-    winston = require('../utility/logging/winston_logger');
+    randomstring = require('randomstring');
 
 
 const record_size  = 10000;

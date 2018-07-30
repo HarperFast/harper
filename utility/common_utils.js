@@ -1,5 +1,6 @@
 "use strict"
 const path = require('path');
+const cast = require('autocast');
 const EMPTY_STRING = '';
 module.exports = {
     isEmpty:isEmpty,
@@ -9,7 +10,8 @@ module.exports = {
     buildFolderPath: buildFolderPath,
     isBoolean: isBoolean,
     errorizeMessage: errorizeMessage,
-    stripFileExtension: stripFileExtension
+    stripFileExtension: stripFileExtension,
+    autoCast: autoCast
 };
 
 /**
@@ -117,4 +119,29 @@ function stripFileExtension(file_name) {
         return EMPTY_STRING;
     }
     return file_name.substr(0, file_name.length-4);
+}
+
+/**
+ * Takes a raw string value and casts it to the correct data type, including Object & Array, but not Dates
+ * @param data
+ * @returns
+ */
+function autoCast(data){
+    if(isEmpty(data)){
+        return data;
+    }
+
+    let value = cast(data);
+
+    //in order to handle json and arrays we test the string to see if it seems minimally like an object or array and perform a JSON.parse on it.
+    //if it fails we assume it is just a regular string
+    if(typeof value === 'string'){
+        if((value.startsWith('{') && value.endsWith('}')) || (value.startsWith('[') && value.endsWith(']'))){
+            try{
+                value = JSON.parse(value);
+            }catch(e){
+            }
+        }
+    }
+    return value;
 }

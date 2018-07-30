@@ -1,6 +1,7 @@
 const installer = require('../utility/install/installer');
+const logger = require('../utility/logging/harper_logger');
 
-function install (callback) {
+function install (callback) {    
     installer.install(function(err) {
         if(err) {
             if(err === 'REFUSED') {
@@ -8,7 +9,7 @@ function install (callback) {
                 return callback(err, null);
             }
             console.log("There was an error during the install.  Please check the install logs. \n ERROR: " + err);
-            winston.error(err)
+            logger.error(err)
             return callback(err);
         }
         callback(null, "Installation successful");

@@ -1,9 +1,7 @@
-const condition_parser = require('./conditionParser'),
-    deleter = require('../data_layer/delete'),
-    alasql = require('alasql'),
-    async = require('async'),
-    search = require('../data_layer/search'),
-    _delete = require('../data_layer/delete');
+const alasql = require('alasql');
+const async = require('async');
+const search = require('../data_layer/search');
+const _delete = require('../data_layer/delete');
 
 const SUCCESS_MESSAGE = 'records successfully deleted';
 

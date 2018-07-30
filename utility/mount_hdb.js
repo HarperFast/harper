@@ -93,6 +93,7 @@ async function mountDirectives(hdb_path, callback) {
     makeDirectory(path.join(hdb_path, "schema/system/hdb_role"));
     makeDirectory(path.join(hdb_path, "schema/system/hdb_queue"));
     makeDirectory(path.join(hdb_path, "schema/system/hdb_nodes"));
+    makeDirectory(path.join(hdb_path, "schema/system/hdb_job"));
     callback(null, 'complete');
     */
 };

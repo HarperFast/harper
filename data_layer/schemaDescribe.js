@@ -2,7 +2,7 @@
 
 const async = require('async'),
     search = require('./search'),
-    winston = require('../utility/logging/winston_logger'),
+    logger = require('../utility/logging/harper_logger'),
     validator = require('../validation/schema_validator'),
     _ = require('lodash');
 
@@ -36,7 +36,7 @@ module.exports = {
                 table_search_obj.get_attributes = ['hash_attribute', 'id', 'name', 'schema'];
                 search.searchByValue(table_search_obj, function (err, tables) {
                     if (err) {
-                        winston.error(err);
+                        logger.error(err);
                         //initialize();
                         return;
                     }
@@ -110,7 +110,7 @@ module.exports = {
         let table_result = {};
         search.searchByValue(table_search_obj, function (err, tables) {
             if (err) {
-                winston.error(err);
+                logger.error(err);
                 callback(err);
                 return;
             }
@@ -125,7 +125,7 @@ module.exports = {
 
                 search.searchByHash(schema_search_obj, function (err, schema) {
                     if (err) {
-                        winston.error(err);
+                        logger.error(err);
                         callback(err);
                         return;
                     }
@@ -190,7 +190,7 @@ function descTable(describe_table_object, callback) {
             let table_result = {};
             search.searchByValue(table_search_obj, function (err, tables) {
                 if (err) {
-                    winston.error(err);
+                    logger.error(err);
                     return;
                 }
 
@@ -221,7 +221,7 @@ function descTable(describe_table_object, callback) {
 
                     search.searchByValue(attribute_search_obj, function (err, attributes) {
                         if (err) {
-                            winston.error(err);
+                            logger.error(err);
                             //initialize();
                             return;
                         }

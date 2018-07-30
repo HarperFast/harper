@@ -3,7 +3,7 @@ const fs = require('fs.extra')
     , async = require('async')
     , validation = require('../validation/schema_validator.js')
     , search = require('./search.js')
-    , winston = require('../utility/logging/winston_logger')
+    , logger = require('../utility/logging/harper_logger')
     , uuidV4 = require('uuid/v4')
     , delete_ = require('../data_layer/delete')
     //this is to avoid a circular dependency with insert.
@@ -48,7 +48,7 @@ function createSchema(schema_create_object, callback) {
             }
 
             signalling.signalSchemaChange({type: 'schema'});
-            addAndRemoveFromQueue(schema_create_object, success, callback);
+            return callback(null, success);
         });
     } catch (e) {
         callback(e);
@@ -115,7 +115,7 @@ function createTable(create_table_object, callback) {
             }
 
             signalling.signalSchemaChange({type: 'schema'});
-            addAndRemoveFromQueue(create_table_object, success, callback);
+            return callback(null, success);
         });
     } catch (e) {
         callback(e);
@@ -171,7 +171,7 @@ function createTableStructure(create_table_object, callback) {
 
                 search.searchByHash(search_obj, function(err, data){
                    if(err){
-                      winston.error(err);
+                      logger.error(err);
                       return callback(err)
                    }
                     let residence_nodes = [hdb_properties.get('NODE_NAME')];
@@ -271,14 +271,14 @@ function moveSchemaStructureToTrash(drop_schema_object, callback) {
             function(err, data) {
                 if( err) {
                     console.error(`There was a problem deleting ${schema}.  Please check the logs for more info`);
-                    winston.error(err);
+                    logger.error(err);
                     return callback(err);
                 } else {
                     callback(null, `successfully deleted schema ${schema}`);
                 }
             });
     } catch (e) {
-        winston.error(e);
+        logger.error(e);
         return callback(e);
     }
 }
@@ -313,7 +313,7 @@ function moveTableStructureToTrash(drop_table_object, callback) {
         ], function(err, result) {
             if( err) {
                 console.error(`There was a problem deleting ${schema}.  Please check the logs for more info`);
-                winston.error(err);
+                logger.error(err);
                 return callback(err);
             } else {
                 callback(null, result);
@@ -334,10 +334,10 @@ function dropSchema(drop_schema_object, callback) {
             signalling.signalSchemaChange({type: 'schema'});
 
             delete global.hdb_schema[drop_schema_object.schema];
-            addAndRemoveFromQueue(drop_schema_object, success, callback);
+            return callback(null, success);
         });
     } catch (e) {
-        winston.error(e);
+        logger.error(e);
         return callback(e);
     }
 }
@@ -351,7 +351,7 @@ function dropTable(drop_table_object, callback) {
             }
 
             signalling.signalSchemaChange({type: 'schema'});
-            addAndRemoveFromQueue(drop_table_object, success, callback);
+            return callback(null, success);
         });
     } catch (e) {
         callback(e);
@@ -370,7 +370,7 @@ function dropAttribute(drop_attribute_object, callback) {
                 callback(err);
                 return;
             }
-            addAndRemoveFromQueue(drop_attribute_object, success, callback);
+            return callback(null, success);
         });
     } catch (e) {
         callback(e);
@@ -617,10 +617,10 @@ function createAttributeStructure(create_attribute_object, callback) {
                 hash_attribute: 'id',
                 records: [record]
             };
-            winston.info("insert object:" + JSON.stringify(insertObject));
+            logger.info("insert object:" + JSON.stringify(insertObject));
             insert.insert(insertObject, function (err, result) {
-                winston.info('attribute:' + record.attribute);
-                winston.info(result);
+                logger.info('attribute:' + record.attribute);
+                logger.info(result);
                 callback(err, result);
             });
 
@@ -695,20 +695,21 @@ function createAttribute(create_attribute_object, callback) {
                 create_attribute_object.operation = 'create_attribute';
                 create_attribute_object.id = success.id;
 
-                process.send({
+                let payload = {
                     "type": "clustering_payload", "pid": process.pid,
                     "clustering_type": "broadcast",
                     "id": success.id,
                     "body": create_attribute_object
-                });
+                };
 
-
-
-
+                if(process.send === undefined){
+                    logger.debug('trying to send payload: ' + JSON.stringify(payload) + ' but there is no process.send for pid ');
+                } else {
+                    process.send(payload);
+                }
 
                 signalling.signalSchemaChange({type: 'schema'});
-                addAndRemoveFromQueue(create_attribute_object, success, callback);
-                return callback();
+                return callback(null, success);
 
             });
 
@@ -721,8 +722,7 @@ function createAttribute(create_attribute_object, callback) {
                 }
 
                 signalling.signalSchemaChange({type: 'schema'});
-                addAndRemoveFromQueue(create_attribute_object, success, callback);
-
+                return callback(null, success);
             });
         }
 
@@ -731,20 +731,4 @@ function createAttribute(create_attribute_object, callback) {
     } catch (e) {
         callback(e);
     }
-}
-
-function addAndRemoveFromQueue(ops_object, success_message, callback) {
-    schema_ops.addToQueue(ops_object, function (err, id) {
-        if (err) {
-            callback(err);
-            return;
-        }
-        schema_ops.addToQueue(id, function (err) {
-            if (err) {
-                callback(err);
-                return;
-            }
-            callback(null, success_message);
-        });
-    });
 }
