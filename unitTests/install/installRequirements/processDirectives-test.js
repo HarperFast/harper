@@ -1,4 +1,4 @@
-"use strict";
+'use strict';
 const path = require('path');
 const test_util = require('../../test_utils');
 
@@ -25,14 +25,14 @@ describe('Test compareVersions', function() {
         new upgrade_directive('1.1.0'),
         new upgrade_directive('1.2.1'),
         new upgrade_directive('2.1.5')
-    ]
+    ];
     it('test matching lowest version number, should include 3 later versions', function() {
         let oldVersion = '1.1.0';
         let filtered_versions = versions.sort(compareVersions).filter( function(curr_version) {
             return curr_version.version > oldVersion;
         });
         assert.equal(filtered_versions.length, 3, `expected 3 version numbers, found ${filtered_versions.length}`);
-        assert.equal(filtered_versions.indexOf(oldVersion), -1, "old version was not filtered out.")
+        assert.equal(filtered_versions.indexOf(oldVersion), -1, 'old version was not filtered out.');
     });
 
     it('test with greater version number, expect 0 returned.', function() {
@@ -41,7 +41,7 @@ describe('Test compareVersions', function() {
             return curr_version.version > oldVersion;
         });
         assert.equal(filtered_versions.length, 0, `expected 0 version numbers, found ${filtered_versions.length}`);
-        assert.equal(filtered_versions.indexOf(oldVersion), -1, "old version was not filtered out.")
+        assert.equal(filtered_versions.indexOf(oldVersion), -1, 'old version was not filtered out.');
     });
     it('test with smaller version number, expect 4 returned.', function() {
         let oldVersion = '0.0.1';
@@ -49,7 +49,7 @@ describe('Test compareVersions', function() {
             return curr_version.version > oldVersion;
         });
         assert.equal(filtered_versions.length, 4, `expected 4 version numbers, found ${filtered_versions.length}`);
-        assert.equal(filtered_versions.indexOf(oldVersion), -1, "old version was not found.")
+        assert.equal(filtered_versions.indexOf(oldVersion), -1, 'old version was not found.');
     });
     it('test with middle version number, expect 1 returned.', function() {
         let oldVersion = '1.2.1';
@@ -57,7 +57,7 @@ describe('Test compareVersions', function() {
             return curr_version.version > oldVersion;
         });
         assert.equal(filtered_versions.length, 1, `expected 1 version numbers, found ${filtered_versions.length}`);
-        assert.equal(filtered_versions.indexOf(oldVersion), -1, "old version was not found.")
+        assert.equal(filtered_versions.indexOf(oldVersion), -1, 'old version was not found.');
     });
 });
 
@@ -80,10 +80,13 @@ describe('test readDirectiveFiles', function() {
 
 describe('test createDirectories', function() {
     let createDirectories = process_directive_rw.__get__('createDirectories');
+    let ver1_1_module = undefined;
     process_directive_rw.__set__('settings_file_path', BASE + '/testsettings.js');
     beforeEach( function() {
         try {
+            let mod_path = path.join(process.cwd(), '../unitTests/install/installRequirements/testDirectives/1-1-0');
             process_directive_rw.__set__('hdb_base', BASE + '/processDirectivesTest/');
+            ver1_1_module = require(mod_path);
         } catch(e) {
             console.error(e);
         }
@@ -97,13 +100,19 @@ describe('test createDirectories', function() {
             console.error(e);
         }
     });
-
+    after( function() {
+        try {
+            fs.unlinkSync(BASE + '/testsettings.js');
+        } catch(e) {
+            //no-op
+        }
+    });
     it('test creating 3 directories', test_util.mochaAsyncWrapper(async () => {
 
         let dirs_to_create = [
-            DIR_PATH_BASE,
-            DIR_PATH_BASE + 'test1',
-            DIR_PATH_BASE + 'test2'
+            'test0',
+            'test1',
+            'test2'
         ];
         await createDirectories(dirs_to_create);
         assert.equal(fs.existsSync(DIR_PATH_BASE), true);
@@ -121,27 +130,26 @@ describe('test updateEnvironmentVariable', function() {
     let updateEnvironmentVariable = process_directive_rw.__get__('updateEnvironmentVariable');
     let props_value = process_directive_rw.__get__('hdb_properties');
     it('test adding new variable', test_util.mochaAsyncWrapper(async () => {
-        let new_var = new env_variable("TEST_VAR", "big_test", null);
+        let new_var = new env_variable('TEST_VAR', 'big_test', null);
         await updateEnvironmentVariable([new_var]);
         let new_props = process_directive_rw.__get__('hdb_properties');
-        assert.equal(new_props.get("TEST_VAR") === 'big_test', true);
+        assert.equal(new_props.get('TEST_VAR') === 'big_test', true);
     }));
     it('test updating existing with new value', test_util.mochaAsyncWrapper(async () => {
-        let update_var = new env_variable("HTTP_PORT", "12345", null);
+        let update_var = new env_variable('HTTP_PORT', '12345', null);
         update_var.force_value_update = true;
         await updateEnvironmentVariable([update_var]);
         let new_props = process_directive_rw.__get__('hdb_properties');
-        assert.equal(new_props.get("HTTP_PORT"),'12345', true);
+        assert.equal(new_props.get('HTTP_PORT'),'12345', true);
     }));
     it('test updating comments', test_util.mochaAsyncWrapper(async () => {
-        let update_var = new env_variable("HTTP_PORT", "12345", null);
+        let update_var = new env_variable('HTTP_PORT', '12345', null);
         update_var.comments = ['test'];
         await updateEnvironmentVariable([update_var]);
         let comments = process_directive_rw.__get__('comments');
-        assert.equal(comments["HTTP_PORT"].length,1, true);
+        assert.equal(comments['HTTP_PORT'].length,1, true);
     }));
 });
-
 
 
 describe('test processDirectives', function() {
@@ -166,7 +174,13 @@ describe('test processDirectives', function() {
            console.error(e);
        }
     });
-
+    after( function() {
+        try {
+            fs.unlinkSync(BASE + '/testsettings.js');
+        } catch(e) {
+            //no-op
+        }
+    });
     it('test with middle version number, expect 1 returned.', async function() {
         try {
             await processDirectives('0.0.1', '1.0.0');

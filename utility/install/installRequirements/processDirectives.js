@@ -1,4 +1,4 @@
-"use strict"
+'use strict';
 /**
  * These classes define the data types used to define the necessary items for an upgrade.
  */
@@ -10,7 +10,6 @@ const os = require('os');
 const fs = require('fs');
 const path = require('path');
 const PropertiesReader = require('properties-reader');
-const hdb_utils = require('../../common_utils');
 
 // Promisified functions
 const p_fs_writeFile = promisify(fs.writeFile);
@@ -24,19 +23,18 @@ module.exports = {
 
 let loaded_directives = [];
 let comments = Object.create(null);
-let hdb_properties = undefined;
 let hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
-hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
+let hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
 
 // These are stored to make unit testing easier
 let hdb_base = undefined;
 let settings_file_path = undefined;
 
 try {
-    hdb_base = hdb_properties.get("HDB_ROOT");
-    settings_file_path = hdb_boot_properties.get('settings_path')
+    hdb_base = hdb_properties.get('HDB_ROOT');
+    settings_file_path = hdb_boot_properties.get('settings_path');
 } catch(e) {
-    log.info("Could not set hdb_base and settings_file_path" + e);
+    log.info('Could not set hdb_base and settings_file_path' + e);
 }
 
 /**
@@ -47,15 +45,15 @@ try {
  */
 async function processDirectives(curr_version, upgrade_version) {
     if(hdb_util.isEmptyOrZeroLength(loaded_directives)) {
-        console.error(`No directive files found.  Exiting.`);
-        log.error(`No directive files found.  Exiting.`);
+        console.error('No directive files found.  Exiting.');
+        log.error('No directive files found.  Exiting.');
         process.exit(1);
     }
     if(hdb_util.isEmptyOrZeroLength(curr_version)) {
-        log.info(`Invalid value for curr_version`);
+        log.info('Invalid value for curr_version');
     }
     if(hdb_util.isEmptyOrZeroLength(upgrade_version)) {
-        log.info(`Invalid value for curr_version`);
+        log.info('Invalid value for curr_version');
     }
     let upgrade_directives = getVersionsToInstall(curr_version);
     for(let vers of upgrade_directives) {
@@ -82,7 +80,7 @@ async function createDirectories(directive_paths) {
     }
     for(let dir_path of directive_paths) {
         // This is synchronous
-        makeDirectory(path.join(hdb_base, dir_path));
+        await makeDirectory(path.join(hdb_base, dir_path));
     }
 }
 
@@ -92,7 +90,7 @@ async function createDirectories(directive_paths) {
  */
 function updateEnvironmentVariable(directive_variables) {
     if(hdb_util.isEmptyOrZeroLength(directive_variables)) {
-        log.info(`No upgrade environment variables were found.`);
+        log.info('No upgrade environment variables were found.');
         return;
     }
     for(let dir_var of directive_variables) {
@@ -119,7 +117,12 @@ async function runFunctions(directive_functions) {
         return;
     }
     for(let func of directive_functions) {
-        await func();
+        try {
+            await func();
+        } catch(e) {
+            log.error(e);
+            throw e;
+        }
     }
 }
 
@@ -139,7 +142,7 @@ async function writeEnvVariables() {
     try {
         hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
     } catch (e) {
-        log.trace(`there was a problem reloading new properties file.`)
+        log.trace('there was a problem reloading new properties file.');
     }
 }
 
@@ -152,9 +155,9 @@ async function writeEnvVariables() {
 function stringifyProps(prop_reader_object, comments) {
     if(hdb_util.isEmpty(prop_reader_object)) {
         log.info('Properties object is null');
-        return "";
+        return '';
     }
-    let lines = "";
+    let lines = '';
     let section = null;
     prop_reader_object.each(function (key, value) {
         let tokens = key.split('.');
@@ -185,8 +188,8 @@ function stringifyProps(prop_reader_object, comments) {
  * @param isRelativeToScript - Defaults to false, if true will use curr directory as the base path
  */
 function makeDirectory(targetDir, {isRelativeToScript = false} = {}) {
-    if(hdb_util.isEmptyOrZeroLength()) {
-        log.info(`Invalid directory path.`);
+    if(hdb_util.isEmptyOrZeroLength(targetDir)) {
+        log.info('Invalid directory path.');
         return;
     }
     const sep = path.sep;
@@ -229,6 +232,8 @@ async function readDirectiveFiles(base_path) {
     }
     for(let i = 0; i<files.length; i++) {
         try {
+            // exception from the no globalrequire eslint rule
+            // eslint-disable-next-line global-require
             let directive = require(`${directive_path}/${files[i]}`);
             loaded_directives.push(directive);
             log.trace(`loaded directive ${files[i]}`);
@@ -265,10 +270,10 @@ function getVersionsToInstall(curr_version_num) {
  */
 function compareVersions (old_version, new_version_number) {
     if(hdb_util.isEmptyOrZeroLength(old_version)) {
-        log.info(`Invalid current version sent as parameter.`);
+        log.info('Invalid current version sent as parameter.');
     }
     if(hdb_util.isEmptyOrZeroLength(new_version_number)) {
-        log.info(`Invalid upgrade version sent as parameter.`);
+        log.info('Invalid upgrade version sent as parameter.');
     }
     let diff;
     let regExStrip0 = /(\.0+)+$/;
