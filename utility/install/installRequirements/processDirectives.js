@@ -21,7 +21,6 @@ module.exports = {
     processDirectives: processDirectives
 };
 
-let loaded_directives = [];
 let comments = Object.create(null);
 let hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
 let hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
@@ -43,7 +42,7 @@ try {
  * @param upgrade_version - The desired upgrade version
  * @returns {Promise<void>}
  */
-async function processDirectives(curr_version, upgrade_version) {
+async function processDirectives(curr_version, upgrade_version, loaded_directives) {
     if(hdb_util.isEmptyOrZeroLength(loaded_directives)) {
         console.error('No directive files found.  Exiting.');
         log.error('No directive files found.  Exiting.');
@@ -55,7 +54,7 @@ async function processDirectives(curr_version, upgrade_version) {
     if(hdb_util.isEmptyOrZeroLength(upgrade_version)) {
         log.info('Invalid value for curr_version');
     }
-    let upgrade_directives = getVersionsToInstall(curr_version);
+    let upgrade_directives = getVersionsToInstall(curr_version, loaded_directives);
     for(let vers of upgrade_directives) {
         // Create Directories
         let directories_to_create = vers.relative_directory_paths;
@@ -108,7 +107,7 @@ function updateEnvironmentVariable(directive_variables) {
 // arguments as the value.  For now, don't allow values passed into functions.
 /**
  * Runs the functions specified in a directive object.
- * @param directive_functions
+ * @param directive_functions - Array of functions to run
  * @returns {Promise<void>}
  */
 async function runFunctions(directive_functions) {
@@ -116,11 +115,22 @@ async function runFunctions(directive_functions) {
         log.info('No functions found to run for upgrade');
         return;
     }
+    if(!Array.isArray(directive_functions)) {
+        log.info('Passed parameter is not an array');
+        return;
+    }
     for(let func of directive_functions) {
+        log.info(`Running function ${func.name}`);
+        if(!(func instanceof Function)) {
+            log.info('Variable being processed is not a function');
+            continue;
+        }
         try {
             await func();
         } catch(e) {
             log.error(e);
+            // Right now assume any functions that need to be run are critical to a successful upgrade, so fail completely
+            // if any of them fail.
             throw e;
         }
     }
@@ -181,7 +191,7 @@ function stringifyProps(prop_reader_object, comments) {
     return lines;
 }
 
-//TODO: Should probably make this async, but not a huge priority since this only is called during an upgrade.
+//This is synchronous to ensure everything runs in order.
 /**
  * Recursively create directory specified.
  * @param targetDir - Directory to create
@@ -219,6 +229,7 @@ function makeDirectory(targetDir, {isRelativeToScript = false} = {}) {
  */
 async function readDirectiveFiles(base_path) {
     const directive_path = path.join(base_path, 'utility', 'install', 'installRequirements', 'directives');
+    let loaded_directives = [];
     let files = undefined;
     try {
         files = await p_fs_readdir(directive_path);
@@ -249,7 +260,7 @@ async function readDirectiveFiles(base_path) {
  * @param curr_version_num - The current versrion of HDB.
  * @returns {Array}
  */
-function getVersionsToInstall(curr_version_num) {
+function getVersionsToInstall(curr_version_num, loaded_directives) {
     if(hdb_util.isEmptyOrZeroLength(curr_version_num)) {
         return [];
     }

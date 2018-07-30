@@ -188,7 +188,7 @@ async function startUpgradeDirectives(old_version_number, new_version_number) {
         countdown.stop();
         return;
     }
-    await process_directives.processDirectives(old_version_number, new_version_number);
+    await process_directives.processDirectives(old_version_number, new_version_number, found_directives);
     countdown.stop();
     console.log('HarperDB has been upgraded to ' + build.product_version);
 }
