@@ -1,90 +1,91 @@
-"use strict"
+'use strict';
 /**
- * Test the hdb_license module.
+ * Test the enterprise init module.
  */
+const test_util = require('../test_utils');
+test_util.preTestPrep();
 
 const assert = require('assert');
 const rewire = require('rewire');
 const sinon = require('sinon');
 const search = require('../../data_layer/search');
-const ClusterServer = rewire('../../server/clustering/ClusterServer');
 
 const SEARCH_RESULT_OBJECT = [
     {
-        "hdb_auth_header": "Basic YWRtaW46YWRtaW4h",
-        "hdb_user": {
-            "active": true,
-            "role": {
-                "id": "10edb35b-3f00-4eee-9684-32b1c054d59f",
-                "permission": {
-                    "super_user": true
+        'hdb_auth_header': 'Basic YWRtaW46YWRtaW4h',
+        'hdb_user': {
+            'active': true,
+            'role': {
+                'id': '10edb35b-3f00-4eee-9684-32b1c054d59f',
+                'permission': {
+                    'super_user': true
                 },
-                "role": "super_user"
+                'role': 'super_user'
             },
-            "username": "admin"
+            'username': 'admin'
         },
-        "host": "localhost",
-        "name": "node_1",
-        "operation": "add_node",
-        "port": 1115
+        'host': 'localhost',
+        'name': 'node_1',
+        'operation': 'add_node',
+        'port': 1115
     },
     {
-        "hdb_auth_header": "Basic YWRtaW46YWRtaW4h",
-        "hdb_user": {
-            "active": true,
-            "role": {
-                "id": "10edb35b-3f00-4eee-9684-32b1c054d59f",
-                "permission": {
-                    "super_user": true
+        'hdb_auth_header': 'Basic YWRtaW46YWRtaW4h',
+        'hdb_user': {
+            'active': true,
+            'role': {
+                'id': '10edb35b-3f00-4eee-9684-32b1c054d59f',
+                'permission': {
+                    'super_user': true
                 },
-                "role": "super_user"
+                'role': 'super_user'
             },
-            "username": "admin"
+            'username': 'admin'
         },
-        "host": "localhost",
-        "name": "node_2",
-        "operation": "add_node",
-        "port": 1113
+        'host': 'localhost',
+        'name': 'node_2',
+        'operation': 'add_node',
+        'port': 1113
     },
     {
-        "hdb_auth_header": "Basic YWRtaW46YWRtaW4h",
-        "hdb_user": {
-            "active": true,
-            "role": {
-                "id": "10edb35b-3f00-4eee-9684-32b1c054d59f",
-                "permission": {
-                    "super_user": true
+        'hdb_auth_header': 'Basic YWRtaW46YWRtaW4h',
+        'hdb_user': {
+            'active': true,
+            'role': {
+                'id': '10edb35b-3f00-4eee-9684-32b1c054d59f',
+                'permission': {
+                    'super_user': true
                 },
-                "role": "super_user"
+                'role': 'super_user'
             },
-            "username": "admin"
+            'username': 'admin'
         },
-        "host": "localhost",
-        "name": "node_3",
-        "operation": "add_node",
-        "port": 1111
+        'host': 'localhost',
+        'name': 'node_3',
+        'operation': 'add_node',
+        'port': 1111
     },
     {
-        "hdb_auth_header": "Basic YWRtaW46YWRtaW4h",
-        "hdb_user": {
-            "active": true,
-            "role": {
-                "id": "10edb35b-3f00-4eee-9684-32b1c054d59f",
-                "permission": {
-                    "super_user": true
+        'hdb_auth_header': 'Basic YWRtaW46YWRtaW4h',
+        'hdb_user': {
+            'active': true,
+            'role': {
+                'id': '10edb35b-3f00-4eee-9684-32b1c054d59f',
+                'permission': {
+                    'super_user': true
                 },
-                "role": "super_user"
+                'role': 'super_user'
             },
-            "username": "admin"
+            'username': 'admin'
         },
-        "host": "localhost",
-        "name": "node_4",
-        "operation": "add_node",
-        "port": 1109
+        'host': 'localhost',
+        'name': 'node_4',
+        'operation': 'add_node',
+        'port': 1109
     }
 ];
 
-describe(`Test kickOffEnterprise`, function () {
+describe('Test kickOffEnterprise', function () {
     let ClusterServerStub = undefined;
     let search_nodes_stub = undefined;
     let enterprise_initialization = undefined;
@@ -102,7 +103,7 @@ describe(`Test kickOffEnterprise`, function () {
 
     it('Nominal, expect clusters are successfully estabished', function (done) {
         // stub searchByValue to return 4 default cluster nodes
-        search_nodes_stub = sinon.stub(search, "searchByValue").yields("", SEARCH_RESULT_OBJECT);
+        search_nodes_stub = sinon.stub(search, 'searchByValue').yields('', SEARCH_RESULT_OBJECT);
         // stub ClusterServer class methods to yield callback without error
         ClusterServerStub.prototype.init = sinon.stub().yields(null);
         ClusterServerStub.prototype.establishConnections = sinon.stub().yields(null);
@@ -128,7 +129,7 @@ describe(`Test kickOffEnterprise`, function () {
     });
     it('No node data in hdb_nodes table, expect no cluster node initiated', function (done) {
         // stub searchByValue to return 4 default cluster nodes
-        search_nodes_stub = sinon.stub(search, "searchByValue").yields("", []);
+        search_nodes_stub = sinon.stub(search, 'searchByValue').yields('', []);
         // stub ClusterServer class methods to yield callback without error
         ClusterServerStub.prototype.init = sinon.stub().yields(null);
         ClusterServerStub.prototype.establishConnections = sinon.stub().yields(null);
@@ -147,7 +148,7 @@ describe(`Test kickOffEnterprise`, function () {
     });
     it('No cluster config in properties, expect no cluster node initiated', function (done) {
         // stub searchByValue to return 4 default cluster nodes
-        search_nodes_stub = sinon.stub(search, "searchByValue").yields("", SEARCH_RESULT_OBJECT);
+        search_nodes_stub = sinon.stub(search, 'searchByValue').yields('', SEARCH_RESULT_OBJECT);
         // stub ClusterServer class methods to yield callback without error
         ClusterServerStub.prototype.init = sinon.stub().yields(null);
         ClusterServerStub.prototype.establishConnections = sinon.stub().yields(null);
@@ -166,7 +167,7 @@ describe(`Test kickOffEnterprise`, function () {
     });
     it('Cluster config in properties is false, expect no cluster node initiated', function (done) {
         // stub searchByValue to return 4 default cluster nodes
-        search_nodes_stub = sinon.stub(search, "searchByValue").yields("", SEARCH_RESULT_OBJECT);
+        search_nodes_stub = sinon.stub(search, 'searchByValue').yields('', SEARCH_RESULT_OBJECT);
         // stub ClusterServer class methods to yield callback without error
         ClusterServerStub.prototype.init = sinon.stub().yields(null);
         ClusterServerStub.prototype.establishConnections = sinon.stub().yields(null);
@@ -185,7 +186,7 @@ describe(`Test kickOffEnterprise`, function () {
     });
     it('Cluster Server failed to init, expect no cluster node initiated', function (done) {
         // stub searchByValue to return 4 default cluster nodes
-        search_nodes_stub = sinon.stub(search, "searchByValue").yields("", SEARCH_RESULT_OBJECT);
+        search_nodes_stub = sinon.stub(search, 'searchByValue').yields('', SEARCH_RESULT_OBJECT);
         // stub ClusterServer class methods to yield callback with error for init but without error for establishConnections
         ClusterServerStub.prototype.init = sinon.stub().yields('error: unable to init');
         ClusterServerStub.prototype.establishConnections = sinon.stub().yields(null);
@@ -204,9 +205,9 @@ describe(`Test kickOffEnterprise`, function () {
     });
     it('Cluster Server failed to establishConnections, expect no cluster node initiated', function (done) {
         // stub searchByValue to return 4 default cluster nodes
-        search_nodes_stub = sinon.stub(search, "searchByValue").yields("", SEARCH_RESULT_OBJECT);
+        search_nodes_stub = sinon.stub(search, 'searchByValue').yields('', SEARCH_RESULT_OBJECT);
         // stub ClusterServer class methods to yield callback without error for init but error for establishConnections
-        ClusterServerStub.prototype.init = sinon.stub().yields(null);
+        ClusterServerStub.prototype.init = sinon.stub().yields('error: unable to establishConnections');
         ClusterServerStub.prototype.establishConnections = sinon.stub().yields('error: unable to establishConnections');
         // inject necessary properties for clustering
         let hdb_properties = enterprise_initialization.__get__('hdb_properties');  
