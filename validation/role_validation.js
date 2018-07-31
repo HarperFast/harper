@@ -49,47 +49,61 @@ function customValidate(object) {
             validationErrors.push(validate.isBoolean(object.permission.super_user));
     }
 
-    for (item in  object.permission) {
+    for (let item in  object.permission) {
         if (item != 'super_user') {
             let schema = object.permission[item];
-            if(schema.tables ){
-                for(t in schema.tables){
+            if(!item || !global.hdb_schema[item]) {
+                validationErrors.push(new Error(`Invalid schema ${item}`));
+                continue;
+            }
+            if(schema.tables ) {
+                for(let t in schema.tables) {
                     let table = schema.tables[t];
-                    if(!validate.isDefined(table.read)){
+                    if(!t || !global.hdb_schema[item][t]) {
+                        validationErrors.push(new Error(`Invalid table ${t}`));
+                        continue;
+                    }
+                    if(!validate.isDefined(table.read)) {
                         validationErrors.push(new Error(`Missing read permission on ${t}`));
                     }
 
-                    if(!validate.isDefined(validate.isBoolean(table.read))){
+                    if(!validate.isDefined(validate.isBoolean(table.read))) {
                         validationErrors.push(new Error(`${t}.read must be a boolean`));
                     }
 
-                    if(!validate.isDefined(table.insert)){
+                    if(!validate.isDefined(table.insert)) {
                         validationErrors.push(new Error(`Missing insert permission on ${t}`));
                     }
 
-                    if(!validate.isDefined(validate.isBoolean(table.insert))){
+                    if(!validate.isDefined(validate.isBoolean(table.insert))) {
                         validationErrors.push(new Error(`${t}.insert must be a boolean`));
                     }
 
-                    if(!validate.isDefined(table.update)){
+                    if(!validate.isDefined(table.update)) {
                         validationErrors.push(new Error(`Missing update permission on ${t}`));
                     }
 
-                    if(!validate.isBoolean(table.update)){
+                    if(!validate.isBoolean(table.update)) {
                         validationErrors.push(new Error(`${t}.update must be a boolean`));
                     }
 
-                    if(!validate.isDefined(table.delete)){
+                    if(!validate.isDefined(table.delete)) {
                         validationErrors.push(new Error(`Missing delete permission on ${t}`));
                     }
 
-                    if(!validate.isBoolean(table.delete)){
+                    if(!validate.isBoolean(table.delete)) {
                         validationErrors.push(new Error(`${t}.delete must be a boolean`));
                     }
 
-                    if(table.attribute_restrictions){
-                        for(r in table.attribute_restrictions){
+                    if(table.attribute_restrictions) {
+                        let table_attribute_names = global.hdb_schema[item][t].attributes.map(({attribute}) => attribute);
+                        for(let r in table.attribute_restrictions) {
                             let restriction = table.attribute_restrictions[r];
+                            if(!restriction.attribute_name || !table_attribute_names.includes(restriction.attribute_name)) {
+                                validationErrors.push(new Error(`Invalid attribute ${restriction.attribute_name}`));
+                                continue;
+                            }
+
                             if(!validate.isDefined(restriction.attribute_name))
                                 validationErrors.push(new Error(`attribute_restriction must have an attribute_name`));
                             if(!validate.isDefined(restriction.read))
