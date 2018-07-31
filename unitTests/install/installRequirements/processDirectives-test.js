@@ -47,7 +47,7 @@ describe('test processDirectives', function() {
     });
     it('test with middle version number, expect 1 returned.', async function() {
         try {
-            await processDirectives('0.0.1', '1.0.0', ver1_1_module);
+            await processDirectives('0.0.1', '1.0.0', [ver1_1_module]);
         } catch(e) {
             console.error(e);
         }
@@ -195,6 +195,20 @@ describe('Test runFunctions', function() {
             result = e;
         }
         assert.equal(results.length, 0, 'Expected empty results array');
+    });
+});
+
+describe('Test writeEnvVariables', function() {
+    let writeEnvVariables = process_directive_rw.__get__('writeEnvVariables');
+    let write_stub = undefined;
+    beforeEach(function () {
+
+    });
+    afterEach(function () {
+
+    });
+    it('test write environment variables, nominal case, ', function() {
+        write_stub = sinon.stub(process_directive_rw, "p_fs_writeFile").yields("");
     });
 });
 
