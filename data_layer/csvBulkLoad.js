@@ -8,13 +8,14 @@ const request_promise = require('request-promise-native');
 const hdb_terms = require('../utility/hdbTerms');
 const hdb_utils = require('../utility/common_utils');
 const {promisify} = require('util');
-const alasql = require('alasql');
+const {promise} = require('alasql');
 const logger = require('../utility/logging/harper_logger');
 const fs = require('fs');
 
 const RECORD_BATCH_SIZE = 1000;
 const NEWLINE = '\n';
 const unix_filename_regex = new RegExp(/[^-_.A-Za-z0-9]/);
+const ALASQL_MIDDLEWARE_PARSE_PARAMETERS = 'SELECT * FROM CSV(?, {headers:true, separator:","})';
 
 // Promisify bulkLoad to avoid more of a refactor for now.
 const p_bulk_load = promisify(bulkLoad);
@@ -34,7 +35,7 @@ module.exports = {
  * @returns err - any errors found during the bulk load
  *
  */
-async function csvDataLoad(json_message){
+async function csvDataLoad(json_message) {
     let validation_msg = validator.dataObject(json_message);
     if (validation_msg) {
         throw new Error(validation_msg);
@@ -48,7 +49,7 @@ async function csvDataLoad(json_message){
         json_message.data = json_message.data + NEWLINE;
     }
     try {
-        csv_records = await alasql.promise('SELECT * FROM CSV(?, {headers:true, separator:","})', [json_message.data]);
+        csv_records = await callMiddleware(ALASQL_MIDDLEWARE_PARSE_PARAMETERS, [json_message.data]);
         if(csv_records && csv_records.length > 0 && validateColumnNames(csv_records[0])) {
             bulk_load_result = await p_bulk_load(csv_records, json_message.schema, json_message.table, json_message.action);
         } else {
@@ -56,11 +57,36 @@ async function csvDataLoad(json_message){
             logger.info(bulk_load_result.message);
         }
     } catch(e) {
-        throw new Error(e);
+        throw e;
     }
 
     return bulk_load_result.message;
 }
+
+/**
+ * Genericize the call to the middlware used for parsing (currently alasql);
+ * @param parameter_string - The parameters to be passed into the middleware
+ * @param data - The data that needs to be parsed.
+ * @returns {Promise<any>}
+ */
+async function callMiddleware(parameter_string, data) {
+    if(hdb_utils.isEmptyOrZeroLength(parameter_string)) {
+        logger.warn('Invalid parameter was passed into callMiddleware()');
+        return [];
+    }
+    if(hdb_utils.isEmptyOrZeroLength(data)) {
+        logger.warn('Invalid data was passed into callMiddleware()');
+        return [];
+    }
+    let middleware_results = undefined;
+    try {
+        middleware_results = await promise(parameter_string, data);
+        return middleware_results;
+    } catch(e) {
+        throw e;
+    }
+}
+
 
 /**
  * Load a csv file from a URL.
@@ -89,7 +115,11 @@ async function csvURLLoad(json_message) {
         throw e;
     }
     try {
-        csv_records = await alasql.promise('SELECT * FROM CSV(?, {headers:true, separator:","})', [url_response.body]);
+        // Some ISPs will return a "Not found" html page that still have a 200 status. This handles that.
+        if(!url_response.body) {
+            throw new Error(url_response.message);
+        }
+        csv_records = await callMiddleware(ALASQL_MIDDLEWARE_PARSE_PARAMETERS, [url_response.body]);
         if(csv_records && csv_records.length > 0 && validateColumnNames(csv_records[0])) {
             bulk_load_result = await p_bulk_load(csv_records, json_message.schema, json_message.table, json_message.action);
         } else {
@@ -147,7 +177,7 @@ async function csvFileLoad(json_message) {
     try {
         // check file exists and have perms to read, throws exception if fails
         await p_fs_access(json_message.file_path, fs.constants.R_OK | fs.constants.F_OK);
-        csv_records = await alasql.promise('SELECT * FROM CSV(?, {headers:true, separator:","})', json_message.file_path);
+        csv_records = await callMiddleware(ALASQL_MIDDLEWARE_PARSE_PARAMETERS, json_message.file_path);
         if(csv_records && csv_records.length > 0 && validateColumnNames(csv_records[0])) {
             bulk_load_result = await p_bulk_load(csv_records, json_message.schema, json_message.table, json_message.action);
         } else {

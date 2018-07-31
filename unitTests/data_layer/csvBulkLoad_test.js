@@ -9,6 +9,7 @@ const rewire = require('rewire');
 const csv_rewire = rewire('../../data_layer/csvBulkLoad');
 const hdb_terms = require('../../utility/hdbTerms');
 const fs = require('fs');
+const {promise} = require('alasql');
 
 const VALID_CSV_DATA = "id,name,section,country,image\n1,ENGLISH POINTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/001g07.jpg\n2,ENGLISH SETTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/002g07.jpg\n3,KERRY BLUE TERRIER,Large and medium sized Terriers,IRELAND,\n";
 const INVALID_CSV_ID_COLUMN_NAME = "id/,name,section,country,image\n1,ENGLISH POINTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/001g07.jpg\n2,ENGLISH SETTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/002g07.jpg\n3,KERRY BLUE TERRIER,Large and medium sized Terriers,IRELAND,\n";
@@ -16,6 +17,7 @@ const VALID_CSV_PATH = '/tmp/csv_input_valid.csv';
 const INVALID_CSV_PATH = '/tmp/csv_input_invalid_id.csv';
 const EMPTY_FILE_PATH = '/tmp/empty.csv';
 const HOSTED_CSV_FILE_URL = 'https://s3.amazonaws.com/complimentarydata/breeds.csv';
+const MIDDLEWARE_PARSE_PARAMETERS = 'SELECT * FROM CSV(?, {headers:true, separator:","})';
 
 const BULK_LOAD_RESPONSE = {
     message: 'successfully loaded 3 of 3 records'
@@ -85,6 +87,52 @@ describe('Test csvDataLoad', function () {
             response = e;
         });
         assert.equal(response, 'successfully loaded 1 of 1 records', 'Did not get expected response message');
+    });
+});
+
+describe('Test makeMiddlewareCall', function () {
+    let test_msg = undefined;
+    let sandbox = sinon.createSandbox();
+    let makeMiddlewareCall = csv_rewire.__get__('makeMiddlewareCall');
+    let alasql_promise_stub = undefined;
+    beforeEach(function () {
+        test_msg = test_utils.deepClone(DATA_LOAD_MESSAGE);
+        test_msg.operation = hdb_terms.OPERATION_NAMES.csv_data_load;
+        test_msg.data = VALID_CSV_DATA;
+
+    });
+    afterEach(function () {
+        // Restore the promise
+        csv_rewire.__set__('promise', promise);
+    });
+    it("test nominal case, valid inputs", async function() {
+        let results = await makeMiddlewareCall(MIDDLEWARE_PARSE_PARAMETERS, VALID_CSV_DATA).catch( (e) => {
+            throw e;
+        });
+        assert.equal(results.length, 3, "Expeted array of length 3 back");
+    });
+    it("Test invalid parameter", async function() {
+        let results = await makeMiddlewareCall(null, VALID_CSV_DATA).catch( (e) => {
+            throw e;
+        });
+        assert.equal(results.length, 0, "Expeted array of length 0 back");
+    });
+    it("Test invalid data parameter", async function() {
+        let results = await makeMiddlewareCall(MIDDLEWARE_PARSE_PARAMETERS, null).catch( (e) => {
+            throw e;
+        });
+        assert.equal(results.length, 0, "Expeted array of length 0 back");
+    });
+    it("Test alasql throwing exception", async function() {
+        alasql_promise_stub = sandbox.stub().yields(new Error("OMG ERROR"));
+        csv_rewire.__set__('promise', alasql_promise_stub);
+        let excep = undefined;
+        try {
+            await makeMiddlewareCall(MIDDLEWARE_PARSE_PARAMETERS, VALID_CSV_DATA);
+        } catch(e) {
+            excep = e;
+        };
+        assert.equal((excep instanceof Error),true, "Expeted exception");
     });
 });
 
