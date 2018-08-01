@@ -21,8 +21,6 @@ module.exports = {
     processDirectives: processDirectives
 };
 
-let comments = Object.create(null);
-
 let hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
 let hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
 
@@ -56,16 +54,29 @@ async function processDirectives(curr_version, upgrade_version, loaded_directive
         log.info('Invalid value for curr_version');
     }
     let upgrade_directives = getVersionsToInstall(curr_version, loaded_directives);
+    let variable_comments = undefined;
     for(let vers of upgrade_directives) {
         // Create Directories
         let directories_to_create = vers.relative_directory_paths;
-        await createDirectories(directories_to_create);
+        await createDirectories(directories_to_create).catch((e) => {
+            log.error('Error creating directories in process Directives' + e);
+            throw e;
+        });
         // Update Environment variables
-        updateEnvironmentVariable(vers.environment_variables);
+        let comments = updateEnvironmentVariable(vers.environment_variables).catch((e) => {
+            log.error('Error updating environment variables in process Directives' + e);
+            throw e;
+        });
         // Run Functions
-        await runFunctions(vers.functions);
+        await runFunctions(vers.functions).catch((e) => {
+            log.error('running func in process Directives' + e);
+            throw e;
+        });
     }
-    await writeEnvVariables();
+    await writeEnvVariables(comments).catch((e) => {
+        log.error('Error writing environment variables in process Directives' + e);
+        throw e;
+    });
 }
 
 /**
@@ -87,11 +98,13 @@ async function createDirectories(directive_paths) {
 /**
  * Update the properties reader object with env variables specified in the directives
  * @param directive_variables - Variables from a directives object
+ * @returns array of variable comments in the form comments[key] = [values]
  */
 function updateEnvironmentVariable(directive_variables) {
+    let comments = [];
     if(hdb_util.isEmptyOrZeroLength(directive_variables)) {
         log.info('No upgrade environment variables were found.');
-        return;
+        return comments;
     }
     for(let dir_var of directive_variables) {
         let found_var = hdb_properties.get(dir_var.name);
@@ -102,6 +115,7 @@ function updateEnvironmentVariable(directive_variables) {
             comments[dir_var.name] = dir_var.comments;
         }
     }
+    return comments;
 }
 
 // TODO: The functions data member may need to be a map with a function as a key and
@@ -141,7 +155,7 @@ async function runFunctions(directive_functions) {
  * Write the environment variables updated in the
  * @returns {Promise<void>}
  */
-async function writeEnvVariables() {
+async function writeEnvVariables(comments) {
     if(hdb_util.isEmptyOrZeroLength(settings_file_path)) {
         let err_msg = 'In process directives, the settings file path is not set';
         log.warn(err_msg);

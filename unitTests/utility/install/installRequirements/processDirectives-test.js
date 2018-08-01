@@ -127,8 +127,7 @@ describe('test updateEnvironmentVariable', function() {
     it('test updating comments', test_util.mochaAsyncWrapper(async () => {
         let update_var = new env_variable('HTTP_PORT', '12345', null);
         update_var.comments = ['test'];
-        await updateEnvironmentVariable([update_var]);
-        let comments = process_directive_rw.__get__('comments');
+        let comments = await updateEnvironmentVariable([update_var]);
         assert.equal(comments['HTTP_PORT'].length,1, true);
     }));
 });
