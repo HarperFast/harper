@@ -22,6 +22,7 @@ module.exports = {
 };
 
 let comments = Object.create(null);
+
 let hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
 let hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
 
@@ -141,11 +142,17 @@ async function runFunctions(directive_functions) {
  * @returns {Promise<void>}
  */
 async function writeEnvVariables() {
+    if(hdb_util.isEmptyOrZeroLength(settings_file_path)) {
+        let err_msg = 'In process directives, the settings file path is not set';
+        log.warn(err_msg);
+        throw new Error(err_msg);
+    }
     try {
         await p_fs_writeFile(settings_file_path, stringifyProps(hdb_properties, comments));
     } catch (e) {
         console.error('There was a problem writing the settings file.  Please check the install log for details.');
         log.error(e);
+        throw e;
     }
 
     // reload written props
@@ -153,6 +160,7 @@ async function writeEnvVariables() {
         hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
     } catch (e) {
         log.trace('there was a problem reloading new properties file.');
+        throw e;
     }
 }
 
@@ -170,23 +178,29 @@ function stringifyProps(prop_reader_object, comments) {
     let lines = '';
     let section = null;
     prop_reader_object.each(function (key, value) {
-        let tokens = key.split('.');
-        if (tokens.length > 1) {
-            if (section !== tokens[0]) {
-                section = tokens[0];
-                lines += ('[' + section + ']');
+        try {
+            let tokens = key.split('.');
+            if (tokens && tokens.length > 1) {
+                if (section !== tokens[0]) {
+                    section = tokens[0];
+                    lines += ('[' + section + ']');
+                }
+                key = tokens.slice(1).join('.');
+            } else {
+                section = null;
             }
-            key = tokens.slice(1).join('.');
-        } else {
-            section = null;
-        }
-        if(comments && comments[key]) {
-            let curr_comments = comments[key];
-            for(let comm of curr_comments) {
-                lines += (';' + comm + os.EOL);
+            if (comments && comments[key]) {
+                let curr_comments = comments[key];
+                for (let comm of curr_comments) {
+                    lines += (';' + comm + os.EOL);
+                }
             }
+            if(!hdb_util.isEmptyOrZeroLength(key) ) {
+                lines += key + '=' + value + os.EOL;
+            }
+        } catch(e) {
+            log.error(`Found bad property during upgrade with key ${key} and value: ${value}`);
         }
-        lines += key + '=' + value + os.EOL;
     });
     return lines;
 }
@@ -224,11 +238,16 @@ function makeDirectory(targetDir, {isRelativeToScript = false} = {}) {
 
 /**
  * Read all directive files in a path and require them for use.
- * @param base_path - Base path to find the directives dir from.
+ * @param directive_path - Base path to find the directives dir from.
  * @returns {Promise<Array>}
  */
-async function readDirectiveFiles(base_path) {
-    const directive_path = path.join(base_path, 'utility', 'install', 'installRequirements', 'directives');
+async function readDirectiveFiles(directive_path) {
+    //const directive_path = path.join(directive_path, 'utility', 'install', 'installRequirements', 'directives');
+    if(hdb_util.isEmptyOrZeroLength(directive_path)) {
+        let err_msg = 'invalid directory path sent to readDirectiveFiles';
+        log.error(err_msg);
+        throw new Error(err_msg);
+    }
     let loaded_directives = [];
     let files = undefined;
     try {
@@ -243,13 +262,18 @@ async function readDirectiveFiles(base_path) {
     }
     for(let i = 0; i<files.length; i++) {
         try {
+            if(!files[i].indexOf('.js')) {
+                continue;
+            }
             // exception from the no globalrequire eslint rule
             // eslint-disable-next-line global-require
             let directive = require(`${directive_path}/${files[i]}`);
+            // Make sure we read a directive file by checking the version wirh version call
+            log.trace(`Read upgrade directive file ${directive_path}/${files[i]} with version ${directive.version}`);
             loaded_directives.push(directive);
-            log.trace(`loaded directive ${files[i]}`);
-        } catch (e) {
-            log.fatal(`could not load file ${files[i]}`);
+        } catch(e) {
+            // if we are here we didn't read a directive file, move along
+            continue;
         }
     }
     return loaded_directives;
@@ -257,6 +281,7 @@ async function readDirectiveFiles(base_path) {
 
 /**
  * Based on the current version, find all upgrade directives that need to be installed to make this installation current.
+ * Returns the install directives array sorted from lowest to highest version number.
  * @param curr_version_num - The current versrion of HDB.
  * @returns {Array}
  */
@@ -274,7 +299,8 @@ function getVersionsToInstall(curr_version_num, loaded_directives) {
 }
 
 /**
- * Get old_version list of version directives to run during an upgrade.  Can be used via [<versions>].sort(compareVersions)
+ * Sorting function, Get old_version list of version directives to run during an upgrade.
+ * Can be used via [<versions>].sort(compareVersions)
  * @param old_version
  * @param new_version_number
  * @returns {*}

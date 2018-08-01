@@ -1,0 +1,1 @@
+This file is used in the processDirectives test to ensure only UpgradeDirective files are processed during an upgrade.
