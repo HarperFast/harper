@@ -63,7 +63,7 @@ async function processDirectives(curr_version, upgrade_version, loaded_directive
             throw e;
         });
         // Update Environment variables
-        let comments = updateEnvironmentVariable(vers.environment_variables).catch((e) => {
+        variable_comments = updateEnvironmentVariable(vers.environment_variables).catch((e) => {
             log.error('Error updating environment variables in process Directives' + e);
             throw e;
         });
@@ -73,7 +73,7 @@ async function processDirectives(curr_version, upgrade_version, loaded_directive
             throw e;
         });
     }
-    await writeEnvVariables(comments).catch((e) => {
+    await writeEnvVariables(variable_comments).catch((e) => {
         log.error('Error writing environment variables in process Directives' + e);
         throw e;
     });
