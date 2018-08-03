@@ -105,7 +105,7 @@ class SelectValidator{
  (this will create duplicate map elements) this will have downstream effects in comparison functions like findColumn*/
         schema_table.attributes.forEach((attribute)=>{
             let attribute_clone = clone(attribute);
-            attribute_clone.table = table;
+            attribute_clone.table = clone(table);
             this.attributes.push(attribute_clone);
         });
     }

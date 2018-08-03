@@ -89,7 +89,8 @@ function convertSQLToAST(sql) {
         ast_response.ast = ast;
         ast_response.variant = variant;
     } catch(e) {
-        logger.error(`Error parsing SQL statement: ${e}`);
+        let split_error = e.message.split('\n');
+        throw new Error(`Invalid SQL at: ${split_error[1]}`);
     }
 
     return ast_response;
