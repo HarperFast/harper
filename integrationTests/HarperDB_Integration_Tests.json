@@ -129,6 +129,65 @@
 					"response": []
 				},
 				{
+					"name": "create_schema_call",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"tests[\"Create Schema\"] = responseBody.has(\"successfully created\");\r",
+									"\r",
+									"\r",
+									""
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"create_schema\",\n  \"schema\": \"call\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "This method is used to create a schema.  It like all other functions requires basic auth.  \n\nAttributes:\n\noperation (required) - must always be create_schema\n\nschema (required) - name of the schema you are creating"
+					},
+					"response": []
+				},
+				{
 					"name": "Validation Check NO Schema.",
 					"event": [
 						{
@@ -958,6 +1017,66 @@
 						"body": {
 							"mode": "raw",
 							"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"dev\",\n  \"table\":\"long_text\",\n  \"hash_attribute\": \"id\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "create_table_call_aggr",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"call\",\n  \"table\":\"aggr\",\n  \"hash_attribute\": \"all\"\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -1801,6 +1920,69 @@
 						}
 					},
 					"response": []
+				},
+				{
+					"name": "Import data bulk insert into call.aggr",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "0d181d65-295e-47bf-bcbd-bfe1582f5797",
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"inserted 25\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message.indexOf('inserted 10')).to.eql(0);",
+									"});",
+									"",
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\":\"insert\",\n    \"schema\" :  \"call\",\n    \"table\":\"aggr\",\n    \"records\": [\n    \t{\n        \"all\" : 1,\n        \"dog_name\" : \"Penny\",\n        \"owner_name\": \"Kyle\",\n        \"breed_id\":154,\n        \"age\":5,\n        \"weight_lbs\":35,\n        \"adorable\":true\n      },\n      {\n        \"all\" : 2,\n        \"dog_name\" : \"Harper\",\n        \"owner_name\": \"Stephen\",\n        \"breed_id\":346,\n        \"age\":5,\n        \"weight_lbs\":55,\n        \"adorable\":true\n      },\n      {\n        \"all\" : 3,\n        \"dog_name\" : \"Alby\",\n        \"owner_name\": \"Kaylan\",\n        \"breed_id\":348,\n        \"age\":5,\n        \"weight_lbs\":84,\n        \"adorable\":true\n      },\n      {\n        \"all\" : 4,\n        \"dog_name\" : \"Billy\",\n        \"owner_name\": \"Zach\",\n        \"breed_id\":347,\n        \"age\":4,\n        \"weight_lbs\":60,\n        \"adorable\":true\n      },\n      {\n        \"all\" : 5,\n        \"dog_name\" : \"Rose Merry\",\n        \"owner_name\": \"Zach\",\n        \"breed_id\":348,\n        \"age\":6,\n        \"weight_lbs\":15,\n        \"adorable\":true\n      },\n      {\n        \"all\" : 6,\n        \"dog_name\" : \"Kato\",\n        \"owner_name\": \"Kyle\",\n        \"breed_id\":351,\n        \"age\":4,\n        \"weight_lbs\":28,\n        \"adorable\":true\n      },\n      {\n        \"all\" : 7,\n        \"dog_name\" : \"Simon\",\n        \"owner_name\": \"Fred\",\n        \"breed_id\":349,\n        \"age\":1,\n        \"weight_lbs\":35,\n        \"adorable\":true\n      },\n      {\n        \"all\" : 8,\n        \"dog_name\" : \"Gemma\",\n        \"owner_name\": \"Stephen\",\n        \"breed_id\":350,\n        \"age\":3,\n        \"weight_lbs\":55,\n        \"adorable\":true\n      },\n      {\n        \"all\" : 9,\n        \"dog_name\" : \"Gertrude\",\n        \"owner_name\": \"Eli\",\n        \"breed_id\":158,\n        \"age\":5,\n        \"weight_lbs\":70,\n        \"adorable\":true\n      },\n      {\n        \"all\" : 10,\n        \"dog_name\" : \"Big Louie\",\n        \"owner_name\": \"Eli\",\n        \"breed_id\":241,\n        \"age\":11,\n        \"weight_lbs\":20,\n        \"adorable\":true\n      }\n    ]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
 				}
 			]
 		},
@@ -1860,6 +2042,134 @@
 						"body": {
 							"mode": "raw",
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select {{emps_id}}, * from {{schema}}.{{emps_tb}} order by {{emps_id}} asc \"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "select * from call.aggr - reserved words",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "cade3b64-9138-4835-b448-5c38cc1089e4",
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"test bad response\", function () {",
+									"    pm.response.to.have.status(500);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from call.aggr\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "select * from `call`.`aggr` - reserved words",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "24468153-d217-4563-91e1-0a937deeaf19",
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"test good response\", function () {",
+									"    pm.response.to.have.status(200);",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[0].all).to.eql(10);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select age AS `alter`, * from `call`.`aggr` as `and` WHERE `all` > 3 ORDER BY `and`.`all` desc\"\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -7844,7 +8154,7 @@
 		},
 		{
 			"name": "9. Alter Role Tests",
-			"description": "",
+			"description": null,
 			"item": [
 				{
 					"name": "SQL Add non SU role Copy",
@@ -8441,6 +8751,69 @@
 						"body": {
 							"mode": "raw",
 							"raw": "{\n     \"operation\": \"drop_schema\",\n     \"schema\": \"dev\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "This method is used to create a schema.  It like all other functions requires basic auth.  \n\nAttributes:\n\noperation (required) - must always be create_schema\n\nschema (required) - name of the schema you are creating"
+					},
+					"response": []
+				},
+				{
+					"name": "sql delete schema call",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"tests[\"Delete Schema\"] = responseBody.has(\"successfully delete\");\r",
+									"\r",
+									"\r",
+									""
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3Q="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n     \"operation\": \"drop_schema\",\n     \"schema\": \"call\"\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
