@@ -1,7 +1,7 @@
 "use strict";
 const path = require('path');
-const env_variable = require('../../../../../utility/install/installRequirements/EnvironmentVariable');
-const upgrade_directive = require('../../../../../utility/install/installRequirements/UpgradeDirective');
+const env_variable = require('../../../../../upgrade/EnvironmentVariable');
+const upgrade_directive = require('../../../../../upgrade/UpgradeDirective');
 
 let sep = path.sep;
 let this_ver = '1.1.1';

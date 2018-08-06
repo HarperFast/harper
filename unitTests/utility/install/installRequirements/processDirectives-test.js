@@ -11,8 +11,8 @@ const PropertiesReader = require('properties-reader');
 
 const rewire = require('rewire');
 const process_directive_rw = rewire('../../../../utility/install/installRequirements/processDirectives');
-const upgrade_directive = require('../../../../utility/install/installRequirements/UpgradeDirective');
-const env_variable = require('../../../../utility/install/installRequirements/EnvironmentVariable');
+const upgrade_directive = require('../../../../upgrade/UpgradeDirective');
+const env_variable = require('../../../../upgrade/EnvironmentVariable');
 
 const BASE = process.cwd();
 let DIR_PATH_BASE = BASE + '/processDirectivesTest/';
@@ -447,6 +447,36 @@ describe('Test compareVersions', function() {
         assert.equal(filtered_versions[1].version, '1.1.1.22', `expected version number 1.1.1.22, found ${filtered_versions.length}`);
         assert.equal(filtered_versions[2].version, '1.2.1', `expected version number 1.2.1, found ${filtered_versions.length}`);
         assert.equal(filtered_versions[3].version, '2.1.5', `expected version number 2.1.5, found ${filtered_versions.length}`);
+    });
+    it('test comparing 2 versions resulting in an upgrade', function() {
+        let oldVersion = '1.1.0';
+        let new_version = '2.0.0';
+        let should_upgrade = compareVersions(oldVersion, new_version);
+        assert.ok(should_upgrade < 0, `expected returned value less than than 0`);
+    });
+    it('test comparing 2 equal versions resulting in versions being up to date', function() {
+        let oldVersion = '1.1.0';
+        let new_version = '1.1.0';
+        let should_upgrade = compareVersions(oldVersion, new_version);
+        assert.ok(should_upgrade === 0, `expected returned value should be 0`);
+    });
+    it('test comparing 2 versions with old version being greater than new version', function() {
+        let oldVersion = '2.1.0';
+        let new_version = '1.1.0';
+        let should_upgrade = compareVersions(oldVersion, new_version);
+        assert.ok(should_upgrade > 0, `expected returned value greater than than 0`);
+    });
+    it('test comparing 2 versions with new version having 4 version', function() {
+        let oldVersion = '1.1.0';
+        let new_version = '1.1.0.1';
+        let should_upgrade = compareVersions(oldVersion, new_version);
+        assert.ok(should_upgrade < 0, `expected returned value less than than 0`);
+    });
+    it('test comparing 2 versions with new and old version having 4 version', function() {
+        let oldVersion = '1.1.0.1';
+        let new_version = '1.1.0.122';
+        let should_upgrade = compareVersions(oldVersion, new_version);
+        assert.ok(should_upgrade < 0, `expected returned value less than than 0`);
     });
 });
 

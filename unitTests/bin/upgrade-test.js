@@ -10,7 +10,7 @@ let fs = require('fs');
 
 const rewire = require('rewire');
 const upgrade_rw = rewire(`../../bin/upgrade`);
-const upgrade_directive = require('../../utility/install/installRequirements/UpgradeDirective');
+const upgrade_directive = require('../../upgrade/UpgradeDirective');
 const BASE = process.cwd();
 
 describe('Test processDirectives', function() {

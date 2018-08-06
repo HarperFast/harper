@@ -3,8 +3,8 @@
  * These classes define the data types used to define the necessary items for an upgrade.
  */
 
-const hdb_util = require('../../common_utils');
-const log = require('../../logging/harper_logger');
+const hdb_util = require('../utility/common_utils');
+const log = require('../utility/logging/harper_logger');
 const {promisify} = require('util');
 const os = require('os');
 const fs = require('fs');
@@ -18,7 +18,8 @@ const p_fs_readdir = promisify(fs.readdir);
 module.exports = {
     readDirectiveFiles: readDirectiveFiles,
     writeEnvVariables: writeEnvVariables,
-    processDirectives: processDirectives
+    processDirectives: processDirectives,
+    compareVersions: compareVersions
 };
 
 let hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
@@ -314,22 +315,27 @@ function getVersionsToInstall(curr_version_num, loaded_directives) {
 
 /**
  * Sorting function, Get old_version list of version directives to run during an upgrade.
- * Can be used via [<versions>].sort(compareVersions)
- * @param old_version
- * @param new_version_number
+ * Can be used via [<versions>].sort(compareVersions). Can also be used to just compare strictly version
+ * numbers.  Returns a number less than 0 if the old_version is less than new_version.
+ * @param old_version - As an UpgradeDirective object or just a version number as a string
+ * @param new_version - Newest version As an UpgradeDirective object or just a version number as a string
  * @returns {*}
  */
-function compareVersions (old_version, new_version_number) {
+function compareVersions (old_version, new_version) {
     if(hdb_util.isEmptyOrZeroLength(old_version)) {
         log.info('Invalid current version sent as parameter.');
+        return;
     }
-    if(hdb_util.isEmptyOrZeroLength(new_version_number)) {
+    if(hdb_util.isEmptyOrZeroLength(new_version)) {
         log.info('Invalid upgrade version sent as parameter.');
+        return;
     }
     let diff;
     let regExStrip0 = /(\.0+)+$/;
-    let segmentsA = old_version.version.replace(regExStrip0, '').split('.');
-    let segmentsB = new_version_number.version.replace(regExStrip0, '').split('.');
+    let old_version_as_string = ((old_version.version) ? old_version.version : old_version);
+    let new_version_as_string = ((new_version.version) ? new_version.version : new_version);
+    let segmentsA = old_version_as_string.replace(regExStrip0, '').split('.');
+    let segmentsB = new_version_as_string.replace(regExStrip0, '').split('.');
     let l = Math.min(segmentsA.length, segmentsB.length);
 
     for (let i = 0; i < l; i++) {

@@ -10,7 +10,8 @@ const log = require('../utility/logging/harper_logger');
 const hdb_util = require('../utility/common_utils');
 const { promisify } = require('util');
 const version = require('./version');
-const process_directives = require('../utility/install/installRequirements/processDirectives');
+const process_directives = require('../upgrade/processDirectives');
+const child_process = require('child_process');
 
 //Promisified functions
 const p_fs_readFile = promisify(fs.readFile);
@@ -34,60 +35,60 @@ module.exports = {
     upgrade: upgrade
 };
 
-//const versions_url = 'http://products.harperdb.io:9926/',
-//      versions_auth ='Basic dXBncmFkZV91c2VyOl43Snk3JCgmIW45TWpsIV4oSDAzMCUhU3ZFOFU2c1RY';
-
-const versions_url = 'http://lms.harperdb.io:9926/';
-const versions_auth ='Basic dXBncmFkZV91c2VyOl43Snk3JCgmIW45TWpsIV4oSDAzMCUhU3ZFOFU2c1RY';
+const versions_url = 'http://lms.harperdb.io:7777/api/latestVersion?os=';
+const download_url = 'http://lms.harperdb.io:7777/api/update?os=';
 
 async function upgrade() {
     if(hdb_util.isEmptyOrZeroLength(hdb_properties) ) {
-        log.error('the hdb_boot_properties file was not found.  Please install HDB.');
-        console.error('the hdb_boot_properties file was not found.  Please install HDB.');
-        return;
+        let msg = 'the hdb_boot_properties file was not found.  Please install HDB.';
+        log.error(msg);
+        console.error(msg);
+        return msg;
     }
     let os = findOs();
     if (!os) {
         return console.error('You are attempting to upgrade HarperDB on an unsupported operating system');
     }
-    let build = undefined;
-    try {
-        build = await getBuild(os);
-    } catch (err) {
-        log.error(err);
-        return console.error(err);
-    }
-
-    let package_json = await p_fs_readFile(hdb_properties.get('PROJECT_DIR') + '/package.json', 'utf8').catch(err => {
-        log.error(err);
-        return console.error(err);
+    let latest_version = await getLatestVersion(os).catch((e) => {
+        log.error(e);
+        console.error(`Error getting latest version from HarperDB: ${e}`);
+        throw e;
     });
 
-    if (JSON.parse(package_json).version >= build[0].product_version) {
-        return console.warn('HarperDB already up to date on ' + JSON.parse(package_json).version);
+    if(process_directives.compareVersions(version.version(), latest_version) === 0) {
+        return "HarperDB version is current";
     }
+
+    let build = await getBuild(os).catch((err) => {
+        log.error(err);
+        console.error(err);
+        throw err;
+    });
+    /*let package_json = await p_fs_readFile(hdb_properties.get('PROJECT_DIR') + '/package.json', 'utf8').catch(err => {
+        log.error(err);
+        return console.error(err);
+    });*/
+
+    //if (JSON.parse(package_json).version >= build[0].product_version) {
+    //    return console.warn('HarperDB already up to date on ' + JSON.parse(package_json).version);
+    //}
+    // untar the new package
+    //.exec('tar -xf /path', function(err) {});
     let found_directives = await process_directives.readDirectiveFiles(hdb_base);
     executeUpgrade(build[0]);
     await startUpgradeDirectives(version.version(), build[0].product_version);
 }
 
-async function getBuild(os) {
+async function getLatestVersion(os) {
     let options = {
-        method: 'POST',
-        url: versions_url,
+        method: 'GET',
+        url: versions_url + os,
         headers:
             {
                 'cache-control': 'no-cache',
-                authorization: versions_auth,
-                'content-type': 'application/json'
-            },
-        body:
-            {
-                operation: 'sql',
-                sql: "select public_path, product_version,path, product, os, " +
-                "status from hdb_lms.versions where status = 'active' AND os = '" + os + "'  ORDER BY product_version desc"
-            },
-        json: true
+                'content-type': 'application/json',
+                'Accept': 'application/json'
+            }
     };
     let res = undefined;
     try {
@@ -96,11 +97,34 @@ async function getBuild(os) {
         log.error(`There was an error with the request to get the latest HDB Build: ${e}`);
         throw new Error("Error getting latest build");
     }
-    if(!res || !res.body || hdb_util.isEmptyOrZeroLength(res.body)) {
-        log.error(`Got empty response from the HDB Version server`);
-        throw new Error("Got empty response from the HDB Version server");
+    res = JSON.parse(res);
+    return res[0].product_version;
+}
+
+async function getBuild(os) {
+    let options = {
+        method: 'GET',
+        url: download_url + os,
+        headers:
+            {
+                'cache-control': 'no-cache',
+                'content-type': 'application/json',
+                'Accept': 'application/json'
+            }
+    };
+    let res = undefined;
+    try {
+        res = await request(options);
+        let file = createWriteStream('hdb-latest.tar');
+        res.pipe(file);
+        file.on('finish', function() {
+
+        });
+    } catch (e) {
+        log.error(`There was an error with the request to get the latest HDB Build: ${e}`);
+        throw new Error("Error getting latest build");
     }
-    return res.body;
+    return;
 }
 
 function findOs() {
