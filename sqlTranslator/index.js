@@ -37,7 +37,7 @@ function evaluateSQL(json_message, callback) {
     if(statement instanceof alasql.yy.Insert) {
         schema = statement.into.databaseid;
     } else if (statement instanceof alasql.yy.Select) {
-        schema = statement.from[0].databaseid;
+        schema = statement.from ? statement.from[0].databaseid : null;
     } else if (statement instanceof alasql.yy.Update) {
         schema = statement.table.databaseid;
     } else if (statement instanceof alasql.yy.Delete) {
@@ -45,7 +45,7 @@ function evaluateSQL(json_message, callback) {
     } else {
         winston.error(`AST in evaluateSQL is not a valid SQL type.`);
     }
-    if(hdb_utils.isEmptyOrZeroLength(schema)) {
+    if(!statement instanceof alasql.yy.Select && hdb_utils.isEmptyOrZeroLength(schema)) {
         return callback('No schema specified', null);
     }
     processAST(json_message, parsed_sql, (error, results)=>{
