@@ -2418,7 +2418,145 @@
 					"response": []
 				},
 				{
-					"_postman_id": "f3486da0-5ae6-4117-9163-83210186683a",
+					"_postman_id": "04134a57-03ff-44a6-8b85-09db57f358ef",
+					"name": "select count(*) orders where shipregion is null",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "c49aad8f-40e3-4230-bccb-86332cf5483c",
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"sql select order where shipregion is null\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[0].count).to.eql(414);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select count(*) as `count` from {{schema}}.{{ords_tb}} where shipregion IS NULL\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"_postman_id": "659a3a25-5ef4-4bf0-af1a-5d65335a59a1",
+					"name": "select count(*) orders where shipregion is not null",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "61018d36-8944-4922-96d5-42d915c81296",
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"sql select order where shipregion is not null\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[0].count).to.eql(416);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select count(*) AS `count` from {{schema}}.{{ords_tb}} where shipregion is not null\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"_postman_id": "b0f7d167-4a74-4f33-b469-a3bc882fcdac",
 					"name": "select most buyer orderby price asc",
 					"event": [
 						{
