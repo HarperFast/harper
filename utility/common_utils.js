@@ -1,7 +1,18 @@
 "use strict"
 const path = require('path');
 const cast = require('autocast');
+const fs = require('fs');
+const log = require('./logging/harper_logger');
+const { promisify } = require('util');
+
 const EMPTY_STRING = '';
+
+//Promisify functions
+const p_fs_stat = promisify(fs.stat);
+const p_fs_readdir = promisify(fs.readdir);
+const p_fs_unlink = promisify(fs.unlink);
+
+
 module.exports = {
     isEmpty:isEmpty,
     isEmptyOrZeroLength:isEmptyOrZeroLength,
@@ -11,7 +22,8 @@ module.exports = {
     isBoolean: isBoolean,
     errorizeMessage: errorizeMessage,
     stripFileExtension: stripFileExtension,
-    autoCast: autoCast
+    autoCast: autoCast,
+    removeDir: removeDir
 };
 
 /**
@@ -139,9 +151,33 @@ function autoCast(data){
         if((value.startsWith('{') && value.endsWith('}')) || (value.startsWith('[') && value.endsWith(']'))){
             try{
                 value = JSON.parse(value);
-            }catch(e){
+            } catch(e) {
             }
         }
     }
     return value;
+}
+
+/**
+ * Removes all files in a given directory path.  This currently does not recurse into existing directories, so it only
+ * works on directorys with a depth of 1.
+ * @param dir_path
+ * @returns {Promise<[any]>}
+ */
+async function removeDir(dir_path) {
+    if(isEmptyOrZeroLength(dir_path)) {
+        throw new Error(`Directory path: ${dir_path} does not exist`);
+    }
+    let files = await p_fs_readdir(dir_path).catch((e) => {
+        throw e;
+    });
+    if(files && files.length > 0) {
+        try {
+            const unlinkPromises = files.map(filename => p_fs_unlink(`${dir_path}/${filename}`));
+            return await Promise.all(unlinkPromises);
+        } catch(e) {
+            log.error(`Error removing files in ${dir_path} -- ${e}`);
+            throw e;
+        }
+    }
 }

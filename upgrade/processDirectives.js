@@ -15,6 +15,8 @@ const PropertiesReader = require('properties-reader');
 const p_fs_writeFile = promisify(fs.writeFile);
 const p_fs_readdir = promisify(fs.readdir);
 
+const DIRECTIVE_PATH = `directives${path.sep}`;
+
 module.exports = {
     readDirectiveFiles: readDirectiveFiles,
     writeEnvVariables: writeEnvVariables,
@@ -345,4 +347,8 @@ function compareVersions (old_version, new_version) {
         }
     }
     return segmentsA.length - segmentsB.length;
+}
+
+async function getCurrentlyInstalledVersion() {
+
 }
