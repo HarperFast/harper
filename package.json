@@ -20,7 +20,7 @@
     "@turf/distance": "^6.0.1",
     "@turf/helpers": "^6.1.4",
     "@turf/length": "^6.0.2",
-    "alasql": "^0.4.8",
+    "alasql": "^0.4.9",
     "async": "^2.6.1",
     "autocast": "0.0.4",
     "aws-sdk": "^2.249.1",
