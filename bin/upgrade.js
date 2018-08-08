@@ -85,6 +85,13 @@ async function checkIfRunning() {
     return;
 }
 
+/**
+ * Call the upgradeExternal function on the untared latest version of HDB.
+ */
+function callUpgradeOnNew() {
+    console.log('HERHEEHREHREHR');
+}
+
 async function upgrade() {
     log.setLogLevel(log.INFO);
     let curr_user = os.userInfo();
@@ -137,7 +144,7 @@ async function upgrade() {
         console.error(err);
         throw err;
     };
-    console.log('here');
+
     /*let package_json = await p_fs_readFile(hdb_properties.get('PROJECT_DIR') + '/package.json', 'utf8').catch(err => {
         log.error(err);
         return console.error(err);
@@ -197,12 +204,9 @@ async function getBuild(opers) {
         res.pipe(file);
         file.on('finish', async function() {
             let tarball = await fs.createReadStream(path.join(UPGRADE_DIR_PATH, 'hdb-latest.tar')).pipe(tar.extract(UPGRADE_DIR_PATH));
-            tarball.on('close', async function () {
-                file.close();
-                tarball.close();
-                return;
+            tarball.on('finish', async function () {
+                callUpgradeOnNew();
             });
-            //tar.extract(path.join(UPGRADE_DIR_PATH, 'hdb-latest.tar'));
         });
     } catch (e) {
         log.error(`There was an error with the request to get the latest HDB Build: ${e}`);
