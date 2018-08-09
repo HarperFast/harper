@@ -18,7 +18,6 @@ const directive_manager_stub = require('./testDirectives/directiveManagerStub');
 
 const BASE = process.cwd();
 let DIR_PATH_BASE = BASE + '/processDirectivesTest/';
-const TEST_DIRECTIVES_PATH = '../unitTests/upgrade/directives/testDirectives/1-1-0.js';
 
 //Use the manager stub in order to control the tests.
 process_directive_rw.__set__('directive_manager', directive_manager_stub.directive_manager_rw);
