@@ -10,15 +10,13 @@ const os = require('os');
 const fs = require('fs');
 const path = require('path');
 const PropertiesReader = require('properties-reader');
+const directive_manager = require('./directives/directiveManager');
 
 // Promisified functions
 const p_fs_writeFile = promisify(fs.writeFile);
 const p_fs_readdir = promisify(fs.readdir);
 
-const DIRECTIVE_PATH = `directives${path.sep}`;
-
 module.exports = {
-    readDirectiveFiles: readDirectiveFiles,
     writeEnvVariables: writeEnvVariables,
     processDirectives: processDirectives,
     compareVersions: compareVersions
@@ -44,7 +42,10 @@ try {
  * @param upgrade_version - The desired upgrade version
  * @returns {Promise<void>}
  */
-async function processDirectives(curr_version, upgrade_version, loaded_directives) {
+async function processDirectives(curr_version, upgrade_version) {
+    // Currently we only support upgrading to latest which will be the largest version in the directive manager.  We
+    // could support upgrading to a specific version later by allowing the filter function to accept a specific version;
+    let loaded_directives = directive_manager.filterInvalidVersions(curr_version);
     if(hdb_util.isEmptyOrZeroLength(loaded_directives)) {
         console.error('No directive files found.  Exiting.');
         log.error('No directive files found.  Exiting.');
@@ -67,10 +68,12 @@ async function processDirectives(curr_version, upgrade_version, loaded_directive
             throw e;
         });
         // Update Environment variables
-        variable_comments = updateEnvironmentVariable(vers.environment_variables).catch((e) => {
+        try {
+            variable_comments = updateEnvironmentVariable(vers.environment_variables);
+        } catch(e) {
             log.error('Error updating environment variables in process Directives' + e);
             throw e;
-        });
+        }
         // Run Functions
         await runFunctions(vers.functions).catch((e) => {
             log.error('running func in process Directives' + e);
@@ -260,49 +263,6 @@ function makeDirectory(targetDir, {isRelativeToScript = false} = {}) {
 }
 
 /**
- * Read all directive files in a path and require them for use.
- * @param directive_path - Base path to find the directives dir from.
- * @returns {Promise<Array>}
- */
-async function readDirectiveFiles(directive_path) {
-    //const directive_path = path.join(directive_path, 'utility', 'install', 'directives', 'directives');
-    if(hdb_util.isEmptyOrZeroLength(directive_path)) {
-        let err_msg = 'invalid directory path sent to readDirectiveFiles';
-        log.error(err_msg);
-        throw new Error(err_msg);
-    }
-    let loaded_directives = [];
-    let files = undefined;
-    try {
-        files = await p_fs_readdir(directive_path);
-    } catch(e) {
-        log.fatal(`not able to read upgrade directive files path ${directive_path}`);
-    }
-    if(!files) {
-        console.error(`No directive files found in path: ${directive_path}`);
-        log.fatal(`No directive files found in path: ${directive_path}`);
-        throw new Error(`No directive files found in path: ${directive_path}`);
-    }
-    for(let i = 0; i<files.length; i++) {
-        try {
-            if(!files[i].indexOf('.js')) {
-                continue;
-            }
-            // exception from the no globalrequire eslint rule
-            // eslint-disable-next-line global-require
-            let directive = require(`${directive_path}/${files[i]}`);
-            // Make sure we read a directive file by checking the version wirh version call
-            log.trace(`Read upgrade directive file ${directive_path}/${files[i]} with version ${directive.version}`);
-            loaded_directives.push(directive);
-        } catch(e) {
-            // if we are here we didn't read a directive file, move along
-            continue;
-        }
-    }
-    return loaded_directives;
-}
-
-/**
  * Based on the current version, find all upgrade directives that need to be installed to make this installation current.
  * Returns the install directives array sorted from lowest to highest version number.
  * @param curr_version_num - The current versrion of HDB.
@@ -315,10 +275,14 @@ function getVersionsToInstall(curr_version_num, loaded_directives) {
     if(hdb_util.isEmptyOrZeroLength(loaded_directives)) {
         return [];
     }
-    let versions_modules_to_run = loaded_directives.sort(compareVersions).filter( function(curr_version) {
-        return curr_version.version > curr_version_num;
-    });
-    return versions_modules_to_run;
+    let version_modules_to_run = [];
+    for(let vers of loaded_directives) {
+        let module = directive_manager.getModuleByVersion(vers);
+        if(module) {
+            version_modules_to_run.push(module);
+        }
+    }
+    return version_modules_to_run;
 }
 
 /**

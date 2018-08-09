@@ -10,22 +10,25 @@ const fs = require('fs');
 const PropertiesReader = require('properties-reader');
 
 const rewire = require('rewire');
-const process_directive_rw = rewire('../../../../upgrade/processDirectives');
+const process_directive_rw = rewire('../../../upgrade/processDirectives');
 const upgrade_directive = require('../../../upgrade/UpgradeDirective');
 const env_variable = require('../../../upgrade/EnvironmentVariable');
+
+const directive_manager_stub = require('./testDirectives/directiveManagerStub');
 
 const BASE = process.cwd();
 let DIR_PATH_BASE = BASE + '/processDirectivesTest/';
 const TEST_DIRECTIVES_PATH = '../unitTests/upgrade/directives/testDirectives/1-1-0.js';
 
+//Use the manager stub in order to control the tests.
+process_directive_rw.__set__('directive_manager', directive_manager_stub.directive_manager_rw);
+
 describe('test processDirectives', function() {
-    let ver1_1_module = undefined;
     let processDirectives = process_directive_rw.__get__('processDirectives');
     process_directive_rw.__set__('settings_file_path', BASE + '/testsettings.js');
+
     beforeEach( function() {
         try {
-            let mod_path = path.join(process.cwd(), TEST_DIRECTIVES_PATH);
-            ver1_1_module = require(mod_path);
             process_directive_rw.__set__('hdb_base', BASE + '/processDirectivesTest/');
         } catch(e) {
             console.error(e);
@@ -50,7 +53,7 @@ describe('test processDirectives', function() {
     });
     it('test with middle version number, expect 1 returned.', async function() {
         try {
-            await processDirectives('0.0.1', '1.0.0', [ver1_1_module]);
+            await processDirectives('1.1.0', '2.1.0');
         } catch(e) {
             console.error(e);
         }
@@ -301,57 +304,14 @@ describe('Test stringifyProps', function() {
     });
 });
 
-describe('test readDirectiveFiles', function() {
-    beforeEach( function() {
-        process_directive_rw.__set__('hdb_base', BASE + '/../');
-    });
-    let readDirectiveFiles = process_directive_rw.__get__('readDirectiveFiles');
-
-    it('test reading with 1 file', async function() {
-        try {
-            let found_files = await readDirectiveFiles(path.join(process.cwd(),TEST_DIRECTIVES_PATH));
-            assert.equal(found_files.length, 3);
-        } catch(e) {
-            throw e;
-        }
-    });
-    it('test reading with bad path', async function() {
-        let excep = undefined;
-        try {
-            let found_files = await readDirectiveFiles('../omgfail/');
-        } catch(e) {
-            excep = e;
-        }
-        assert.equal((excep instanceof Error), true, 'Expected exception');
-    });
-    it('test reading with path resulting in no files found', async function() {
-        let excep = undefined;
-        try {
-            let found_files = await readDirectiveFiles('../');
-            assert.equal(found_files.length, 0);
-        } catch(e) {
-            excep = e;
-        }
-    });
-    it('test reading with null parh, expect exception', async function() {
-        let excep = undefined;
-        try {
-            let found_files = await readDirectiveFiles(null);
-        } catch(e) {
-            excep = e;
-        }
-        assert.equal((excep instanceof Error), true, 0);
-    });
-});
-
 describe('Test getVersionsToInstall', async function() {
     let getVersionsToInstall = process_directive_rw.__get__('getVersionsToInstall');
     let loaded_directives = null;
-    let readDirectiveFiles = process_directive_rw.__get__('readDirectiveFiles');
+    let filterInvalidVersions = directive_manager_stub.directive_manager_rw.__get__('filterInvalidVersions');
 
     beforeEach( async function() {
         process_directive_rw.__set__('hdb_base', BASE + '/../');
-        loaded_directives = await readDirectiveFiles(path.join(process.cwd(), TEST_DIRECTIVES_PATH));
+        loaded_directives = filterInvalidVersions('1.1.0');
     });
     afterEach(function() {
        loaded_directives = null;
@@ -363,15 +323,14 @@ describe('Test getVersionsToInstall', async function() {
         assert.equal(versions_to_run[0].version, '1.1.1', 'Expected 2 upgrade numbers back');
         assert.equal(versions_to_run[1].version, '2.1.0', 'Expected 2 upgrade numbers back');
     });
-    it('Test getVersionsToInstall  with 4 number version', function() {
+    it('Test getVersionsToInstall  with invalid number version', function() {
         let curr_version = '1.1.0';
         let loaded_copy = [...loaded_directives];
         loaded_copy.push(new upgrade_directive('1.1.1.22'));
         let versions_to_run = getVersionsToInstall(curr_version, loaded_copy);
-        assert.equal(versions_to_run.length, 3, 'Expected 2 upgrade numbers back');
+        assert.equal(versions_to_run.length, 2, 'Expected 2 upgrade numbers back');
         assert.equal(versions_to_run[0].version, '1.1.1', 'Expected 2 upgrade numbers back');
-        assert.equal(versions_to_run[1].version, '1.1.1.22', 'Expected 2 upgrade numbers back');
-        assert.equal(versions_to_run[2].version, '2.1.0', 'Expected 2 upgrade numbers back');
+        assert.equal(versions_to_run[1].version, '2.1.0', 'Expected 2 upgrade numbers back');
     });
     it('Test getVersionsToInstall  with 4 number version lower than curr', function() {
         let curr_version = '1.1.0';

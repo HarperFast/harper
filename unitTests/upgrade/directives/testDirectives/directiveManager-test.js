@@ -14,7 +14,6 @@ const test_vers1_1_1 = require('./1-1-1');
 const test_vers2_1_0 = require('./2-1-0');
 
 const rewire = require('rewire');
-//const directive_manager = require('../../../../upgrade/directives/directiveManager');
 const directive_manager_rw = rewire('../../../../upgrade/directives/directiveManager');
 
 describe('test getSortedVersions', function() {
