@@ -1,6 +1,6 @@
 'use strict';
 const path = require('path');
-const test_util = require('../../../test_utils');
+const test_util = require('../../test_utils');
 
 test_util.preTestPrep();
 
@@ -10,12 +10,13 @@ const fs = require('fs');
 const PropertiesReader = require('properties-reader');
 
 const rewire = require('rewire');
-const process_directive_rw = rewire('../../../../utility/install/installRequirements/processDirectives');
-const upgrade_directive = require('../../../../upgrade/UpgradeDirective');
-const env_variable = require('../../../../upgrade/EnvironmentVariable');
+const process_directive_rw = rewire('../../../../upgrade/processDirectives');
+const upgrade_directive = require('../../../upgrade/UpgradeDirective');
+const env_variable = require('../../../upgrade/EnvironmentVariable');
 
 const BASE = process.cwd();
 let DIR_PATH_BASE = BASE + '/processDirectivesTest/';
+const TEST_DIRECTIVES_PATH = '../unitTests/upgrade/directives/testDirectives/1-1-0.js';
 
 describe('test processDirectives', function() {
     let ver1_1_module = undefined;
@@ -23,7 +24,7 @@ describe('test processDirectives', function() {
     process_directive_rw.__set__('settings_file_path', BASE + '/testsettings.js');
     beforeEach( function() {
         try {
-            let mod_path = path.join(process.cwd(), '../unitTests/utility/install/installRequirements/testDirectives/1-1-0.js');
+            let mod_path = path.join(process.cwd(), TEST_DIRECTIVES_PATH);
             ver1_1_module = require(mod_path);
             process_directive_rw.__set__('hdb_base', BASE + '/processDirectivesTest/');
         } catch(e) {
@@ -62,7 +63,7 @@ describe('test createDirectories', function() {
     process_directive_rw.__set__('settings_file_path', BASE + '/testsettings.js');
     beforeEach( function() {
         try {
-            let mod_path = path.join(process.cwd(), '../unitTests/utility/install/installRequirements/testDirectives/1-1-0');
+            let mod_path = path.join(process.cwd(), '../unitTests/upgrade/directives/testDirectives/1-1-0');
             process_directive_rw.__set__('hdb_base', BASE + '/processDirectivesTest/');
             ver1_1_module = require(mod_path);
         } catch(e) {
@@ -308,7 +309,7 @@ describe('test readDirectiveFiles', function() {
 
     it('test reading with 1 file', async function() {
         try {
-            let found_files = await readDirectiveFiles(path.join(process.cwd(), '../unitTests/utility/install/installRequirements/testDirectives'));
+            let found_files = await readDirectiveFiles(path.join(process.cwd(),TEST_DIRECTIVES_PATH));
             assert.equal(found_files.length, 3);
         } catch(e) {
             throw e;
@@ -350,7 +351,7 @@ describe('Test getVersionsToInstall', async function() {
 
     beforeEach( async function() {
         process_directive_rw.__set__('hdb_base', BASE + '/../');
-        loaded_directives = await readDirectiveFiles(path.join(process.cwd(), '../unitTests/utility/install/installRequirements/testDirectives'));
+        loaded_directives = await readDirectiveFiles(path.join(process.cwd(), TEST_DIRECTIVES_PATH));
     });
     afterEach(function() {
        loaded_directives = null;

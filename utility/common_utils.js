@@ -23,7 +23,8 @@ module.exports = {
     errorizeMessage: errorizeMessage,
     stripFileExtension: stripFileExtension,
     autoCast: autoCast,
-    removeDir: removeDir
+    removeDir: removeDir,
+    compareVersions: compareVersions
 };
 
 /**
@@ -180,4 +181,38 @@ async function removeDir(dir_path) {
             throw e;
         }
     }
+}
+
+/**
+ * Sorting function, Get old_version list of version directives to run during an upgrade.
+ * Can be used via [<versions>].sort(compareVersions). Can also be used to just compare strictly version
+ * numbers.  Returns a number less than 0 if the old_version is less than new_version.
+ * @param old_version - As an UpgradeDirective object or just a version number as a string
+ * @param new_version - Newest version As an UpgradeDirective object or just a version number as a string
+ * @returns {*}
+ */
+function compareVersions (old_version, new_version) {
+    if(isEmptyOrZeroLength(old_version)) {
+        log.info('Invalid current version sent as parameter.');
+        return;
+    }
+    if(isEmptyOrZeroLength(new_version)) {
+        log.info('Invalid upgrade version sent as parameter.');
+        return;
+    }
+    let diff;
+    let regExStrip0 = /(\.0+)+$/;
+    let old_version_as_string = ((old_version.version) ? old_version.version : old_version);
+    let new_version_as_string = ((new_version.version) ? new_version.version : new_version);
+    let segmentsA = old_version_as_string.replace(regExStrip0, '').split('.');
+    let segmentsB = new_version_as_string.replace(regExStrip0, '').split('.');
+    let l = Math.min(segmentsA.length, segmentsB.length);
+
+    for (let i = 0; i < l; i++) {
+        diff = parseInt(segmentsA[i], 10) - parseInt(segmentsB[i], 10);
+        if (diff) {
+            return diff;
+        }
+    }
+    return segmentsA.length - segmentsB.length;
 }

@@ -28,20 +28,21 @@ const hdb_util = require('../utility/common_utils');
 const { promisify } = require('util');
 const version = require('./version');
 const process_directives = require('../upgrade/processDirectives');
-const child_process = require('child_process');
+const {spawn} = require('child_process');
 const ps = require('find-process');
 const path = require('path');
-const zlib = require('zlib');
 
 const UPGRADE_DIR_NAME= 'upgrade_vers'
-const UPGRADE_DIR_PATH = path.join(process.cwd(), UPGRADE_DIR_NAME);
+const UPGRADE_DIR_PATH = path.join(process.cwd(), '../', UPGRADE_DIR_NAME);
+const TAR_FILE_NAME = 'hdb-latest.tar';
+const EXE_COPY_NAME = 'hdb';
 
 //Promisified functions
-const p_fs_readFile = promisify(fs.readFile);
 const p_fs_rename = promisify(fs.rename);
 const p_fs_unlink = promisify(fs.unlink);
-const p_fs_stat = promisify(fs.stat);
 const p_fs_readdir = promisify(fs.readdir);
+const p_fs_copyfile = promisify(fs.copyFile);
+const p_fs_readfile = promisify(fs.readFile);
 
 let hdb_properties;
 
@@ -63,6 +64,9 @@ module.exports = {
 
 const versions_url = 'http://lms.harperdb.io:7777/api/latestVersion?os=';
 const download_url = 'http://lms.harperdb.io:7777/api/update?os=';
+
+let UPGRADE_VERSION_NUM = undefined;
+let CURRENT_VERSION_NUM = undefined;
 
 /**
  * Check to see if an instance of HDB is running. Throws an error if running, otherwise it will just return to resolve the promise.
@@ -89,7 +93,10 @@ async function checkIfRunning() {
  * Call the upgradeExternal function on the untared latest version of HDB.
  */
 function callUpgradeOnNew() {
-    console.log('HERHEEHREHREHR');
+    let spawn_target = `${process.cwd()}/${EXE_COPY_NAME}`;
+    let child = spawn(`${process.cwd()}/${EXE_COPY_NAME}`, ['upgrade_extern',version.version()], {detached: true, stdio: ['ignore','ignore','ignore']}).unref();
+    // Should terminate after this spawn
+    process.exit();
 }
 
 async function upgrade() {
@@ -125,7 +132,7 @@ async function upgrade() {
         // Most Failures here are OK, we just want to delete it if it exists.  Log it just in case.
         log.info(`Error reading upgrade directory, this is probably OK, we want to make sure it's empty before an upgrade. ${e} `)
     });
-
+    /*
     if(upgrade_dir_stat) {
         await hdb_util.removeDir(UPGRADE_DIR_PATH).catch((e) => {
            let err_msg = `Got an error trying to remove the upgrade/ directory.  Please manually delete the directory and 
@@ -134,9 +141,9 @@ async function upgrade() {
            log.error(err_msg);
            return;
         });
-    };
+    };*/
 
-    mkdirp(UPGRADE_DIR_PATH);
+    //mkdirp(UPGRADE_DIR_PATH);
     try {
         let build = await getBuild(opers);
     } catch(err) {
@@ -161,6 +168,16 @@ async function upgrade() {
 
 
 async function upgradeExternal(curr_installed_version) {
+    log.setLogLevel(log.INFO);
+    log.info('Starting upgrade process');
+    CURRENT_VERSION_NUM = curr_installed_version;
+    let package_path = path.join(UPGRADE_DIR_PATH, 'HarperDB', 'package.json');
+    let package_json = await p_fs_readfile(package_path, 'utf8').catch(err => {
+        log.error(err);
+        return console.error(err);
+    });
+    UPGRADE_VERSION_NUM = JSON.parse(package_json).version;
+    let upgrade_result = await startUpgradeDirectives(CURRENT_VERSION_NUM, UPGRADE_VERSION_NUM);
 
 }
 
@@ -199,18 +216,21 @@ async function getBuild(opers) {
     };
     let res = undefined;
     try {
-        res = await request(options);
+        /*res = await request(options);
         let file = await fs.createWriteStream(path.join(UPGRADE_DIR_PATH, 'hdb-latest.tar'));
         res.pipe(file);
         file.on('finish', async function() {
             let tarball = await fs.createReadStream(path.join(UPGRADE_DIR_PATH, 'hdb-latest.tar')).pipe(tar.extract(UPGRADE_DIR_PATH));
             tarball.on('finish', async function () {
+                await copyUpgradeExecutable();
                 callUpgradeOnNew();
             });
-        });
+        }); */
+        await copyUpgradeExecutable();
+        callUpgradeOnNew();
     } catch (e) {
         log.error(`There was an error with the request to get the latest HDB Build: ${e}`);
-        throw new Error("Error getting latest build");
+        throw new Error("Error getting latest build" + e);
     }
 }
 
@@ -291,6 +311,16 @@ function executeUpgrade(build) {
     });
 }
 
+async function copyUpgradeExecutable() {
+    let source_path = path.join(UPGRADE_DIR_PATH, 'HarperDB', 'bin', 'harperdb');
+    // Note we need to rename the new executable to 'hdb', so we don't e overwrite the existing installed executable (yet)
+    let destination_path = path.join(process.cwd(), 'hdb');
+    await p_fs_copyfile(source_path, destination_path).catch((e) => {
+        log.error(e);
+        throw e;
+    });
+}
+
 async function startUpgradeDirectives(old_version_number, new_version_number) {
     let found_directives = await process_directives.readDirectiveFiles(hdb_base);
     if(hdb_util.isEmptyOrZeroLength(found_directives)) {
@@ -300,7 +330,7 @@ async function startUpgradeDirectives(old_version_number, new_version_number) {
     }
     await process_directives.processDirectives(old_version_number, new_version_number, found_directives);
     countdown.stop();
-    console.log('HarperDB has been upgraded to ' + build.product_version);
+    //console.log('HarperDB has been upgraded to ' + build.product_version);
 }
 
 

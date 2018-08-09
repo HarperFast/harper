@@ -20,7 +20,7 @@ module.exports = {
 };
 
 async function readDirectives(hdb_path) {
-    const directive_path = path.join(process.cwd(), 'installRequirements', 'directives');
+    const directive_path = path.join(process.cwd(), 'directives', 'directives');
     let files = await p_fs_readdir(directive_path);
     if(!files) {
         console.error(`No directive files found in path: ${directive_path}`);

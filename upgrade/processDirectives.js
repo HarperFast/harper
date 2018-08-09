@@ -59,6 +59,7 @@ async function processDirectives(curr_version, upgrade_version, loaded_directive
     let upgrade_directives = getVersionsToInstall(curr_version, loaded_directives);
     let variable_comments = undefined;
     for(let vers of upgrade_directives) {
+        log.info(`Starting upgrade to version ${vers.version}`);
         // Create Directories
         let directories_to_create = vers.relative_directory_paths;
         await createDirectories(directories_to_create).catch((e) => {
@@ -94,7 +95,9 @@ async function createDirectories(directive_paths) {
     }
     for(let dir_path of directive_paths) {
         // This is synchronous
-        await makeDirectory(path.join(hdb_base, dir_path));
+        let new_dir_path = path.join(hdb_base, dir_path)
+        log.info(`Creating directory ${new_dir_path}`)
+        await makeDirectory(new_dir_path);
     }
 }
 
@@ -112,6 +115,7 @@ function updateEnvironmentVariable(directive_variables) {
     for(let dir_var of directive_variables) {
         let found_var = hdb_properties.get(dir_var.name);
         if( found_var === null || dir_var.force_value_update) {
+            log.info(`Updating settings variable: ${dir_var.name} to value: ${dir_var.value}`);
             hdb_properties.set(dir_var.name, dir_var.value);
         }
         if(!hdb_util.isEmptyOrZeroLength(dir_var.comments)) {
@@ -165,6 +169,7 @@ async function writeEnvVariables(comments) {
         throw new Error(err_msg);
     }
     try {
+        log.info(`Writing config values to ${settings_file_path}`);
         await p_fs_writeFile(settings_file_path, stringifyProps(hdb_properties, comments));
     } catch (e) {
         console.error('There was a problem writing the settings file.  Please check the install log for details.');
@@ -174,6 +179,7 @@ async function writeEnvVariables(comments) {
 
     // reload written props
     try {
+        log.info(`Reloading config values from ${settings_file_path}`);
         hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
     } catch (e) {
         log.trace('there was a problem reloading new properties file.');
@@ -259,7 +265,7 @@ function makeDirectory(targetDir, {isRelativeToScript = false} = {}) {
  * @returns {Promise<Array>}
  */
 async function readDirectiveFiles(directive_path) {
-    //const directive_path = path.join(directive_path, 'utility', 'install', 'installRequirements', 'directives');
+    //const directive_path = path.join(directive_path, 'utility', 'install', 'directives', 'directives');
     if(hdb_util.isEmptyOrZeroLength(directive_path)) {
         let err_msg = 'invalid directory path sent to readDirectiveFiles';
         log.error(err_msg);

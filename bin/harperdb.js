@@ -35,7 +35,7 @@ function harperDBService() {
         if (process.argv && process.argv[2]) {
             service = process.argv[2].toLowerCase();
         }
-
+        let curr_version = process.argv[3];
         let result = undefined;
         switch (service) {
             case "run":
@@ -61,9 +61,12 @@ function harperDBService() {
             case "upgrade":
                 upgrade.upgrade();
                 break;
+            case "upgrade_extern":
+                upgrade.upgradeExternal(curr_version);
+                break;
             default:
                 run.run();
-                break
+                break;
         }
     });
 }
