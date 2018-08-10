@@ -5,16 +5,12 @@
 
 const hdb_util = require('../utility/common_utils');
 const log = require('../utility/logging/harper_logger');
-const {promisify} = require('util');
 const os = require('os');
 const fs = require('fs');
 const path = require('path');
 const PropertiesReader = require('properties-reader');
 const directive_manager = require('./directives/directiveManager');
 
-// Promisified functions
-const p_fs_writeFile = promisify(fs.writeFile);
-const p_fs_readdir = promisify(fs.readdir);
 
 module.exports = {
     writeEnvVariables: writeEnvVariables,
@@ -40,10 +36,8 @@ try {
  * Iterates through the directives files to find uninstalled updates and runs the files.
  * @param curr_version - The version of HDB at this point.
  * @param upgrade_version - The desired upgrade version
- * @returns {Promise<void>}
  */
-async function processDirectives(curr_version, upgrade_version) {
-    console.trace('starting process directives')
+function processDirectives(curr_version, upgrade_version) {
     // Currently we only support upgrading to latest which will be the largest version in the directive manager.  We
     // could support upgrading to a specific version later by allowing the filter function to accept a specific version;
     let loaded_directives = directive_manager.filterInvalidVersions(curr_version);
@@ -60,14 +54,17 @@ async function processDirectives(curr_version, upgrade_version) {
     }
     let upgrade_directives = getVersionsToInstall(curr_version, loaded_directives);
     let variable_comments = undefined;
+    let func_responses = [];
     for(let vers of upgrade_directives) {
         log.info(`Starting upgrade to version ${vers.version}`);
         // Create Directories
         let directories_to_create = vers.relative_directory_paths;
-        await createDirectories(directories_to_create).catch((e) => {
+        try {
+            createDirectories(directories_to_create);
+        } catch(e) {
             log.error('Error creating directories in process Directives' + e);
             throw e;
-        });
+        }
         // Update Environment variables
         try {
             variable_comments = updateEnvironmentVariable(vers.environment_variables);
@@ -76,23 +73,29 @@ async function processDirectives(curr_version, upgrade_version) {
             throw e;
         }
         // Run Functions
-        await runFunctions(vers.functions).catch((e) => {
+        try {
+            func_responses = runFunctions(vers.functions);
+        } catch(e) {
             log.error('running func in process Directives' + e);
             throw e;
-        });
+        }
     }
-    await writeEnvVariables(variable_comments).catch((e) => {
+    try {
+        writeEnvVariables(variable_comments);
+    } catch(e) {
         log.error('Error writing environment variables in process Directives' + e);
         throw e;
-    });
+    }
+    for(let i of func_responses) {
+        log.info(i);
+    }
 }
 
 /**
  * Creates all directories specified in a directive file.
  * @param directive_paths
- * @returns {Promise<void>}
  */
-async function createDirectories(directive_paths) {
+function createDirectories(directive_paths) {
     if(hdb_util.isEmptyOrZeroLength(directive_paths)) {
         log.info('No upgrade directories to create.');
         return;
@@ -101,7 +104,7 @@ async function createDirectories(directive_paths) {
         // This is synchronous
         let new_dir_path = path.join(hdb_base, dir_path)
         log.info(`Creating directory ${new_dir_path}`)
-        await makeDirectory(new_dir_path);
+        makeDirectory(new_dir_path);
     }
 }
 
@@ -134,17 +137,18 @@ function updateEnvironmentVariable(directive_variables) {
 /**
  * Runs the functions specified in a directive object.
  * @param directive_functions - Array of functions to run
- * @returns {Promise<void>}
+ * @returns - Array of responses from function calls
  */
-async function runFunctions(directive_functions) {
+function runFunctions(directive_functions) {
     if(hdb_util.isEmptyOrZeroLength(directive_functions)) {
         log.info('No functions found to run for upgrade');
-        return;
+        return [];
     }
     if(!Array.isArray(directive_functions)) {
         log.info('Passed parameter is not an array');
-        return;
+        return [];
     }
+    let func_responses = [];
     for(let func of directive_functions) {
         log.info(`Running function ${func.name}`);
         if(!(func instanceof Function)) {
@@ -152,7 +156,8 @@ async function runFunctions(directive_functions) {
             continue;
         }
         try {
-            await func();
+            // All defined functions should be synchronous
+            func_responses.push(func());
         } catch(e) {
             log.error(e);
             // Right now assume any functions that need to be run are critical to a successful upgrade, so fail completely
@@ -160,13 +165,15 @@ async function runFunctions(directive_functions) {
             throw e;
         }
     }
+    return func_responses;
 }
 
 /**
  * Write the environment variables updated in the
- * @returns {Promise<void>}
+ * @param - comments - Object with key,value describing comments that should be placed above a variable in the settings file.
+ * The key is the variable name (PROJECT_DIR) and the value will be the string comment.
  */
-async function writeEnvVariables(comments) {
+function writeEnvVariables(comments) {
     if(hdb_util.isEmptyOrZeroLength(settings_file_path)) {
         let err_msg = 'In process directives, the settings file path is not set';
         log.warn(err_msg);
@@ -174,7 +181,7 @@ async function writeEnvVariables(comments) {
     }
     try {
         log.info(`Writing config values to ${settings_file_path}`);
-        await p_fs_writeFile(settings_file_path, stringifyProps(hdb_properties, comments));
+        fs.writeFileSync(settings_file_path, stringifyProps(hdb_properties, comments));
     } catch (e) {
         console.error('There was a problem writing the settings file.  Please check the install log for details.');
         log.error(e);
@@ -193,8 +200,9 @@ async function writeEnvVariables(comments) {
 
 /**
  * Takes a PropertiesReader object and converts it to a string so it can be printed to a file.
- * @param prop_reader_object
- * @param comments
+ * @param prop_reader_object - An object of type properties-reader containing properties stored in settings.js
+ * @param comments - Object with key,value describing comments that should be placed above a variable in the settings file.
+ * The key is the variable name (PROJECT_DIR) and the value will be the string comment.
  * @returns {string}
  */
 function stringifyProps(prop_reader_object, comments) {

@@ -15,7 +15,7 @@ directive.environment_variables.push(
     new env_variable(`TEST_VAR`, `TEST VAL`, ['THIS IS A COMMENT'])
 );
 
-async function thisIsATest() {
+function thisIsATest() {
     console.error('This is a test');
 }
 

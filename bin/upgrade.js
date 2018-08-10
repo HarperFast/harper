@@ -110,7 +110,6 @@ function callUpgradeOnNew() {
 }
 
 async function upgrade() {
-    log.fatal("SOMEHOW WE ARE HERE");
     log.setLogLevel(log.INFO);
     let curr_user = os.userInfo();
     log.info('Starting upgrade process');
@@ -165,18 +164,20 @@ async function upgrade() {
 }
 
 
-async function upgradeExternal(curr_installed_version) {
+function upgradeExternal(curr_installed_version) {
     log.info(`curr version ${curr_installed_version}`);
     CURRENT_VERSION_NUM = curr_installed_version;
     let package_path = path.join(UPGRADE_DIR_PATH, 'HarperDB', 'package.json');
-    let package_json = await p_fs_readfile(package_path, 'utf8').catch(err => {
+    let package_json = undefined;
+    try {
+        package_json = fs.readFileSync(package_path, 'utf8');
+    } catch(err) {
         log.error(err);
         return console.error(err);
-    });
+    }
     UPGRADE_VERSION_NUM = JSON.parse(package_json).version;
     log.info(`Starting upgrade process from version ${CURRENT_VERSION_NUM} to version ${UPGRADE_VERSION_NUM}`);
-    let upgrade_result = await startUpgradeDirectives(CURRENT_VERSION_NUM, UPGRADE_VERSION_NUM);
-    return;
+    let upgrade_result = startUpgradeDirectives(CURRENT_VERSION_NUM, UPGRADE_VERSION_NUM);
 }
 
 async function getLatestVersion(opers) {
@@ -223,10 +224,6 @@ async function getBuild(opers) {
                 await copyUpgradeExecutable();
                 callUpgradeOnNew();
             });
-            tarball.on('close', async function () {
-                await copyUpgradeExecutable();
-                callUpgradeOnNew();
-            });
         });
     } catch (e) {
         log.error(`There was an error with the request to get the latest HDB Build: ${e}`);
@@ -239,22 +236,17 @@ function findOs() {
         switch (os.release()) {
             case "armv7l":
                 return 'ARM 7'
-                break;
             case "armv6l":
                 return 'ARM 6';
-                break;
             default:
                 return null;
-                break;
         }
     }
     switch (os.platform()) {
         case "darwin":
             return 'Mac';
-            break;
         case "linux":
             return 'Linux';
-            break;
         default:
             return null;
     }
@@ -276,8 +268,8 @@ async function copyUpgradeExecutable() {
     });
 }
 
-async function startUpgradeDirectives(old_version_number, new_version_number) {
-    await process_directives.processDirectives(old_version_number, new_version_number);
+function startUpgradeDirectives(old_version_number, new_version_number) {
+    process_directives.processDirectives(old_version_number, new_version_number);
     countdown.stop();
 }
 
