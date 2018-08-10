@@ -43,6 +43,7 @@ try {
  * @returns {Promise<void>}
  */
 async function processDirectives(curr_version, upgrade_version) {
+    console.trace('starting process directives')
     // Currently we only support upgrading to latest which will be the largest version in the directive manager.  We
     // could support upgrading to a specific version later by allowing the filter function to accept a specific version;
     let loaded_directives = directive_manager.filterInvalidVersions(curr_version);

@@ -94,8 +94,8 @@ async function checkIfRunning() {
  * Call the upgradeExternal function on the untared latest version of HDB.
  */
 function callUpgradeOnNew() {
-    let spawn_target = `${process.cwd()}/${EXE_COPY_NAME}`;
-    let temp = version.version();
+    let spawn_target =
+        `${process.cwd()}/${EXE_COPY_NAME}`;
     try {
         let child = spawn(spawn_target, ['upgrade_extern', version.version()], {
             detached: true,
@@ -110,6 +110,7 @@ function callUpgradeOnNew() {
 }
 
 async function upgrade() {
+    log.fatal("SOMEHOW WE ARE HERE");
     log.setLogLevel(log.INFO);
     let curr_user = os.userInfo();
     log.info('Starting upgrade process');
@@ -165,35 +166,17 @@ async function upgrade() {
 
 
 async function upgradeExternal(curr_installed_version) {
-    // Need to initialize a new logger
-    let win_logger = new (winston.Logger)({
-        transports: [
-            new(winston.transports.File)({
-                level: 'info',
-                filename: `./upgrade.log`,
-                handleExceptions: true,
-                prettyPrint:true
-            })
-        ],
-        level: 'info',
-        exitOnError:false
-    });
-    //win_logger.setLogLevel(log.INFO);
-    win_logger.info(`Starting upgrade process in upgrade_extern`);
-    win_logger.info(`curr version ${curr_installed_version}`);
+    log.info(`curr version ${curr_installed_version}`);
     CURRENT_VERSION_NUM = curr_installed_version;
-    win_logger.info(`CURRENT_VERSION_NUM ${CURRENT_VERSION_NUM}`);
     let package_path = path.join(UPGRADE_DIR_PATH, 'HarperDB', 'package.json');
     let package_json = await p_fs_readfile(package_path, 'utf8').catch(err => {
-        win_logger.error(err);
+        log.error(err);
         return console.error(err);
     });
-    win_logger.info(`about to parse`);
     UPGRADE_VERSION_NUM = JSON.parse(package_json).version;
-    win_logger.info(`after parse`);
-    win_logger.info(`Starting upgrade process from version ${CURRENT_VERSION_NUM} to version ${UPGRADE_VERSION_NUM}`);
+    log.info(`Starting upgrade process from version ${CURRENT_VERSION_NUM} to version ${UPGRADE_VERSION_NUM}`);
     let upgrade_result = await startUpgradeDirectives(CURRENT_VERSION_NUM, UPGRADE_VERSION_NUM);
-
+    return;
 }
 
 async function getLatestVersion(opers) {

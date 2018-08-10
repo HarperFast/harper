@@ -6,7 +6,10 @@ const version = require('./version');
 const upgrade = require('./upgrade');
 const fs = require('fs');
 const logger = require('../utility/logging/harper_logger');
-    
+const {promisify} = require('util');
+
+const p_upgrade_extern = promisify( upgrade.upgradeExternal);
+
 harperDBService();
 
 function harperDBService() {
@@ -62,7 +65,13 @@ function harperDBService() {
                 upgrade.upgrade();
                 break;
             case "upgrade_extern":
-                upgrade.upgradeExternal(curr_version);
+                logger.setLogLevel(logger.INFO);
+                p_upgrade_extern(curr_version)
+                    .then(() => {
+                        logger.info('Upgrade complete');
+                    }).catch((e) => {
+                        logger.error(e);
+                });
                 break;
             default:
                 run.run();
