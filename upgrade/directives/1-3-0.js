@@ -1,5 +1,5 @@
 "use strict";
-const path = require('os');
+const path = require('path');
 const env_variable = require('../EnvironmentVariable');
 const upgrade_directive = require('../UpgradeDirective');
 

@@ -33,7 +33,6 @@ describe('test processDirectives', function() {
             console.error(e);
             throw e;
         }
-        //process_directive_rw.__set__('loaded_directives', [ver1_1_module]);
     });
 
     afterEach( function () {

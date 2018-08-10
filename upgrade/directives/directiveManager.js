@@ -11,6 +11,9 @@ const hdb_utils = require('../../utility/common_utils');
 // VERSIONS
 const version_1_1_0 = require('./1-1-0');
 const version_1_2_0 = require('./1-2-0');
+const version_1_1_2 = require('./1-1-2');
+const version_1_2_005 = require('./1-2-005');
+const version_1_2_0_1 = require('./1-2-0-1');
 const version_1_3_0 = require('./1-3-0');
 
 let versions = new Map();
@@ -18,6 +21,9 @@ let versions = new Map();
 //TODO:  ALL NEW DIRECTIVES MUST BE ADDED TO VERSIONS
 versions.set(version_1_1_0.version, version_1_1_0);
 versions.set(version_1_2_0.version, version_1_2_0);
+versions.set(version_1_1_2.version, version_1_1_2);
+versions.set(version_1_2_0_1.version, version_1_2_0_1);
+versions.set(version_1_2_005.version, version_1_2_005);
 versions.set(version_1_3_0.version, version_1_3_0);
 
 function getSortedVersions() {
