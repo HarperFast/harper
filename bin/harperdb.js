@@ -56,7 +56,7 @@ function harperDBService() {
                 });
                 break;
             case "version":
-                version.version();
+                version.printVersion();
                 break;
             case "upgrade":
                 upgrade.upgrade();

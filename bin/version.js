@@ -1,10 +1,14 @@
 const pjson = require('../package.json');
 
 module.exports = {
-   version: version
+   version: version,
+    printVersion, printVersion
 }
 
 function version(){
-    console.log(`HarperDB Version ${pjson.version}`);
     return pjson.version;
+}
+
+function printVersion() {
+    console.log(`HarperDB Version ${pjson.version}`);
 }

@@ -31,8 +31,6 @@ const process_directives = require('../upgrade/processDirectives');
 const {spawn} = require('child_process');
 const ps = require('find-process');
 const path = require('path');
-// we use winston during the external call
-const winston = require('winston');
 
 const UPGRADE_DIR_NAME= 'upgrade_vers'
 const UPGRADE_DIR_PATH = path.join(process.cwd(), '../', UPGRADE_DIR_NAME);
@@ -42,7 +40,6 @@ const EXE_COPY_NAME = 'hdb';
 //Promisified functions
 const p_fs_readdir = promisify(fs.readdir);
 const p_fs_copyfile = promisify(fs.copyFile);
-const p_fs_readfile = promisify(fs.readFile);
 const p_fs_chmod = promisify(fs.chmod);
 
 let hdb_properties;
@@ -56,7 +53,7 @@ try {
 
 const hdb_base = hdb_properties.get('PROJECT_DIR');
 let Spinner = CLI.Spinner;
-let countdown = new Spinner('Upgrading HarperDB ', ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷']);
+let countdown = new Spinner(`Upgrading HarperDB `, ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷']);
 
 module.exports = {
     upgrade: upgrade,
@@ -112,7 +109,7 @@ function callUpgradeOnNew() {
 async function upgrade() {
     log.setLogLevel(log.INFO);
     let curr_user = os.userInfo();
-    log.info('Starting upgrade process');
+    console.log(`This version of HarperDB is ${version.version()}`);
     if(hdb_util.isEmptyOrZeroLength(hdb_properties) ) {
         let msg = 'the hdb_boot_properties file was not found.  Please install HDB.';
         log.error(msg);
@@ -136,7 +133,10 @@ async function upgrade() {
     if(process_directives.compareVersions(version.version(), latest_version) === 0) {
         return "HarperDB version is current";
     }
-
+    //console.log(`Starting upgrade to version ${latest_version}`);
+    countdown.message(`Starting upgrade to version ${latest_version}`);
+    countdown.start();
+    log.info(`Starting upgrade to version ${latest_version}`);
     // Remove any existing upgrade/ directory path files
     let upgrade_dir_stat = await p_fs_readdir(UPGRADE_DIR_PATH).catch((e) => {
         // Most Failures here are OK, we just want to delete it if it exists.  Log it just in case.
@@ -166,6 +166,7 @@ async function upgrade() {
 
 function upgradeExternal(curr_installed_version) {
     log.info(`curr version ${curr_installed_version}`);
+    countdown.start();
     CURRENT_VERSION_NUM = curr_installed_version;
     let package_path = path.join(UPGRADE_DIR_PATH, 'HarperDB', 'package.json');
     let package_json = undefined;
@@ -177,6 +178,7 @@ function upgradeExternal(curr_installed_version) {
     }
     UPGRADE_VERSION_NUM = JSON.parse(package_json).version;
     log.info(`Starting upgrade process from version ${CURRENT_VERSION_NUM} to version ${UPGRADE_VERSION_NUM}`);
+    console.log(`Starting upgrade process from version ${CURRENT_VERSION_NUM} to version ${UPGRADE_VERSION_NUM}`);
     let upgrade_result = startUpgradeDirectives(CURRENT_VERSION_NUM, UPGRADE_VERSION_NUM);
 }
 
