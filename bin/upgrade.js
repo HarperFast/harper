@@ -32,7 +32,7 @@ const process_directives = require('../upgrade/processDirectives');
 const {spawn} = require('child_process');
 const ps = require('find-process');
 const path = require('path');
-const fs_extra = require('fs.extra');
+const fs_extra = require('fs-extra');
 
 const UPGRADE_DIR_NAME= 'hdb_upgrade'
 const UPGRADE_DIR_PATH = path.join(process.cwd(), '../', UPGRADE_DIR_NAME);
@@ -43,7 +43,6 @@ const EXE_COPY_NAME = 'hdb';
 const p_fs_readdir = promisify(fs.readdir);
 const p_fs_copyfile = promisify(fs.copyFile);
 const p_fs_chmod = promisify(fs.chmod);
-const p_fs_extra_copy_recursive = promisify(fs_extra.copyRecursive);
 
 let hdb_properties;
 
@@ -98,7 +97,6 @@ function callUpgradeOnNew() {
         `${process.cwd()}/${EXE_COPY_NAME}`;
     try {
         let child = spawn(spawn_target, ['upgrade_extern', version.version()], {
-            detached: true,
             stdio: ['ignore', 'ignore', 'ignore']
         }).unref();
     } catch(e) {
@@ -298,15 +296,35 @@ function startUpgradeDirectives(old_version_number, new_version_number) {
 
 function backupCurrInstall() {
     console.log('Backing up current install files.');
-    let curr_install_base = `${process.cwd() + '../'}`;
+    let curr_install_base = path.join(process.cwd(), '../');
     let data_base = hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.HDB_ROOT);
     log.info(`Current install path is: ${curr_install_base}`);
 
     let backup_path = path.join(data_base, 'backup', `version${(version.version().replace('/./g', '-'))}`);
     log.info(`Writing backup files to path: ${backup_path}`);
-    fs.mkdirSync(backup_path);
+
+    if(fs.existsSync(backup_path)) {
+        fs_extra.emptyDirSync(backup_path);
+    } else {
+        fs.mkdirSync(backup_path);
+    }
+
     // copy the current files to the backup directory
-    p_fs_extra_copy_recursive(curr_install_base, backup_path)
+    /*fs_extra.copyRecursive(curr_install_base, backup_path, { replace: true }, function (err) {
+        if (err) {
+            console.log(`There was a problem backing up current install.  Please check the logs.  Exiting.`);
+            log.fatal(err);
+            throw err;
+        }
+    }); */
+    try {
+        fs_extra.copySync(curr_install_base, backup_path);
+    } catch(err) {
+        console.log(`There was a problem backing up current install.  Please check the logs.  Exiting.`);
+        log.fatal(err);
+        throw err;
+    }
+    /*p_fs_extra_copy_recursive(curr_install_base, backup_path, {replace: true})
         .then(() => {
             //no-op
         })
@@ -314,17 +332,32 @@ function backupCurrInstall() {
             console.log(`There was a problem backing up current install.  Please check the logs.  Exiting.`);
             log.fatal(err);
             throw err;
-    });
+    });*/
 }
 
 function copyNewFilesIntoInstall() {
     console.log('Copying new install files.');
-    log.info(`backing up current install files to path: ${curr_install_base}`);
     let curr_install_base = path.join(process.cwd(), '../');
+    log.info(`backing up current install files to path: ${curr_install_base}`);
     let upgrade_base = path.join(UPGRADE_DIR_PATH, 'HarperDB');
     log.info(`upgrading from path: ${upgrade_base} to install path ${curr_install_base}`);
     // copy the new files to the current directory.
-    p_fs_extra_copy_recursive(upgrade_base, curr_install_base)
+    try {
+        fs_extra.copySync(upgrade_base, curr_install_base);
+    } catch(err) {
+        console.log(`There was a problem backing up current install.  Please check the logs.  Exiting.`);
+        log.fatal(err);
+        throw err;
+    }
+    /*fs_extra.copyRecursive(upgrade_base, curr_install_base, { replace: true }, function (err) {
+        if (err) {
+            console.log(`There was a problem moving the new version of HDB over.  Please check the log and try again.`);
+            log.fatal(err);
+            throw err;
+        }
+    }); */
+    /*
+    p_fs_extra_copy_recursive(upgrade_base, curr_install_base, {replace: true})
         .then(() => {
             //no-op
         })
@@ -332,7 +365,7 @@ function copyNewFilesIntoInstall() {
             console.log(`There was a problem moving the new version of HDB over.  Please check the log and try again.`);
             log.fatal(err);
             throw err;
-    });
+    }); */
 }
 
 
