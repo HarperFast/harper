@@ -25,14 +25,16 @@ const request_promise = require("request-promise-native");
 const PropertiesReader = require('properties-reader');
 const log = require('../utility/logging/harper_logger');
 const hdb_util = require('../utility/common_utils');
+const hdb_terms = require('../utility/hdbTerms');
 const { promisify } = require('util');
 const version = require('./version');
 const process_directives = require('../upgrade/processDirectives');
 const {spawn} = require('child_process');
 const ps = require('find-process');
 const path = require('path');
+const fs_extra = require('fs.extra');
 
-const UPGRADE_DIR_NAME= 'upgrade_vers'
+const UPGRADE_DIR_NAME= 'hdb_upgrade'
 const UPGRADE_DIR_PATH = path.join(process.cwd(), '../', UPGRADE_DIR_NAME);
 const TAR_FILE_NAME = 'hdb-latest.tar';
 const EXE_COPY_NAME = 'hdb';
@@ -41,6 +43,7 @@ const EXE_COPY_NAME = 'hdb';
 const p_fs_readdir = promisify(fs.readdir);
 const p_fs_copyfile = promisify(fs.copyFile);
 const p_fs_chmod = promisify(fs.chmod);
+const p_fs_extra_copy_recursive = promisify(fs_extra.copyRecursive);
 
 let hdb_properties;
 
@@ -135,7 +138,7 @@ async function upgrade() {
     }
     //console.log(`Starting upgrade to version ${latest_version}`);
     countdown.message(`Starting upgrade to version ${latest_version}`);
-    countdown.start();
+    //countdown.start();
     log.info(`Starting upgrade to version ${latest_version}`);
     // Remove any existing upgrade/ directory path files
     let upgrade_dir_stat = await p_fs_readdir(UPGRADE_DIR_PATH).catch((e) => {
@@ -165,15 +168,20 @@ async function upgrade() {
 
 
 function upgradeExternal(curr_installed_version) {
-    log.info(`curr version ${curr_installed_version}`);
-    countdown.start();
+    log.setLogLevel(log.INFO);
+    log.error(`curr version ${curr_installed_version}`);
+    //countdown.start();
     CURRENT_VERSION_NUM = curr_installed_version;
     let package_path = path.join(UPGRADE_DIR_PATH, 'HarperDB', 'package.json');
+    log.error(`package path is ${package_path}`);
+    console.error(`package path is ${package_path}`);
+    console.log(`UPGRADE PATH IS  ${UPGRADE_DIR_PATH}`);
     let package_json = undefined;
     try {
         package_json = fs.readFileSync(package_path, 'utf8');
     } catch(err) {
         log.error(err);
+        console.error(`could not find package at path ${package_path}`);
         return console.error(err);
     }
     UPGRADE_VERSION_NUM = JSON.parse(package_json).version;
@@ -218,10 +226,10 @@ async function getBuild(opers) {
     let res = undefined;
     try {
         res = await request(options);
-        let file = await fs.createWriteStream(path.join(UPGRADE_DIR_PATH, 'hdb-latest.tar'),  {mode: 0o754});
+        let file = await fs.createWriteStream(path.join(UPGRADE_DIR_PATH, TAR_FILE_NAME),  {mode: 0o754});
         res.pipe(file);
         file.on('finish', async function() {
-            let tarball = await fs.createReadStream(path.join(UPGRADE_DIR_PATH, 'hdb-latest.tar'), {mode: 0o754}).pipe(tar.extract(UPGRADE_DIR_PATH));
+            let tarball = await fs.createReadStream(path.join(UPGRADE_DIR_PATH, TAR_FILE_NAME), {mode: 0o754}).pipe(tar.extract(UPGRADE_DIR_PATH));
             tarball.on('finish', async function () {
                 await copyUpgradeExecutable();
                 callUpgradeOnNew();
@@ -272,7 +280,59 @@ async function copyUpgradeExecutable() {
 
 function startUpgradeDirectives(old_version_number, new_version_number) {
     process_directives.processDirectives(old_version_number, new_version_number);
+    try {
+        backupCurrInstall();
+    } catch(err) {
+        throw err;
+    }
+
+    try {
+        copyNewFilesIntoInstall();
+    } catch(e) {
+        throw e;
+    }
+
     countdown.stop();
+    console.log(`HarperDB was successfully upgraded to version ${version.version()}`);
+}
+
+function backupCurrInstall() {
+    console.log('Backing up current install files.');
+    let curr_install_base = `${process.cwd() + '../'}`;
+    let data_base = hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.HDB_ROOT);
+    log.info(`Current install path is: ${curr_install_base}`);
+
+    let backup_path = path.join(data_base, 'backup', `version${(version.version().replace('/./g', '-'))}`);
+    log.info(`Writing backup files to path: ${backup_path}`);
+    fs.mkdirSync(backup_path);
+    // copy the current files to the backup directory
+    p_fs_extra_copy_recursive(curr_install_base, backup_path)
+        .then(() => {
+            //no-op
+        })
+        .catch((err) => {
+            console.log(`There was a problem backing up current install.  Please check the logs.  Exiting.`);
+            log.fatal(err);
+            throw err;
+    });
+}
+
+function copyNewFilesIntoInstall() {
+    console.log('Copying new install files.');
+    log.info(`backing up current install files to path: ${curr_install_base}`);
+    let curr_install_base = path.join(process.cwd(), '../');
+    let upgrade_base = path.join(UPGRADE_DIR_PATH, 'HarperDB');
+    log.info(`upgrading from path: ${upgrade_base} to install path ${curr_install_base}`);
+    // copy the new files to the current directory.
+    p_fs_extra_copy_recursive(upgrade_base, curr_install_base)
+        .then(() => {
+            //no-op
+        })
+        .catch((err) => {
+            console.log(`There was a problem moving the new version of HDB over.  Please check the log and try again.`);
+            log.fatal(err);
+            throw err;
+    });
 }
 
 

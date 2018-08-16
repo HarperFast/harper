@@ -63,7 +63,7 @@ function harperDBService() {
                 break;
             case "upgrade_extern":
                 logger.setLogLevel(logger.INFO);
-                upgrade.upgradeExternal();
+                upgrade.upgradeExternal(curr_version);
                 break;
             default:
                 run.run();
