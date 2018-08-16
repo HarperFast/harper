@@ -140,7 +140,7 @@ async function upgrade() {
         throw e;
     });
 
-    if(process_directives.compareVersions(version.version(), latest_version) === 0) {
+    if(hdb_util.compareVersions(version.version(), latest_version) === 0) {
         return "HarperDB version is current";
     }
     countdown.message(`Starting upgrade to version ${latest_version}`);
