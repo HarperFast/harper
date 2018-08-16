@@ -3,6 +3,7 @@ const path = require('path');
 const cast = require('autocast');
 const fs = require('fs');
 const log = require('./logging/harper_logger');
+const fs_extra = require('fs-extra');
 const { promisify } = require('util');
 
 const EMPTY_STRING = '';
@@ -160,8 +161,7 @@ function autoCast(data){
 }
 
 /**
- * Removes all files in a given directory path.  This currently does not recurse into existing directories, so it only
- * works on directorys with a depth of 1.
+ * Removes all files in a given directory path.
  * @param dir_path
  * @returns {Promise<[any]>}
  */
@@ -169,17 +169,12 @@ async function removeDir(dir_path) {
     if(isEmptyOrZeroLength(dir_path)) {
         throw new Error(`Directory path: ${dir_path} does not exist`);
     }
-    let files = await p_fs_readdir(dir_path).catch((e) => {
+    try {
+        await fs_extra.emptyDir(dir_path);
+        await fs_extra.remove(dir_path);
+    } catch(e) {
+        log.error(`Error removing files in ${dir_path} -- ${e}`);
         throw e;
-    });
-    if(files && files.length > 0) {
-        try {
-            const unlinkPromises = files.map(filename => p_fs_unlink(`${dir_path}/${filename}`));
-            return await Promise.all(unlinkPromises);
-        } catch(e) {
-            log.error(`Error removing files in ${dir_path} -- ${e}`);
-            throw e;
-        }
     }
 }
 

@@ -89,6 +89,7 @@ function processDirectives(curr_version, upgrade_version) {
     for(let i of func_responses) {
         log.info(i);
     }
+    return func_responses;
 }
 
 /**
@@ -326,8 +327,4 @@ function compareVersions (old_version, new_version) {
         }
     }
     return segmentsA.length - segmentsB.length;
-}
-
-async function getCurrentlyInstalledVersion() {
-
 }
