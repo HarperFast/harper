@@ -76,7 +76,7 @@ let CURRENT_VERSION_NUM = undefined;
  * @returns {Promise<void>}
  */
 async function checkIfRunning() {
-    let list = await ps('name', HDB_PROC_NAME).catch((e) => {
+    let list = await ps('name', hdb_terms.HDB_PROC_NAME).catch((e) => {
         let run_err = 'HarperDB is running, please stop HarperDB with /bin/harperdb stop and run the upgrade command again.';
         console.log(run_err);
         log.info(run_err);
@@ -118,7 +118,6 @@ function callUpgradeOnNew() {
  */
 async function upgrade() {
     log.setLogLevel(log.INFO);
-    let curr_user = os.userInfo();
     console.log(`This version of HarperDB is ${version.version()}`);
     if(hdb_util.isEmptyOrZeroLength(hdb_properties) ) {
         let msg = 'the hdb_boot_properties file was not found.  Please install HDB.';
@@ -128,7 +127,11 @@ async function upgrade() {
     }
 
     // check if already running, ends process if error caught.
-    await checkIfRunning().catch(() => {return});
+    try {
+        await checkIfRunning();
+    } catch(e) {
+        return ;
+    }
 
     let opers = findOs();
     if (!opers) {
