@@ -80,7 +80,7 @@ async function checkIfRunning() {
         let run_err = 'HarperDB is running, please stop HarperDB with /bin/harperdb stop and run the upgrade command again.';
         console.log(run_err);
         log.info(run_err);
-        throw new Error('An instance of harperdb is running.');
+        throw new Error(run_err);
     });
 
     if( list.length !== 0 ) {
@@ -89,7 +89,6 @@ async function checkIfRunning() {
         log.info(run_err);
         throw new Error('An instance of harperdb is running.');
     }
-    return;
 }
 
 /**
@@ -123,19 +122,21 @@ async function upgrade() {
         let msg = 'the hdb_boot_properties file was not found.  Please install HDB.';
         log.error(msg);
         console.error(msg);
-        return msg;
+        throw new Error(msg);
     }
 
     // check if already running, ends process if error caught.
     try {
         await checkIfRunning();
     } catch(e) {
-        return ;
+        console.log(e.message);
+        throw e;
     }
 
     let opers = findOs();
     if (!opers) {
-        return console.error('You are attempting to upgrade HarperDB on an unsupported operating system');
+        console.error('You are attempting to upgrade HarperDB on an unsupported operating system');
+        throw new Error('You are attempting to upgrade HarperDB on an unsupported operating system');
     }
     let latest_version = await getLatestVersion(opers).catch((e) => {
         log.error(e);
@@ -151,8 +152,7 @@ async function upgrade() {
     log.info(`Starting upgrade to version ${latest_version}`);
     // Remove any existing upgrade/ directory path files
     let upgrade_dir_stat = await p_fs_readdir(UPGRADE_DIR_PATH).catch((e) => {
-        // Most Failures here are OK, we just want to delete it if it exists.  Log it just in case.
-        log.info(`Error reading upgrade directory, this is probably OK, we want to make sure it's empty before an upgrade. ${e} `)
+        // no-op
     });
 
     if(upgrade_dir_stat) {
@@ -165,7 +165,11 @@ async function upgrade() {
         });
     };
 
-    mkdirp(UPGRADE_DIR_PATH);
+    await mkdirp(UPGRADE_DIR_PATH).catch((e) => {
+        let err_msg = `Got an error trying to create the upgrade directory. ${e}`;
+        console.error(err_msg);
+        log.error(err_msg);
+    });
     try {
         let build = await getBuild(opers);
     } catch(err) {
