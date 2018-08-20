@@ -6,10 +6,10 @@ test_util.preTestPrep();
 
 const assert = require('assert');
 const sinon = require('sinon');
-const child_process = require('child_process');
-const events = require('events');
 const version = require('../../bin/version');
 const hdb_utils = require('../../utility/common_utils');
+const fs = require('fs');
+const request_promise = require("request-promise-native");
 
 const rewire = require('rewire');
 const upgrade_rw = rewire(`../../bin/upgrade`);
@@ -18,6 +18,11 @@ const process_directives_rw = rewire('../../upgrade/processDirectives');
 const BASE = process.cwd();
 
 const directive_manager_stub = require('../upgrade/directives/testDirectives/directiveManagerStub');
+
+const PACKAGE_JSON_VAL = {
+    "name": "harperdb",
+    "version": "1.2.0"
+};
 
 describe('Upgrade Test - Test processDirectives', function() {
     upgrade_rw.__set__('hdb_base', BASE + '/../');
@@ -61,14 +66,6 @@ describe('Upgrade Test - Test checkIfRunning', function() {
 });
 
 describe('Upgrade Test - Test upgrade', async function() {
-    async function mkdirpstub(path) {
-        return;
-    }
-
-    async function mkdirpstub(path) {
-        throw new Error('mkdirp exception');
-    }
-
     let check_if_running_stub_orig = upgrade_rw.__get__('checkIfRunning');
     let get_latest_stub_orig = upgrade_rw.__get__('getLatestVersion');
     let p_read_dir_stub_orig = upgrade_rw.__get__('p_fs_readdir');
@@ -218,54 +215,160 @@ describe('Upgrade Test - Test upgrade', async function() {
 });
 
 describe('Upgrade Test - Test upgradeExternal', function() {
-    upgrade_rw.__set__('hdb_base', BASE + '/../');
-    let startUpgradeDirectives = upgrade_rw.__get__('upgradeExternal');
-    // We don't want to use real directives for testing as they could change over time and invalidate tests, so we use
-    // the directive manager stub.  In order to assign it to the process_directive instance we need to bring in a rewired
-    // version.
-    process_directives_rw.__set__('directive_manager', directive_manager_stub.directive_manager_rw);
-    upgrade_rw.__set__('process_directives', process_directives_rw);
-    it('test startUpgradeDirectives', function() {
-        startUpgradeDirectives('1.1.0', '2.1.0');
-    });
-});
 
-describe('Upgrade Test - Test postInstallCleanUp', function() {
+    let readFileSync_stub = undefined;
+    let backupCurrInstall_stub = undefined;
+    let startUpgradeDirectives_stub = undefined;
+    let copyNewFilesIntoInstall_stub = undefined;
+    let chmodSync_stub = undefined;
+    let postInstallCleanUp_stub = undefined;
+
+    let backupCurrInstall_orig = upgrade_rw.__get__('backupCurrInstall');
+    let startUpgradeDirectives_orig = upgrade_rw.__get__('startUpgradeDirectives');
+    let copyNewFilesIntoInstall_orig = upgrade_rw.__get__('copyNewFilesIntoInstall');
+    let postInstallCleanUp_orig = upgrade_rw.__get__('postInstallCleanUp');
+
+    let spinner = upgrade_rw.__get__('countdown');
     upgrade_rw.__set__('hdb_base', BASE + '/../');
-    let startUpgradeDirectives = upgrade_rw.__get__('postInstallCleanUp');
+    let upgradeExternal = upgrade_rw.__get__('upgradeExternal');
     // We don't want to use real directives for testing as they could change over time and invalidate tests, so we use
     // the directive manager stub.  In order to assign it to the process_directive instance we need to bring in a rewired
     // version.
     process_directives_rw.__set__('directive_manager', directive_manager_stub.directive_manager_rw);
     upgrade_rw.__set__('process_directives', process_directives_rw);
-    it('test startUpgradeDirectives', function() {
-        startUpgradeDirectives('1.1.0', '2.1.0');
+    let sandbox = sinon.createSandbox();
+
+    beforeEach(function () {
+        readFileSync_stub = sandbox.stub(fs, 'readFileSync').returns(JSON.stringify(PACKAGE_JSON_VAL));
+        backupCurrInstall_stub = sandbox.stub().returns('');
+        startUpgradeDirectives_stub = sandbox.stub().returns(['result 1', 'result 2']);
+        copyNewFilesIntoInstall_stub = sandbox.stub().returns('');
+        chmodSync_stub = sandbox.stub(fs, 'chmodSync').returns('');
+        postInstallCleanUp_stub = sandbox.stub().returns('');
+
+        upgrade_rw.__set__('backupCurrInstall', backupCurrInstall_stub);
+        upgrade_rw.__set__('startUpgradeDirectives', startUpgradeDirectives_stub);
+        upgrade_rw.__set__('copyNewFilesIntoInstall', copyNewFilesIntoInstall_stub);
+        upgrade_rw.__set__('postInstallCleanUp', postInstallCleanUp_stub);
+    });
+
+    afterEach(function () {
+        sandbox.restore();
+        upgrade_rw.__set__('backupCurrInstall', backupCurrInstall_orig);
+        upgrade_rw.__set__('startUpgradeDirectives', startUpgradeDirectives_orig);
+        upgrade_rw.__set__('copyNewFilesIntoInstall', copyNewFilesIntoInstall_orig);
+        upgrade_rw.__set__('postInstallCleanUp', postInstallCleanUp_orig);
+        spinner.stop();
+    });
+
+    it('test upgradeExternal nominal path', function() {
+        let exep = undefined;
+        try {
+            upgradeExternal('1.1.0');
+        } catch(e) {
+            exep = e;
+        }
+        assert.equal(exep, undefined, 'expected an exception');
+    });
+    it('test upgradeExternal with invalid version parameter', function() {
+        let exep = undefined;
+        try {
+            upgradeExternal(null);
+        } catch(e) {
+            exep = e;
+        }
+        assert.equal((exep instanceof Error), true, 'expected no exceptions');
+        assert.equal(readFileSync_stub.called, false, 'Process kept going despite upgrade directive exception');
+    });
+    it('test upgradeExternal with readFileSyncException', function() {
+        let exep = undefined;
+        let exception_msg = "ReadFileSync Test Error";
+        try {
+            readFileSync_stub.restore();
+            readFileSync_stub = sandbox.stub(fs, 'readFileSync').throws(new Error(exception_msg));
+            upgradeExternal('1.1.0');
+        } catch(e) {
+            exep = e;
+        }
+        assert.equal((exep instanceof Error), true, 'expected no exceptions');
+        // Make sure we are getting the expected exception
+        assert.equal(exep.message === exception_msg, true, 'expected specific  exception message');
+    });
+    it('test upgradeExternal with backupCurrInstall Exception', function() {
+        let exep = undefined;
+        let exception_msg = "backupCurrInstall Test Error";
+        try {
+            backupCurrInstall_stub = sandbox.stub().throws(new Error("backupCurrInstall Test Error"));
+            upgrade_rw.__set__('backupCurrInstall', backupCurrInstall_stub);
+            upgradeExternal('1.1.0');
+        } catch(e) {
+            exep = e;
+        }
+        assert.equal((exep instanceof Error), true, 'expected no exceptions');
+        assert.equal(exep.message === exception_msg, true, 'expected specific  exception message');
+    });
+    it('test upgradeExternal with startUpgradeDirectives_stub Exception', function() {
+        let exep = undefined;
+        try {
+            startUpgradeDirectives_stub = sandbox.stub().throws(new Error("startUpgradeDirectives_stub Test Error"));
+            upgrade_rw.__set__('startUpgradeDirectives', startUpgradeDirectives_stub);
+            upgradeExternal('1.1.0');
+        } catch(e) {
+            exep = e;
+        }
+        assert.equal(copyNewFilesIntoInstall_stub.called, true, 'Process keep going despite upgrade directive exception');
+    });
+    it('test upgradeExternal with chmodSync Exception', function() {
+        let exep = undefined;
+        try {
+            chmodSync_stub.restore();
+            chmodSync_stub = sandbox.stub(fs, 'chmodSync').throws(new Error("chmod exception"));
+            upgradeExternal('1.1.0');
+        } catch(e) {
+            exep = e;
+        }
+        // We should still be running if chmod throws an exception
+        assert.equal(postInstallCleanUp_stub.called, true, 'Process should keep running after chmod exception');
     });
 });
 
 describe('Upgrade Test - Test getLatestVersion', function() {
     upgrade_rw.__set__('hdb_base', BASE + '/../');
     let getLatestVersion = upgrade_rw.__get__('getLatestVersion');
-    // We don't want to use real directives for testing as they could change over time and invalidate tests, so we use
-    // the directive manager stub.  In order to assign it to the process_directive instance we need to bring in a rewired
-    // version.
-    process_directives_rw.__set__('directive_manager', directive_manager_stub.directive_manager_rw);
-    upgrade_rw.__set__('process_directives', process_directives_rw);
-    it('test startUpgradeDirectives', function() {
-        getLatestVersion('1.1.0', '2.1.0');
-    });
-});
+    let sandbox = sinon.createSandbox();
 
-describe('Upgrade Test - Test getBuild', function() {
-    upgrade_rw.__set__('hdb_base', BASE + '/../');
-    let getBuild = upgrade_rw.__get__('getBuild');
-    // We don't want to use real directives for testing as they could change over time and invalidate tests, so we use
-    // the directive manager stub.  In order to assign it to the process_directive instance we need to bring in a rewired
-    // version.
-    process_directives_rw.__set__('directive_manager', directive_manager_stub.directive_manager_rw);
-    upgrade_rw.__set__('process_directives', process_directives_rw);
-    it('test startUpgradeDirectives', function() {
-        getBuild('1.1.0', '2.1.0');
+    let request_promise_stub = undefined;
+    let request_promise_orig = upgrade_rw.__get__('request_promise');
+
+    let request_response = '[{"product_version":"1.2.005"},{"product_version":"1.2.004"},{"product_version":"1.2.0.1"}]';
+
+    beforeEach(function () {
+        request_promise_stub = sandbox.stub().resolves(request_response);
+    });
+
+    afterEach(function () {
+        sandbox.restore();
+        upgrade_rw.__set__('request_promise', request_promise_orig);
+    });
+
+    it('test getLatestVersion', async function() {
+        upgrade_rw.__set__('request_promise', request_promise_stub);
+        let exep = undefined;
+        await getLatestVersion('1.1.0').catch((e) => {
+            exep = e;
+        });
+        assert.ok(exep === undefined, 'Got an unexpected exception');
+    });
+    it('test getLatestVersion throwing exception', async function() {
+        upgrade_rw.__set__('request_promise', request_promise_stub);
+        let exep_msg = 'Request exception';
+        request_promise_stub = sandbox.stub().throws(new Error(exep_msg));
+        upgrade_rw.__set__('request_promise', request_promise_stub);
+        let exep = undefined;
+        await getLatestVersion('1.1.0').catch((e) => {
+            exep = e;
+        });
+        assert.ok((exep instanceof Error) === true, 'Got an unexpected exception');
     });
 });
 
@@ -282,6 +385,7 @@ describe('Upgrade Test - Test findOs', function() {
     });
 });
 
+/*
 describe('Upgrade Test - Test copyUpgradeExecutable', function() {
     upgrade_rw.__set__('hdb_base', BASE + '/../');
     let copyUpgradeExecutable = upgrade_rw.__get__('copyUpgradeExecutable');
@@ -333,3 +437,4 @@ describe('Upgrade Test - Test copyNewFilesIntoInstall', function() {
         copyNewFilesIntoInstall('1.1.0', '2.1.0');
     });
 });
+*/

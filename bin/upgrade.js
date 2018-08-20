@@ -78,15 +78,12 @@ let CURRENT_VERSION_NUM = undefined;
 async function checkIfRunning() {
     let list = await ps('name', hdb_terms.HDB_PROC_NAME).catch((e) => {
         let run_err = 'HarperDB is running, please stop HarperDB with /bin/harperdb stop and run the upgrade command again.';
-        console.log(run_err);
-        log.info(run_err);
+        printToLogAndConsole(run_err, log.ERR);
         throw new Error(run_err);
     });
 
     if( list.length !== 0 ) {
-        let run_err = 'HarperDB is running, please stop HarperDB with /bin/harperdb stop and run the upgrade command again.';
-        console.log(run_err);
-        log.info(run_err);
+        printToLogAndConsole('HarperDB is running, please stop HarperDB with /bin/harperdb stop and run the upgrade command again.', log.ERR);
         throw new Error('An instance of harperdb is running.');
     }
 }
@@ -102,8 +99,7 @@ function callUpgradeOnNew() {
             stdio: ['ignore', 'ignore', 'ignore']
         }).unref();
     } catch(e) {
-        console.error(e);
-        log.error(e);
+        printToLogAndConsole(e, log.ERR);
     }
     // Should terminate after this spawn
     process.exit();
@@ -117,12 +113,10 @@ function callUpgradeOnNew() {
  */
 async function upgrade() {
     log.setLogLevel(log.INFO);
-    console.log(`This version of HarperDB is ${version.version()}`);
+    printToLogAndConsole(`This version of HarperDB is ${version.version()}`, log.INFO);
     if(hdb_util.isEmptyOrZeroLength(hdb_properties) ) {
-        let msg = 'the hdb_boot_properties file was not found.  Please install HDB.';
-        log.error(msg);
-        console.error(msg);
-        throw new Error(msg);
+        printToLogAndConsole('the hdb_boot_properties file was not found.  Please install HDB.', log.ERR);
+        throw new Error('the hdb_boot_properties file was not found.  Please install HDB.');
     }
 
     // check if already running, ends process if error caught.
@@ -135,7 +129,7 @@ async function upgrade() {
 
     let opers = findOs();
     if (!opers) {
-        console.error('You are attempting to upgrade HarperDB on an unsupported operating system');
+        printToLogAndConsole('You are attempting to upgrade HarperDB on an unsupported operating system', log.ERR);
         throw new Error('You are attempting to upgrade HarperDB on an unsupported operating system');
     }
     let latest_version = await getLatestVersion(opers).catch((e) => {
@@ -157,24 +151,19 @@ async function upgrade() {
 
     if(upgrade_dir_stat) {
         await hdb_util.removeDir(UPGRADE_DIR_PATH).catch((e) => {
-           let err_msg = `Got an error trying to remove the upgrade/ directory.  Please manually delete the directory and 
-           it's contents and re-run upgrade. ${e}`;
-           console.error(err_msg);
-           log.error(err_msg);
+           printToLogAndConsole(`Got an error trying to remove the upgrade/ directory.  Please manually delete the directory and 
+           it's contents and re-run upgrade. ${e}`, log.ERR);
            return;
         });
     };
 
     await mkdirp(UPGRADE_DIR_PATH).catch((e) => {
-        let err_msg = `Got an error trying to create the upgrade directory. ${e}`;
-        console.error(err_msg);
-        log.error(err_msg);
+        printToLogAndConsole(`Got an error trying to create the upgrade directory. ${e}`, log.ERR);
     });
     try {
         let build = await getBuild(opers);
     } catch(err) {
-        log.error(err);
-        console.error(err);
+        printToLogAndConsole(err, log.ERR);
         throw err;
     };
 }
@@ -186,33 +175,32 @@ async function upgrade() {
  * @param curr_installed_version
  */
 function upgradeExternal(curr_installed_version) {
-    log.setLogLevel(log.INFO);
-    log.info(`curr version ${curr_installed_version}`);
+    if(hdb_util.isEmptyOrZeroLength(curr_installed_version)) {
+        printToLogAndConsole('Invalid current version, exiting.', log.ERR);
+        throw new Error('Invalid current version, exiting.');
+    }
     countdown.start();
     CURRENT_VERSION_NUM = curr_installed_version;
     let package_path = path.join(UPGRADE_DIR_PATH, 'HarperDB', 'package.json');
-    log.info(`package path is ${package_path}`);
-    console.log(`package path is ${package_path}`);
+    printToLogAndConsole(`package path is ${package_path}`, log.INFO);
     console.log(`Upgrade path is ${UPGRADE_DIR_PATH}`);
 
     let package_json = undefined;
     try {
         package_json = fs.readFileSync(package_path, 'utf8');
     } catch(err) {
-        log.error(err);
         console.error(`could not find package at path ${package_path}`);
-        console.error(err);
-        process.exit();
+        printToLogAndConsole(err, log.ERR);
+        throw err;
     }
     UPGRADE_VERSION_NUM = JSON.parse(package_json).version;
-    log.info(`Starting upgrade process from version ${CURRENT_VERSION_NUM} to version ${UPGRADE_VERSION_NUM}`);
-    console.log(`Starting upgrade process from version ${CURRENT_VERSION_NUM} to version ${UPGRADE_VERSION_NUM}`);
+    printToLogAndConsole(`Starting upgrade process from version ${CURRENT_VERSION_NUM} to version ${UPGRADE_VERSION_NUM}`, log.INFO);
 
     try {
         backupCurrInstall();
     } catch(err) {
         // Error logging happens in backup.
-        process.exit();
+        throw err;
     }
 
     let upgrade_result = undefined;
@@ -220,16 +208,14 @@ function upgradeExternal(curr_installed_version) {
         upgrade_result = startUpgradeDirectives(CURRENT_VERSION_NUM, UPGRADE_VERSION_NUM);
     } catch(e) {
         // since we dont currently support any kind of rollback, just keep moving forward.
-        let msg = `There was a problem running upgrade instructions.  Installation will continue and try to correct the problem.  ${e}`;
-        console.log(msg);
-        log.error(msg);
+        printToLogAndConsole(`There was a problem running upgrade instructions.  Installation will continue and try to correct the problem.  ${e}`, log.ERR);
     }
 
     try {
         copyNewFilesIntoInstall();
-    } catch(e) {
+    } catch(err) {
         // Error logging happens in copy.
-        process.exit();
+        throw err;
     }
     let exe_path = path.join(process.cwd(), EXE_NAME);
     log.info(`Calling chmod on ${exe_path}`);
@@ -241,9 +227,10 @@ function upgradeExternal(curr_installed_version) {
         console.error(msg);
     }
 
+    // Logging and exception handling occurs in postInstallCleanUp.
     postInstallCleanUp();
     countdown.stop();
-    console.log(`HarperDB was successfully upgraded to version ${version.version()}`);
+    printToLogAndConsole(`HarperDB was successfully upgraded to version ${version.version()}`, log.INFO);
 }
 
 /**
@@ -306,8 +293,9 @@ async function getBuild(opers) {
     };
     let res = undefined;
     try {
+        // The request-promise repo recommends using plain old request when piping needs to happen.
         res = await request(options);
-        let file = await fs.createWriteStream(path.join(UPGRADE_DIR_PATH, TAR_FILE_NAME),  {mode: FILE_PERM});
+        let file = await fs.createWriteStream(path.join(UPGRADE_DIR_PATH, TAR_FILE_NAME), {mode: FILE_PERM});
         res.pipe(file);
         file.on('finish', async function() {
             let tarball = await fs.createReadStream(path.join(UPGRADE_DIR_PATH, TAR_FILE_NAME), {mode: FILE_PERM}).pipe(tar.extract(UPGRADE_DIR_PATH));
@@ -429,4 +417,11 @@ function copyNewFilesIntoInstall() {
     }
 }
 
+function printToLogAndConsole(msg, log_level) {
+    if(!log_level) {
+        log_level = log.info;
+    }
+    log.write_log(log_level, msg);
+    console.log(msg);
+}
 
