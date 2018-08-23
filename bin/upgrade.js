@@ -57,7 +57,6 @@ try {
     log.fatal(`There was an error reading settings the properties & settings file. ${e}`);
 }
 
-const hdb_base = hdb_properties.get('PROJECT_DIR');
 let Spinner = CLI.Spinner;
 let countdown = new Spinner(`Upgrading HarperDB `, ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷']);
 
