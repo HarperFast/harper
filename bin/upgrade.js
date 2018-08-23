@@ -7,10 +7,10 @@
  * running instances of HDB and cancel the upgrade until they are stopped.  It will then download the tarball of the
  * latest version of HDB and untar it into an upgrade/ directory.
  *
- * Once they are stopped, it will call upgradeExternal() on the newly downloaded version of HDB in upgrade/, and then stop
+ * Once they are stopped, it will call startUpgrade() on the newly downloaded version of HDB in upgrade/, and then stop
  * the currently running process.
  *
- * upgradeExternal() will read in the current environemnt variable settings, create an upgrade log file, run the upgrade directives
+ * startUpgrade() will read in the current environemnt variable settings, create an upgrade log file, run the upgrade directives
  * stored in the new versions, swap the /bin/harperdb with /upgrade/harperdb by moving /bin/harperdb to <install_path>/trash.
  *
  */
@@ -35,12 +35,14 @@ const path = require('path');
 const fs_extra = require('fs-extra');
 
 const UPGRADE_DIR_NAME= 'hdb_upgrade'
-const UPGRADE_DIR_PATH = path.join(process.cwd(), '../', UPGRADE_DIR_NAME);
 const TAR_FILE_NAME = 'hdb-latest.tar';
 const EXE_COPY_NAME = 'hdb';
 const EXE_NAME = 'harperdb';
 
 const FILE_PERM = 0o754;
+
+// This will be set to the path of the upgrade directory.
+let UPGRADE_DIR_PATH = path.join(process.cwd(), '../', UPGRADE_DIR_NAME);
 
 //Promisified functions
 const p_fs_readdir = promisify(fs.readdir);
@@ -62,7 +64,7 @@ let countdown = new Spinner(`Upgrading HarperDB `, ['⣾', '⣽', '⣻', '⢿', 
 
 module.exports = {
     upgrade: upgrade,
-    upgradeExternal: upgradeExternal
+    upgradeFromFilePath: startUpgrade
 };
 
 const versions_url = 'http://lms.harperdb.io:7777/api/latestVersion?os=';
@@ -89,13 +91,13 @@ async function checkIfRunning() {
 }
 
 /**
- * Call the upgradeExternal function on the untared latest version of HDB.
+ * Call the startUpgrade function on the untared latest version of HDB.
  */
 function callUpgradeOnNew() {
     let spawn_target =
         `${process.cwd()}/${EXE_COPY_NAME}`;
     try {
-        let child = spawn(spawn_target, ['upgrade_extern', version.version()], {
+        let child = spawn(spawn_target, [hdb_terms.SERVICE_ACTIONS_ENUM.UPGRADE_EXTERN], {
             stdio: ['ignore', 'ignore', 'ignore']
         }).unref();
     } catch(e) {
@@ -103,6 +105,16 @@ function callUpgradeOnNew() {
     }
     // Should terminate after this spawn
     process.exit();
+}
+
+async function upgradeFromFilePath(file_path) {
+    // Extract the tar file, use the 'finish' event to kick off the upgrade process.
+    let tarball = await fs.createReadStream(file_path, {mode: FILE_PERM}).pipe(tar.extract(UPGRADE_DIR_PATH));
+    tarball.on('finish', async function () {
+        printToLogAndConsole(`Finished extracting tar file at path: ${file_path}`);
+        await copyUpgradeExecutable();
+        startUpgrade(current_version);
+    });
 }
 
 /**
@@ -142,7 +154,7 @@ async function upgrade() {
         return "HarperDB version is current";
     }
     countdown.message(`Starting upgrade to version ${latest_version}`);
-    countdown.start();
+    //countdown.start();
     log.info(`Starting upgrade to version ${latest_version}`);
     // Remove any existing upgrade/ directory path files
     let upgrade_dir_stat = await p_fs_readdir(UPGRADE_DIR_PATH).catch((e) => {
@@ -157,9 +169,11 @@ async function upgrade() {
         });
     };
 
-    await mkdirp(UPGRADE_DIR_PATH).catch((e) => {
+    try {
+        fs.mkdirSync(UPGRADE_DIR_PATH);
+    } catch(e) {
         printToLogAndConsole(`Got an error trying to create the upgrade directory. ${e}`, log.ERR);
-    });
+    }
     try {
         let build = await getBuild(opers);
     } catch(err) {
@@ -170,17 +184,17 @@ async function upgrade() {
 
 /**
  * This function is called during an upgrade from the existing install's harperdb executable.  We needed to be able to
- * overwrite the existing executable during upgrads as well as reference directive files that are packaged into latest
+ * overwrite the existing executable during upgrade as well as reference directive files that are packaged into latest
  * versions.
- * @param curr_installed_version
  */
-function upgradeExternal(curr_installed_version) {
-    if(hdb_util.isEmptyOrZeroLength(curr_installed_version)) {
-        printToLogAndConsole('Invalid current version, exiting.', log.ERR);
-        throw new Error('Invalid current version, exiting.');
+function startUpgrade() {
+    try {
+        let curr_version_path = path.join(process.cwd(), '../', 'package.json');
+        CURRENT_VERSION_NUM = JSON.parse(curr_version_path);
+    } catch(e) {
+        printToLogAndConsole('Error loading the currently installed version number');
     }
-    countdown.start();
-    CURRENT_VERSION_NUM = curr_installed_version;
+
     let package_path = path.join(UPGRADE_DIR_PATH, 'HarperDB', 'package.json');
     printToLogAndConsole(`package path is ${package_path}`, log.INFO);
     console.log(`Upgrade path is ${UPGRADE_DIR_PATH}`);
@@ -192,7 +206,7 @@ function upgradeExternal(curr_installed_version) {
         console.error(`could not find package at path ${package_path}`);
         printToLogAndConsole(err, log.ERR);
         throw err;
-    }
+
     UPGRADE_VERSION_NUM = JSON.parse(package_json).version;
     printToLogAndConsole(`Starting upgrade process from version ${CURRENT_VERSION_NUM} to version ${UPGRADE_VERSION_NUM}`, log.INFO);
 

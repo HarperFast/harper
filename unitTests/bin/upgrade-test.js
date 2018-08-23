@@ -214,7 +214,7 @@ describe('Upgrade Test - Test upgrade', async function() {
     });
 });
 
-describe('Upgrade Test - Test upgradeExternal', function() {
+describe('Upgrade Test - Test startUpgrade', function() {
 
     let readFileSync_stub = undefined;
     let backupCurrInstall_stub = undefined;
@@ -230,7 +230,7 @@ describe('Upgrade Test - Test upgradeExternal', function() {
 
     let spinner = upgrade_rw.__get__('countdown');
     upgrade_rw.__set__('hdb_base', BASE + '/../');
-    let upgradeExternal = upgrade_rw.__get__('upgradeExternal');
+    let upgradeExternal = upgrade_rw.__get__('startUpgrade');
     // We don't want to use real directives for testing as they could change over time and invalidate tests, so we use
     // the directive manager stub.  In order to assign it to the process_directive instance we need to bring in a rewired
     // version.
@@ -261,7 +261,7 @@ describe('Upgrade Test - Test upgradeExternal', function() {
         spinner.stop();
     });
 
-    it('test upgradeExternal nominal path', function() {
+    it('test startUpgrade nominal path', function() {
         let exep = undefined;
         try {
             upgradeExternal('1.1.0');
@@ -270,7 +270,7 @@ describe('Upgrade Test - Test upgradeExternal', function() {
         }
         assert.equal(exep, undefined, 'expected an exception');
     });
-    it('test upgradeExternal with invalid version parameter', function() {
+    it('test startUpgrade with invalid version parameter', function() {
         let exep = undefined;
         try {
             upgradeExternal(null);
@@ -280,7 +280,7 @@ describe('Upgrade Test - Test upgradeExternal', function() {
         assert.equal((exep instanceof Error), true, 'expected no exceptions');
         assert.equal(readFileSync_stub.called, false, 'Process kept going despite upgrade directive exception');
     });
-    it('test upgradeExternal with readFileSyncException', function() {
+    it('test startUpgrade with readFileSyncException', function() {
         let exep = undefined;
         let exception_msg = "ReadFileSync Test Error";
         try {
@@ -294,7 +294,7 @@ describe('Upgrade Test - Test upgradeExternal', function() {
         // Make sure we are getting the expected exception
         assert.equal(exep.message === exception_msg, true, 'expected specific  exception message');
     });
-    it('test upgradeExternal with backupCurrInstall Exception', function() {
+    it('test startUpgrade with backupCurrInstall Exception', function() {
         let exep = undefined;
         let exception_msg = "backupCurrInstall Test Error";
         try {
@@ -307,7 +307,7 @@ describe('Upgrade Test - Test upgradeExternal', function() {
         assert.equal((exep instanceof Error), true, 'expected no exceptions');
         assert.equal(exep.message === exception_msg, true, 'expected specific  exception message');
     });
-    it('test upgradeExternal with startUpgradeDirectives_stub Exception', function() {
+    it('test startUpgrade with startUpgradeDirectives_stub Exception', function() {
         let exep = undefined;
         try {
             startUpgradeDirectives_stub = sandbox.stub().throws(new Error("startUpgradeDirectives_stub Test Error"));
@@ -318,7 +318,7 @@ describe('Upgrade Test - Test upgradeExternal', function() {
         }
         assert.equal(copyNewFilesIntoInstall_stub.called, true, 'Process keep going despite upgrade directive exception');
     });
-    it('test upgradeExternal with chmodSync Exception', function() {
+    it('test startUpgrade with chmodSync Exception', function() {
         let exep = undefined;
         try {
             chmodSync_stub.restore();

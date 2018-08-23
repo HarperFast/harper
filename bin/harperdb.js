@@ -6,6 +6,7 @@ const version = require('./version');
 const upgrade = require('./upgrade');
 const fs = require('fs');
 const logger = require('../utility/logging/harper_logger');
+const hdb_terms = require('../utility/hdbTerms');
 const {promisify} = require('util');
 
 const p_upgrade = promisify(upgrade.upgrade);
@@ -38,30 +39,31 @@ function harperDBService() {
         if (process.argv && process.argv[2]) {
             service = process.argv[2].toLowerCase();
         }
-        let curr_version = process.argv[3];
+
+        let tar_file_path = process.argv[3];
         let result = undefined;
         switch (service) {
-            case "run":
+            case hdb_terms.SERVICE_ACTIONS_ENUM.RUN:
                 result = run.run();
                 break;
-            case "install":            
+            case hdb_terms.SERVICE_ACTIONS_ENUM.INSTALL:
                 install.install();
                 break;
-            case "register":
+            case hdb_terms.SERVICE_ACTIONS_ENUM.REGISTER:
                 register.register();
                 break;
-            case "stop":
+            case hdb_terms.SERVICE_ACTIONS_ENUM.STOP:
                 stop.stop(function(){});
                 break;
-            case "restart":
+            case hdb_terms.SERVICE_ACTIONS_ENUM.RESTART:
                 stop.stop(function () {
                     run.run();
                 });
                 break;
-            case "version":
+            case hdb_terms.SERVICE_ACTIONS_ENUM.VERSION:
                 version.printVersion();
                 break;
-            case "upgrade":
+            case hdb_terms.SERVICE_ACTIONS_ENUM.UPGRADE:
                 logger.setLogLevel(logger.INFO);
                 p_upgrade()
                     .then( () => {
@@ -72,9 +74,9 @@ function harperDBService() {
                         logger.error(`Got an error during upgrade ${e}`);
                     });
                 break;
-            case "upgrade_extern":
+            case hdb_terms.SERVICE_ACTIONS_ENUM.UPGRADE_EXTERN:
                 logger.setLogLevel(logger.INFO);
-                upgrade.upgradeExternal(curr_version);
+                upgrade.upgradeFromFilePath(curr_version);
                 break;
             default:
                 run.run();

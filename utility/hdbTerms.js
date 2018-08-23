@@ -59,7 +59,53 @@ const HTTP_STATUS_CODES = {
 
 // Operations
 const OPERATIONS_ENUM = {
-    UPDATE: 'update'
+    INSERT: 'insert',
+    UPDATE: 'update',
+    SEARCH_BY_HASH: 'search_by_hash',
+    SEARCH_BY_VALUE: 'search_by_value',
+    SEARCH: 'search',
+    SQL: 'sql',
+    CSV_DATA_LOAD: 'csv_data_load',
+    CSV_FILE_LOAD: 'csv_file_load',
+    CSV_URL_LOAD: 'csv_url_load',
+    CREATE_SCHEMA: 'create_schema',
+    CREATE_TABLE: 'create_table',
+    CREATE_ATTRIBUTE: 'create_attribute',
+    DROP_SCHEMA: 'drop_schema',
+    DROP_TABLE: 'drop_table',
+    DESCRIBE_SCHEMA: 'describe_schema',
+    DESCRIBE_TABLE: 'describe_table',
+    DESCRIBE_ALL: 'describe_all',
+    DELETE: 'delete',
+    ADD_USER: 'add_user',
+    ALTER_USER: 'alter_user',
+    DROP_USER: 'drop_user',
+    LIST_USERS: 'list_users',
+    LIST_ROLES: 'list_roles',
+    ADD_ROLE: 'add_role',
+    ALTER_ROLE: 'alter_role',
+    DROP_ROLE: 'drop_role',
+    USER_INFO: 'user_info',
+    READ_LOG: 'read_log',
+    ADD_NODE: 'add_node',
+    EXPORT_TO_S3: 'export_to_s3',
+    DELETE_FILES_BEFORE: 'delete_files_before',
+    EXPORT_LOCAL: 'export_local',
+    SEARCH_JOBS_BY_START_DATE: 'search_jobs_by_start_date',
+    GET_JOB: 'get_job',
+    DELETE_JOB: 'delete_job',
+    UPDATE_JOB: 'update_job'
+};
+
+const SERVICE_ACTIONS_ENUM = {
+    RUN:'run',
+    INSTALL:'install',
+    REGISTER:'register',
+    STOP:'stop',
+    RESTART:'restart',
+    VERSION: 'version',
+    UPGRADE:'upgrade',
+    UPGRADE_EXTERN: 'upgrade_external'
 };
 
 //describes the Geo Conversion types
@@ -100,6 +146,7 @@ module.exports = {
     OPERATIONS_ENUM,
     HTTP_STATUS_CODES,
     GEO_CONVERSION_ENUM,
-    HDB_SETTINGS_NAMES
+    HDB_SETTINGS_NAMES,
+    SERVICE_ACTIONS_ENUM
 };
 
