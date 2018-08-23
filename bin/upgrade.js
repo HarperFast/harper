@@ -206,6 +206,7 @@ function startUpgrade() {
         console.error(`could not find package at path ${package_path}`);
         printToLogAndConsole(err, log.ERR);
         throw err;
+    }
 
     UPGRADE_VERSION_NUM = JSON.parse(package_json).version;
     printToLogAndConsole(`Starting upgrade process from version ${CURRENT_VERSION_NUM} to version ${UPGRADE_VERSION_NUM}`, log.INFO);
@@ -438,4 +439,3 @@ function printToLogAndConsole(msg, log_level) {
     log.write_log(log_level, msg);
     console.log(msg);
 }
-
