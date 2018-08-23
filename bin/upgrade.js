@@ -46,6 +46,7 @@ const FILE_PERM = 0o754;
 const p_fs_readdir = promisify(fs.readdir);
 const p_fs_copyfile = promisify(fs.copyFile);
 const p_fs_chmod = promisify(fs.chmod);
+const p_fs_mkdir = promisify(fs.mkdir);
 
 let hdb_properties;
 
@@ -157,9 +158,12 @@ async function upgrade() {
         });
     };
 
-    await mkdirp(UPGRADE_DIR_PATH).catch((e) => {
+    try {
+        await p_fs_mkdir(UPGRADE_DIR_PATH);
+    } catch(e) {
         printToLogAndConsole(`Got an error trying to create the upgrade directory. ${e}`, log.ERR);
-    });
+    }
+
     try {
         let build = await getBuild(opers);
     } catch(err) {
