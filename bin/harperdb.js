@@ -7,6 +7,7 @@ const upgrade = require('./upgrade');
 const fs = require('fs');
 const logger = require('../utility/logging/harper_logger');
 const hdb_terms = require('../utility/hdbTerms');
+const hdb_utils = require('../utility/common_utils');
 const {promisify} = require('util');
 
 const p_upgrade = promisify(upgrade.upgrade);
@@ -76,7 +77,13 @@ function harperDBService() {
                 break;
             case hdb_terms.SERVICE_ACTIONS_ENUM.UPGRADE_EXTERN:
                 logger.setLogLevel(logger.INFO);
-                upgrade.upgradeFromFilePath(curr_version);
+
+                if(hdb_utils.isEmptyOrZeroLength(tar_file_path)) {
+                    upgrade.startUpgrade();
+                } else {
+                    upgrade.upgradeFromFilePath(tar_file_path);
+                }
+
                 break;
             default:
                 run.run();

@@ -64,7 +64,8 @@ let countdown = new Spinner(`Upgrading HarperDB `, ['⣾', '⣽', '⣻', '⢿', 
 
 module.exports = {
     upgrade: upgrade,
-    upgradeFromFilePath: startUpgrade
+    startUpgrade: startUpgrade,
+    upgradeFromFilePath:upgradeFromFilePath
 };
 
 const versions_url = 'http://lms.harperdb.io:7777/api/latestVersion?os=';
@@ -113,7 +114,7 @@ async function upgradeFromFilePath(file_path) {
     tarball.on('finish', async function () {
         printToLogAndConsole(`Finished extracting tar file at path: ${file_path}`);
         await copyUpgradeExecutable();
-        startUpgrade(current_version);
+        startUpgrade();
     });
 }
 
@@ -190,26 +191,27 @@ async function upgrade() {
 function startUpgrade() {
     try {
         let curr_version_path = path.join(process.cwd(), '../', 'package.json');
-        CURRENT_VERSION_NUM = JSON.parse(curr_version_path);
+        let curr_package_json = fs.readFileSync(curr_version_path, 'utf8');
+        CURRENT_VERSION_NUM = JSON.parse(curr_package_json).version;
     } catch(e) {
         printToLogAndConsole('Error loading the currently installed version number');
+        log.error(e);
     }
 
-    let package_path = path.join(UPGRADE_DIR_PATH, 'HarperDB', 'package.json');
-    printToLogAndConsole(`package path is ${package_path}`, log.INFO);
+    let upgrade_package_path = path.join(UPGRADE_DIR_PATH, 'HarperDB', 'package.json');
+    printToLogAndConsole(`package path is ${upgrade_package_path}`, log.INFO);
     console.log(`Upgrade path is ${UPGRADE_DIR_PATH}`);
 
-    let package_json = undefined;
+    let upgrade_package_json = undefined;
     try {
-        package_json = fs.readFileSync(package_path, 'utf8');
+        upgrade_package_json = fs.readFileSync(upgrade_package_path, 'utf8');
+        UPGRADE_VERSION_NUM = JSON.parse(upgrade_package_json).version;
+        printToLogAndConsole(`Starting upgrade process from version ${CURRENT_VERSION_NUM} to version ${UPGRADE_VERSION_NUM}`, log.INFO);
     } catch(err) {
-        console.error(`could not find package at path ${package_path}`);
+        console.error(`could not find package at path ${upgrade_package_path}`);
         printToLogAndConsole(err, log.ERR);
         throw err;
     }
-
-    UPGRADE_VERSION_NUM = JSON.parse(package_json).version;
-    printToLogAndConsole(`Starting upgrade process from version ${CURRENT_VERSION_NUM} to version ${UPGRADE_VERSION_NUM}`, log.INFO);
 
     try {
         backupCurrInstall();
