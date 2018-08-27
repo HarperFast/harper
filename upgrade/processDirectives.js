@@ -16,8 +16,15 @@ module.exports = {
     processDirectives: processDirectives
 };
 
-let hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
-let hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
+let hdb_boot_properties = undefined;
+let hdb_properties = undefined;
+
+try {
+    hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
+    hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
+} catch(e) {
+    log.info(`Couldn't read settings files.`);
+}
 
 // These are stored to make unit testing easier
 let hdb_base = undefined;

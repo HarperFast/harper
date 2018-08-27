@@ -46,6 +46,7 @@ let UPGRADE_DIR_PATH = path.join(process.cwd(), '../', UPGRADE_DIR_NAME);
 const p_fs_readdir = promisify(fs.readdir);
 const p_fs_copyfile = promisify(fs.copyFile);
 const p_fs_chmod = promisify(fs.chmod);
+const p_fs_mkdir = promisify(fs.mkdir);
 
 let hdb_properties;
 
