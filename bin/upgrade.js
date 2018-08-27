@@ -153,7 +153,7 @@ async function upgrade() {
         return "HarperDB version is current";
     }
     countdown.message(`Starting upgrade to version ${latest_version}`);
-    //countdown.start();
+    countdown.start();
     log.info(`Starting upgrade to version ${latest_version}`);
     // Remove any existing upgrade/ directory path files
     let upgrade_dir_stat = await p_fs_readdir(UPGRADE_DIR_PATH).catch((e) => {
