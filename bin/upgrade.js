@@ -15,9 +15,7 @@
  *
  */
 const os = require('os');
-const mkdirp = require('mkdirp');
 const fs = require('fs');
-const http = require('http');
 const tar = require('tar-fs');
 const CLI = require('clui');
 const request = require("request");
@@ -58,7 +56,6 @@ try {
     log.fatal(`There was an error reading settings the properties & settings file. ${e}`);
 }
 
-const hdb_base = hdb_properties.get('PROJECT_DIR');
 let Spinner = CLI.Spinner;
 let countdown = new Spinner(`Upgrading HarperDB `, ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷']);
 
@@ -176,7 +173,7 @@ async function upgrade() {
         printToLogAndConsole(`Got an error trying to create the upgrade directory. ${e}`, log.ERR);
     }
     try {
-        let build = await getBuild(opers);
+        await getBuild(opers);
     } catch(err) {
         printToLogAndConsole(err, log.ERR);
         throw err;

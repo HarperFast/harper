@@ -9,10 +9,24 @@ const logger = require('../utility/logging/harper_logger');
 const hdb_terms = require('../utility/hdbTerms');
 const hdb_utils = require('../utility/common_utils');
 const {promisify} = require('util');
+const path = require('path');
+const os = require('path');
 
 const p_upgrade = promisify(upgrade.upgrade);
 
 harperDBService();
+
+function checkCallingUserSync() {
+    let hdb_exe_path = path.join(process.cwd(), 'bin', 'harperdb');
+    let stats = fs.statSync(hdb_exe_path);
+    let curr_user = os.userInfo();
+    if(stats.uid !== curr_user.uid) {
+        let err_msg = `You are not the owner of the HarperDB process.  Please log in as the owner and try the command again.`;
+        logger.error(err_msg);
+        console.log(err_msg);
+        throw new Error(err_msg);
+    }
+}
 
 function harperDBService() {
     let service;
@@ -20,7 +34,15 @@ function harperDBService() {
     if (currentDir_tokens[currentDir_tokens.length - 1] != 'bin') {
         return console.error('You must run harperdb from HDB_HOME/bin');
     }
-    
+
+    // check if already running, ends process if error caught.
+    try {
+        checkCallingUserSync();
+    } catch(e) {
+        console.log(e.message);
+        throw e;
+    }
+
     let inBin = false;
     fs.readdir(process.cwd(), (err, files) => {
         if (err) {
