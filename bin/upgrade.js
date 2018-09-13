@@ -48,6 +48,9 @@ const p_fs_copyfile = promisify(fs.copyFile);
 const p_fs_chmod = promisify(fs.chmod);
 const p_fs_mkdir = promisify(fs.mkdir);
 
+const versions_url = 'http://lms.harperdb.io:7777/api/latestVersion?os=';
+const download_url = 'http://lms.harperdb.io:7777/api/update?os=';
+
 let hdb_properties;
 
 try {
@@ -65,9 +68,6 @@ module.exports = {
     startUpgrade: startUpgrade,
     upgradeFromFilePath:upgradeFromFilePath
 };
-
-const versions_url = 'http://lms.harperdb.io:7777/api/latestVersion?os=';
-const download_url = 'http://lms.harperdb.io:7777/api/update?os=';
 
 let UPGRADE_VERSION_NUM = undefined;
 let CURRENT_VERSION_NUM = undefined;
