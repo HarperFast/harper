@@ -46,10 +46,9 @@ let UPGRADE_DIR_PATH = path.join(process.cwd(), '../', UPGRADE_DIR_NAME);
 const p_fs_readdir = promisify(fs.readdir);
 const p_fs_copyfile = promisify(fs.copyFile);
 const p_fs_chmod = promisify(fs.chmod);
-const p_fs_mkdir = promisify(fs.mkdir);
 
-const versions_url = 'http://lms.harperdb.io:7777/api/latestVersion?os=';
-const download_url = 'http://lms.harperdb.io:7777/api/update?os=';
+const VERSIONS_URL = 'http://products.harperdb.io:7777/api/latestVersion?os=';
+const DOWNLOAD_URL = 'http://products.harperdb.io:7777/api/update?os=';
 
 let hdb_properties;
 
@@ -271,7 +270,7 @@ function postInstallCleanUp() {
 async function getLatestVersion(opers) {
     let options = {
         method: 'GET',
-        url: versions_url + opers,
+        url: VERSIONS_URL + opers,
         headers:
             {
                 'cache-control': 'no-cache',
@@ -298,7 +297,7 @@ async function getLatestVersion(opers) {
 async function getBuild(opers) {
     let options = {
         method: 'GET',
-        url: download_url + opers,
+        url: DOWNLOAD_URL + opers,
         headers:
             {
                 'cache-control': 'no-cache',
