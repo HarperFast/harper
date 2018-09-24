@@ -25,7 +25,7 @@ const PACKAGE_JSON_VAL = {
 };
 
 describe('Upgrade Test - Test processDirectives', function() {
-    upgrade_rw.__set__('hdb_base', BASE + '/../');
+    //upgrade_rw.__set__('hdb_base', BASE + '/../');
     let startUpgradeDirectives = upgrade_rw.__get__('startUpgradeDirectives');
     // We don't want to use real directives for testing as they could change over time and invalidate tests, so we use
     // the directive manager stub.  In order to assign it to the process_directive instance we need to bring in a rewired
@@ -69,18 +69,16 @@ describe('Upgrade Test - Test upgrade', async function() {
     let check_if_running_stub_orig = upgrade_rw.__get__('checkIfRunning');
     let get_latest_stub_orig = upgrade_rw.__get__('getLatestVersion');
     let p_read_dir_stub_orig = upgrade_rw.__get__('p_fs_readdir');
-    let mkdirp_stub_orig = upgrade_rw.__get__('mkdirp');
     let get_build_stub_orig = upgrade_rw.__get__('checkIfRunning');
 
     let check_if_running_stub = undefined;
     let get_latest_stub = undefined;
     let version_stub = undefined;
     let p_read_dir_stub = undefined;
-    let mkdirp_stub = undefined;
     let get_build_stub = undefined;
     let remove_dir_stub = undefined;
     let spinner = upgrade_rw.__get__('countdown');
-    upgrade_rw.__set__('hdb_base', BASE + '/../');
+    //upgrade_rw.__set__('hdb_base', BASE + '/../');
     let upgrade = upgrade_rw.__get__('upgrade');
     // We don't want to use real directives for testing as they could change over time and invalidate tests, so we use
     // the directive manager stub.  In order to assign it to the process_directive instance we need to bring in a rewired
@@ -94,14 +92,12 @@ describe('Upgrade Test - Test upgrade', async function() {
         get_latest_stub = sandbox.stub().resolves('2.1.0');
         version_stub = sandbox.stub(version, version.version.name).returns('1.1.0');
         p_read_dir_stub = sandbox.stub().resolves(null);
-        mkdirp_stub = sandbox.stub().resolves('');
         get_build_stub = sandbox.stub().resolves('');
         remove_dir_stub = sandbox.stub(hdb_utils, hdb_utils.removeDir.name).resolves('');
 
         upgrade_rw.__set__('checkIfRunning', check_if_running_stub);
         upgrade_rw.__set__('getLatestVersion', get_latest_stub);
         upgrade_rw.__set__('p_fs_readdir', p_read_dir_stub);
-        upgrade_rw.__set__('mkdirp', mkdirp_stub);
         upgrade_rw.__set__('getBuild', get_build_stub);
     });
 
@@ -110,7 +106,6 @@ describe('Upgrade Test - Test upgrade', async function() {
         upgrade_rw.__set__('checkIfRunning', check_if_running_stub_orig);
         upgrade_rw.__set__('getLatestVersion', get_latest_stub_orig);
         upgrade_rw.__set__('p_fs_readdir', p_read_dir_stub_orig);
-        upgrade_rw.__set__('mkdirp', mkdirp_stub_orig);
         upgrade_rw.__set__('getBuild', get_build_stub_orig);
         spinner.stop();
     });
@@ -190,18 +185,7 @@ describe('Upgrade Test - Test upgrade', async function() {
         });
         assert.equal(remove_dir_stub.called, true, 'expected rmdir to have been called');
         // make sure we terminate after this call
-        assert.equal(mkdirp_stub.called, false, 'mkdirp should not have been called');
         assert.equal(get_build_stub.called, false, 'getBuild should not have been called');
-    });
-    it('test with mkdirp throwing exception', async function() {
-        let exep = undefined;
-        mkdirp_stub = sandbox.stub().throws(new Error('mkdirp exception'));
-        upgrade_rw.__set__('mkdirp', mkdirp_stub);
-        let result = await upgrade('1.1.0', '2.1.0').catch((e) => {
-            exep = e;
-        });
-        assert.equal((exep instanceof Error), true, 'expected exception');
-        assert.equal(get_build_stub.called, false, 'getbuild should not have been called');
     });
     it('test with getBuild throwing exception', async function() {
         let exep = undefined;
@@ -229,8 +213,8 @@ describe('Upgrade Test - Test startUpgrade', function() {
     let postInstallCleanUp_orig = upgrade_rw.__get__('postInstallCleanUp');
 
     let spinner = upgrade_rw.__get__('countdown');
-    upgrade_rw.__set__('hdb_base', BASE + '/../');
-    let upgradeExternal = upgrade_rw.__get__('startUpgrade');
+    //upgrade_rw.__set__('hdb_base', BASE + '/../');
+    let startUpgrade = upgrade_rw.__get__('startUpgrade');
     // We don't want to use real directives for testing as they could change over time and invalidate tests, so we use
     // the directive manager stub.  In order to assign it to the process_directive instance we need to bring in a rewired
     // version.
@@ -264,21 +248,11 @@ describe('Upgrade Test - Test startUpgrade', function() {
     it('test startUpgrade nominal path', function() {
         let exep = undefined;
         try {
-            upgradeExternal('1.1.0');
+            startUpgrade('1.1.0');
         } catch(e) {
             exep = e;
         }
         assert.equal(exep, undefined, 'expected an exception');
-    });
-    it('test startUpgrade with invalid version parameter', function() {
-        let exep = undefined;
-        try {
-            upgradeExternal(null);
-        } catch(e) {
-            exep = e;
-        }
-        assert.equal((exep instanceof Error), true, 'expected no exceptions');
-        assert.equal(readFileSync_stub.called, false, 'Process kept going despite upgrade directive exception');
     });
     it('test startUpgrade with readFileSyncException', function() {
         let exep = undefined;
@@ -286,7 +260,7 @@ describe('Upgrade Test - Test startUpgrade', function() {
         try {
             readFileSync_stub.restore();
             readFileSync_stub = sandbox.stub(fs, 'readFileSync').throws(new Error(exception_msg));
-            upgradeExternal('1.1.0');
+            startUpgrade('1.1.0');
         } catch(e) {
             exep = e;
         }
@@ -300,7 +274,7 @@ describe('Upgrade Test - Test startUpgrade', function() {
         try {
             backupCurrInstall_stub = sandbox.stub().throws(new Error("backupCurrInstall Test Error"));
             upgrade_rw.__set__('backupCurrInstall', backupCurrInstall_stub);
-            upgradeExternal('1.1.0');
+            startUpgrade('1.1.0');
         } catch(e) {
             exep = e;
         }
@@ -312,7 +286,7 @@ describe('Upgrade Test - Test startUpgrade', function() {
         try {
             startUpgradeDirectives_stub = sandbox.stub().throws(new Error("startUpgradeDirectives_stub Test Error"));
             upgrade_rw.__set__('startUpgradeDirectives', startUpgradeDirectives_stub);
-            upgradeExternal('1.1.0');
+            startUpgrade('1.1.0');
         } catch(e) {
             exep = e;
         }
@@ -323,7 +297,7 @@ describe('Upgrade Test - Test startUpgrade', function() {
         try {
             chmodSync_stub.restore();
             chmodSync_stub = sandbox.stub(fs, 'chmodSync').throws(new Error("chmod exception"));
-            upgradeExternal('1.1.0');
+            startUpgrade('1.1.0');
         } catch(e) {
             exep = e;
         }
@@ -333,7 +307,6 @@ describe('Upgrade Test - Test startUpgrade', function() {
 });
 
 describe('Upgrade Test - Test getLatestVersion', function() {
-    upgrade_rw.__set__('hdb_base', BASE + '/../');
     let getLatestVersion = upgrade_rw.__get__('getLatestVersion');
     let sandbox = sinon.createSandbox();
 
@@ -373,7 +346,6 @@ describe('Upgrade Test - Test getLatestVersion', function() {
 });
 
 describe('Upgrade Test - Test findOs', function() {
-    upgrade_rw.__set__('hdb_base', BASE + '/../');
     let findOs = upgrade_rw.__get__('findOs');
     // We don't want to use real directives for testing as they could change over time and invalidate tests, so we use
     // the directive manager stub.  In order to assign it to the process_directive instance we need to bring in a rewired
@@ -384,57 +356,3 @@ describe('Upgrade Test - Test findOs', function() {
         findOs('1.1.0', '2.1.0');
     });
 });
-
-/*
-describe('Upgrade Test - Test copyUpgradeExecutable', function() {
-    upgrade_rw.__set__('hdb_base', BASE + '/../');
-    let copyUpgradeExecutable = upgrade_rw.__get__('copyUpgradeExecutable');
-    // We don't want to use real directives for testing as they could change over time and invalidate tests, so we use
-    // the directive manager stub.  In order to assign it to the process_directive instance we need to bring in a rewired
-    // version.
-    process_directives_rw.__set__('directive_manager', directive_manager_stub.directive_manager_rw);
-    upgrade_rw.__set__('process_directives', process_directives_rw);
-    it('test copyUpgradeExecutable', function() {
-        copyUpgradeExecutable('1.1.0', '2.1.0');
-    });
-});
-
-describe('Upgrade Test - Test startUpgradeDirectives', function() {
-    upgrade_rw.__set__('hdb_base', BASE + '/../');
-    let startUpgradeDirectives = upgrade_rw.__get__('startUpgradeDirectives');
-    // We don't want to use real directives for testing as they could change over time and invalidate tests, so we use
-    // the directive manager stub.  In order to assign it to the process_directive instance we need to bring in a rewired
-    // version.
-    process_directives_rw.__set__('directive_manager', directive_manager_stub.directive_manager_rw);
-    upgrade_rw.__set__('process_directives', process_directives_rw);
-    it('test startUpgradeDirectives', function() {
-        startUpgradeDirectives('1.1.0', '2.1.0');
-    });
-});
-
-describe('Upgrade Test - Test backupCurrInstall', function() {
-    upgrade_rw.__set__('hdb_base', BASE + '/../');
-    let backupCurrInstall = upgrade_rw.__get__('backupCurrInstall');
-    // We don't want to use real directives for testing as they could change over time and invalidate tests, so we use
-    // the directive manager stub.  In order to assign it to the process_directive instance we need to bring in a rewired
-    // version.
-    process_directives_rw.__set__('directive_manager', directive_manager_stub.directive_manager_rw);
-    upgrade_rw.__set__('process_directives', process_directives_rw);
-    it('test backupCurrInstall', function() {
-        backupCurrInstall('1.1.0', '2.1.0');
-    });
-});
-
-describe('Upgrade Test - Test copyNewFilesIntoInstall', function() {
-    upgrade_rw.__set__('hdb_base', BASE + '/../');
-    let copyNewFilesIntoInstall = upgrade_rw.__get__('copyNewFilesIntoInstall');
-    // We don't want to use real directives for testing as they could change over time and invalidate tests, so we use
-    // the directive manager stub.  In order to assign it to the process_directive instance we need to bring in a rewired
-    // version.
-    process_directives_rw.__set__('directive_manager', directive_manager_stub.directive_manager_rw);
-    upgrade_rw.__set__('process_directives', process_directives_rw);
-    it('test copyNewFilesIntoInstall', function() {
-        copyNewFilesIntoInstall('1.1.0', '2.1.0');
-    });
-});
-*/
