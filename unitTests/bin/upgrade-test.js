@@ -25,7 +25,6 @@ const PACKAGE_JSON_VAL = {
 };
 
 describe('Upgrade Test - Test processDirectives', function() {
-    //upgrade_rw.__set__('hdb_base', BASE + '/../');
     let startUpgradeDirectives = upgrade_rw.__get__('startUpgradeDirectives');
     // We don't want to use real directives for testing as they could change over time and invalidate tests, so we use
     // the directive manager stub.  In order to assign it to the process_directive instance we need to bring in a rewired
@@ -78,7 +77,6 @@ describe('Upgrade Test - Test upgrade', async function() {
     let get_build_stub = undefined;
     let remove_dir_stub = undefined;
     let spinner = upgrade_rw.__get__('countdown');
-    //upgrade_rw.__set__('hdb_base', BASE + '/../');
     let upgrade = upgrade_rw.__get__('upgrade');
     // We don't want to use real directives for testing as they could change over time and invalidate tests, so we use
     // the directive manager stub.  In order to assign it to the process_directive instance we need to bring in a rewired
@@ -213,7 +211,6 @@ describe('Upgrade Test - Test startUpgrade', function() {
     let postInstallCleanUp_orig = upgrade_rw.__get__('postInstallCleanUp');
 
     let spinner = upgrade_rw.__get__('countdown');
-    //upgrade_rw.__set__('hdb_base', BASE + '/../');
     let startUpgrade = upgrade_rw.__get__('startUpgrade');
     // We don't want to use real directives for testing as they could change over time and invalidate tests, so we use
     // the directive manager stub.  In order to assign it to the process_directive instance we need to bring in a rewired
