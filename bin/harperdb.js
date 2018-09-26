@@ -18,7 +18,13 @@ harperDBService();
 
 function checkCallingUserSync() {
     let hdb_exe_path = path.join(process.cwd(), 'harperdb');
-    let stats = fs.statSync(hdb_exe_path);
+    try {
+        let stats = fs.statSync(hdb_exe_path);
+    } catch(e) {
+        // if we are here, we are probably running from the repo.
+        logger.info(`Couldn't find the harperdb executable process.`);
+        return;
+    }
     let curr_user = os.userInfo();
     if(stats.uid !== curr_user.uid) {
         let err_msg = `You are not the owner of the HarperDB process.  Please log in as the owner and try the command again.`;
