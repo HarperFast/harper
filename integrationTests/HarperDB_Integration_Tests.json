@@ -3602,7 +3602,84 @@
 					"response": []
 				},
 				{
-					"_postman_id": "5fc5d5dc-b1d4-42ba-af02-3f1eb781a168",
+					"_postman_id": "b06a7e1f-8fe3-41c6-8e59-25d97db691c2",
+					"name": "update NoSQL employee add new attribute",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Update employee id 1 address\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.update_hashes[0]).to.eql(1);",
+									"});",
+									"",
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"function pausecomp(millis)",
+									" {",
+									"  var date = new Date();",
+									"  var curDate = null;",
+									"  do { curDate = new Date(); }",
+									"  while(curDate-date < millis);",
+									"}",
+									"",
+									"pausecomp(100);"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"update\",\n\"schema\":\"{{schema}}\",\n\"table\":\"{{emps_tb}}\",\n\"records\": [\n  {\n    \"{{emps_id}}\": 1,\n    \"address\": \"def1234\",\n    \"test_record\":\"I'mATest\"\n  }\n]\n\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"_postman_id": "5d148335-e103-4a53-be72-73bfe5da0952",
 					"name": "NoSQL search by hash",
 					"event": [
 						{
@@ -3617,6 +3694,11 @@
 									"pm.test(\"verify NoSQL update worked\", function () {",
 									"    var jsonData = pm.response.json();",
 									"    pm.expect(jsonData[0].address).to.eql('def1234');",
+									"});",
+									"",
+									"pm.test(\"verify NoSQL update worked, new attribute added\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[0].test_record).to.eql(\"I'mATest\");",
 									"});",
 									"",
 									"",
@@ -3659,7 +3741,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{emps_tb}}\",\n  \"hash_attribute\": \"{{emps_id}}\",\n  \"hash_values\":[1],\n  \"get_attributes\": [\"address\"]\n}"
+							"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{emps_tb}}\",\n  \"hash_attribute\": \"{{emps_id}}\",\n  \"hash_values\":[1],\n  \"get_attributes\": [\"address\", \"test_record\"]\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",

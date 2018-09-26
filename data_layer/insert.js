@@ -216,6 +216,21 @@ function updateData(update_object, callback){
 
                 caller(null, search_obj);
             },
+            (search_obj, caller) => {
+                // We need to filter out any new attributes from the update statement, as they will not be found in the searchByHash
+                // call below and cause a validation error.
+                let valid_attributes = search_obj.get_attributes.filter(function (item) {
+                    let attributes = global.hdb_schema[search_obj.schema][search_obj.table].attributes;
+                    if(attributes && Array.isArray(attributes)) {
+                        let picked = global.hdb_schema[search_obj.schema][search_obj.table].attributes.find(o => o.attribute === item);
+                        if(picked) return picked;
+                    }
+                });
+                if(valid_attributes && valid_attributes.length > 0) {
+                    search_obj.get_attributes = valid_attributes;
+                }
+                caller(null, search_obj);
+            },
             search.searchByHash,
             (existing_records, caller) => {
                 if( existing_records.length === 0) {
