@@ -7,28 +7,28 @@
  * as the update module is meant to be used in more specific circumstances.
  */
 
-const insert_validator = require('../validation/insertValidator.js'),
-    fs = require('graceful-fs'),
-    async = require('async'),
-    path = require('path'),
-    mkdirp = require('mkdirp'),
-    h_utils = require('../utility/common_utils'),
-    search = require('./search'),
-    logger = require('../utility/logging/harper_logger'),
-    _ = require('lodash'),
-    truncate = require('truncate-utf8-bytes'),
-    PropertiesReader = require('properties-reader'),
-    autocast = require('autocast'),
-    signalling = require('../utility/signalling');
+const insert_validator = require('../validation/insertValidator.js');
+const fs = require('graceful-fs');
+const async = require('async');
+const path = require('path');
+const mkdirp = require('mkdirp');
+const h_utils = require('../utility/common_utils');
+const search = require('./search');
+const logger = require('../utility/logging/harper_logger');
+const _ = require('lodash');
+const truncate = require('truncate-utf8-bytes');
+const PropertiesReader = require('properties-reader');
+const autocast = require('autocast');
+const signalling = require('../utility/signalling');
 
 let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
 hdb_properties.append(hdb_properties.get('settings_path'));
 
 
 const hdb_path = path.join(hdb_properties.get('HDB_ROOT'), '/schema');
-const regex = /\//g,
-    hash_regex = /^[a-zA-Z0-9-_]+$/,
-    unicode_slash = 'U+002F';
+const regex = /\//g;
+const hash_regex = /^[a-zA-Z0-9-_]+$/;
+const unicode_slash = 'U+002F';
 
 const WRITE_RECORDS_ASYNC_EACH_LIMIT = 2500;
 const CREATE_FOLDERS_ASYNC_EACH_LIMIT = 2000;
@@ -144,16 +144,26 @@ function insertData(insert_object, callback){
         }
         let inserted_records = [];
         let skipped_records = [];
+
         async.waterfall([
             validation.bind(null, insert_object),
             (table_schema, caller) => {
                 let hash_attribute = table_schema.hash_attribute;
                 let base_path = hdb_path + '/' + insert_object.schema + '/' + insert_object.table + '/';
+                insert_object.dup_check = {};
+
                 for (let r in insert_object.records) {
+                    let hash_val = insert_object.records[r][hash_attribute];
+                    // If duplicate, we don't assign the HDB_INTERNAL_PATH internal attribute so it will be skipped later.
+                    if(insert_object.dup_check[hash_val]) {
+                        continue;
+                    }
+                    insert_object.dup_check[hash_val] = {};
                     let record = insert_object.records[r];
                     let path = `${base_path}__hdb_hash/${hash_attribute}/${record[hash_attribute]}.hdb`;
                     //Internal record that is removed if the record exists.  Should not be written to the DB.
                     insert_object.records[r][HDB_PATH_KEY] = path;
+
                 }
                 caller(null);
             },
@@ -461,16 +471,21 @@ function checkAttributeSchema(insert_object, callerback) {
 function checkRecordsExist(insert_object, skipped_records, inserted_records, callback) {
     let table_schema = global.hdb_schema[insert_object.schema][insert_object.table];
     async.map(insert_object.records, function(record, inner_callback) {
-        fs.access(record[HDB_PATH_KEY], (err) => {
-            if (err && err.code === 'ENOENT') {
-                inserted_records.push(autocast(record[table_schema.hash_attribute]));
-                inner_callback();
-            } else {
-                record[HDB_PATH_KEY] = undefined;
-                skipped_records.push(autocast(record[table_schema.hash_attribute]));
-                inner_callback();
-            }
-        });
+        if(record[HDB_PATH_KEY]) {
+            fs.access(record[HDB_PATH_KEY], (err) => {
+                if (err && err.code === 'ENOENT') {
+                    inserted_records.push(autocast(record[table_schema.hash_attribute]));
+                    inner_callback();
+                } else {
+                    record[HDB_PATH_KEY] = undefined;
+                    skipped_records.push(autocast(record[table_schema.hash_attribute]));
+                    inner_callback();
+                }
+            });
+        } else {
+            skipped_records.push(autocast(record[table_schema.hash_attribute]));
+            inner_callback();
+        }
     }, function(err){
         if (err) {
             callback(err);

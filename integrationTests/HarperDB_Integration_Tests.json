@@ -3679,7 +3679,73 @@
 					"response": []
 				},
 				{
-					"_postman_id": "5d148335-e103-4a53-be72-73bfe5da0952",
+					"name": "Insert with duplicate records to make sure both are not added",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "cc8c0614-8642-4057-8b31-fb89f4f52d24",
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Update employee id 1 address\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.skipped_hashes[0]).to.eql(212);",
+									"});",
+									"",
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"insert\",\n\t\"schema\":\"{{schema}}\",\n\t\"table\":\"{{emps_tb}}\",\n\t\"records\": [\n\t  {\n\t    \"{{emps_id}}\": 212,\n\t    \"address\": \"def1234\",\n\t    \"lastname\":\"dobolina\",\n\t    \"firstname\":\"bob\"\n\t  },\n\t  {\n\t    \"{{emps_id}}\": 212,\n\t    \"address\": \"def1234\",\n\t    \"lastname\":\"dobolina2\",\n\t    \"firstname\":\"bob\"\n\t  }\n\t]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
 					"name": "NoSQL search by hash",
 					"event": [
 						{
