@@ -154,11 +154,11 @@ function insertData(insert_object, callback){
 
                 for (let r in insert_object.records) {
                     let hash_val = insert_object.records[r][hash_attribute];
-                    if(!insert_object.dup_check[hash_val]) {
-                        insert_object.dup_check[hash_val] = {};
-                    } else {
+                    // If duplicate, we don't assign the HDB_INTERNAL_PATH internal attribute so it will be skipped later.
+                    if(insert_object.dup_check[hash_val]) {
                         continue;
                     }
+                    insert_object.dup_check[hash_val] = {};
                     let record = insert_object.records[r];
                     let path = `${base_path}__hdb_hash/${hash_attribute}/${record[hash_attribute]}.hdb`;
                     //Internal record that is removed if the record exists.  Should not be written to the DB.
