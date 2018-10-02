@@ -907,7 +907,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"northnwd\",\n  \"table\":\"order_details\",\n  \"hash_attribute\": \"orderid\"\n}"
+							"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"northnwd\",\n  \"table\":\"order_details\",\n  \"hash_attribute\": \"orderdetailid\"\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
