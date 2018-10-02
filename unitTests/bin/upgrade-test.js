@@ -49,7 +49,7 @@ describe('Upgrade Test - Test checkIfRunning', function() {
         await checkIfRunning('1.1.0', '2.1.0').catch((e) => {
             except = e;
         });
-        assert.equal(except, undefined, 'Expected no exception');
+        assert.equal(except, undefined, 'Expected no exception.  Is HDB running while you run these tests?');
     });
     it('test checkIfRunning, stub reports hdb running so expect exception', async function() {
         let except = undefined;
