@@ -17,22 +17,6 @@ const ROLE_TABLE_NAME = 'hdb_role';
 // Job table name
 const JOB_TABLE_NAME = 'hdb_job';
 
-const OPERATION_NAMES = {
-    csv_data_load: 'csv_data_load',
-    csv_url_load: 'csv_url_load'
-};
-
-// Describes all available job types
-const JOB_TYPE_ENUM = {
-    csv_file_load: 'csv_file_load',
-    empty_trash: 'empty_trash',
-    csv_url_load: OPERATION_NAMES.csv_url_load,
-    csv_data_load: OPERATION_NAMES.csv_data_load,
-    export_to_s3: 'export_to_s3',
-    export_local: 'export_local',
-	delete_files_before: 'delete_files_before'
-};
-
 // Describes the available statuses for jobs
 const JOB_STATUS_ENUM = {
 	CREATED: 'CREATED',
@@ -64,7 +48,53 @@ const HTTP_STATUS_CODES = {
 
 // Operations
 const OPERATIONS_ENUM = {
-    UPDATE: 'update'
+    INSERT: 'insert',
+    UPDATE: 'update',
+    SEARCH_BY_HASH: 'search_by_hash',
+    SEARCH_BY_VALUE: 'search_by_value',
+    SEARCH: 'search',
+    SQL: 'sql',
+    CSV_DATA_LOAD: 'csv_data_load',
+    CSV_FILE_LOAD: 'csv_file_load',
+    CSV_URL_LOAD: 'csv_url_load',
+    CREATE_SCHEMA: 'create_schema',
+    CREATE_TABLE: 'create_table',
+    CREATE_ATTRIBUTE: 'create_attribute',
+    DROP_SCHEMA: 'drop_schema',
+    DROP_TABLE: 'drop_table',
+    DESCRIBE_SCHEMA: 'describe_schema',
+    DESCRIBE_TABLE: 'describe_table',
+    DESCRIBE_ALL: 'describe_all',
+    DELETE: 'delete',
+    ADD_USER: 'add_user',
+    ALTER_USER: 'alter_user',
+    DROP_USER: 'drop_user',
+    LIST_USERS: 'list_users',
+    LIST_ROLES: 'list_roles',
+    ADD_ROLE: 'add_role',
+    ALTER_ROLE: 'alter_role',
+    DROP_ROLE: 'drop_role',
+    USER_INFO: 'user_info',
+    READ_LOG: 'read_log',
+    ADD_NODE: 'add_node',
+    EXPORT_TO_S3: 'export_to_s3',
+    DELETE_FILES_BEFORE: 'delete_files_before',
+    EXPORT_LOCAL: 'export_local',
+    SEARCH_JOBS_BY_START_DATE: 'search_jobs_by_start_date',
+    GET_JOB: 'get_job',
+    DELETE_JOB: 'delete_job',
+    UPDATE_JOB: 'update_job'
+};
+
+const SERVICE_ACTIONS_ENUM = {
+    RUN:'run',
+    INSTALL:'install',
+    REGISTER:'register',
+    STOP:'stop',
+    RESTART:'restart',
+    VERSION: 'version',
+    UPGRADE:'upgrade',
+    UPGRADE_EXTERN: 'upgrade_external'
 };
 
 //describes the Geo Conversion types
@@ -77,6 +107,35 @@ const GEO_CONVERSION_ENUM = {
     polygon: 'polygon'
 };
 
+const HDB_SETTINGS_NAMES = {
+    PROJECT_DIR: 'PROJECT_DIR',
+    HDB_ROOT: 'HDB_ROOT',
+    HTTP_PORT: 'HTTP_PORT',
+    HTTPS_PORT: 'HTTPS_PORT',
+    CERTIFICATE: 'CERTIFICATE',
+    PRIVATE_KEY: 'PRIVATE_KEY',
+    HTTPS_ON: 'HTTPS_ON',
+    HTTP_ON: 'HTTP_ON',
+    CORS_ON: 'CORS_ON',
+    CORS_WHITELIST: 'CORS_WHITELIST',
+    SERVER_TIMEOUT_MS: 'SERVER_TIMEOUT_MS',
+    LOG_LEVEL: 'LOG_LEVEL',
+    LOGGER: 'LOG_LEVEL',
+    LOG_PATH: 'LOG_PATH',
+    NODE_ENV: 'NODE_ENV'
+};
+
+// Describes all available job types
+const JOB_TYPE_ENUM = {
+    csv_file_load: 'csv_file_load',
+    empty_trash: 'empty_trash',
+    csv_url_load: OPERATIONS_ENUM.csv_url_load,
+    csv_data_load: OPERATIONS_ENUM.csv_data_load,
+    export_to_s3: 'export_to_s3',
+    export_local: 'export_local',
+    delete_files_before: 'delete_files_before'
+};
+
 module.exports = {
     HDB_PROC_NAME,
     SYSTEM_SCHEMA_NAME,
@@ -87,6 +146,7 @@ module.exports = {
     OPERATIONS_ENUM,
     HTTP_STATUS_CODES,
     GEO_CONVERSION_ENUM,
-    OPERATION_NAMES
+    HDB_SETTINGS_NAMES,
+    SERVICE_ACTIONS_ENUM
 };
 

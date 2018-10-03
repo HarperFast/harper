@@ -30,9 +30,6 @@ let fork = require('child_process').fork;
  * start.  If the hdb_boot_props file is not found, it is assumed an install needs to be performed.
  */
 function run() {
-
-    logger.setLogLevel('info');
-
     ps('name', HDB_PROC_NAME).then(function (list) {
         if( list.length === 0 ) {
             arePortsInUse( (err) => {
@@ -52,7 +49,7 @@ function run() {
     }, function (err) {
         console.log(err.stack || err);
         logger.error(err.stack || err);
-    })
+    });
 }
 
 function arePortsInUse(callback) {

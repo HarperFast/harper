@@ -37,7 +37,7 @@ describe('Test csvDataLoad', function () {
     let bulk_load_stub = undefined;
     beforeEach(function () {
         test_msg = test_utils.deepClone(DATA_LOAD_MESSAGE);
-        test_msg.operation = hdb_terms.OPERATION_NAMES.csv_data_load;
+        test_msg.operation = hdb_terms.OPERATIONS_ENUM.csv_data_load;
         test_msg.data = VALID_CSV_DATA;
         bulk_load_stub = sandbox.stub().returns(BULK_LOAD_RESPONSE);
         csv_rewire.__set__('p_bulk_load', bulk_load_stub);
@@ -97,7 +97,7 @@ describe('Test makeMiddlewareCall', function () {
     let alasql_promise_stub = undefined;
     beforeEach(function () {
         test_msg = test_utils.deepClone(DATA_LOAD_MESSAGE);
-        test_msg.operation = hdb_terms.OPERATION_NAMES.csv_data_load;
+        test_msg.operation = hdb_terms.OPERATIONS_ENUM.csv_data_load;
         test_msg.data = VALID_CSV_DATA;
 
     });
@@ -143,7 +143,7 @@ describe('Test csvURLLoad', function () {
     // TODO: Expand these tests once we can get some additional invalid csv files hosted on the intranet.
     beforeEach(function () {
         test_msg = test_utils.deepClone(DATA_LOAD_MESSAGE);
-        test_msg.operation = hdb_terms.OPERATION_NAMES.csv_url_load;
+        test_msg.operation = hdb_terms.OPERATIONS_ENUM.csv_url_load;
         bulk_load_stub = sandbox.stub().returns(BULK_LOAD_RESPONSE);
         csv_rewire.__set__('p_bulk_load', bulk_load_stub);
     });
@@ -202,7 +202,7 @@ describe('Test csvFileLoad', function () {
     // TODO: Expand these tests once we can get some additional invalid csv files hosted on the intranet.
     beforeEach(function () {
         test_msg = test_utils.deepClone(DATA_LOAD_MESSAGE);
-        test_msg.operation = hdb_terms.OPERATION_NAMES.csv_url_load;
+        test_msg.operation = hdb_terms.OPERATIONS_ENUM.csv_url_load;
         bulk_load_stub = sandbox.stub().returns(BULK_LOAD_RESPONSE);
         csv_rewire.__set__('p_bulk_load', bulk_load_stub);
     });

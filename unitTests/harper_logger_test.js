@@ -1,3 +1,4 @@
+"use strict";
 /**
  * Tests the harper logger module.  Note the following variables are required in the settings file:
  *
