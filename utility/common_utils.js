@@ -232,9 +232,17 @@ function escapeRawValue(value){
     if(isEmpty(value)){
         return value;
     }
-    return String(value).replace(FORWARD_SLASH_REGEX, UNICODE_FORWARD_SLASH)
-        .replace(PERIOD_REGEX, UNICODE_PERIOD)
-        .replace(DOUBLE_PERIOD_REGEX, UNICODE_PERIOD + UNICODE_PERIOD);
+    let the_value = String(value);
+
+    if(the_value === '.') {
+        return UNICODE_PERIOD;
+    }
+
+    if(the_value === '..') {
+        return UNICODE_PERIOD + UNICODE_PERIOD;
+    }
+
+    return the_value.replace(FORWARD_SLASH_REGEX, UNICODE_FORWARD_SLASH);
 }
 
 /**
@@ -246,7 +254,16 @@ function unescapeValue(value){
     if(isEmpty(value)){
         return value;
     }
-    return String(value).replace(ESCAPED_FORWARD_SLASH_REGEX, '/')
-        .replace(ESCAPED_PERIOD_REGEX, '.')
-        .replace(ESCAPED_DOUBLE_PERIOD_REGEX, '..');
+
+    let the_value = String(value);
+
+    if(the_value === UNICODE_PERIOD) {
+        return '.';
+    }
+
+    if(the_value === UNICODE_PERIOD + UNICODE_PERIOD) {
+        return '..';
+    }
+
+    return String(value).replace(ESCAPED_FORWARD_SLASH_REGEX, '/');
 }
