@@ -311,11 +311,11 @@ function compareUpdatesToExistingRecords(update_object, hash_attribute, existing
 
                     let {value_path} = valueConverter(existing_record[attr]);
 
-                    if (existing_record[attr] !== null && existing_record[attr] !== undefined) {
+                    if (!h_utils.isEmpty(existing_record[attr]) && !h_utils.isEmpty(value_path)) {
                         unlink_paths.push(`${base_path}${attr}/${value_path}/${existing_record[hash_attribute]}.hdb`);
                     }
 
-                    if (update_record[attr] === null || update_record[attr] === undefined) {
+                    if (h_utils.isEmpty(update_record[attr])) {
                         unlink_paths.push(`${base_path}__hdb_hash/${attr}/${existing_record[hash_attribute]}.hdb`);
                     }
                 }
@@ -462,7 +462,13 @@ function checkAttributeSchema(insert_object, callerback) {
  * @returns {{value: string, value_stripped: string, value_path: string}}
  */
 function valueConverter(raw_value){
-    let value = typeof raw_value === 'object' ? JSON.stringify(raw_value) : raw_value;
+    let value;
+    try {
+        value = typeof raw_value === 'object' ? JSON.stringify(raw_value) : raw_value;
+    } catch(e){
+        logger.error(e);
+        value = raw_value;
+    }
     let value_stripped = String(h_utils.escapeRawValue(value));
     let value_path = Buffer.byteLength(value_stripped) > 255 ? truncate(value_stripped, 255) + '/blob' : value_stripped;
 
