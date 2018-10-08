@@ -2016,6 +2016,69 @@
 						}
 					},
 					"response": []
+				},
+				{
+					"name": "Insert dot & double dot data",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "83493efa-2538-4d2d-85dd-765f55db06fe",
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"inserted 1\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message.indexOf('inserted 1')).to.eql(0);",
+									"});",
+									"",
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\":\"insert\",\n    \"schema\" :  \"call\",\n    \"table\":\"aggr\",\n    \"records\": [\n    \t{\n        \"all\" : 11,\n        \"dog_name\" : \".\",\n        \"owner_name\": \"..\"\n      }\n    ]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
 				}
 			]
 		},
@@ -2296,7 +2359,7 @@
 									"pm.test(\"test good response\", function () {",
 									"    pm.response.to.have.status(200);",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData[0].all).to.eql(10);",
+									"    pm.expect(jsonData[0].all).to.eql(11);",
 									"});"
 								]
 							}
@@ -2350,7 +2413,80 @@
 					"response": []
 				},
 				{
-					"_postman_id": "0a50cfe7-c3f5-4a47-8983-a2bdc5af37b5",
+					"name": "select * from call.aggr where id = 11 - select dot & double dot",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "0a597f86-2495-446b-9c55-81e450143fbc",
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"test good response\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"test 1 object in array\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(1);",
+									"});",
+									"",
+									"pm.test(\"test owner_name is .. and dog_name is .\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[0].owner_name).to.eql(\"..\");",
+									"    pm.expect(jsonData[0].dog_name).to.eql(\".\");",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from `call`.`aggr` where `all` = 11\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
 					"name": "select orders orderby id desc",
 					"event": [
 						{
@@ -3602,7 +3738,73 @@
 					"response": []
 				},
 				{
-					"_postman_id": "b06a7e1f-8fe3-41c6-8e59-25d97db691c2",
+					"name": "update NoSQL call.aggr set data to dot & double dot",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "c6ff3b64-bcb1-46ed-9ca2-5776f7fae9a4",
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Update aggr id 4 dog_name, owner_name\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.update_hashes[0]).to.eql(4);",
+									"});",
+									"",
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"update\",\n\"schema\":\"call\",\n\"table\":\"aggr\",\n\"records\": [\n  {\n    \"all\": 4,\n    \"dog_name\": \".\",\n    \"owner_name\": \"..\"\n  }\n]\n\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
 					"name": "update NoSQL employee add new attribute",
 					"event": [
 						{
@@ -3820,7 +4022,81 @@
 					"response": []
 				},
 				{
-					"_postman_id": "d289e2b5-96a1-4cba-b133-939b036fad87",
+					"name": "NoSQL search by hash - check dot & double dot",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "8585d877-4334-4ee1-9e85-48733b10bebd",
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"verify NoSQL update worked check dot\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[0].dog_name).to.eql('.');",
+									"});",
+									"",
+									"pm.test(\"verify NoSQL update worked, check double dot\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[0].owner_name).to.eql(\"..\");",
+									"});",
+									"",
+									"",
+									""
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\":\"call\",\n  \"table\":\"aggr\",\n  \"hash_values\":[4],\n  \"get_attributes\": [\"*\"]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
 					"name": "NoSQL search by hash with unknown attribute",
 					"event": [
 						{
