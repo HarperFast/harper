@@ -5,6 +5,14 @@ const fs = require('fs');
 const log = require('./logging/harper_logger');
 const fs_extra = require('fs-extra');
 const { promisify } = require('util');
+const {PERIOD_REGEX,
+    DOUBLE_PERIOD_REGEX,
+    UNICODE_PERIOD,
+    FORWARD_SLASH_REGEX,
+    UNICODE_FORWARD_SLASH,
+    ESCAPED_FORWARD_SLASH_REGEX,
+    ESCAPED_PERIOD_REGEX,
+    ESCAPED_DOUBLE_PERIOD_REGEX} = require('./hdbTerms');
 
 const EMPTY_STRING = '';
 
@@ -25,7 +33,9 @@ module.exports = {
     stripFileExtension: stripFileExtension,
     autoCast: autoCast,
     removeDir: removeDir,
-    compareVersions: compareVersions
+    compareVersions: compareVersions,
+    escapeRawValue: escapeRawValue,
+    unescapeValue: unescapeValue
 };
 
 /**
@@ -210,4 +220,33 @@ function compareVersions (old_version, new_version) {
         }
     }
     return segmentsA.length - segmentsB.length;
+}
+
+/**
+ * takes a raw value and replaces any forward slashes with the unicode equivalent.  if the value directly matches "." or ".." then it replaces with their unicode equivalent
+ * the reason for this is to because linux does not allow forward slashes in folder names and "." & ".." are already taken
+ * @param value
+ * @returns {string}
+ */
+function escapeRawValue(value){
+    if(isEmpty(value)){
+        return value;
+    }
+    return String(value).replace(FORWARD_SLASH_REGEX, UNICODE_FORWARD_SLASH)
+        .replace(PERIOD_REGEX, UNICODE_PERIOD)
+        .replace(DOUBLE_PERIOD_REGEX, UNICODE_PERIOD + UNICODE_PERIOD);
+}
+
+/**
+ * takes the value and unesacapes the unicode for any occurrance of "U+002F" and exact values of  "U+002E", "U+002EU+002E"
+ * @param value
+ * @returns {string}
+ */
+function unescapeValue(value){
+    if(isEmpty(value)){
+        return value;
+    }
+    return String(value).replace(ESCAPED_FORWARD_SLASH_REGEX, '/')
+        .replace(ESCAPED_PERIOD_REGEX, '.')
+        .replace(ESCAPED_DOUBLE_PERIOD_REGEX, '..');
 }
