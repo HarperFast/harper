@@ -20,14 +20,14 @@ const truncate = require('truncate-utf8-bytes');
 const PropertiesReader = require('properties-reader');
 const autocast = require('autocast');
 const signalling = require('../utility/signalling');
+const hdb_terms = require('../utility/hdbTerms');
 
 let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
 hdb_properties.append(hdb_properties.get('settings_path'));
 
 
 const hdb_path = path.join(hdb_properties.get('HDB_ROOT'), '/schema');
-const regex = /\//g;
-const hash_regex = /^[a-zA-Z0-9-_]+$/;
+
 const unicode_slash = 'U+002F';
 
 const WRITE_RECORDS_ASYNC_EACH_LIMIT = 2500;
@@ -92,7 +92,7 @@ function validation(write_object, callback) {
             if(record[hash_attribute] === null || record[hash_attribute] === undefined){
                 no_hash = true;
                 return;
-            } else if(regex.test(record[hash_attribute])) {
+            } else if(hdb_terms.FORWARD_SLASH_REGEX.test(record[hash_attribute])) {
                 bad_hash_value = true;
                 return;
             } else if(Buffer.byteLength(String(record[hash_attribute])) > 250){
@@ -309,18 +309,13 @@ function compareUpdatesToExistingRecords(update_object, hash_attribute, existing
                 if (autocast(existing_record[attr]) !== autocast(update_record[attr])) {
                     update[attr] = update_record[attr];
 
-                    let value = typeof existing_record[attr] === 'object' ? JSON.stringify(existing_record[attr]) : existing_record[attr];
+                    let {value_path} = valueConverter(existing_record[attr]);
 
-                    //here we replace any forward slashes with the unicode  encoding of a forward slash.
-                    // The reason is you cannot have a forward slash in a folder name and we want to preserve the value for search
-                    let value_stripped = String(value).replace(regex, unicode_slash);
-                    value_stripped = Buffer.byteLength(value_stripped) > 255  ? truncate(value_stripped, 255) + '/blob' : value_stripped;
-
-                    if (existing_record[attr] !== null && existing_record[attr] !== undefined) {
-                        unlink_paths.push(`${base_path}${attr}/${value_stripped}/${existing_record[hash_attribute]}.hdb`);
+                    if (!h_utils.isEmpty(existing_record[attr]) && !h_utils.isEmpty(value_path)) {
+                        unlink_paths.push(`${base_path}${attr}/${value_path}/${existing_record[hash_attribute]}.hdb`);
                     }
 
-                    if (update_record[attr] === null || update_record[attr] === undefined) {
+                    if (h_utils.isEmpty(update_record[attr])) {
                         unlink_paths.push(`${base_path}__hdb_hash/${attr}/${existing_record[hash_attribute]}.hdb`);
                     }
                 }
@@ -416,9 +411,7 @@ function checkAttributeSchema(insert_object, callerback) {
                     continue;
                 }
 
-                let value = typeof record[property] === 'object' ? JSON.stringify(record[property]) : record[property];
-                let value_stripped = String(value).replace(regex, 'U+002F');
-                let value_path = Buffer.byteLength(value_stripped) > 255 ? truncate(value_stripped, 255) + '/blob' : value_stripped;
+                let {value, value_path} = valueConverter(record[property]);
                 let attribute_file_name = record[hash_attribute] + '.hdb';
                 let attribute_path = base_path + property + '/' + value_path;
 
@@ -461,6 +454,29 @@ function checkAttributeSchema(insert_object, callerback) {
     } catch(e){
         return callerback(e);
     }
+}
+
+/**
+ * takes a raw value from an attribute, replaces "/", ".", ".." with unicode equivalents and returns the value, escaped value & the value path
+ * @param raw_value
+ * @returns {{value: string, value_stripped: string, value_path: string}}
+ */
+function valueConverter(raw_value){
+    let value;
+    try {
+        value = typeof raw_value === 'object' ? JSON.stringify(raw_value) : raw_value;
+    } catch(e){
+        logger.error(e);
+        value = raw_value;
+    }
+    let value_stripped = String(h_utils.escapeRawValue(value));
+    let value_path = Buffer.byteLength(value_stripped) > 255 ? truncate(value_stripped, 255) + '/blob' : value_stripped;
+
+    return {
+        value: value,
+        value_stripped: value_stripped,
+        value_path: value_path
+    };
 }
 
 /**

@@ -225,6 +225,90 @@ describe(`Test autoCast`, function(){
     });
 });
 
+describe('Test escapeRawValue', function(){
+    it('Pass in null, expect null', function(){
+        assert.equal(cu.escapeRawValue(null), null);
+    });
+
+    it('Pass in undefined, expect undefined', function(){
+        assert.equal(cu.escapeRawValue(undefined), undefined);
+    });
+
+    it('Pass in "", expect ""', function(){
+        assert.equal(cu.escapeRawValue(""), "");
+    });
+
+    it('Pass in ".", expect "U+002E"', function(){
+        assert.equal(cu.escapeRawValue("."), "U+002E");
+    });
+
+    it('Pass in "..", expect "U+002EU+002E"', function(){
+        assert.equal(cu.escapeRawValue(".."), "U+002EU+002E");
+    });
+
+    it('Pass in "...", expect "..."', function(){
+        assert.equal(cu.escapeRawValue("..."), "...");
+    });
+
+    it('Pass in "words..", expect "words.."', function(){
+        assert.equal(cu.escapeRawValue("words.."), "words..");
+    });
+
+    it('Pass in "word.s.", expect "word.s."', function(){
+        assert.equal(cu.escapeRawValue("word.s."), "word.s.");
+    });
+
+    it('Pass in "hello/this/is/some/text", expect "helloU+002FthisU+002FisU+002FsomeU+002Ftext"', function(){
+        assert.equal(cu.escapeRawValue("hello/this/is/some/text"), "helloU+002FthisU+002FisU+002FsomeU+002Ftext");
+    });
+});
+
+describe('Test unescapeValue', function(){
+    it('Pass in null, expect null', function(){
+        assert.equal(cu.unescapeValue(null), null);
+    });
+
+    it('Pass in undefined, expect undefined', function(){
+        assert.equal(cu.unescapeValue(undefined), undefined);
+    });
+
+    it('Pass in "", expect ""', function(){
+        assert.equal(cu.unescapeValue(""), "");
+    });
+
+    it('Pass in "U+002E", expect "."', function(){
+        assert.equal(cu.unescapeValue("U+002E"), ".");
+    });
+
+    it('Pass in "U+002EU+002E", expect ".."', function(){
+        assert.equal(cu.unescapeValue("U+002EU+002E"), "..");
+    });
+
+    it('Pass in "words..", expect "words.."', function(){
+        assert.equal(cu.unescapeValue("words.."), "words..");
+    });
+
+    it('Pass in "word.s.", expect "word.s."', function(){
+        assert.equal(cu.unescapeValue("word.s."), "word.s.");
+    });
+
+    it('Pass in "wordsU+002EU+002E", expect "wordsU+002EU+002E"', function(){
+        assert.equal(cu.unescapeValue("wordsU+002EU+002E"), "wordsU+002EU+002E");
+    });
+
+    it('Pass in "wordU+002EsU+002E", expect "wordU+002EsU+002E"', function(){
+        assert.equal(cu.unescapeValue("wordU+002EsU+002E"), "wordU+002EsU+002E");
+    });
+
+    it('Pass in "hello/this/is/some/text", expect "hello/this/is/some/text"', function(){
+        assert.equal(cu.unescapeValue("hello/this/is/some/text"), "hello/this/is/some/text");
+    });
+
+    it('Pass in "helloU+002FthisU+002FisU+002FsomeU+002Ftext" , expect "hello/this/is/some/text"', function(){
+        assert.equal(cu.unescapeValue("helloU+002FthisU+002FisU+002FsomeU+002Ftext"), "hello/this/is/some/text");
+    });
+});
+
 describe('Test compareVersions', function() {
     let versions = [
         new upgrade_directive('1.1.1'),
