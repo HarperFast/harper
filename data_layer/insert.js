@@ -37,6 +37,7 @@ const CREATE_FOLDERS_ASYNC_EACH_LIMIT = 2000;
 const NO_RESULTS = 'NR';
 //This is an internal value that should not be written to the DB.
 const HDB_PATH_KEY = 'HDB_INTERNAL_PATH';
+const HDB_AUTH_HEADER = 'hdb_auth_header';
 
 
 module.exports = {
@@ -407,7 +408,7 @@ function checkAttributeSchema(insert_object, callerback) {
 
             hash_paths[`${base_path}__hdb_hash/${hash_attribute}/${record[hash_attribute]}.hdb`] = '';
             for (let property in record) {
-                if (record[property] === null || record[property] === undefined || record[property] === '' || property === HDB_PATH_KEY) {
+                if (record[property] === null || record[property] === undefined || record[property] === '' || property === HDB_PATH_KEY || property === HDB_AUTH_HEADER) {
                     continue;
                 }
 
