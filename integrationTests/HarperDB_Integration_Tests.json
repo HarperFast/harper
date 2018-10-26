@@ -2703,11 +2703,12 @@
 								"exec": [
 									"pm.test(\"sql test most buyer\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData[0].companyname).to.eql(\"Berglunds snabbköp\");",
-									"    pm.expect(jsonData[1].companyname).to.eql(\"Hanari Carnes\");",
+									"    pm.expect(jsonData[0].companyname).to.eql(\"Berglunds snabbk\\ufffdp\");",
+									"    pm.expect(jsonData[1].companyname).to.eql(\"Great Lakes Food Market\");",
 									"});",
 									""
-								]
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
