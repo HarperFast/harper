@@ -267,7 +267,7 @@ function chooseOperation(json, callback) {
             json.parsed_sql_object = parsed_sql_object;
             if (!sql.checkASTPermissions(json, parsed_sql_object)) {
                 harper_logger.error(`${UNAUTH_RESPONSE} from operation ${json.search_operation}`);
-                return callback(UNAUTH_RESPONSE, null);
+                return callback(UNAUTH_RESPONSE, `${UNAUTH_RESPONSE} from operation ${json.search_operation}`);
             }
         } else {
             let function_to_check = (job_operation_function === undefined ? operation_function : job_operation_function);

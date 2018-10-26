@@ -16,6 +16,9 @@
       },
       {
         "attribute":"schema"
+      },
+      {
+        "attribute":"residence"
       }
     ]
   },
@@ -55,6 +58,17 @@
     "hash_attribute":"id",
     "name":"hdb_role",
     "schema":"system",
+    "attributes":[
+      {
+        "attribute":"id"
+      },
+      {
+        "attribute":"role"
+      },
+      {
+        "attribute":"permission"
+      }
+    ],
     "residence":["*"]
   },
   "hdb_job":{
@@ -62,6 +76,9 @@
     "name":"hdb_job",
     "schema":"system",
     "attributes":[
+      {
+        "attribute":"id"
+      },
       {
         "attribute":"user"
       },

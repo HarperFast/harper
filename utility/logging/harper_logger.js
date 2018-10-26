@@ -89,6 +89,7 @@ module.exports = {
     fatal:fatal,
     setLogLevel:setLogLevel,
     setLogType:setLogType,
+    write_log:write_log,
     log_level,
     FATAL,
     ERR,

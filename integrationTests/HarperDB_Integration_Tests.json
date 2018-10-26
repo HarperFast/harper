@@ -7,10 +7,12 @@
 	},
 	"item": [
 		{
+			"_postman_id": "7abbcf20-44ef-483a-8018-ed51373b7d63",
 			"name": "1. Environment Setup",
 			"description": null,
 			"item": [
 				{
+					"_postman_id": "b0e7b6af-c1a2-45e9-a117-dda8c47f914a",
 					"name": "create_schema",
 					"event": [
 						{
@@ -70,6 +72,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "6e98a977-0777-49de-ba03-95fa67c9e8d0",
 					"name": "create_schema_dev",
 					"event": [
 						{
@@ -129,6 +132,67 @@
 					"response": []
 				},
 				{
+					"_postman_id": "1d487d12-4528-4e4c-862e-03d08ad08fd0",
+					"name": "create_schema_call",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"tests[\"Create Schema\"] = responseBody.has(\"successfully created\");\r",
+									"\r",
+									"\r",
+									""
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"create_schema\",\n  \"schema\": \"call\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "This method is used to create a schema.  It like all other functions requires basic auth.  \n\nAttributes:\n\noperation (required) - must always be create_schema\n\nschema (required) - name of the schema you are creating"
+					},
+					"response": []
+				},
+				{
+					"_postman_id": "606a5270-409f-49fc-a442-6da1ed96269d",
 					"name": "Validation Check NO Schema.",
 					"event": [
 						{
@@ -195,12 +259,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "6f1fbe8b-7ba5-499f-b03c-676f043643a1",
 					"name": "create_table_customers",
 					"event": [
 						{
@@ -256,12 +320,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "324224d8-5f2f-4cd3-8149-e59d54fd3499",
 					"name": "create_table_suppliers",
 					"event": [
 						{
@@ -321,12 +385,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "0344808c-c5da-4fa1-8e2b-671da79df278",
 					"name": "create_table_region",
 					"event": [
 						{
@@ -386,12 +450,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "c5e59b49-6bec-4c12-a332-7040e7022e4b",
 					"name": "create_table_employees",
 					"event": [
 						{
@@ -461,12 +525,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "e5aed179-a63a-42e9-be58-30701b80dce3",
 					"name": "create_table_orders",
 					"event": [
 						{
@@ -526,12 +590,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "c1819cee-2fc8-4116-9a72-253b41511429",
 					"name": "create_table_territories",
 					"event": [
 						{
@@ -591,12 +655,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "5e0c3bc3-63ae-4ab5-acfb-56ff163dbfe6",
 					"name": "create_table_categories",
 					"event": [
 						{
@@ -656,12 +720,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "a90a63f9-501e-4920-8837-3452e6025cc6",
 					"name": "create_table_shippers",
 					"event": [
 						{
@@ -721,12 +785,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "fef85b58-19da-4ca0-96a6-5a210be0a82b",
 					"name": "create_table_employeeterritories",
 					"event": [
 						{
@@ -786,12 +850,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "9f52610b-5f61-482e-92c1-018ad9846bf3",
 					"name": "create_table_orderdetails",
 					"event": [
 						{
@@ -843,7 +907,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"northnwd\",\n  \"table\":\"order_details\",\n  \"hash_attribute\": \"orderid\"\n}"
+							"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"northnwd\",\n  \"table\":\"order_details\",\n  \"hash_attribute\": \"orderdetailid\"\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -851,12 +915,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "a0125c82-bc95-4c60-81be-c49c48f3c831",
 					"name": "create_table_products",
 					"event": [
 						{
@@ -916,12 +980,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "9656b995-7890-49fc-a34e-d0eee1016180",
 					"name": "create_table_dev_long_text",
 					"event": [
 						{
@@ -977,12 +1041,73 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "77ddd954-01b7-48e5-8c9a-f900c2a10641",
+					"name": "create_table_call_aggr",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"call\",\n  \"table\":\"aggr\",\n  \"hash_attribute\": \"all\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"_postman_id": "7b983242-01e1-46b4-b4de-85b571fec303",
 					"name": "describe_schema",
 					"event": [
 						{
@@ -1049,18 +1174,19 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				}
 			]
 		},
 		{
+			"_postman_id": "787223e4-87b2-43ac-aab8-db4365db4200",
 			"name": "2. Data Load",
 			"description": null,
 			"item": [
 				{
+					"_postman_id": "4a1918b6-d60a-4708-bfcb-9aa314855d55",
 					"name": "Import data csv files into suppliers table",
 					"event": [
 						{
@@ -1119,12 +1245,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "71282798-d5bb-4b1c-832f-4ae90855ba63",
 					"name": "Import data csv files into region table",
 					"event": [
 						{
@@ -1183,12 +1309,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "1f3e70a0-538c-44b6-9257-b5110ee95302",
 					"name": "Import data csv files into territories table",
 					"event": [
 						{
@@ -1247,12 +1373,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "e35cd175-bace-4c7a-b220-85771037176b",
 					"name": "Import data csv files into employeeterritories table",
 					"event": [
 						{
@@ -1311,12 +1437,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "2b6ef2b7-f006-408e-8b83-4cea703d1d3f",
 					"name": "Import data csv files into shippers table",
 					"event": [
 						{
@@ -1375,12 +1501,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "a9236a3b-fdab-40f4-ae42-5a2ae957529f",
 					"name": "Import data csv files into categories table",
 					"event": [
 						{
@@ -1439,12 +1565,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "c8e8afe9-f30f-48c9-b849-49c596aaf154",
 					"name": "Import data csv files into employees table",
 					"event": [
 						{
@@ -1503,12 +1629,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "bc25beb4-6279-4cbd-b72e-50e8298daf59",
 					"name": "Import data csv files into customers table",
 					"event": [
 						{
@@ -1567,12 +1693,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "3113dc84-f325-4789-b15d-84506071e701",
 					"name": "Import data csv files into products table",
 					"event": [
 						{
@@ -1631,12 +1757,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "d589510a-83b9-4c0c-8baa-e2f80a39ce15",
 					"name": "Import data csv files into orderdetails table",
 					"event": [
 						{
@@ -1695,12 +1821,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "ad58f181-48e0-48b3-8f8a-661044aba1f5",
 					"name": "Import data csv files into orders table",
 					"event": [
 						{
@@ -1759,12 +1885,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "a15df9c6-e4f7-4f43-af5d-ec6d88f6e202",
 					"name": "Import data bulk insert into dev.long_text table",
 					"event": [
 						{
@@ -1823,18 +1949,146 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"_postman_id": "6eff58bc-3664-4933-8220-af7bf18cff6a",
+					"name": "Import data bulk insert into call.aggr",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "0d181d65-295e-47bf-bcbd-bfe1582f5797",
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"inserted 25\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message.indexOf('inserted 10')).to.eql(0);",
+									"});",
+									"",
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
 						},
-						"description": null
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\":\"insert\",\n    \"schema\" :  \"call\",\n    \"table\":\"aggr\",\n    \"records\": [\n    \t{\n        \"all\" : 1,\n        \"dog_name\" : \"Penny\",\n        \"owner_name\": \"Kyle\",\n        \"breed_id\":154,\n        \"age\":5,\n        \"weight_lbs\":35,\n        \"adorable\":true\n      },\n      {\n        \"all\" : 2,\n        \"dog_name\" : \"Harper\",\n        \"owner_name\": \"Stephen\",\n        \"breed_id\":346,\n        \"age\":5,\n        \"weight_lbs\":55,\n        \"adorable\":true\n      },\n      {\n        \"all\" : 3,\n        \"dog_name\" : \"Alby\",\n        \"owner_name\": \"Kaylan\",\n        \"breed_id\":348,\n        \"age\":5,\n        \"weight_lbs\":84,\n        \"adorable\":true\n      },\n      {\n        \"all\" : 4,\n        \"dog_name\" : \"Billy\",\n        \"owner_name\": \"Zach\",\n        \"breed_id\":347,\n        \"age\":4,\n        \"weight_lbs\":60,\n        \"adorable\":true\n      },\n      {\n        \"all\" : 5,\n        \"dog_name\" : \"Rose Merry\",\n        \"owner_name\": \"Zach\",\n        \"breed_id\":348,\n        \"age\":6,\n        \"weight_lbs\":15,\n        \"adorable\":true\n      },\n      {\n        \"all\" : 6,\n        \"dog_name\" : \"Kato\",\n        \"owner_name\": \"Kyle\",\n        \"breed_id\":351,\n        \"age\":4,\n        \"weight_lbs\":28,\n        \"adorable\":true\n      },\n      {\n        \"all\" : 7,\n        \"dog_name\" : \"Simon\",\n        \"owner_name\": \"Fred\",\n        \"breed_id\":349,\n        \"age\":1,\n        \"weight_lbs\":35,\n        \"adorable\":true\n      },\n      {\n        \"all\" : 8,\n        \"dog_name\" : \"Gemma\",\n        \"owner_name\": \"Stephen\",\n        \"breed_id\":350,\n        \"age\":3,\n        \"weight_lbs\":55,\n        \"adorable\":true\n      },\n      {\n        \"all\" : 9,\n        \"dog_name\" : \"Gertrude\",\n        \"owner_name\": \"Eli\",\n        \"breed_id\":158,\n        \"age\":5,\n        \"weight_lbs\":70,\n        \"adorable\":true\n      },\n      {\n        \"all\" : 10,\n        \"dog_name\" : \"Big Louie\",\n        \"owner_name\": \"Eli\",\n        \"breed_id\":241,\n        \"age\":11,\n        \"weight_lbs\":20,\n        \"adorable\":true\n      }\n    ]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Insert dot & double dot data",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "83493efa-2538-4d2d-85dd-765f55db06fe",
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"inserted 1\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message.indexOf('inserted 1')).to.eql(0);",
+									"});",
+									"",
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\":\"insert\",\n    \"schema\" :  \"call\",\n    \"table\":\"aggr\",\n    \"records\": [\n    \t{\n        \"all\" : 11,\n        \"dog_name\" : \".\",\n        \"owner_name\": \"..\"\n      }\n    ]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
 					},
 					"response": []
 				}
 			]
 		},
 		{
+			"_postman_id": "09653ee7-81f5-481e-8c93-faa603e6c9e3",
 			"name": "3. SQLTests",
 			"description": null,
 			"item": [
 				{
+					"_postman_id": "db048448-209f-4afc-94f9-278e7506b61c",
 					"name": "select employees orderby id asc",
 					"event": [
 						{
@@ -1893,8 +2147,342 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"_postman_id": "609ad005-1dd6-4c33-811a-7bf3346e4f0e",
+					"name": "select 2 + 2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "570062cb-252d-4106-b738-1b855cef18d8",
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"test calculator\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[0][\"2 + 2\"]).to.eql(4);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
 						},
-						"description": null
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select 2 + 2 \"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"_postman_id": "87be70f5-17cc-42cf-8ead-f14a95e4e6f5",
+					"name": "select * FROM orders - test no schema",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "2f352f23-1f68-4b96-b74d-459d5e7b77d4",
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"test select table no schema\", function () {",
+									"    pm.response.to.have.status(500);",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.eql('schema not defined for table orders');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * FROM orders\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"_postman_id": "03b7d983-1d21-41c4-bbc4-fea75db28441",
+					"name": "select * from call.aggr - reserved words",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "cade3b64-9138-4835-b448-5c38cc1089e4",
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"test bad response\", function () {",
+									"    pm.response.to.have.status(500);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from call.aggr\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"_postman_id": "13728897-07fa-497d-b343-f21ac4b2df44",
+					"name": "select * from `call`.`aggr` - reserved words",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "24468153-d217-4563-91e1-0a937deeaf19",
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"test good response\", function () {",
+									"    pm.response.to.have.status(200);",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[0].all).to.eql(11);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select age AS `alter`, * from `call`.`aggr` as `and` WHERE `all` > 3 ORDER BY `and`.`all` desc\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "select * from call.aggr where id = 11 - select dot & double dot",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "0a597f86-2495-446b-9c55-81e450143fbc",
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"test good response\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"test 1 object in array\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(1);",
+									"});",
+									"",
+									"pm.test(\"test owner_name is .. and dog_name is .\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[0].owner_name).to.eql(\"..\");",
+									"    pm.expect(jsonData[0].dog_name).to.eql(\".\");",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from `call`.`aggr` where `all` = 11\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
 					},
 					"response": []
 				},
@@ -1961,12 +2549,150 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "04134a57-03ff-44a6-8b85-09db57f358ef",
+					"name": "select count(*) orders where shipregion is null",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "c49aad8f-40e3-4230-bccb-86332cf5483c",
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"sql select order where shipregion is null\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[0].count).to.eql(414);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select count(*) as `count` from {{schema}}.{{ords_tb}} where shipregion IS NULL\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"_postman_id": "659a3a25-5ef4-4bf0-af1a-5d65335a59a1",
+					"name": "select count(*) orders where shipregion is not null",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "61018d36-8944-4922-96d5-42d915c81296",
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"sql select order where shipregion is not null\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[0].count).to.eql(416);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select count(*) AS `count` from {{schema}}.{{ords_tb}} where shipregion is not null\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"_postman_id": "b0f7d167-4a74-4f33-b469-a3bc882fcdac",
 					"name": "select most buyer orderby price asc",
 					"event": [
 						{
@@ -1977,7 +2703,7 @@
 								"exec": [
 									"pm.test(\"sql test most buyer\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData[0].companyname).to.eql(\"Berglunds snabbk�p\");",
+									"    pm.expect(jsonData[0].companyname).to.eql(\"Berglunds snabbköp\");",
 									"    pm.expect(jsonData[1].companyname).to.eql(\"Hanari Carnes\");",
 									"});",
 									""
@@ -2027,12 +2753,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "d1e83e18-947f-484c-b52a-2dbbaf2c7581",
 					"name": "select product orderby id asc",
 					"event": [
 						{
@@ -2095,12 +2821,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "a4ff7100-ce4b-47a1-b1ce-4089a413bb2d",
 					"name": "select customers orderby id asc",
 					"event": [
 						{
@@ -2163,12 +2889,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "09750e1f-5016-4de2-aafc-7db42c994c59",
 					"name": "select all details join 5 table where customername",
 					"event": [
 						{
@@ -2231,12 +2957,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "24c9740e-98d5-455c-a6cc-a4e0d9f5efef",
 					"name": "select order details",
 					"event": [
 						{
@@ -2309,12 +3035,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "6dfc3e94-f524-427a-bbc4-891c52118d64",
 					"name": "select count groupby country",
 					"event": [
 						{
@@ -2383,12 +3109,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "40c77a1e-9610-4d49-bbbb-0a344e354cf0",
 					"name": "select most have the extension employees",
 					"event": [
 						{
@@ -2451,12 +3177,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "d9b139fa-2d94-440e-9b33-84f13b040f78",
 					"name": "select top 10 most price of product",
 					"event": [
 						{
@@ -2519,12 +3245,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "a26e8c97-358b-42ba-ab0e-bfaed2b625a6",
 					"name": "select count min max avg sum price of products",
 					"event": [
 						{
@@ -2587,12 +3313,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "ceaca961-36b1-418c-a975-91ad3a7d25eb",
 					"name": "select where (like)and(<=>)",
 					"event": [
 						{
@@ -2655,12 +3381,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "854fba62-0b30-4e29-ba73-68266588d40e",
 					"name": "update SQL employee",
 					"event": [
 						{
@@ -2722,12 +3448,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "d438b1f4-95b7-4a8b-876f-607a7416d783",
 					"name": "select verify SQL update",
 					"event": [
 						{
@@ -2789,12 +3515,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "80618f14-956a-4217-822c-de54fca82e2e",
 					"name": "select * dev.long_text",
 					"event": [
 						{
@@ -2861,12 +3587,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "ec2ef793-7f25-4727-929f-22df9356cae3",
 					"name": "select * dev.long_text regexp",
 					"event": [
 						{
@@ -2933,18 +3659,19 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				}
 			]
 		},
 		{
+			"_postman_id": "48ca0d3b-3b53-4a3a-a6fb-8910836bcf31",
 			"name": "4. NoSQL Tests",
 			"description": null,
 			"item": [
 				{
+					"_postman_id": "1a677544-8c4d-473b-9182-3c6473409107",
 					"name": "update NoSQL employee",
 					"event": [
 						{
@@ -3006,13 +3733,222 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
-					"name": "NoSQL  search by hash",
+					"name": "update NoSQL call.aggr set data to dot & double dot",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "c6ff3b64-bcb1-46ed-9ca2-5776f7fae9a4",
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Update aggr id 4 dog_name, owner_name\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.update_hashes[0]).to.eql(4);",
+									"});",
+									"",
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"update\",\n\"schema\":\"call\",\n\"table\":\"aggr\",\n\"records\": [\n  {\n    \"all\": 4,\n    \"dog_name\": \".\",\n    \"owner_name\": \"..\"\n  }\n]\n\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "update NoSQL employee add new attribute",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Update employee id 1 address\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.update_hashes[0]).to.eql(1);",
+									"});",
+									"",
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"function pausecomp(millis)",
+									" {",
+									"  var date = new Date();",
+									"  var curDate = null;",
+									"  do { curDate = new Date(); }",
+									"  while(curDate-date < millis);",
+									"}",
+									"",
+									"pausecomp(100);"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"update\",\n\"schema\":\"{{schema}}\",\n\"table\":\"{{emps_tb}}\",\n\"records\": [\n  {\n    \"{{emps_id}}\": 1,\n    \"address\": \"def1234\",\n    \"test_record\":\"I'mATest\"\n  }\n]\n\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Insert with duplicate records to make sure both are not added",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "cc8c0614-8642-4057-8b31-fb89f4f52d24",
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Update employee id 1 address\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.skipped_hashes[0]).to.eql(212);",
+									"});",
+									"",
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"insert\",\n\t\"schema\":\"{{schema}}\",\n\t\"table\":\"{{emps_tb}}\",\n\t\"records\": [\n\t  {\n\t    \"{{emps_id}}\": 212,\n\t    \"address\": \"def1234\",\n\t    \"lastname\":\"dobolina\",\n\t    \"firstname\":\"bob\"\n\t  },\n\t  {\n\t    \"{{emps_id}}\": 212,\n\t    \"address\": \"def1234\",\n\t    \"lastname\":\"dobolina2\",\n\t    \"firstname\":\"bob\"\n\t  }\n\t]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL search by hash",
 					"event": [
 						{
 							"listen": "test",
@@ -3026,6 +3962,11 @@
 									"pm.test(\"verify NoSQL update worked\", function () {",
 									"    var jsonData = pm.response.json();",
 									"    pm.expect(jsonData[0].address).to.eql('def1234');",
+									"});",
+									"",
+									"pm.test(\"verify NoSQL update worked, new attribute added\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[0].test_record).to.eql(\"I'mATest\");",
 									"});",
 									"",
 									"",
@@ -3068,7 +4009,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{emps_tb}}\",\n  \"hash_attribute\": \"{{emps_id}}\",\n  \"hash_values\":[1],\n  \"get_attributes\": [\"address\"]\n}"
+							"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{emps_tb}}\",\n  \"hash_attribute\": \"{{emps_id}}\",\n  \"hash_values\":[1],\n  \"get_attributes\": [\"address\", \"test_record\"]\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -3076,18 +4017,163 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL search by hash - check dot & double dot",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "8585d877-4334-4ee1-9e85-48733b10bebd",
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"verify NoSQL update worked check dot\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[0].dog_name).to.eql('.');",
+									"});",
+									"",
+									"pm.test(\"verify NoSQL update worked, check double dot\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[0].owner_name).to.eql(\"..\");",
+									"});",
+									"",
+									"",
+									""
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
 						},
-						"description": null
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\":\"call\",\n  \"table\":\"aggr\",\n  \"hash_values\":[4],\n  \"get_attributes\": [\"*\"]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL search by hash with unknown attribute",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status code is 500\", function () {",
+									"    pm.response.to.have.status(500);",
+									"});",
+									"",
+									"pm.test(\"verify proper error message is given\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.eql('unknown attribute attr1, attr3 and attr4');",
+									"});",
+									"",
+									"",
+									""
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{emps_tb}}\",\n  \"hash_attribute\": \"{{emps_id}}\",\n  \"hash_values\":[1],\n  \"get_attributes\": [\"attr1\", \"address\", \"attr3\", \"attr4\"]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
 					},
 					"response": []
 				}
 			]
 		},
 		{
+			"_postman_id": "2bad03ce-23b3-4620-b128-92fafe7fb78c",
 			"name": "5. NoSQL Role Testing",
 			"description": null,
 			"item": [
 				{
+					"_postman_id": "18718847-2aa6-49be-8302-f9d853f1065e",
 					"name": "NoSQL Add non SU role",
 					"event": [
 						{
@@ -3148,12 +4234,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "2a65d3e9-b36b-49f0-a7de-cb5d569dba8e",
 					"name": "NoSQL Add User with new Role",
 					"event": [
 						{
@@ -3221,6 +4307,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "f236d903-6bbc-482c-abbb-74c9e4e8e462",
 					"name": "NoSQL Try to read suppliers table as SU",
 					"event": [
 						{
@@ -3288,6 +4375,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "4df2d4af-49c5-4d0c-8153-256ccf0454fa",
 					"name": "NoSQL Try to read user read restricted suppliers table",
 					"event": [
 						{
@@ -3355,6 +4443,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "d5619342-3056-46ea-9d9e-19bc3e16bb1e",
 					"name": "NoSQL Try to read region table as SU",
 					"event": [
 						{
@@ -3422,6 +4511,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "aae54694-f464-4143-ba7f-ab271091bcef",
 					"name": "NoSQL Try to read region table as test_user",
 					"event": [
 						{
@@ -3489,6 +4579,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "1c851076-dd3f-4754-982e-3a4fc3ead667",
 					"name": "NoSQL Try to insert into region table as SU",
 					"event": [
 						{
@@ -3556,6 +4647,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "4046085e-8cd8-457a-b711-30974f449c5e",
 					"name": "NoSQL Try to insert into insert restricted region table as test_user",
 					"event": [
 						{
@@ -3623,6 +4715,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "075d4187-0c4a-4d75-b72b-9e8b23721b67",
 					"name": "NoSQL Try to insert into territories table as SU",
 					"event": [
 						{
@@ -3690,6 +4783,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "e8238592-d77d-4a21-9d10-a065f7339a07",
 					"name": "NoSQL Try to insert into territories table as test_user",
 					"event": [
 						{
@@ -3757,6 +4851,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "fce2b716-b592-41df-a331-d83a0dec0e3e",
 					"name": "NoSQL Try to update territories table as SU",
 					"event": [
 						{
@@ -3824,6 +4919,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "a307ca94-1c66-4e3d-918b-698be17e195a",
 					"name": "NoSQL Try to update restricted territories table as test_user",
 					"event": [
 						{
@@ -3891,6 +4987,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "ab6e0730-b103-4d79-91ce-34a9cea819ee",
 					"name": "NoSQL Try to update categories table as test_user",
 					"event": [
 						{
@@ -3958,6 +5055,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "c28b5c14-8ad5-4598-a8bd-ecdcc4e2f527",
 					"name": "NoSQL Try to delete from categories table as SU",
 					"event": [
 						{
@@ -4025,6 +5123,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "6e66c870-db5f-41ec-9623-e6375a61373f",
 					"name": "NoSQL Try to delete from restricted categories table as test_user",
 					"event": [
 						{
@@ -4092,6 +5191,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "bf446dda-dd72-4661-955c-694ab7f1b2c3",
 					"name": "NoSQL Try to read shippers table restricted attribute as test_user",
 					"event": [
 						{
@@ -4159,6 +5259,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "91390187-1a0e-4006-87c2-6e9a33a0241e",
 					"name": "NoSQL Try to update shippers table restricted attribute as test_user",
 					"event": [
 						{
@@ -4226,6 +5327,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "c04feb39-5e7c-44ba-8012-a0678e0a508d",
 					"name": "NoSQL Try to insert shippers table restricted attribute as test_user",
 					"event": [
 						{
@@ -4293,6 +5395,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "a2d6a18f-1612-49ed-b462-63f00bc88bf6",
 					"name": "NoSQL Try to insert shippers table unrestricted attribute as test_user",
 					"event": [
 						{
@@ -4360,6 +5463,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "fc55646c-a34f-4a6c-b44d-05d8abbff9cf",
 					"name": "NoSQL drop test user",
 					"event": [
 						{
@@ -4424,6 +5528,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "89236905-56bd-495d-9efe-eae0ca524ca6",
 					"name": "NoSQL drop_role",
 					"event": [
 						{
@@ -4490,10 +5595,12 @@
 			]
 		},
 		{
+			"_postman_id": "9bb00a26-89bb-4c3b-b391-5ddcc76cd0b0",
 			"name": "6. SQL Role Testing",
 			"description": null,
 			"item": [
 				{
+					"_postman_id": "3c7f4a6d-fd29-4a99-9938-cbd1246c0443",
 					"name": "SQL Add non SU role",
 					"event": [
 						{
@@ -4554,12 +5661,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "36925b36-0803-4a77-a8b5-4d0dcb5068f6",
 					"name": "SQL Add User with new Role",
 					"event": [
 						{
@@ -4627,6 +5734,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "0e69a6c9-0edf-45c2-b410-4249121d078a",
 					"name": "SQL Try to read suppliers table as SU",
 					"event": [
 						{
@@ -4694,6 +5802,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "de0b696a-bb59-4419-97b0-85b7a6e958dc",
 					"name": "SQL Try to read user read restricted suppliers table",
 					"event": [
 						{
@@ -4761,6 +5870,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "bcdda039-7953-4b80-bea9-ebefe2c7a713",
 					"name": "SQL Try to read region table as SU",
 					"event": [
 						{
@@ -4828,6 +5938,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "92fdebc0-838a-407d-997f-c49732390335",
 					"name": "SQL Try to read region table as test_user",
 					"event": [
 						{
@@ -4895,6 +6006,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "f85c18f8-ce24-4dd7-83fc-ac5a76d92a7a",
 					"name": "SQL Try to insert into region table as SU",
 					"event": [
 						{
@@ -4962,6 +6074,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "880f2603-748f-462f-9536-baf65f5d2523",
 					"name": "SQL Try to insert into insert restricted region table as test_user",
 					"event": [
 						{
@@ -5029,6 +6142,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "a83d2a96-6a93-48c3-908a-31cc66b51c8c",
 					"name": "SQL Try to insert into territories table as SU",
 					"event": [
 						{
@@ -5096,6 +6210,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "f3526247-e893-4f28-a5e0-5b2daa3c3716",
 					"name": "SQL Try to insert into territories table as test_user",
 					"event": [
 						{
@@ -5163,6 +6278,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "e1cd6cc3-3f27-4f94-9526-6fcb345add89",
 					"name": "SQL Try to update territories table as SU",
 					"event": [
 						{
@@ -5230,6 +6346,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "497ea9cc-f315-4543-8e53-76bcbe8bd790",
 					"name": "SQL Try to update restricted territories table as test_user",
 					"event": [
 						{
@@ -5297,6 +6414,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "d55123de-4cdc-4f1c-bc27-3f63688b0579",
 					"name": "SQL Try to update categories table as test_user",
 					"event": [
 						{
@@ -5364,6 +6482,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "f2746a9b-c18d-4122-9a0c-6a555c0b5ef1",
 					"name": "SQL Try to delete from categories table as SU",
 					"event": [
 						{
@@ -5431,6 +6550,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "200e9068-9e48-4c0a-9db2-369652570672",
 					"name": "SQL Try to delete from restricted categories table as test_user",
 					"event": [
 						{
@@ -5498,6 +6618,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "4a967d2c-53b5-4e17-b9a8-95985779c39d",
 					"name": "SQL Try to read shippers table restricted attribute as test_user",
 					"event": [
 						{
@@ -5565,6 +6686,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "3debfbad-354d-4c93-aa7c-c7f68fe4def1",
 					"name": "SQL Try to update shippers table restricted attribute as test_user",
 					"event": [
 						{
@@ -5632,6 +6754,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "ace57518-d8ce-4ead-aa7a-51e82173f0f5",
 					"name": "SQL Try to insert shippers table restricted attribute as test_user",
 					"event": [
 						{
@@ -5699,6 +6822,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "57c69d9e-59df-4f4f-8ebc-9d88726a842e",
 					"name": "SQL Try to insert shippers table unrestricted attribute as test_user",
 					"event": [
 						{
@@ -5762,6 +6886,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "7006e500-983a-4d17-9ce4-e545adfcbe59",
 					"name": "SQL drop test user",
 					"event": [
 						{
@@ -5826,6 +6951,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "f7bb41d0-09aa-459f-917e-5f3b271934ed",
 					"name": "SQL drop_role",
 					"event": [
 						{
@@ -5914,10 +7040,12 @@
 			]
 		},
 		{
-			"name": "3. Jobs & Job Role Testing",
+			"_postman_id": "66d8ba76-0b1f-4b2e-bf70-430fd7de9a6d",
+			"name": "7. Jobs & Job Role Testing",
 			"description": null,
 			"item": [
 				{
+					"_postman_id": "2440915b-1b9d-4efb-9bbe-5cc3e76bd872",
 					"name": "Jobs - Add non SU role",
 					"event": [
 						{
@@ -5978,12 +7106,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "7bec2c95-4ca2-4fd8-986d-7fef6dcbbf88",
 					"name": "Jobs - Add User with new Role",
 					"event": [
 						{
@@ -6051,6 +7179,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "af455310-4e5a-4c9f-8521-821e8f9c6fb5",
 					"name": "Jobs - Add jobs test schema",
 					"event": [
 						{
@@ -6118,6 +7247,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "8f1e31fc-2315-4018-8c64-7b2fead30a47",
 					"name": "Jobs - Add runner table",
 					"event": [
 						{
@@ -6185,6 +7315,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "d3b76d66-6246-40d2-8457-d26060ea5354",
 					"name": "Jobs - Insert into runners table",
 					"event": [
 						{
@@ -6262,6 +7393,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "d2562981-54fc-4aae-bc79-55332fa64edc",
 					"name": "Jobs - Validate 1 entry in runners table",
 					"event": [
 						{
@@ -6334,6 +7466,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "8f180df3-9fcc-47a4-980c-e2bcbfd16533",
 					"name": "Jobs - Test Remove Files Before with test_user",
 					"event": [
 						{
@@ -6397,6 +7530,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "491f53f1-2bdb-4be8-9525-68b4edc790b7",
 					"name": "Jobs - Test Remove Files Before with su and store job_id",
 					"event": [
 						{
@@ -6475,6 +7609,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "2cd00fe7-aaff-494c-97b4-0a9421d6df3f",
 					"name": "Jobs - Validate 0 entry in runners table",
 					"event": [
 						{
@@ -6541,12 +7676,12 @@
 							"path": [
 								""
 							]
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "8cf61b30-ef85-48ff-bb75-67ade9d06799",
 					"name": "Search Jobs by date",
 					"event": [
 						{
@@ -6620,12 +7755,12 @@
 								"localhost"
 							],
 							"port": "9925"
-						},
-						"description": ""
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "b37ea72c-776a-4fcb-9a2b-7fbd941f2cc0",
 					"name": "Search Jobs by job_id",
 					"event": [
 						{
@@ -6689,13 +7824,28 @@
 								"localhost"
 							],
 							"port": "9925"
-						},
-						"description": ""
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "3db12f8b-d8f8-4538-a19f-c8b2168ca4c1",
 					"name": "Delete Job by job_id",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "cdd3336d-83fb-49ba-aef9-0d589dc23374",
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									""
+								]
+							}
+						}
+					],
 					"request": {
 						"auth": {
 							"type": "basic",
@@ -6739,12 +7889,12 @@
 								"localhost"
 							],
 							"port": "9925"
-						},
-						"description": ""
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "57b1160e-b192-4fc0-afa9-1815524abc2e",
 					"name": "Ensure Job was deleted",
 					"event": [
 						{
@@ -6770,13 +7920,13 @@
 							"type": "basic",
 							"basic": [
 								{
-									"key": "password",
-									"value": "{{password}}",
+									"key": "username",
+									"value": "{{username}}",
 									"type": "string"
 								},
 								{
-									"key": "username",
-									"value": "{{username}}",
+									"key": "password",
+									"value": "{{password}}",
 									"type": "string"
 								},
 								{
@@ -6808,12 +7958,12 @@
 								"localhost"
 							],
 							"port": "9925"
-						},
-						"description": ""
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "e9f72fae-cf46-44a4-8e40-b89000461132",
 					"name": "Jobs - Bulk CSV load into restricted region table as test_user",
 					"event": [
 						{
@@ -6881,6 +8031,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "5553f192-eea0-4b3b-b69a-b356b7bb5e6d",
 					"name": "Jobs - Bulk CSV load into restricted region table as su",
 					"event": [
 						{
@@ -6948,6 +8099,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "9c252cf2-2ea9-4ff6-890c-58cebd10586f",
 					"name": "Jobs - Bulk CSV Try to insert suppliers table restricted attribute as test_user Copy",
 					"event": [
 						{
@@ -7011,6 +8163,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "58773ace-9de9-4d25-93f0-6051ef53f095",
 					"name": "Jobs Test Export To Local using SQL as su",
 					"event": [
 						{
@@ -7074,6 +8227,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "6f127000-2738-4f87-9078-5a65814b692f",
 					"name": "Jobs Test Export To Local using NoSQL as su",
 					"event": [
 						{
@@ -7137,6 +8291,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "02a6dcb1-f7b0-4d6b-8a7b-43585dda1512",
 					"name": "Jobs Test Export To Local using SQL as test_user",
 					"event": [
 						{
@@ -7200,6 +8355,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "847c7d16-a0cf-4f2d-9314-ce0f0b4a74f7",
 					"name": "Jobs Test Export To Local using NoSQL as test_user",
 					"event": [
 						{
@@ -7263,6 +8419,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "7118eb79-bd7e-480f-bf74-1ca3ad10acb0",
 					"name": "Jobs - drop test user",
 					"event": [
 						{
@@ -7327,6 +8484,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "dcac8909-7958-472e-92c6-67bdae9fc39d",
 					"name": "Jobs -  drop_role",
 					"event": [
 						{
@@ -7391,6 +8549,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "c318f123-de93-4485-9b13-733a4ab93be6",
 					"name": "Jobs - Delete Jobs_test schema",
 					"event": [
 						{
@@ -7478,10 +8637,12 @@
 			]
 		},
 		{
-			"name": "7. Delete Tests",
+			"_postman_id": "74fc46a0-b9e2-4fd7-ba9f-a9fd4bc49f16",
+			"name": "8. Delete Tests",
 			"description": null,
 			"item": [
 				{
+					"_postman_id": "7546c3bd-d173-4b4e-bd00-5b806f51b821",
 					"name": "Insert new Employees",
 					"event": [
 						{
@@ -7544,12 +8705,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "a146e1ec-563e-4bd5-8bea-3a16ec2c9c49",
 					"name": "Delete records ending in Lane",
 					"event": [
 						{
@@ -7607,12 +8768,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "514dbf97-67fa-4f1c-874e-8a35523d83f0",
 					"name": "Verify records are deleted",
 					"event": [
 						{
@@ -7676,12 +8837,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "b72fe07a-afbc-439d-b72b-3057080d7f3e",
 					"name": "NoSQL Delete",
 					"event": [
 						{
@@ -7739,12 +8900,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "63cc4068-037e-48de-be72-0a7ef79564a5",
 					"name": "NoSQL Verify records are deleted",
 					"event": [
 						{
@@ -7808,18 +8969,448 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				}
 			]
 		},
 		{
-			"name": "8. Environment Clean Up",
+			"_postman_id": "73be8666-0c33-4dc1-97ef-e2a823c4dfa0",
+			"name": "9. Alter Role Tests",
 			"description": null,
 			"item": [
 				{
+					"_postman_id": "d4c21166-d9dd-4ce6-938a-d37691d958c9",
+					"name": "SQL Add non SU role Copy",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "6d42cf23-2901-455c-9d6a-a3742af81cd4",
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"responseData = JSON.parse(responseBody);",
+									"postman.setEnvironmentVariable(\"role_id\", responseData.id)"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"add_role\",\n\"role\":\"developer_test_5\",\n\"permission\":{\n  \"super_user\": false,\n  \"northnwd\":{\n\n   \"tables\": {\n     \"customers\": {\n         \"read\":true,\n         \"insert\":true,\n         \"update\":true,\n         \"delete\":true,\n         \"attribute_restrictions\":[]\n      },\n      \"suppliers\": {\n         \"read\":false,\n         \"insert\":false,\n         \"update\":false,\n         \"delete\":false,\n         \"attribute_restrictions\":[]\n      },\n      \"region\": {\n         \"read\":true,\n         \"insert\":false,\n         \"update\":false,\n         \"delete\":false,\n         \"attribute_restrictions\":[{\n               \"attribute_name\": \"regiondescription\",\n               \"read\":true,\n               \"insert\":false,\n               \"update\":false,\n               \"delete\":false\n            }]\n      },\n      \"territories\": {\n         \"read\":true,\n         \"insert\":true,\n         \"update\":false,\n         \"delete\":false,\n         \"attribute_restrictions\":[\n           {\n               \"attribute_name\": \"territorydescription\",\n               \"read\":true,\n               \"insert\":true,\n               \"update\":false,\n               \"delete\":false\n            }\n           ]\n      },\n      \"categories\": {\n         \"read\":true,\n         \"insert\":true,\n         \"update\":true,\n         \"delete\":false,\n         \"attribute_restrictions\":[\n           {\n               \"attribute_name\": \"description\",\n               \"read\":true,\n               \"insert\":true,\n               \"update\":true,\n               \"delete\":false\n            }\n           ]\n      },\n      \"shippers\": {\n         \"read\":true,\n         \"insert\":true,\n         \"update\":true,\n         \"delete\":true,\n         \"attribute_restrictions\":[\n           {\n               \"attribute_name\": \"companyname\",\n               \"read\":false,\n               \"insert\":false,\n               \"update\":false,\n               \"delete\":false\n            }\n           ]\n      }\n   }\n}\n  }\n\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"_postman_id": "6678b21b-8157-4e74-afc4-424f7bdfb4fe",
+					"name": "alter_role with bad data",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "1944125e-a9da-47eb-b31f-a61c65da9174",
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status code is 500\", function () {",
+									"    pm.response.to.have.status(500);",
+									"});",
+									"",
+									"pm.test(\"Response text shows invalid schema, table, attribute\", function () {",
+									"    pm.response.error === \"Invalid schema crapschema. Invalid table craptable. Invalid attribute crapattribute. \";",
+									"});",
+									""
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46ZmFsc2U="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"alter_role\",\n    \"role\": \"bad_user_2\",\n    \"id\": \"{{role_id}}\",\n    \"permission\": {\n        \"super_user\": false,\n        \"crapschema\": {\n            \"tables\": {\n                \"blahblah\": {\n                    \"read\": false,\n                    \"insert\": false,\n                    \"update\": false,\n                    \"delete\": false,\n                    \"attribute_restrictions\": [\n                        {\n                            \"attribute_name\": \"name\",\n                            \"read\": false,\n                            \"insert\": false,\n                            \"update\": true,\n                            \"delete\": false\n                        }\n                    ]\n                }\n            }\n        },\n        \"dev\": {\n            \"tables\": {\n                \"craptable\": {\n                    \"read\": false,\n                    \"insert\": false,\n                    \"update\": false,\n                    \"delete\": false,\n                    \"attribute_restrictions\": [\n                        {\n                            \"attribute_name\": \"name\",\n                            \"read\": false,\n                            \"insert\": false,\n                            \"update\": true,\n                            \"delete\": false\n                        }\n                    ]\n                },\n                \"dog\": {\n                    \"read\": false,\n                    \"insert\": false,\n                    \"update\": false,\n                    \"delete\": false,\n                    \"attribute_restrictions\": [\n                        {\n                            \"attribute_name\": \"name\",\n                            \"read\": false,\n                            \"insert\": false,\n                            \"update\": true,\n                            \"delete\": false\n                        },\n                        {\n                            \"attribute_name\": \"crapattribute\",\n                            \"read\": false,\n                            \"insert\": false,\n                            \"update\": true,\n                            \"delete\": false\n                        }\n                    ]\n                }\n            }\n        }\n    }\n}"
+						},
+						"url": {
+							"raw": "http://localhost:9925",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "9925"
+						},
+						"description": "Method for altering  roles.  Roles are assigned to users to give them specifc permisisons.  \n\n<ul>\n<li><b>operation</b><i> (required)</i> - must always be 'alter_role'</li>\n\n<li><b>role</b><i> (optional)</i> - name of role you are defining </li>\n\n<li><b>permission </b><i>(optional)</i> - object defining permissions for users associated with this role </li>\n\n<li> <b>permission.super_admin (optional) </b> - boolean which if set to true gives users associated with this role full access to all operations and methods. </li>\n\n\n\nTo learn more about managing roles view our help desk article \nhttps://harperdbhelp.zendesk.com/hc/en-us/articles/115010158848"
+					},
+					"response": []
+				},
+				{
+					"_postman_id": "5192a402-8fba-4043-9cc0-563e756cb53f",
+					"name": "list_roles ensure role not changed",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "3d11c012-fe41-493e-af43-228990e94de7",
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.environment.set(\"found_role\", undefined);",
+									"for(let role of pm.response.json()) {",
+									"   if(role.role === \"bad_user_2\") {",
+									"       pm.environment.set(\"found_role\", role);",
+									"   }",
+									"}",
+									"",
+									"pm.test(\"role name was not updated\", function () {",
+									"   pm.expect(pm.environment.get(\"found_role\")).to.eql(undefined);",
+									"});",
+									""
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"list_roles\"\n\n}"
+						},
+						"url": {
+							"raw": "http://localhost:9925",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "9925"
+						},
+						"description": "Method for listing all roles.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'list_roles'</li>"
+					},
+					"response": []
+				},
+				{
+					"_postman_id": "5c235247-f0dc-406a-a9c6-86405647d9dd",
+					"name": "alter_role good data",
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46ZmFsc2U="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\": \"alter_role\",\n  \"role\": \"user_role_update\",\n  \"id\": \"{{role_id}}\",\n  \"permission\": {\n    \"super_user\": false,\n    \"{{schema}}\": {\n      \"tables\": {\n        \"{{cust_tb}}\": {\n          \"read\": false,\n          \"insert\": false,\n          \"update\": false,\n          \"delete\": false,\n          \"attribute_restrictions\": [\n            {\n              \"attribute_name\": \"fax\",\n              \"read\": false,\n              \"insert\": false,\n              \"update\": false,\n              \"delete\": false\n            }\n          ]\n        }\n      }\n    }\n    }\n  }"
+						},
+						"url": {
+							"raw": "http://localhost:9925",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "9925"
+						},
+						"description": "Method for altering  roles.  Roles are assigned to users to give them specifc permisisons.  \n\n<ul>\n<li><b>operation</b><i> (required)</i> - must always be 'alter_role'</li>\n\n<li><b>role</b><i> (optional)</i> - name of role you are defining </li>\n\n<li><b>permission </b><i>(optional)</i> - object defining permissions for users associated with this role </li>\n\n<li> <b>permission.super_admin (optional) </b> - boolean which if set to true gives users associated with this role full access to all operations and methods. </li>\n\n\n\nTo learn more about managing roles view our help desk article \nhttps://harperdbhelp.zendesk.com/hc/en-us/articles/115010158848"
+					},
+					"response": []
+				},
+				{
+					"_postman_id": "551a5f30-6068-4238-857b-912ada54f305",
+					"name": "list_roles ensure role was updated",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "5eeee0fb-ade5-450d-a5cc-b84849dd231e",
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.environment.set(\"found_role\", undefined);",
+									"for(let role of pm.response.json()) {",
+									"       if(role.role === \"user_role_update\") {",
+									"           pm.environment.set(\"found_role\", role);",
+									"       }",
+									"   }",
+									"",
+									"pm.test(\"role name was updated\", function () {",
+									"   pm.expect(pm.environment.get(\"found_role\").role).to.eql(\"user_role_update\");",
+									"});",
+									""
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"list_roles\"\n\n}"
+						},
+						"url": {
+							"raw": "http://localhost:9925",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "9925"
+						},
+						"description": "Method for listing all roles.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'list_roles'</li>"
+					},
+					"response": []
+				},
+				{
+					"_postman_id": "022867cc-5ced-4d2b-ab72-2b8ca852d522",
+					"name": "SQL drop_role Copy",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "43e34308-05a8-433b-be7d-964fccf09f03",
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46cGFzc3dvcmQ="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"drop_role\",\n\"id\":\"{{role_id}}\"\n\n}"
+						},
+						"url": {
+							"raw": "http://localhost:9925",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "9925"
+						},
+						"description": "This method is used for dropping a role.  \n\n<i>You cannot drop a role with associated users.  </i>\n\n<ul>\n<li><b>operation </b><i>(required)</i> - this must always be drop_role </li>\n<li><b>id </b><i>(required) </i> - this is the id of the role you are dropping\n</ul>"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"_postman_id": "eb0c8fe5-9800-4a72-81c2-8eeba62d8ef8",
+			"name": "10. Environment Clean Up",
+			"description": null,
+			"item": [
+				{
+					"_postman_id": "dcddfd26-1af8-4169-8e67-26284994e2b0",
 					"name": "sql delete schema",
 					"event": [
 						{
@@ -7883,6 +9474,7 @@
 					"response": []
 				},
 				{
+					"_postman_id": "ba1318a1-f4fc-48f0-9b5a-7a787005bfd7",
 					"name": "VALIDATION Check Schema not found.",
 					"event": [
 						{
@@ -7937,12 +9529,12 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": null
+						}
 					},
 					"response": []
 				},
 				{
+					"_postman_id": "26461a30-46e4-48f6-940d-8b5b436421f4",
 					"name": "sql delete schema dev",
 					"event": [
 						{
@@ -8004,6 +9596,92 @@
 						"description": "This method is used to create a schema.  It like all other functions requires basic auth.  \n\nAttributes:\n\noperation (required) - must always be create_schema\n\nschema (required) - name of the schema you are creating"
 					},
 					"response": []
+				},
+				{
+					"_postman_id": "6376d7a8-5778-4f3d-8fb0-06b4818f4000",
+					"name": "sql delete schema call",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"tests[\"Delete Schema\"] = responseBody.has(\"successfully delete\");\r",
+									"\r",
+									"\r",
+									""
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3Q="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n     \"operation\": \"drop_schema\",\n     \"schema\": \"call\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "This method is used to create a schema.  It like all other functions requires basic auth.  \n\nAttributes:\n\noperation (required) - must always be create_schema\n\nschema (required) - name of the schema you are creating"
+					},
+					"response": []
+				}
+			],
+			"event": [
+				{
+					"listen": "prerequest",
+					"script": {
+						"id": "45d1602b-d776-4411-bda3-fee7896d8a73",
+						"type": "text/javascript",
+						"exec": [
+							""
+						]
+					}
+				},
+				{
+					"listen": "test",
+					"script": {
+						"id": "ee8ed888-442f-4ad5-9492-40ebb95b5dfb",
+						"type": "text/javascript",
+						"exec": [
+							""
+						]
+					}
 				}
 			]
 		}

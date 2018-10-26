@@ -1,6 +1,7 @@
 "use strict"
 const path = require('path');
 const sinon = require('sinon');
+const fs = require('fs');
 
 /**
  * This needs to be called near the top of our unit tests.  Most will fail when loading harper modules due to the
@@ -55,10 +56,38 @@ function preTestPrep() {
     changeProcessToBinDir();
 }
 
+/**
+ * Call this function to delete all directories under the specified path.  This is a synchronous function.
+ * @param target_path
+ */
+function cleanUpDirectories(target_path) {
+    if(!target_path) return;
+    //Just in case
+    if(target_path === '/') return;
+    let files = [];
+    if( fs.existsSync(target_path) ) {
+        try {
+            files = fs.readdirSync(target_path);
+            for(let i = 0; i<files.length; i++) {
+                let file = files[i];
+                let curPath = path.join(target_path, file);
+                if (fs.lstatSync(curPath).isDirectory()) { // recurse
+                    cleanUpDirectories(curPath);
+                } else {
+                    fs.unlinkSync(curPath);
+                }
+            }
+            fs.rmdirSync(target_path);
+        } catch (e) {
+            console.error(e);
+        }
+    }
+};
 
 module.exports = {
     changeProcessToBinDir:changeProcessToBinDir,
     deepClone:deepClone,
     mochaAsyncWrapper:mochaAsyncWrapper,
-    preTestPrep:preTestPrep
+    preTestPrep:preTestPrep,
+    cleanUpDirectories: cleanUpDirectories
 }

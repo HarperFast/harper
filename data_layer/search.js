@@ -38,11 +38,7 @@ function searchByHash(search_object, callback){
             callback(validation_error, null);
             return;
         }
-
-        if(search_object.schema !== 'system' && (!global.hdb_schema[search_object.schema] || !global.hdb_schema[search_object.schema][search_object.table])){
-            return callback(`invalid table ${search_object.schema}.${search_object.table}`);
-        }
-
+        
         let table_path = `${base_path}${search_object.schema}/${search_object.table}/`;
         evaluateTableAttributes(search_object.get_attributes, search_object, (error, attributes) => {
             if (error) {
@@ -106,10 +102,6 @@ function searchByValue (search_object, callback) {
             hash_attribute: hash_attribute
         }, base_path);
 
-        if(search_object.schema !== 'system' && (!global.hdb_schema[search_object.schema] || !global.hdb_schema[search_object.schema][search_object.table])){
-            return callback(`invalid table ${search_object.schema}.${search_object.table}`);
-        }
-
         evaluateTableAttributes(search_object.get_attributes, search_object, (err, attributes) => {
             if (err) {
                 callback(err);
@@ -145,10 +137,6 @@ function searchByConditions(search_object, callback){
         if (validation_error) {
             callback(validation_error);
             return;
-        }
-
-        if(search_object.schema !== 'system' && (!global.hdb_schema[search_object.schema] || !global.hdb_schema[search_object.schema][search_object.table])){
-            return callback(`invalid table ${search_object.schema}.${search_object.table}`);
         }
 
         let table_schema = global.hdb_schema[search_object.schema][search_object.table];
@@ -240,12 +228,13 @@ function search(statement, callback){
         validator.validate();
 
         let search = new FileSearch(validator.statement, validator.attributes, base_path);
-        search.search((err, data) => {
-            if(err){
-                return callback(err);
-            }
+        let search_results = undefined;
 
-            return callback(null, data);
+        search.search().then( (data) => {
+            search_results = data;
+            callback(null, data);
+        }).catch((e) => {
+           callback(e, null);
         });
     } catch(e){
         callback(e);
