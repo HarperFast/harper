@@ -1,5 +1,4 @@
 const csvFilePath='./data/fci-breeds.csv',
-    csv=require('csvtojson'),
     insert = require('../data_layer/insert');
 
 let insert_object = {
@@ -9,6 +8,7 @@ let insert_object = {
     hash_attribute: 'id',
     records: []
 };
+/*
 csv()
     .fromFile(csvFilePath)
     .on('json',(jsonObj, rowIndex)=>{
@@ -24,7 +24,7 @@ csv()
             winston.info(data);
         });
     });
-
+*/
 /*csv()
     .fromFile('./data/2017-dog-license.csv')
     .on('json',(jsonObj, rowIndex)=>{

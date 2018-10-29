@@ -1,6 +1,5 @@
 "use strict";
 
-const csv=require('csvtojson');
 const insert = require('./insert');
 const _ = require('lodash');
 const async = require('async');
@@ -11,6 +10,8 @@ const hdb_terms = require('../utility/hdbTerms');
 const hdb_utils = require('../utility/common_utils');
 const {promisify} = require('util');
 const RECORD_BATCH_SIZE = 1000;
+
+const alasql = require('alasql');
 
 // Promisify bulkLoad to avoid more of a refactor for now.
 const p_bulk_load = promisify(bulkLoad);
@@ -38,7 +39,7 @@ async function csvDataLoad(csv_object){
     let csv_records = [];
     let bulk_load_result = undefined;
     try {
-        csv_records = await csv().fromString(csv_object.data);
+        csv_records = await alasql.promise('SELECT * FROM CSV(?, {headers:true, separator:","})', [csv_object.data]);
         bulk_load_result = await p_bulk_load(csv_records, csv_object.schema, csv_object.table, csv_object.action);
     } catch(e) {
         throw new Error(e);
@@ -65,8 +66,7 @@ async function csvURLLoad(csv_object) {
     let csv_records = [];
     let bulk_load_result = undefined;
     try {
-        let url_file = await createReadStream(csv_object.csv_url);
-        csv_records = await csv().fromString(url_file.body);
+        csv_records = await alasql.promise('SELECT * FROM CSV(?, {headers:true, separator:","})', [csv_object.csv_url]);
         bulk_load_result = await p_bulk_load(csv_records, csv_object.schema, csv_object.table, csv_object.action);
     } catch(e) {
         throw new Error(e);
@@ -117,7 +117,7 @@ async function csvFileLoad(csv_object) {
     let csv_records = [];
     let bulk_load_result = undefined;
     try {
-        csv_records = await csv().fromFile(csv_object.file_path);
+        csv_records = await alasql.promise('SELECT * FROM CSV(?, {headers:true, separator:","})', csv_object.file_path);
         bulk_load_result = await p_bulk_load(csv_records, csv_object.schema, csv_object.table, csv_object.action);
     } catch(e) {
         throw new Error(e);
