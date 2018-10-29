@@ -90,10 +90,10 @@ describe('Test csvDataLoad', function () {
     });
 });
 
-describe('Test makeMiddlewareCall', function () {
+describe('Test callMiddleware', function () {
     let test_msg = undefined;
     let sandbox = sinon.createSandbox();
-    let makeMiddlewareCall = csv_rewire.__get__('makeMiddlewareCall');
+    let callMiddleware = csv_rewire.__get__('callMiddleware');
     let alasql_promise_stub = undefined;
     beforeEach(function () {
         test_msg = test_utils.deepClone(DATA_LOAD_MESSAGE);
@@ -106,19 +106,19 @@ describe('Test makeMiddlewareCall', function () {
         csv_rewire.__set__('promise', promise);
     });
     it("test nominal case, valid inputs", async function() {
-        let results = await makeMiddlewareCall(MIDDLEWARE_PARSE_PARAMETERS, VALID_CSV_DATA).catch( (e) => {
+        let results = await callMiddleware(MIDDLEWARE_PARSE_PARAMETERS, VALID_CSV_DATA).catch( (e) => {
             throw e;
         });
         assert.equal(results.length, 3, "Expeted array of length 3 back");
     });
     it("Test invalid parameter", async function() {
-        let results = await makeMiddlewareCall(null, VALID_CSV_DATA).catch( (e) => {
+        let results = await callMiddleware(null, VALID_CSV_DATA).catch( (e) => {
             throw e;
         });
         assert.equal(results.length, 0, "Expeted array of length 0 back");
     });
     it("Test invalid data parameter", async function() {
-        let results = await makeMiddlewareCall(MIDDLEWARE_PARSE_PARAMETERS, null).catch( (e) => {
+        let results = await callMiddleware(MIDDLEWARE_PARSE_PARAMETERS, null).catch( (e) => {
             throw e;
         });
         assert.equal(results.length, 0, "Expeted array of length 0 back");
@@ -128,7 +128,7 @@ describe('Test makeMiddlewareCall', function () {
         csv_rewire.__set__('promise', alasql_promise_stub);
         let excep = undefined;
         try {
-            await makeMiddlewareCall(MIDDLEWARE_PARSE_PARAMETERS, VALID_CSV_DATA);
+            await callMiddleware(MIDDLEWARE_PARSE_PARAMETERS, VALID_CSV_DATA);
         } catch(e) {
             excep = e;
         };
@@ -151,7 +151,7 @@ describe('Test csvURLLoad', function () {
         sandbox.restore();
     });
 
-    it('Test csvDataLoad nominal case with valid file and valid column names/data', async function() {
+    it('Test csvURLLoad nominal case with valid file and valid column names/data', async function() {
         try {
             test_msg.csv_url = HOSTED_CSV_FILE_URL;
             let result = await csv_rewire.csvURLLoad(test_msg);
@@ -190,6 +190,7 @@ describe('Test createReadStreamFromURL', function () {
     });
 });
 
+
 describe('Test csvFileLoad', function () {
     let test_msg = undefined;
     let sandbox = sinon.createSandbox();
@@ -202,7 +203,7 @@ describe('Test csvFileLoad', function () {
     // TODO: Expand these tests once we can get some additional invalid csv files hosted on the intranet.
     beforeEach(function () {
         test_msg = test_utils.deepClone(DATA_LOAD_MESSAGE);
-        test_msg.operation = hdb_terms.OPERATIONS_ENUM.csv_url_load;
+        test_msg.operation = hdb_terms.OPERATIONS_ENUM.csv_file_load;
         bulk_load_stub = sandbox.stub().returns(BULK_LOAD_RESPONSE);
         csv_rewire.__set__('p_bulk_load', bulk_load_stub);
     });
@@ -214,6 +215,7 @@ describe('Test csvFileLoad', function () {
     });
 
     it('Test csvFileLoad nominal case with valid file and valid column names/data', async function () {
+        let response = undefined;
         try {
             test_msg.file_path = VALID_CSV_PATH;
             let result = await csv_rewire.csvFileLoad(test_msg);
@@ -222,7 +224,8 @@ describe('Test csvFileLoad', function () {
             throw e;
         }
     });
-    it('Test csvDataLoad invalid column names, expect exception', async function() {
+
+    it('Test csvFileLoad invalid column names, expect exception', async function() {
         test_msg.file_path = INVALID_CSV_PATH;
         let response = undefined;
         await csv_rewire.csvFileLoad(test_msg).catch( (e) => {
@@ -230,7 +233,7 @@ describe('Test csvFileLoad', function () {
         });
         assert.ok((response instanceof Error) === true, 'Did not get expected exception');
     });
-    it('Test csvDataLoad bad file path, expect exception', async function() {
+    it('Test csvFileLoad bad file path, expect exception', async function() {
         test_msg.file_path = '/tmp/yaddayadda.csv';
         let response = undefined;
         await csv_rewire.csvFileLoad(test_msg).catch( (e) => {
@@ -238,12 +241,13 @@ describe('Test csvFileLoad', function () {
         });
         assert.ok((response instanceof Error) === true, 'Did not get expected exception');
     });
-    it('Test csvDataLoad file path to empty file, expect exception', async function() {
+    it('Test csvFileLoad file path to empty file, no records parsed', async function() {
         test_msg.file_path = EMPTY_FILE_PATH;
         let response = undefined;
         let result = await csv_rewire.csvFileLoad(test_msg).catch( (e) => {
             response = e;
         });
-        assert.equal(result, 'No records parsed from csv file.', 'Got incorrect response');
+
+        assert.equal(result, 'No records parsed from csv file.', 'Got incorrect response' + result);
     });
 });
