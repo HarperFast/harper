@@ -38,7 +38,7 @@ const NO_RESULTS = 'NR';
 //This is an internal value that should not be written to the DB.
 const HDB_PATH_KEY = 'HDB_INTERNAL_PATH';
 const HDB_AUTH_HEADER = 'hdb_auth_header';
-
+const HDB_USER_DATA_KEY = 'hdb_user';
 
 module.exports = {
     insert: insertData,
@@ -408,7 +408,9 @@ function checkAttributeSchema(insert_object, callerback) {
 
             hash_paths[`${base_path}__hdb_hash/${hash_attribute}/${record[hash_attribute]}.hdb`] = '';
             for (let property in record) {
-                if (record[property] === null || record[property] === undefined || record[property] === '' || property === HDB_PATH_KEY || property === HDB_AUTH_HEADER) {
+                if (record[property] === null || record[property] === undefined || record[property] === '' || property === HDB_PATH_KEY || property === HDB_AUTH_HEADER ||
+                    property === HDB_USER_DATA_KEY)
+                {
                     continue;
                 }
 
