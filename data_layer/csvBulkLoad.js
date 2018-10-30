@@ -50,43 +50,13 @@ async function csvDataLoad(json_message) {
     }
     try {
         csv_records = await callMiddleware(ALASQL_MIDDLEWARE_PARSE_PARAMETERS, [json_message.data]);
-        if(csv_records && csv_records.length > 0 && validateColumnNames(csv_records[0])) {
-            bulk_load_result = await p_bulk_load(csv_records, json_message.schema, json_message.table, json_message.action);
-        } else {
-            bulk_load_result.message = 'No records parsed from csv file.';
-            logger.info(bulk_load_result.message);
-        }
+        bulk_load_result = await callBulkLoad(csv_records, json_message.schema, json_message.table, json_message.action);
     } catch(e) {
         throw e;
     }
 
     return bulk_load_result.message;
 }
-
-/**
- * Genericize the call to the middlware used for parsing (currently alasql);
- * @param parameter_string - The parameters to be passed into the middleware
- * @param data - The data that needs to be parsed.
- * @returns {Promise<any>}
- */
-async function callMiddleware(parameter_string, data) {
-    if(hdb_utils.isEmptyOrZeroLength(parameter_string)) {
-        logger.warn('Invalid parameter was passed into callMiddleware()');
-        return [];
-    }
-    if(hdb_utils.isEmptyOrZeroLength(data)) {
-        logger.warn('Invalid data was passed into callMiddleware()');
-        return [];
-    }
-    let middleware_results = undefined;
-    try {
-        middleware_results = await promise(parameter_string, data);
-        return middleware_results;
-    } catch(e) {
-        throw e;
-    }
-}
-
 
 /**
  * Load a csv file from a URL.
@@ -120,12 +90,36 @@ async function csvURLLoad(json_message) {
             throw new Error(url_response.message);
         }
         csv_records = await callMiddleware(ALASQL_MIDDLEWARE_PARSE_PARAMETERS, [url_response.body]);
-        if(csv_records && csv_records.length > 0 && validateColumnNames(csv_records[0])) {
-            bulk_load_result = await p_bulk_load(csv_records, json_message.schema, json_message.table, json_message.action);
-        } else {
-            bulk_load_result.message = 'No records parsed from csv file.';
-            logger.info(bulk_load_result.message);
-        }
+        bulk_load_result = await callBulkLoad(csv_records, json_message.schema, json_message.table, json_message.action);
+    } catch(e) {
+        throw new Error(e);
+    }
+
+    return bulk_load_result.message;
+}
+
+/**
+ * Parse and load CSV values.
+ *
+ * @param json_message - An object representing the CSV file.
+ * @returns validation_msg - Contains any validation errors found
+ * @returns error - any errors found reading the csv file
+ * @return err - any errors found during the bulk load
+ *
+ */
+async function csvFileLoad(json_message) {
+    let validation_msg = validator.fileObject(json_message);
+    if (validation_msg) {
+        throw new Error(validation_msg);
+    }
+
+    let csv_records = [];
+    let bulk_load_result = {};
+    try {
+        // check file exists and have perms to read, throws exception if fails
+        await p_fs_access(json_message.file_path, fs.constants.R_OK | fs.constants.F_OK);
+        csv_records = await callMiddleware(ALASQL_MIDDLEWARE_PARSE_PARAMETERS, json_message.file_path);
+        bulk_load_result = await callBulkLoad(csv_records, json_message.schema, json_message.table, json_message.action);
     } catch(e) {
         throw new Error(e);
     }
@@ -157,38 +151,40 @@ async function createReadStreamFromURL(url) {
     return response;
 }
 
+
 /**
- * Parse and load CSV values.
- * 
- * @param json_message - An object representing the CSV file.
- * @returns validation_msg - Contains any validation errors found
- * @returns error - any errors found reading the csv file
- * @return err - any errors found during the bulk load
- *
+ * Genericize the call to the middlware used for parsing (currently alasql);
+ * @param parameter_string - The parameters to be passed into the middleware
+ * @param data - The data that needs to be parsed.
+ * @returns {Promise<any>}
  */
-async function csvFileLoad(json_message) {
-    let validation_msg = validator.fileObject(json_message);
-    if (validation_msg) {
-        throw new Error(validation_msg);
+async function callMiddleware(parameter_string, data) {
+    if(hdb_utils.isEmptyOrZeroLength(parameter_string)) {
+        logger.warn('Invalid parameter was passed into callMiddleware()');
+        return [];
     }
-
-    let csv_records = [];
-    let bulk_load_result = {};
+    if(hdb_utils.isEmptyOrZeroLength(data)) {
+        logger.warn('Invalid data was passed into callMiddleware()');
+        return [];
+    }
+    let middleware_results = undefined;
     try {
-        // check file exists and have perms to read, throws exception if fails
-        await p_fs_access(json_message.file_path, fs.constants.R_OK | fs.constants.F_OK);
-        csv_records = await callMiddleware(ALASQL_MIDDLEWARE_PARSE_PARAMETERS, json_message.file_path);
-        if(csv_records && csv_records.length > 0 && validateColumnNames(csv_records[0])) {
-            bulk_load_result = await p_bulk_load(csv_records, json_message.schema, json_message.table, json_message.action);
-        } else {
-            bulk_load_result.message = 'No records parsed from csv file.';
-            logger.info(bulk_load_result.message);
-        }
+        middleware_results = await promise(parameter_string, data);
+        return middleware_results;
     } catch(e) {
-        throw new Error(e);
+        throw e;
     }
+}
 
-    return bulk_load_result.message;
+async function callBulkLoad(csv_records, schema, table, action) {
+    let bulk_load_result = {};
+    if(csv_records && csv_records.length > 0 && validateColumnNames(csv_records[0])) {
+        bulk_load_result = await p_bulk_load(csv_records, schema, table, action);
+    } else {
+        bulk_load_result.message = 'No records parsed from csv file.';
+        logger.info(bulk_load_result.message);
+    }
+    return bulk_load_result;
 }
 
 /**
