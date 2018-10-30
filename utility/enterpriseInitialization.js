@@ -29,7 +29,10 @@ function kickOffEnterprise(callback) {
                 harper_logger.error(err);
             }
 
-            if (nodes && nodes.length > 0) {
+            if(!Array.isArray(nodes)){
+                nodes = [];
+            }
+            //if (nodes && nodes.length > 0) {
                 node.other_nodes = nodes;
                 global.cluster_server = new ClusterServer(node, nodes);
 
@@ -41,9 +44,9 @@ function kickOffEnterprise(callback) {
                     return callback({"clustering":true});
                 });
 
-            } else {
+            /*} else {
                 return callback({"clustering":false});
-            }
+            }*/
         });
     } else {
         // default to clustering not set response
