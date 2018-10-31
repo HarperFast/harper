@@ -110,9 +110,21 @@
   },
   "hdb_nodes":{
     "hash_attribute": "name",
+    "attributes":[
+      {
+        "attribute":"name"
+      },
+      {
+        "attribute":"host"
+      },
+      {
+        "attribute":"operation"
+      },
+      {
+        "attribute":"port"
+      }
+    ],
     "residence":["*"]
-
-
   },
   "hdb_queue":{
     "hash_attribute":"id",
