@@ -32,21 +32,18 @@ function kickOffEnterprise(callback) {
             if(!Array.isArray(nodes)){
                 nodes = [];
             }
-            //if (nodes && nodes.length > 0) {
-                node.other_nodes = nodes;
-                global.cluster_server = new ClusterServer(node, nodes);
 
-                global.cluster_server.init(function (err) {
-                    if (err) {
-                        harper_logger.error(err);
-                        return callback({"clustering":false});
-                    }
-                    return callback({"clustering":true});
-                });
+            node.other_nodes = nodes;
+            global.cluster_server = new ClusterServer(node, nodes);
 
-            /*} else {
-                return callback({"clustering":false});
-            }*/
+            global.cluster_server.init(function (err) {
+                if (err) {
+                    harper_logger.error(err);
+                    return callback({"clustering":false});
+                }
+                return callback({"clustering":true});
+            });
+
         });
     } else {
         // default to clustering not set response
