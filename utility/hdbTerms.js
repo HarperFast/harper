@@ -33,17 +33,6 @@ const ROLE_TABLE_NAME = 'hdb_role';
 // Job table name
 const JOB_TABLE_NAME = 'hdb_job';
 
-// Describes all available job types
-const JOB_TYPE_ENUM = {
-    csv_file_load: 'csv_file_load',
-    empty_trash: 'empty_trash',
-    csv_url_load: 'csv_url_load',
-    csv_data_load: 'csv_data_load',
-    export_to_s3: 'export_to_s3',
-    export_local: 'export_local',
-	delete_files_before: 'delete_files_before'
-};
-
 // Describes the available statuses for jobs
 const JOB_STATUS_ENUM = {
 	CREATED: 'CREATED',
@@ -150,6 +139,17 @@ const HDB_SETTINGS_NAMES = {
     LOGGER: 'LOG_LEVEL',
     LOG_PATH: 'LOG_PATH',
     NODE_ENV: 'NODE_ENV'
+};
+
+// Describes all available job types
+const JOB_TYPE_ENUM = {
+    csv_file_load: 'csv_file_load',
+    empty_trash: 'empty_trash',
+    csv_url_load: OPERATIONS_ENUM.CSV_URL_LOAD,
+    csv_data_load: OPERATIONS_ENUM.CSV_DATA_LOAD,
+    export_to_s3: 'export_to_s3',
+    export_local: 'export_local',
+    delete_files_before: 'delete_files_before'
 };
 
 module.exports = {
