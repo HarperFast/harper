@@ -27,21 +27,27 @@ class SocketServer {
             this.io = require('socket.io').listen(server);
             this.io.sockets.on("connection", function (socket) {
                 socket.on("identify", function (msg, callback) {
-                    socket.join(msg, () => {
+                    //this is the remote ip address of the client connecting to this server.
+                    let raw_remote_ip = socket.conn.remoteAddress;
+                    let raw_remote_ip_array = raw_remote_ip ? raw_remote_ip.split(':') : [];
+                    msg.host = Array.isArray(raw_remote_ip_array) && raw_remote_ip_array.length > 0 ?  raw_remote_ip_array[raw_remote_ip_array.length - 1] : '';
 
-                        harper_logger.info(node.name + ' joined room ' + msg);
+                    global.cluster_server.createConnection(msg);
+                    socket.join(msg.name, () => {
+
+                        harper_logger.info(node.name + ' joined room ' + msg.name);
                         // retrive the queue and send to this node.
 
-                        getFromDisk({"name": msg}, function (err, disk_catch_up) {
+                        getFromDisk({"name": msg.name}, function (err, disk_catch_up) {
                             if (disk_catch_up && disk_catch_up.length > 0) {
-                                if (!global.cluster_queue[msg]) {
-                                    global.cluster_queue[msg] = {};
+                                if (!global.cluster_queue[msg.name]) {
+                                    global.cluster_queue[msg.name] = {};
                                 }
 
                                 for (let item in disk_catch_up) {
-                                    if (!global.cluster_queue[msg][disk_catch_up[item].id]) {
+                                    if (!global.cluster_queue[msg.name][disk_catch_up[item].id]) {
                                         global.forkClusterMsgQueue[disk_catch_up[item].id] = disk_catch_up[item].payload;
-                                        global.cluster_queue[msg][disk_catch_up[item].id] = disk_catch_up[item].payload;
+                                        global.cluster_queue[msg.name][disk_catch_up[item].id] = disk_catch_up[item].payload;
                                     }
 
                                 }
@@ -49,11 +55,11 @@ class SocketServer {
 
                             socket.emit('confirm_identity');
 
-                            if (global.cluster_queue && global.cluster_queue[msg]) {
+                            if (global.cluster_queue && global.cluster_queue[msg.name]) {
                                 harper_logger.info('sent msg');
-                                harper_logger.info(global.cluster_queue[msg]);
+                                harper_logger.info(global.cluster_queue[msg.name]);
 
-                                let catchup_payload = JSON.stringify(global.cluster_queue[msg]);
+                                let catchup_payload = JSON.stringify(global.cluster_queue[msg.name]);
                                 socket.emit('catchup', catchup_payload);
                             }
                         });

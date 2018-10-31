@@ -21,11 +21,22 @@ class ClusterServer {
 
     establishConnections(){
         this.other_nodes.forEach((o_node)=>{
+            this.createConnection(node, o_node);
+        });
+    }
+
+    createConnection(o_node){
+        //in order to avoid create multiple connections to the same end point
+        let found_client =  this.socket_client.filter((client)=>{
+            return client.other_node.host === o_node.host && client.other_node.port === o_node.port;
+        });
+
+        if(!found_client) {
             let new_client = new SocketClient(this.node, o_node);
             this.socket_client.push(new_client);
             new_client.connectToNode();
             new_client.createClientMessageHandlers();
-        });
+        }
     }
 
     send(msg, res) {
