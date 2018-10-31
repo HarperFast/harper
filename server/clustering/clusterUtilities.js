@@ -23,6 +23,7 @@ function addNode(new_node, callback){
             log.error(`Error adding new cluster node ${new_node_insert}.  ${err}`);
             return callback(err);
         }
+        // re read new node here.
         return callback(null, `successfully added ${new_node.name} to manifest`);
     });
 }
