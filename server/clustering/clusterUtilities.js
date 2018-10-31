@@ -3,7 +3,6 @@ const node_Validator = require('../../validation/nodeValidator');
 const hdb_utils = require('../../utility/common_utils');
 const log = require('../../utility/logging/harper_logger');
 
-
 function addNode(new_node, callback){
     // need to clean up new node as it hads operation and user on it
     let validation = node_Validator(new_node);
