@@ -22,7 +22,7 @@ class SocketClient {
         this.other_node.status = 'connected';
 
         harper_logger.info('Client: Connected to port ' + this.other_node.port);
-        this.client.emit('identify', this.node.name);
+        this.client.emit('identify', this.node);
         this.client.emit('schema_update_request');
     }
 
