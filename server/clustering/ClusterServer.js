@@ -31,7 +31,7 @@ class ClusterServer {
             return client.other_node.host === o_node.host && client.other_node.port === o_node.port;
         });
 
-        if(!found_client) {
+        if(!found_client || found_client.length === 0) {
             let new_client = new SocketClient(this.node, o_node);
             this.socket_client.push(new_client);
             new_client.connectToNode();
