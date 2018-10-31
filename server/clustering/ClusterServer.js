@@ -21,7 +21,7 @@ class ClusterServer {
 
     establishConnections(){
         this.other_nodes.forEach((o_node)=>{
-            this.createConnection(node, o_node);
+            this.createConnection(o_node);
         });
     }
 
