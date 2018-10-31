@@ -83,23 +83,15 @@ class ClusterServer {
             throw e;
         });
 
-        let new_nodes = [];
         for(let curr_node of nodes) {
             for(let existing_node of this.node.other_nodes) {
                 if(existing_node.name !== curr_node.name) {
-                    new_nodes.push(curr_node);
+                    this.node.other_nodes.push(curr_node);
+                    // establishConnection handles any exceptions thrown.
+                    this.establishConnection(curr_node);
                 }
             }
         }
-
-        if(!hdb_utils.isEmptyOrZeroLength(new_nodes)) {
-            for (let new_node of new_nodes) {
-                this.node.other_nodes.push(new_node);
-                // establishConnection handles any exceptions thrown.
-                this.establishConnection(new_node);
-            }
-        }
-
     }
 }
 
