@@ -7,6 +7,13 @@ const _ = require('lodash');
 const async = require('async');
 const auth = require('../../security/auth');
 const common_utils = require('../../utility/common_utils');
+const terms = require('../../utility/hdbTerms');
+
+const PropertiesReader = require('properties-reader');
+let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
+hdb_properties.append(hdb_properties.get('settings_path'));
+
+const ALLOW_SELF_SIGNED_CERTS = hdb_properties.get(terms.HDB_SETTINGS_NAMES.ALLOW_SELF_SIGNED_SSL_CERTS);
 
 const WHITELISTED_ERRORS = ['attribute already exists'];
 const ERROR_NO_HDB_USER = 'there is no hdb_user';
@@ -265,9 +272,12 @@ class SocketClient {
         if (this.node.port === this.other_node.port && this.other_node.host === this.node.host) {
             harper_logger.debug("cannot connect to thyself");
         }
-        //TODO needs to be HTTPS
+
         harper_logger.info(`${this.node.name} is attempting to connect to ${this.other_node.name} at ${this.other_node.host}:${this.other_node.port}`);
-        this.client = ioc.connect(`https://${this.other_node.host}:${this.other_node.port}`, { secure: true, reconnect: true, rejectUnauthorized : false });
+        let socket_options = { secure: true, reconnect: true, rejectUnauthorized :
+                (ALLOW_SELF_SIGNED_CERTS.toString().toLowerCase() === 'true' ? true : false)
+        };
+        this.client = ioc.connect(`https://${this.other_node.host}:${this.other_node.port}`, socket_options);
     }
 
     createClientMessageHandlers(){

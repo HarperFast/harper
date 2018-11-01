@@ -138,7 +138,8 @@ const HDB_SETTINGS_NAMES = {
     LOG_LEVEL: 'LOG_LEVEL',
     LOGGER: 'LOG_LEVEL',
     LOG_PATH: 'LOG_PATH',
-    NODE_ENV: 'NODE_ENV'
+    NODE_ENV: 'NODE_ENV',
+    ALLOW_SELF_SIGNED_SSL_CERTS: 'ALLOW_SELF_SIGNED_SSL_CERTS'
 };
 
 // Describes all available job types
