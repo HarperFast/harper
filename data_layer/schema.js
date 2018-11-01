@@ -160,45 +160,16 @@ function createTableStructure(create_table_object, callback) {
             hash_attribute: create_table_object.hash_attribute
         };
 
-        if(create_table_object.residence){
-            if(global.clustering_on){
-                let search_obj = {};
-                search_obj.schema = 'system';
-                search_obj.table = 'hdb_nodes';
-                search_obj.hash_attribute = 'name';
-                search_obj.hash_values =create_table_object.residence;
-                search_obj.get_attributes = ['name'];
-
-                search.searchByHash(search_obj, function(err, data){
-                   if(err){
-                      logger.error(err);
-                      return callback(err)
-                   }
-                    let residence_nodes = [hdb_properties.get('NODE_NAME')];
-                    for(let item in data){
-                        residence_nodes.push(data[item].name);
-                    }
-
-
-                    var missing_nodes =  _.difference(create_table_object.residence, residence_nodes)
-                    if(missing_nodes && missing_nodes.length > 0){
-                        return callback(`Clustering error unable to find ${JSON.stringify(missing_nodes)}`);
-                    }
-
-                    table.residence = create_table_object.residence;
-                    insertTable();
-
-                });
-
-            }else{
-                return callback(`Clustering does not appear to be enabled.  Cannot insert table with property residence.`);
+        if(create_table_object.residence) {
+            if(global.clustering_on) {
+                table.residence = create_table_object.residence;
+                insertTable();
+            } else {
+                return callback(`Clustering does not appear to be enabled.  Cannot insert table with property 'residence'.`);
             }
-
-        }else{
+        } else {
             insertTable();
         }
-
-
 
         function insertTable(){
             let insertObject = {

@@ -21,7 +21,8 @@ class SocketClient {
     onConnectHandler(){
         this.other_node.status = 'connected';
 
-        harper_logger.info('Client: Connected to port ' + this.other_node.port);
+        harper_logger.info(`Client: Connected to port ${this.other_node.port} on host ${this.other_node.host}`);
+
         let node_info = {
             name: this.node.name,
             port: this.node.port

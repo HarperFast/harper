@@ -10,7 +10,7 @@ hdb_properties.append(hdb_properties.get('settings_path'));
 
 function kickOffEnterprise(callback) {
     let clustering_setting = hdb_properties.get('CLUSTERING');
-    if (clustering_setting && clustering_setting.toLowerCase() === 'true') {
+    if (clustering_setting && clustering_setting.toString().toLowerCase() === 'true') {
         let node = {
             "name": hdb_properties.get('NODE_NAME'),
             "port": hdb_properties.get('CLUSTERING_PORT'),
