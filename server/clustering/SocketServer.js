@@ -84,7 +84,6 @@ class SocketServer {
                                 let catchup_payload = JSON.stringify(global.cluster_queue[msg]);
                                 socket.emit('catchup', catchup_payload);
                             }
-                            callback(null);
                         });
                     });
                 });
