@@ -45,7 +45,7 @@ class SocketClient {
             let json = queue[item].body;
             let the_client = this.client;
             let the_node = this.node;
-            authHeaderToUser(json, (error)=> {
+            authHeaderToUser(json, (error) => {
                 if (error) {
                     queue[item].err = error;
                     the_client.emit('error', queue[item]);
