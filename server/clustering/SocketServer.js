@@ -1,11 +1,32 @@
 "use strict";
 
-const harper_logger = require('../../utility/logging/harper_logger');
+const log = require('../../utility/logging/harper_logger');
 const search = require('../../data_layer/search');
 const insert = require('../../data_layer/insert');
 const delete_ = require('../../data_layer/delete');
 const schema = require('../../data_layer/schema');
 const uuidv4 = require('uuid/v1');
+const http = require('http');
+const https = require('https');
+const sio = require('socket.io');
+const {promisify} = require('util');
+const fs = require('fs');
+const terms = require('../../utility/hdbTerms');
+
+const PropertiesReader = require('properties-reader');
+let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
+hdb_properties.append(hdb_properties.get('settings_path'));
+
+const privateKeyPath = hdb_properties.get(terms.HDB_SETTINGS_NAMES.PRIVATE_KEY);
+const certificatePath = hdb_properties.get(terms.HDB_SETTINGS_NAMES.CERTIFICATE);
+
+let credentials = undefined;
+try {
+    credentials = {key: fs.readFileSync(`${privateKeyPath}`), cert: fs.readFileSync(`${certificatePath}`)};
+} catch(err) {
+    log.error('Error reading https private key and credential files');
+    credentials = undefined;
+}
 
 class SocketServer {
     constructor(node) {
@@ -21,15 +42,22 @@ class SocketServer {
 
     init(next) {
         try {
-            // TODO probably need to make this https
-            let server = require('http').createServer().listen(this.port, function () {});
+            let server = undefined;
+            if(!credentials) {
+                server = http.createServer().listen(this.port, function () {
+                });
+            } else {
+                server = https.createServer(credentials, () => {
+
+                }).listen(this.port);
+            }
             let node = this.node;
-            this.io = require('socket.io').listen(server);
+            this.io = sio.listen(server);
             this.io.sockets.on("connection", function (socket) {
                 socket.on("identify", function (msg, callback) {
                     socket.join(msg, () => {
 
-                        harper_logger.info(node.name + ' joined room ' + msg);
+                        log.info(node.name + ' joined room ' + msg);
                         // retrive the queue and send to this node.
 
                         getFromDisk({"name": msg}, function (err, disk_catch_up) {
@@ -50,19 +78,20 @@ class SocketServer {
                             socket.emit('confirm_identity');
 
                             if (global.cluster_queue && global.cluster_queue[msg]) {
-                                harper_logger.info('sent msg');
-                                harper_logger.info(global.cluster_queue[msg]);
+                                log.info('sent msg');
+                                log.info(global.cluster_queue[msg]);
 
                                 let catchup_payload = JSON.stringify(global.cluster_queue[msg]);
                                 socket.emit('catchup', catchup_payload);
                             }
+                            callback(null);
                         });
                     });
                 });
 
 
                 socket.on('confirm_msg', function (msg) {
-                    harper_logger.info(msg);
+                    log.info(msg);
                     msg.type = 'cluster_response';
                     let queded_msg = global.forkClusterMsgQueue[msg.id];
                     if (queded_msg) {
@@ -82,10 +111,10 @@ class SocketServer {
                             "hash_values": [msg.id]
 
                         };
-                        harper_logger.info("delete_obj === " + JSON.stringify(delete_obj));
+                        log.info("delete_obj === " + JSON.stringify(delete_obj));
                         delete_.delete(delete_obj, function (err, result) {
                             if (err) {
-                                harper_logger.error(err);
+                                log.error(err);
                             }
                         });
 
@@ -95,22 +124,22 @@ class SocketServer {
                 });
 
                 socket.on("msg", function (msg) {
-                    harper_logger.info(`${this.node.name} says ${msg}`);
+                    log.info(`${this.node.name} says ${msg}`);
                 });
 
                 socket.on('error', function (error) {
-                    harper_logger.error(error);
+                    log.error(error);
                 });
 
                 socket.on('disconnect', function (error) {
                     if (error !== 'transport close')
-                        harper_logger.error(error);
+                        log.error(error);
                 });
 
                 socket.on('schema_update_request', function(error){
                     schema.describeAll({}, function(err, schema){
                         if(err){
-                            return harper_logger.error(err);
+                            return log.error(err);
                         }
                         socket.emit('schema_update_response', schema);
                     });
@@ -122,7 +151,7 @@ class SocketServer {
             next();
 
         } catch (e) {
-            harper_logger.error(e);
+            log.error(e);
             next(e);
         }
     }
@@ -160,7 +189,7 @@ class SocketServer {
 
         } catch (e) {
             //save the queue to disk for all nodes.
-            harper_logger.error(e);
+            log.error(e);
         }
     }
 
@@ -177,7 +206,7 @@ function saveToDisk(item, callback) {
 
         insert.insert(insert_object, function (err, result) {
             if (err) {
-                harper_logger.error(err);
+                log.error(err);
                 return callback(err);
             }
             callback(null, result);
@@ -185,7 +214,7 @@ function saveToDisk(item, callback) {
 
         });
     } catch (e) {
-        harper_logger.error(e);
+        log.error(e);
     }
 }
 

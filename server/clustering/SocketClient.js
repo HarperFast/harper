@@ -267,7 +267,7 @@ class SocketClient {
         }
         //TODO needs to be HTTPS
         harper_logger.info(`${this.node.name} is attempting to connect to ${this.other_node.name} at ${this.other_node.host}:${this.other_node.port}`);
-        this.client = ioc.connect(`http://${this.other_node.host}:${this.other_node.port}`);
+        this.client = ioc.connect(`https://${this.other_node.host}:${this.other_node.port}`, { secure: true, reconnect: true, rejectUnauthorized : false });
     }
 
     createClientMessageHandlers(){
