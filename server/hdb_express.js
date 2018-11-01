@@ -107,7 +107,7 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                 for (let i = 0; i < numCPUs; i++) {
                     try {
                         let forked = cluster.fork();
-                        forked.on('message', messageHandler);
+                        forked.on('message', cluster_utilities.clusterMessageHandler);
                         forks.push(forked);
                     } catch (e) {
                         harper_logger.fatal(`Had trouble kicking off new HDB processes.  ${e}`);
@@ -135,7 +135,7 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                     let new_worker = undefined;
                     try {
                         new_worker = cluster.fork();
-                        new_worker.on('message', messageHandler);
+                        new_worker.on('message', cluster_utilities.clusterMessageHandler);
                         harper_logger.info(`kicked off replacement worker with new pid=${new_worker.process.pid}`);
                     } catch (e) {
                         harper_logger.fatal(`FATAL error trying to restart a dead_worker with pid ${dead_worker.process.pid}.  ${e}`);
@@ -150,49 +150,6 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                 });
 
                 global.forkClusterMsgQueue = {};
-
-                function messageHandler(msg) {
-                    try {
-                        if (msg.type === 'clustering_payload') {
-                            global.forkClusterMsgQueue[msg.id] = msg;
-                            cluster_utilities.payloadHandler(msg);
-                        } else if (msg.type === 'delegate_thread_response') {
-                            global.delegate_callback_queue[msg.id](msg.err, msg.data);
-                        }else if (msg.type === 'clustering') {
-                            global.clustering_on = true;
-                            forks.forEach((fork) => {
-                                fork.send(msg);
-                            });
-                        }else if (msg.type === 'schema') {
-                            forks.forEach((fork) => {
-                                fork.send(msg);
-                            });
-                        }else if (!hdb_util.isEmptyOrZeroLength(msg.target_process_id)) {
-                            // If a process is specified in the message, send this job to that process.
-                            let backup_process = undefined;
-                            let specified_process = undefined;
-                            for (let i = 0; i < global.forks.length; i++) {
-                                if (!backup_process && global.forks[i].process.pid !== msg.target_process_id) {
-                                    // Set a backup process to send the message to in case we don't find the specified process.
-                                    backup_process = global.forks[i];
-                                }
-                                if (global.forks[i].process.pid === msg.target_process_id) {
-                                    specified_process = global.forks[i];
-                                    specified_process.send(msg);
-                                    harper_logger.info(`Processing job on process: ${msg.target_process_id}`);
-                                    break;
-                                }
-                            }
-                            if (!specified_process && backup_process) {
-                                harper_logger.info(`The specified process ${msg.target_process_id} was not found, sending to process ${global.forks[i].pid} instead.`);
-                                backup_process.send(msg);
-                            }
-
-                        }
-                    } catch (e) {
-                        harper_logger.error(e);
-                    }
-                }
             });
         });
     });
