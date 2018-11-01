@@ -22,12 +22,17 @@ class SocketClient {
         this.other_node.status = 'connected';
 
         harper_logger.info(`Client: Connected to port ${this.other_node.port} on host ${this.other_node.host}`);
-        this.client.emit('identify', this.node.name);
+
+        let node_info = {
+            name: this.node.name,
+            port: this.node.port
+        };
+        this.client.emit('identify', node_info);
         this.client.emit('schema_update_request');
     }
 
     onConnectErrorHandler(error){
-        harper_logger.error('cannot connect to ' + this.other_node.name + ' due to ' + error);
+        harper_logger.debug('cannot connect to ' + this.other_node.name + ' due to ' + error);
     }
 
     onCatchupHandler(queue_string) {
