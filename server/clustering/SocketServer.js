@@ -32,7 +32,7 @@ class SocketServer {
                     let raw_remote_ip_array = raw_remote_ip ? raw_remote_ip.split(':') : [];
                     msg.host = Array.isArray(raw_remote_ip_array) && raw_remote_ip_array.length > 0 ?  raw_remote_ip_array[raw_remote_ip_array.length - 1] : '';
 
-                    global.cluster_server.createConnection(msg);
+                    global.cluster_server.establishConnection(msg);
                     socket.join(msg.name, () => {
 
                         harper_logger.info(node.name + ' joined room ' + msg.name);

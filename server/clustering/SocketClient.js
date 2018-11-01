@@ -32,7 +32,7 @@ class SocketClient {
     }
 
     onConnectErrorHandler(error){
-        harper_logger.error('cannot connect to ' + this.other_node.name + ' due to ' + error);
+        harper_logger.debug('cannot connect to ' + this.other_node.name + ' due to ' + error);
     }
 
     onCatchupHandler(queue_string) {

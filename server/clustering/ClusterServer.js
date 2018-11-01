@@ -25,10 +25,16 @@ class ClusterServer {
 
     establishConnection(o_node) {
         try {
-            let new_client = new SocketClient(this.node, o_node);
-            this.socket_client.push(new_client);
-            new_client.connectToNode();
-            new_client.createClientMessageHandlers();
+            let found_client =  this.socket_client.filter((client)=>{
+                return client.other_node.host === o_node.host && client.other_node.port === o_node.port;
+            });
+
+            if(!found_client || found_client.length === 0) {
+                let new_client = new SocketClient(this.node, o_node);
+                this.socket_client.push(new_client);
+                new_client.connectToNode();
+                new_client.createClientMessageHandlers();
+            }
         } catch(e) {
             log.error(`Error establishing connection with ${o_node.name} at address ${o_node.host}`);
             log.error(e);
