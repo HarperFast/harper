@@ -275,7 +275,7 @@ class SocketClient {
 
         harper_logger.info(`${this.node.name} is attempting to connect to ${this.other_node.name} at ${this.other_node.host}:${this.other_node.port}`);
         let socket_options = { secure: true, reconnect: true, rejectUnauthorized :
-                (ALLOW_SELF_SIGNED_CERTS.toString().toLowerCase() === 'true' ? true : false)
+                ((ALLOW_SELF_SIGNED_CERTS && ALLOW_SELF_SIGNED_CERTS.toString().toLowerCase() === 'true') ? true : false)
         };
         this.client = ioc.connect(`https://${this.other_node.host}:${this.other_node.port}`, socket_options);
     }
