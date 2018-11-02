@@ -11,6 +11,11 @@ const common_utils = require('../../utility/common_utils');
 const WHITELISTED_ERRORS = ['attribute already exists'];
 const ERROR_NO_HDB_USER = 'there is no hdb_user';
 
+const CLIENT_CONNECTION_OPTIONS = {
+    reconnectionDelay: 5000,
+    reconnectionDelayMax: 20000
+};
+
 class SocketClient {
     constructor(node, other_node) {
         this.node = node;
@@ -33,6 +38,10 @@ class SocketClient {
 
     onConnectErrorHandler(error){
         harper_logger.debug('cannot connect to ' + this.other_node.name + ' due to ' + error);
+    }
+
+    onReconnectHandler(attempt_number){
+        harper_logger.debug(': attempting to connect to ' + JSON.stringify(this.other_node) + ' for the ' + attempt_number + ' time');
     }
 
     onCatchupHandler(queue_string) {
@@ -272,11 +281,13 @@ class SocketClient {
         }
         //TODO needs to be HTTPS
         harper_logger.info(`${this.node.name} is attempting to connect to ${this.other_node.name} at ${this.other_node.host}:${this.other_node.port}`);
-        this.client = ioc.connect(`http://${this.other_node.host}:${this.other_node.port}`);
+        this.client = ioc.connect(`http://${this.other_node.host}:${this.other_node.port}`, CLIENT_CONNECTION_OPTIONS);
     }
 
     createClientMessageHandlers(){
         this.client.on("connect", this.onConnectHandler.bind(this));
+
+        this.client.on("reconnect_attempt", this.onReconnectHandler.bind(this));
 
         this.client.on('connect_error', this.onConnectErrorHandler.bind(this));
 
