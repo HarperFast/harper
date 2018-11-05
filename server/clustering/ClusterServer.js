@@ -90,12 +90,22 @@ class ClusterServer {
         });
 
         for(let curr_node of nodes) {
-            for(let existing_node of this.node.other_nodes) {
-                if(existing_node.name !== curr_node.name) {
-                    this.node.other_nodes.push(curr_node);
-                    // establishConnection handles any exceptions thrown.
-                    this.establishConnection(curr_node);
+            let should_add_connection = true;
+            if(!this.node.other_nodes) {
+                this.node.other_nodes = [];
+            }
+            for(let i = 0; i<this.node.other_nodes.length; i++) {
+                let existing_node = this.node.other_nodes[i];
+                if(existing_node.name === curr_node.name) {
+                    should_add_connection = false;
+                    break;
                 }
+            }
+            if(should_add_connection) {
+                this.node.other_nodes.push(curr_node);
+                // establishConnection handles any exceptions thrown.
+                log.info(`Establishing connection with cluster node ${curr_node.name}`);
+                this.establishConnection(curr_node);
             }
         }
     }
