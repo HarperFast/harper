@@ -18,11 +18,17 @@ function addNode(new_node, callback){
         "records": [new_node]
     }
 
-    insert.insert(new_node_insert, function(err){
+    insert.insert(new_node_insert, function(err, results){
         if(err) {
             log.error(`Error adding new cluster node ${new_node_insert}.  ${err}`);
             return callback(err);
         }
+
+        if(!hdb_utils.isEmptyOrZeroLength(results.skipped_hashes)){
+            log.info(`Node '${new_node.name}' has already been already added. Operation aborted.`);
+            return callback(null, `Node '${new_node.name}' has already been already added. Operation aborted.`)
+        }
+
         // Send IPC message so master will command forks to rescan for new nodes.
         process.send({
             "type": "node_added"
