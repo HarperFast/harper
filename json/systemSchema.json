@@ -100,8 +100,7 @@
       {
         "attribute":"message"
       }
-    ],
-    "residence":["*"]
+    ]
   },
   "hdb_license":{
     "hash_attribute":"license_key",
@@ -123,8 +122,7 @@
       {
         "attribute":"port"
       }
-    ],
-    "residence":["*"]
+    ]
   },
   "hdb_queue":{
     "hash_attribute":"id",
