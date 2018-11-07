@@ -60,7 +60,7 @@ class ClusterServer {
     broadCast(msg) {
         log.debug('broadcast msg out: ' + JSON.stringify(msg));
         let operation = clone(msg.body.operation);
-        for (let o_node in this.other_nodes) {
+        for (let o_node in this.socket_client) {
             let payload = {};
             payload.body = msg.body;
             payload.id = msg.id;
