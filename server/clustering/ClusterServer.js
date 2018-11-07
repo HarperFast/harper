@@ -68,7 +68,7 @@ class ClusterServer {
             if (!msg.body.operation) {
                 payload.body.operation = operation;
             }
-            payload.node = this.other_nodes[o_node];
+            payload.node = this.socket_client[o_node].other_node;
             global.cluster_server.send(payload);
         }
     }
