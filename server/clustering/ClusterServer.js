@@ -89,13 +89,11 @@ class ClusterServer {
             throw e;
         });
 
-        if(!this.node.other_nodes) {
-            this.node.other_nodes = [];
-        }
-
-        // Purposefully not returning anything, just using filter for an iterator shorthand.
-        nodes.filter((curr_node) => {
+        for(let curr_node of nodes) {
             let should_add_connection = true;
+            if(!this.node.other_nodes) {
+                this.node.other_nodes = [];
+            }
             for(let i = 0; i<this.node.other_nodes.length; i++) {
                 let existing_node = this.node.other_nodes[i];
                 if(existing_node.name === curr_node.name) {
@@ -109,7 +107,7 @@ class ClusterServer {
                 log.info(`Establishing connection with cluster node ${curr_node.name}`);
                 this.establishConnection(curr_node);
             }
-        });
+        }
     }
 }
 
