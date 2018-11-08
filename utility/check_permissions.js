@@ -5,7 +5,7 @@ module.exports = {
     checkPermission: checkPermission,
 };
 
-function checkPermission (){
+function checkPermission () {
     let hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
 
     if(os.userInfo().username != hdb_boot_properties.get('install_user')){
