@@ -4,8 +4,7 @@ const log = require('../logging/harper_logger');
 const check_permisison = require('../check_permissions');
 const prompt = require('prompt');
 const {promisify} = require('util');
-const {inspect} = require('util');
-let insert = require('../../data_layer/insert');
+const insert = require('../../data_layer/insert');
 
 //Promisified function
 let p_insert_insert = promisify(insert.insert);
@@ -18,6 +17,13 @@ module.exports = {
 
 // For now, the function that is called via chooseOperation needs to be in the callback style.  Once we move away from
 // callbacks, we can change the exports above from the cb function to the async function.
+/**
+ * Calls the get_fingerprint async function to match the callback style of processLocalTransaction.  This will be
+ * removed once those are migrated.
+ * @param message - The JSON formatted inbound message.
+ * @param callback
+ * @returns {*}
+ */
 function get_fingerprint_cb(message, callback) {
     let fingerprint = {};
     try {
@@ -31,6 +37,10 @@ function get_fingerprint_cb(message, callback) {
     }
 }
 
+/**
+ * Returns the fingerprint of this install which is used in the registration process.
+ * @returns {Promise<*>}
+ */
 async function get_fingerprint() {
     try {
         check_permisison.checkPermission();
@@ -100,7 +110,6 @@ async function register() {
     if (!validation.valid_machine) {
         return console.error('This license is in use on another machine.');
     }
-
 
     let insert_object = {
         operation: 'insert',
