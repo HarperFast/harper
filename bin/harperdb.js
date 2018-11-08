@@ -82,9 +82,7 @@ function harperDBService() {
                 install.install();
                 break;
             case hdb_terms.SERVICE_ACTIONS_ENUM.REGISTER:
-                register.register().then((result) => {
-                    console.log(result);
-                }).catch((err) => {
+                register.register().catch((err) => {
                     console.error(err);
                 });
                 break;

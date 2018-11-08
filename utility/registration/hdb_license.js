@@ -68,9 +68,9 @@ async function validateLicense(license_key, company) {
         decrypted += decipher.final('utf8');
     } catch (e) {
         license_validation_object.valid_license = false;
-        let err_msg = `'invalid license key format', ${license_validation_object}`;
+        let err_msg = `invalid license key format`;
         log.error(err_msg);
-        throw new Error(err_msg);
+        return err_msg;
     }
 
     if (decrypted < moment().unix()) {

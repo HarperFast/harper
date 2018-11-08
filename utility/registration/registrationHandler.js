@@ -1,19 +1,21 @@
 const hdb_license = require('./hdb_license');
 const colors = require("colors/safe");
-const logger = require('../logging/harper_logger');
+const log = require('../logging/harper_logger');
 const check_permisison = require('../check_permissions');
 const prompt = require('prompt');
 const {promisify} = require('util');
+const {inspect} = require('util');
 let insert = require('../../data_layer/insert');
 
 //Promisified function
 let p_insert_insert = promisify(insert.insert);
+let p_prompt_get = promisify(prompt.get);
 
 module.exports = {
     register: register
 };
 
-async function register(prompt) {
+async function register() {
     try {
         check_permisison.checkPermission();
     } catch(err) {
@@ -24,57 +26,61 @@ async function register(prompt) {
     let register_schema = {
         properties: {
             CUSTOMER_COMPANY: {
-                description: colors.magenta(`[COMPANY] Please enter your company name:`),
+                description: colors.magenta(`[COMPANY] Please enter your company name`),
                 required: true
-
             },
             HDB_LICENSE: {
-                description: colors.magenta(`[HDB_LICENSE] Your fingerprint is ${fingerprint} Please enter your license key:`),
+                description: colors.magenta(`[HDB_LICENSE] Your fingerprint is ${fingerprint} Please enter your license key`),
                 required: true
-
             }
         }
     };
 
-    if(!prompt) {
+    try {
         prompt.start();
+    } catch(err) {
+        log.error(err);
     }
-    prompt.get(register_schema, async function (err, data) {
-        if(!data.HDB_LICENSE || !data.CUSTOMER_COMPANY) {
-            logger.error(err);
-            return console.error(err);
-        }
-        let validation = await hdb_license.validateLicense(data.HDB_LICENSE, data.CUSTOMER_COMPANY).catch((err) => {
-            logger.error(err);
-            throw err;
-        });
 
-        if (!validation.valid_license) {
-            return 'Invalid license!';
-        }
-
-        if (!validation.valid_date) {
-            return 'License expired!';
-
-        }
-
-        if (!validation.valid_machine) {
-            return 'This license is in use on another machine!';
-        }
-
-
-        let insert_object = {
-            operation: 'insert',
-            schema: 'system',
-            table: 'hdb_license',
-            hash_attribute: 'license_key',
-            records: [{"license_key": data.HDB_LICENSE, "company":data.CUSTOMER_COMPANY }]
-        };
-
-        p_insert_insert(insert_object).catch((err) => {
-            return logger.error(err);
-        });
-
-        return 'Successfully registered';
+    let data = await p_prompt_get(register_schema).catch((err) => {
+        console.error('There was a problem prompting for registration input.  Exiting.');
+        return log.error(err);
     });
+
+    if(!data.HDB_LICENSE || !data.CUSTOMER_COMPANY) {
+        return console.error(`Invalid entries for License Key and Customer Company`);
+    }
+    console.log('Validating license input...');
+    let validation = hdb_license.validateLicense(data.HDB_LICENSE, data.CUSTOMER_COMPANY).catch((err) => {
+        log.error(err);
+        return console.error(err);
+    });
+    console.log(`checking for valid license...`);
+    if (!validation.valid_license) {
+        return console.error('Invalid license found.');
+    }
+    console.log(`checking valid license date...`);
+    if (!validation.valid_date) {
+        return console.error('This License has expired.');
+
+    }
+    console.log(`checking for valid machine license ${validation.valid_machine}`);
+    if (!validation.valid_machine) {
+        return console.error('This license is in use on another machine.');
+    }
+
+
+    let insert_object = {
+        operation: 'insert',
+        schema: 'system',
+        table: 'hdb_license',
+        hash_attribute: 'license_key',
+        records: [{"license_key": data.HDB_LICENSE, "company":data.CUSTOMER_COMPANY }]
+    };
+
+    p_insert_insert(insert_object).catch((err) => {
+        return log.error(err);
+    });
+
+    return 'Successfully registered';
 }
