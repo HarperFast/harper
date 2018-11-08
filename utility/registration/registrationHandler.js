@@ -12,9 +12,41 @@ let p_insert_insert = promisify(insert.insert);
 let p_prompt_get = promisify(prompt.get);
 
 module.exports = {
+    get_fingerprint: get_fingerprint_cb,
     register: register
 };
 
+// For now, the function that is called via chooseOperation needs to be in the callback style.  Once we move away from
+// callbacks, we can change the exports above from the cb function to the async function.
+function get_fingerprint_cb(message, callback) {
+    let fingerprint = {};
+    try {
+        get_fingerprint().then((result) => {
+            fingerprint['fingerprint'] = result;
+            return callback(null, fingerprint);
+        });
+    } catch(err) {
+        log.error(`There was an error getting the fingerprint for this machine ${err}`);
+        return callback(err, null);
+    }
+}
+
+async function get_fingerprint() {
+    try {
+        check_permisison.checkPermission();
+    } catch(err) {
+        log.error(err);
+        return 'You do not have permission to generate a fingerprint.';
+    }
+
+    let fingerprint = await hdb_license.generateFingerPrint();
+    return fingerprint;
+}
+
+/**
+ * This handler is called when registration is run from the command line.
+ * @returns {Promise<*>}
+ */
 async function register() {
     try {
         check_permisison.checkPermission();

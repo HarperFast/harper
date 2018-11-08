@@ -18,6 +18,8 @@ const op_auth = require('../utility/operation_authorization');
 const jobs = require('./jobs');
 const signal = require('../utility/signalling');
 const job_runner = require('./jobRunner');
+const terms = require('../utility/hdbTerms');
+const {get_fingerprint} = require('../utility/registration/registrationHandler');
 
 const UNAUTH_RESPONSE = 403;
 const UNAUTHORIZED_TEXT = 'You are not authorized to perform the operation specified';
@@ -254,6 +256,9 @@ function chooseOperation(json, callback) {
             break;
         case 'update_job':
             operation_function = jobs.updateJob;
+            break;
+        case terms.OPERATIONS_ENUM.GET_FINGERPRINT:
+            operation_function = get_fingerprint;
             break;
         default:
             break;
