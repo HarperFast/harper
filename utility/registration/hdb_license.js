@@ -38,7 +38,7 @@ function generateLicense(license_object) {
     try {
         let validation_error = validation(license_object);
         if (validation_error) {
-            return validation_error;
+            throw validation_error;
         }
 
         let fingerprint = license_object.fingerprint;
@@ -50,6 +50,7 @@ function generateLicense(license_object) {
         license = `${encrypted_exp}${LICENSE_KEY_DELIMITER}${hash_license}`;
     } catch(err) {
         log.error(`Error generating a license ${err}`);
+        throw err;
     }
     return license;
 }
@@ -69,19 +70,21 @@ async function validateLicense(license_key, company) {
         decrypted += decipher.final('utf8');
     } catch (e) {
         license_validation_object.valid_license = false;
-        let err_msg = `invalid license key format`;
-        log.error(err_msg);
-        return err_msg;
+        let err_msg = new Error(`invalid license key format`);
+        log.error(err_msg.message);
+        throw err_msg;
     }
 
     if (decrypted < moment().unix()) {
         license_validation_object.valid_date = false;
     }
 
-    let is_exist = await fs.exists(FINGER_PRINT_FILE);
+    let is_exist = await fs.stat(FINGER_PRINT_FILE).catch((err) => {
+        log.error(err);
+    });
     if (is_exist) {
         try {
-            let data = await fs.access(FINGER_PRINT_FILE, fs.constants.F_OK);
+            let data = await fs.readFile(FINGER_PRINT_FILE, 'utf8');
             if (!password.validate(license_tokens[1], `${LICENSE_HASH_PREFIX}${data}${company}`)) {
                 license_validation_object.valid_license = false;
             }
