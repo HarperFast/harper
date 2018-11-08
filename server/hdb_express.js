@@ -78,7 +78,7 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
     };
     global_schema.setSchemaDataToGlobal((err, data)=> {
         search.searchByValue(licenseKeySearch, function (err, licenses) {
-            const hdb_license = require('../utility/hdb_license');
+            const hdb_license = require('../utility/registration/hdb_license');
             if (err) {
                 return harper_logger.error(err);
             }

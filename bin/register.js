@@ -1,16 +1,11 @@
-const registerationHandler = require('../utility/registrationHandler');
+const registrationHandler = require('../utility/registration/registrationHandler');
 const logger = require('../utility/logging/harper_logger');
 
-function register() {
-    registerationHandler.register(null, function (err, result) {
-        if (err) {
-            logger.error(err);
-            return;
-        }
-
-        console.log(result);
-        return;
+async function register() {
+    let result = await registrationHandler.register(null).catch((err) => {
+        return logger.error(err);
     });
+    return console.log(result);
 }
 
 module.exports = {

@@ -99,7 +99,9 @@ const OPERATIONS_ENUM = {
     SEARCH_JOBS_BY_START_DATE: 'search_jobs_by_start_date',
     GET_JOB: 'get_job',
     DELETE_JOB: 'delete_job',
-    UPDATE_JOB: 'update_job'
+    UPDATE_JOB: 'update_job',
+    GET_FINGERPRINT: 'get_fingerprint',
+    SET_LICENSE: 'set_license'
 };
 
 const SERVICE_ACTIONS_ENUM = {

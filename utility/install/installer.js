@@ -154,7 +154,7 @@ function checkInstall(callback) {
 
 function checkRegister(callback) {
     if (wizard_result.HDB_REGISTER === 'true') {
-        register = require('../registrationHandler'),
+        register = require('../registration/registrationHandler'),
             register.register(prompt, function (err, result) {
                 if (err) {
                     return callback(err);
