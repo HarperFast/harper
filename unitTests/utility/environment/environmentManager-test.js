@@ -21,68 +21,6 @@ const ACCESS_RESPONSE = {
     'stats': 'true'
 };
 
-const STATS_REPONSE = {
-    "dev": 16777220,
-    "mode": 16877,
-    "nlink": 10,
-    "uid": 501,
-    "gid": 80,
-    "rdev": 0,
-    "blksize": 4096,
-    "ino": 844668,
-    "size": 320,
-    "blocks": 0,
-    "atimeMs": 1541787927006.5354,
-    "mtimeMs": 1541786994625.8591,
-    "ctimeMs": 1541786994625.8591,
-    "birthtimeMs": 1531887388310.7217,
-    "atime": "2018-11-09T18:25:27.007Z",
-    "mtime": "2018-11-09T18:09:54.626Z",
-    "ctime": "2018-11-09T18:09:54.626Z",
-    "birthtime": "2018-07-18T04:16:28.311Z"
-};
-
-const PROPERTIES_SETTINGS = {
-    "_properties": {
-        "settings_path": "/Users/elipalmer/harperdb/bin/../unitTests/settings.tstFile",
-        "PROJECT_DIR": "/Users/elipalmer/harperdb",
-        "HDB_ROOT": "/Users/elipalmer/DevDB",
-        "HTTP_PORT": "9925",
-        "HTTPS_PORT": "31283",
-        "CERTIFICATE": "/Users/elipalmer/DevDB/keys/certificate.pem",
-        "PRIVATE_KEY": "/Users/elipalmer/DevDB/keys/privateKey.pem",
-        "HTTPS_ON": "FALSE",
-        "HTTP_ON": "TRUE",
-        "CORS_ON": "TRUE",
-        "CORS_WHITELIST": "",
-        "LOG_LEVEL": "trace",
-        "LOGGER": "1",
-        "LOG_PATH": "/Users/elipalmer/harperdb/unitTests/testlog.log",
-        "CLUSTERING": "false",
-        "NODE_NAME": "node_name",
-        "CLUSTERING_PORT": "1111"
-    },
-    "_propertiesExpanded": {
-        "settings_path": "/Users/elipalmer/harperdb/bin/../unitTests/settings.tstFile",
-        "PROJECT_DIR": "/Users/elipalmer/harperdb",
-        "HDB_ROOT": "/Users/elipalmer/DevDB",
-        "HTTP_PORT": "9925",
-        "HTTPS_PORT": "31283",
-        "CERTIFICATE": "/Users/elipalmer/DevDB/keys/certificate.pem",
-        "PRIVATE_KEY": "/Users/elipalmer/DevDB/keys/privateKey.pem",
-        "HTTPS_ON": "FALSE",
-        "HTTP_ON": "TRUE",
-        "CORS_ON": "TRUE",
-        "CORS_WHITELIST": "",
-        "LOG_LEVEL": "trace",
-        "LOGGER": "1",
-        "LOG_PATH": "/Users/elipalmer/harperdb/unitTests/testlog.log",
-        "CLUSTERING": "false",
-        "NODE_NAME": "node_name",
-        "CLUSTERING_PORT": "1111"
-    }
-}
-
 describe('Test getProperty', () => {
     let test_properties = {};
     beforeEach(() => {
