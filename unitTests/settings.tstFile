@@ -11,3 +11,6 @@ CORS_WHITELIST=
 LOG_LEVEL = trace
 LOGGER = 1
 LOG_PATH = /Users/elipalmer/harperdb/unitTests/testlog.log
+CLUSTERING=false
+NODE_NAME=node_name
+CLUSTERING_PORT=1111
