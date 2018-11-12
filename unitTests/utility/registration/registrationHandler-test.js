@@ -44,7 +44,8 @@ describe(`Test setLicense`, function () {
         } catch (e) {
             err = e;
         }
-        assert.equal(result.indexOf('There was an error writing the key') > -1, true, 'expected error message');
+        assert.notEqual(err, undefined, 'expected exceptions');
+        assert.equal(err.message.indexOf('There was an error writing the key') > -1, true, 'expected error message');
     });
     it('Set license key invalid json message', async function () {
         write_stub = sandbox.stub(fs, 'writeFile').throws(new Error('BAD WRITE'));
@@ -54,7 +55,8 @@ describe(`Test setLicense`, function () {
         } catch (e) {
             err = e;
         }
-        assert.equal(result, 'Invalid key specified for license file.', 'expected error message');
+        assert.notEqual(err, undefined, 'expected exceptions');
+        assert.equal(err.message, 'Invalid key specified for license file.', 'expected error message');
     });
     it('Set license key invalid key in json message', async function () {
         write_stub = sandbox.stub(fs, 'writeFile').throws(new Error('BAD WRITE'));
@@ -64,7 +66,8 @@ describe(`Test setLicense`, function () {
         } catch (e) {
             err = e;
         }
-        assert.equal(result, 'Invalid key specified for license file.', 'expected error message');
+        assert.notEqual(err, undefined, 'expected exceptions');
+        assert.equal(err.message, 'Invalid key specified for license file.', 'expected error message');
     });
 });
 
@@ -92,14 +95,14 @@ describe(`Test getFingerprint`, function () {
         assert.equal(result, 'blahhash', 'expected success message');
     });
     it('Set license key stub write file, write throws exception', async function () {
-        generate_stub = sandbox.stub(hdb_license, 'generateFingerPrint').resolves('There was an error generating the fingerprint');
+        generate_stub = sandbox.stub(hdb_license, 'generateFingerPrint').throws(new Error('There was an error generating the fingerprint'));
         let result = undefined;
         try {
             result = await getFingerprint();
         } catch (e) {
             err = e;
         }
-        assert.equal(result,'There was an error generating the fingerprint', 'expected error message');
+        assert.equal(err.message,'Error generating fingerprint.', 'expected error message');
     });
 
 });

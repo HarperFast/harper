@@ -30,15 +30,13 @@ module.exports = {
  */
 function getFingerprintCB(json_message, callback) {
     let fingerprint = {};
-    try {
-        getFingerprint().then((result) => {
-            fingerprint['fingerprint'] = result;
-            return callback(null, fingerprint);
-        });
-    } catch(err) {
+    getFingerprint().then((result) => {
+        fingerprint['fingerprint'] = result;
+        return callback(null, fingerprint);
+    }).catch((err) => {
         log.error(`There was an error getting the fingerprint for this machine ${err}`);
         return callback(err, null);
-    }
+    });
 }
 
 // For now, the function that is called via chooseOperation needs to be in the callback style.  Once we move away from
@@ -52,15 +50,13 @@ function getFingerprintCB(json_message, callback) {
  */
 function setLicenseCB(json_message, callback) {
     let call_result = undefined;
-    try {
-        setLicense(json_message).then((result) => {
-            call_result = result;
-            return callback(null, call_result);
-        });
-    } catch(err) {
+    setLicense(json_message).then((result) => {
+        call_result = result;
+        return callback(null, call_result);
+    }).catch((err) => {
         log.error(`There was an error getting the fingerprint for this machine ${err}`);
         return callback(err, null);
-    }
+    });
 }
 
 /**
@@ -70,19 +66,21 @@ function setLicenseCB(json_message, callback) {
  */
 async function setLicense(json_message) {
     let key_path = undefined;
-    try {
-        key_path = `${env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.PROJECT_DIR_KEY)}/utility/keys/${terms.REG_KEY_FILE_NAME}`;
-        if (json_message && json_message.key) {
+    key_path = `${env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.PROJECT_DIR_KEY)}/utility/keys/${terms.REG_KEY_FILE_NAME}`;
+    //key_path = '/asdfa asdfasdf';
+    if (json_message && json_message.key) {
+        try {
             await fs.writeFile(key_path, json_message.key, 'utf8');
-            return 'Wrote license key file.';
+        } catch(err) {
+            let err_msg = `There was an error writing the key: ${json_message.key} to file path: ${key_path}`;
+            log.error(err_msg);
+            log.error(err);
+            //return err_msg;
+            throw new Error(err_msg);
         }
-        return 'Invalid key specified for license file.';
-    } catch(e) {
-        let err_msg = `There was an error writing the key: ${json_message.key} to file path: ${key_path}`;
-        log.error(err_msg);
-        log.error(e);
-        return err_msg;
+        return 'Wrote license key file.';
     }
+    throw new Error('Invalid key specified for license file.');
 }
 
 /**
@@ -94,10 +92,17 @@ async function getFingerprint() {
         check_permisison.checkPermission();
     } catch(err) {
         log.error(err);
-        return 'You do not have permission to generate a fingerprint.';
+        throw new Error('You do not have permission to generate a fingerprint.');
     }
-
-    let fingerprint = await hdb_license.generateFingerPrint();
+    let fingerprint = {};
+    try {
+        fingerprint = await hdb_license.generateFingerPrint();
+    } catch(err) {
+        let err_msg = 'Error generating fingerprint.';
+        log.error(err_msg);
+        log.error(err);
+        throw new Error(err_msg);
+    }
     return fingerprint;
 }
 
