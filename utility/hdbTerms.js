@@ -150,6 +150,24 @@ const HDB_SETTINGS_NAMES = {
     CLUSTERING_ENABLED_KEY: 'CLUSTERING'
 };
 
+// Default values for the Settings, some do not have a default.
+const HDB_SETTINGS_DEFAULT_VALUES = {
+    HTTP_PORT: '9925',
+    HTTPS_PORT: '31283',
+    HTTPS_ON: 'true',
+    HTTP_ON: 'false',
+    CORS_ON: 'true',
+    CORS_WHITELIST: '',
+    SERVER_TIMEOUT_MS: '120000',
+    LOG_LEVEL: 'error',
+    LOGGER: '1',
+    LOG_PATH: './harper_log.log',
+    NODE_ENV: 'production',
+    CLUSTERING_PORT: '5545',
+    NODE_NAME: 'NEW_HDB_NODE',
+    CLUSTERING: 'false'
+};
+
 // Describes all available job types
 const JOB_TYPE_ENUM = {
     csv_file_load: 'csv_file_load',
@@ -172,6 +190,7 @@ module.exports = {
     HTTP_STATUS_CODES,
     GEO_CONVERSION_ENUM,
     HDB_SETTINGS_NAMES,
+    HDB_SETTINGS_DEFAULT_VALUES,
     SERVICE_ACTIONS_ENUM,
     PERIOD_REGEX,
     DOUBLE_PERIOD_REGEX,

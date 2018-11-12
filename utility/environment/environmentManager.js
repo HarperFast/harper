@@ -13,36 +13,15 @@ const PROPS_FILE_PATH = `${process.cwd()}/../hdb_boot_properties.file`;
 const p_fs_access = promisify(fs.access);
 const p_fs_stat = promisify(fs.stat);
 
-// DEFAULTS
-const DEFAULT_SERVER_TIMEOUT = 120000;
-const PROPS_FILE_PATH_DEFUALT = '../hdb_boot_properties.file';
-const HTTP_PORT_DEFAULT = 9925;
-const HTTP_SECURE_PORT_DEFAULT = 31283;
-const HTTP_SECURE_ENABLED_DEFAULT = true;
-const HTTP_ENABLED_DEFAULT = false;
-const CORS_ENABLED_DEFAULT = true;
-const CORS_WHITELIST_DEFAULT = '';
-const LOG_LEVEL_DEFAULT = 'error';
-const LOGGER_DEFAULT = 1;
-const LOG_PATH_DEFAULT = './harper_log.log';
-const PROPS_ENV_DEFAULT = 'production';
-
 const defaults = {};
-defaults[hdb_terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY] = '~/harperdb/';
-defaults[hdb_terms.HDB_SETTINGS_NAMES.PROPS_ENV_KEY] = PROPS_ENV_DEFAULT;
-defaults[hdb_terms.HDB_SETTINGS_NAMES.PROPS_SERVER_TIMEOUT_KEY] = DEFAULT_SERVER_TIMEOUT;
-defaults[hdb_terms.HDB_SETTINGS_NAMES.HTTP_PORT_KEY] = HTTP_PORT_DEFAULT;
-defaults[hdb_terms.HDB_SETTINGS_NAMES.HTTP_SECURE_PORT_KEY] = HTTP_SECURE_PORT_DEFAULT;
-defaults[hdb_terms.HDB_SETTINGS_NAMES.HTTP_ENABLED_KEY] = HTTP_ENABLED_DEFAULT;
-defaults[hdb_terms.HDB_SETTINGS_NAMES.HTTP_SECURE_ENABLED_KEY] = HTTP_SECURE_ENABLED_DEFAULT;
-defaults[hdb_terms.HDB_SETTINGS_NAMES.CORS_ENABLED_KEY] = CORS_ENABLED_DEFAULT;
-defaults[hdb_terms.HDB_SETTINGS_NAMES.CORS_WHITELIST_KEY] = CORS_WHITELIST_DEFAULT;
-defaults[hdb_terms.HDB_SETTINGS_NAMES.LOG_LEVEL_KEY] = LOG_LEVEL_DEFAULT;
-defaults[hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY] = LOG_PATH_DEFAULT;
-defaults[hdb_terms.HDB_SETTINGS_NAMES.LOGGER_KEY] = LOGGER_DEFAULT;
-defaults[hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY] = false;
-defaults[hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY] = 5545;
-defaults[hdb_terms.HDB_SETTINGS_NAMES.NODE_NAME_KEY] = 'NEW_HDB_NODE';
+
+for(let key of Object.keys(hdb_terms.HDB_SETTINGS_NAMES)) {
+    let setting_val = hdb_terms.HDB_SETTINGS_NAMES[key];
+    let default_val = hdb_terms.HDB_SETTINGS_DEFAULT_VALUES[setting_val];
+    if(default_val) {
+        defaults[setting_val] = default_val;
+    }
+}
 
 module.exports = {
     PROPS_FILE_PATH,
