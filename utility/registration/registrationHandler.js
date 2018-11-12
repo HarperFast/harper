@@ -65,9 +65,7 @@ function setLicenseCB(json_message, callback) {
  * @returns {Promise<string>}
  */
 async function setLicense(json_message) {
-    let key_path = undefined;
-    key_path = `${env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.PROJECT_DIR_KEY)}/utility/keys/${terms.REG_KEY_FILE_NAME}`;
-    //key_path = '/asdfa asdfasdf';
+    let key_path = `${env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.PROJECT_DIR_KEY)}/utility/keys/${terms.REG_KEY_FILE_NAME}`;
     if (json_message && json_message.key) {
         try {
             await fs.writeFile(key_path, json_message.key, 'utf8');
@@ -75,7 +73,6 @@ async function setLicense(json_message) {
             let err_msg = `There was an error writing the key: ${json_message.key} to file path: ${key_path}`;
             log.error(err_msg);
             log.error(err);
-            //return err_msg;
             throw new Error(err_msg);
         }
         return 'Wrote license key file.';

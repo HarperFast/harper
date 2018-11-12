@@ -21,6 +21,8 @@ const ACCESS_RESPONSE = {
     'stats': 'true'
 };
 
+let access_orig = env_rw.__get__('p_fs_access');
+
 describe('Test getProperty', () => {
     let test_properties = {};
     beforeEach(() => {
@@ -28,6 +30,7 @@ describe('Test getProperty', () => {
     afterEach(() => {
         test_properties = {};
         env_rw.__set__('property_values', test_properties);
+        env_rw.__set__('p_fs_access', access_orig);
     });
     it('Nominal, return property', () => {
         test_properties[TEST_PROP_1_NAME] = TEST_PROP_1_VAL;
@@ -63,6 +66,7 @@ describe('Test storeVariableValue', () => {
     afterEach(() => {
         test_properties = {};
         env_rw.__set__('property_values', test_properties);
+        env_rw.__set__('p_fs_access', access_orig);
     });
     it('Nominal, store property', () => {
         test_properties[TEST_PROP_1_NAME] = TEST_PROP_1_VAL;
@@ -125,6 +129,7 @@ describe('Test readEnvVariable', () => {
     afterEach(() => {
         test_properties = {};
         env_rw.__set__('property_values', test_properties);
+        env_rw.__set__('p_fs_access', access_orig);
     });
     it('Nominal, return property', () => {
         props.set(terms.HDB_SETTINGS_NAMES.PROPS_ENV_KEY, 'blob');
@@ -166,6 +171,7 @@ describe('Test readSettingsFile', () => {
     afterEach(() => {
         test_properties = {};
         env_rw.__set__('property_values', test_properties);
+        env_rw.__set__('p_fs_access', access_orig);
     });
     it('Nominal, store key path', async () => {
         props.set(terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, TEST_SETTINGS_FILE_PATH);
@@ -218,6 +224,7 @@ describe('Test readPropsFile', () => {
     afterEach(() => {
         test_properties = {};
         env_rw.__set__('property_values', test_properties);
+        env_rw.__set__('p_fs_access', access_orig);
     });
     it('Nominal, store key path', async () => {
         access_stub = sandbox.stub().onFirstCall().resolves(ACCESS_RESPONSE);
@@ -234,7 +241,7 @@ describe('Test readPropsFile', () => {
         }
         let prop1 = env_rw.getProperty(terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY);
 
-        assert.equal(prop1, TEST_PROPS_FILE_PATH);
+        assert.equal(prop1, './settings.tstFile');
     });
     it('invalid key path', async () => {
         access_stub = sandbox.stub().throws(new Error('INVALID PATH'));
@@ -272,6 +279,7 @@ describe('Test readRootPath', () => {
     afterEach(() => {
         test_properties = {};
         env_rw.__set__('property_values', test_properties);
+        env_rw.__set__('p_fs_access', access_orig);
     });
     it('Nominal, store key path', async () => {
         props.set(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, './');
@@ -316,6 +324,7 @@ describe('Test readPrivateKeyPath', () => {
     afterEach(() => {
         test_properties = {};
         env_rw.__set__('property_values', test_properties);
+        env_rw.__set__('p_fs_access', access_orig);
     });
     it('Nominal, store key path', async () => {
         access_stub = sandbox.stub().resolves(ACCESS_RESPONSE);
@@ -363,6 +372,7 @@ describe('Test readCertPath', () => {
     afterEach(() => {
         test_properties = {};
         env_rw.__set__('property_values', test_properties);
+        env_rw.__set__('p_fs_access', access_orig);
     });
     it('Nominal, store key path', async () => {
         access_stub = sandbox.stub().resolves(ACCESS_RESPONSE);
@@ -398,7 +408,6 @@ describe('Test readCertPath', () => {
 
 describe('Test init', () => {
     let test_properties = {};
-    let readPrivateKeyPath = env_rw.__get__('readPrivateKeyPath');
     let props = undefined;
     let sandbox = null;
     let access_stub = undefined;
@@ -407,22 +416,29 @@ describe('Test init', () => {
         props = new PropertiesReader();
         sandbox = sinon.createSandbox();
         env_rw.__set__('hdb_properties', props);
+        env_rw.__set__('p_fs_access', access_stub);
     });
     afterEach(() => {
         test_properties = {};
+        sandbox.restore();
         env_rw.__set__('property_values', test_properties);
+        env_rw.__set__('p_fs_access', access_orig);
     });
     // There is no good way to inject a value for the settings path during the init run, so just replacing
     // it with this function that will point to a valid path.
     async function loadThisInstead() {
         let props = env_rw.__get__('hdb_properties');
-        props.append(props.get(TEST_SETTINGS_FILE_PATH));
+        let found = new PropertiesReader(TEST_SETTINGS_FILE_PATH);
+        found.each((key, value) => {
+            props.set(key, value);
+        });
     }
     it('Nominal, load up environment variables', async () => {
         access_stub = sandbox.stub().resolves(ACCESS_RESPONSE);
         props.set(terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, TEST_SETTINGS_FILE_PATH);
-        env_rw.__set__('PROPS_FILE_PATH', TEST_SETTINGS_FILE_PATH);
+        env_rw.__set__('PROPS_FILE_PATH', TEST_PROPS_FILE_PATH);
         env_rw.__set__('readSettingsFile', loadThisInstead);
+        env_rw.__set__('p_fs_access', access_orig);
         try {
             await env_rw.init();
         } catch(e) {

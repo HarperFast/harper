@@ -166,7 +166,7 @@ async function readRootPath() {
         storeVariableValue(hdb_terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, root_path);
     } else {
         let error_msg = `The specified root path ${root_path} does not exist.  Please change this to the correct path to HarperDB. in your settings file. Exiting Harper DB.`;
-        log.warn(`The specified root path ${root_path} does not exist.  Please change this to the correct path to HarperDB. in your settings file. Exiting Harper DB.`);
+        log.fatal(`The specified root path ${root_path} does not exist.  Please change this to the correct path to HarperDB. in your settings file. Exiting Harper DB.`);
         throw new Error(error_msg);
     }
 }
@@ -180,11 +180,12 @@ async function readPropsFile() {
         await p_fs_access(PROPS_FILE_PATH, fs.constants.F_OK | fs.constants.R_OK);
     } catch(e) {
         let error_msg = `The properties file at path ${PROPS_FILE_PATH} does not exist.  Exiting Harper DB.`;
+        log.error(e);
         throw new Error(error_msg);
     }
 
     hdb_properties = PropertiesReader(PROPS_FILE_PATH);
-    storeVariableValue(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, PROPS_FILE_PATH);
+    storeVariableValue(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY));
     await readSettingsFile();
 }
 
@@ -196,7 +197,7 @@ async function readSettingsFile() {
     try {
         await p_fs_access(hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY), fs.constants.F_OK | fs.constants.R_OK);
     } catch(e) {
-        let error_msg = `The properties file at path ${PROPS_FILE_PATH} does not exist.  Exiting Harper DB.`;
+        let error_msg = `The settings file at path ${PROPS_FILE_PATH} does not exist.  Exiting Harper DB.`;
         throw new Error(error_msg);
     }
 
@@ -242,6 +243,7 @@ async function init() {
     } catch(err) {
         let msg = `Error reading in HDB environment variables from path ${PROPS_FILE_PATH}.  Please check your boot props and settings files`;
         log.fatal(msg);
+        log.error(err);
         throw new Error(msg);
     }
 }
