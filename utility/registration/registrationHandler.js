@@ -5,29 +5,33 @@ const check_permisison = require('../check_permissions');
 const prompt = require('prompt');
 const {promisify} = require('util');
 const insert = require('../../data_layer/insert');
+const env_mgr = require('../environment/environmentManager');
+const terms = require('../hdbTerms');
+const fs = require('fs-extra');
 
 //Promisified function
 let p_insert_insert = promisify(insert.insert);
 let p_prompt_get = promisify(prompt.get);
 
 module.exports = {
-    get_fingerprint: get_fingerprint_cb,
+    getFingerprint: getFingerprintCB,
+    setLicense: setLicenseCB,
     register: register
 };
 
 // For now, the function that is called via chooseOperation needs to be in the callback style.  Once we move away from
 // callbacks, we can change the exports above from the cb function to the async function.
 /**
- * Calls the get_fingerprint async function to match the callback style of processLocalTransaction.  This will be
+ * Calls the getFingerprint async function to match the callback style of processLocalTransaction.  This will be
  * removed once those are migrated.
- * @param message - The JSON formatted inbound message.
+ * @param json_message - The JSON formatted inbound message.
  * @param callback
  * @returns {*}
  */
-function get_fingerprint_cb(message, callback) {
+function getFingerprintCB(json_message, callback) {
     let fingerprint = {};
     try {
-        get_fingerprint().then((result) => {
+        getFingerprint().then((result) => {
             fingerprint['fingerprint'] = result;
             return callback(null, fingerprint);
         });
@@ -37,11 +41,41 @@ function get_fingerprint_cb(message, callback) {
     }
 }
 
+function setLicenseCB(json_message, callback) {
+    let call_result = undefined;
+    try {
+        setLicense(json_message).then((result) => {
+            call_result = result;
+            return callback(null, call_result);
+        });
+    } catch(err) {
+        log.error(`There was an error getting the fingerprint for this machine ${err}`);
+        return callback(err, null);
+    }
+}
+
+async function setLicense(json_message) {
+    let key_path = undefined;
+    try {
+        key_path = `${env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.PROJECT_DIR_KEY)}/utility/keys/${terms.REG_KEY_FILE_NAME}`;
+        if (json_message && json_message.key) {
+            await fs.writeFile(key_path, json_message.key, 'utf8');
+            return 'Wrote license key file';
+        }
+        return 'Invalid key specified for license file.';
+    } catch(e) {
+        let err_msg = `There was an error writing the key: ${json_message.key} to file path: ${key_path}`;
+        log.error(err_msg);
+        log.error(e);
+        return err_msg;
+    }
+}
+
 /**
  * Returns the fingerprint of this install which is used in the registration process.
  * @returns {Promise<*>}
  */
-async function get_fingerprint() {
+async function getFingerprint() {
     try {
         check_permisison.checkPermission();
     } catch(err) {

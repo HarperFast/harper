@@ -33,6 +33,9 @@ const ROLE_TABLE_NAME = 'hdb_role';
 // Job table name
 const JOB_TABLE_NAME = 'hdb_job';
 
+// Registration key file name
+const REG_KEY_FILE_NAME = '060493.ks';
+
 // Describes the available statuses for jobs
 const JOB_STATUS_ENUM = {
 	CREATED: 'CREATED',
@@ -177,6 +180,7 @@ module.exports = {
     UNICODE_FORWARD_SLASH,
     ESCAPED_FORWARD_SLASH_REGEX,
     ESCAPED_PERIOD_REGEX,
-    ESCAPED_DOUBLE_PERIOD_REGEX
+    ESCAPED_DOUBLE_PERIOD_REGEX,
+    REG_KEY_FILE_NAME
 };
 

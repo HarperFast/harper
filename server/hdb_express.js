@@ -6,6 +6,7 @@ const user_schema = require('../utility/user_schema');
 const async = require('async');
 const insert = require('../data_layer/insert');
 const os = require('os');
+const env_mgr = require('../utility/environment/environmentManager');
 const job_runner = require('./jobRunner');
 const hdb_util = require('../utility/common_utils');
 const guidePath = require('path');
@@ -43,6 +44,13 @@ if (node_env_value === undefined || node_env_value === null || node_env_value ==
 }
 
 process.env['NODE_ENV'] = node_env_value;
+
+try {
+    env_mgr.init();
+} catch(err) {
+    harper_logger.error(`Got an error loading the environment.  Exiting.${err}`);
+    process.exit(0);
+}
 
 let numCPUs = 4;
 
