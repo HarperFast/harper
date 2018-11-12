@@ -1,7 +1,7 @@
 const run = require('./run');
 const install = require('./install');
 const stop = require('./stop');
-const register = require('./register');
+
 const version = require('./version');
 const upgrade = require('./upgrade');
 const fs = require('fs');
@@ -82,6 +82,8 @@ function harperDBService() {
                 install.install();
                 break;
             case hdb_terms.SERVICE_ACTIONS_ENUM.REGISTER:
+                // register requires a lot of imports that could fail during install, so only bring it in when needed.
+                const register = require('./register');
                 register.register().catch((err) => {
                     console.error(err);
                 });
