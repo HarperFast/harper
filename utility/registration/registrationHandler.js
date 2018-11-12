@@ -41,6 +41,15 @@ function getFingerprintCB(json_message, callback) {
     }
 }
 
+// For now, the function that is called via chooseOperation needs to be in the callback style.  Once we move away from
+// callbacks, we can change the exports above from the cb function to the async function.
+/**
+ * Calls the setLicense async function to match the callback style of processLocalTransaction.  This will be removed
+ * onces those are migrated to async/await.
+ * @param json_message - The JSON formatted inbound message.
+ * @param callback
+ * @returns {*}
+ */
 function setLicenseCB(json_message, callback) {
     let call_result = undefined;
     try {
@@ -54,13 +63,18 @@ function setLicenseCB(json_message, callback) {
     }
 }
 
+/**
+ * Set the license on this node to the key specified in the json_message parameter.
+ * @param json_message
+ * @returns {Promise<string>}
+ */
 async function setLicense(json_message) {
     let key_path = undefined;
     try {
         key_path = `${env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.PROJECT_DIR_KEY)}/utility/keys/${terms.REG_KEY_FILE_NAME}`;
         if (json_message && json_message.key) {
             await fs.writeFile(key_path, json_message.key, 'utf8');
-            return 'Wrote license key file';
+            return 'Wrote license key file.';
         }
         return 'Invalid key specified for license file.';
     } catch(e) {
