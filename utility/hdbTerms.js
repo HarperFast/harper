@@ -164,7 +164,6 @@ const HDB_SETTINGS_DEFAULT_VALUES = {
     LOG_PATH: './harper_log.log',
     NODE_ENV: 'production',
     CLUSTERING_PORT: '5545',
-    NODE_NAME: 'NEW_HDB_NODE',
     CLUSTERING: 'false'
 };
 

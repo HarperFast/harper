@@ -186,39 +186,20 @@ async function readSettingsFile() {
 async function init() {
     try {
         await readPropsFile();
-        /** Read the desired server timeout setting.  Default is 120000 ms. */
-        readEnvVariable(hdb_terms.HDB_SETTINGS_NAMES.PROPS_SERVER_TIMEOUT_KEY);
-        /** Read the project path. If the path is not defined or not found, Harper will log an error and exit. */
-        readEnvVariable(hdb_terms.HDB_SETTINGS_NAMES.PROJECT_DIR_KEY);
         await readRootPath();
-        /** Read the desired HTTP port.  Default is 9925 */
-        readEnvVariable(hdb_terms.HDB_SETTINGS_NAMES.HTTP_PORT_KEY);
-        /** Reads the desired Secure HTTP port.  Default is 31283 */
-        readEnvVariable(hdb_terms.HDB_SETTINGS_NAMES.HTTP_SECURE_PORT_KEY);
         await readCertPath();
         await readPrivateKeyPath();
-        /** Read if Secure HTTP (HTTPS) is enabled.  Default is true (enabled). */
-        readEnvVariable(hdb_terms.HDB_SETTINGS_NAMES.HTTP_SECURE_ENABLED_KEY);
-        /** Read if HTTP is enabled.  Default is false (disabled). */
-        readEnvVariable(hdb_terms.HDB_SETTINGS_NAMES.HTTP_ENABLED_KEY);
-        /** Read if CORS is enabled.  Default is true (enabled). */
-        readEnvVariable(hdb_terms.HDB_SETTINGS_NAMES.CORS_ENABLED_KEY);
-        /** Read the whitelist for CORS.  Default is an empty list. */
-        readEnvVariable(hdb_terms.HDB_SETTINGS_NAMES.CORS_WHITELIST_KEY);
-        /** Read the desired log level for the logger.  Default is error. */
-        readEnvVariable(hdb_terms.HDB_SETTINGS_NAMES.LOG_LEVEL_KEY);
-        /** Read the desired logger to be used by HarperDB. Default is 1 (WINSTON */
-        readEnvVariable(hdb_terms.HDB_SETTINGS_NAMES.LOGGER_KEY);
-        /** Read the desired path for the log file. Default is ./harper_log.log. */
-        readEnvVariable(hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY);
-        /** Read the variable used to set the nodejs runtime environment value. Default is production */
-        readEnvVariable(hdb_terms.HDB_SETTINGS_NAMES.PROPS_ENV_KEY);
-        // Read the variable used to enable clustering
-        readEnvVariable(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY);
-        // Read the variable used to set the port used in clustering
-        readEnvVariable(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY);
-        // Read the variable used to set the node name in clustering.
-        readEnvVariable(hdb_terms.HDB_SETTINGS_NAMES.NODE_NAME_KEY);
+        //These settings are read in separate function calls above to handle file IO errors.
+        let ignore_settings = [hdb_terms.HDB_SETTINGS_NAMES.CERT_KEY, hdb_terms.HDB_SETTINGS_NAMES.PRIVATE_KEY_KEY, hdb_terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY,hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY];
+        let keys = Object.keys(hdb_terms.HDB_SETTINGS_NAMES);
+        for( let i=0; i<keys.length; i++) {
+            let key = keys[i];
+            let value = hdb_terms.HDB_SETTINGS_NAMES[key];
+            if(ignore_settings.includes(value)) {
+                continue;
+            }
+            readEnvVariable(value);
+        }
     } catch(err) {
         let msg = `Error reading in HDB environment variables from path ${PROPS_FILE_PATH}.  Please check your boot props and settings files`;
         log.fatal(msg);
@@ -226,16 +207,3 @@ async function init() {
         throw new Error(msg);
     }
 }
-
-//Initialize the environment manager.
-/*
-init()
-    .then( () => {
-        harper_logger.info("initialized environment logger with no issues.");
-    })
-    .catch( (err) => {
-        harper_logger.error(err);
-        process.exit(1);
-    });
-*/
-
