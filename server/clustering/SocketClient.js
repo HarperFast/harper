@@ -23,6 +23,15 @@ class SocketClient {
         this.client = null;
     }
 
+    disconnectNode() {
+        if(!this.other_node || this.other_node.disconnected) {
+            harper_logger.info('There is no connected client to disconnect');
+            return;
+        }
+        harper_logger.info(`disconnecting node ${this.other_node.name}`);
+        this.other_node.disconnect();
+    }
+
     onConnectHandler(){
         this.other_node.status = 'connected';
 

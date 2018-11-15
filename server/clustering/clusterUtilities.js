@@ -2,8 +2,15 @@ const insert = require('../../data_layer/insert');
 const node_Validator = require('../../validation/nodeValidator');
 const hdb_utils = require('../../utility/common_utils');
 const log = require('../../utility/logging/harper_logger');
+const {promisify} = require('util');
+const del = require('../../data_layer/delete');
+const terms = require('../../utility/hdbTerms');
 
-function addNode(new_node, callback){
+//Promisified functions
+const p_insert_insert = promisify(insert.insert);
+const p_delete_delete = promisify(del.delete);
+
+function addNode(new_node, callback) {
     // need to clean up new node as it hads operation and user on it
     let validation = node_Validator(new_node);
     if(validation) {
@@ -16,7 +23,7 @@ function addNode(new_node, callback){
         "schema":"system",
         "table":"hdb_nodes",
         "records": [new_node]
-    }
+    };
 
     insert.insert(new_node_insert, function(err, results){
         if(err) {
@@ -26,7 +33,7 @@ function addNode(new_node, callback){
 
         if(!hdb_utils.isEmptyOrZeroLength(results.skipped_hashes)){
             log.info(`Node '${new_node.name}' has already been already added. Operation aborted.`);
-            return callback(null, `Node '${new_node.name}' has already been already added. Operation aborted.`)
+            return callback(null, `Node '${new_node.name}' has already been already added. Operation aborted.`);
         }
 
         // Send IPC message so master will command forks to rescan for new nodes.
@@ -37,22 +44,69 @@ function addNode(new_node, callback){
     });
 }
 
-function payloadHandler(msg){
+function removeNodeCB(remove_node, callback) {
+    if(!remove_node) {
+        return callback('Invalid JSON message for remove_node', null);
+    }
+    let response = {};
+    removeNode(remove_node).then((result) => {
+        response['message'] = result;
+        return callback(null, response);
+    }).catch((err) => {
+        log.error(`There was an error removing node ${err}`);
+        return callback(err, null);
+    });
+
+}
+
+async function removeNode(remove_node) {
+    if(!remove_node.name) {
+        let err_msg = `Missing node name in remove_node`;
+        log.error(err_msg);
+        throw new Error(err_msg);
+    }
+
+    let delete_obj = {
+        "table": terms.SYSTEM_TABLE_NAMES.NODE_TABLE_NAME,
+        "schema": terms.SYSTEM_SCHEMA_NAME,
+        "hash_values": [remove_node.name]
+    };
+
+    let results = undefined;
+    try {
+        results = await p_delete_delete(delete_obj);
+    } catch(err) {
+        log.error(`Error removing cluster node ${delete_obj}.  ${err}`);
+        throw err;
+    }
+    if(!hdb_utils.isEmptyOrZeroLength(results.skipped_hashes)) {
+        log.info(`Node '${remove_node.name}' was not found. Operation aborted.`);
+        return `Node '${remove_node.name}' was not found.`;
+    }
+
+    // Send IPC message so master will command forks to rescan for new nodes.
+    process.send({
+        "type": "node_added"
+    });
+    return `successfully removed ${delete_obj.name} from manifest`;
+}
+
+function payloadHandler(msg) {
     if(hdb_utils.isEmptyOrZeroLength(global.cluster_server)) {
         log.error(`Cannot send cluster updates, cluster server is not initialized.`);
         return;
     }
-    switch(msg.clustering_type){
+    switch(msg.clustering_type) {
         case "broadcast":
             log.info(`broadcasting cluster message`);
             global.cluster_server.broadCast(msg);
             break;
         case "send":
-            log.info('sending cluster message')
+            log.info('sending cluster message');
             global.cluster_server.send(msg, msg.res);
     break;
     }
-};
+}
 
 function clusterMessageHandler(msg) {
     try {
@@ -87,11 +141,22 @@ function clusterMessageHandler(msg) {
                 }
             }
             if (!specified_process && backup_process) {
-                log.info(`The specified process ${msg.target_process_id} was not found, sending to process ${global.forks[i].pid} instead.`);
+                log.info(`The specified process ${msg.target_process_id} was not found, sending to default process instead.`);
                 backup_process.send(msg);
             }
 
         } else if (msg.type === 'node_added') {
+            if(hdb_utils.isEmptyOrZeroLength(global.cluster_server)) {
+                log.error('Cluster Server has not been initialized.  Do you have CLUSTERING=true in your config/settings file?');
+                return;
+            }
+            global.cluster_server.scanNodes().then( () => {
+                log.info('Done scanning for new cluster nodes');
+            }).catch( (e) => {
+                log.error('There was an error scanning for new cluster nodes');
+                log.error(e);
+            });
+        } else if (msg.type === 'node_removed') {
             if(hdb_utils.isEmptyOrZeroLength(global.cluster_server)) {
                 log.error('Cluster Server has not been initialized.  Do you have CLUSTERING=true in your config/settings file?');
                 return;
@@ -109,7 +174,8 @@ function clusterMessageHandler(msg) {
 }
 
 module.exports = {
-        addNode: addNode,
-        payloadHandler: payloadHandler,
-        clusterMessageHandler: clusterMessageHandler
-}
+    addNode: addNode,
+    removeNode: removeNodeCB,
+    payloadHandler: payloadHandler,
+    clusterMessageHandler: clusterMessageHandler
+};

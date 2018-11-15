@@ -131,7 +131,7 @@ async function addJob(json_body) {
     let new_job = new JobObject();
     new_job.type = json_body.operation;
     new_job.user = json_body.hdb_user.username;
-	let search_obj = new Search_Object(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.JOB_TABLE_NAME, 'id', new_job.id, 'id', 'id');
+	let search_obj = new Search_Object(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME, 'id', new_job.id, 'id', 'id');
 	
 	let found_job = undefined;
 	try {
@@ -164,7 +164,7 @@ async function addJob(json_body) {
         }
     }
 
-    let insert_object = new Insert_Object('insert', hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.JOB_TABLE_NAME, 'id', [new_job]);
+    let insert_object = new Insert_Object('insert', hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME, 'id', [new_job]);
     let insert_result = undefined;
     try {
         insert_result = await p_insert(insert_object);
@@ -222,7 +222,7 @@ async function getJobById(json_body) {
     if(hdb_util.isEmptyOrZeroLength(json_body.id)) {
         return hdb_util.errorizeMessage('Invalid job ID specified.');
     }
-    let search_obj = new Search_Object(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.JOB_TABLE_NAME, 'id', json_body.id, 'id', ['*']);
+    let search_obj = new Search_Object(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME, 'id', json_body.id, 'id', ['*']);
     try {
         return await p_search_by_value(search_obj);
     } catch(e) {
@@ -242,7 +242,7 @@ async function deleteJobById(json_body) {
         return hdb_util.errorizeMessage('Invalid job ID specified.');
     }
     let delete_result = {};
-    let delete_obj = new Delete_Object(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.JOB_TABLE_NAME, [json_body.id]);
+    let delete_obj = new Delete_Object(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME, [json_body.id]);
     try {
         delete_result.message = await p_delete(delete_obj);
     } catch(e) {
@@ -275,7 +275,7 @@ async function updateJob(job_object) {
         job_object.end_datetime = moment().valueOf();
     }
 
-    let update_object = new UpdateObject(hdb_terms.OPERATIONS_ENUM.UPDATE, hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.JOB_TABLE_NAME, [job_object]);
+    let update_object = new UpdateObject(hdb_terms.OPERATIONS_ENUM.UPDATE, hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME, [job_object]);
     let update_result = undefined;
     try {
         update_result = await p_insert_update(update_object);

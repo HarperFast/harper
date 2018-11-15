@@ -41,6 +41,23 @@ class ClusterServer {
         }
     }
 
+    removeConnection(o_node) {
+        try {
+            let found_client = this.socket_client.filter((client)=>{
+                return client.other_node.host === o_node.host && client.other_node.port === o_node.port;
+            });
+
+            if(found_client && found_client[0]) {
+                found_client[0].disconnectNode;
+            }
+
+        } catch(err) {
+            log.error(`Error removing connection with ${o_node.name} at address ${o_node.host}`);
+            log.error(err);
+        }
+    }
+
+
     establishAllConnections(){
         this.other_nodes.forEach((o_node)=>{
             this.establishConnection(o_node);
@@ -89,23 +106,38 @@ class ClusterServer {
             throw e;
         });
 
-        for(let curr_node of nodes) {
-            let should_add_connection = true;
-            if(!this.node.other_nodes) {
-                this.node.other_nodes = [];
+        let added_nodes = ((this.node.other_nodes.length === 0)? nodes : undefined);
+        let removed_nodes = ((nodes.length === 0)? this.node.other_nodes : undefined);
+
+        try {
+            if(!added_nodes && nodes.length > 0) {
+                added_nodes = nodes.filter(item => !this.node.other_nodes.some(other => item.name === other.name));
             }
-            for(let i = 0; i<this.node.other_nodes.length; i++) {
-                let existing_node = this.node.other_nodes[i];
-                if(existing_node.name === curr_node.name) {
-                    should_add_connection = false;
-                    break;
+            if(!removed_nodes && this.node.other_nodes.length > 0) {
+                removed_nodes = this.node.other_nodes.filter(item => !nodes.some(other => item.name === other.name));
+            }
+        } catch (err) {
+            log.info('Had a problem detecting node changes.');
+        } finally {
+            if(added_nodes) {
+                for (let curr_node of added_nodes) {
+                    this.node.other_nodes.push(curr_node);
+                    // establishConnection handles any exceptions thrown.
+                    log.info(`Establishing connection with cluster node ${curr_node.name}`);
+                    this.establishConnection(curr_node);
                 }
             }
-            if(should_add_connection) {
-                this.node.other_nodes.push(curr_node);
-                // establishConnection handles any exceptions thrown.
-                log.info(`Establishing connection with cluster node ${curr_node.name}`);
-                this.establishConnection(curr_node);
+
+            if(removed_nodes) {
+                for (let removed_node of removed_nodes) {
+                    log.info(`Removing connection with cluster node ${removed_node.name}`);
+                    this.removeConnection(removed_node);
+                    for( let i = 0; i < this.node.other_nodes.length; i++){
+                        if ( this.node.other_nodes[i].name === removed_node.name) {
+                            this.node.other_nodes.splice(i, 1);
+                        }
+                    }
+                }
             }
         }
     }
