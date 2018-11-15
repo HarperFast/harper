@@ -3,6 +3,7 @@ const node_Validator = require('../../validation/nodeValidator');
 const hdb_utils = require('../../utility/common_utils');
 const log = require('../../utility/logging/harper_logger');
 const {promisify} = require('util');
+const {inspect} = require('util');
 const del = require('../../data_layer/delete');
 const terms = require('../../utility/hdbTerms');
 
@@ -90,7 +91,7 @@ async function removeNode(remove_json_message) {
     try {
         results = await p_delete_delete(delete_obj);
     } catch(err) {
-        log.error(`Error removing cluster node ${delete_obj}.  ${err}`);
+        log.error(`Error removing cluster node ${inspect(delete_obj)}.  ${err}`);
         throw err;
     }
     if(!hdb_utils.isEmptyOrZeroLength(results.skipped_hashes)) {
@@ -102,7 +103,7 @@ async function removeNode(remove_json_message) {
     process.send({
         "type": "node_added"
     });
-    return `successfully removed ${delete_obj.name} from manifest`;
+    return `successfully removed ${remove_json_message.name} from manifest`;
 }
 
 function payloadHandler(msg) {

@@ -32,7 +32,7 @@ class SocketClient {
             return;
         }
         harper_logger.info(`disconnecting node ${this.other_node.name}`);
-        this.other_node.disconnect();
+        this.client.disconnect();
     }
 
     onConnectHandler(){
