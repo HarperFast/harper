@@ -44,6 +44,15 @@ function addNode(new_node, callback) {
     });
 }
 
+/**
+ * A callback wrapper for removeNode.  This is needed to match the processLocalTransaction style currently used until we fully
+ * migrate to async/await.  Once that migration is complete, this function can be removed and have it replaced in module.exports
+ * with the async function.
+ *
+ * @param remove_node
+ * @param callback
+ * @returns {*}
+ */
 function removeNodeCB(remove_node, callback) {
     if(!remove_node) {
         return callback('Invalid JSON message for remove_node', null);
@@ -59,8 +68,13 @@ function removeNodeCB(remove_node, callback) {
 
 }
 
-async function removeNode(remove_node) {
-    if(!remove_node.name) {
+/**
+ * Remove a node from hdb_nodes.
+ * @param remove_json_message - The remove_node json message.
+ * @returns {Promise<string>}
+ */
+async function removeNode(remove_json_message) {
+    if(!remove_json_message.name) {
         let err_msg = `Missing node name in remove_node`;
         log.error(err_msg);
         throw new Error(err_msg);
@@ -69,7 +83,7 @@ async function removeNode(remove_node) {
     let delete_obj = {
         "table": terms.SYSTEM_TABLE_NAMES.NODE_TABLE_NAME,
         "schema": terms.SYSTEM_SCHEMA_NAME,
-        "hash_values": [remove_node.name]
+        "hash_values": [remove_json_message.name]
     };
 
     let results = undefined;
@@ -80,8 +94,8 @@ async function removeNode(remove_node) {
         throw err;
     }
     if(!hdb_utils.isEmptyOrZeroLength(results.skipped_hashes)) {
-        log.info(`Node '${remove_node.name}' was not found. Operation aborted.`);
-        return `Node '${remove_node.name}' was not found.`;
+        log.info(`Node '${remove_json_message.name}' was not found. Operation aborted.`);
+        return `Node '${remove_json_message.name}' was not found.`;
     }
 
     // Send IPC message so master will command forks to rescan for new nodes.
@@ -144,7 +158,6 @@ function clusterMessageHandler(msg) {
                 log.info(`The specified process ${msg.target_process_id} was not found, sending to default process instead.`);
                 backup_process.send(msg);
             }
-
         } else if (msg.type === 'node_added') {
             if(hdb_utils.isEmptyOrZeroLength(global.cluster_server)) {
                 log.error('Cluster Server has not been initialized.  Do you have CLUSTERING=true in your config/settings file?');
@@ -162,9 +175,9 @@ function clusterMessageHandler(msg) {
                 return;
             }
             global.cluster_server.scanNodes().then( () => {
-                log.info('Done scanning for new cluster nodes');
+                log.info('Done scanning for removed cluster nodes');
             }).catch( (e) => {
-                log.error('There was an error scanning for new cluster nodes');
+                log.error('There was an error scanning for removed cluster nodes');
                 log.error(e);
             });
         }
@@ -175,6 +188,7 @@ function clusterMessageHandler(msg) {
 
 module.exports = {
     addNode: addNode,
+    // This reference to the removeNode callback function can be removed once processLocalTransaction has been refactored
     removeNode: removeNodeCB,
     payloadHandler: payloadHandler,
     clusterMessageHandler: clusterMessageHandler

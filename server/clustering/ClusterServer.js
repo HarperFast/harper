@@ -48,7 +48,7 @@ class ClusterServer {
             });
 
             if(found_client && found_client[0]) {
-                found_client[0].disconnectNode;
+                found_client[0].disconnectNode();
             }
 
         } catch(err) {
@@ -90,6 +90,12 @@ class ClusterServer {
         }
     }
 
+    /**
+     * Scan nodes does a comparison between a search against hdb_nodes and any existing connections that exist in
+     * this.other_nodes.  If there are nodes found in one but not the other, we need to either connect or disconnect
+     * those nodes.
+     * @returns {Promise<void>}
+     */
     async scanNodes() {
         log.debug(`Scanning for new clustering nodes`);
         let search_obj = {
@@ -106,13 +112,16 @@ class ClusterServer {
             throw e;
         });
 
-        let added_nodes = ((this.node.other_nodes.length === 0)? nodes : undefined);
-        let removed_nodes = ((nodes.length === 0)? this.node.other_nodes : undefined);
-
+        // If there is nothing in other nodes, anything found in the nodes search is assumed to be new and should be opened
+        let added_nodes = ((this.node.other_nodes.length === 0) ? nodes : undefined);
+        //If there is nothing found in existing nodes, anything found in other_nodes has been removed and should be closed.
+        let removed_nodes = ((nodes.length === 0) ? this.node.other_nodes : undefined);
         try {
+            //find nodes that were found in a search but don't yet exist in other_nodes.
             if(!added_nodes && nodes.length > 0) {
                 added_nodes = nodes.filter(item => !this.node.other_nodes.some(other => item.name === other.name));
             }
+            //find nodes that exist in other_nodes but no longer exist in a node search.
             if(!removed_nodes && this.node.other_nodes.length > 0) {
                 removed_nodes = this.node.other_nodes.filter(item => !nodes.some(other => item.name === other.name));
             }

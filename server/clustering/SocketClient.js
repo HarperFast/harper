@@ -23,6 +23,9 @@ class SocketClient {
         this.client = null;
     }
 
+    /**
+     * Disconnect the connection in this.other_node.  This is typically needed when a node has been removed from hdb_nodes.
+     */
     disconnectNode() {
         if(!this.other_node || this.other_node.disconnected) {
             harper_logger.info('There is no connected client to disconnect');
