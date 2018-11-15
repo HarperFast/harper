@@ -80,7 +80,7 @@ cluster.on('exit', (dead_worker, code, signal) => {
     }
 });
 
-if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
+if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     const search = require('../data_layer/search');
     const enterprise_util = require('../utility/enterpriseInitialization');
 
