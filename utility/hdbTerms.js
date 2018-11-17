@@ -27,11 +27,17 @@ const ESCAPED_DOUBLE_PERIOD_REGEX = /^U\+002EU\+002E$/;
 // Name of the System schema
 const SYSTEM_SCHEMA_NAME = 'system';
 
-// Role table name
-const ROLE_TABLE_NAME = 'hdb_role';
-
-// Job table name
-const JOB_TABLE_NAME = 'hdb_job';
+const SYSTEM_TABLE_NAMES = {
+    JOB_TABLE_NAME : 'hdb_job',
+    NODE_TABLE_NAME :'hdb_nodes',
+    ATTRIBUTE_TABLE_NAME : 'hdb_attribute',
+    LICENSE_TABLE_NAME: 'hdb_license',
+    QUEUE_TABLE_NAME: 'hdb_queue',
+    ROLE_TABLE_NAME: 'hdb_role',
+    SCHEMA_TABLE_NAME: 'hdb_schema',
+    TABLE_TABLE_NAME: 'hdb_table',
+    USER_TABLE_NAME: 'hdb_user'
+}
 
 // Describes the available statuses for jobs
 const JOB_STATUS_ENUM = {
@@ -155,10 +161,9 @@ const JOB_TYPE_ENUM = {
 module.exports = {
     HDB_PROC_NAME,
     SYSTEM_SCHEMA_NAME,
-    ROLE_TABLE_NAME,
-    JOB_TABLE_NAME,
     JOB_TYPE_ENUM,
     JOB_STATUS_ENUM,
+    SYSTEM_TABLE_NAMES,
     OPERATIONS_ENUM,
     HTTP_STATUS_CODES,
     GEO_CONVERSION_ENUM,

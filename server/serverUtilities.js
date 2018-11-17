@@ -231,6 +231,9 @@ function chooseOperation(json, callback) {
         case 'add_node':
             operation_function = cluster_utilities.addNode;
             break;
+        case 'remove_node':
+            operation_function = cluster_utilities.removeNode;
+            break;
         case 'export_to_s3':
             operation_function = signalJob;
             job_operation_function = export_.export_to_s3;
