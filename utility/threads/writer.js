@@ -1,14 +1,20 @@
+"use strict";
+
 const Pool = require('threads').Pool;
 const _ = require('lodash');
-const insert = require('../../data_layer/insert');
+const child = require('./childwriter');
 
-const NUMBER_OF_CORES = require('os').cpus;
+const NUMBER_OF_CORES = require('os').cpus().length;
+
+module.exports = {
+    init: init
+};
 
 function init(records, schema, table, action){
     let pool = new Pool();
-    let chunks = _.chunk(records, NUMBER_OF_CORES);
-    let jobs = {};
-    pool.run(insert.insert);
+    let chunks = _.chunk(records, records.length / NUMBER_OF_CORES);
+
+    pool.run(child.worker);
     for(let x = 0; x < chunks.length; x++){
         let target_object = {
             operation: 'insert',
@@ -16,7 +22,7 @@ function init(records, schema, table, action){
             table: table,
             records: chunks[x]
         };
-        jobs['job' + x] = pool.send(target_object);
+        pool.send([{}, target_object]);
     }
 
     pool
@@ -27,7 +33,7 @@ function init(records, schema, table, action){
             console.error('Job errored:', job);
         })
         .on('finished', function() {
-            console.log('all done ' + (Date.now() - start)/1000);
+          //  console.log('all done ' + (Date.now() - start)/1000);
             console.log('Everything done, shutting down the thread pool.');
             pool.killAll();
         });
