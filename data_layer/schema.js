@@ -676,7 +676,11 @@ function createAttribute(create_attribute_object, callback) {
                 if(process.send === undefined){
                     logger.debug('trying to send payload: ' + JSON.stringify(payload) + ' but there is no process.send for pid ');
                 } else {
-                    process.send(payload);
+                    try {
+                        process.send(payload);
+                    } catch(e){
+                        logger.error(e);
+                    }
                 }
 
                 signalling.signalSchemaChange({type: 'schema'});

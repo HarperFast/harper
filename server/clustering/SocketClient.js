@@ -222,29 +222,34 @@ class SocketClient {
                 });
             }
 
-            function createMissingAttributes(missing_attributes, callback2){
+            function createMissingAttributes(missing_attributes, callback2) {
 
 
-                async.each(missing_attributes, function(attribute, attr_callback) {
-                    let tokens = attribute.split(".");
-                    let attr_create_object = {
-                        "schema": tokens[0],
-                        "table":tokens[1],
-                        "attribute":tokens[2]
-                    };
+                    async.each(missing_attributes, function (attribute, attr_callback) {
+                        try {
+                            let tokens = attribute.split(".");
+                            let attr_create_object = {
+                                "schema": tokens[0],
+                                "table": tokens[1],
+                                "attribute": tokens[2]
+                            };
 
-                    schema.createAttribute(attr_create_object, function(err, result){
-                        attr_callback(err, result);
+                            schema.createAttribute(attr_create_object, function (err, result) {
+                                attr_callback(err, result);
 
+                            });
+
+                        } catch(e){
+                            harper_logger.error('failed to create missing attribute: ' + attribute + ' due to ' + e );
+                            attr_callback(e);
+                        }
+                    }, function (err) {
+                        if (err) {
+                            return callback2(err);
+                        }
+                        return callback2();
                     });
 
-
-                }, function(err) {
-                    if(err){
-                        return callback2(err);
-                    }
-                    return callback2();
-                });
             }
 
         });
