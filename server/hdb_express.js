@@ -243,7 +243,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                     }
                     return res.status(hdb_terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send(err);
                 }
-                let localOnlyOperations = ['describe_all', 'describe_table', 'describe_schema', 'read_log'];
+                let localOnlyOperations = ['describe_all', 'describe_table', 'describe_schema', 'read_log', 'add_node'];
 
                 if (global.clustering_on && req.body.operation !== 'sql') {
                     if (!req.body.schema
