@@ -104,7 +104,7 @@ class SocketServer {
                 });*/
 
                 socket.on("msg", (msg) => {
-                    harper_logger.info(`received by ${this.node.name} : msg = ${JSON.stringify(msg)}`);
+                    harper_logger.info(`received by ${this.name} : msg = ${JSON.stringify(msg)}`);
                     let the_client = socket;
                     let this_node = this.node;
                     authHeaderToUser(msg.body, (error) => {
