@@ -361,7 +361,7 @@ class SocketClient {
     }
 
     send(msg) {
-
+        let the_client = this.client;
         try {
             delete msg.body.hdb_user;
             if (!msg.id)
@@ -385,7 +385,7 @@ class SocketClient {
                     return err;
                 }
 
-                this.client.emit('msg', payload);
+                the_client.emit('msg', payload);
             });
 
 
