@@ -7,6 +7,8 @@ const _ = require('lodash');
 const async = require('async');
 const auth = require('../../security/auth');
 const common_utils = require('../../utility/common_utils');
+const insert = require('../../data_layer/insert');
+const delete_ = require('../../data_layer/delete');
 
 const WHITELISTED_ERRORS = ['attribute already exists'];
 const ERROR_NO_HDB_USER = 'there is no hdb_user';
@@ -260,7 +262,8 @@ class SocketClient {
 
     }
 
-    onMsgHandler(msg) {
+    //move to socketserver
+    /*onMsgHandler(msg) {
         harper_logger.info(`received by ${this.node.name} : msg = ${JSON.stringify(msg)}`);
         let the_client = this.client;
         let this_node = this.node;
@@ -285,7 +288,11 @@ class SocketClient {
                 });
             });
         });
+    }*/
+    onMsgHandler(msg) {
+        harper_logger.info(`${this.other_node.name} says ${msg}`);
     }
+
 
     onDisconnectHandler(reason) {
         this.other_node.status = 'disconnected';
@@ -299,6 +306,39 @@ class SocketClient {
         //TODO needs to be HTTPS
         harper_logger.info(`${this.node.name} is attempting to connect to ${this.other_node.name} at ${this.other_node.host}:${this.other_node.port}`);
         this.client = ioc.connect(`http://${this.other_node.host}:${this.other_node.port}`, CLIENT_CONNECTION_OPTIONS);
+    }
+
+    onConfirmMessage(msg) {
+        harper_logger.info(msg);
+        msg.type = 'cluster_response';
+        let queded_msg = global.forkClusterMsgQueue[msg.id];
+        if (queded_msg) {
+            for (let f in global.forks) {
+                if (global.forks[f].process.pid === queded_msg.pid) {
+                    global.forks[f].send(msg);
+                }
+            }
+
+            // delete from memory
+            delete global.cluster_queue[msg.node.name][msg.id];
+            delete global.forkClusterMsgQueue[msg.id];
+            // delete from disk
+            let delete_obj = {
+                "table": "hdb_queue",
+                "schema": "system",
+                "hash_values": [msg.id]
+
+            };
+            harper_logger.info("delete_obj === " + JSON.stringify(delete_obj));
+            delete_.delete(delete_obj, function (err, result) {
+                if (err) {
+                    harper_logger.error(err);
+                }
+            });
+
+        }
+
+
     }
 
     createClientMessageHandlers(){
@@ -317,6 +357,42 @@ class SocketClient {
         this.client.on('msg', this.onMsgHandler.bind(this));
 
         this.client.on('disconnect', this.onDisconnectHandler.bind(this));
+        this.client.on('confirm_msg', this.onConfirmMessage.bind(this))
+    }
+
+    send(msg) {
+
+        try {
+            delete msg.body.hdb_user;
+            if (!msg.id)
+                msg.id = uuidv4();
+
+            let payload = {"body": msg.body, "id": msg.id};
+
+            if (!global.cluster_queue[msg.node.name]) {
+                global.cluster_queue[msg.node.name] = {};
+            }
+            global.cluster_queue[msg.node.name][payload.id] = payload;
+            //kyle...this needs to be a var not a let ....
+
+            saveToDisk({
+                "payload": payload,
+                "id": payload.id,
+                "node": msg.node,
+                "node_name": msg.node.name
+            }, function (err, result) {
+                if (err) {
+                    return err;
+                }
+
+                this.client.emit('msg', payload);
+            });
+
+
+        } catch (e) {
+            //save the queue to disk for all nodes.
+            harper_logger.error(e);
+        }
     }
 }
 
@@ -362,6 +438,29 @@ function checkWhitelistedErrors(error){
     }
 
     return false;
+}
+
+function saveToDisk(item, callback) {
+    try {
+        let insert_object = {
+            operation: 'insert',
+            schema: 'system',
+            table: 'hdb_queue',
+            records: [item]
+        };
+
+        insert.insert(insert_object, function (err, result) {
+            if (err) {
+                harper_logger.error(err);
+                return callback(err);
+            }
+            callback(null, result);
+
+
+        });
+    } catch (e) {
+        harper_logger.error(e);
+    }
 }
 
 

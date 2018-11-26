@@ -5,6 +5,8 @@ const search = require('../../data_layer/search');
 const insert = require('../../data_layer/insert');
 const delete_ = require('../../data_layer/delete');
 const schema = require('../../data_layer/schema');
+const server_utilities = require('../serverUtilities');
+const auth = require('../../security/auth');
 const uuidv4 = require('uuid/v1');
 
 class SocketServer {
@@ -28,11 +30,12 @@ class SocketServer {
             this.io.sockets.on("connection", function (socket) {
                 socket.on("identify", function (msg, callback) {
                     //this is the remote ip address of the client connecting to this server.
-                    let raw_remote_ip = socket.conn.remoteAddress;
+                    /*let raw_remote_ip = socket.conn.remoteAddress;
                     let raw_remote_ip_array = raw_remote_ip ? raw_remote_ip.split(':') : [];
-                    msg.host = Array.isArray(raw_remote_ip_array) && raw_remote_ip_array.length > 0 ?  raw_remote_ip_array[raw_remote_ip_array.length - 1] : '';
+                    msg.host = Array.isArray(raw_remote_ip_array) && raw_remote_ip_array.length > 0 ?  raw_remote_ip_array[raw_remote_ip_array.length - 1] : '';*/
 
-                    global.cluster_server.establishConnection(msg);
+                    socket.name  = msg.name;
+                    //global.cluster_server.establishConnection(msg);
                     socket.join(msg.name, () => {
 
                         harper_logger.info(node.name + ' joined room ' + msg.name);
@@ -66,8 +69,8 @@ class SocketServer {
                     });
                 });
 
-
-                socket.on('confirm_msg', function (msg) {
+//move to SocketCLient
+                /*socket.on('confirm_msg', function (msg) {
                     harper_logger.info(msg);
                     msg.type = 'cluster_response';
                     let queded_msg = global.forkClusterMsgQueue[msg.id];
@@ -98,10 +101,33 @@ class SocketServer {
                     }
 
 
-                });
+                });*/
 
-                socket.on("msg", function (msg) {
-                    harper_logger.info(`${this.node.name} says ${msg}`);
+                socket.on("msg", (msg) => {
+                    harper_logger.info(`received by ${this.node.name} : msg = ${JSON.stringify(msg)}`);
+                    let the_client = socket;
+                    let this_node = this.node;
+                    authHeaderToUser(msg.body, (error) => {
+                        if (error) {
+                            return harper_logger.error(error);
+                        }
+
+                        if (!msg.body.hdb_user) {
+                            harper_logger.info('there is no hdb_user: ' + JSON.stringify(msg.body));
+                        }
+
+                        server_utilities.chooseOperation(msg.body, (err, operation_function) => {
+                            server_utilities.proccessDelegatedTransaction(msg.body, operation_function, function (err, data) {
+                                let payload = {
+                                    "id": msg.id,
+                                    "error": err,
+                                    "data": data,
+                                    "node": this_node
+                                };
+                                the_client.emit('confirm_msg', payload);
+                            });
+                        });
+                    });
                 });
 
                 socket.on('error', function (error) {
@@ -133,7 +159,8 @@ class SocketServer {
         }
     }
 
-    send(msg) {
+    //move to SocketClient
+    /*send(msg) {
 
         try {
             delete msg.body.hdb_user;
@@ -168,11 +195,11 @@ class SocketServer {
             //save the queue to disk for all nodes.
             harper_logger.error(e);
         }
-    }
+    }*/
 
 }
-
-function saveToDisk(item, callback) {
+//move to SocketCLient
+/*function saveToDisk(item, callback) {
     try {
         let insert_object = {
             operation: 'insert',
@@ -193,7 +220,7 @@ function saveToDisk(item, callback) {
     } catch (e) {
         harper_logger.error(e);
     }
-}
+}*/
 
 function getFromDisk(node, callback) {
     let search_obj = {};
@@ -215,6 +242,22 @@ function getFromDisk(node, callback) {
         return callback(null, data);
 
     });
-};
+}
+
+function authHeaderToUser(json_body, callback){
+    let req = {};
+    req.headers = {};
+    req.headers.authorization = json_body.hdb_auth_header;
+
+    auth.authorize(req, null, function (err, user) {
+        if (err) {
+            return callback(err);
+        }
+
+        json_body.hdb_user = user;
+
+        callback(null, json_body);
+    });
+}
 
 module.exports = SocketServer;

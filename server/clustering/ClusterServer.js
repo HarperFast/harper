@@ -64,6 +64,7 @@ class ClusterServer {
         });
     }
 
+    //refactor to find the node from clients, then call it's send function
     send(msg, res) {
         log.debug('node cluster msg out: ' + JSON.stringify(msg));
         let payload = {};
@@ -86,7 +87,7 @@ class ClusterServer {
                 payload.body.operation = operation;
             }
             payload.node = this.socket_client[o_node].other_node;
-            global.cluster_server.send(payload);
+            this.socket_client[o_node].send(payload);
         }
     }
 
