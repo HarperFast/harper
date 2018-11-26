@@ -6,12 +6,14 @@ const user_schema = require('../utility/user_schema');
 const async = require('async');
 const insert = require('../data_layer/insert');
 const os = require('os');
+const env_mgr = require('../utility/environment/environmentManager');
 const job_runner = require('./jobRunner');
 const hdb_util = require('../utility/common_utils');
 const guidePath = require('path');
 const hdb_terms = require('../utility/hdbTerms');
 const global_schema = require('../utility/globalSchema');
 const fs = require('fs');
+const cluster_utilities = require('./clustering/clusterUtilities');
 
 const DEFAULT_SERVER_TIMEOUT = 120000;
 const PROPS_SERVER_TIMEOUT_KEY = 'SERVER_TIMEOUT_MS';
@@ -43,6 +45,13 @@ if (node_env_value === undefined || node_env_value === null || node_env_value ==
 
 process.env['NODE_ENV'] = node_env_value;
 
+try {
+    env_mgr.init();
+} catch(err) {
+    harper_logger.error(`Got an error loading the environment.  Exiting.${err}`);
+    process.exit(0);
+}
+
 let numCPUs = 4;
 
 let num_workers = os.cpus().length;
@@ -52,9 +61,27 @@ if(DEBUG){
     numCPUs = 1;
 }
 
+cluster.on('exit', (dead_worker, code, signal) => {
+    harper_logger.info(`worker ${dead_worker.process.pid} died with signal ${signal} and code ${code}`);
+    let new_worker = undefined;
+    try {
+        new_worker = cluster.fork();
+        new_worker.on('message', cluster_utilities.clusterMessageHandler);
+        harper_logger.info(`kicked off replacement worker with new pid=${new_worker.process.pid}`);
+    } catch (e) {
+        harper_logger.fatal(`FATAL error trying to restart a dead_worker with pid ${dead_worker.process.pid}.  ${e}`);
+        return;
+    }
+    for (let a_fork in global.forks) {
+        if (global.forks[a_fork].process.pid === dead_worker.process.pid) {
+            global.forks[a_fork] = new_worker;
+            harper_logger.trace(`replaced dead fork in global.forks with new fork that has pid ${new_worker.process.pid}`);
+        }
+    }
+});
+
 if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     const search = require('../data_layer/search');
-    const cluster_utilities = require('./clustering/clusterUtilities');
     const enterprise_util = require('../utility/enterpriseInitialization');
 
     process.on('uncaughtException', function (err) {
@@ -78,28 +105,26 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     };
     global_schema.setSchemaDataToGlobal((err, data)=> {
         search.searchByValue(licenseKeySearch, function (err, licenses) {
-            const hdb_license = require('../utility/hdb_license');
+            const hdb_license = require('../utility/registration/hdb_license');
             if (err) {
                 return harper_logger.error(err);
             }
 
-            async.each(licenses, function (license, callback) {
-                hdb_license.validateLicense(license.license_key, license.company, function (err, license_validation) {
-                    if (license_validation.valid_machine && license_validation.valid_date && license_validation.valid_license) {
-                        enterprise = true;
-                        if (num_workers > numCPUs) {
-                            if (numCPUs === 4) {
-                                numCPUs = 16;
-                            } else {
-                                numCPUs += 16;
-                            }
+            Promise.all(licenses.map(async (license) => {
+                let license_validation = await hdb_license.validateLicense(license.license_key, license.company).catch((err) => {
+                    return harper_logger.error(err);
+                });
+                if (license_validation.valid_machine && license_validation.valid_date && license_validation.valid_license) {
+                    enterprise = true;
+                    if (num_workers > numCPUs) {
+                        if (numCPUs === 4) {
+                            numCPUs = 16;
+                        } else {
+                            numCPUs += 16;
                         }
                     }
-                    callback();
-                });
-            }, function (err) {
-                if (err)
-                    return harper_logger.error(err);
+                }
+            })).then(() => {
                 harper_logger.info(`Master ${process.pid} is running`);
                 harper_logger.info(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
                 // Fork workers.
@@ -129,26 +154,6 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                         }
                     });
                 }
-
-                cluster.on('exit', (dead_worker, code, signal) => {
-                    harper_logger.info(`worker ${dead_worker.process.pid} died with signal ${signal} and code ${code}`);
-                    let new_worker = undefined;
-                    try {
-                        new_worker = cluster.fork();
-                        new_worker.on('message', cluster_utilities.clusterMessageHandler);
-                        harper_logger.info(`kicked off replacement worker with new pid=${new_worker.process.pid}`);
-                    } catch (e) {
-                        harper_logger.fatal(`FATAL error trying to restart a dead_worker with pid ${dead_worker.process.pid}.  ${e}`);
-                        return;
-                    }
-                    for (let a_fork in global.forks) {
-                        if (global.forks[a_fork].process.pid === dead_worker.process.pid) {
-                            global.forks[a_fork] = new_worker;
-                            harper_logger.trace(`replaced dead fork in global.forks with new fork that has pid ${new_worker.process.pid}`);
-                        }
-                    }
-                });
-
                 global.forkClusterMsgQueue = {};
             });
         });

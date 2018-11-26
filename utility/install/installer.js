@@ -152,18 +152,6 @@ function checkInstall(callback) {
     }
 }
 
-function checkRegister(callback) {
-    if (wizard_result.HDB_REGISTER === 'true') {
-        register = require('../registrationHandler'),
-            register.register(prompt, function (err, result) {
-                if (err) {
-                    return callback(err);
-                }
-                return callback(null, "Successful installation!");
-            });
-    }
-}
-
 /**
  * The install wizard will guide the user through the required data needed for the install.
  * @param err - Errors from the previous (Terms and Conditions) waterfall function.
