@@ -305,6 +305,10 @@ class SocketClient {
         harper_logger.info(`server ${this.other_node.name} down`);
     }
 
+    onConfirmMessageHandler(msg){
+        cluster_handlers.onConfirmMessageHandler(msg);
+    }
+
     connectToNode() {
         if (this.node.port === this.other_node.port && this.other_node.host === this.node.host) {
             harper_logger.debug("cannot connect to thyself");
@@ -325,6 +329,8 @@ class SocketClient {
         this.client.on('catchup', this.onCatchupHandler.bind(this));
 
         this.client.on('catchup_request', this.onCatchupRequestHandler.bind(this));
+
+        this.client.on('confirm_msg', this.onConfirmMessageHandler.bind(this));
 
         this.client.on('schema_update_response', this.onSchemaUpdateResponseHandler.bind(this));
 

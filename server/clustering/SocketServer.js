@@ -77,36 +77,7 @@ class SocketServer {
 
 
                 socket.on('confirm_msg', function (msg) {
-                    harper_logger.info(msg);
-                    msg.type = 'cluster_response';
-                    let queded_msg = global.forkClusterMsgQueue[msg.id];
-                    if (queded_msg) {
-                        for (let f in global.forks) {
-                            if (global.forks[f].process.pid === queded_msg.pid) {
-                                global.forks[f].send(msg);
-                            }
-                        }
-
-                        // delete from memory
-                        delete global.cluster_queue[msg.node.name][msg.id];
-                        delete global.forkClusterMsgQueue[msg.id];
-                        // delete from disk
-                        let delete_obj = {
-                            "table": "hdb_queue",
-                            "schema": "system",
-                            "hash_values": [msg.id]
-
-                        };
-                        harper_logger.info("delete_obj === " + JSON.stringify(delete_obj));
-                        delete_.delete(delete_obj, function (err, result) {
-                            if (err) {
-                                harper_logger.error(err);
-                            }
-                        });
-
-                    }
-
-
+                    cluster_handlers.onConfirmMessageHandler(msg);
                 });
 
                 socket.on('error', function (error) {
