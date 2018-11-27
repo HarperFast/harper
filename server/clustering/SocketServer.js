@@ -7,8 +7,9 @@ const delete_ = require('../../data_layer/delete');
 const schema = require('../../data_layer/schema');
 const server_utilities = require('../serverUtilities');
 const auth = require('../../security/auth');
-const uuidv4 = require('uuid/v1');
+
 const SocketClient = require('./SocketClient');
+const cluster_handlers = require('./clusterHandlers');
 
 class SocketServer {
     constructor(node) {
@@ -38,7 +39,13 @@ class SocketServer {
                     new_client.client = socket;
                     new_client.createClientMessageHandlers();
 //todo check for pre-existing socket_client with same name
-                    global.cluster_server.socket_client.push(new_client);
+                    let found_client = global.cluster_server.socket_client.filter((client)=>{
+                        return client.other_node.name;
+                    });
+
+                    if(!found_client || found_client.length === 0){
+                        global.cluster_server.socket_client.push(new_client);
+                    }
 
                     socket.join(msg.name, () => {
 
@@ -73,8 +80,8 @@ class SocketServer {
                     });
                 });
 
-//move to SocketCLient
-                /*socket.on('confirm_msg', function (msg) {
+
+                socket.on('confirm_msg', function (msg) {
                     harper_logger.info(msg);
                     msg.type = 'cluster_response';
                     let queded_msg = global.forkClusterMsgQueue[msg.id];
@@ -105,10 +112,11 @@ class SocketServer {
                     }
 
 
-                });*/
+                });
 
                 socket.on("msg", (msg) => {
-                    harper_logger.info(`received by ${this.name} : msg = ${JSON.stringify(msg)}`);
+                    cluster_handlers.onMessageHandler(this.node, socket, msg);
+                    /*harper_logger.info(`received by ${this.name} : msg = ${JSON.stringify(msg)}`);
                     let the_client = socket;
                     let this_node = this.node;
                     authHeaderToUser(msg.body, (error) => {
@@ -131,7 +139,7 @@ class SocketServer {
                                 the_client.emit('confirm_msg', payload);
                             });
                         });
-                    });
+                    });*/
                 });
 
                 socket.on('error', function (error) {

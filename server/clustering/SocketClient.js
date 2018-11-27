@@ -10,6 +10,7 @@ const common_utils = require('../../utility/common_utils');
 const insert = require('../../data_layer/insert');
 const delete_ = require('../../data_layer/delete');
 const uuidv4 = require('uuid/v1');
+const cluster_handlers = require('./clusterHandlers');
 
 const WHITELISTED_ERRORS = ['attribute already exists'];
 const ERROR_NO_HDB_USER = 'there is no hdb_user';
@@ -49,6 +50,7 @@ class SocketClient {
         };
         this.client.emit('identify', node_info);
         this.client.emit('schema_update_request');
+        //todo send data to sync up
     }
 
     onConnectErrorHandler(error){
@@ -263,9 +265,10 @@ class SocketClient {
 
     }
 
-    //move to socketserver
+
     onMsgHandler(msg) {
-        harper_logger.info(`received by ${this.node.name} : msg = ${JSON.stringify(msg)}`);
+        cluster_handlers.onMessageHandler(this.node, this.client, msg);
+        /*harper_logger.info(`received by ${this.node.name} : msg = ${JSON.stringify(msg)}`);
         let the_client = this.client;
         let this_node = this.node;
         authHeaderToUser(msg.body, (error) => {
@@ -288,7 +291,7 @@ class SocketClient {
                     the_client.emit('confirm_msg', payload);
                 });
             });
-        });
+        })*/;
     }
 
 
