@@ -263,7 +263,7 @@ class SocketClient {
     }
 
     //move to socketserver
-    /*onMsgHandler(msg) {
+    onMsgHandler(msg) {
         harper_logger.info(`received by ${this.node.name} : msg = ${JSON.stringify(msg)}`);
         let the_client = this.client;
         let this_node = this.node;
@@ -288,9 +288,6 @@ class SocketClient {
                 });
             });
         });
-    }*/
-    onMsgHandler(msg) {
-        harper_logger.info(`${this.other_node.name} says ${msg}`);
     }
 
 
