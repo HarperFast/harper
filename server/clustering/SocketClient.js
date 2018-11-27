@@ -267,8 +267,7 @@ class SocketClient {
 
 
     onMsgHandler(msg) {
-        cluster_handlers.onMessageHandler(this.node, this.client, msg);
-        /*harper_logger.info(`received by ${this.node.name} : msg = ${JSON.stringify(msg)}`);
+        harper_logger.info(`received by ${this.node.name} : msg = ${JSON.stringify(msg)}`);
         let the_client = this.client;
         let this_node = this.node;
         authHeaderToUser(msg.body, (error) => {
@@ -291,7 +290,7 @@ class SocketClient {
                     the_client.emit('confirm_msg', payload);
                 });
             });
-        })*/;
+        });
     }
 
 
@@ -309,41 +308,6 @@ class SocketClient {
         this.client = ioc.connect(`http://${this.other_node.host}:${this.other_node.port}`, CLIENT_CONNECTION_OPTIONS);
     }
 
-    onConfirmMessage(msg) {
-        try {
-            harper_logger.info(msg);
-            msg.type = 'cluster_response';
-            let queded_msg = global.forkClusterMsgQueue[msg.id];
-            if (queded_msg) {
-                for (let f in global.forks) {
-                    if (global.forks[f].process.pid === queded_msg.pid) {
-                        global.forks[f].send(msg);
-                    }
-                }
-
-                // delete from memory
-                delete global.cluster_queue[msg.node.name][msg.id];
-                delete global.forkClusterMsgQueue[msg.id];
-                // delete from disk
-                let delete_obj = {
-                    "table": "hdb_queue",
-                    "schema": "system",
-                    "hash_values": [msg.id]
-
-                };
-                harper_logger.info("delete_obj === " + JSON.stringify(delete_obj));
-                delete_.delete(delete_obj, function (err, result) {
-                    if (err) {
-                        harper_logger.error(err);
-                    }
-                });
-
-            }
-        } catch(e){
-            harper_logger.error(e);
-        }
-
-    }
 
     createClientMessageHandlers(){
         this.client.on("connect", this.onConnectHandler.bind(this));
@@ -361,7 +325,6 @@ class SocketClient {
         this.client.on('msg', this.onMsgHandler.bind(this));
 
         this.client.on('disconnect', this.onDisconnectHandler.bind(this));
-        this.client.on('confirm_msg', this.onConfirmMessage.bind(this))
     }
 
     send(msg) {

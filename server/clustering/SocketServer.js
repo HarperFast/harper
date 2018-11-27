@@ -38,10 +38,19 @@ class SocketServer {
                     let new_client = new SocketClient(node, msg);
                     new_client.client = socket;
                     new_client.createClientMessageHandlers();
-//todo check for pre-existing socket_client with same name
+
                     let found_client = global.cluster_server.socket_client.filter((client)=>{
-                        return client.other_node.name;
+                        return client.other_node.name === msg.name;
                     });
+
+                    // if we do not have a client connection for this other node we need to ask it for what we may have missed since last connection
+                    let catchup_request = true;
+                    for(let k = 0; k < node.other_nodes.length; k++){
+                        if(node.other_nodes[k].name === msg.name){
+                            socket.emit('catchup_request', {name: node.name});
+                            return;
+                        }
+                    }
 
                     if(!found_client || found_client.length === 0){
                         global.cluster_server.socket_client.push(new_client);
@@ -51,35 +60,43 @@ class SocketServer {
 
                         harper_logger.info(node.name + ' joined room ' + msg.name);
                         // retrive the queue and send to this node.
+                        fetchQueue(msg)
 
-                        getFromDisk({"name": msg.name}, function (err, disk_catch_up) {
-                            if (disk_catch_up && disk_catch_up.length > 0) {
-                                if (!global.cluster_queue[msg.name]) {
-                                    global.cluster_queue[msg.name] = {};
-                                }
-
-                                for (let item in disk_catch_up) {
-                                    if (!global.cluster_queue[msg.name][disk_catch_up[item].id]) {
-                                        global.forkClusterMsgQueue[disk_catch_up[item].id] = disk_catch_up[item].payload;
-                                        global.cluster_queue[msg.name][disk_catch_up[item].id] = disk_catch_up[item].payload;
-                                    }
-
-                                }
-                            }
-
-                            socket.emit('confirm_identity');
-
-                            if (global.cluster_queue && global.cluster_queue[msg.name]) {
-                                harper_logger.info('sent msg');
-                                harper_logger.info(global.cluster_queue[msg.name]);
-
-                                let catchup_payload = JSON.stringify(global.cluster_queue[msg.name]);
-                                socket.emit('catchup', catchup_payload);
-                            }
-                        });
                     });
                 });
 
+                socket.on('catchup_request', (msg)=>{
+                    harper_logger.info(msg.name + ' catchup_request');
+                    fetchQueue(msg);
+                });
+
+                function fetchQueue(msg){
+                    getFromDisk({"name": msg.name}, function (err, disk_catch_up) {
+                        if (disk_catch_up && disk_catch_up.length > 0) {
+                            if (!global.cluster_queue[msg.name]) {
+                                global.cluster_queue[msg.name] = {};
+                            }
+
+                            for (let item in disk_catch_up) {
+                                if (!global.cluster_queue[msg.name][disk_catch_up[item].id]) {
+                                    global.forkClusterMsgQueue[disk_catch_up[item].id] = disk_catch_up[item].payload;
+                                    global.cluster_queue[msg.name][disk_catch_up[item].id] = disk_catch_up[item].payload;
+                                }
+
+                            }
+                        }
+
+                        socket.emit('confirm_identity');
+
+                        if (global.cluster_queue && global.cluster_queue[msg.name]) {
+                            harper_logger.info('sent msg');
+                            harper_logger.info(global.cluster_queue[msg.name]);
+
+                            let catchup_payload = JSON.stringify(global.cluster_queue[msg.name]);
+                            socket.emit('catchup', catchup_payload);
+                        }
+                    });
+                }
 
                 socket.on('confirm_msg', function (msg) {
                     harper_logger.info(msg);
@@ -143,68 +160,7 @@ class SocketServer {
         }
     }
 
-    //move to SocketClient
-    /*send(msg) {
-
-        try {
-            delete msg.body.hdb_user;
-            if (!msg.id)
-                msg.id = uuidv4();
-
-            let payload = {"body": msg.body, "id": msg.id};
-
-            if (!global.cluster_queue[msg.node.name]) {
-                global.cluster_queue[msg.node.name] = {};
-            }
-            global.cluster_queue[msg.node.name][payload.id] = payload;
-            //kyle...this needs to be a var not a let ....
-            var this_io = this.io;
-            saveToDisk({
-                "payload": payload,
-                "id": payload.id,
-                "node": msg.node,
-                "node_name": msg.node.name
-            }, function (err, result) {
-                if (err) {
-                    return err;
-                }
-
-                this_io.to(msg.node.name).emit('msg', payload);
-
-
-            });
-
-
-        } catch (e) {
-            //save the queue to disk for all nodes.
-            harper_logger.error(e);
-        }
-    }*/
-
 }
-//move to SocketCLient
-/*function saveToDisk(item, callback) {
-    try {
-        let insert_object = {
-            operation: 'insert',
-            schema: 'system',
-            table: 'hdb_queue',
-            records: [item]
-        };
-
-        insert.insert(insert_object, function (err, result) {
-            if (err) {
-                harper_logger.error(err);
-                return callback(err);
-            }
-            callback(null, result);
-
-
-        });
-    } catch (e) {
-        harper_logger.error(e);
-    }
-}*/
 
 function getFromDisk(node, callback) {
     let search_obj = {};
