@@ -67,36 +67,10 @@ class SocketServer {
 
                 socket.on('catchup_request', (msg)=>{
                     harper_logger.info(msg.name + ' catchup_request');
-                    fetchQueue(msg);
+                    cluster_handlers.fetchQueue(msg, socket);
                 });
 
-                function fetchQueue(msg){
-                    getFromDisk({"name": msg.name}, function (err, disk_catch_up) {
-                        if (disk_catch_up && disk_catch_up.length > 0) {
-                            if (!global.cluster_queue[msg.name]) {
-                                global.cluster_queue[msg.name] = {};
-                            }
 
-                            for (let item in disk_catch_up) {
-                                if (!global.cluster_queue[msg.name][disk_catch_up[item].id]) {
-                                    global.forkClusterMsgQueue[disk_catch_up[item].id] = disk_catch_up[item].payload;
-                                    global.cluster_queue[msg.name][disk_catch_up[item].id] = disk_catch_up[item].payload;
-                                }
-
-                            }
-                        }
-
-                        socket.emit('confirm_identity');
-
-                        if (global.cluster_queue && global.cluster_queue[msg.name]) {
-                            harper_logger.info('sent msg');
-                            harper_logger.info(global.cluster_queue[msg.name]);
-
-                            let catchup_payload = JSON.stringify(global.cluster_queue[msg.name]);
-                            socket.emit('catchup', catchup_payload);
-                        }
-                    });
-                }
 
                 socket.on('confirm_msg', function (msg) {
                     harper_logger.info(msg);

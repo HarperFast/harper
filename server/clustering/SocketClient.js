@@ -61,6 +61,11 @@ class SocketClient {
         harper_logger.debug(': attempting to connect to ' + JSON.stringify(this.other_node) + ' for the ' + attempt_number + ' time');
     }
 
+    onCatchupRequestHandler(msg){
+        harper_logger.info('catchup_request from :' + msg.name);
+        cluster_handlers.fetchQueue(msg, this.client);
+    }
+
     onCatchupHandler(queue_string) {
         harper_logger.info('catchup' + queue_string);
         let queue = JSON.parse(queue_string);
@@ -317,6 +322,8 @@ class SocketClient {
         this.client.on('connect_error', this.onConnectErrorHandler.bind(this));
 
         this.client.on('catchup', this.onCatchupHandler.bind(this));
+
+        this.client.on('catchup_request', this.onCatchupRequestHandler.bind(this));
 
         this.client.on('schema_update_response', this.onSchemaUpdateResponseHandler.bind(this));
 

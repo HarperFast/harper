@@ -1,56 +1,60 @@
 const harper_logger = require('../../utility/logging/harper_logger');
 const auth = require('../../security/auth');
 const server_utilities = require('../serverUtilities');
+const search = require('../../data_layer/search');
 
 module.exports = {
-    onMessageHandler: onMessageHandler
+    fetchQueue: fetchQueue
 };
 
-function onMessageHandler(node, socket, msg){
-    try {
-        let the_client = socket;
-        let this_node = node;
 
-        harper_logger.info(`received by ${this_node.name} : msg = ${JSON.stringify(msg)}`);
-
-        authHeaderToUser(msg.body, (error) => {
-            if (error) {
-                return harper_logger.error(error);
+function fetchQueue(msg, socket){
+    let the_socket = socket;
+    getFromDisk({"name": msg.name}, function (err, disk_catch_up) {
+        if (disk_catch_up && disk_catch_up.length > 0) {
+            if (!global.cluster_queue[msg.name]) {
+                global.cluster_queue[msg.name] = {};
             }
 
-            if (!msg.body.hdb_user) {
-                harper_logger.info('there is no hdb_user: ' + JSON.stringify(msg.body));
-            }
+            for (let item in disk_catch_up) {
+                if (!global.cluster_queue[msg.name][disk_catch_up[item].id]) {
+                    global.forkClusterMsgQueue[disk_catch_up[item].id] = disk_catch_up[item].payload;
+                    global.cluster_queue[msg.name][disk_catch_up[item].id] = disk_catch_up[item].payload;
+                }
 
-            server_utilities.chooseOperation(msg.body, (err, operation_function) => {
-                server_utilities.proccessDelegatedTransaction(msg.body, operation_function, function (err, data) {
-                    let payload = {
-                        "id": msg.id,
-                        "error": err,
-                        "data": data,
-                        "node": this_node
-                    };
-                    the_client.emit('confirm_msg', payload);
-                });
-            });
-        });
-    } catch(e){
-        harper_logger.error(e);
-    }
+            }
+        }
+
+        //socket.emit('confirm_identity');
+
+        if (global.cluster_queue && global.cluster_queue[msg.name]) {
+            harper_logger.info('sent msg');
+            harper_logger.info(global.cluster_queue[msg.name]);
+
+            let catchup_payload = JSON.stringify(global.cluster_queue[msg.name]);
+            the_socket.emit('catchup', catchup_payload);
+        }
+    });
 }
 
-function authHeaderToUser(json_body, callback){
-    let req = {};
-    req.headers = {};
-    req.headers.authorization = json_body.hdb_auth_header;
+function getFromDisk(node, callback) {
+    let search_obj = {};
+    search_obj.schema = 'system';
+    search_obj.table = 'hdb_queue';
+    search_obj.hash_attribute = 'id';
+    search_obj.search_attribute = 'node_name';
+    if (node)
+        search_obj.search_value = node.name;
+    else
+        search_obj.search_value = "*";
 
-    auth.authorize(req, null, function (err, user) {
+    search_obj.get_attributes = ['*'];
+
+    search.searchByValue(search_obj, function (err, data) {
         if (err) {
             return callback(err);
         }
+        return callback(null, data);
 
-        json_body.hdb_user = user;
-
-        callback(null, json_body);
     });
 }
