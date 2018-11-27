@@ -47,9 +47,13 @@ class SocketServer {
                     let catchup_request = true;
                     for(let k = 0; k < node.other_nodes.length; k++){
                         if(node.other_nodes[k].name === msg.name){
-                            socket.emit('catchup_request', {name: node.name});
+                            catchup_request = false;
                             return;
                         }
+                    }
+
+                    if(catchup_request){
+                        socket.emit('catchup_request', {name: node.name});
                     }
 
                     if(!found_client || found_client.length === 0){
@@ -60,7 +64,7 @@ class SocketServer {
 
                         harper_logger.info(node.name + ' joined room ' + msg.name);
                         // retrive the queue and send to this node.
-                        fetchQueue(msg)
+                        cluster_handlers.fetchQueue(msg, socket)
 
                     });
                 });

@@ -25,7 +25,7 @@ function fetchQueue(msg, socket){
             }
         }
 
-        //socket.emit('confirm_identity');
+        socket.emit('confirm_identity');
 
         if (global.cluster_queue && global.cluster_queue[msg.name]) {
             harper_logger.info('sent msg');
