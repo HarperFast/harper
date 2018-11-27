@@ -115,7 +115,7 @@ class SocketServer {
                 });
 
                 socket.on("msg", (msg) => {
-                    cluster_handlers.onMessageHandler(this.node, socket, msg);
+                    cluster_handlers.onMessageHandler(node, socket, msg);
                     /*harper_logger.info(`received by ${this.name} : msg = ${JSON.stringify(msg)}`);
                     let the_client = socket;
                     let this_node = this.node;

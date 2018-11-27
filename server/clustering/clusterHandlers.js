@@ -7,32 +7,36 @@ module.exports = {
 };
 
 function onMessageHandler(node, socket, msg){
-    let the_client = socket;
-    let this_node = node;
+    try {
+        let the_client = socket;
+        let this_node = node;
 
-    harper_logger.info(`received by ${this_node.name} : msg = ${JSON.stringify(msg)}`);
+        harper_logger.info(`received by ${this_node.name} : msg = ${JSON.stringify(msg)}`);
 
-    authHeaderToUser(msg.body, (error) => {
-        if (error) {
-            return harper_logger.error(error);
-        }
+        authHeaderToUser(msg.body, (error) => {
+            if (error) {
+                return harper_logger.error(error);
+            }
 
-        if (!msg.body.hdb_user) {
-            harper_logger.info('there is no hdb_user: ' + JSON.stringify(msg.body));
-        }
+            if (!msg.body.hdb_user) {
+                harper_logger.info('there is no hdb_user: ' + JSON.stringify(msg.body));
+            }
 
-        server_utilities.chooseOperation(msg.body, (err, operation_function) => {
-            server_utilities.proccessDelegatedTransaction(msg.body, operation_function, function (err, data) {
-                let payload = {
-                    "id": msg.id,
-                    "error": err,
-                    "data": data,
-                    "node": this_node
-                };
-                the_client.emit('confirm_msg', payload);
+            server_utilities.chooseOperation(msg.body, (err, operation_function) => {
+                server_utilities.proccessDelegatedTransaction(msg.body, operation_function, function (err, data) {
+                    let payload = {
+                        "id": msg.id,
+                        "error": err,
+                        "data": data,
+                        "node": this_node
+                    };
+                    the_client.emit('confirm_msg', payload);
+                });
             });
         });
-    });
+    } catch(e){
+        harper_logger.error(e);
+    }
 }
 
 function authHeaderToUser(json_body, callback){
