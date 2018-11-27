@@ -9,6 +9,7 @@ const auth = require('../../security/auth');
 const common_utils = require('../../utility/common_utils');
 const insert = require('../../data_layer/insert');
 const delete_ = require('../../data_layer/delete');
+const uuidv4 = require('uuid/v1');
 
 const WHITELISTED_ERRORS = ['attribute already exists'];
 const ERROR_NO_HDB_USER = 'there is no hdb_user';

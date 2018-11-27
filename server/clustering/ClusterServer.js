@@ -77,7 +77,7 @@ class ClusterServer {
         });
 
         if(found_node && Array.isArray(found_node) && found_node.length > 0){
-            found_node[0].client.send(payload);
+            found_node[0].send(payload);
         }
 
         //this.socket_server.send(payload, res);
