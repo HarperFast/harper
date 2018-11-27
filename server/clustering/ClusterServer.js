@@ -66,38 +66,45 @@ class ClusterServer {
 
     //refactor to find the node from clients, then call it's send function
     send(msg, res) {
-        log.debug('node cluster msg out: ' + JSON.stringify(msg));
-        let payload = {};
-        payload.body = msg.body;
-        payload.id = msg.id;
-        payload.node = msg.node;
+        try {
+            log.debug('node cluster msg out: ' + JSON.stringify(msg));
+            let payload = {};
+            payload.body = msg.body;
+            payload.id = msg.id;
+            payload.node = msg.node;
 
-        let found_node = this.socket_client.filter((client)=>{
-            return client.other_node.name;
-        });
+            let found_node = this.socket_client.filter((client) => {
+                return client.other_node.name;
+            });
 
-        if(found_node && Array.isArray(found_node) && found_node.length > 0){
-            found_node[0].send(payload);
+            if (found_node && Array.isArray(found_node) && found_node.length > 0) {
+                found_node[0].send(payload);
+            }
+        } catch (e) {
+            log.error(e);
         }
-
         //this.socket_server.send(payload, res);
         //this.send_payload(payload, the_client, the_client.name);
     }
 
     broadCast(msg) {
-        log.debug('broadcast msg out: ' + JSON.stringify(msg));
-        let operation = clone(msg.body.operation);
+        try {
+            log.debug('broadcast msg out: ' + JSON.stringify(msg));
+            let operation = clone(msg.body.operation);
 
-        for (let o_node in this.socket_client) {
-            let payload = {};
-            payload.body = msg.body;
-            payload.id = msg.id;
+            for (let o_node in this.socket_client) {
+                let payload = {};
+                payload.body = msg.body;
+                payload.id = msg.id;
 
-            if (!msg.body.operation) {
-                payload.body.operation = operation;
+                if (!msg.body.operation) {
+                    payload.body.operation = operation;
+                }
+                payload.node = this.socket_client[o_node].other_node;
+                this.socket_client[o_node].send(payload);
             }
-            payload.node = this.socket_client[o_node].other_node;
-            this.socket_client[o_node].send(payload);
+        } catch (e) {
+            log.error(e);
         }
     }
 
