@@ -72,12 +72,22 @@ class ClusterServer {
         payload.id = msg.id;
         payload.node = msg.node;
 
-        this.socket_server.send(payload, res);
+        let found_node = this.socket_client.filter((client)=>{
+            return client.other_node.name;
+        });
+
+        if(found_node && Array.isArray(found_node) && found_node.length > 0){
+            found_node[0].client.send(payload);
+        }
+
+        //this.socket_server.send(payload, res);
+        //this.send_payload(payload, the_client, the_client.name);
     }
 
     broadCast(msg) {
         log.debug('broadcast msg out: ' + JSON.stringify(msg));
         let operation = clone(msg.body.operation);
+
         for (let o_node in this.socket_client) {
             let payload = {};
             payload.body = msg.body;

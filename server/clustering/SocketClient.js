@@ -372,11 +372,10 @@ class SocketClient {
 
             let payload = {"body": msg.body, "id": msg.id};
 
-            if (!global.cluster_queue[msg.node.name]) {
-                global.cluster_queue[msg.node.name] = {};
+            if (!global.cluster_queue[this.other_node.name]) {
+                global.cluster_queue[this.other_node.name] = {};
             }
-            global.cluster_queue[msg.node.name][payload.id] = payload;
-            //kyle...this needs to be a var not a let ....
+            global.cluster_queue[this.other_node.name][payload.id] = payload;
 
             saveToDisk({
                 "payload": payload,

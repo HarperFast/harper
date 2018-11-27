@@ -8,6 +8,7 @@ const schema = require('../../data_layer/schema');
 const server_utilities = require('../serverUtilities');
 const auth = require('../../security/auth');
 const uuidv4 = require('uuid/v1');
+const SocketClient = require('./SocketClient');
 
 class SocketServer {
     constructor(node) {
@@ -30,12 +31,15 @@ class SocketServer {
             this.io.sockets.on("connection", function (socket) {
                 socket.on("identify", function (msg, callback) {
                     //this is the remote ip address of the client connecting to this server.
-                    /*let raw_remote_ip = socket.conn.remoteAddress;
+                    let raw_remote_ip = socket.conn.remoteAddress;
                     let raw_remote_ip_array = raw_remote_ip ? raw_remote_ip.split(':') : [];
-                    msg.host = Array.isArray(raw_remote_ip_array) && raw_remote_ip_array.length > 0 ?  raw_remote_ip_array[raw_remote_ip_array.length - 1] : '';*/
+                    msg.host = Array.isArray(raw_remote_ip_array) && raw_remote_ip_array.length > 0 ?  raw_remote_ip_array[raw_remote_ip_array.length - 1] : '';
+                    let new_client = new SocketClient(node, msg);
+                    new_client.client = socket;
+                    new_client.createClientMessageHandlers();
+//todo check for pre-existing socket_client with same name
+                    global.cluster_server.socket_client.push(new_client);
 
-                    socket.name  = msg.name;
-                    //global.cluster_server.establishConnection(msg);
                     socket.join(msg.name, () => {
 
                         harper_logger.info(node.name + ' joined room ' + msg.name);
