@@ -21,10 +21,11 @@ const CLIENT_CONNECTION_OPTIONS = {
 };
 
 class SocketClient {
-    constructor(node, other_node) {
+    constructor(node, other_node, is_node) {
         this.node = node;
         this.other_node = other_node;
         this.client = null;
+        this.is_node = is_node;
     }
 
     /**

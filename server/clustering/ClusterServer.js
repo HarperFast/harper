@@ -7,6 +7,8 @@ const clone = require('clone');
 const log = require('../../utility/logging/harper_logger');
 const {promisify} = require('util');
 
+const SCHEMA_OPERATIONS = ['create_schema', 'drop_schema', 'add_table', 'drop_table', 'create_attribute'];
+
 //promisified functions
 const p_search_searchbyvalue = promisify(search.searchByValue);
 
@@ -30,7 +32,7 @@ class ClusterServer {
             });
 
             if(!found_client || found_client.length === 0) {
-                let new_client = new SocketClient(this.node, o_node);
+                let new_client = new SocketClient(this.node, o_node, true);
                 this.socket_client.push(new_client);
                 new_client.connectToNode();
                 new_client.createClientMessageHandlers();
@@ -93,15 +95,18 @@ class ClusterServer {
             let operation = clone(msg.body.operation);
 
             for (let o_node in this.socket_client) {
-                let payload = {};
-                payload.body = msg.body;
-                payload.id = msg.id;
+                //if this is a schema operation we send to every connection, or if it's not we only send to clients who are established
+                if(SCHEMA_OPERATIONS.indexOf(operation) >= 0 || (SCHEMA_OPERATIONS.indexOf(operation) < 0 && this.socket_client[o_node].is_node)) {
+                    let payload = {};
+                    payload.body = msg.body;
+                    payload.id = msg.id;
 
-                if (!msg.body.operation) {
-                    payload.body.operation = operation;
+                    if (!msg.body.operation) {
+                        payload.body.operation = operation;
+                    }
+                    payload.node = this.socket_client[o_node].other_node;
+                    this.socket_client[o_node].send(payload);
                 }
-                payload.node = this.socket_client[o_node].other_node;
-                this.socket_client[o_node].send(payload);
             }
         } catch (e) {
             log.error(e);
