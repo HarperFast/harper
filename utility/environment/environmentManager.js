@@ -220,7 +220,6 @@ async function writeSettingsFile(create_backup_bool) {
         });
     }
     try {
-        let props = common_utils.stringifyProps(hdb_properties, null);
         await p_fs_write(settings_file_path, common_utils.stringifyProps(hdb_properties, null));
     } catch(err) {
         log.error(`Had a problem writing new settings.`);
