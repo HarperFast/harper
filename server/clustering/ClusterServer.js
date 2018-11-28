@@ -7,7 +7,7 @@ const clone = require('clone');
 const log = require('../../utility/logging/harper_logger');
 const {promisify} = require('util');
 
-const SCHEMA_OPERATIONS = ['create_schema', 'drop_schema', 'add_table', 'drop_table', 'create_attribute'];
+const SCHEMA_OPERATIONS = ['create_schema', 'drop_schema', 'create_table', 'drop_table', 'create_attribute'];
 
 //promisified functions
 const p_search_searchbyvalue = promisify(search.searchByValue);
