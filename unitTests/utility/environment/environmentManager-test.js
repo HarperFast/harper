@@ -8,6 +8,7 @@ const test_utils = require('../../test_utils');
 test_utils.preTestPrep();
 const terms = require('../../../utility/hdbTerms');
 const PropertiesReader = require('properties-reader');
+const fs = require('fs');
 
 const TEST_PROP_1_NAME = 'root';
 const TEST_PROP_2_NAME = 'path';
@@ -21,7 +22,10 @@ const ACCESS_RESPONSE = {
     'stats': 'true'
 };
 
+//These are used to restore the promisified functions.  sandbox.restore isn't working for these cases.
 let access_orig = env_rw.__get__('p_fs_access');
+let copy_orig = env_rw.__get__('p_fs_copy');
+let write_orig = env_rw.__get__('p_fs_write');
 
 describe('Test getProperty', () => {
     let test_properties = {};
@@ -55,6 +59,44 @@ describe('Test getProperty', () => {
 
         assert.equal(prop1, null);
         assert.equal(prop2, TEST_PROP_2_VAL);
+    });
+});
+
+describe('Test setProperty', () => {
+    let test_properties = {};
+
+    let props = undefined;
+
+    beforeEach(() => {
+        props = new PropertiesReader();
+    });
+    afterEach(() => {
+        test_properties = {};
+        env_rw.__set__('property_values', test_properties);
+        env_rw.__set__('p_fs_access', access_orig);
+    });
+    it('Nominal, set properties', () => {
+        env_rw.__set__('hdb_properties', props);
+
+        env_rw.setProperty(TEST_PROP_1_NAME, TEST_PROP_1_VAL);
+        env_rw.setProperty(TEST_PROP_2_NAME, TEST_PROP_2_VAL);
+
+        test_properties = env_rw.__get__('property_values');
+
+        assert.equal(props.get(TEST_PROP_1_NAME), TEST_PROP_1_VAL);
+        assert.equal(props.get(TEST_PROP_2_NAME), TEST_PROP_2_VAL);
+        assert.equal(test_properties[TEST_PROP_1_NAME], TEST_PROP_1_VAL);
+        assert.equal(test_properties[TEST_PROP_2_NAME], TEST_PROP_2_VAL);
+    });
+    it('Set with invalid property, expect exception', () => {
+        env_rw.__set__('hdb_properties', props);
+        let result = undefined;
+        try {
+            env_rw.setProperty(null, TEST_PROP_1_VAL);
+        } catch(err) {
+            result = err;
+        }
+        assert.equal((result instanceof Error), true, 'expected exception');
     });
 });
 
@@ -185,7 +227,7 @@ describe('Test readSettingsFile', () => {
         let prop1 = props.get(terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY);
 
         assert.equal(prop1, TEST_SETTINGS_FILE_PATH);
-        assert.equal(props.get(terms.HDB_SETTINGS_NAMES.NODE_NAME_KEY), 'node_name');
+        assert.equal(props.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY), 'node_name');
     });
     it('invalid key path', async () => {
         access_stub = sandbox.stub().throws(new Error('INVALID PATH'));
@@ -203,7 +245,7 @@ describe('Test readSettingsFile', () => {
 
         assert.equal(prop1, null);
         assert.equal((err instanceof Error), true, 'expected exception');
-        assert.equal(props.get(terms.HDB_SETTINGS_NAMES.NODE_NAME_KEY), null);
+        assert.equal(props.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY), null);
     });
 });
 
@@ -450,5 +492,89 @@ describe('Test init', () => {
         assert.equal(prop1, 9925);
         assert.equal(prop2, 'trace');
         assert.equal(prop3, '1');
+    });
+});
+
+describe('Test writeSettingsFile', () => {
+    let test_properties = {};
+    let writeSettingsFile = env_rw.__get__('writeSettingsFile');
+    let props = undefined;
+    let sandbox = null;
+    let copy_stub = undefined;
+    let write_stub = undefined;
+    beforeEach(() => {
+        props = new PropertiesReader();
+        sandbox = sinon.createSandbox();
+        env_rw.__set__('hdb_properties', props);
+    });
+    afterEach(() => {
+        test_properties = {};
+        sandbox.restore();
+        env_rw.__set__('property_values', test_properties);
+        env_rw.__set__('p_fs_copy', copy_orig);
+        env_rw.__set__('p_fs_write', write_orig);
+    });
+    it('Nominal, write to file, copy not called', async () => {
+        copy_stub = sandbox.stub().resolves('');
+        write_stub = sandbox.stub().resolves('');
+        props.set(terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, './thisisavalidpath');
+        env_rw.__set__('hdb_properties', props);
+        env_rw.__set__('p_fs_copy', copy_stub);
+        env_rw.__set__('p_fs_write', write_stub);
+        try {
+            await writeSettingsFile(false);
+        } catch(e) {
+            throw e;
+        }
+        assert.equal(write_stub.called, true, 'expected write to be called');
+        assert.equal(copy_stub.called, false, 'copy should not have been called');
+    });
+    it('Nominal, write to file, copy called', async () => {
+        copy_stub = sandbox.stub().resolves('');
+        write_stub = sandbox.stub().resolves('');
+        props.set(terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, './thisisavalidpath');
+        env_rw.__set__('hdb_properties', props);
+        env_rw.__set__('p_fs_copy', copy_stub);
+        env_rw.__set__('p_fs_write', write_stub);
+        try {
+            await writeSettingsFile(true);
+        } catch(e) {
+            throw e;
+        }
+        assert.equal(write_stub.called, true, 'expected write to be called');
+        assert.equal(copy_stub.called, true, 'copy should not have been called');
+    });
+    it('Exception expected, no path defined.', async () => {
+        copy_stub = sandbox.stub().throws(new Error('BAD COPY'));
+        write_stub = sandbox.stub().resolves('');
+        env_rw.__set__('hdb_properties', props);
+        env_rw.__set__('p_fs_copy', copy_stub);
+        env_rw.__set__('p_fs_write', write_stub);
+        let result = undefined;
+        try {
+            await writeSettingsFile(true);
+        } catch(e) {
+            result = e;
+        }
+        assert.equal(write_stub.called, false, 'expected write not to be called');
+        assert.equal(copy_stub.called, false, 'copy should have been called');
+        assert.equal((result instanceof Error), true, 'expected exception');
+    });
+    it('write to file, exception during copy', async () => {
+        copy_stub = sandbox.stub().throws(new Error('BAD COPY'));
+        write_stub = sandbox.stub().resolves('');
+        props.set(terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, './thisisavalidpath');
+        env_rw.__set__('hdb_properties', props);
+        env_rw.__set__('p_fs_copy', copy_stub);
+        env_rw.__set__('p_fs_write', write_stub);
+        let result = undefined;
+        try {
+            await writeSettingsFile(true);
+        } catch(e) {
+            result = e;
+        }
+        assert.equal(write_stub.called, false, 'expected write not to be called');
+        assert.equal(copy_stub.called, true, 'copy should have been called');
+        assert.equal((result instanceof Error), true, 'expected exception');
     });
 });

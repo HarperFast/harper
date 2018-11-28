@@ -6,6 +6,7 @@ const {promisify} = require('util');
 const {inspect} = require('util');
 const del = require('../../data_layer/delete');
 const terms = require('../../utility/hdbTerms');
+const env_mgr = require('../../utility/environment/environmentManager');
 
 //Promisified functions
 const p_insert_insert = promisify(insert.insert);
@@ -66,7 +67,6 @@ function removeNodeCB(remove_node, callback) {
         log.error(`There was an error removing node ${err}`);
         return callback(err, null);
     });
-
 }
 
 /**
@@ -123,6 +123,50 @@ function payloadHandler(msg) {
     }
 }
 
+/**
+ * A callback wrapper for configureCluster.  This is needed to match the processLocalTransaction style currently used until we fully
+ * migrate to async/await.  Once that migration is complete, this function can be removed and have it replaced in module.exports
+ * with the async function.
+ *
+ * @param enable_cluster_json - The json message containing the port, node name, enabled to use to enable clustering
+ * @param callback
+ * @returns {*}
+ */
+function configureClusterCB(enable_cluster_json, callback) {
+    if(!enable_cluster_json) {
+        return callback('Invalid JSON message for remove_node', null);
+    }
+    let response = {};
+    configureCluster(enable_cluster_json).then((result) => {
+        response['message'] = 'Successfully wrote clustering config settings.';
+        return callback(null, response);
+    }).catch((err) => {
+        log.error(`There was an error removing node ${err}`);
+        return callback(err, null);
+    });
+}
+
+/**
+ * Configure clustering by updating the config settings file with the specified paramters in the message, and then
+ * start or stop clustering depending on the enabled value.
+ * @param enable_cluster_json
+ * @returns {Promise<void>}
+ */
+async function configureCluster(enable_cluster_json) {
+    if(hdb_utils.isEmptyOrZeroLength(enable_cluster_json) || hdb_utils.isEmptyOrZeroLength(enable_cluster_json.clustering_port) || hdb_utils.isEmptyOrZeroLength(enable_cluster_json.clustering_node_name)) {
+        throw new Error(`Invalid port: ${enable_cluster_json.clustering_port} or hostname: ${enable_cluster_json.clustering_node_name} specified in enableCluster.`);
+    }
+    try {
+        env_mgr.setProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY, enable_cluster_json.enabled);
+        env_mgr.setProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY, enable_cluster_json.clustering_port);
+        env_mgr.setProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY, enable_cluster_json.clustering_node_name);
+        await env_mgr.writeSettingsFile(true);
+    } catch(err) {
+        log.error(err);
+        throw err;
+    }
+}
+
 function clusterMessageHandler(msg) {
     try {
         if (msg.type === 'clustering_payload') {
@@ -130,16 +174,16 @@ function clusterMessageHandler(msg) {
             payloadHandler(msg);
         } else if (msg.type === 'delegate_thread_response') {
             global.delegate_callback_queue[msg.id](msg.err, msg.data);
-        }else if (msg.type === 'clustering') {
+        } else if (msg.type === 'clustering') {
             global.clustering_on = true;
             global.forks.forEach((fork) => {
                 fork.send(msg);
             });
-        }else if (msg.type === 'schema') {
+        } else if (msg.type === 'schema') {
             global.forks.forEach((fork) => {
                 fork.send(msg);
             });
-        }else if (!hdb_utils.isEmptyOrZeroLength(msg.target_process_id)) {
+        } else if (!hdb_utils.isEmptyOrZeroLength(msg.target_process_id)) {
             // If a process is specified in the message, send this job to that process.
             let backup_process = undefined;
             let specified_process = undefined;
@@ -189,7 +233,8 @@ function clusterMessageHandler(msg) {
 
 module.exports = {
     addNode: addNode,
-    // This reference to the removeNode callback function can be removed once processLocalTransaction has been refactored
+    // The reference to the callback functions can be removed once processLocalTransaction has been refactored
+    configureCluster: configureClusterCB,
     removeNode: removeNodeCB,
     payloadHandler: payloadHandler,
     clusterMessageHandler: clusterMessageHandler

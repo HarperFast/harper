@@ -1,4 +1,4 @@
-"use strict"
+"use strict";
 
 const fs = require('fs');
 const PropertiesReader = require('properties-reader');
@@ -12,6 +12,8 @@ const PROPS_FILE_PATH = `${process.cwd()}/../hdb_boot_properties.file`;
 // Promisified functions
 const p_fs_access = promisify(fs.access);
 const p_fs_stat = promisify(fs.stat);
+const p_fs_write = promisify(fs.writeFile);
+const p_fs_copy = promisify(fs.copyFile);
 
 const defaults = {};
 
@@ -26,7 +28,9 @@ for(let key of Object.keys(hdb_terms.HDB_SETTINGS_NAMES)) {
 module.exports = {
     PROPS_FILE_PATH,
     getProperty:getProperty,
-    init: init
+    init: init,
+    setProperty: setProperty,
+    writeSettingsFile: writeSettingsFile
 };
 
 let hdb_properties = undefined;
@@ -39,7 +43,7 @@ let property_values = Object.create(null);
  */
 function getProperty(prop_name) {
     if(common_utils.isEmptyOrZeroLength(prop_name)) {
-        log.info(`Invalid parameter ${prop_name} passed in getProperty().`)
+        log.info(`Invalid parameter ${prop_name} passed in getProperty().`);
         return null;
     }
     try {
@@ -47,6 +51,23 @@ function getProperty(prop_name) {
     } catch (e) {
         log.warn(`Property ${prop_name} is undefined.`);
         return null;
+    }
+}
+
+/**
+ * Set a property
+ */
+function setProperty(prop_name, value) {
+    if(common_utils.isEmptyOrZeroLength(prop_name)) {
+        log.info(`Invalid parameter for setProperty`);
+        throw new Error('Null property specified');
+    }
+    try {
+        hdb_properties.set(prop_name, value);
+        storeVariableValue(prop_name, value);
+    } catch(e) {
+        log.error(`Failed to set property ${prop_name}.`);
+        throw e;
     }
 }
 
@@ -181,6 +202,30 @@ async function readSettingsFile() {
     }
 
     hdb_properties.append(hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY));
+}
+
+/**
+ * Write currently stored settings into the settings file
+ * @returns {Promise<void>}
+ */
+async function writeSettingsFile(create_backup_bool) {
+    let settings_file_path = hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY);
+    if(!settings_file_path) {
+        log.error(`No value found for the settings file path.`);
+        throw new Error(`No path found for config file.`);
+    }
+    if(create_backup_bool) {
+        await p_fs_copy(settings_file_path, `${settings_file_path}.bak`).catch((err) => {
+            throw err;
+        });
+    }
+    try {
+        let props = common_utils.stringifyProps(hdb_properties, null);
+        await p_fs_write(settings_file_path, common_utils.stringifyProps(hdb_properties, null));
+    } catch(err) {
+        log.error(`Had a problem writing new settings.`);
+        throw err;
+    }
 }
 
 async function init() {
