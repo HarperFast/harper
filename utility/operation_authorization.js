@@ -80,6 +80,8 @@ required_permissions.set(role.dropRole.name, new permission(true, []));
 required_permissions.set(user.userInfo.name, new permission(true, []));
 required_permissions.set(read_log.read_log.name, new permission(true, []));
 required_permissions.set(cluster_utilities.addNode.name, new permission(true, []));
+required_permissions.set(cluster_utilities.removeNode.name, new permission(true, []));
+required_permissions.set(cluster_utilities.configureCluster.name, new permission(true, []));
 required_permissions.set(reg.getFingerprint.name, new permission(true, []));
 required_permissions.set(reg.setLicense.name, new permission(true, []));
 required_permissions.set(data_export.export_to_s3.name, new permission(false, [READ_PERM]));
