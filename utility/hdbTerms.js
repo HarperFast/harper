@@ -110,7 +110,8 @@ const OPERATIONS_ENUM = {
     DELETE_JOB: 'delete_job',
     UPDATE_JOB: 'update_job',
     GET_FINGERPRINT: 'get_fingerprint',
-    SET_LICENSE: 'set_license'
+    SET_LICENSE: 'set_license',
+    CONFIGURE_CLUSTER: 'configure_cluster'
 };
 
 const SERVICE_ACTIONS_ENUM = {
@@ -152,7 +153,7 @@ const HDB_SETTINGS_NAMES = {
     PROPS_ENV_KEY: 'NODE_ENV',
     SETTINGS_PATH_KEY: 'settings_path',
     CLUSTERING_PORT_KEY: 'CLUSTERING_PORT',
-    NODE_NAME_KEY: 'NODE_NAME',
+    CLUSTERING_NODE_NAME_KEY: 'NODE_NAME',
     CLUSTERING_ENABLED_KEY: 'CLUSTERING'
 };
 
