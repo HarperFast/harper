@@ -84,7 +84,9 @@ function harperDBService() {
             case hdb_terms.SERVICE_ACTIONS_ENUM.REGISTER:
                 // register requires a lot of imports that could fail during install, so only bring it in when needed.
                 const register = require('./register');
-                register.register().catch((err) => {
+                register.register().then((response) => {
+                    console.log(response);
+                }).catch((err) => {
                     console.error(err);
                 });
                 break;
