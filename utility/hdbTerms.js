@@ -27,11 +27,20 @@ const ESCAPED_DOUBLE_PERIOD_REGEX = /^U\+002EU\+002E$/;
 // Name of the System schema
 const SYSTEM_SCHEMA_NAME = 'system';
 
-// Role table name
-const ROLE_TABLE_NAME = 'hdb_role';
+const SYSTEM_TABLE_NAMES = {
+    JOB_TABLE_NAME : 'hdb_job',
+    NODE_TABLE_NAME :'hdb_nodes',
+    ATTRIBUTE_TABLE_NAME : 'hdb_attribute',
+    LICENSE_TABLE_NAME: 'hdb_license',
+    QUEUE_TABLE_NAME: 'hdb_queue',
+    ROLE_TABLE_NAME: 'hdb_role',
+    SCHEMA_TABLE_NAME: 'hdb_schema',
+    TABLE_TABLE_NAME: 'hdb_table',
+    USER_TABLE_NAME: 'hdb_user'
+};
 
-// Job table name
-const JOB_TABLE_NAME = 'hdb_job';
+// Registration key file name
+const REG_KEY_FILE_NAME = '060493.ks';
 
 // Describes the available statuses for jobs
 const JOB_STATUS_ENUM = {
@@ -99,7 +108,10 @@ const OPERATIONS_ENUM = {
     SEARCH_JOBS_BY_START_DATE: 'search_jobs_by_start_date',
     GET_JOB: 'get_job',
     DELETE_JOB: 'delete_job',
-    UPDATE_JOB: 'update_job'
+    UPDATE_JOB: 'update_job',
+    GET_FINGERPRINT: 'get_fingerprint',
+    SET_LICENSE: 'set_license',
+    CONFIGURE_CLUSTER: 'configure_cluster'
 };
 
 const SERVICE_ACTIONS_ENUM = {
@@ -124,22 +136,43 @@ const GEO_CONVERSION_ENUM = {
 };
 
 const HDB_SETTINGS_NAMES = {
-    PROJECT_DIR: 'PROJECT_DIR',
-    HDB_ROOT: 'HDB_ROOT',
-    HTTP_PORT: 'HTTP_PORT',
-    HTTPS_PORT: 'HTTPS_PORT',
-    CERTIFICATE: 'CERTIFICATE',
-    PRIVATE_KEY: 'PRIVATE_KEY',
-    HTTPS_ON: 'HTTPS_ON',
-    HTTP_ON: 'HTTP_ON',
-    CORS_ON: 'CORS_ON',
-    CORS_WHITELIST: 'CORS_WHITELIST',
-    SERVER_TIMEOUT_MS: 'SERVER_TIMEOUT_MS',
-    LOG_LEVEL: 'LOG_LEVEL',
-    LOGGER: 'LOG_LEVEL',
-    LOG_PATH: 'LOG_PATH',
-    NODE_ENV: 'NODE_ENV',
+    PROJECT_DIR_KEY: 'PROJECT_DIR',
+    HDB_ROOT_KEY: 'HDB_ROOT',
+    HTTP_PORT_KEY: 'HTTP_PORT',
+    HTTP_SECURE_PORT_KEY: 'HTTPS_PORT',
+    CERT_KEY: 'CERTIFICATE',
+    PRIVATE_KEY_KEY: 'PRIVATE_KEY',
+    HTTP_SECURE_ENABLED_KEY: 'HTTPS_ON',
+    HTTP_ENABLED_KEY: 'HTTP_ON',
+    CORS_ENABLED_KEY: 'CORS_ON',
+    CORS_WHITELIST_KEY: 'CORS_WHITELIST',
+    PROPS_SERVER_TIMEOUT_KEY: 'SERVER_TIMEOUT_MS',
+    LOG_LEVEL_KEY: 'LOG_LEVEL',
+    LOGGER_KEY: 'LOGGER',
+    LOG_PATH_KEY: 'LOG_PATH',
+    PROPS_ENV_KEY: 'NODE_ENV',
+    SETTINGS_PATH_KEY: 'settings_path',
+    CLUSTERING_PORT_KEY: 'CLUSTERING_PORT',
+    CLUSTERING_NODE_NAME_KEY: 'NODE_NAME',
+    CLUSTERING_ENABLED_KEY: 'CLUSTERING',
     ALLOW_SELF_SIGNED_SSL_CERTS: 'ALLOW_SELF_SIGNED_SSL_CERTS'
+};
+
+// Default values for the Settings, some do not have a default.
+const HDB_SETTINGS_DEFAULT_VALUES = {
+    HTTP_PORT: '9925',
+    HTTPS_PORT: '31283',
+    HTTPS_ON: 'true',
+    HTTP_ON: 'false',
+    CORS_ON: 'true',
+    CORS_WHITELIST: '',
+    SERVER_TIMEOUT_MS: '120000',
+    LOG_LEVEL: 'error',
+    LOGGER: '1',
+    LOG_PATH: './harper_log.log',
+    NODE_ENV: 'production',
+    CLUSTERING_PORT: '5545',
+    CLUSTERING: 'false'
 };
 
 // Describes all available job types
@@ -156,14 +189,14 @@ const JOB_TYPE_ENUM = {
 module.exports = {
     HDB_PROC_NAME,
     SYSTEM_SCHEMA_NAME,
-    ROLE_TABLE_NAME,
-    JOB_TABLE_NAME,
     JOB_TYPE_ENUM,
     JOB_STATUS_ENUM,
+    SYSTEM_TABLE_NAMES,
     OPERATIONS_ENUM,
     HTTP_STATUS_CODES,
     GEO_CONVERSION_ENUM,
     HDB_SETTINGS_NAMES,
+    HDB_SETTINGS_DEFAULT_VALUES,
     SERVICE_ACTIONS_ENUM,
     PERIOD_REGEX,
     DOUBLE_PERIOD_REGEX,
@@ -172,6 +205,7 @@ module.exports = {
     UNICODE_FORWARD_SLASH,
     ESCAPED_FORWARD_SLASH_REGEX,
     ESCAPED_PERIOD_REGEX,
-    ESCAPED_DOUBLE_PERIOD_REGEX
+    ESCAPED_DOUBLE_PERIOD_REGEX,
+    REG_KEY_FILE_NAME
 };
 

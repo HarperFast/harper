@@ -18,6 +18,15 @@ const ALLOW_SELF_SIGNED_CERTS = hdb_properties.get(terms.HDB_SETTINGS_NAMES.ALLO
 const WHITELISTED_ERRORS = ['attribute already exists'];
 const ERROR_NO_HDB_USER = 'there is no hdb_user';
 
+const CLIENT_CONNECTION_OPTIONS = {
+    reconnectionDelay: 5000,
+    reconnectionDelayMax: 20000,
+    secure: true,
+    reconnect: true,
+    rejectUnauthorized :
+        ((ALLOW_SELF_SIGNED_CERTS && ALLOW_SELF_SIGNED_CERTS.toString().toLowerCase() === 'true') ? true : false)
+};
+
 class SocketClient {
     constructor(node, other_node) {
         this.node = node;
@@ -25,16 +34,37 @@ class SocketClient {
         this.client = null;
     }
 
+    /**
+     * Disconnect the connection in this.other_node.  This is typically needed when a node has been removed from hdb_nodes.
+     */
+    disconnectNode() {
+        if(!this.other_node || this.other_node.disconnected) {
+            harper_logger.info('There is no connected client to disconnect');
+            return;
+        }
+        harper_logger.info(`disconnecting node ${this.other_node.name}`);
+        this.client.disconnect();
+    }
+
     onConnectHandler(){
         this.other_node.status = 'connected';
 
-        harper_logger.info('Client: Connected to port ' + this.other_node.port);
-        this.client.emit('identify', this.node.name);
+        harper_logger.info(`Client: Connected to port ${this.other_node.port} on host ${this.other_node.host}`);
+
+        let node_info = {
+            name: this.node.name,
+            port: this.node.port
+        };
+        this.client.emit('identify', node_info);
         this.client.emit('schema_update_request');
     }
 
     onConnectErrorHandler(error){
-        harper_logger.error('cannot connect to ' + this.other_node.name + ' due to ' + error);
+        harper_logger.debug('cannot connect to ' + this.other_node.name + ' due to ' + error);
+    }
+
+    onReconnectHandler(attempt_number){
+        harper_logger.debug(': attempting to connect to ' + JSON.stringify(this.other_node) + ' for the ' + attempt_number + ' time');
     }
 
     onCatchupHandler(queue_string) {
@@ -203,29 +233,34 @@ class SocketClient {
                 });
             }
 
-            function createMissingAttributes(missing_attributes, callback2){
+            function createMissingAttributes(missing_attributes, callback2) {
 
 
-                async.each(missing_attributes, function(attribute, attr_callback) {
-                    let tokens = attribute.split(".");
-                    let attr_create_object = {
-                        "schema": tokens[0],
-                        "table":tokens[1],
-                        "attribute":tokens[2]
-                    };
+                    async.each(missing_attributes, function (attribute, attr_callback) {
+                        try {
+                            let tokens = attribute.split(".");
+                            let attr_create_object = {
+                                "schema": tokens[0],
+                                "table": tokens[1],
+                                "attribute": tokens[2]
+                            };
 
-                    schema.createAttribute(attr_create_object, function(err, result){
-                        attr_callback(err, result);
+                            schema.createAttribute(attr_create_object, function (err, result) {
+                                attr_callback(err, result);
 
+                            });
+
+                        } catch(e){
+                            harper_logger.error('failed to create missing attribute: ' + attribute + ' due to ' + e );
+                            attr_callback(e);
+                        }
+                    }, function (err) {
+                        if (err) {
+                            return callback2(err);
+                        }
+                        return callback2();
                     });
 
-
-                }, function(err) {
-                    if(err){
-                        return callback2(err);
-                    }
-                    return callback2();
-                });
             }
 
         });
@@ -274,14 +309,13 @@ class SocketClient {
         }
 
         harper_logger.info(`${this.node.name} is attempting to connect to ${this.other_node.name} at ${this.other_node.host}:${this.other_node.port}`);
-        let socket_options = { secure: true, reconnect: true, rejectUnauthorized :
-                ((ALLOW_SELF_SIGNED_CERTS && ALLOW_SELF_SIGNED_CERTS.toString().toLowerCase() === 'true') ? true : false)
-        };
-        this.client = ioc.connect(`https://${this.other_node.host}:${this.other_node.port}`, socket_options);
+        this.client = ioc.connect(`https://${this.other_node.host}:${this.other_node.port}`, CLIENT_CONNECTION_OPTIONS);
     }
 
     createClientMessageHandlers(){
         this.client.on("connect", this.onConnectHandler.bind(this));
+
+        this.client.on("reconnect_attempt", this.onReconnectHandler.bind(this));
 
         this.client.on('connect_error', this.onConnectErrorHandler.bind(this));
 

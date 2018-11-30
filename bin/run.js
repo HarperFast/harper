@@ -181,7 +181,7 @@ function completeRun() {
         if(error)
             console.error(error);
 
-        foregroundHandler()
+        foregroundHandler();
     });
 }
 
@@ -238,24 +238,24 @@ function isForegroundProcess(){
 
 function checkPermission(callback){
     let checkPermissions = require('../utility/check_permissions');
-    checkPermissions.checkPermission(function(err){
-        if(err){
-            console.error(err);
-            return callback(err, null);
-        }else{
-            return callback(null, 'success');
-        }
-    });
+    try {
+        checkPermissions.checkPermission();
+    } catch(err) {
+        console.error(err);
+        return callback(err, null);
+    }
+    return callback(null, 'success');
 }
 
-function kickOffExpress(err, callback){
+function kickOffExpress(err, callback) {
+    let child = undefined;
     if (hdb_properties && hdb_properties.get('MAX_MEMORY')) {
-        var child = fork(path.join(__dirname,'../server/hdb_express.js'),[`--max-old-space-size=${hdb_properties.get('MAX_MEMORY')}`, `${hdb_properties.get('PROJECT_DIR')}/server/hdb_express.js`],{
+        child = fork(path.join(__dirname,'../server/hdb_express.js'),[`--max-old-space-size=${hdb_properties.get('MAX_MEMORY')}`, `${hdb_properties.get('PROJECT_DIR')}/server/hdb_express.js`],{
             detached: true,
             stdio: 'ignore'
         });
     }else{
-        var child = fork(path.join(__dirname,'../server/hdb_express.js'),{
+        child = fork(path.join(__dirname,'../server/hdb_express.js'),{
             detached: true,
             stdio: 'ignore'
         });
