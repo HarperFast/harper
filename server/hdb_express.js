@@ -248,7 +248,6 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                     }
                     return res.status(hdb_terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send(err);
                 }
-                let localOnlyOperations = ['describe_all', 'describe_table', 'describe_schema', 'read_log', 'add_node'];
 
                 if (global.clustering_on && req.body.operation !== 'sql') {
                     if (!req.body.schema
@@ -256,7 +255,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                         || req.body.operation === 'create_table'
                         || req.body.operation === 'drop_table'
                     ) {
-                        if (localOnlyOperations.includes(req.body.operation)) {
+                        if (hdb_terms.LOCAL_HARPERDB_OPERATIONS.includes(req.body.operation)) {
                             harper_logger.info('local only operation: ' + req.body.operation);
                             server_utilities.processLocalTransaction(req, res, operation_function, function (err) {
                                 if(err){
@@ -346,7 +345,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                         });
                     }
                 } else if(req.body.schema && req.body.table
-                    && req.body.operation !== 'create_table' && req.body.operation !=='drop_table' && !localOnlyOperations.includes(req.body.operation) ) {
+                    && req.body.operation !== 'create_table' && req.body.operation !=='drop_table' && !hdb_terms.LOCAL_HARPERDB_OPERATIONS.includes(req.body.operation) ) {
 
                     global_schema.getTableSchema(req.body.schema, req.body.table, function (err, table) {
 
