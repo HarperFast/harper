@@ -136,29 +136,28 @@ async function register() {
 
     let data = await p_prompt_get(register_schema).catch((err) => {
         console.error('There was a problem prompting for registration input.  Exiting.');
-        return log.error(err);
+        throw err;
     });
 
     if(!data.HDB_LICENSE || !data.CUSTOMER_COMPANY) {
-        return console.error(`Invalid entries for License Key and Customer Company`);
+        throw new Error(`Invalid entries for License Key and Customer Company`);
     }
     console.log('Validating license input...');
-    let validation = hdb_license.validateLicense(data.HDB_LICENSE, data.CUSTOMER_COMPANY).catch((err) => {
+    let validation = await hdb_license.validateLicense(data.HDB_LICENSE, data.CUSTOMER_COMPANY).catch((err) => {
         log.error(err);
-        return console.error(err);
+        throw err;
     });
     console.log(`checking for valid license...`);
     if (!validation.valid_license) {
-        return console.error('Invalid license found.');
+        throw new Error('Invalid license found.');
     }
     console.log(`checking valid license date...`);
     if (!validation.valid_date) {
-        return console.error('This License has expired.');
-
+        throw new Error('This License has expired.');
     }
     console.log(`checking for valid machine license ${validation.valid_machine}`);
     if (!validation.valid_machine) {
-        return console.error('This license is in use on another machine.');
+        throw new Error('This license is in use on another machine.');
     }
 
     let insert_object = {
@@ -169,8 +168,8 @@ async function register() {
         records: [{"license_key": data.HDB_LICENSE, "company":data.CUSTOMER_COMPANY }]
     };
 
-    p_insert_insert(insert_object).catch((err) => {
-        return log.error(err);
+    await p_insert_insert(insert_object).catch((err) => {
+        throw err;
     });
 
     return 'Successfully registered';
