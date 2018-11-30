@@ -254,6 +254,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                         || !req.body.table
                         || req.body.operation === 'create_table'
                         || req.body.operation === 'drop_table'
+                        || req.body.operation === 'delete_files_before'
                     ) {
                         if (hdb_terms.LOCAL_HARPERDB_OPERATIONS.includes(req.body.operation)) {
                             harper_logger.info('local only operation: ' + req.body.operation);
@@ -266,7 +267,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                             harper_logger.info('local & delegated operation: ' + req.body.operation);
                             server_utilities.processLocalTransaction(req, res, operation_function, function (err) {
                                 if(err){
-                                    harper_logger.error('error from local & delegated: ' + err);
+                                    harper_logger.error('error from local & delegated: ' + JSON.stringify(err));
                                 }else {
                                     let id = uuidv1();
                                     process.send({
