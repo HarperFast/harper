@@ -75,6 +75,7 @@ async function validateLicense(license_key, company) {
     } catch (e) {
         license_validation_object.valid_license = false;
         let err_msg = new Error(`invalid license key format`);
+        console.error(`invalid license key format`);
         log.error(err_msg.message);
         throw err_msg;
     }
