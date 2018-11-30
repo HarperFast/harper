@@ -26,6 +26,10 @@ const ACCESS_RESPONSE = {
 let access_orig = env_rw.__get__('p_fs_access');
 let copy_orig = env_rw.__get__('p_fs_copy');
 let write_orig = env_rw.__get__('p_fs_write');
+let read_props_orig = env_rw.__get__('readPropsFile');
+let cert_path_orig = env_rw.__get__('readRootPath');
+let private_path_orig = env_rw.__get__('readCertPath');
+let root_path_orig = env_rw.__get__('readPrivateKeyPath');
 
 describe('Test getProperty', () => {
     let test_properties = {};
@@ -453,21 +457,30 @@ describe('Test init', () => {
     let props = undefined;
     let sandbox = null;
     let access_stub = undefined;
-    let read_settings_stub = undefined;
+    let read_props_stub = undefined;
+    let cert_path_stub = undefined;
+    let private_path_stub = undefined;
+    let root_path_stub = undefined;
+
     beforeEach(() => {
         props = new PropertiesReader();
         sandbox = sinon.createSandbox();
         env_rw.__set__('hdb_properties', props);
         env_rw.__set__('p_fs_access', access_stub);
+
     });
     afterEach(() => {
         test_properties = {};
         sandbox.restore();
         env_rw.__set__('property_values', test_properties);
         env_rw.__set__('p_fs_access', access_orig);
+        env_rw.__set__('readPropsFile', read_props_orig);
+        env_rw.__set__('readRootPath', root_path_orig);
+        env_rw.__set__('readCertPath', cert_path_orig);
+        env_rw.__set__('readPrivateKeyPath', private_path_orig);
     });
     // There is no good way to inject a value for the settings path during the init run, so just replacing
-    // it with this function that will point to a valid path.
+    // readPropsFile with this function that will point to a valid path.
     async function loadThisInstead() {
         let props = env_rw.__get__('hdb_properties');
         let found = new PropertiesReader(TEST_SETTINGS_FILE_PATH);
@@ -476,11 +489,19 @@ describe('Test init', () => {
         });
     }
     it('Nominal, load up environment variables', async () => {
+
+        read_props_stub = sandbox.stub().resolves('');
+        cert_path_stub = sandbox.stub().resolves('');
+        private_path_stub = sandbox.stub().resolves('');
+        root_path_stub = sandbox.stub().resolves('');
         access_stub = sandbox.stub().resolves(ACCESS_RESPONSE);
         props.set(terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, TEST_SETTINGS_FILE_PATH);
         env_rw.__set__('PROPS_FILE_PATH', TEST_PROPS_FILE_PATH);
-        env_rw.__set__('readSettingsFile', loadThisInstead);
         env_rw.__set__('p_fs_access', access_orig);
+        env_rw.__set__('readPropsFile', loadThisInstead);
+        env_rw.__set__('readRootPath', root_path_stub);
+        env_rw.__set__('readCertPath', cert_path_stub);
+        env_rw.__set__('readPrivateKeyPath', private_path_stub);
         try {
             await env_rw.init();
         } catch(e) {
