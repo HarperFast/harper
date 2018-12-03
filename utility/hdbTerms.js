@@ -40,7 +40,7 @@ const SYSTEM_TABLE_NAMES = {
     SCHEMA_TABLE_NAME: 'hdb_schema',
     TABLE_TABLE_NAME: 'hdb_table',
     USER_TABLE_NAME: 'hdb_user'
-}
+};
 
 // Registration key file name
 const REG_KEY_FILE_NAME = '060493.ks';
@@ -157,7 +157,8 @@ const HDB_SETTINGS_NAMES = {
     SETTINGS_PATH_KEY: 'settings_path',
     CLUSTERING_PORT_KEY: 'CLUSTERING_PORT',
     CLUSTERING_NODE_NAME_KEY: 'NODE_NAME',
-    CLUSTERING_ENABLED_KEY: 'CLUSTERING'
+    CLUSTERING_ENABLED_KEY: 'CLUSTERING',
+    ALLOW_SELF_SIGNED_SSL_CERTS: 'ALLOW_SELF_SIGNED_SSL_CERTS'
 };
 
 // Default values for the Settings, some do not have a default.
