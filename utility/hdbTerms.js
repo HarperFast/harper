@@ -27,6 +27,9 @@ const ESCAPED_DOUBLE_PERIOD_REGEX = /^U\+002EU\+002E$/;
 // Name of the System schema
 const SYSTEM_SCHEMA_NAME = 'system';
 
+//this variable defines operations that should only run locally and not pass over clustering to another node(s)
+const LOCAL_HARPERDB_OPERATIONS = ['describe_all', 'describe_table', 'describe_schema', 'read_log', 'add_node', 'list_users', 'list_roles', 'user_info', 'sql', 'get_job', 'search_jobs_by_start_date', 'delete_files_before', 'export_local', 'export_to_s3'];
+
 const SYSTEM_TABLE_NAMES = {
     JOB_TABLE_NAME : 'hdb_job',
     NODE_TABLE_NAME :'hdb_nodes',
@@ -205,6 +208,7 @@ module.exports = {
     ESCAPED_FORWARD_SLASH_REGEX,
     ESCAPED_PERIOD_REGEX,
     ESCAPED_DOUBLE_PERIOD_REGEX,
-    REG_KEY_FILE_NAME
+    REG_KEY_FILE_NAME,
+    LOCAL_HARPERDB_OPERATIONS
 };
 
