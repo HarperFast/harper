@@ -24,7 +24,7 @@ const CLIENT_CONNECTION_OPTIONS = {
     secure: true,
     reconnect: true,
     rejectUnauthorized :
-        ((ALLOW_SELF_SIGNED_CERTS && ALLOW_SELF_SIGNED_CERTS.toString().toLowerCase() === 'true') ? true : false)
+        ((ALLOW_SELF_SIGNED_CERTS && ALLOW_SELF_SIGNED_CERTS.toString().toLowerCase() === 'true') ? false : true)
 };
 
 class SocketClient {
