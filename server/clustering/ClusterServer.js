@@ -80,13 +80,12 @@ class ClusterServer {
             });
 
             if (found_node && Array.isArray(found_node) && found_node.length > 0) {
-                found_node[0].send(payload);
+                found_node[0].send(payload).
+                    then(() => {return;});
             }
         } catch (e) {
             log.error(e);
         }
-        //this.socket_server.send(payload, res);
-        //this.send_payload(payload, the_client, the_client.name);
     }
 
     broadCast(msg) {
@@ -105,7 +104,10 @@ class ClusterServer {
                         payload.body.operation = operation;
                     }
                     payload.node = this.socket_client[o_node].other_node;
-                    this.socket_client[o_node].send(payload);
+                    this.socket_client[o_node].send(payload)
+                        .then(()=>{
+                            return;
+                        });
                 }
             }
         } catch (e) {

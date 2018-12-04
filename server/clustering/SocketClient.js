@@ -1,16 +1,24 @@
 "use strict";
+const cluster_utilities = require('./clusterUtilities');
 const server_utilities = require('../serverUtilities');
 const harper_logger = require('../../utility/logging/harper_logger');
 const ioc = require('socket.io-client');
 const schema = require('../../data_layer/schema');
 const _ = require('lodash');
-const async = require('async');
-const auth = require('../../security/auth');
+
 const common_utils = require('../../utility/common_utils');
 const insert = require('../../data_layer/insert');
-const delete_ = require('../../data_layer/delete');
 const uuidv4 = require('uuid/v1');
+const {promisify} = require('util');
 const cluster_handlers = require('./clusterHandlers');
+
+const p_server_utilities_choose_operation = promisify(server_utilities.chooseOperation);
+const p_server_utilities_proccess_delegated_transaction = promisify(server_utilities.proccessDelegatedTransaction);
+const p_schema_describe_all = promisify(schema.describeAll);
+const p_schema_create_schema = promisify(schema.createSchema);
+const p_schema_create_table = promisify(schema.createTable);
+const p_schema_create_attribute = promisify(schema.createAttribute);
+const p_insert = promisify(insert.insert);
 
 const WHITELISTED_ERRORS = ['attribute already exists'];
 const ERROR_NO_HDB_USER = 'there is no hdb_user';
@@ -51,7 +59,6 @@ class SocketClient {
         };
         this.client.emit('identify', node_info);
         this.client.emit('schema_update_request');
-        //todo send data to sync up
     }
 
     onConnectErrorHandler(error){
@@ -62,12 +69,12 @@ class SocketClient {
         harper_logger.debug(': attempting to connect to ' + JSON.stringify(this.other_node) + ' for the ' + attempt_number + ' time');
     }
 
-    onCatchupRequestHandler(msg){
+    async onCatchupRequestHandler(msg){
         harper_logger.info('catchup_request from :' + msg.name);
-        cluster_handlers.fetchQueue(msg, this.client);
+        await cluster_handlers.fetchQueue(msg, this.client);
     }
 
-    onCatchupHandler(queue_string) {
+    async onCatchupHandler(queue_string) {
         harper_logger.info('catchup' + queue_string);
         let queue = JSON.parse(queue_string);
         for (let item in queue) {
@@ -75,196 +82,121 @@ class SocketClient {
             let json = queue[item].body;
             let the_client = this.client;
             let the_node = this.node;
-            authHeaderToUser(json, (error)=> {
-                if (error) {
+
+            json = await cluster_utilities.authHeaderToUser(json)
+                .catch(error=>{
                     queue[item].err = error;
                     the_client.emit('error', queue[item]);
                     return harper_logger.error(error);
-                }
+                });
 
-                if(!queue[item].body.hdb_user){
-                    queue[item].err = ERROR_NO_HDB_USER;
-                    harper_logger.error(`${ERROR_NO_HDB_USER}: ` + JSON.stringify(json));
-                    the_client.emit('error', queue[item]);
-                } else {
+            if(!queue[item].body.hdb_user){
+                queue[item].err = ERROR_NO_HDB_USER;
+                harper_logger.error(`${ERROR_NO_HDB_USER}: ` + JSON.stringify(json));
+                the_client.emit('error', queue[item]);
+            } else {
+                let operation_function = await p_server_utilities_choose_operation(json)
+                    .catch(err => {
+                        queue[item].err = err;
+                        the_client.emit('error', queue[item]);
+                        return harper_logger.error(err);
+                    });
 
-                    server_utilities.chooseOperation(json, function (err, operation_function) {
-                        if (err) {
+                queue[item].node = the_node;
+                await p_server_utilities_proccess_delegated_transaction(json, operation_function)
+                    .catch(err => {
+                        if(!checkWhitelistedErrors(err)){
                             queue[item].err = err;
                             the_client.emit('error', queue[item]);
                             return harper_logger.error(err);
                         }
-
-                        server_utilities.proccessDelegatedTransaction(json, operation_function, function (err, result) {
-                            queue[item].node = the_node;
-                            if (err && !checkWhitelistedErrors(err)) {
-                                queue[item].err = err;
-                                the_client.emit('error', queue[item]);
-                                return harper_logger.error(err);
-                            }
-
-                            the_client.emit('confirm_msg', queue[item]);
-                        });
                     });
-                }
-            });
+
+                the_client.emit('confirm_msg', queue[item]);
+            }
         }
     }
 
-    onSchemaUpdateResponseHandler(cluster_schema){
-        schema.describeAll(null, function(err, my_schema){
-            let missing_schemas = [];
-            let missing_tables = [];
-            let missing_attributes = [];
-            let residence_table_map = {};
+    async onSchemaUpdateResponseHandler(cluster_schema){
+        let my_schema = await p_schema_describe_all()
+            .catch(err => {
+                harper_logger.error(err);
+            });
 
-            Object.keys(cluster_schema).forEach(function(this_schema) {
-                if (!my_schema[this_schema]) {
-                    missing_schemas.push(this_schema);
-                    Object.keys(cluster_schema[this_schema]).forEach(function(table){
+        let missing_schemas = [];
+        let missing_tables = [];
+        let missing_attributes = [];
+        let residence_table_map = {};
+
+        Object.keys(cluster_schema).forEach(function(this_schema) {
+            if (!my_schema[this_schema]) {
+                missing_schemas.push(this_schema);
+                Object.keys(cluster_schema[this_schema]).forEach(function(table){
+                    missing_tables.push(this_schema + "." + table + "." + cluster_schema[this_schema][table].hash_attribute);
+                    if(cluster_schema[this_schema][table].residence){
+                        residence_table_map[this_schema + "." + table] = [];
+                        Object.keys(cluster_schema[this_schema][table].residence).forEach(function(r){
+                            residence_table_map[this_schema + "." + table].push(cluster_schema[this_schema][table].residence[r])
+                        });
+                    }
+
+                    Object.keys(cluster_schema[this_schema][table].attributes).forEach(function(attribute){
+                        missing_attributes.push(this_schema + "." + table + "." + cluster_schema[this_schema][table].attributes[attribute].attribute);
+                    });
+                });
+
+            } else {
+                Object.keys(cluster_schema[this_schema]).forEach(function(table){
+                    if (!my_schema[this_schema][table]) {
                         missing_tables.push(this_schema + "." + table + "." + cluster_schema[this_schema][table].hash_attribute);
                         if(cluster_schema[this_schema][table].residence){
                             residence_table_map[this_schema + "." + table] = [];
                             Object.keys(cluster_schema[this_schema][table].residence).forEach(function(r){
                                 residence_table_map[this_schema + "." + table].push(cluster_schema[this_schema][table].residence[r])
                             });
-                        }
 
+                        }
                         Object.keys(cluster_schema[this_schema][table].attributes).forEach(function(attribute){
                             missing_attributes.push(this_schema + "." + table + "." + cluster_schema[this_schema][table].attributes[attribute].attribute);
+
                         });
-                    });
 
-                } else {
-                    Object.keys(cluster_schema[this_schema]).forEach(function(table){
-                        if (!my_schema[this_schema][table]) {
-                            missing_tables.push(this_schema + "." + table + "." + cluster_schema[this_schema][table].hash_attribute);
-                            if(cluster_schema[this_schema][table].residence){
-                                residence_table_map[this_schema + "." + table] = [];
-                                Object.keys(cluster_schema[this_schema][table].residence).forEach(function(r){
-                                    residence_table_map[this_schema + "." + table].push(cluster_schema[this_schema][table].residence[r])
-                                });
+                    } else {
+                        let their_attributes = [];
+                        Object.keys(cluster_schema[this_schema][table].attributes).forEach(function(attribute){
+                            their_attributes.push(cluster_schema[this_schema][table].attributes[attribute].attribute);
 
-                            }
-                            Object.keys(cluster_schema[this_schema][table].attributes).forEach(function(attribute){
-                                missing_attributes.push(this_schema + "." + table + "." + cluster_schema[this_schema][table].attributes[attribute].attribute);
+                        });
 
-                            });
+                        let my_attributes = [];
 
-                        } else {
-                            let their_attributes = [];
-                            Object.keys(cluster_schema[this_schema][table].attributes).forEach(function(attribute){
-                                their_attributes.push(cluster_schema[this_schema][table].attributes[attribute].attribute);
+                        Object.keys(my_schema[this_schema][table].attributes).forEach(function(attribute){
+                            my_attributes.push(my_schema[this_schema][table].attributes[attribute].attribute);
+                        });
 
-                            });
-
-                            let my_attributes = [];
-
-                            Object.keys(my_schema[this_schema][table].attributes).forEach(function(attribute){
-                                my_attributes.push(my_schema[this_schema][table].attributes[attribute].attribute);
-                            });
-
-                            let missing_attrs = _.difference(their_attributes, my_attributes);
-                            for(let attr in missing_attrs){
-                                missing_attributes.push(this_schema + "." + table +"."+  missing_attrs[attr]);
-                            }
+                        let missing_attrs = _.difference(their_attributes, my_attributes);
+                        for(let attr in missing_attrs){
+                            missing_attributes.push(this_schema + "." + table +"."+  missing_attrs[attr]);
                         }
-                    });
-                }
-            });
-
-            createMissingSchemas(missing_schemas, function(err, result){
-                if(err){
-                    return harper_logger.error(err);
-                }
-                createMissingTables(missing_tables, function(err, result){
-                    if(err){
-                        return harper_logger.error(err);
                     }
-
-                    createMissingAttributes(missing_attributes, function(err, result){
-                        if(err){
-                            return harper_logger.error(err);
-                        }
-                    });
-                });
-            });
-
-            function createMissingSchemas(missing_schemas, callback2){
-                async.each(missing_schemas, function(this_schema, schema_callback) {
-                    schema.createSchema({"schema": this_schema}, function(err, result){
-                        if(err && err !== 'schema already exists'){
-                            return schema_callback(err);
-                        }
-                        schema_callback(null, result);
-
-                    });
-                }, function(err) {
-                    if(err){
-                        return callback2(err);
-                    }
-                    return callback2();
                 });
             }
-
-            function createMissingTables(missing_tables, callback2){
-                async.each(missing_tables, function(table, table_callback) {
-                    let tokens = table.split(".");
-                    let table_create_object = {
-                        "schema": tokens[0],
-                        "table":tokens[1],
-                        "hash_attribute":tokens[2]
-                    };
-                    if(residence_table_map[tokens[0] + "." + tokens[1]]){
-                        table_create_object.residence = residence_table_map[tokens[0] + "." + tokens[1]];
-                    }
-                    schema.createTable(table_create_object, function(err, result){
-                        if(err && err !== `table ${table_create_object.table} already exists in schema ${table_create_object.schema}`){
-                            return table_callback(err);
-                        }
-                        return table_callback(null, result);
-
-                    });
-                }, function(err) {
-                    if(err){
-                        return callback2(err);
-                    }
-                    return callback2();
-                });
-            }
-
-            function createMissingAttributes(missing_attributes, callback2) {
-
-
-                    async.each(missing_attributes, function (attribute, attr_callback) {
-                        try {
-                            let tokens = attribute.split(".");
-                            let attr_create_object = {
-                                "schema": tokens[0],
-                                "table": tokens[1],
-                                "attribute": tokens[2]
-                            };
-
-                            schema.createAttribute(attr_create_object, function (err, result) {
-                                attr_callback(err, result);
-
-                            });
-
-                        } catch(e){
-                            harper_logger.error('failed to create missing attribute: ' + attribute + ' due to ' + e );
-                            attr_callback(e);
-                        }
-                    }, function (err) {
-                        if (err) {
-                            return callback2(err);
-                        }
-                        return callback2();
-                    });
-
-            }
-
         });
 
+        await createMissingSchemas(missing_schemas)
+            .catch(err =>{
+                return harper_logger.error(err);
+            });
+
+        await createMissingTables(missing_tables, residence_table_map)
+            .catch(err =>{
+                return harper_logger.error(err);
+            });
+
+        await createMissingAttributes(missing_attributes)
+            .catch(err =>{
+                return harper_logger.error(err);
+            });
     }
 
     onConfirmIdentity(msg) {
@@ -272,31 +204,36 @@ class SocketClient {
     }
 
 
-    onMsgHandler(msg) {
+    async onMsgHandler(msg) {
         harper_logger.info(`received by ${this.node.name} : msg = ${JSON.stringify(msg)}`);
         let the_client = this.client;
         let this_node = this.node;
-        authHeaderToUser(msg.body, (error) => {
-            if (error) {
+        msg.body = await cluster_utilities.authHeaderToUser(msg.body)
+            .catch(error =>{
                 return harper_logger.error(error);
-            }
-
-            if (!msg.body.hdb_user) {
-                harper_logger.info('there is no hdb_user: ' + JSON.stringify(msg.body));
-            }
-
-            server_utilities.chooseOperation(msg.body, (err, operation_function) => {
-                server_utilities.proccessDelegatedTransaction(msg.body, operation_function, function (err, data) {
-                    let payload = {
-                        "id": msg.id,
-                        "error": err,
-                        "data": data,
-                        "node": this_node
-                    };
-                    the_client.emit('confirm_msg', payload);
-                });
             });
-        });
+
+        if (!msg.body.hdb_user) {
+            harper_logger.info('there is no hdb_user: ' + JSON.stringify(msg.body));
+        }
+
+        let operation_function = await p_server_utilities_choose_operation(msg.body)
+            .catch(err =>{
+                return harper_logger.error(err);
+            });
+
+        let data = await p_server_utilities_proccess_delegated_transaction(msg.body, operation_function)
+            .catch(err =>{
+                return harper_logger.error(err);
+            });
+
+        let payload = {
+            "id": msg.id,
+            "error": err,
+            "data": data,
+            "node": this_node
+        };
+        the_client.emit('confirm_msg', payload);
     }
 
 
@@ -305,8 +242,8 @@ class SocketClient {
         harper_logger.info(`server ${this.other_node.name} down`);
     }
 
-    onConfirmMessageHandler(msg){
-        cluster_handlers.onConfirmMessageHandler(msg);
+    async onConfirmMessageHandler(msg){
+        await cluster_handlers.onConfirmMessageHandler(msg);
     }
 
     connectToNode() {
@@ -319,7 +256,7 @@ class SocketClient {
     }
 
 
-    createClientMessageHandlers(){
+    createClientMessageHandlers() {
         this.client.on("connect", this.onConnectHandler.bind(this));
 
         this.client.on("reconnect_attempt", this.onReconnectHandler.bind(this));
@@ -341,7 +278,7 @@ class SocketClient {
         this.client.on('disconnect', this.onDisconnectHandler.bind(this));
     }
 
-    send(msg) {
+    async send(msg) {
         let the_client = this.client;
         try {
             delete msg.body.hdb_user;
@@ -355,41 +292,75 @@ class SocketClient {
             }
             global.cluster_queue[this.other_node.name][payload.id] = payload;
 
-            saveToDisk({
+            let results = await saveToDisk({
                 "payload": payload,
                 "id": payload.id,
                 "node": msg.node,
                 "node_name": msg.node.name
-            }, function (err, result) {
-                if (err) {
-                    return err;
-                }
-
-                the_client.emit('msg', payload);
             });
 
-
+            if(!common_utils.isEmpty(results)) {
+                the_client.emit('msg', payload);
+            }
         } catch (e) {
-            //save the queue to disk for all nodes.
             harper_logger.error(e);
         }
     }
 }
 
-function authHeaderToUser(json_body, callback){
-    let req = {};
-    req.headers = {};
-    req.headers.authorization = json_body.hdb_auth_header;
+async function createMissingSchemas(missing_schemas){
+    await Promise.all(missing_schemas.map(async (this_schema) => {
+        await p_schema_create_schema({"schema": this_schema})
+            .catch(err=>{
+                if(err !== 'schema already exists') {
+                    throw err;
+                }
+            });
+    }));
+}
 
-    auth.authorize(req, null, function (err, user) {
-        if (err) {
-            return callback(err);
+async function createMissingTables(missing_tables, residence_table_map){
+    await Promise.all(missing_tables.map(async(table) =>{
+        let tokens = table.split(".");
+        let table_create_object = {
+            "schema": tokens[0],
+            "table":tokens[1],
+            "hash_attribute":tokens[2]
+        };
+        if(residence_table_map[tokens[0] + "." + tokens[1]]){
+            table_create_object.residence = residence_table_map[tokens[0] + "." + tokens[1]];
         }
 
-        json_body.hdb_user = user;
+        await p_schema_create_table(table_create_object)
+            .catch(err=>{
+                if(err !== `table ${table_create_object.table} already exists in schema ${table_create_object.schema}`){
+                    throw err;
+                }
+            });
+    }));
+}
 
-        callback(null, json_body);
-    });
+async function createMissingAttributes(missing_attributes, callback2) {
+    await Promise.all(missing_attributes.map(async(attribute) =>{
+        try {
+            let tokens = attribute.split(".");
+            let attr_create_object = {
+                "schema": tokens[0],
+                "table": tokens[1],
+                "attribute": tokens[2]
+            };
+
+            await p_schema_create_attribute(attr_create_object)
+                .catch(err =>{
+                    if(WHITELISTED_ERRORS.indexOf(err) < 0) {
+                        throw err;
+                    }
+                });
+        } catch(e){
+            harper_logger.error('failed to create missing attribute: ' + attribute + ' due to ' + e );
+            throw e;
+        }
+    }));
 }
 
 function checkWhitelistedErrors(error){
@@ -420,7 +391,7 @@ function checkWhitelistedErrors(error){
     return false;
 }
 
-function saveToDisk(item, callback) {
+async function saveToDisk(item) {
     try {
         let insert_object = {
             operation: 'insert',
@@ -429,15 +400,12 @@ function saveToDisk(item, callback) {
             records: [item]
         };
 
-        insert.insert(insert_object, function (err, result) {
-            if (err) {
-                harper_logger.error(err);
-                return callback(err);
-            }
-            callback(null, result);
+        let results = await p_insert(insert_object)
+            .catch(err => {
+                return harper_logger.error(err);
+            });
 
-
-        });
+        return results;
     } catch (e) {
         harper_logger.error(e);
     }

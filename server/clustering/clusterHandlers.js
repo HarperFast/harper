@@ -3,6 +3,10 @@ const auth = require('../../security/auth');
 const server_utilities = require('../serverUtilities');
 const search = require('../../data_layer/search');
 const delete_ = require('../../data_layer/delete');
+const {promisify} = require('util');
+
+const p_search_by_value = promisify(search.searchByValue);
+const p_delete = promisify(delete_.delete);
 
 module.exports = {
     fetchQueue: fetchQueue,
@@ -10,36 +14,40 @@ module.exports = {
 };
 
 
-function fetchQueue(msg, socket){
+async function fetchQueue(msg, socket){
     let the_socket = socket;
-    getFromDisk({"name": msg.name}, function (err, disk_catch_up) {
-        if (disk_catch_up && disk_catch_up.length > 0) {
-            if (!global.cluster_queue[msg.name]) {
-                global.cluster_queue[msg.name] = {};
-            }
 
-            for (let item in disk_catch_up) {
-                if (!global.cluster_queue[msg.name][disk_catch_up[item].id]) {
-                    global.forkClusterMsgQueue[disk_catch_up[item].id] = disk_catch_up[item].payload;
-                    global.cluster_queue[msg.name][disk_catch_up[item].id] = disk_catch_up[item].payload;
-                }
+    let disk_catch_up = await getFromDisk({"name": msg.name})
+        .catch(err => {
+            return harper_logger.error(err);
+        });
 
-            }
+    if (disk_catch_up && disk_catch_up.length > 0) {
+        if (!global.cluster_queue[msg.name]) {
+            global.cluster_queue[msg.name] = {};
         }
 
-        socket.emit('confirm_identity');
+        for (let item in disk_catch_up) {
+            if (!global.cluster_queue[msg.name][disk_catch_up[item].id]) {
+                global.forkClusterMsgQueue[disk_catch_up[item].id] = disk_catch_up[item].payload;
+                global.cluster_queue[msg.name][disk_catch_up[item].id] = disk_catch_up[item].payload;
+            }
 
-        if (global.cluster_queue && global.cluster_queue[msg.name]) {
-            harper_logger.info('sent msg');
-            harper_logger.info(global.cluster_queue[msg.name]);
-
-            let catchup_payload = JSON.stringify(global.cluster_queue[msg.name]);
-            the_socket.emit('catchup', catchup_payload);
         }
-    });
+    }
+
+    socket.emit('confirm_identity');
+
+    if (global.cluster_queue && global.cluster_queue[msg.name]) {
+        harper_logger.info('sent msg');
+        harper_logger.info(global.cluster_queue[msg.name]);
+
+        let catchup_payload = JSON.stringify(global.cluster_queue[msg.name]);
+        the_socket.emit('catchup', catchup_payload);
+    }
 }
 
-function onConfirmMessageHandler(msg){
+async function onConfirmMessageHandler(msg){
     harper_logger.info(msg);
     msg.type = 'cluster_response';
     let queded_msg = global.forkClusterMsgQueue[msg.id];
@@ -60,17 +68,15 @@ function onConfirmMessageHandler(msg){
             "hash_values": [msg.id]
 
         };
-        harper_logger.info("delete_obj === " + JSON.stringify(delete_obj));
-        delete_.delete(delete_obj, function (err, result) {
-            if (err) {
+        harper_logger.info("delete from queue: " + JSON.stringify(delete_obj));
+        await p_delete(delete_obj)
+            .catch(err => {
                 harper_logger.error(err);
-            }
-        });
-
+            });
     }
 }
 
-function getFromDisk(node, callback) {
+async function getFromDisk(node) {
     let search_obj = {};
     search_obj.schema = 'system';
     search_obj.table = 'hdb_queue';
@@ -83,11 +89,10 @@ function getFromDisk(node, callback) {
 
     search_obj.get_attributes = ['*'];
 
-    search.searchByValue(search_obj, function (err, data) {
-        if (err) {
-            return callback(err);
-        }
-        return callback(null, data);
+    let data = await p_search_by_value(search_obj)
+        .catch(err =>{
+            throw err;
+        });
 
-    });
+    return data;
 }

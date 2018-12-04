@@ -1,15 +1,13 @@
 "use strict";
 
 const harper_logger = require('../../utility/logging/harper_logger');
-const search = require('../../data_layer/search');
-const insert = require('../../data_layer/insert');
-const delete_ = require('../../data_layer/delete');
 const schema = require('../../data_layer/schema');
-const server_utilities = require('../serverUtilities');
-const auth = require('../../security/auth');
+const {promisify} = require('util');
 
 const SocketClient = require('./SocketClient');
 const cluster_handlers = require('./clusterHandlers');
+
+const p_schema_describe_all = promisify(schema.describeAll);
 
 class SocketServer {
     constructor(node) {
@@ -60,42 +58,41 @@ class SocketServer {
                         global.cluster_server.socket_client.push(new_client);
                     }
 
-                    socket.join(msg.name, () => {
+                    socket.join(msg.name, async () => {
 
                         harper_logger.info(node.name + ' joined room ' + msg.name);
-                        // retrive the queue and send to this node.
-                        cluster_handlers.fetchQueue(msg, socket)
+                        // retrieve the queue and send to this node.
+                        await cluster_handlers.fetchQueue(msg, socket)
 
                     });
                 });
 
-                socket.on('catchup_request', (msg)=>{
+                socket.on('catchup_request', async msg => {
                     harper_logger.info(msg.name + ' catchup_request');
-                    cluster_handlers.fetchQueue(msg, socket);
+                    await cluster_handlers.fetchQueue(msg, socket);
                 });
 
 
 
-                socket.on('confirm_msg', function (msg) {
-                    cluster_handlers.onConfirmMessageHandler(msg);
+                socket.on('confirm_msg', async msg => {
+                    await cluster_handlers.onConfirmMessageHandler(msg);
                 });
 
-                socket.on('error', function (error) {
+                socket.on('error', error => {
                     harper_logger.error(error);
                 });
 
-                socket.on('disconnect', function (error) {
+                socket.on('disconnect', error => {
                     if (error !== 'transport close')
                         harper_logger.error(error);
                 });
 
-                socket.on('schema_update_request', function(error){
-                    schema.describeAll({}, function(err, schema){
-                        if(err){
+                socket.on('schema_update_request', async () => {
+                    let schema = await p_schema_describe_all({})
+                        .catch(err =>{
                             return harper_logger.error(err);
-                        }
-                        socket.emit('schema_update_response', schema);
-                    });
+                        });
+                    socket.emit('schema_update_response', schema);
                 });
 
 
@@ -108,45 +105,6 @@ class SocketServer {
             next(e);
         }
     }
-
-}
-
-function getFromDisk(node, callback) {
-    let search_obj = {};
-    search_obj.schema = 'system';
-    search_obj.table = 'hdb_queue';
-    search_obj.hash_attribute = 'id';
-    search_obj.search_attribute = 'node_name';
-    if (node)
-        search_obj.search_value = node.name;
-    else
-        search_obj.search_value = "*";
-
-    search_obj.get_attributes = ['*'];
-
-    search.searchByValue(search_obj, function (err, data) {
-        if (err) {
-            return callback(err);
-        }
-        return callback(null, data);
-
-    });
-}
-
-function authHeaderToUser(json_body, callback){
-    let req = {};
-    req.headers = {};
-    req.headers.authorization = json_body.hdb_auth_header;
-
-    auth.authorize(req, null, function (err, user) {
-        if (err) {
-            return callback(err);
-        }
-
-        json_body.hdb_user = user;
-
-        callback(null, json_body);
-    });
 }
 
 module.exports = SocketServer;

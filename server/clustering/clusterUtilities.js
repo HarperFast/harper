@@ -6,10 +6,11 @@ const {promisify} = require('util');
 const {inspect} = require('util');
 const del = require('../../data_layer/delete');
 const terms = require('../../utility/hdbTerms');
+const auth = require('../../security/auth');
 
 //Promisified functions
-const p_insert_insert = promisify(insert.insert);
 const p_delete_delete = promisify(del.delete);
+const p_auth_authorize = promisify(auth.authorize);
 
 function addNode(new_node, callback) {
     // need to clean up new node as it hads operation and user on it
@@ -187,10 +188,24 @@ function clusterMessageHandler(msg) {
     }
 }
 
+async function authHeaderToUser(json_body){
+    let req = {};
+    req.headers = {};
+    req.headers.authorization = json_body.hdb_auth_header;
+
+    let user = await p_auth_authorize(req, null)
+        .catch((e)=>{
+            throw e;
+        });
+    json_body.hdb_user = user;
+    return json_body;
+}
+
 module.exports = {
     addNode: addNode,
     // This reference to the removeNode callback function can be removed once processLocalTransaction has been refactored
     removeNode: removeNodeCB,
     payloadHandler: payloadHandler,
-    clusterMessageHandler: clusterMessageHandler
+    clusterMessageHandler: clusterMessageHandler,
+    authHeaderToUser: authHeaderToUser
 };
