@@ -118,11 +118,15 @@ class SocketClient {
     }
 
     async onSchemaUpdateResponseHandler(cluster_schema){
-        let my_schema = await p_schema_describe_all()
-            .catch(err => {
-                harper_logger.error(err);
-            });
-
+        let my_schema;
+        try {
+            my_schema = await p_schema_describe_all({})
+                .catch(err => {
+                    harper_logger.error(err);
+                });
+        } catch(e){
+            return harper_logger.error(e);
+        }
         let missing_schemas = [];
         let missing_tables = [];
         let missing_attributes = [];
