@@ -226,17 +226,20 @@ class SocketClient {
                 return harper_logger.error(err);
             });
 
-        let data = await p_server_utilities_proccess_delegated_transaction(msg.body, operation_function)
-            .catch(err =>{
-                return harper_logger.error(err);
-            });
-
         let payload = {
             "id": msg.id,
-            "error": err,
-            "data": data,
+            "error": null,
+            "data": null,
             "node": this_node
         };
+        let data = await p_server_utilities_proccess_delegated_transaction(msg.body, operation_function)
+            .catch(err =>{
+                harper_logger.error(err);
+                payload.error = err;
+                the_client.emit('confirm_msg', payload);
+            });
+
+        payload.data = data;
         the_client.emit('confirm_msg', payload);
     }
 
