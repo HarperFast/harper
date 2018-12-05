@@ -1,13 +1,36 @@
 "use strict";
 
-const harper_logger = require('../../utility/logging/harper_logger');
+const log = require('../../utility/logging/harper_logger');
+const search = require('../../data_layer/search');
+const insert = require('../../data_layer/insert');
+const delete_ = require('../../data_layer/delete');
 const schema = require('../../data_layer/schema');
+const uuidv4 = require('uuid/v1');
+const http = require('http');
+const https = require('https');
+const sio = require('socket.io');
 const {promisify} = require('util');
-
+const fs = require('fs');
+const terms = require('../../utility/hdbTerms');
 const SocketClient = require('./SocketClient');
 const cluster_handlers = require('./clusterHandlers');
 
 const p_schema_describe_all = promisify(schema.describeAll);
+
+const PropertiesReader = require('properties-reader');
+let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
+hdb_properties.append(hdb_properties.get('settings_path'));
+
+const privateKeyPath = hdb_properties.get(terms.HDB_SETTINGS_NAMES.PRIVATE_KEY_KEY);
+const certificatePath = hdb_properties.get(terms.HDB_SETTINGS_NAMES.CERT_KEY);
+
+let credentials = undefined;
+try {
+    credentials = {key: fs.readFileSync(`${privateKeyPath}`), cert: fs.readFileSync(`${certificatePath}`)};
+} catch(err) {
+    log.error('Error reading https private key and credential files');
+    credentials = undefined;
+}
 
 class SocketServer {
     constructor(node) {
@@ -23,10 +46,17 @@ class SocketServer {
 
     init(next) {
         try {
-            // TODO probably need to make this https
-            let server = require('http').createServer().listen(this.port, function () {});
+            let server = undefined;
+            if(!credentials) {
+                server = http.createServer().listen(this.port, function () {
+                });
+            } else {
+                server = https.createServer(credentials, () => {
+
+                }).listen(this.port);
+            }
             let node = this.node;
-            this.io = require('socket.io').listen(server);
+            this.io = sio.listen(server);
             this.io.sockets.on("connection", function (socket) {
                 socket.on("identify", function (msg, callback) {
                     //this is the remote ip address of the client connecting to this server.
@@ -84,7 +114,7 @@ class SocketServer {
 
                 socket.on('disconnect', error => {
                     if (error !== 'transport close')
-                        harper_logger.error(error);
+                        log.error(error);
                 });
 
                 socket.on('schema_update_request', async () => {
@@ -101,7 +131,7 @@ class SocketServer {
             next();
 
         } catch (e) {
-            harper_logger.error(e);
+            log.error(e);
             next(e);
         }
     }

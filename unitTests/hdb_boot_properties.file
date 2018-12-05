@@ -1,2 +1,2 @@
-settings_path = /Users/elipalmer/harperdb/unitTests/settings.test
+settings_path = ./settings.tstFile
     install_user = elipalmer

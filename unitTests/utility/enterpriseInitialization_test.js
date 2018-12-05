@@ -127,7 +127,7 @@ describe('Test kickOffEnterprise', function () {
             done();
         });
     });
-    it('No node data in hdb_nodes table, expect no cluster node initiated', function (done) {
+    it('No node data in hdb_nodes table, expect cluster server initiated', function (done) {
         // stub searchByValue to return 4 default cluster nodes
         search_nodes_stub = sinon.stub(search, 'searchByValue').yields('', []);
         // stub ClusterServer class methods to yield callback without error
@@ -140,9 +140,9 @@ describe('Test kickOffEnterprise', function () {
         hdb_properties.set('NODE_NAME', 'node_1');
         
         enterprise_initialization.kickOffEnterprise(function(result){
-            assert.deepEqual(ClusterServerStub.calledWithNew(), false, 'new ClusterServer(...) should have not been called');                
-            assert.deepEqual(null, global.cluster_server, 'global.cluster_server should not be set');
-            assert.deepEqual(result.clustering, false, 'function should return clustering = false');
+            assert.deepEqual(ClusterServerStub.calledWithNew(), true, 'new ClusterServer(...) should have been called');
+            assert.notEqual(null, global.cluster_server, 'global.cluster_server should be set');
+            assert.deepEqual(result.clustering, true, 'function should return clustering = true');
             done();
         });
     });

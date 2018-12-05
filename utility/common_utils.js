@@ -4,6 +4,7 @@ const cast = require('autocast');
 const fs = require('fs');
 const log = require('./logging/harper_logger');
 const fs_extra = require('fs-extra');
+const os = require('os');
 const { promisify } = require('util');
 const {PERIOD_REGEX,
     DOUBLE_PERIOD_REGEX,
@@ -35,7 +36,8 @@ module.exports = {
     removeDir: removeDir,
     compareVersions: compareVersions,
     escapeRawValue: escapeRawValue,
-    unescapeValue: unescapeValue
+    unescapeValue: unescapeValue,
+    stringifyProps: stringifyProps
 };
 
 /**
@@ -266,4 +268,46 @@ function unescapeValue(value){
     }
 
     return String(value).replace(ESCAPED_FORWARD_SLASH_REGEX, '/');
+}
+
+/**
+ * Takes a PropertiesReader object and converts it to a string so it can be printed to a file.
+ * @param prop_reader_object - An object of type properties-reader containing properties stored in settings.js
+ * @param comments - Object with key,value describing comments that should be placed above a variable in the settings file.
+ * The key is the variable name (PROJECT_DIR) and the value will be the string comment.
+ * @returns {string}
+ */
+function stringifyProps(prop_reader_object, comments) {
+    if(isEmpty(prop_reader_object)) {
+        log.info('Properties object is null');
+        return '';
+    }
+    let lines = '';
+    let section = null;
+    prop_reader_object.each(function (key, value) {
+        try {
+            let tokens = key.split('.');
+            if (tokens && tokens.length > 1) {
+                if (section !== tokens[0]) {
+                    section = tokens[0];
+                    lines += ('[' + section + ']');
+                }
+                key = tokens.slice(1).join('.');
+            } else {
+                section = null;
+            }
+            if (comments && comments[key]) {
+                let curr_comments = comments[key];
+                for (let comm of curr_comments) {
+                    lines += (';' + comm + os.EOL);
+                }
+            }
+            if(!isEmptyOrZeroLength(key) ) {
+                lines += key + '=' + value + os.EOL;
+            }
+        } catch(e) {
+            log.error(`Found bad property during upgrade with key ${key} and value: ${value}`);
+        }
+    });
+    return lines;
 }

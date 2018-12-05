@@ -7,6 +7,13 @@ const schema = require('../../data_layer/schema');
 const _ = require('lodash');
 
 const common_utils = require('../../utility/common_utils');
+const terms = require('../../utility/hdbTerms');
+
+const PropertiesReader = require('properties-reader');
+let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
+hdb_properties.append(hdb_properties.get('settings_path'));
+
+const ALLOW_SELF_SIGNED_CERTS = hdb_properties.get(terms.HDB_SETTINGS_NAMES.ALLOW_SELF_SIGNED_SSL_CERTS);
 const insert = require('../../data_layer/insert');
 const uuidv4 = require('uuid/v1');
 const {promisify} = require('util');
@@ -25,7 +32,11 @@ const ERROR_NO_HDB_USER = 'there is no hdb_user';
 
 const CLIENT_CONNECTION_OPTIONS = {
     reconnectionDelay: 5000,
-    reconnectionDelayMax: 20000
+    reconnectionDelayMax: 20000,
+    secure: true,
+    reconnect: true,
+    rejectUnauthorized :
+        ((ALLOW_SELF_SIGNED_CERTS && ALLOW_SELF_SIGNED_CERTS.toString().toLowerCase() === 'true') ? false : true)
 };
 
 class SocketClient {
@@ -243,7 +254,6 @@ class SocketClient {
         the_client.emit('confirm_msg', payload);
     }
 
-
     onDisconnectHandler(reason) {
         this.other_node.status = 'disconnected';
         harper_logger.info(`server ${this.other_node.name} down`);
@@ -257,9 +267,9 @@ class SocketClient {
         if (this.node.port === this.other_node.port && this.other_node.host === this.node.host) {
             harper_logger.debug("cannot connect to thyself");
         }
-        //TODO needs to be HTTPS
+
         harper_logger.info(`${this.node.name} is attempting to connect to ${this.other_node.name} at ${this.other_node.host}:${this.other_node.port}`);
-        this.client = ioc.connect(`http://${this.other_node.host}:${this.other_node.port}`, CLIENT_CONNECTION_OPTIONS);
+        this.client = ioc.connect(`https://${this.other_node.host}:${this.other_node.port}`, CLIENT_CONNECTION_OPTIONS);
     }
 
 

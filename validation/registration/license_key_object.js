@@ -1,4 +1,4 @@
-const validator = require('./validationWrapper.js'),
+const validator = require('../validationWrapper.js'),
     validate = require('validate.js'),
     moment = require('moment');
 

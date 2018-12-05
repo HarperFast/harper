@@ -152,18 +152,6 @@ function checkInstall(callback) {
     }
 }
 
-function checkRegister(callback) {
-    if (wizard_result.HDB_REGISTER === 'true') {
-        register = require('../registrationHandler'),
-            register.register(prompt, function (err, result) {
-                if (err) {
-                    return callback(err);
-                }
-                return callback(null, "Successful installation!");
-            });
-    }
-}
-
 /**
  * The install wizard will guide the user through the required data needed for the install.
  * @param err - Errors from the previous (Terms and Conditions) waterfall function.
@@ -300,7 +288,11 @@ function createSettingsFile(mount_status, callback) {
             `   ;LOGGER = 2 Uses the more performant PINO logger.\n` +
             `LOGGER = 1\n` +
             `LOG_PATH = ${wizard_result.HDB_ROOT}/log/hdb_log.log\n` +
-            `NODE_ENV = production\n`;
+            `NODE_ENV = production\n` +
+            `   ;This allows self signed certificates to be used in clustering.  This is a security risk\n` +
+            `   ;as clustering will not validate the cert, so should only be used internally.\n` +
+            `   ;The HDB install creates a self signed certficate, if you use that cert this must be set to true.\n` +
+            `ALLOW_SELF_SIGNED_SSL_CERTS = false\n`;
 
         winston.info('info', `hdb_props_value ${JSON.stringify(hdb_props_value)}`);
         winston.info('info', `settings path: ${hdb_boot_properties.get('settings_path')}`);

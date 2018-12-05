@@ -18,6 +18,8 @@ const op_auth = require('../utility/operation_authorization');
 const jobs = require('./jobs');
 const signal = require('../utility/signalling');
 const job_runner = require('./jobRunner');
+const terms = require('../utility/hdbTerms');
+const reg = require('../utility/registration/registrationHandler');
 
 const UNAUTH_RESPONSE = 403;
 const UNAUTHORIZED_TEXT = 'You are not authorized to perform the operation specified';
@@ -234,6 +236,9 @@ function chooseOperation(json, callback) {
         case 'remove_node':
             operation_function = cluster_utilities.removeNode;
             break;
+        case terms.OPERATIONS_ENUM.CONFIGURE_CLUSTER:
+            operation_function = cluster_utilities.configureCluster;
+            break;
         case 'export_to_s3':
             operation_function = signalJob;
             job_operation_function = export_.export_to_s3;
@@ -257,6 +262,12 @@ function chooseOperation(json, callback) {
             break;
         case 'update_job':
             operation_function = jobs.updateJob;
+            break;
+        case terms.OPERATIONS_ENUM.GET_FINGERPRINT:
+            operation_function = reg.getFingerprint;
+            break;
+        case terms.OPERATIONS_ENUM.SET_LICENSE:
+            operation_function = reg.setLicense;
             break;
         default:
             break;
