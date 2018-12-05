@@ -1,11 +1,7 @@
 "use strict";
 
 const log = require('../../utility/logging/harper_logger');
-const search = require('../../data_layer/search');
-const insert = require('../../data_layer/insert');
-const delete_ = require('../../data_layer/delete');
 const schema = require('../../data_layer/schema');
-const uuidv4 = require('uuid/v1');
 const http = require('http');
 const https = require('https');
 const sio = require('socket.io');
@@ -90,7 +86,7 @@ class SocketServer {
 
                     socket.join(msg.name, async () => {
 
-                        harper_logger.info(node.name + ' joined room ' + msg.name);
+                        log.info(node.name + ' joined room ' + msg.name);
                         // retrieve the queue and send to this node.
                         await cluster_handlers.fetchQueue(msg, socket)
 
@@ -98,7 +94,7 @@ class SocketServer {
                 });
 
                 socket.on('catchup_request', async msg => {
-                    harper_logger.info(msg.name + ' catchup_request');
+                    log.info(msg.name + ' catchup_request');
                     await cluster_handlers.fetchQueue(msg, socket);
                 });
 
@@ -109,7 +105,7 @@ class SocketServer {
                 });
 
                 socket.on('error', error => {
-                    harper_logger.error(error);
+                    log.error(error);
                 });
 
                 socket.on('disconnect', error => {
@@ -120,7 +116,7 @@ class SocketServer {
                 socket.on('schema_update_request', async () => {
                     let schema = await p_schema_describe_all({})
                         .catch(err =>{
-                            return harper_logger.error(err);
+                            return log.error(err);
                         });
                     socket.emit('schema_update_response', schema);
                 });

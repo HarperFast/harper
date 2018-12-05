@@ -1,6 +1,4 @@
 const harper_logger = require('../../utility/logging/harper_logger');
-const auth = require('../../security/auth');
-const server_utilities = require('../serverUtilities');
 const search = require('../../data_layer/search');
 const delete_ = require('../../data_layer/delete');
 const {promisify} = require('util');

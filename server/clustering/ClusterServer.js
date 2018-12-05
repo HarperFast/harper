@@ -1,6 +1,5 @@
 "use strict";
 const search = require('../../data_layer/search');
-const hdb_utils = require('../../utility/common_utils');
 const SocketServer = require('./SocketServer');
 const SocketClient = require('./SocketClient');
 const clone = require('clone');
