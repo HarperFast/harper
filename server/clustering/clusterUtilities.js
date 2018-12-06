@@ -8,6 +8,7 @@ const del = require('../../data_layer/delete');
 const terms = require('../../utility/hdbTerms');
 const env_mgr = require('../../utility/environment/environmentManager');
 const os = require('os');
+const configure_validator = require('../../validation/clustering/configureValidator');
 
 //Promisified functions
 const p_insert_insert = promisify(insert.insert);
@@ -175,8 +176,8 @@ function configureClusterCB(enable_cluster_json, callback) {
         return callback('Invalid JSON message for remove_node', null);
     }
     let response = {};
-    configureCluster(enable_cluster_json).then((result) => {
-        response['message'] = 'Successfully wrote clustering config settings.';
+    configureCluster(enable_cluster_json).then(() => {
+        response['message'] = 'Successfully wrote clustering config settings.  A backup file was created.';
         return callback(null, response);
     }).catch((err) => {
         log.error(`There was an error removing node ${err}`);
@@ -191,11 +192,13 @@ function configureClusterCB(enable_cluster_json, callback) {
  * @returns {Promise<void>}
  */
 async function configureCluster(enable_cluster_json) {
-    if(hdb_utils.isEmptyOrZeroLength(enable_cluster_json) || hdb_utils.isEmptyOrZeroLength(enable_cluster_json.clustering_port) || hdb_utils.isEmptyOrZeroLength(enable_cluster_json.clustering_node_name)) {
-        throw new Error(`Invalid port: ${enable_cluster_json.clustering_port} or hostname: ${enable_cluster_json.clustering_node_name} specified in enableCluster.`);
+    let validation = configure_validator(enable_cluster_json);
+    if(validation) {
+        log.error(`Validation error in configureCluster validation. ${validation}`);
+        throw new Error(validation);
     }
     try {
-        env_mgr.setProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY, enable_cluster_json.enabled);
+        env_mgr.setProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY, enable_cluster_json.clustering_enabled);
         env_mgr.setProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY, enable_cluster_json.clustering_port);
         env_mgr.setProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY, enable_cluster_json.clustering_node_name);
         await env_mgr.writeSettingsFile(true);
