@@ -9406,12 +9406,799 @@
 			]
 		},
 		{
-			"_postman_id": "eb0c8fe5-9800-4a72-81c2-8eeba62d8ef8",
-			"name": "10. Environment Clean Up",
-			"description": null,
+			"name": "10. Configuration",
 			"item": [
 				{
-					"_postman_id": "dcddfd26-1af8-4169-8e67-26284994e2b0",
+					"name": "Get Fingerprint",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "c3c689de-425f-4538-a7c9-4c2c2a2c974e",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"test fingerprint returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData['fingerprint'] !== undefined);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46MTQwMA=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"get_fingerprint\"\n}"
+						},
+						"url": {
+							"raw": "http://localhost:9925",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "9925"
+						},
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+					},
+					"response": [
+						{
+							"name": "Create Schema",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic ZWxpOnBhc3M="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "access-control-allow-origin",
+									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
+									"name": "access-control-allow-origin",
+									"description": ""
+								},
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "45",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "vary",
+									"value": "Origin",
+									"name": "vary",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": "{\"message\":\"schema dev successfully created\"}"
+						}
+					]
+				},
+				{
+					"name": "Set License",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "056aa65e-6a84-4043-9396-1ad303277ea8",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"test fingerprint returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData['message'] === \"Wrote license key file.\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46MTQwMA=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"set_license\",\n\"key\":\"uFFG7xAZG11ec9d335bfe27c4ec5555310bd4a27f\"\n}"
+						},
+						"url": {
+							"raw": "http://localhost:9925",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "9925"
+						},
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+					},
+					"response": [
+						{
+							"name": "Create Schema",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic ZWxpOnBhc3M="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "access-control-allow-origin",
+									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
+									"name": "access-control-allow-origin",
+									"description": ""
+								},
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "45",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "vary",
+									"value": "Origin",
+									"name": "vary",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": "{\"message\":\"schema dev successfully created\"}"
+						}
+					]
+				},
+				{
+					"name": "Set License Bad Key",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "056aa65e-6a84-4043-9396-1ad303277ea8",
+								"exec": [
+									"pm.test(\"Status code is 500\", function () {",
+									"    pm.response.to.have.status(500);",
+									"});",
+									"",
+									"pm.test(\"test fingerprint returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData['message'] === \"Invalid key specified for license file.\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46MTQwMA=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"set_license\",\n\"key\":\"\"\n}"
+						},
+						"url": {
+							"raw": "http://localhost:9925",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "9925"
+						},
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+					},
+					"response": [
+						{
+							"name": "Create Schema",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic ZWxpOnBhc3M="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "access-control-allow-origin",
+									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
+									"name": "access-control-allow-origin",
+									"description": ""
+								},
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "45",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "vary",
+									"value": "Origin",
+									"name": "vary",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": "{\"message\":\"schema dev successfully created\"}"
+						}
+					]
+				},
+				{
+					"name": "Configure Cluster",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "5e4e982a-c39d-43eb-8496-fa6a0b0f20fd",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46MTQwMA=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\": \"configure_cluster\",\n\t\"clustering_enabled\": \"true\",\n\t\"clustering_port\": \"12345\",\n\t\"clustering_node_name\":\"some_name\"\n}"
+						},
+						"url": {
+							"raw": "http://localhost:9925",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "9925"
+						},
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+					},
+					"response": [
+						{
+							"name": "Create Schema",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic ZWxpOnBhc3M="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "access-control-allow-origin",
+									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
+									"name": "access-control-allow-origin",
+									"description": ""
+								},
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "45",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "vary",
+									"value": "Origin",
+									"name": "vary",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": "{\"message\":\"schema dev successfully created\"}"
+						}
+					]
+				},
+				{
+					"name": "Configure Cluster bad port",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "5e4e982a-c39d-43eb-8496-fa6a0b0f20fd",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46MTQwMA=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\": \"configure_cluster\",\n\t\"clustering_enabled\": \"true\",\n\t\"clustering_port\": \"12345\",\n\t\"clustering_node_name\":\"some_name\"\n}"
+						},
+						"url": {
+							"raw": "http://localhost:9925",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "9925"
+						},
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+					},
+					"response": [
+						{
+							"name": "Create Schema",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic ZWxpOnBhc3M="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "access-control-allow-origin",
+									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
+									"name": "access-control-allow-origin",
+									"description": ""
+								},
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "45",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "vary",
+									"value": "Origin",
+									"name": "vary",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": "{\"message\":\"schema dev successfully created\"}"
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "11. Environment Clean Up",
+			"item": [
+				{
 					"name": "sql delete schema",
 					"event": [
 						{

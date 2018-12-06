@@ -284,8 +284,8 @@ function createSettingsFile(mount_status, callback) {
             `CORS_WHITELIST =\n` +
             `SERVER_TIMEOUT_MS = 120000\n` +
             `LOG_LEVEL = error\n` +
-            `   ;LOGGER = 1 Uses the WINSTON logger.\n` +
-            `   ;LOGGER = 2 Uses the more performant PINO logger.\n` +
+            `   ;Setting LOGGER to 1 uses the WINSTON logger.\n` +
+            `   ; 2 Uses the more performant PINO logger.\n` +
             `LOGGER = 1\n` +
             `LOG_PATH = ${wizard_result.HDB_ROOT}/log/hdb_log.log\n` +
             `NODE_ENV = production\n` +
