@@ -286,23 +286,17 @@ function stringifyProps(prop_reader_object, comments) {
     let section = null;
     prop_reader_object.each(function (key, value) {
         try {
-            let tokens = key.split('.');
-            if (tokens && tokens.length > 1) {
-                if (section !== tokens[0]) {
-                    section = tokens[0];
-                    lines += ('[' + section + ']');
-                }
-                key = tokens.slice(1).join('.');
-            } else {
-                section = null;
-            }
             if (comments && comments[key]) {
                 let curr_comments = comments[key];
                 for (let comm of curr_comments) {
                     lines += (';' + comm + os.EOL);
                 }
             }
-            if(!isEmptyOrZeroLength(key) ) {
+            if(!isEmptyOrZeroLength(key) && key[0] === ';') {
+                // This is a comment, just write it all
+                lines += '\t' + key + value + os.EOL;
+            }
+            else if(!isEmptyOrZeroLength(key) ) {
                 lines += key + '=' + value + os.EOL;
             }
         } catch(e) {

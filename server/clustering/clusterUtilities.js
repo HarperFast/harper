@@ -7,15 +7,54 @@ const {inspect} = require('util');
 const del = require('../../data_layer/delete');
 const terms = require('../../utility/hdbTerms');
 const env_mgr = require('../../utility/environment/environmentManager');
+const os = require('os');
+const configure_validator = require('../../validation/clustering/configureValidator');
 const auth = require('../../security/auth');
 
 //Promisified functions
 const p_delete_delete = promisify(del.delete);
 const p_auth_authorize = promisify(auth.authorize);
 
+const iface = os.networkInterfaces();
+const addresses = [];
+
+const DUPLICATE_ERR_MSG = 'Cannot add a node that matches the hosts clustering config.';
+
+for (let k in iface) {
+    for (let k2 in iface[k]) {
+        let address = iface[k][k2];
+        if (address.family === 'IPv4' && !address.internal) {
+            addresses.push(address.address);
+        }
+    }
+}
+
 function addNode(new_node, callback) {
     // need to clean up new node as it hads operation and user on it
     let validation = node_Validator(new_node);
+    let cluster_port = undefined;
+    let new_port = undefined;
+    try {
+        // This should move up as a const once https://harperdb.atlassian.net/browse/HDB-640 is done.
+        cluster_port = env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY);
+        new_port = parseInt(new_node.port);
+    } catch(err) {
+        return callback(`Invalid port: ${new_node.port} specified`, null);
+    }
+
+    //TODO: We may need to expand this depending on what is decided in https://harperdb.atlassian.net/browse/HDB-638
+    if(new_port === cluster_port) {
+        if((new_node.host === 'localhost' || new_node.host === '127.0.0.1')) {
+            return callback(DUPLICATE_ERR_MSG, null);
+        }
+        if(addresses && addresses.includes(new_node.host)) {
+            return callback(DUPLICATE_ERR_MSG, null);
+        }
+        if(os.hostname() === new_node.host) {
+            return callback(DUPLICATE_ERR_MSG, null);
+        }
+    }
+
     if(validation) {
         log.error(`Validation error in addNode validation. ${validation}`);
         return callback(validation);
@@ -138,8 +177,8 @@ function configureClusterCB(enable_cluster_json, callback) {
         return callback('Invalid JSON message for remove_node', null);
     }
     let response = {};
-    configureCluster(enable_cluster_json).then((result) => {
-        response['message'] = 'Successfully wrote clustering config settings.';
+    configureCluster(enable_cluster_json).then(() => {
+        response['message'] = 'Successfully wrote clustering config settings.  A backup file was created.';
         return callback(null, response);
     }).catch((err) => {
         log.error(`There was an error removing node ${err}`);
@@ -154,11 +193,13 @@ function configureClusterCB(enable_cluster_json, callback) {
  * @returns {Promise<void>}
  */
 async function configureCluster(enable_cluster_json) {
-    if(hdb_utils.isEmptyOrZeroLength(enable_cluster_json) || hdb_utils.isEmptyOrZeroLength(enable_cluster_json.clustering_port) || hdb_utils.isEmptyOrZeroLength(enable_cluster_json.clustering_node_name)) {
-        throw new Error(`Invalid port: ${enable_cluster_json.clustering_port} or hostname: ${enable_cluster_json.clustering_node_name} specified in enableCluster.`);
+    let validation = configure_validator(enable_cluster_json);
+    if(validation) {
+        log.error(`Validation error in configureCluster validation. ${validation}`);
+        throw new Error(validation);
     }
     try {
-        env_mgr.setProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY, enable_cluster_json.enabled);
+        env_mgr.setProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY, enable_cluster_json.clustering_enabled);
         env_mgr.setProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY, enable_cluster_json.clustering_port);
         env_mgr.setProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY, enable_cluster_json.clustering_node_name);
         await env_mgr.writeSettingsFile(true);

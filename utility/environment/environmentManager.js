@@ -220,7 +220,17 @@ async function writeSettingsFile(create_backup_bool) {
         });
     }
     try {
-        await p_fs_write(settings_file_path, common_utils.stringifyProps(hdb_properties, null));
+        // The global hdb_props file holds the settings_path and install_user which is from the hdb_boot_props file, we
+        // dont want to write those so we clone it and delete them.
+        let copy = hdb_properties.clone();
+        try {
+            delete copy._properties['settings_path'];
+            delete copy._properties['install_user'];
+        } catch(err) {
+            log.error(err);
+            throw new Error('There was a problem writing the settings file.  Please try again');
+        }
+        await p_fs_write(settings_file_path, common_utils.stringifyProps(copy, null));
     } catch(err) {
         log.error(`Had a problem writing new settings.`);
         throw err;
