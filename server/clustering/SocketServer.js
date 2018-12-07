@@ -114,11 +114,12 @@ class SocketServer {
                 });
 
                 socket.on('schema_update_request', async () => {
-                    let schema = await p_schema_describe_all({})
-                        .catch(err =>{
-                            return log.error(err);
-                        });
-                    socket.emit('schema_update_response', schema);
+                    try {
+                        let schema = await p_schema_describe_all({});
+                        socket.emit('schema_update_response', schema);
+                    } catch(e){
+                        log.error(err);
+                    }
                 });
 
 
