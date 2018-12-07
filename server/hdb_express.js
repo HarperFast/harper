@@ -111,18 +111,20 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
             }
 
             Promise.all(licenses.map(async (license) => {
-                let license_validation = await hdb_license.validateLicense(license.license_key, license.company).catch((err) => {
-                    return harper_logger.error(err);
-                });
-                if (license_validation.valid_machine && license_validation.valid_date && license_validation.valid_license) {
-                    enterprise = true;
-                    if (num_workers > numCPUs) {
-                        if (numCPUs === 4) {
-                            numCPUs = 16;
-                        } else {
-                            numCPUs += 16;
+                try {
+                    let license_validation = await hdb_license.validateLicense(license.license_key, license.company);
+                    if (license_validation.valid_machine && license_validation.valid_date && license_validation.valid_license) {
+                        enterprise = true;
+                        if (num_workers > numCPUs) {
+                            if (numCPUs === 4) {
+                                numCPUs = 16;
+                            } else {
+                                numCPUs += 16;
+                            }
                         }
                     }
+                } catch(e){
+                    harper_logger.error(e);
                 }
             })).then(() => {
                 harper_logger.info(`Master ${process.pid} is running`);

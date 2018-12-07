@@ -65,7 +65,6 @@ class ClusterServer {
         });
     }
 
-    //refactor to find the node from clients, then call it's send function
     send(msg, res) {
         try {
             log.debug('node cluster msg out: ' + JSON.stringify(msg));
