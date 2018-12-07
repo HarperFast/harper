@@ -111,18 +111,20 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
             }
 
             Promise.all(licenses.map(async (license) => {
-                let license_validation = await hdb_license.validateLicense(license.license_key, license.company).catch((err) => {
-                    return harper_logger.error(err);
-                });
-                if (license_validation.valid_machine && license_validation.valid_date && license_validation.valid_license) {
-                    enterprise = true;
-                    if (num_workers > numCPUs) {
-                        if (numCPUs === 4) {
-                            numCPUs = 16;
-                        } else {
-                            numCPUs += 16;
+                try {
+                    let license_validation = await hdb_license.validateLicense(license.license_key, license.company);
+                    if (license_validation.valid_machine && license_validation.valid_date && license_validation.valid_license) {
+                        enterprise = true;
+                        if (num_workers > numCPUs) {
+                            if (numCPUs === 4) {
+                                numCPUs = 16;
+                            } else {
+                                numCPUs += 16;
+                            }
                         }
                     }
+                } catch(e){
+                    harper_logger.error(e);
                 }
             })).then(() => {
                 harper_logger.info(`Master ${process.pid} is running`);
@@ -248,6 +250,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                     }
                     return res.status(hdb_terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send(err);
                 }
+                let localOnlyOperations = ['describe_all', 'describe_table', 'describe_schema', 'read_log', 'add_node'];
 
                 if (global.clustering_on && req.body.operation !== 'sql') {
                     if (!req.body.schema
@@ -303,38 +306,39 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                                             });
                                         }
                                     });
-                                }
+                                } else {
 
-                                if (residence.indexOf(hdb_properties.get('NODE_NAME')) > -1) {
-                                    server_utilities.processLocalTransaction(req, res, operation_function, function (err) {
-                                        if (residence.length > 1) {
-                                            for (let node in residence) {
-                                                if (residence[node] !== hdb_properties.get('NODE_NAME')) {
+                                    if (residence.indexOf(hdb_properties.get('NODE_NAME')) > -1) {
+                                        server_utilities.processLocalTransaction(req, res, operation_function, function (err) {
+                                            if (residence.length > 1) {
+                                                for (let node in residence) {
+                                                    if (residence[node] !== hdb_properties.get('NODE_NAME')) {
 
-                                                    let id = uuidv1();
-                                                    process.send({
-                                                        "type": "clustering_payload", "pid": process.pid,
-                                                        "clustering_type": "send",
-                                                        "id": id,
-                                                        "body": req.body,
-                                                        "node": {"name": residence[node]}
-                                                    });
+                                                        let id = uuidv1();
+                                                        process.send({
+                                                            "type": "clustering_payload", "pid": process.pid,
+                                                            "clustering_type": "send",
+                                                            "id": id,
+                                                            "body": req.body,
+                                                            "node": {"name": residence[node]}
+                                                        });
+                                                    }
                                                 }
                                             }
-                                        }
-                                    });
-                                } else {
-                                    for (let node in residence) {
-                                        if (residence[node] !== hdb_properties.get('NODE_NAME')) {
-                                            let id = uuidv1();
-                                            global.clusterMsgQueue[id] = res;
-                                            process.send({
-                                                "type": "clustering_payload", "pid": process.pid,
-                                                "clustering_type": "send",
-                                                "id": id,
-                                                "body": req.body,
-                                                "node": {"name": residence[node]}
-                                            });
+                                        });
+                                    } else {
+                                        for (let node in residence) {
+                                            if (residence[node] !== hdb_properties.get('NODE_NAME')) {
+                                                let id = uuidv1();
+                                                global.clusterMsgQueue[id] = res;
+                                                process.send({
+                                                    "type": "clustering_payload", "pid": process.pid,
+                                                    "clustering_type": "send",
+                                                    "id": id,
+                                                    "body": req.body,
+                                                    "node": {"name": residence[node]}
+                                                });
+                                            }
                                         }
                                     }
                                 }

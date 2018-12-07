@@ -9,10 +9,11 @@ const terms = require('../../utility/hdbTerms');
 const env_mgr = require('../../utility/environment/environmentManager');
 const os = require('os');
 const configure_validator = require('../../validation/clustering/configureValidator');
+const auth = require('../../security/auth');
 
 //Promisified functions
-const p_insert_insert = promisify(insert.insert);
 const p_delete_delete = promisify(del.delete);
+const p_auth_authorize = promisify(auth.authorize);
 
 const iface = os.networkInterfaces();
 const addresses = [];
@@ -272,11 +273,25 @@ function clusterMessageHandler(msg) {
     }
 }
 
+async function authHeaderToUser(json_body){
+    let req = {};
+    req.headers = {};
+    req.headers.authorization = json_body.hdb_auth_header;
+
+    let user = await p_auth_authorize(req, null)
+        .catch((e)=>{
+            throw e;
+        });
+    json_body.hdb_user = user;
+    return json_body;
+}
+
 module.exports = {
     addNode: addNode,
     // The reference to the callback functions can be removed once processLocalTransaction has been refactored
     configureCluster: configureClusterCB,
     removeNode: removeNodeCB,
     payloadHandler: payloadHandler,
-    clusterMessageHandler: clusterMessageHandler
+    clusterMessageHandler: clusterMessageHandler,
+    authHeaderToUser: authHeaderToUser
 };
