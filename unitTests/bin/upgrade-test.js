@@ -36,6 +36,9 @@ describe('Upgrade Test - Test processDirectives', function() {
     });
 });
 
+// Commented out for https://harperdb.atlassian.net/browse/HDB-646
+// Put bback in when tests are running on their own build server
+/*
 describe('Upgrade Test - Test checkIfRunning', function() {
     // the find-module function does an annoying way of bringing in it's modules that makes stubbing
     // them difficult, so we need to force the stub this way.
@@ -62,7 +65,7 @@ describe('Upgrade Test - Test checkIfRunning', function() {
         upgrade_rw.__set__('ps', orig_ps);
         assert.ok((except instanceof Error) === true, 'Expected exception');
     });
-});
+}); */
 
 describe('Upgrade Test - Test upgrade', async function() {
     let check_if_running_stub_orig = upgrade_rw.__get__('checkIfRunning');
