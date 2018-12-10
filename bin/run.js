@@ -25,6 +25,8 @@ let hdb_boot_properties = null;
 let hdb_properties = null;
 let fork = require('child_process').fork;
 
+let child = undefined;
+
 /***
  * Starts Harper DB.  If Harper is already running, or the port is in use, and error will be thrown and Harper will not
  * start.  If the hdb_boot_props file is not found, it is assumed an install needs to be performed.
@@ -193,6 +195,7 @@ function foregroundHandler(){
     let is_foreground = isForegroundProcess();
 
     if(!is_foreground){
+        child.unref();
         exitInstall();
     }
 
@@ -248,7 +251,7 @@ function checkPermission(callback){
 }
 
 function kickOffExpress(err, callback) {
-    let child = undefined;
+
     if (hdb_properties && hdb_properties.get('MAX_MEMORY')) {
         child = fork(path.join(__dirname,'../server/hdb_express.js'),[`--max-old-space-size=${hdb_properties.get('MAX_MEMORY')}`, `${hdb_properties.get('PROJECT_DIR')}/server/hdb_express.js`],{
             detached: true,
@@ -261,7 +264,6 @@ function kickOffExpress(err, callback) {
         });
     }
 
-    child.unref();
     console.log(colors.magenta('' + fs.readFileSync(path.join(__dirname,'../utility/install/ascii_logo.txt'))));
     console.log(colors.magenta(`|------------- HarperDB ${pjson.version} successfully started ------------|`));
     return callback();
