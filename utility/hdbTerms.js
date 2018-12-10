@@ -27,6 +27,8 @@ const ESCAPED_DOUBLE_PERIOD_REGEX = /^U\+002EU\+002E$/;
 // Name of the System schema
 const SYSTEM_SCHEMA_NAME = 'system';
 
+const HASH_FOLDER_NAME = '__hdb_hash';
+
 //this variable defines operations that should only run locally and not pass over clustering to another node(s)
 const LOCAL_HARPERDB_OPERATIONS = ['describe_all', 'describe_table', 'describe_schema', 'read_log', 'add_node', 'list_users', 'list_roles', 'user_info', 'sql', 'get_job', 'search_jobs_by_start_date', 'delete_files_before', 'export_local', 'export_to_s3'];
 
@@ -114,7 +116,9 @@ const OPERATIONS_ENUM = {
     UPDATE_JOB: 'update_job',
     GET_FINGERPRINT: 'get_fingerprint',
     SET_LICENSE: 'set_license',
-    CONFIGURE_CLUSTER: 'configure_cluster'
+    CONFIGURE_CLUSTER: 'configure_cluster',
+    DROP_ATTRIBUTE: 'drop_attribute',
+    REMOVE_NODE: 'remove_node'
 };
 
 const SERVICE_ACTIONS_ENUM = {
@@ -192,6 +196,7 @@ const JOB_TYPE_ENUM = {
 module.exports = {
     HDB_PROC_NAME,
     SYSTEM_SCHEMA_NAME,
+    HASH_FOLDER_NAME,
     JOB_TYPE_ENUM,
     JOB_STATUS_ENUM,
     SYSTEM_TABLE_NAMES,
