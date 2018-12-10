@@ -194,7 +194,7 @@ function chooseOperation(json, callback) {
         case terms.OPERATIONS_ENUM.DESCRIBE_SCHEMA:
             operation_function = schema.describeSchema;
             break;
-        case terms.OPERATIONS_ENUM:
+        case terms.OPERATIONS_ENUM.DESCRIBE_TABLE:
             operation_function = schema.describeTable;
             break;
         case terms.OPERATIONS_ENUM.DESCRIBE_ALL:

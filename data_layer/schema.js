@@ -556,6 +556,8 @@ async function dropAttributeFromSystem(drop_attribute_object) {
         log.error(`Got an error removing attribute ${drop_attribute_object.attribute} from hdb_attribute.`);
         throw err;
     });
+
+    return result;
 }
 
 /**
