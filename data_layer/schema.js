@@ -13,6 +13,7 @@ const schema_describe = require('./schemaDescribe');
 const schema_ops = require('../utility/schema_ops');
 const PropertiesReader = require('properties-reader');
 const clone = require('clone');
+// TODO: Replace this with fs-extra mkdirp and remove module.
 const mkdirp = require('mkdirp');
 const _ = require('underscore');
 const signalling = require('../utility/signalling');
