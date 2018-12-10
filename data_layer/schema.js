@@ -584,6 +584,7 @@ async function moveAttributeToTrash (drop_attribute_object) {
     let hash_result = await moveFolderToTrash(hash_path, attribute_hash_trash_path).catch((err) => {
        log.error(`There was a problem moving the hash attribute at path ${path} to the trash at path: ${attribute_trash_path}`);
         // Not good, rollback attribute __hdb_hash folder and attribute folder
+        throw err;
     });
 
     let drop_result = await dropAttributeFromSystem(drop_attribute_object).catch((err) => {
