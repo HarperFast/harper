@@ -52,7 +52,7 @@ module.exports = {
     describeAll: schema_describe.describeAll,
     dropSchema: dropSchema,
     dropTable: dropTable,
-    dropAttribute: dropAttributeCB
+    dropAttribute: dropAttributeCB // This can be changed to just dropAttribute when processLocal has been updated to async/await
 };
 
 /** EXPORTED FUNCTIONS **/
@@ -225,7 +225,6 @@ function createTableStructure(create_table_object, callback) {
                 });
             });
         }
-
     });
 }
 
@@ -352,7 +351,7 @@ function dropTable(drop_table_object, callback) {
 /**
  * Calls the dropAttributeCB async function to match the callback style of processLocalTransaction.  This will be
  * removed once those are migrated.
- * @param json_message - The JSON formatted inbound message.
+ * @param drop_attribute_object - The JSON formatted inbound message.
  * @param callback
  * @returns {*}
  */
@@ -362,13 +361,14 @@ function dropAttributeCB(drop_attribute_object, callback) {
         response['message'] = result;
         return callback(null, response);
     }).catch((err) => {
-        return callback(err, null);
+        log.error(err);
+        return callback(`There was a problem dropping attribute: ${drop_attribute_object.attribute}.  Please check the log and try again.`, null);
     });
 }
 
 /**
- * Drops (removes all files for) the specified attribute.
- * @param drop_attribute_object
+ * Drops (moves to trash) all files for the specified attribute.
+ * @param drop_attribute_object - The JSON formatted inbound message.
  * @returns {Promise<*>}
  */
 async function dropAttribute(drop_attribute_object) {
@@ -450,7 +450,7 @@ function moveSchemaToTrash(drop_schema_object, tables, callback) {
                         }
                     });
                 } else {
-                  callback();
+                    callback();
                 }
             });
     });
@@ -561,7 +561,6 @@ async function dropAttributeFromSystem(drop_attribute_object) {
 /**
  * Performs the move of the target attribute and it's __hdb_hash entry to the trash directory.
  * @param drop_attribute_object - Descriptor of the table being moved to trash.
- * @param msg - Message returned from the delete.delete function.
  */
 async function moveAttributeToTrash (drop_attribute_object) {
     // TODO: Need to do specific rollback actions if any of the actions below fails.  https://harperdb.atlassian.net/browse/HDB-312
@@ -697,7 +696,6 @@ function createAttributeStructure(create_attribute_object, callback) {
                 }
             }
 
-
             let record = {
                 schema: create_attribute_object.schema,
                 table: create_attribute_object.table,
@@ -723,8 +721,6 @@ function createAttributeStructure(create_attribute_object, callback) {
                 logger.info(result);
                 callback(err, result);
             });
-
-
         });
     } catch (e) {
         callback(e);
@@ -782,8 +778,7 @@ function deleteAttributeStructure(attribute_drop_object, callback) {
 function createAttribute(create_attribute_object, callback) {
     try {
         if(global.clustering_on
-            && !create_attribute_object.delegated && create_attribute_object.schema != 'system'   ){
-
+            && !create_attribute_object.delegated && create_attribute_object.schema != 'system') {
 
             createAttributeStructure(create_attribute_object, function (err, success) {
                 if (err) {
@@ -817,7 +812,6 @@ function createAttribute(create_attribute_object, callback) {
 
             });
 
-
         }else{
             createAttributeStructure(create_attribute_object, function (err, success) {
                 if (err) {
@@ -829,9 +823,6 @@ function createAttribute(create_attribute_object, callback) {
                 return callback(null, success);
             });
         }
-
-
-
     } catch (e) {
         callback(e);
     }
