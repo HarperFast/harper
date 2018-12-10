@@ -38,6 +38,7 @@ const ENTITY_TYPE_ENUM = {
 };
 
 const DATE_SUBSTR_LENGTH = 19;
+const TRASH_BASE_PATH = `${hdb_properties.get('HDB_ROOT')}/trash/`;
 
 module.exports = {
     createSchema: createSchema,
@@ -363,7 +364,7 @@ function dropAttributeCB(drop_attribute_object, callback) {
         return callback(null, response);
     }).catch((err) => {
         log.error(err);
-        return callback(`There was a problem dropping attribute: ${drop_attribute_object.attribute}.  Please check the log and try again.`, null);
+        return callback(`There was a problem dropping attribute: ${drop_attribute_object.attribute}.  ${err.message}`, null);
     });
 }
 
@@ -376,6 +377,9 @@ async function dropAttribute(drop_attribute_object) {
     let validation_error = validation.attribute_object(drop_attribute_object);
     if (validation_error) {
         throw new Error(validation_error);
+    }
+    if(drop_attribute_object.attribute === global.hdb_schema[drop_attribute_object.schema][drop_attribute_object.table].hash_attribute) {
+        throw new Error('You cannot drop a hash attribute');
     }
     let success = await moveAttributeToTrash(drop_attribute_object).catch((err) => {
         log.error(`Got an error deleting attribute ${inspect(drop_attribute_object)}.`);
@@ -607,9 +611,9 @@ async function moveFolderToTrash(path, trash_path) {
     if(hdb_util.isEmptyOrZeroLength(path) || hdb_util.isEmptyOrZeroLength(trash_path)) {
         return false;
     }
-    let trash_base_path = `${hdb_properties.get('HDB_ROOT')}/trash/`;
+
     // if mk_result is returned as null, the folder already exists.
-    let mk_result = await fs.mkdirp(trash_base_path).catch((err) => {
+    let mk_result = await fs.mkdirp(TRASH_BASE_PATH).catch((err) => {
         log.info(`Failed to create the trash directory.`);
         throw err;
     });
