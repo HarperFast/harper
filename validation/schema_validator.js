@@ -98,10 +98,37 @@ function describe_table(object) {
     return validator.validateObject(object, constraints);
 }
 
+/**
+ * validates the residence attribute of the table object.  the residence must be an array of string if it is supplied
+ * @param residence
+ */
+function validateTableResidence(residence){
+    if(!residence){
+        return;
+    }
+
+    if(!Array.isArray(residence)){
+        throw new Error("residence must be a string array");
+    }
+
+    if(residence.length === 0) {
+        throw new Error("residence cannot be an empty array");
+    }
+
+    for(let x = 0; x < residence.length; x++){
+        if(typeof residence[x] !== 'string'){
+            throw new Error(`residence must be a string array, item '${residence[x]}' is not a string`);
+        }
+    }
+
+    return;
+}
+
 module.exports = {
     schema_object: schema_object,
     create_table_object: create_table_object,
     table_object: table_object,
     attribute_object: attribute_object,
-    describe_table: describe_table
+    describe_table: describe_table,
+    validateTableResidence: validateTableResidence
 };
