@@ -59,7 +59,7 @@ class SocketServer {
                     let raw_remote_ip = socket.conn.remoteAddress;
                     let raw_remote_ip_array = raw_remote_ip ? raw_remote_ip.split(':') : [];
                     msg.host = Array.isArray(raw_remote_ip_array) && raw_remote_ip_array.length > 0 ?  raw_remote_ip_array[raw_remote_ip_array.length - 1] : '';
-                    let new_client = new SocketClient(node, msg);
+                    let new_client = new SocketClient(node, msg, terms.CLUSTER_CONNECTION_DIRECTION_ENUM.INBOUND);
                     new_client.client = socket;
                     new_client.createClientMessageHandlers();
 
@@ -82,6 +82,9 @@ class SocketServer {
 
                     if(!found_client || found_client.length === 0){
                         global.cluster_server.socket_client.push(new_client);
+                    } else {
+                        // This client already exists and is connected, this means we are establishing a bidirectional connection.
+                        found_client.direction = terms.CLUSTER_CONNECTION_DIRECTION_ENUM.BIDIRECTIONAL;
                     }
 
                     socket.join(msg.name, async () => {

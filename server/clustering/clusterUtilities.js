@@ -10,6 +10,9 @@ const env_mgr = require('../../utility/environment/environmentManager');
 const os = require('os');
 const configure_validator = require('../../validation/clustering/configureValidator');
 const auth = require('../../security/auth');
+const ClusterStatusObject = require('../../server/clustering/ClusterStatusObject');
+const signalling = require('../../utility/signalling');
+const cluster_status_event = require('../../events/ClusterStatusEmitter');
 
 //Promisified functions
 const p_delete_delete = promisify(del.delete);
@@ -209,64 +212,215 @@ async function configureCluster(enable_cluster_json) {
     }
 }
 
+/**
+ * A callback wrapper for clusterStatusCB.  This is needed to match the processLocalTransaction style currently used until we fully
+ * migrate to async/await.  Once that migration is complete, this function can be removed and have it replaced in module.exports
+ * with the async function.
+ *
+ * @param cluster_status_json - The json message containing the port, node name, enabled to use to enable clustering
+ * @param callback
+ * @returns {*}
+ */
+function clusterStatusCB(cluster_status_json, callback) {
+    if(!cluster_status_json) {
+        return callback('Invalid JSON message for remove_node', null);
+    }
+    let response = {};
+    clusterStatus(cluster_status_json).then((result) => {
+        response = result;
+        return callback(null, response);
+    }).catch((err) => {
+        log.error(`There was an error removing node ${err}`);
+        return callback(err, null);
+    });
+}
+
+/**
+ * Get the status of this hosts clustering configuration and connections.
+ * @param enable_cluster_json
+ * @returns {Promise<void>}
+ */
+async function clusterStatus(cluster_status_json) {
+    let response = {};
+    try {
+
+        let get_status_msg = {};
+        let clustering_enabled = env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY);
+        response["is_enabled"] = clustering_enabled;
+        if (!clustering_enabled) {
+            return response;
+        }
+        // we only have 1 process, call get status directly
+        if (process.send === undefined) {
+            response["status"] = JSON.stringify(getClusterStatus());
+            return response;
+        }
+        const event_promise = new Promise((resolve) => {
+            cluster_status_event.clusterEmitter.on(cluster_status_event.EVENT_NAME, (msg) => {
+                log.info(`Got cluster status event response: ${inspect(msg)}`);
+                response["status"] = msg;
+                resolve(response);
+            });
+        });
+        signalling.signalClusterStatus();
+        await event_promise;
+        return response;
+
+    } catch(err) {
+        log.error(`Got an error getting cluster status ${err}`);
+    }
+}
+
+/**
+ * Decide which process to send response to.  If parameter is null, a random process will be selected.
+ * @param target_process_id
+ */
+function selectProcess(target_process_id) {
+    let backup_process = undefined;
+    let specified_process = undefined;
+    for (let i = 0; i < global.forks.length; i++) {
+        if (!backup_process && global.forks[i].process.pid !== target_process_id) {
+            // Set a backup process to send the message to in case we don't find the specified process.
+            backup_process = global.forks[i];
+        }
+        if (global.forks[i].process.pid === target_process_id) {
+            specified_process = global.forks[i];
+            //specified_process.send(msg);
+            log.info(`Processing job on process: ${target_process_id}`);
+            return specified_process;
+        }
+    }
+    if (!specified_process && backup_process) {
+        log.info(`The specified process ${target_process_id} was not found, sending to default process instead.`);
+        return backup_process;
+    }
+}
+
+/**
+ * This will build and populate a ClusterStatusObject and send it back to the process that requested it.
+ * @returns {Promise<void>}
+ */
+function getClusterStatus() {
+    let status_obj = new ClusterStatusObject.ClusterStatusObject();
+    status_obj.my_node_port = global.cluster_server.socket_server.port;
+    status_obj.my_node_name = global.cluster_server.socket_server.name;
+
+    for(let conn of global.cluster_server.socket_client) {
+        let new_status = new ClusterStatusObject.ConnectionStatus();
+        new_status.direction = conn.direction;
+        new_status.host = conn.client.host;
+        new_status.port = conn.client.port;
+        let status = conn.client.connected;
+        new_status.connection_status = (status ? ClusterStatusObject.CONNECTION_STATUS_ENUM.CONNECTED :
+            ClusterStatusObject.CONNECTION_STATUS_ENUM.DISCONNECTED);
+
+        switch(conn.direction) {
+            case terms.CLUSTER_CONNECTION_DIRECTION_ENUM.INBOUND:
+                status_obj.inbound_connections.push(new_status);
+                break;
+            case terms.CLUSTER_CONNECTION_DIRECTION_ENUM.OUTBOUND:
+                status_obj.outbound_connections.push(new_status);
+                break;
+            case terms.CLUSTER_CONNECTION_DIRECTION_ENUM.BIDIRECTIONAL:
+                status_obj.bidirectional_connections.push(new_status);
+                break;
+        }
+    }
+    return status_obj;
+}
+
 function clusterMessageHandler(msg) {
     try {
-        if (msg.type === 'clustering_payload') {
-            global.forkClusterMsgQueue[msg.id] = msg;
-            payloadHandler(msg);
-        } else if (msg.type === 'delegate_thread_response') {
-            global.delegate_callback_queue[msg.id](msg.err, msg.data);
-        } else if (msg.type === 'clustering') {
-            global.clustering_on = true;
-            global.forks.forEach((fork) => {
-                fork.send(msg);
-            });
-        } else if (msg.type === 'schema') {
-            global.forks.forEach((fork) => {
-                fork.send(msg);
-            });
-        } else if (!hdb_utils.isEmptyOrZeroLength(msg.target_process_id)) {
-            // If a process is specified in the message, send this job to that process.
-            let backup_process = undefined;
-            let specified_process = undefined;
-            for (let i = 0; i < global.forks.length; i++) {
-                if (!backup_process && global.forks[i].process.pid !== msg.target_process_id) {
-                    // Set a backup process to send the message to in case we don't find the specified process.
-                    backup_process = global.forks[i];
+        switch(msg.type) {
+            case terms.CLUSTER_MESSAGE_TYPE_ENUM.CLUSTERING_PAYLOAD:
+                global.forkClusterMsgQueue[msg.id] = msg;
+                payloadHandler(msg);
+                break;
+            case terms.CLUSTER_MESSAGE_TYPE_ENUM.DELEGATE_THREAD_RESPONSE:
+                global.delegate_callback_queue[msg.id](msg.err, msg.data);
+                break;
+            case terms.CLUSTER_MESSAGE_TYPE_ENUM.CLUSTERING:
+                global.clustering_on = true;
+                global.forks.forEach((fork) => {
+                    fork.send(msg);
+                });
+                break;
+            case terms.CLUSTER_MESSAGE_TYPE_ENUM.SCHEMA:
+                global.forks.forEach((fork) => {
+                    fork.send(msg);
+                });
+                break;
+            case terms.CLUSTER_MESSAGE_TYPE_ENUM.NODE_ADDED:
+                if(hdb_utils.isEmptyOrZeroLength(global.cluster_server)) {
+                    log.error('Cluster Server has not been initialized.  Do you have CLUSTERING=true in your config/settings file?');
+                    return;
                 }
-                if (global.forks[i].process.pid === msg.target_process_id) {
-                    specified_process = global.forks[i];
-                    specified_process.send(msg);
-                    log.info(`Processing job on process: ${msg.target_process_id}`);
-                    break;
+                global.cluster_server.scanNodes().then( () => {
+                    log.info('Done scanning for new cluster nodes');
+                }).catch( (e) => {
+                    log.error('There was an error scanning for new cluster nodes');
+                    log.error(e);
+                });
+                break;
+            case terms.CLUSTER_MESSAGE_TYPE_ENUM.NODE_REMOVED:
+                if(hdb_utils.isEmptyOrZeroLength(global.cluster_server)) {
+                    log.error('Cluster Server has not been initialized.  Do you have CLUSTERING=true in your config/settings file?');
+                    return;
                 }
-            }
-            if (!specified_process && backup_process) {
-                log.info(`The specified process ${msg.target_process_id} was not found, sending to default process instead.`);
-                backup_process.send(msg);
-            }
-        } else if (msg.type === 'node_added') {
-            if(hdb_utils.isEmptyOrZeroLength(global.cluster_server)) {
-                log.error('Cluster Server has not been initialized.  Do you have CLUSTERING=true in your config/settings file?');
-                return;
-            }
-            global.cluster_server.scanNodes().then( () => {
-                log.info('Done scanning for new cluster nodes');
-            }).catch( (e) => {
-                log.error('There was an error scanning for new cluster nodes');
-                log.error(e);
-            });
-        } else if (msg.type === 'node_removed') {
-            if(hdb_utils.isEmptyOrZeroLength(global.cluster_server)) {
-                log.error('Cluster Server has not been initialized.  Do you have CLUSTERING=true in your config/settings file?');
-                return;
-            }
-            global.cluster_server.scanNodes().then( () => {
-                log.info('Done scanning for removed cluster nodes');
-            }).catch( (e) => {
-                log.error('There was an error scanning for removed cluster nodes');
-                log.error(e);
-            });
+                global.cluster_server.scanNodes().then( () => {
+                    log.info('Done scanning for removed cluster nodes');
+                }).catch( (e) => {
+                    log.error('There was an error scanning for removed cluster nodes');
+                    log.error(e);
+                });
+                break;
+            case terms.CLUSTER_MESSAGE_TYPE_ENUM.CLUSTER_STATUS:
+                try {
+                    let status = getClusterStatus();
+                    let target_process = selectProcess(msg.target_process_id);
+                    if(!target_process) {
+                        throw new Error(`Failed to select a process to respond to with cluster status.`);
+                    }
+                    msg["cluster_status"] = status;
+                    target_process.process.send({"type": terms.CLUSTER_MESSAGE_TYPE_ENUM.CLUSTER_STATUS, "status": status});
+                }catch (err) {
+                    log.error(err);
+                    throw err;
+                }
+                break;
+            case terms.CLUSTER_MESSAGE_TYPE_ENUM.JOB:
+                if (!hdb_utils.isEmptyOrZeroLength(msg.target_process_id)) {
+                    // If a process is specified in the message, send this job to that process.
+                    /*
+                    let backup_process = undefined;
+                    let specified_process = undefined;
+                    for (let i = 0; i < global.forks.length; i++) {
+                        if (!backup_process && global.forks[i].process.pid !== msg.target_process_id) {
+                            // Set a backup process to send the message to in case we don't find the specified process.
+                            backup_process = global.forks[i];
+                        }
+                        if (global.forks[i].process.pid === msg.target_process_id) {
+                            specified_process = global.forks[i];
+                            specified_process.send(msg);
+                            log.info(`Processing job on process: ${msg.target_process_id}`);
+                            break;
+                        }
+                    }
+                    if (!specified_process && backup_process) {
+                        log.info(`The specified process ${msg.target_process_id} was not found, sending to default process instead.`);
+                        backup_process.send(msg);
+                    } */
+                    let target_process = selectProcess(msg.target_process_id);
+                    if(!target_process) {
+                        log.error(`Failed to select a process to send job message to.`);
+                        return;
+                    }
+                    target_process.send(msg);
+                }
+                break;
+            default:
+                log.error(`Got an unhandled cluster message type ${msg.type}`);
+                break;
         }
     } catch (e) {
         log.error(e);
@@ -290,6 +444,7 @@ module.exports = {
     addNode: addNode,
     // The reference to the callback functions can be removed once processLocalTransaction has been refactored
     configureCluster: configureClusterCB,
+    clusterStatus: clusterStatusCB,
     removeNode: removeNodeCB,
     payloadHandler: payloadHandler,
     clusterMessageHandler: clusterMessageHandler,

@@ -1,4 +1,10 @@
 "use strict";
+
+/**
+ * The main purpose of socket client is to store all connection no matter which direction they go.
+ *
+ * @type {{addNode, configureCluster, removeNode, payloadHandler, clusterMessageHandler, authHeaderToUser}|*}
+ */
 const cluster_utilities = require('./clusterUtilities');
 const server_utilities = require('../serverUtilities');
 const harper_logger = require('../../utility/logging/harper_logger');
@@ -40,11 +46,12 @@ const CLIENT_CONNECTION_OPTIONS = {
 };
 
 class SocketClient {
-    constructor(node, other_node, is_node) {
+    constructor(node, other_node, direction_enum) {
         this.node = node;
         this.other_node = other_node;
         this.client = null;
-        this.is_node = is_node;
+        // The direction data is flowing regarding this node.
+        this.direction = direction_enum;
     }
 
     /**
