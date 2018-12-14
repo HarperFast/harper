@@ -70,7 +70,7 @@ async function setLicense(json_message) {
         try {
             let lic = await parseLicense(json_message.key.trim(), json_message.company.trim());
         } catch(err) {
-            let err_msg = `There was an parsing the license key.`;
+            let err_msg = `There was an error parsing the license key.`;
             log.error(err_msg);
             log.error(err);
             throw new Error(err_msg);
