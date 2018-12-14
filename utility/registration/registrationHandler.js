@@ -16,6 +16,7 @@ let p_prompt_get = promisify(prompt.get);
 module.exports = {
     getFingerprint: getFingerprintCB,
     setLicense: setLicenseCB,
+    parseLicense: parseLicense,
     register: register
 };
 
@@ -65,17 +66,16 @@ function setLicenseCB(json_message, callback) {
  * @returns {Promise<string>}
  */
 async function setLicense(json_message) {
-    let key_path = `${env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.PROJECT_DIR_KEY)}/utility/keys/${terms.REG_KEY_FILE_NAME}`;
     if (json_message && json_message.key) {
         try {
-            await fs.writeFile(key_path, json_message.key, 'utf8');
+            let lic = await parseLicense(json_message.key.trim(), json_message.company.trim());
         } catch(err) {
-            let err_msg = `There was an error writing the key: ${json_message.key} to file path: ${key_path}`;
+            let err_msg = `There was an parsing the license key.`;
             log.error(err_msg);
             log.error(err);
             throw new Error(err_msg);
         }
-        return 'Wrote license key file.';
+        return 'Wrote license key file.  Registration successful.';
     }
     throw new Error('Invalid key specified for license file.');
 }
@@ -104,10 +104,65 @@ async function getFingerprint() {
 }
 
 /**
+ * Takes the license string received either from the
+ * @param license
+ */
+async function parseLicense(license, company) {
+    if(!license || !company) {
+        throw new Error(`Invalid entries for License Key and Customer Company`);
+    }
+
+    console.log('Validating license input...');
+    let validation = await hdb_license.validateLicense(license, company).catch((err) => {
+        log.error(err);
+        throw err;
+    });
+
+    console.log(`checking for valid license...`);
+    if (!validation.valid_license) {
+        throw new Error('Invalid license found.');
+    }
+    console.log(`checking valid license date...`);
+    if (!validation.valid_date) {
+        throw new Error('This License has expired.');
+    }
+    console.log(`checking for valid machine license ${validation.valid_machine}`);
+    if (!validation.valid_machine) {
+        throw new Error('This license is in use on another machine.');
+    }
+
+    let insert_object = {
+        operation: 'insert',
+        schema: 'system',
+        table: 'hdb_license',
+        hash_attribute: 'license_key',
+        records: [{"license_key": license, "company":company}]
+    };
+
+    await p_insert_insert(insert_object).catch((err) => {
+        throw err;
+    });
+
+    return license;
+}
+
+async function register() {
+    let data = await promptForRegistration().catch((err) => {
+       throw err;
+    });
+
+    let result = parseLicense(data.HDB_LICENSE, data.CUSTOMER_COMPANY).catch((err) => {
+       throw err;
+    });
+
+    return result;
+}
+
+/**
  * This handler is called when registration is run from the command line.
  * @returns {Promise<*>}
  */
-async function register() {
+async function promptForRegistration() {
     try {
         check_permisison.checkPermission();
     } catch(err) {
@@ -139,38 +194,5 @@ async function register() {
         throw err;
     });
 
-    if(!data.HDB_LICENSE || !data.CUSTOMER_COMPANY) {
-        throw new Error(`Invalid entries for License Key and Customer Company`);
-    }
-    console.log('Validating license input...');
-    let validation = await hdb_license.validateLicense(data.HDB_LICENSE, data.CUSTOMER_COMPANY).catch((err) => {
-        log.error(err);
-        throw err;
-    });
-    console.log(`checking for valid license...`);
-    if (!validation.valid_license) {
-        throw new Error('Invalid license found.');
-    }
-    console.log(`checking valid license date...`);
-    if (!validation.valid_date) {
-        throw new Error('This License has expired.');
-    }
-    console.log(`checking for valid machine license ${validation.valid_machine}`);
-    if (!validation.valid_machine) {
-        throw new Error('This license is in use on another machine.');
-    }
-
-    let insert_object = {
-        operation: 'insert',
-        schema: 'system',
-        table: 'hdb_license',
-        hash_attribute: 'license_key',
-        records: [{"license_key": data.HDB_LICENSE, "company":data.CUSTOMER_COMPANY }]
-    };
-
-    await p_insert_insert(insert_object).catch((err) => {
-        throw err;
-    });
-
-    return 'Successfully registered';
+    return data;
 }
