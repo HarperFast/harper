@@ -32,7 +32,7 @@ async function generateFingerPrint() {
     await fs.writeFile(FINGER_PRINT_FILE, hashed_hash).catch((err) => {
         log.error(`Error writing fingerprint file to ${FINGER_PRINT_FILE}`);
         log.error(err);
-        return 'There was an error generating the fingerprint';
+        throw new Error('There was an error generating the fingerprint');
     });
     return hashed_hash;
 }

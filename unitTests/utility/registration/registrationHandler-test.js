@@ -13,8 +13,17 @@ test_utils.preTestPrep();
 const reg = rewire('../../../utility/registration/registrationHandler');
 const hdb_license = require('../../../utility/registration/hdb_license');
 
+const parse_orig = reg.__get__('parseLicense');
+
+const VALIDATE_SUCCESS = {
+    "valid_date": true,
+    "valid_license": true,
+    "valid_machine": true
+};
+
 describe(`Test setLicense`, function () {
     let write_stub = undefined;
+    let validate_stub = undefined;
     let sandbox = null;
     let err = undefined;
     let setLicense = reg.__get__('setLicense');
@@ -24,28 +33,34 @@ describe(`Test setLicense`, function () {
     });
     afterEach(() => {
         sandbox.restore();
+        reg.__set__('parseLicense', parse_orig);
     });
     it('Nominal, set license key stub write file', async function () {
         write_stub = sandbox.stub(fs, 'writeFile').resolves('');
+        validate_stub = sandbox.stub().resolves(VALIDATE_SUCCESS);
+        reg.__set__('parseLicense', validate_stub);
         let result = undefined;
         try {
-            result = await setLicense({'key': 'blahblah'});
+            result = await setLicense({'key': 'e35130571358cd0c79090a782ab44618mofi25nutnRafDD78a36126f0cb549d8fb72e880ef2459d', 'company': 'harperdb.io'});
         } catch (e) {
             err = e;
         }
-        assert.equal(err, undefined, 'expected no exceptions');
-        assert.equal(result, 'Wrote license key file.', 'expected success message');
+        assert.equal(err, undefined, `expected no exceptions ${err}`);
+        assert.equal(result, 'Wrote license key file.  Registration successful.', 'expected success message');
     });
-    it('Set license key stub write file, write throws exception', async function () {
+    it('Set license key, invalid license', async function () {
         write_stub = sandbox.stub(fs, 'writeFile').throws(new Error('BAD WRITE'));
+        let copy = test_utils.deepClone(VALIDATE_SUCCESS);
+        copy.valid_license = false;
+        validate_stub = sandbox.stub(hdb_license, 'validateLicense').resolves(copy);
         let result = undefined;
         try {
-            result = await setLicense({'key': 'blahblah'});
+            result = await setLicense({'key': 'blahblah', 'company': 'harperdb.io'});
         } catch (e) {
             err = e;
         }
-        assert.notEqual(err, undefined, 'expected exceptions');
-        assert.equal(err.message.indexOf('There was an error writing the key') > -1, true, 'expected error message');
+        assert.notEqual(err, undefined, 'expected exception');
+        assert.equal(err.message.indexOf('There was an error parsing the license key.') > -1, true, 'expected error message');
     });
     it('Set license key invalid json message', async function () {
         write_stub = sandbox.stub(fs, 'writeFile').throws(new Error('BAD WRITE'));
@@ -62,7 +77,7 @@ describe(`Test setLicense`, function () {
         write_stub = sandbox.stub(fs, 'writeFile').throws(new Error('BAD WRITE'));
         let result = undefined;
         try {
-            result = await setLicense({'key':null});
+            result = await setLicense({'key':null, 'company': 'harperdb.io'});
         } catch (e) {
             err = e;
         }
