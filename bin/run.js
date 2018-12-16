@@ -32,26 +32,29 @@ let child = undefined;
  * start.  If the hdb_boot_props file is not found, it is assumed an install needs to be performed.
  */
 function run() {
-    ps('name', HDB_PROC_NAME).then(function (list) {
-        if( list.length === 0 ) {
-            arePortsInUse( (err) => {
-              if(err) {
-                  console.log(err);
-                  logger.info(err);
-                  return;
-              }
-              startHarper();
-            });
-        }
-        else {
-            let run_err = 'HarperDB is already running.';
-            console.log(run_err);
-            logger.info(run_err);
-        }
-    }, function (err) {
-        console.log(err.stack || err);
-        logger.error(err.stack || err);
-    });
+    try {
+        ps('name', HDB_PROC_NAME).then(function (list) {
+            if (list.length === 0) {
+                arePortsInUse((err) => {
+                    if (err) {
+                        console.log(err);
+                        logger.info(err);
+                        return;
+                    }
+                    startHarper();
+                });
+            } else {
+                let run_err = 'HarperDB is already running.';
+                console.log(run_err);
+                logger.info(run_err);
+            }
+        }, function (err) {
+            console.log(err.stack || err);
+            logger.error(err.stack || err);
+        });
+    } catch(e){
+        logger.error(e);
+    }
 }
 
 function arePortsInUse(callback) {
