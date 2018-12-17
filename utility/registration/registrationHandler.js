@@ -66,8 +66,9 @@ function setLicenseCB(json_message, callback) {
  * @returns {Promise<string>}
  */
 async function setLicense(json_message) {
-    if (json_message && json_message.key) {
+    if (json_message && json_message.key && json_message.company) {
         try {
+            log.info(`parsing license key: ${json_message.key} and `);
             let lic = await parseLicense(json_message.key.trim(), json_message.company.trim());
         } catch(err) {
             let err_msg = `There was an error parsing the license key.`;
@@ -77,7 +78,7 @@ async function setLicense(json_message) {
         }
         return 'Wrote license key file.  Registration successful.';
     }
-    throw new Error('Invalid key specified for license file.');
+    throw new Error('Invalid key or company specified for license file.');
 }
 
 /**
