@@ -151,6 +151,12 @@ function createTableStructure(create_table_object, callback) {
         return;
     }
 
+    try{
+        validation.validateTableResidence(create_table_object.residence);
+    } catch(e){
+        return callback(e);
+    }
+
     async.waterfall([
         searchForSchema.bind(null, create_table_object.schema),
         (schema, caller) => {

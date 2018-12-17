@@ -54,8 +54,14 @@ if (node_env_value === undefined || node_env_value === null || node_env_value ==
 process.env['NODE_ENV'] = node_env_value;
 
 let numCPUs = 4;
+let num_workers = 4;
 
-let num_workers = os.cpus().length;
+//in an instance of having HDB installed on an android devices we don't have access to the cpu info so we need to handle the error and move on
+try {
+    num_workers = os.cpus().length;
+} catch(e){
+    harper_logger.info(e);
+}
 numCPUs = num_workers < numCPUs ? num_workers : numCPUs;
 
 if(DEBUG){
