@@ -65,6 +65,7 @@
   "pkg": {
     "scripts": [],
     "assets": [
+      "./upgrade/*.js",
       "./utility/install/*.txt",
       "./json/*.json",
       "./server/*.js",
@@ -77,6 +78,7 @@
       "./sqlTranslator/*.js",
       "./lib/**/*.js",
       "./validation/*.js",
+      "./validation/**/*.js",
       "./bin/*.js"
     ]
   },
