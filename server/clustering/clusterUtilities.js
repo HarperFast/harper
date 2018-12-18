@@ -301,6 +301,10 @@ function selectProcess(target_process_id) {
  * @returns {Promise<void>}
  */
 function getClusterStatus() {
+    if(!global.cluster_server) {
+        log.error(`Tried to get cluster status, but the cluster is not initialized.`);
+        throw new Error(`Tried to get cluster status, but the cluster is not initialized.`);
+    }
     let status_obj = new ClusterStatusObject.ClusterStatusObject();
     status_obj.my_node_port = global.cluster_server.socket_server.port;
     status_obj.my_node_name = global.cluster_server.socket_server.name;
