@@ -118,7 +118,7 @@ class SocketServer {
                         let schema = await p_schema_describe_all({});
                         socket.emit('schema_update_response', schema);
                     } catch(e){
-                        log.error(err);
+                        log.error(e);
                     }
                 });
 

@@ -1,10 +1,13 @@
 const harper_logger = require('../../utility/logging/harper_logger');
 const search = require('../../data_layer/search');
 const delete_ = require('../../data_layer/delete');
+const schema = require('../../data_layer/schema');
 const {promisify} = require('util');
+const clone = require('clone');
 
 const p_search_by_value = promisify(search.searchByValue);
 const p_delete = promisify(delete_.delete);
+const p_schema_describe_all = promisify(schema.describeAll);
 
 module.exports = {
     fetchQueue: fetchQueue,
@@ -33,14 +36,22 @@ async function fetchQueue(msg, socket){
         }
 
         socket.emit('confirm_identity');
+        let schema_describe = await p_schema_describe_all({});
+        let node_payload = {
+            schema: schema_describe
+        };
 
         if (global.cluster_queue && global.cluster_queue[msg.name]) {
             harper_logger.info('sent msg');
             harper_logger.info(global.cluster_queue[msg.name]);
 
-            let catchup_payload = JSON.stringify(global.cluster_queue[msg.name]);
+            //node_payload.queue = clone(global.cluster_queue[msg.name]);
+            let catchup_payload = JSON.stringify(node_payload);
             the_socket.emit('catchup', catchup_payload);
         }
+
+        /*let catchup_payload = JSON.stringify(node_payload);
+        the_socket.emit('catchup', catchup_payload);*/
     } catch(e){
         harper_logger.error(e);
     }
@@ -74,9 +85,45 @@ async function onConfirmMessageHandler(msg){
         harper_logger.info("delete from queue: " + JSON.stringify(delete_obj));
         await p_delete(delete_obj);
     } catch(e){
-        harper_logger.error(err);
+        harper_logger.error(e);
     }
 }
+/*
+async function onCatchupHandler(queue_string) {
+    harper_logger.info('catchup' + queue_string);
+    let queue = JSON.parse(queue_string);
+    let the_client = this.client;
+    let the_node = this.node;
+    for (let item in queue) {
+        let json = queue[item].body;
+        try {
+            json = await cluster_utilities.authHeaderToUser(json);
+
+            if (!queue[item].body.hdb_user) {
+                queue[item].err = ERROR_NO_HDB_USER;
+                harper_logger.error(`${ERROR_NO_HDB_USER}: ` + JSON.stringify(json));
+                the_client.emit('error', queue[item]);
+            } else {
+                let operation_function = await p_server_utilities_choose_operation(json);
+
+                queue[item].node = the_node;
+                await p_server_utilities_proccess_delegated_transaction(json, operation_function)
+                    .catch(err => {
+                        if (!checkWhitelistedErrors(err)) {
+                            throw err;
+                        }
+                    });
+
+                the_client.emit('confirm_msg', queue[item]);
+            }
+        } catch (e) {
+            queue[item].err = e;
+            the_client.emit('error', queue[item]);
+            return harper_logger.error(e);
+        }
+    }
+
+}*/
 
 async function getFromDisk(node) {
     let search_obj = {};

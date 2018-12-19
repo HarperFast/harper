@@ -113,9 +113,9 @@ class SocketClient {
                     the_client.emit('confirm_msg', queue[item]);
                 }
             } catch (e) {
-                queue[item].err = error;
+                queue[item].err = e;
                 the_client.emit('error', queue[item]);
-                return harper_logger.error(error);
+                return harper_logger.error(e);
             }
         }
 
@@ -232,7 +232,7 @@ class SocketClient {
             payload.data = data;
             the_client.emit('confirm_msg', payload);
         } catch(e){
-            harper_logger.error(error);
+            harper_logger.error(e);
         }
     }
 
