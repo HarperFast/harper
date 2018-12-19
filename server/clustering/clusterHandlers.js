@@ -45,8 +45,7 @@ async function fetchQueue(msg, socket){
             harper_logger.info('sent msg');
             harper_logger.info(global.cluster_queue[msg.name]);
 
-            node_payload.queue = clone(global.cluster_queue[msg.name]);
-
+            node_payload.queue = global.cluster_queue[msg.name];
         }
 
         let catchup_payload = JSON.stringify(node_payload);
