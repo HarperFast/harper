@@ -69,7 +69,7 @@ class SocketClient {
             port: this.node.port
         };
         this.client.emit('identify', node_info);
-        this.client.emit('schema_update_request');
+        //this.client.emit('schema_update_request');
     }
 
     onConnectErrorHandler(error){
@@ -88,6 +88,13 @@ class SocketClient {
     async onCatchupHandler(queue_string) {
         harper_logger.info('catchup' + queue_string);
         let queue = JSON.parse(queue_string);
+
+        await this.onSchemaUpdateResponseHandler(queue.schema);
+
+        if(!queue.queue){
+            return;
+        }
+
         let the_client = this.client;
         let the_node = this.node;
         for (let item in queue) {
