@@ -27,7 +27,7 @@ const p_schema_create_table = promisify(schema.createTable);
 const p_schema_create_attribute = promisify(schema.createAttribute);
 const p_insert = promisify(insert.insert);
 
-const WHITELISTED_ERRORS = ['attribute already exists'];
+const WHITELISTED_ERRORS = 'already exists';
 const ERROR_NO_HDB_USER = 'there is no hdb_user';
 
 const CLIENT_CONNECTION_OPTIONS = {
@@ -69,7 +69,6 @@ class SocketClient {
             port: this.node.port
         };
         this.client.emit('identify', node_info);
-        //this.client.emit('schema_update_request');
     }
 
     onConnectErrorHandler(error){
@@ -388,10 +387,8 @@ function checkWhitelistedErrors(error){
         }
     }
 
-    for(let ok_msg in WHITELISTED_ERRORS){
-        if(error_msg.includes(ok_msg)){
-            return true;
-        }
+    if(error_msg.includes(WHITELISTED_ERRORS)) {
+        return true;
     }
 
     return false;
