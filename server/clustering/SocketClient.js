@@ -97,19 +97,19 @@ class SocketClient {
 
         let the_client = this.client;
         let the_node = this.node;
-        for (let item in queue) {
-            let json = queue[item].body;
+        for (let item in queue.queue) {
+            let json = queue.queue[item].body;
             try {
                 json = await cluster_utilities.authHeaderToUser(json);
 
-                if (!queue[item].body.hdb_user) {
-                    queue[item].err = ERROR_NO_HDB_USER;
+                if (!queue.queue[item].body.hdb_user) {
+                    queue.queue[item].err = ERROR_NO_HDB_USER;
                     harper_logger.error(`${ERROR_NO_HDB_USER}: ` + JSON.stringify(json));
-                    the_client.emit('error', queue[item]);
+                    the_client.emit('error', queue.queue[item]);
                 } else {
                     let operation_function = await p_server_utilities_choose_operation(json);
 
-                    queue[item].node = the_node;
+                    queue.queue[item].node = the_node;
                     await p_server_utilities_proccess_delegated_transaction(json, operation_function)
                         .catch(err => {
                             if (!checkWhitelistedErrors(err)) {
@@ -117,11 +117,11 @@ class SocketClient {
                             }
                         });
 
-                    the_client.emit('confirm_msg', queue[item]);
+                    the_client.emit('confirm_msg', queue.queue[item]);
                 }
             } catch (e) {
-                queue[item].err = e;
-                the_client.emit('error', queue[item]);
+                queue.queue[item].err = e;
+                the_client.emit('error', queue.queue[item]);
                 return harper_logger.error(e);
             }
         }
