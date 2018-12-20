@@ -1,4 +1,4 @@
-const hdb_license = require('../utility/hdb_license'),
+const hdb_license = require('../utility/registration/hdb_license'),
     winston = require('../utility/logging/winston_logger');
 
 /**

@@ -18,6 +18,8 @@ const op_auth = require('../utility/operation_authorization');
 const jobs = require('./jobs');
 const signal = require('../utility/signalling');
 const job_runner = require('./jobRunner');
+const terms = require('../utility/hdbTerms');
+const reg = require('../utility/registration/registrationHandler');
 
 const UNAUTH_RESPONSE = 403;
 const UNAUTHORIZED_TEXT = 'You are not authorized to perform the operation specified';
@@ -141,119 +143,134 @@ function chooseOperation(json, callback) {
     let job_operation_function = undefined;
 
     switch (json.operation) {
-        case 'insert':
+        case terms.OPERATIONS_ENUM.INSERT:
             operation_function = write.insert;
             break;
-        case 'update':
+        case terms.OPERATIONS_ENUM.UPDATE:
             operation_function = write.update;
             break;
-        case 'search_by_hash':
+        case terms.OPERATIONS_ENUM.SEARCH_BY_HASH:
             operation_function = search.searchByHash;
             break;
-        case 'search_by_value':
+        case terms.OPERATIONS_ENUM.SEARCH_BY_VALUE:
             operation_function = search.searchByValue;
             break;
-        case 'search':
+        case terms.OPERATIONS_ENUM.SEARCH:
             operation_function = search.search;
             break;
-        case 'sql':
+        case terms.OPERATIONS_ENUM.SQL:
             operation_function = sql.evaluateSQL;
             break;
-        case 'csv_data_load':
+        case terms.OPERATIONS_ENUM.CSV_DATA_LOAD:
             operation_function = signalJob;
             job_operation_function = csv.csvDataLoad;
             break;
-        case 'csv_file_load':
+        case terms.OPERATIONS_ENUM.CSV_FILE_LOAD:
             operation_function = signalJob;
             job_operation_function = csv.csvFileLoad;
             break;
-        case 'csv_url_load':
+        case terms.OPERATIONS_ENUM.CSV_URL_LOAD:
             operation_function = signalJob;
             job_operation_function = csv.csvURLLoad;
             break;
-        case 'create_schema':
+        case terms.OPERATIONS_ENUM.CREATE_SCHEMA:
             operation_function = schema.createSchema;
             break;
-        case 'create_table':
+        case terms.OPERATIONS_ENUM.CREATE_TABLE:
             operation_function = schema.createTable;
             break;
-        case 'create_attribute':
+        case terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE:
             operation_function = schema.createAttribute;
             break;
-        case 'drop_schema':
+        case terms.OPERATIONS_ENUM.DROP_SCHEMA:
             operation_function = schema.dropSchema;
             break;
-        case 'drop_table':
+        case terms.OPERATIONS_ENUM.DROP_TABLE:
             operation_function = schema.dropTable;
             break;
-        case 'describe_schema':
+        case terms.OPERATIONS_ENUM.DROP_ATTRIBUTE:
+            operation_function = schema.dropAttribute;
+            break;
+        case terms.OPERATIONS_ENUM.DESCRIBE_SCHEMA:
             operation_function = schema.describeSchema;
             break;
-        case 'describe_table':
+        case terms.OPERATIONS_ENUM.DESCRIBE_TABLE:
             operation_function = schema.describeTable;
             break;
-        case 'describe_all':
+        case terms.OPERATIONS_ENUM.DESCRIBE_ALL:
             operation_function = schema.describeAll;
             break;
-        case 'delete':
+        case terms.OPERATIONS_ENUM.DELETE:
             operation_function = delete_.delete;
             break;
-        case 'add_user':
+        case terms.OPERATIONS_ENUM.ADD_USER:
             operation_function = user.addUser;
             break;
-        case 'alter_user':
+        case terms.OPERATIONS_ENUM.ALTER_USER:
             operation_function = user.alterUser;
             break;
-        case 'drop_user':
+        case terms.OPERATIONS_ENUM.DROP_USER:
             operation_function = user.dropUser;
             break;
-        case 'list_users':
+        case terms.OPERATIONS_ENUM.LIST_USERS:
             operation_function = user.listUsersExternal;
             break;
-        case 'list_roles':
+        case terms.OPERATIONS_ENUM.LIST_ROLES:
             operation_function = role.listRoles;
             break;
-        case 'add_role':
+        case terms.OPERATIONS_ENUM.ADD_ROLE:
             operation_function = role.addRole;
             break;
-        case 'alter_role':
+        case terms.OPERATIONS_ENUM.ALTER_ROLE:
             operation_function = role.alterRole;
             break;
-        case 'drop_role':
+        case terms.OPERATIONS_ENUM.DROP_ROLE:
             operation_function = role.dropRole;
             break;
-        case 'user_info':
+        case terms.OPERATIONS_ENUM.USER_INFO:
             operation_function = user.userInfo;
             break;
-        case 'read_log':
+        case terms.OPERATIONS_ENUM.READ_LOG:
             operation_function = read_log.read_log;
             break;
-        case 'add_node':
+        case terms.OPERATIONS_ENUM.ADD_NODE:
             operation_function = cluster_utilities.addNode;
             break;
-        case 'export_to_s3':
+        case terms.OPERATIONS_ENUM.REMOVE_NODE:
+            operation_function = cluster_utilities.removeNode;
+            break;
+        case terms.OPERATIONS_ENUM.CONFIGURE_CLUSTER:
+            operation_function = cluster_utilities.configureCluster;
+            break;
+        case terms.OPERATIONS_ENUM.EXPORT_TO_S3:
             operation_function = signalJob;
             job_operation_function = export_.export_to_s3;
             break;
-        case 'delete_files_before':
+        case terms.OPERATIONS_ENUM.DELETE_FILES_BEFORE:
             operation_function = signalJob;
             job_operation_function = delete_.deleteFilesBefore;
             break;
-        case 'export_local':
+        case terms.OPERATIONS_ENUM.EXPORT_LOCAL:
             operation_function = signalJob;
             job_operation_function = export_.export_local;
 			break;
-        case 'search_jobs_by_start_date':
+        case terms.OPERATIONS_ENUM.SEARCH_JOBS_BY_START_DATE:
             operation_function = jobs.jobHandler;
             break;
-        case 'get_job':
+        case terms.OPERATIONS_ENUM.GET_JOB:
             operation_function = jobs.jobHandler;
             break;
-        case 'delete_job':
+        case terms.OPERATIONS_ENUM.DELETE_JOB:
             operation_function = jobs.jobHandler;
             break;
-        case 'update_job':
+        case terms.OPERATIONS_ENUM.UPDATE_JOB:
             operation_function = jobs.updateJob;
+            break;
+        case terms.OPERATIONS_ENUM.GET_FINGERPRINT:
+            operation_function = reg.getFingerprint;
+            break;
+        case terms.OPERATIONS_ENUM.SET_LICENSE:
+            operation_function = reg.setLicense;
             break;
         default:
             break;

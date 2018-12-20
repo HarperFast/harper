@@ -157,7 +157,7 @@ module.exports = function (search_object, type) {
             let unknown_attributes =  _.filter(search_object.get_attributes, (attribute)=> {
                 return attribute !== '*' && attribute.attribute !== '*' && // skip check for asterik attribute
                     !_.some(all_table_attributes, (table_attribute)=> { // attribute should match one of the attribute in global
-                        return table_attribute === attribute || table_attribute.attribute === attribute;
+                        return table_attribute === attribute || table_attribute.attribute === attribute || table_attribute.attribute === attribute.attribute;
                     });
             });
             // if any unknown attributes present in the search request then list all indicated as unknown attribute to error message at once split in well format

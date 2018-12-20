@@ -1,0 +1,432 @@
+{
+	"info": {
+		"_postman_id": "86a9ad48-79e7-4bfb-8916-83cd9e272595",
+		"name": "Clustering Test",
+		"description": "Basic 2 node clustering register and data load.\nJSON ONLY.. \nSQL does not do across node data query.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "remove node1 from node2",
+			"item": [
+				{
+					"name": "Remove Node1 from Node2",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46QWJjMTIzNCE="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n\"operation\":\"remove_node\",\r\n\"name\":\"{{node1_name}}\"\r\n}"
+						},
+						"url": {
+							"raw": "{{node2_host}}:{{node2_port}}",
+							"host": [
+								"{{node2_host}}"
+							],
+							"port": "{{node2_port}}"
+						},
+						"description": "Req to node 2\nAdding node 1 and registered node."
+					},
+					"response": []
+				}
+			],
+			"event": [
+				{
+					"listen": "prerequest",
+					"script": {
+						"id": "74b00d6e-1745-4f50-b1cf-a1c43fb9dc65",
+						"type": "text/javascript",
+						"exec": [
+							""
+						]
+					}
+				},
+				{
+					"listen": "test",
+					"script": {
+						"id": "ed0578bf-2f14-4eba-9479-df304790a644",
+						"type": "text/javascript",
+						"exec": [
+							""
+						]
+					}
+				}
+			]
+		},
+		{
+			"name": "add_node1",
+			"item": [
+				{
+					"name": "Add node 1 to Node 2",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46QWJjMTIzNCE="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n\"operation\":\"add_node\",\r\n\"name\":\"{{node1_name}}\" ,\r\n\"port\": \"{{node1_clustering_port}}\",\r\n\"host\":\"{{node1_host}}\"\r\n}"
+						},
+						"url": {
+							"raw": "{{node2_host}}:{{node2_port}}",
+							"host": [
+								"{{node2_host}}"
+							],
+							"port": "{{node2_port}}"
+						},
+						"description": "Req to node 2\nAdding node 1 and registered node."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "clustered",
+			"item": [
+				{
+					"name": "Create Shema on node 1",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46QWJjMTIzNCE="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n  \"operation\":\"create_schema\",\r\n  \"schema\": \"{{dev_schema}}\"\r\n}\r\n"
+						},
+						"url": {
+							"raw": "{{node1_host}}:{{node1_port}}",
+							"host": [
+								"{{node1_host}}"
+							],
+							"port": "{{node1_port}}"
+						},
+						"description": "Req to node 2\nAdding node 1 and registered node."
+					},
+					"response": []
+				},
+				{
+					"name": "Create table on node 1 w/ residence *",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46QWJjMTIzNCE="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n\"operation\":\"create_table\",\r\n\"schema\":\"{{dev_schema}}\",\r\n\"table\":\"{{dev_test_table}}\",\r\n\"hash_attribute\": \"id\",\r\n\"residence\":[\"*\"]\r\n}\r\n"
+						},
+						"url": {
+							"raw": "{{node1_host}}:{{node1_port}}",
+							"host": [
+								"{{node1_host}}"
+							],
+							"port": "{{node1_port}}"
+						},
+						"description": "Req to node 2\nAdding node 1 and registered node."
+					},
+					"response": []
+				},
+				{
+					"name": "Check Node 2 for schema and table.",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46QWJjMTIzNCE="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n  \"operation\":\"describe_schema\",\r\n  \"schema\": \"{{dev_schema}}\"\r\n}\r\n"
+						},
+						"url": {
+							"raw": "{{node2_host}}:{{node2_port}}",
+							"host": [
+								"{{node2_host}}"
+							],
+							"port": "{{node2_port}}"
+						},
+						"description": "Req to node 2\nAdding node 1 and registered node."
+					},
+					"response": []
+				},
+				{
+					"name": "Check Node 1 for schema and table.",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46QWJjMTIzNCE="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n  \"operation\":\"describe_schema\",\r\n  \"schema\": \"{{dev_schema}}\"\r\n}\r\n"
+						},
+						"url": {
+							"raw": "{{node1_host}}:{{node1_port}}",
+							"host": [
+								"{{node1_host}}"
+							],
+							"port": "{{node1_port}}"
+						},
+						"description": "Req to node 2\nAdding node 1 and registered node."
+					},
+					"response": []
+				},
+				{
+					"name": "add data to node_2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "f61b6d3f-407f-4e83-a22a-44a136ce9956",
+								"exec": [
+									"//pm.environment.set(\"variable_key\", \"variable_value\");"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46QWJjMTIzNCE="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"{{dev_schema}}\",\n\"table\":\"{{dev_test_table}}\",\n\"records\": [\n  {\n  \t\"id\":\"{{$guid}}\",\n  \t\"temperature\":{{$randomInt}},\n  \t\"timestamp\":{{$timestamp}}\n  }\n]\n}"
+						},
+						"url": {
+							"raw": "{{node2_host}}:{{node2_port}}",
+							"host": [
+								"{{node2_host}}"
+							],
+							"port": "{{node2_port}}"
+						},
+						"description": "Req to node 2\nAdding node 1 and registered node."
+					},
+					"response": []
+				},
+				{
+					"name": "add data to node_1",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "f61b6d3f-407f-4e83-a22a-44a136ce9956",
+								"exec": [
+									"//pm.environment.set(\"variable_key\", \"variable_value\");"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46QWJjMTIzNCE="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"{{dev_schema}}\",\n\"table\":\"{{dev_test_table}}\",\n\"records\": [\n  {\n  \t\"id\":\"{{$guid}}\",\n  \t\"temperature\":{{$randomInt}},\n  \t\"timestamp\":{{$timestamp}}\n  }\n]\n}"
+						},
+						"url": {
+							"raw": "{{node1_host}}:{{node1_port}}",
+							"host": [
+								"{{node1_host}}"
+							],
+							"port": "{{node1_port}}"
+						},
+						"description": "Req to node 2\nAdding node 1 and registered node."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "data_wait",
+			"item": [
+				{
+					"name": "Select data from node2",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46QWJjMTIzNCE="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"search_by_value\",\n\"schema\":\"{{dev_schema}}\",\n\"table\":\"{{dev_test_table}}\",\n\"search_attribute\":\"id\",\n\"search_value\":\"*\",\n\"get_attributes\":[\"*\"]\n}"
+						},
+						"url": {
+							"raw": "{{node2_host}}:{{node2_port}}",
+							"host": [
+								"{{node2_host}}"
+							],
+							"port": "{{node2_port}}"
+						},
+						"description": "Req to node 2\nAdding node 1 and registered node."
+					},
+					"response": []
+				},
+				{
+					"name": "Select data from node1",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46QWJjMTIzNCE="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"search_by_value\",\n\"schema\":\"{{dev_schema}}\",\n\"table\":\"{{dev_test_table}}\",\n\"search_attribute\":\"id\",\n\"search_value\":\"*\",\n\"get_attributes\":[\"*\"]\n}"
+						},
+						"url": {
+							"raw": "{{node2_host}}:{{node2_port}}",
+							"host": [
+								"{{node2_host}}"
+							],
+							"port": "{{node2_port}}"
+						},
+						"description": "Req to node 2\nAdding node 1 and registered node."
+					},
+					"response": []
+				},
+				{
+					"name": "Select data by hash",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46QWJjMTIzNCE="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n \"operation\":\"search_by_hash\",\n  \"schema\": \"dev\",\n  \"table\": \"dog\",\n  \"hash_attribute\": \"id\",\n  \"hash_values\":[1,2],\n  \"get_attributes\": [\"name\", \"breed\"]\n}"
+						},
+						"url": {
+							"raw": "{{url_node2}}:{{port_node2}}",
+							"host": [
+								"{{url_node2}}"
+							],
+							"port": "{{port_node2}}"
+						},
+						"description": "Req to node 2\nAdding node 1 and registered node."
+					},
+					"response": []
+				}
+			]
+		}
+	],
+	"auth": {
+		"type": "basic",
+		"basic": [
+			{
+				"key": "password",
+				"value": "1400",
+				"type": "string"
+			},
+			{
+				"key": "username",
+				"value": "HDB_ADMIN",
+				"type": "string"
+			}
+		]
+	},
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"id": "81ca77b4-5077-4dfd-89a3-22307d038f3e",
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		},
+		{
+			"listen": "test",
+			"script": {
+				"id": "33dd32b9-289a-48c2-b0a5-dd2d104f446a",
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		}
+	]
+}

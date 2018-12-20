@@ -1,6 +1,14 @@
 const cluster = require('cluster');
 const DEBUG = false;
 const harper_logger = require('../utility/logging/harper_logger');
+// We want to kick off the mgr init as soon as possible.
+const env_mgr = require('../utility/environment/environmentManager');
+try {
+    env_mgr.init();
+} catch(err) {
+    harper_logger.error(`Got an error loading the environment.  Exiting.${err}`);
+    process.exit(0);
+}
 const uuidv1 = require('uuid/v1');
 const user_schema = require('../utility/user_schema');
 const async = require('async');
@@ -12,6 +20,7 @@ const guidePath = require('path');
 const hdb_terms = require('../utility/hdbTerms');
 const global_schema = require('../utility/globalSchema');
 const fs = require('fs');
+const cluster_utilities = require('./clustering/clusterUtilities');
 
 const DEFAULT_SERVER_TIMEOUT = 120000;
 const PROPS_SERVER_TIMEOUT_KEY = 'SERVER_TIMEOUT_MS';
@@ -44,17 +53,41 @@ if (node_env_value === undefined || node_env_value === null || node_env_value ==
 process.env['NODE_ENV'] = node_env_value;
 
 let numCPUs = 4;
+let num_workers = 4;
 
-let num_workers = os.cpus().length;
+//in an instance of having HDB installed on an android devices we don't have access to the cpu info so we need to handle the error and move on
+try {
+    num_workers = os.cpus().length;
+} catch(e){
+    harper_logger.info(e);
+}
 numCPUs = num_workers < numCPUs ? num_workers : numCPUs;
 
 if(DEBUG){
     numCPUs = 1;
 }
 
-if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
+cluster.on('exit', (dead_worker, code, signal) => {
+    harper_logger.info(`worker ${dead_worker.process.pid} died with signal ${signal} and code ${code}`);
+    let new_worker = undefined;
+    try {
+        new_worker = cluster.fork();
+        new_worker.on('message', cluster_utilities.clusterMessageHandler);
+        harper_logger.info(`kicked off replacement worker with new pid=${new_worker.process.pid}`);
+    } catch (e) {
+        harper_logger.fatal(`FATAL error trying to restart a dead_worker with pid ${dead_worker.process.pid}.  ${e}`);
+        return;
+    }
+    for (let a_fork in global.forks) {
+        if (global.forks[a_fork].process.pid === dead_worker.process.pid) {
+            global.forks[a_fork] = new_worker;
+            harper_logger.trace(`replaced dead fork in global.forks with new fork that has pid ${new_worker.process.pid}`);
+        }
+    }
+});
+
+if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     const search = require('../data_layer/search');
-    const cluster_utilities = require('./clustering/clusterUtilities');
     const enterprise_util = require('../utility/enterpriseInitialization');
 
     process.on('uncaughtException', function (err) {
@@ -78,13 +111,14 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
     };
     global_schema.setSchemaDataToGlobal((err, data)=> {
         search.searchByValue(licenseKeySearch, function (err, licenses) {
-            const hdb_license = require('../utility/hdb_license');
+            const hdb_license = require('../utility/registration/hdb_license');
             if (err) {
                 return harper_logger.error(err);
             }
 
-            async.each(licenses, function (license, callback) {
-                hdb_license.validateLicense(license.license_key, license.company, function (err, license_validation) {
+            Promise.all(licenses.map(async (license) => {
+                try {
+                    let license_validation = await hdb_license.validateLicense(license.license_key, license.company);
                     if (license_validation.valid_machine && license_validation.valid_date && license_validation.valid_license) {
                         enterprise = true;
                         if (num_workers > numCPUs) {
@@ -95,11 +129,10 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                             }
                         }
                     }
-                    callback();
-                });
-            }, function (err) {
-                if (err)
-                    return harper_logger.error(err);
+                } catch(e){
+                    harper_logger.error(e);
+                }
+            })).then(() => {
                 harper_logger.info(`Master ${process.pid} is running`);
                 harper_logger.info(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
                 // Fork workers.
@@ -129,26 +162,6 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                         }
                     });
                 }
-
-                cluster.on('exit', (dead_worker, code, signal) => {
-                    harper_logger.info(`worker ${dead_worker.process.pid} died with signal ${signal} and code ${code}`);
-                    let new_worker = undefined;
-                    try {
-                        new_worker = cluster.fork();
-                        new_worker.on('message', cluster_utilities.clusterMessageHandler);
-                        harper_logger.info(`kicked off replacement worker with new pid=${new_worker.process.pid}`);
-                    } catch (e) {
-                        harper_logger.fatal(`FATAL error trying to restart a dead_worker with pid ${dead_worker.process.pid}.  ${e}`);
-                        return;
-                    }
-                    for (let a_fork in global.forks) {
-                        if (global.forks[a_fork].process.pid === dead_worker.process.pid) {
-                            global.forks[a_fork] = new_worker;
-                            harper_logger.trace(`replaced dead fork in global.forks with new fork that has pid ${new_worker.process.pid}`);
-                        }
-                    }
-                });
-
                 global.forkClusterMsgQueue = {};
             });
         });
@@ -243,15 +256,16 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                     }
                     return res.status(hdb_terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send(err);
                 }
-                let localOnlyOperations = ['describe_all', 'describe_table', 'describe_schema', 'read_log'];
+                let localOnlyOperations = ['describe_all', 'describe_table', 'describe_schema', 'read_log', 'add_node'];
 
                 if (global.clustering_on && req.body.operation !== 'sql') {
                     if (!req.body.schema
                         || !req.body.table
                         || req.body.operation === 'create_table'
                         || req.body.operation === 'drop_table'
+                        || req.body.operation === 'delete_files_before'
                     ) {
-                        if (localOnlyOperations.includes(req.body.operation)) {
+                        if (hdb_terms.LOCAL_HARPERDB_OPERATIONS.includes(req.body.operation)) {
                             harper_logger.info('local only operation: ' + req.body.operation);
                             server_utilities.processLocalTransaction(req, res, operation_function, function (err) {
                                 if(err){
@@ -262,7 +276,7 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                             harper_logger.info('local & delegated operation: ' + req.body.operation);
                             server_utilities.processLocalTransaction(req, res, operation_function, function (err) {
                                 if(err){
-                                    harper_logger.error('error from local & delegated: ' + err);
+                                    harper_logger.error('error from local & delegated: ' + JSON.stringify(err));
                                 }else {
                                     let id = uuidv1();
                                     process.send({
@@ -298,38 +312,39 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                                             });
                                         }
                                     });
-                                }
+                                } else {
 
-                                if (residence.indexOf(hdb_properties.get('NODE_NAME')) > -1) {
-                                    server_utilities.processLocalTransaction(req, res, operation_function, function (err) {
-                                        if (residence.length > 1) {
-                                            for (let node in residence) {
-                                                if (residence[node] !== hdb_properties.get('NODE_NAME')) {
+                                    if (residence.indexOf(hdb_properties.get('NODE_NAME')) > -1) {
+                                        server_utilities.processLocalTransaction(req, res, operation_function, function (err) {
+                                            if (residence.length > 1) {
+                                                for (let node in residence) {
+                                                    if (residence[node] !== hdb_properties.get('NODE_NAME')) {
 
-                                                    let id = uuidv1();
-                                                    process.send({
-                                                        "type": "clustering_payload", "pid": process.pid,
-                                                        "clustering_type": "send",
-                                                        "id": id,
-                                                        "body": req.body,
-                                                        "node": {"name": residence[node]}
-                                                    });
+                                                        let id = uuidv1();
+                                                        process.send({
+                                                            "type": "clustering_payload", "pid": process.pid,
+                                                            "clustering_type": "send",
+                                                            "id": id,
+                                                            "body": req.body,
+                                                            "node": {"name": residence[node]}
+                                                        });
+                                                    }
                                                 }
                                             }
-                                        }
-                                    });
-                                } else {
-                                    for (let node in residence) {
-                                        if (residence[node] !== hdb_properties.get('NODE_NAME')) {
-                                            let id = uuidv1();
-                                            global.clusterMsgQueue[id] = res;
-                                            process.send({
-                                                "type": "clustering_payload", "pid": process.pid,
-                                                "clustering_type": "send",
-                                                "id": id,
-                                                "body": req.body,
-                                                "node": {"name": residence[node]}
-                                            });
+                                        });
+                                    } else {
+                                        for (let node in residence) {
+                                            if (residence[node] !== hdb_properties.get('NODE_NAME')) {
+                                                let id = uuidv1();
+                                                global.clusterMsgQueue[id] = res;
+                                                process.send({
+                                                    "type": "clustering_payload", "pid": process.pid,
+                                                    "clustering_type": "send",
+                                                    "id": id,
+                                                    "body": req.body,
+                                                    "node": {"name": residence[node]}
+                                                });
+                                            }
                                         }
                                     }
                                 }
@@ -341,7 +356,7 @@ if (cluster.isMaster &&( numCPUs > 1 || DEBUG )) {
                         });
                     }
                 } else if(req.body.schema && req.body.table
-                    && req.body.operation !== 'create_table' && req.body.operation !=='drop_table' && !localOnlyOperations.includes(req.body.operation) ) {
+                    && req.body.operation !== 'create_table' && req.body.operation !=='drop_table' && !hdb_terms.LOCAL_HARPERDB_OPERATIONS.includes(req.body.operation) ) {
 
                     global_schema.getTableSchema(req.body.schema, req.body.table, function (err, table) {
 

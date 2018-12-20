@@ -25,31 +25,36 @@ let hdb_boot_properties = null;
 let hdb_properties = null;
 let fork = require('child_process').fork;
 
+let child = undefined;
+
 /***
  * Starts Harper DB.  If Harper is already running, or the port is in use, and error will be thrown and Harper will not
  * start.  If the hdb_boot_props file is not found, it is assumed an install needs to be performed.
  */
 function run() {
-    ps('name', HDB_PROC_NAME).then(function (list) {
-        if( list.length === 0 ) {
-            arePortsInUse( (err) => {
-              if(err) {
-                  console.log(err);
-                  logger.info(err);
-                  return;
-              }
-              startHarper();
-            });
-        }
-        else {
-            let run_err = 'HarperDB is already running.';
-            console.log(run_err);
-            logger.info(run_err);
-        }
-    }, function (err) {
-        console.log(err.stack || err);
-        logger.error(err.stack || err);
-    });
+    try {
+        ps('name', HDB_PROC_NAME).then(function (list) {
+            if (list.length === 0) {
+                arePortsInUse((err) => {
+                    if (err) {
+                        console.log(err);
+                        logger.info(err);
+                        return;
+                    }
+                    startHarper();
+                });
+            } else {
+                let run_err = 'HarperDB is already running.';
+                console.log(run_err);
+                logger.info(run_err);
+            }
+        }, function (err) {
+            console.log(err.stack || err);
+            logger.error(err.stack || err);
+        });
+    } catch(e){
+        logger.error(e);
+    }
 }
 
 function arePortsInUse(callback) {
@@ -181,7 +186,7 @@ function completeRun() {
         if(error)
             console.error(error);
 
-        foregroundHandler()
+        foregroundHandler();
     });
 }
 
@@ -193,6 +198,7 @@ function foregroundHandler(){
     let is_foreground = isForegroundProcess();
 
     if(!is_foreground){
+        child.unref();
         exitInstall();
     }
 
@@ -238,30 +244,29 @@ function isForegroundProcess(){
 
 function checkPermission(callback){
     let checkPermissions = require('../utility/check_permissions');
-    checkPermissions.checkPermission(function(err){
-        if(err){
-            console.error(err);
-            return callback(err, null);
-        }else{
-            return callback(null, 'success');
-        }
-    });
+    try {
+        checkPermissions.checkPermission();
+    } catch(err) {
+        console.error(err);
+        return callback(err, null);
+    }
+    return callback(null, 'success');
 }
 
-function kickOffExpress(err, callback){
+function kickOffExpress(err, callback) {
+
     if (hdb_properties && hdb_properties.get('MAX_MEMORY')) {
-        var child = fork(path.join(__dirname,'../server/hdb_express.js'),[`--max-old-space-size=${hdb_properties.get('MAX_MEMORY')}`, `${hdb_properties.get('PROJECT_DIR')}/server/hdb_express.js`],{
+        child = fork(path.join(__dirname,'../server/hdb_express.js'),[`--max-old-space-size=${hdb_properties.get('MAX_MEMORY')}`, `${hdb_properties.get('PROJECT_DIR')}/server/hdb_express.js`],{
             detached: true,
             stdio: 'ignore'
         });
     }else{
-        var child = fork(path.join(__dirname,'../server/hdb_express.js'),{
+        child = fork(path.join(__dirname,'../server/hdb_express.js'),{
             detached: true,
             stdio: 'ignore'
         });
     }
 
-    child.unref();
     console.log(colors.magenta('' + fs.readFileSync(path.join(__dirname,'../utility/install/ascii_logo.txt'))));
     console.log(colors.magenta(`|------------- HarperDB ${pjson.version} successfully started ------------|`));
     return callback();
