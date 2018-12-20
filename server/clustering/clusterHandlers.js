@@ -48,8 +48,8 @@ async function fetchQueue(msg, socket){
             node_payload.queue = global.cluster_queue[msg.name];
         }
 
-        let catchup_payload = JSON.stringify(node_payload);
-        the_socket.emit('catchup', catchup_payload);
+        //let catchup_payload = JSON.stringify(node_payload);
+        the_socket.emit('catchup', node_payload);
     } catch(e){
         harper_logger.error(e);
     }

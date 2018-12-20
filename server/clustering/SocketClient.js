@@ -84,9 +84,9 @@ class SocketClient {
         await cluster_handlers.fetchQueue(msg, this.client);
     }
 
-    async onCatchupHandler(queue_string) {
-        harper_logger.info('catchup' + queue_string);
-        let queue = JSON.parse(queue_string);
+    async onCatchupHandler(queue) {
+        harper_logger.info('catchup' + queue);
+        //let queue = JSON.parse(queue_string);
 
         await this.onSchemaUpdateResponseHandler(queue.schema);
 

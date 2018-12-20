@@ -55,6 +55,7 @@ class SocketServer {
             this.io = sio.listen(server);
             this.io.sockets.on("connection", function (socket) {
                 socket.on("identify", function (msg, callback) {
+                    log.info(`${msg.name} connected to cluster`);
                     //this is the remote ip address of the client connecting to this server.
                     let raw_remote_ip = socket.conn.remoteAddress;
                     let raw_remote_ip_array = raw_remote_ip ? raw_remote_ip.split(':') : [];
