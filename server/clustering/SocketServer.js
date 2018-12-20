@@ -10,7 +10,6 @@ const fs = require('fs');
 const terms = require('../../utility/hdbTerms');
 const SocketClient = require('./SocketClient');
 const cluster_handlers = require('./clusterHandlers');
-const inspect = require('util');
 
 const p_schema_describe_all = promisify(schema.describeAll);
 
@@ -56,7 +55,6 @@ class SocketServer {
             this.io = sio.listen(server);
             this.io.sockets.on("connection", function (socket) {
                 socket.on("identify", function (msg, callback) {
-                    const inspect = require('util');
                     //this is the remote ip address of the client connecting to this server.
                     let raw_remote_ip = socket.conn.remoteAddress;
                     let raw_remote_ip_array = raw_remote_ip ? raw_remote_ip.split(':') : [];
@@ -71,8 +69,8 @@ class SocketServer {
                             return client.other_node.host === msg.host && client.other_node.port === msg.port;
                         });
                     }
-                    log.info(`**** found client results = ${inspect(found_client)}`);
-                    log.info(`**** Cluster socket client currently: ${inspect(global.cluster_server.socket_client)}`);
+                    log.info(`**** found client results = ${found_client}`);
+                    log.info(`**** Cluster socket client currently: ${global.cluster_server.socket_client}`);
                     // if we do not have a client connection for this other node we need to ask it for what we may have missed since last connection
                     let catchup_request = true;
                     for(let k = 0; k < node.other_nodes.length; k++) {
