@@ -63,36 +63,43 @@ class SocketServer {
                     new_client.client = socket;
                     new_client.createClientMessageHandlers();
 
-                    let found_client = global.cluster_server.socket_client.filter((client)=>{
-                        return client.other_node.name === msg.name;
-                    });
+                    let found_client = undefined;
+                    if(global.cluster_server.socket_client) {
+                        found_client = global.cluster_server.socket_client.filter((client) => {
+                            return client.other_node.host === msg.host && client.other_node.port === msg.port;
+                        });
+                    }
 
                     // if we do not have a client connection for this other node we need to ask it for what we may have missed since last connection
                     let catchup_request = true;
-                    for(let k = 0; k < node.other_nodes.length; k++){
-                        if(node.other_nodes[k].name === msg.name){
+                    for(let k = 0; k < node.other_nodes.length; k++) {
+                        if(node.other_nodes[k].name === msg.name) {
                             catchup_request = false;
                             return;
                         }
                     }
 
-                    if(catchup_request){
+                    if(catchup_request) {
                         socket.emit('catchup_request', {name: node.name});
                     }
 
-                    if(!found_client || found_client.length === 0){
+                    if(!found_client || found_client.length === 0) {
                         global.cluster_server.socket_client.push(new_client);
                     } else {
                         // This client already exists and is connected, this means we are establishing a bidirectional connection.
-                        found_client.direction = terms.CLUSTER_CONNECTION_DIRECTION_ENUM.BIDIRECTIONAL;
+                        // We probably should never return more than 1, but set them all just in case.
+                        if(found_client.length > 1) {
+                            log.warn(`Multiple socket clients with the same host: ${found_client[0].host} and port: ${found_client[0].port} were found`);
+                        }
+                        for(let client of found_client) {
+                            client.direction = terms.CLUSTER_CONNECTION_DIRECTION_ENUM.BIDIRECTIONAL;
+                        }
                     }
 
                     socket.join(msg.name, async () => {
-
                         log.info(node.name + ' joined room ' + msg.name);
                         // retrieve the queue and send to this node.
                         await cluster_handlers.fetchQueue(msg, socket)
-
                     });
                 });
 
@@ -100,8 +107,6 @@ class SocketServer {
                     log.info(msg.name + ' catchup_request');
                     await cluster_handlers.fetchQueue(msg, socket);
                 });
-
-
 
                 socket.on('confirm_msg', async msg => {
                     await cluster_handlers.onConfirmMessageHandler(msg);
@@ -121,13 +126,10 @@ class SocketServer {
                         let schema = await p_schema_describe_all({});
                         socket.emit('schema_update_response', schema);
                     } catch(e){
-                        log.error(err);
+                        log.error(e);
                     }
                 });
-
-
             });
-
             next();
 
         } catch (e) {
