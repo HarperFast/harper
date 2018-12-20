@@ -27,7 +27,7 @@ const p_schema_create_table = promisify(schema.createTable);
 const p_schema_create_attribute = promisify(schema.createAttribute);
 const p_insert = promisify(insert.insert);
 
-const WHITELISTED_ERRORS = ['attribute already exists'];
+const WHITELISTED_ERRORS = 'already exists';
 const ERROR_NO_HDB_USER = 'there is no hdb_user';
 
 const CLIENT_CONNECTION_OPTIONS = {
@@ -69,7 +69,6 @@ class SocketClient {
             port: this.node.port
         };
         this.client.emit('identify', node_info);
-        this.client.emit('schema_update_request');
     }
 
     onConnectErrorHandler(error){
@@ -85,24 +84,31 @@ class SocketClient {
         await cluster_handlers.fetchQueue(msg, this.client);
     }
 
-    async onCatchupHandler(queue_string) {
-        harper_logger.info('catchup' + queue_string);
-        let queue = JSON.parse(queue_string);
+    async onCatchupHandler(queue) {
+        harper_logger.info('catchup' + queue);
+        //let queue = JSON.parse(queue_string);
+
+        await this.onSchemaUpdateResponseHandler(queue.schema);
+
+        if(!queue.queue){
+            return;
+        }
+
         let the_client = this.client;
         let the_node = this.node;
-        for (let item in queue) {
-            let json = queue[item].body;
+        for (let item in queue.queue) {
+            let json = queue.queue[item].body;
             try {
                 json = await cluster_utilities.authHeaderToUser(json);
 
-                if (!queue[item].body.hdb_user) {
-                    queue[item].err = ERROR_NO_HDB_USER;
+                if (!queue.queue[item].body.hdb_user) {
+                    queue.queue[item].err = ERROR_NO_HDB_USER;
                     harper_logger.error(`${ERROR_NO_HDB_USER}: ` + JSON.stringify(json));
-                    the_client.emit('error', queue[item]);
+                    the_client.emit('error', queue.queue[item]);
                 } else {
                     let operation_function = await p_server_utilities_choose_operation(json);
 
-                    queue[item].node = the_node;
+                    queue.queue[item].node = the_node;
                     await p_server_utilities_proccess_delegated_transaction(json, operation_function)
                         .catch(err => {
                             if (!checkWhitelistedErrors(err)) {
@@ -110,12 +116,12 @@ class SocketClient {
                             }
                         });
 
-                    the_client.emit('confirm_msg', queue[item]);
+                    the_client.emit('confirm_msg', queue.queue[item]);
                 }
             } catch (e) {
-                queue[item].err = error;
-                the_client.emit('error', queue[item]);
-                return harper_logger.error(error);
+                queue.queue[item].err = e;
+                the_client.emit('error', queue.queue[item]);
+                return harper_logger.error(e);
             }
         }
 
@@ -232,7 +238,7 @@ class SocketClient {
             payload.data = data;
             the_client.emit('confirm_msg', payload);
         } catch(e){
-            harper_logger.error(error);
+            harper_logger.error(e);
         }
     }
 
@@ -381,10 +387,8 @@ function checkWhitelistedErrors(error){
         }
     }
 
-    for(let ok_msg in WHITELISTED_ERRORS){
-        if(error_msg.includes(ok_msg)){
-            return true;
-        }
+    if(error_msg.includes(WHITELISTED_ERRORS)) {
+        return true;
     }
 
     return false;
