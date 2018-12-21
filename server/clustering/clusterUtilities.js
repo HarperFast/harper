@@ -298,37 +298,43 @@ function selectProcess(target_process_id) {
 
 /**
  * This will build and populate a ClusterStatusObject and send it back to the process that requested it.
- * @returns {Promise<void>}
  */
 function getClusterStatus() {
+
     if(!global.cluster_server) {
         log.error(`Tried to get cluster status, but the cluster is not initialized.`);
         throw new Error(`Tried to get cluster status, but the cluster is not initialized.`);
     }
     let status_obj = new ClusterStatusObject.ClusterStatusObject();
-    status_obj.my_node_port = global.cluster_server.socket_server.port;
-    status_obj.my_node_name = global.cluster_server.socket_server.name;
+    try {
+        status_obj.my_node_port = global.cluster_server.socket_server.port;
+        status_obj.my_node_name = global.cluster_server.socket_server.name;
 
-    for(let conn of global.cluster_server.socket_client) {
-        let new_status = new ClusterStatusObject.ConnectionStatus();
-        new_status.direction = conn.direction;
-        new_status.host = conn.client.io.engine.hostname;
-        new_status.port = conn.client.io.engine.port;
-        let status = conn.client.connected;
-        new_status.connection_status = (status ? ClusterStatusObject.CONNECTION_STATUS_ENUM.CONNECTED :
-            ClusterStatusObject.CONNECTION_STATUS_ENUM.DISCONNECTED);
+        for (let conn of global.cluster_server.socket_client) {
+            let new_status = new ClusterStatusObject.ConnectionStatus();
+            new_status.direction = conn.direction;
+            if (conn.client) {
+                new_status.host = conn.client.io.engine.hostname;
+                new_status.port = conn.client.io.engine.port;
+            }
+            let status = conn.client.connected;
+            new_status.connection_status = (status ? ClusterStatusObject.CONNECTION_STATUS_ENUM.CONNECTED :
+                ClusterStatusObject.CONNECTION_STATUS_ENUM.DISCONNECTED);
 
-        switch(conn.direction) {
-            case terms.CLUSTER_CONNECTION_DIRECTION_ENUM.INBOUND:
-                status_obj.inbound_connections.push(new_status);
-                break;
-            case terms.CLUSTER_CONNECTION_DIRECTION_ENUM.OUTBOUND:
-                status_obj.outbound_connections.push(new_status);
-                break;
-            case terms.CLUSTER_CONNECTION_DIRECTION_ENUM.BIDIRECTIONAL:
-                status_obj.bidirectional_connections.push(new_status);
-                break;
+            switch (conn.direction) {
+                case terms.CLUSTER_CONNECTION_DIRECTION_ENUM.INBOUND:
+                    status_obj.inbound_connections.push(new_status);
+                    break;
+                case terms.CLUSTER_CONNECTION_DIRECTION_ENUM.OUTBOUND:
+                    status_obj.outbound_connections.push(new_status);
+                    break;
+                case terms.CLUSTER_CONNECTION_DIRECTION_ENUM.BIDIRECTIONAL:
+                    status_obj.bidirectional_connections.push(new_status);
+                    break;
+            }
         }
+    } catch(err) {
+        log.error(err);
     }
     return status_obj;
 }
