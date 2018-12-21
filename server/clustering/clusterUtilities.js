@@ -313,9 +313,9 @@ function getClusterStatus() {
         for (let conn of global.cluster_server.socket_client) {
             let new_status = new ClusterStatusObject.ConnectionStatus();
             new_status.direction = conn.direction;
-            if (conn.client) {
-                new_status.host = conn.client.io.engine.hostname;
-                new_status.port = conn.client.io.engine.port;
+            if (conn.other_node) {
+                new_status.host = conn.other_node.hostname;
+                new_status.port = conn.other_node.host;
             }
             let status = conn.client.connected;
             new_status.connection_status = (status ? ClusterStatusObject.CONNECTION_STATUS_ENUM.CONNECTED :

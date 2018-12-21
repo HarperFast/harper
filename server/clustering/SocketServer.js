@@ -93,7 +93,6 @@ class SocketServer {
                                 log.warn(`Multiple socket clients with the same host: ${found_client[0].host} and port: ${found_client[0].port} were found`);
                             }
                             for (let client of found_client) {
-                                log.info(`Setting BIDIRECTIONAL connection for ${client.io.engine.hostname}`);
                                 client.direction = terms.CLUSTER_CONNECTION_DIRECTION_ENUM.BIDIRECTIONAL;
                             }
                         }
