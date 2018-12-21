@@ -55,7 +55,7 @@ class SocketServer {
             let node = this.node;
             this.io = sio.listen(server);
             this.io.sockets.on("connection", function (socket) {
-                socket.on("identify", function (msg, callback) {
+                socket.on("identify", function (msg) {
                     //this is the remote ip address of the client connecting to this server.
                     try {
                         let raw_remote_ip = socket.conn.remoteAddress;
@@ -71,38 +71,24 @@ class SocketServer {
                                 return client.other_node.host === msg.host && client.other_node.port === msg.port;
                             });
                         }
-                        //log.info(`**** found client results = ${inspect(found_client)}`);
-                        //log.info(`**** Cluster socket client currently: ${inspect(global.cluster_server.socket_client)}`);
-                        if(!found_client) {
-                            log.error('didnt find a client');
-                        } else {
-                            log.error('found a client.');
-                        }
+
                         // if we do not have a client connection for this other node we need to ask it for what we may have missed since last connection
-                        log.error('About to calculate catchup request')
                         let catchup_request = true;
                         for(let k = 0; k < node.other_nodes.length; k++) {
-                            if(node.other_nodes[k].name === msg.name) {
+                            if(node.other_nodes[k].host === msg.host && node.other_nodes[k].port === msg.port) {
                                 catchup_request = false;
-                                log.error('returning');
-                                //return;
                             }
                         }
-                        log.error('done with catchup request');
+
                         if(catchup_request) {
                             socket.emit('catchup_request', {name: node.name});
                         }
 
-                        log.error('done emitting catchup request');
                         if (!found_client || found_client.length === 0) {
-                            log.error('cluster server push');
                             global.cluster_server.socket_client.push(new_client);
-                            log.error('after cluster server push');
                         } else {
                             // This client already exists and is connected, this means we are establishing a bidirectional connection.
                             // We probably should never return more than 1, but set them all just in case.
-                            log.error('in found client code');
-                            log.error(`found client length: ${found_client.length}`);
                             if (found_client.length > 1) {
                                 log.warn(`Multiple socket clients with the same host: ${found_client[0].host} and port: ${found_client[0].port} were found`);
                             }
@@ -118,7 +104,7 @@ class SocketServer {
                     socket.join(msg.name, async () => {
                         log.info(node.name + ' joined room ' + msg.name);
                         // retrieve the queue and send to this node.
-                        await cluster_handlers.fetchQueue(msg, socket)
+                        await cluster_handlers.fetchQueue(msg, socket);
                     });
                 });
 
