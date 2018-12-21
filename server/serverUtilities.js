@@ -242,6 +242,9 @@ function chooseOperation(json, callback) {
         case terms.OPERATIONS_ENUM.CONFIGURE_CLUSTER:
             operation_function = cluster_utilities.configureCluster;
             break;
+        case terms.OPERATIONS_ENUM.CLUSTER_STATUS:
+            operation_function = cluster_utilities.clusterStatus;
+            break;
         case terms.OPERATIONS_ENUM.EXPORT_TO_S3:
             operation_function = signalJob;
             job_operation_function = export_.export_to_s3;

@@ -544,7 +544,7 @@ function writeRecords(data, callback){
             writeLinkFiles.bind(null, record.links)
         ], (err)=>{
             if(err){
-                winston.error(err);
+                logger.error(err);
             }
             callback2();
         });
