@@ -77,6 +77,7 @@ class SocketServer {
                         for(let k = 0; k < node.other_nodes.length; k++) {
                             if(node.other_nodes[k].host === msg.host && node.other_nodes[k].port === msg.port) {
                                 catchup_request = false;
+                                break;
                             }
                         }
 
