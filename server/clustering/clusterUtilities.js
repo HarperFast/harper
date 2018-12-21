@@ -312,8 +312,8 @@ function getClusterStatus() {
     for(let conn of global.cluster_server.socket_client) {
         let new_status = new ClusterStatusObject.ConnectionStatus();
         new_status.direction = conn.direction;
-        new_status.host = conn.client.host;
-        new_status.port = conn.client.port;
+        new_status.host = conn.client.io.engine.hostname;
+        new_status.port = conn.client.io.engine.port;
         let status = conn.client.connected;
         new_status.connection_status = (status ? ClusterStatusObject.CONNECTION_STATUS_ENUM.CONNECTED :
             ClusterStatusObject.CONNECTION_STATUS_ENUM.DISCONNECTED);
