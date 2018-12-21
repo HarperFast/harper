@@ -57,39 +57,40 @@ class SocketServer {
             this.io.sockets.on("connection", function (socket) {
                 socket.on("identify", function (msg, callback) {
                     //this is the remote ip address of the client connecting to this server.
-                    let raw_remote_ip = socket.conn.remoteAddress;
-                    let raw_remote_ip_array = raw_remote_ip ? raw_remote_ip.split(':') : [];
-                    msg.host = Array.isArray(raw_remote_ip_array) && raw_remote_ip_array.length > 0 ?  raw_remote_ip_array[raw_remote_ip_array.length - 1] : '';
-                    let new_client = new SocketClient(node, msg, terms.CLUSTER_CONNECTION_DIRECTION_ENUM.INBOUND);
-                    new_client.client = socket;
-                    new_client.createClientMessageHandlers();
-
-                    let found_client = undefined;
-                    if(global.cluster_server.socket_client) {
-                        found_client = global.cluster_server.socket_client.filter((client) => {
-                            return client.other_node.host === msg.host && client.other_node.port === msg.port;
-                        });
-                    }
-                    //log.info(`**** found client results = ${inspect(found_client)}`);
-                    //log.info(`**** Cluster socket client currently: ${inspect(global.cluster_server.socket_client)}`);
-                    if(!found_client) {
-                        log.error('didnt find a client');
-                    } else {
-                        log.error('found a client.');
-                    }
-                    // if we do not have a client connection for this other node we need to ask it for what we may have missed since last connection
-                    let catchup_request = true;
-                    for(let k = 0; k < node.other_nodes.length; k++) {
-                        if(node.other_nodes[k].name === msg.name) {
-                            catchup_request = false;
-                            return;
-                        }
-                    }
-                    log.error('done with catchup request');
-                    if(catchup_request) {
-                        socket.emit('catchup_request', {name: node.name});
-                    }
                     try {
+                        let raw_remote_ip = socket.conn.remoteAddress;
+                        let raw_remote_ip_array = raw_remote_ip ? raw_remote_ip.split(':') : [];
+                        msg.host = Array.isArray(raw_remote_ip_array) && raw_remote_ip_array.length > 0 ?  raw_remote_ip_array[raw_remote_ip_array.length - 1] : '';
+                        let new_client = new SocketClient(node, msg, terms.CLUSTER_CONNECTION_DIRECTION_ENUM.INBOUND);
+                        new_client.client = socket;
+                        new_client.createClientMessageHandlers();
+
+                        let found_client = undefined;
+                        if(global.cluster_server.socket_client) {
+                            found_client = global.cluster_server.socket_client.filter((client) => {
+                                return client.other_node.host === msg.host && client.other_node.port === msg.port;
+                            });
+                        }
+                        //log.info(`**** found client results = ${inspect(found_client)}`);
+                        //log.info(`**** Cluster socket client currently: ${inspect(global.cluster_server.socket_client)}`);
+                        if(!found_client) {
+                            log.error('didnt find a client');
+                        } else {
+                            log.error('found a client.');
+                        }
+                        // if we do not have a client connection for this other node we need to ask it for what we may have missed since last connection
+                        let catchup_request = true;
+                        for(let k = 0; k < node.other_nodes.length; k++) {
+                            if(node.other_nodes[k].name === msg.name) {
+                                catchup_request = false;
+                                return;
+                            }
+                        }
+                        log.error('done with catchup request');
+                        if(catchup_request) {
+                            socket.emit('catchup_request', {name: node.name});
+                        }
+
                         log.error('done emitting catchup request');
                         if (!found_client || found_client.length === 0) {
                             log.error('cluster server push');
