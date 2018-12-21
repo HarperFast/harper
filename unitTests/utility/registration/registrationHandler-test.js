@@ -71,7 +71,7 @@ describe(`Test setLicense`, function () {
             err = e;
         }
         assert.notEqual(err, undefined, 'expected exceptions');
-        assert.equal(err.message, 'Invalid key specified for license file.', 'expected error message');
+        assert.equal(err.message, 'Invalid key or company specified for license file.', 'expected error message');
     });
     it('Set license key invalid key in json message', async function () {
         write_stub = sandbox.stub(fs, 'writeFile').throws(new Error('BAD WRITE'));
@@ -82,7 +82,7 @@ describe(`Test setLicense`, function () {
             err = e;
         }
         assert.notEqual(err, undefined, 'expected exceptions');
-        assert.equal(err.message, 'Invalid key specified for license file.', 'expected error message');
+        assert.equal(err.message, 'Invalid key or company specified for license file.', 'expected error message');
     });
 });
 

@@ -401,25 +401,6 @@ function clusterMessageHandler(msg) {
             case terms.CLUSTER_MESSAGE_TYPE_ENUM.JOB:
                 if (!hdb_utils.isEmptyOrZeroLength(msg.target_process_id)) {
                     // If a process is specified in the message, send this job to that process.
-                    /*
-                    let backup_process = undefined;
-                    let specified_process = undefined;
-                    for (let i = 0; i < global.forks.length; i++) {
-                        if (!backup_process && global.forks[i].process.pid !== msg.target_process_id) {
-                            // Set a backup process to send the message to in case we don't find the specified process.
-                            backup_process = global.forks[i];
-                        }
-                        if (global.forks[i].process.pid === msg.target_process_id) {
-                            specified_process = global.forks[i];
-                            specified_process.send(msg);
-                            log.info(`Processing job on process: ${msg.target_process_id}`);
-                            break;
-                        }
-                    }
-                    if (!specified_process && backup_process) {
-                        log.info(`The specified process ${msg.target_process_id} was not found, sending to default process instead.`);
-                        backup_process.send(msg);
-                    } */
                     let target_process = selectProcess(msg.target_process_id);
                     if(!target_process) {
                         log.error(`Failed to select a process to send job message to.`);
