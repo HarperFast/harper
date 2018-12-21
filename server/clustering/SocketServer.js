@@ -85,23 +85,31 @@ class SocketServer {
                             return;
                         }
                     }
-
+                    log.error('done with catchup request');
                     if(catchup_request) {
                         socket.emit('catchup_request', {name: node.name});
                     }
-
-                    if(!found_client || found_client.length === 0) {
-                        global.cluster_server.socket_client.push(new_client);
-                    } else {
-                        // This client already exists and is connected, this means we are establishing a bidirectional connection.
-                        // We probably should never return more than 1, but set them all just in case.
-                        if(found_client.length > 1) {
-                            log.warn(`Multiple socket clients with the same host: ${found_client[0].host} and port: ${found_client[0].port} were found`);
+                    try {
+                        log.error('done emitting catchup request');
+                        if (!found_client || found_client.length === 0) {
+                            log.error('cluster server push');
+                            global.cluster_server.socket_client.push(new_client);
+                            log.error('after cluster server push');
+                        } else {
+                            // This client already exists and is connected, this means we are establishing a bidirectional connection.
+                            // We probably should never return more than 1, but set them all just in case.
+                            log.error('in found client code');
+                            log.error(`found client length: ${found_client.length}`);
+                            if (found_client.length > 1) {
+                                log.warn(`Multiple socket clients with the same host: ${found_client[0].host} and port: ${found_client[0].port} were found`);
+                            }
+                            for (let client of found_client) {
+                                log.info(`Setting BIDIRECTIONAL connection for ${client.host}`);
+                                client.direction = terms.CLUSTER_CONNECTION_DIRECTION_ENUM.BIDIRECTIONAL;
+                            }
                         }
-                        for(let client of found_client) {
-                            log.info(`Setting BIDIRECTIONAL connection for ${client.host}`);
-                            client.direction = terms.CLUSTER_CONNECTION_DIRECTION_ENUM.BIDIRECTIONAL;
-                        }
+                    } catch(err) {
+                        log.error(err);
                     }
 
                     socket.join(msg.name, async () => {
