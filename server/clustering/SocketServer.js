@@ -79,11 +79,13 @@ class SocketServer {
                             log.error('found a client.');
                         }
                         // if we do not have a client connection for this other node we need to ask it for what we may have missed since last connection
+                        log.error('About to calculate catchup request')
                         let catchup_request = true;
                         for(let k = 0; k < node.other_nodes.length; k++) {
                             if(node.other_nodes[k].name === msg.name) {
                                 catchup_request = false;
-                                return;
+                                log.error('returning');
+                                //return;
                             }
                         }
                         log.error('done with catchup request');
