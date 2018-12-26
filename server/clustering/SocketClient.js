@@ -86,7 +86,6 @@ class SocketClient {
 
     async onCatchupHandler(queue) {
         harper_logger.info('catchup' + queue);
-        //let queue = JSON.parse(queue_string);
 
         await this.onSchemaUpdateResponseHandler(queue.schema);
 
