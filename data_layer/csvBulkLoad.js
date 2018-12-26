@@ -229,7 +229,7 @@ function bulkLoad(records, schema, table, action, callback){
         switch (action) {
             case 'insert':
                 target_object.operation = 'insert';
-                insert.insert(target_object, (err, data)=>{
+                insert.insertCB(target_object, (err, data)=>{
                     if(err){
                         caller(err);
                         return;
@@ -243,7 +243,7 @@ function bulkLoad(records, schema, table, action, callback){
                 break;
             case 'update':
                 target_object.operation = 'update';
-                insert.update(target_object, (err, data)=>{
+                insert.updateCB(target_object, (err, data)=>{
                     if(err){
                         caller(err);
                         return;

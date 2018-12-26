@@ -70,7 +70,7 @@ function addUser(user, callback){
             records: [clean_user]
         };
 
-        insert.insert(insert_object, function (err, success) {
+        insert.insertCB(insert_object, function (err, success) {
             if (err) {
                 return callback(err);
             }
@@ -121,7 +121,7 @@ function alterUser(user, callback){
         records: [clean_user]
     };
 
-    insert.update(update_object, function(err, success){
+    insert.updateCB(update_object, function(err, success){
         if(err) {
             callback(err);
             return;

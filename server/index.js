@@ -43,7 +43,7 @@ function conn(socket) {
 
     function onSocketData(data) {
         //socket_data += data;
-        insert.insert(JSON.parse(data).write, function (err, results) {
+        insert.insertCB(JSON.parse(data).write, function (err, results) {
             if(err) {
                 winston.info('error', err);
             }
@@ -81,7 +81,7 @@ function conn(socket) {
         //winston.info(payload);
         switch (Object.keys(json)[0]) {
             case 'write':
-                insert.insert(payload, function (err, data) {
+                insert.insertCB(payload, function (err, data) {
                     callback(err, data);
                 });
                 break;

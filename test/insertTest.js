@@ -27,7 +27,7 @@ let insert_object = {
 };
 
 console.time('insertTest');
-insert.insert(insert_object, function(err, data){
+insert.insertCB(insert_object, function(err, data){
     if(err) {
         console.error(err);
     } else {

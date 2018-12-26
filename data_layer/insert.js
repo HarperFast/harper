@@ -33,8 +33,8 @@ const HDB_AUTH_HEADER = 'hdb_auth_header';
 const HDB_USER_DATA_KEY = 'hdb_user';
 
 module.exports = {
-    insertDataCB: insertDataCB,
-    updateDataCB: updateDataCB,
+    insertCB: insertDataCB,
+    updateCB: updateDataCB,
     insert: insertData,
     update: updateData
 };

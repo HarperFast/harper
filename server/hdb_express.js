@@ -381,7 +381,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                                         records: [item]
                                     };
 
-                                    insert.insert(insert_object, function (err) {
+                                    insert.insertCB(insert_object, function (err) {
                                         if (err) {
                                             harper_logger.error(err);
                                             return callback_(err);

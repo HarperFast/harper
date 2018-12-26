@@ -100,7 +100,7 @@ function createSchemaStructure(schema_create_object, callback) {
                 ]
             };
 
-            insert.insert(insertObject, function (err, result) {
+            insert.insertCB(insertObject, function (err, result) {
                 if (err) {
                     callback(err);
                     return;
@@ -206,7 +206,7 @@ function createTableStructure(create_table_object, callback) {
                 records: [table]
             };
 
-            insert.insert(insertObject, function (err, result) {
+            insert.insertCB(insertObject, function (err, result) {
                 if (err) {
                     callback(err);
                     return;
@@ -730,7 +730,7 @@ function createAttributeStructure(create_attribute_object, callback) {
                 records: [record]
             };
             logger.info("insert object:" + JSON.stringify(insertObject));
-            insert.insert(insertObject, function (err, result) {
+            insert.insertCB(insertObject, function (err, result) {
                 logger.info('attribute:' + record.attribute);
                 logger.info(result);
                 callback(err, result);
