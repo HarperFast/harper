@@ -43,6 +43,7 @@ const global_schema = require('../utility/globalSchema');
 
 const p_global_schema = promisify(global_schema.getTableSchema);
 const p_search_by_hash = promisify(search.searchByHash);
+const  p_fs_access = promisify(fs.access);
 
 /**
  * This validation is called before an insert or update is performed with the write_object.
@@ -77,21 +78,24 @@ async function validation(write_object) {
     }
 
     let hash_attribute = table_schema.hash_attribute;
-
+    let base_path = hdb_path + '/' + write_object.schema + '/' + write_object.table + '/';
     //validate that every record has hash_attribute populated
     let no_hash = false;
     let long_hash = false;
     let long_attribute = false;
     let bad_hash_value = false;
+    write_object.dup_check = {};
+    let attributes = [];
     for(let x = 0; x < write_object.records.length; x++){
         let record = write_object.records[x];
-        if(record[hash_attribute] === null || record[hash_attribute] === undefined){
+        let hash_value = record[hash_attribute];
+        if(hash_value === null || hash_value === undefined){
             no_hash = true;
             break;
-        } else if(hdb_terms.FORWARD_SLASH_REGEX.test(record[hash_attribute])) {
+        } else if(hdb_terms.FORWARD_SLASH_REGEX.test(hash_value)) {
             bad_hash_value = true;
             break;
-        } else if(Buffer.byteLength(String(record[hash_attribute])) > 250){
+        } else if(Buffer.byteLength(String(hash_value)) > 250){
             long_hash = true;
             break;
         }
@@ -103,8 +107,19 @@ async function validation(write_object) {
             }
         });
         if(long_attribute) {
-            return;
+            break;
         }
+
+        //dup check
+        // If duplicate, we don't assign the HDB_INTERNAL_PATH internal attribute so it will be skipped later.
+        if(write_object.dup_check[hash_value]) {
+            continue;
+        }
+        write_object.dup_check[hash_value] = {};
+        let path = `${base_path}__hdb_hash/${hash_attribute}/${hash_value}.hdb`;
+        //Internal record that is removed if the record exists.  Should not be written to the DB.
+        write_object.records[x][HDB_PATH_KEY] = path;
+        //end dup check
     }
 
     if (no_hash) {
@@ -130,6 +145,8 @@ function insertDataCB(insert_object, callback){
     try{
         insertData(insert_object).then((results)=>{
             callback(null, results);
+        }).catch(err=>{
+            callback(err);
         });
 
     } catch(e){
@@ -141,6 +158,8 @@ function updateDataCB(insert_object, callback){
     try{
         updateData(insert_object).then((results)=>{
             callback(null, results);
+        }).catch(err=>{
+            callback(err);
         });
 
     } catch(e){
@@ -164,10 +183,10 @@ async function insertData(insert_object){
 
         let table_schema = await validation(insert_object);
         let hash_attribute = table_schema.hash_attribute;
-        let base_path = hdb_path + '/' + insert_object.schema + '/' + insert_object.table + '/';
+
         insert_object.dup_check = {};
 
-        //TODO possibly move the duplicate check to validate
+/*        //TODO possibly move the duplicate check to validate
         for (let r in insert_object.records) {
             let hash_val = insert_object.records[r][hash_attribute];
             // If duplicate, we don't assign the HDB_INTERNAL_PATH internal attribute so it will be skipped later.
@@ -179,7 +198,7 @@ async function insertData(insert_object){
             let path = `${base_path}__hdb_hash/${hash_attribute}/${record[hash_attribute]}.hdb`;
             //Internal record that is removed if the record exists.  Should not be written to the DB.
             insert_object.records[r][HDB_PATH_KEY] = path;
-        }
+        }*/
 
         await checkRecordsExist(insert_object, skipped_records, inserted_records, table_schema);
         let data_wrapper = checkAttributeSchema(insert_object, table_schema);
@@ -210,6 +229,7 @@ async function updateData(update_object){
             all_ids:[],
             update_ids:[]
         };
+
         let table_schema = await validation(update_object);
         let hash_attribute = table_schema.hash_attribute;
 
@@ -470,9 +490,11 @@ async function checkRecordsExist(insert_object, skipped_records, inserted_record
         insert_object.records.map(async record => {
             if(record[HDB_PATH_KEY]) {
                 try {
-                    await fs.access(record[HDB_PATH_KEY]);
+                    await p_fs_access(record[HDB_PATH_KEY]);
+                    record[HDB_PATH_KEY] = undefined;
+                    skipped_records.push(autocast(record[hash_attribute]));
                 } catch(err){
-                    if (err && err.code === 'ENOENT') {
+                    if (err.code === 'ENOENT') {
                         inserted_records.push(autocast(record[hash_attribute]));
                     } else {
                         record[HDB_PATH_KEY] = undefined;

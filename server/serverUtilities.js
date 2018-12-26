@@ -144,10 +144,10 @@ function chooseOperation(json, callback) {
 
     switch (json.operation) {
         case terms.OPERATIONS_ENUM.INSERT:
-            operation_function = write.insert;
+            operation_function = write.insertCB;
             break;
         case terms.OPERATIONS_ENUM.UPDATE:
-            operation_function = write.update;
+            operation_function = write.updateCB;
             break;
         case terms.OPERATIONS_ENUM.SEARCH_BY_HASH:
             operation_function = search.searchByHash;

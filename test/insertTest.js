@@ -22,8 +22,17 @@ for(let x = 0; x < record_size; x++){
 let insert_object = {
     operation:'insert',
     schema :  'dev',
-    table:'genome',
-    records: objects
+    table:'test',
+    records: [
+        {
+            "id": 8,
+            "temperature":98
+        },
+        {
+            "id": 8,
+            "temperature":99
+        }
+    ]
 };
 
 console.time('insertTest');
