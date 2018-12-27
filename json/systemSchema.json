@@ -32,7 +32,24 @@
     "hash_attribute":"id",
     "name":"hdb_attribute",
     "schema":"system",
-    "residence":["*"]
+    "residence":["*"],
+    "attributes": [
+      {
+        "attribute": "id"
+      },
+      {
+        "attribute": "schema"
+      },
+      {
+        "attribute": "table"
+      },
+      {
+        "attribute": "attribute"
+      },
+      {
+        "attribute": "schema_table"
+      }
+    ]
   },
   "hdb_schema":{
     "hash_attribute":"name",
@@ -52,7 +69,21 @@
     "hash_attribute":"username",
     "name":"hdb_user",
     "schema":"system",
-    "residence":["*"]
+    "residence":["*"],
+    "attributes": [
+      {
+        "attribute": "username"
+      },
+      {
+        "attribute": "password"
+      },
+      {
+        "attribute": "role"
+      },
+      {
+        "attribute": "active"
+      }
+    ]
   },
   "hdb_role":{
     "hash_attribute":"id",

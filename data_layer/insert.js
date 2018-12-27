@@ -85,10 +85,12 @@ async function validation(write_object) {
     let long_attribute = false;
     let bad_hash_value = false;
     write_object.dup_check = {};
-    let attributes = [];
+    let attributes = new Set();
+    let hashes = [];
     for(let x = 0; x < write_object.records.length; x++){
         let record = write_object.records[x];
         let hash_value = record[hash_attribute];
+        hashes.push(autocast(hash_value));
         if(hash_value === null || hash_value === undefined){
             no_hash = true;
             break;
@@ -101,12 +103,16 @@ async function validation(write_object) {
         }
 
         //evaluate that there are no attributes who have a name longer than 250 characters
-        Object.keys(record).forEach((attribute)=>{
-            if(Buffer.byteLength(String(attribute)) > 250) {
+        let record_keys = Object.keys(record);
+        for(let k = 0; k < record_keys.length; k++){
+            if(Buffer.byteLength(String(record_keys[k])) > 250) {
                 long_attribute = true;
+                break;
             }
-        });
-        if(long_attribute) {
+            attributes.add(record_keys[k]);
+        }
+
+        if(long_attribute){
             break;
         }
 
@@ -138,7 +144,11 @@ async function validation(write_object) {
         throw new Error('transaction aborted due to record(s) with an attribute that exceeds 250 bytes.');
     }
 
-    return table_schema;
+    return {
+        table_schema:table_schema,
+        attributes:[...attributes],
+        hashes: hashes
+    };
 }
 
 function insertDataCB(insert_object, callback){
@@ -181,26 +191,12 @@ async function insertData(insert_object){
         let inserted_records = [];
         let skipped_records = [];
 
-        let table_schema = await validation(insert_object);
-        let hash_attribute = table_schema.hash_attribute;
-
-        insert_object.dup_check = {};
-
-/*        //TODO possibly move the duplicate check to validate
-        for (let r in insert_object.records) {
-            let hash_val = insert_object.records[r][hash_attribute];
-            // If duplicate, we don't assign the HDB_INTERNAL_PATH internal attribute so it will be skipped later.
-            if(insert_object.dup_check[hash_val]) {
-                continue;
-            }
-            insert_object.dup_check[hash_val] = {};
-            let record = insert_object.records[r];
-            let path = `${base_path}__hdb_hash/${hash_attribute}/${record[hash_attribute]}.hdb`;
-            //Internal record that is removed if the record exists.  Should not be written to the DB.
-            insert_object.records[r][HDB_PATH_KEY] = path;
-        }*/
+        let {table_schema, attributes} = await validation(insert_object);
 
         await checkRecordsExist(insert_object, skipped_records, inserted_records, table_schema);
+
+        await checkForNewAttributes(insert_object.hdb_auth_header, table_schema, attributes);
+
         let data_wrapper = checkAttributeSchema(insert_object, table_schema);
         await processData(data_wrapper);
 
@@ -209,6 +205,7 @@ async function insertData(insert_object){
             inserted_hashes: inserted_records,
             skipped_hashes: skipped_records
         };
+        //TODO add new attributes here
 
         return return_object;
     } catch(e){
@@ -230,17 +227,8 @@ async function updateData(update_object){
             update_ids:[]
         };
 
-        let table_schema = await validation(update_object);
+        let {table_schema, attributes, hashes} = await validation(update_object);
         let hash_attribute = table_schema.hash_attribute;
-
-        let attributes = new Set();
-        let hashes = [];
-        update_object.records.forEach((record) => {
-            hashes.push(autocast(record[hash_attribute]));
-            Object.keys(record).forEach((attribute) => {
-                attributes.add(attribute);
-            });
-        });
 
         tracker.all_ids = hashes;
 
@@ -248,13 +236,13 @@ async function updateData(update_object){
             schema: update_object.schema,
             table: update_object.table,
             hash_values: hashes,
-            get_attributes: Array.from(attributes)
+            get_attributes: attributes
         };
 
         // We need to filter out any new attributes from the update statement, as they will not be found in the searchByHash
         // call below and cause a validation error.
         let valid_attributes = search_obj.get_attributes.filter(function (item) {
-            let attributes = global.hdb_schema[search_obj.schema][search_obj.table].attributes;
+            let attributes = table_schema.attributes;
             if(attributes && Array.isArray(attributes)) {
                 let picked = table_schema.attributes.find(o => o.attribute === item);
                 if(picked) return picked;
@@ -276,6 +264,8 @@ async function updateData(update_object){
                 // need to make sure the attribute is a string for the lodash comparison below.
                 tracker.update_ids.push(autocast(record[hash_attribute]));
             });
+
+            await checkForNewAttributes(update_object.hdb_auth_header, table_schema, attributes);
 
             let data_wrapper = checkAttributeSchema(update_object, table_schema);
             await processData(data_wrapper);
@@ -570,24 +560,40 @@ async function writeLinkFiles(links) {
  * @param callback
  */
 async function createFolders(data_wrapper,folders) {
-
-    let folder_created_flag = false;
-
     await Promise.all(
         folders.map(async folder=>{
-            let created_folder = await fs.mkdirp(folder);
-            //todo move this to validation?
-            if(created_folder && folder.indexOf('/__hdb_hash/') >= 0 ) {
-                folder_created_flag = true;
-
-                await createNewAttribute(data_wrapper,folder);
-            }
+            await fs.mkdirp(folder);
         })
     );
+}
 
-    if( folder_created_flag ) {
-        signalling.signalSchemaChange({type: 'schema'});
+async function checkForNewAttributes(hdb_auth_header, table_schema, data_attributes){
+    if(h_utils.isEmptyOrZeroLength(data_attributes)){
+        return;
     }
+
+    let raw_attributes = [];
+    if(!h_utils.isEmptyOrZeroLength(table_schema.attributes)){
+        table_schema.attributes.forEach((attribute)=>{
+            raw_attributes.push(attribute.attribute);
+        });
+    }
+
+   let new_attributes = data_attributes.filter(attribute =>{
+       return raw_attributes.indexOf(attribute) < 0;
+   });
+
+   if(new_attributes.length == 0) {
+        return;
+   }
+
+   await Promise.all(
+       new_attributes.map(async attribute=>{
+           await createNewAttribute(hdb_auth_header, table_schema.schema, table_schema.name, attribute);
+       })
+   );
+
+   // signalling.signalSchemaChange({type: 'schema'});
 }
 
 /**
@@ -595,23 +601,21 @@ async function createFolders(data_wrapper,folders) {
  * @param data_wrapper
  * @param folder
  */
-async function createNewAttribute(data_wrapper,folder) {
-
-    let base_parts = folder.replace(hdb_path, '').split('/');
+async function createNewAttribute(hdb_auth_header,schema, table, attribute) {
     let attribute_object = {
-        schema:base_parts[1],
-        table:base_parts[2],
-        attribute:base_parts[base_parts.length - 1]
+        schema:schema,
+        table:table,
+        attribute:attribute
     };
 
-    if(data_wrapper.hdb_auth_header){
-        attribute_object.hdb_auth_header = data_wrapper.hdb_auth_header;
+    if(hdb_auth_header){
+        attribute_object.hdb_auth_header = hdb_auth_header;
     }
 
     try {
         await p_create_attribute(attribute_object);
     } catch(e) {
-        logger(e);
+        logger.error(e);
     }
 }
 
