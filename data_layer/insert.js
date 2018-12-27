@@ -222,15 +222,14 @@ async function updateData(update_object){
         if (update_object.operation !== 'update') {
             throw new Error('invalid operation, must be update');
         }
-        let tracker = {
-            all_ids:[],
-            update_ids:[]
-        };
+
+        let all_ids;
+        let update_ids = [];
 
         let {table_schema, attributes, hashes} = await validation(update_object);
         let hash_attribute = table_schema.hash_attribute;
 
-        tracker.all_ids = hashes;
+        all_ids = hashes;
 
         let search_obj = {
             schema: update_object.schema,
@@ -255,14 +254,14 @@ async function updateData(update_object){
         let existing_records = await p_search_by_hash(search_obj);
 
         if( existing_records.length > 0) {
-            let comparator = compareUpdatesToExistingRecords(update_object, hash_attribute, existing_records);
-            await unlinkFiles(comparator.unlink_paths);
+            let {unlink_paths, update_objects} = compareUpdatesToExistingRecords(update_object, hash_attribute, existing_records);
+            await unlinkFiles(unlink_paths);
 
-            update_object.records = comparator.update_objects;
+            update_object.records = update_objects;
 
-            comparator.update_objects.forEach((record) => {
+            update_objects.forEach((record) => {
                 // need to make sure the attribute is a string for the lodash comparison below.
-                tracker.update_ids.push(autocast(record[hash_attribute]));
+                update_ids.push(autocast(record[hash_attribute]));
             });
 
             await checkForNewAttributes(update_object.hdb_auth_header, table_schema, attributes);
@@ -271,10 +270,11 @@ async function updateData(update_object){
             await processData(data_wrapper);
         }
 
-        let skipped_hashes = _.difference(tracker.all_ids, tracker.update_ids);
+        let skipped_hashes = _.difference(all_ids, update_ids);
+
         return {
-            message: `updated ${tracker.update_ids.length} of ${tracker.all_ids.length} records`,
-            update_hashes: tracker.update_ids,
+            message: `updated ${update_ids.length} of ${all_ids.length} records`,
+            update_hashes: update_ids,
             skipped_hashes: skipped_hashes
         };
     } catch(e){
@@ -567,6 +567,13 @@ async function createFolders(data_wrapper,folders) {
     );
 }
 
+/**
+ * Compares the existing schema attributes to the
+ * @param hdb_auth_header
+ * @param table_schema
+ * @param data_attributes
+ * @returns {Promise<void>}
+ */
 async function checkForNewAttributes(hdb_auth_header, table_schema, data_attributes){
     if(h_utils.isEmptyOrZeroLength(data_attributes)){
         return;
@@ -592,8 +599,6 @@ async function checkForNewAttributes(hdb_auth_header, table_schema, data_attribu
            await createNewAttribute(hdb_auth_header, table_schema.schema, table_schema.name, attribute);
        })
    );
-
-   // signalling.signalSchemaChange({type: 'schema'});
 }
 
 /**
