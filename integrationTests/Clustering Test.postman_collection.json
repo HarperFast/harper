@@ -1,17 +1,3039 @@
 {
 	"info": {
-		"_postman_id": "86a9ad48-79e7-4bfb-8916-83cd9e272595",
+		"_postman_id": "e42a82e3-707f-481c-8597-54e8209410c2",
 		"name": "Clustering Test",
 		"description": "Basic 2 node clustering register and data load.\nJSON ONLY.. \nSQL does not do across node data query.",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
 	},
 	"item": [
 		{
-			"name": "remove node1 from node2",
+			"name": "1. Configure Server",
 			"item": [
 				{
-					"name": "Remove Node1 from Node2",
+					"name": "Get Fingerprint",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "c3c689de-425f-4538-a7c9-4c2c2a2c974e",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"test fingerprint returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData['fingerprint'] !== undefined);",
+									"    pm.environment.set(\"fingerprint\", jsonData['fingerprint']);",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
 					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46MTQwMA=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"get_fingerprint\"\n}"
+						},
+						"url": {
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{SERVER_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						},
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+					},
+					"response": [
+						{
+							"name": "Create Schema",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic ZWxpOnBhc3M="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "access-control-allow-origin",
+									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
+									"name": "access-control-allow-origin",
+									"description": ""
+								},
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "45",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "vary",
+									"value": "Origin",
+									"name": "vary",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": "{\"message\":\"schema dev successfully created\"}"
+						}
+					]
+				},
+				{
+					"name": "Call HDB LMS",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "c3c689de-425f-4538-a7c9-4c2c2a2c974e",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"test fingerprint returned\", function () {",
+									"    pm.environment.set(\"license\", pm.response.text());    ",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{LMS_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{LMS_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46MTQwMA=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"fingerprint\": \"{{fingerprint}}\",\n\t\"company\":\"{{COMPANY}}\",\n\t\"exp_date\":\"2040-09-11\"\n}"
+						},
+						"url": {
+							"raw": "http://{{LMS_HOST}}",
+							"protocol": "http",
+							"host": [
+								"{{LMS_HOST}}"
+							]
+						},
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+					},
+					"response": [
+						{
+							"name": "Create Schema",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic ZWxpOnBhc3M="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "access-control-allow-origin",
+									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
+									"name": "access-control-allow-origin",
+									"description": ""
+								},
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "45",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "vary",
+									"value": "Origin",
+									"name": "vary",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": "{\"message\":\"schema dev successfully created\"}"
+						}
+					]
+				},
+				{
+					"name": "Set License Copy",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "056aa65e-6a84-4043-9396-1ad303277ea8",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"test fingerprint returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData['message'] === \"Wrote license key file.\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46MTQwMA=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"set_license\",\n\"key\":\"{{license}}\",\n\"company\": \"{{COMPANY}}\"\n}"
+						},
+						"url": {
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{SERVER_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						},
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+					},
+					"response": [
+						{
+							"name": "Create Schema",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic ZWxpOnBhc3M="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "access-control-allow-origin",
+									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
+									"name": "access-control-allow-origin",
+									"description": ""
+								},
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "45",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "vary",
+									"value": "Origin",
+									"name": "vary",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": "{\"message\":\"schema dev successfully created\"}"
+						}
+					]
+				},
+				{
+					"name": "Configure Cluster Copy",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "5e4e982a-c39d-43eb-8496-fa6a0b0f20fd",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46MTQwMA=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\": \"configure_cluster\",\n\t\"clustering_enabled\": \"true\",\n\t\"clustering_port\": \"12345\",\n\t\"clustering_node_name\":\"{{SERVER_NAME}}\"\n}"
+						},
+						"url": {
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{SERVER_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						},
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+					},
+					"response": [
+						{
+							"name": "Create Schema",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic ZWxpOnBhc3M="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "access-control-allow-origin",
+									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
+									"name": "access-control-allow-origin",
+									"description": ""
+								},
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "45",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "vary",
+									"value": "Origin",
+									"name": "vary",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": "{\"message\":\"schema dev successfully created\"}"
+						}
+					]
+				}
+			],
+			"event": [
+				{
+					"listen": "prerequest",
+					"script": {
+						"id": "9a881f61-ee4e-48fa-85f3-a1dbc8c1116c",
+						"type": "text/javascript",
+						"exec": [
+							""
+						]
+					}
+				},
+				{
+					"listen": "test",
+					"script": {
+						"id": "764bfec7-3ddb-4c95-ba8a-7813b35592b5",
+						"type": "text/javascript",
+						"exec": [
+							""
+						]
+					}
+				}
+			]
+		},
+		{
+			"name": "2. Configure Truck 1",
+			"item": [
+				{
+					"name": "Get Fingerprint on truck 1",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "c3c689de-425f-4538-a7c9-4c2c2a2c974e",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"test fingerprint returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData['fingerprint'] !== undefined);",
+									"    pm.environment.set(\"fingerprint\", jsonData['fingerprint']);",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46MTQwMA=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"get_fingerprint\"\n}"
+						},
+						"url": {
+							"raw": "http://{{TRUCK_1_HOST}}:{{TRUCK_1_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{TRUCK_1_HOST}}"
+							],
+							"port": "{{TRUCK_1_HDB_PORT}}"
+						},
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+					},
+					"response": [
+						{
+							"name": "Create Schema",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic ZWxpOnBhc3M="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "access-control-allow-origin",
+									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
+									"name": "access-control-allow-origin",
+									"description": ""
+								},
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "45",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "vary",
+									"value": "Origin",
+									"name": "vary",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": "{\"message\":\"schema dev successfully created\"}"
+						}
+					]
+				},
+				{
+					"name": "Call HDB LMS for truck 1",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "c3c689de-425f-4538-a7c9-4c2c2a2c974e",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"test fingerprint returned\", function () {",
+									"    pm.environment.set(\"license\", pm.response.text());    ",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{LMS_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{LMS_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46MTQwMA=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"fingerprint\": \"{{fingerprint}}\",\n\t\"company\":\"harperdb.io\",\n\t\"exp_date\":\"2040-09-11\"\n}\n"
+						},
+						"url": {
+							"raw": "http://{{LMS_HOST}}",
+							"protocol": "http",
+							"host": [
+								"{{LMS_HOST}}"
+							]
+						},
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+					},
+					"response": [
+						{
+							"name": "Create Schema",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic ZWxpOnBhc3M="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "access-control-allow-origin",
+									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
+									"name": "access-control-allow-origin",
+									"description": ""
+								},
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "45",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "vary",
+									"value": "Origin",
+									"name": "vary",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": "{\"message\":\"schema dev successfully created\"}"
+						}
+					]
+				},
+				{
+					"name": "Set License on truck 1",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "056aa65e-6a84-4043-9396-1ad303277ea8",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"test fingerprint returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData['message'] === \"Wrote license key file.\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46MTQwMA=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"set_license\",\n\"key\":\"{{license}}\",\n\"company\":\"{{COMPANY}}\"\n}"
+						},
+						"url": {
+							"raw": "http://{{TRUCK_1_HOST}}:{{TRUCK_1_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{TRUCK_1_HOST}}"
+							],
+							"port": "{{TRUCK_1_HDB_PORT}}"
+						},
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+					},
+					"response": [
+						{
+							"name": "Create Schema",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic ZWxpOnBhc3M="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "access-control-allow-origin",
+									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
+									"name": "access-control-allow-origin",
+									"description": ""
+								},
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "45",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "vary",
+									"value": "Origin",
+									"name": "vary",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": "{\"message\":\"schema dev successfully created\"}"
+						}
+					]
+				},
+				{
+					"name": "Configure Cluster on truck 1",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "5e4e982a-c39d-43eb-8496-fa6a0b0f20fd",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46MTQwMA=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\": \"configure_cluster\",\n\t\"clustering_enabled\": \"true\",\n\t\"clustering_port\": \"12345\",\n\t\"clustering_node_name\":\"{{TRUCK_1_NAME}}\"\n}"
+						},
+						"url": {
+							"raw": "http://{{TRUCK_1_HOST}}:{{TRUCK_1_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{TRUCK_1_HOST}}"
+							],
+							"port": "{{TRUCK_1_HDB_PORT}}"
+						},
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+					},
+					"response": [
+						{
+							"name": "Create Schema",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic ZWxpOnBhc3M="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "access-control-allow-origin",
+									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
+									"name": "access-control-allow-origin",
+									"description": ""
+								},
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "45",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "vary",
+									"value": "Origin",
+									"name": "vary",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": "{\"message\":\"schema dev successfully created\"}"
+						}
+					]
+				}
+			],
+			"event": [
+				{
+					"listen": "prerequest",
+					"script": {
+						"id": "9a881f61-ee4e-48fa-85f3-a1dbc8c1116c",
+						"type": "text/javascript",
+						"exec": [
+							""
+						]
+					}
+				},
+				{
+					"listen": "test",
+					"script": {
+						"id": "764bfec7-3ddb-4c95-ba8a-7813b35592b5",
+						"type": "text/javascript",
+						"exec": [
+							""
+						]
+					}
+				}
+			]
+		},
+		{
+			"name": "3. Configure Truck 2",
+			"item": [
+				{
+					"name": "Get Fingerprint on truck 2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "c3c689de-425f-4538-a7c9-4c2c2a2c974e",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"test fingerprint returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData['fingerprint'] !== undefined);",
+									"    pm.environment.set(\"fingerprint\", jsonData['fingerprint']);",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46MTQwMA=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"get_fingerprint\"\n}"
+						},
+						"url": {
+							"raw": "http://{{TRUCK_2_HOST}}:{{TRUCK_2_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{TRUCK_2_HOST}}"
+							],
+							"port": "{{TRUCK_2_HDB_PORT}}"
+						},
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+					},
+					"response": [
+						{
+							"name": "Create Schema",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic ZWxpOnBhc3M="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "access-control-allow-origin",
+									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
+									"name": "access-control-allow-origin",
+									"description": ""
+								},
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "45",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "vary",
+									"value": "Origin",
+									"name": "vary",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": "{\"message\":\"schema dev successfully created\"}"
+						}
+					]
+				},
+				{
+					"name": "Call HDB LMS for truck 2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "c3c689de-425f-4538-a7c9-4c2c2a2c974e",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"test fingerprint returned\", function () {",
+									"    pm.environment.set(\"license\", pm.response.text());    ",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{LMS_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{LMS_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46MTQwMA=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"fingerprint\": \"{{fingerprint}}\",\n\t\"company\":\"harperdb.io\",\n\t\"exp_date\":\"2040-09-11\"\n}\n"
+						},
+						"url": {
+							"raw": "http://{{LMS_HOST}}",
+							"protocol": "http",
+							"host": [
+								"{{LMS_HOST}}"
+							]
+						},
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+					},
+					"response": [
+						{
+							"name": "Create Schema",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic ZWxpOnBhc3M="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "access-control-allow-origin",
+									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
+									"name": "access-control-allow-origin",
+									"description": ""
+								},
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "45",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "vary",
+									"value": "Origin",
+									"name": "vary",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": "{\"message\":\"schema dev successfully created\"}"
+						}
+					]
+				},
+				{
+					"name": "Set License  on truck 2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "056aa65e-6a84-4043-9396-1ad303277ea8",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"test fingerprint returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData['message'] === \"Wrote license key file.\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46MTQwMA=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"set_license\",\n\"key\":\"{{license}}\",\n\"company\":\"{{COMPANY}}\"\n}"
+						},
+						"url": {
+							"raw": "http://{{TRUCK_2_HOST}}:{{TRUCK_2_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{TRUCK_2_HOST}}"
+							],
+							"port": "{{TRUCK_2_HDB_PORT}}"
+						},
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+					},
+					"response": [
+						{
+							"name": "Create Schema",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic ZWxpOnBhc3M="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "access-control-allow-origin",
+									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
+									"name": "access-control-allow-origin",
+									"description": ""
+								},
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "45",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "vary",
+									"value": "Origin",
+									"name": "vary",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": "{\"message\":\"schema dev successfully created\"}"
+						}
+					]
+				},
+				{
+					"name": "Configure Truck 2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "5e4e982a-c39d-43eb-8496-fa6a0b0f20fd",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46MTQwMA=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\": \"configure_cluster\",\n\t\"clustering_enabled\": \"true\",\n\t\"clustering_port\": \"12345\",\n\t\"clustering_node_name\":\"{{TRUCK_2_NAME}}\"\n}"
+						},
+						"url": {
+							"raw": "http://{{TRUCK_2_HOST}}:{{TRUCK_2_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{TRUCK_2_HOST}}"
+							],
+							"port": "{{TRUCK_2_HDB_PORT}}"
+						},
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+					},
+					"response": [
+						{
+							"name": "Create Schema",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic ZWxpOnBhc3M="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "access-control-allow-origin",
+									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
+									"name": "access-control-allow-origin",
+									"description": ""
+								},
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "45",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "vary",
+									"value": "Origin",
+									"name": "vary",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": "{\"message\":\"schema dev successfully created\"}"
+						}
+					]
+				}
+			],
+			"event": [
+				{
+					"listen": "prerequest",
+					"script": {
+						"id": "9a881f61-ee4e-48fa-85f3-a1dbc8c1116c",
+						"type": "text/javascript",
+						"exec": [
+							""
+						]
+					}
+				},
+				{
+					"listen": "test",
+					"script": {
+						"id": "764bfec7-3ddb-4c95-ba8a-7813b35592b5",
+						"type": "text/javascript",
+						"exec": [
+							""
+						]
+					}
+				}
+			]
+		},
+		{
+			"name": "4. Configure Truck 3",
+			"item": [
+				{
+					"name": "Get Fingerprint  on truck 3",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "c3c689de-425f-4538-a7c9-4c2c2a2c974e",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"test fingerprint returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData['fingerprint'] !== undefined);",
+									"    pm.environment.set(\"fingerprint\", jsonData['fingerprint']);",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46MTQwMA=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"get_fingerprint\"\n}"
+						},
+						"url": {
+							"raw": "http://{{TRUCK_3_HOST}}:{{TRUCK_3_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{TRUCK_3_HOST}}"
+							],
+							"port": "{{TRUCK_3_HDB_PORT}}"
+						},
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+					},
+					"response": [
+						{
+							"name": "Create Schema",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic ZWxpOnBhc3M="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "access-control-allow-origin",
+									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
+									"name": "access-control-allow-origin",
+									"description": ""
+								},
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "45",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "vary",
+									"value": "Origin",
+									"name": "vary",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": "{\"message\":\"schema dev successfully created\"}"
+						}
+					]
+				},
+				{
+					"name": "Call HDB LMS for truck 3",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "c3c689de-425f-4538-a7c9-4c2c2a2c974e",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"test fingerprint returned\", function () {",
+									"    pm.environment.set(\"license\", pm.response.text());    ",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{LMS_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{LMS_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46MTQwMA=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"fingerprint\": \"{{fingerprint}}\",\n\t\"company\":\"harperdb.io\",\n\t\"exp_date\":\"2040-09-11\"\n}\n"
+						},
+						"url": {
+							"raw": "http://{{LMS_HOST}}",
+							"protocol": "http",
+							"host": [
+								"{{LMS_HOST}}"
+							]
+						},
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+					},
+					"response": [
+						{
+							"name": "Create Schema",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic ZWxpOnBhc3M="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "access-control-allow-origin",
+									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
+									"name": "access-control-allow-origin",
+									"description": ""
+								},
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "45",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "vary",
+									"value": "Origin",
+									"name": "vary",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": "{\"message\":\"schema dev successfully created\"}"
+						}
+					]
+				},
+				{
+					"name": "Set License on truck 3",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "056aa65e-6a84-4043-9396-1ad303277ea8",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"test fingerprint returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData['message'] === \"Wrote license key file.\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46MTQwMA=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"set_license\",\n\"key\":\"{{license}}\",\n\"company\":\"{{COMPANY}}\"\n}"
+						},
+						"url": {
+							"raw": "http://{{TRUCK_3_HOST}}:{{TRUCK_3_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{TRUCK_3_HOST}}"
+							],
+							"port": "{{TRUCK_3_HDB_PORT}}"
+						},
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+					},
+					"response": [
+						{
+							"name": "Create Schema",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic ZWxpOnBhc3M="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "access-control-allow-origin",
+									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
+									"name": "access-control-allow-origin",
+									"description": ""
+								},
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "45",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "vary",
+									"value": "Origin",
+									"name": "vary",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": "{\"message\":\"schema dev successfully created\"}"
+						}
+					]
+				},
+				{
+					"name": "Configure  on truck 3",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "5e4e982a-c39d-43eb-8496-fa6a0b0f20fd",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46MTQwMA=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\": \"configure_cluster\",\n\t\"clustering_enabled\": \"true\",\n\t\"clustering_port\": \"12345\",\n\t\"clustering_node_name\":\"{{TRUCK_3_NAME}}\"\n}"
+						},
+						"url": {
+							"raw": "http://{{TRUCK_3_HOST}}:{{TRUCK_3_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{TRUCK_3_HOST}}"
+							],
+							"port": "{{TRUCK_3_HDB_PORT}}"
+						},
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+					},
+					"response": [
+						{
+							"name": "Create Schema",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic ZWxpOnBhc3M="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "access-control-allow-origin",
+									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
+									"name": "access-control-allow-origin",
+									"description": ""
+								},
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "45",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "vary",
+									"value": "Origin",
+									"name": "vary",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": "{\"message\":\"schema dev successfully created\"}"
+						}
+					]
+				}
+			],
+			"event": [
+				{
+					"listen": "prerequest",
+					"script": {
+						"id": "9a881f61-ee4e-48fa-85f3-a1dbc8c1116c",
+						"type": "text/javascript",
+						"exec": [
+							""
+						]
+					}
+				},
+				{
+					"listen": "test",
+					"script": {
+						"id": "764bfec7-3ddb-4c95-ba8a-7813b35592b5",
+						"type": "text/javascript",
+						"exec": [
+							""
+						]
+					}
+				}
+			]
+		},
+		{
+			"name": "5. Set Up Bidirectional Cluster with Truck 1",
+			"item": [
+				{
+					"name": "Add Truck 1 To Server",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "0f6cea83-97f3-40be-b1a9-2fa87b2ed813",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"add_node\",\n\t\"name\":\"{{TRUCK_1_NAME}}\" ,\n\t\"port\": \"{{TRUCK_1_CLUSTER_PORT}}\",\n\t\"host\":\"{{TRUCK_1_HOST}}\"\n}"
+						},
+						"url": {
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{SERVER_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Add Server to Truck 1",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "9113d4d9-faab-4449-b1d0-0a7053c56918",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"add_node\",\n\t\"name\":\"{{SERVER_NAME}}\" ,\n\t\"port\": \"{{SERVER_CLUSTER_PORT}}\",\n\t\"host\":\"{{SERVER_HOST}}\"\n}"
+						},
+						"url": {
+							"raw": "http://{{TRUCK_1_HOST}}:{{TRUCK_1_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{TRUCK_1_HOST}}"
+							],
+							"port": "{{TRUCK_1_HDB_PORT}}"
+						}
+					},
+					"response": []
+				}
+			],
+			"event": [
+				{
+					"listen": "prerequest",
+					"script": {
+						"id": "8017f745-e384-42e3-b743-6ce5232c52f8",
+						"type": "text/javascript",
+						"exec": [
+							""
+						]
+					}
+				},
+				{
+					"listen": "test",
+					"script": {
+						"id": "e772dcc0-aafe-4b56-b7f8-35bcb0bc221f",
+						"type": "text/javascript",
+						"exec": [
+							""
+						]
+					}
+				}
+			]
+		},
+		{
+			"name": "6. Set Up Inbound connection from Truck 2",
+			"item": [
+				{
+					"name": "Add Server to Truck 2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "1af0e567-845b-48bc-8163-21d5f6558ad0",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"add_node\",\n\t\"name\":\"{{SERVER_NAME}}\" ,\n\t\"port\": \"{{SERVER_CLUSTER_PORT}}\",\n\t\"host\":\"{{SERVER_HOST}}\"\n}"
+						},
+						"url": {
+							"raw": "http://{{TRUCK_2_HOST}}:{{TRUCK_2_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{TRUCK_2_HOST}}"
+							],
+							"port": "{{TRUCK_2_HDB_PORT}}"
+						},
+						"description": "Method for registering a node for HarperDB Clustering.  Each node must be aware of all other nodes. <b><i> This is a HarperDB Enterprise version only feature </i></b>\n<p>\n<a href=\"https://harperdbhelp.zendesk.com/hc/en-us/articles/115003583194\">See this article for more info</a>\n</p>\n<ul>\n<li>\n<b>operation</b> <i> (required) </i> - must always be 'add_node'\n</li>\n<li>\n<b>name</b> <i> (required) </i> - The name of the node you are registering with this node.  Must match exactly. \n</li>\n<li>\n<b>port</b> <i> (required) </i> - The clustering port for the node you are registering with this node.  Not to be confused with HTTP/S PORTS.\n</li>\n<li>\n<b>host</b> <i> (required) </i> - the uri where the node you are adding to the cluster resides. \n</li>\n\n\n\n\n</ul>"
+					},
+					"response": []
+				}
+			],
+			"event": [
+				{
+					"listen": "prerequest",
+					"script": {
+						"id": "eb095265-95c5-4026-9095-e9aa379b34cf",
+						"type": "text/javascript",
+						"exec": [
+							""
+						]
+					}
+				},
+				{
+					"listen": "test",
+					"script": {
+						"id": "3e10e90c-7585-41ce-ba61-3ca31d18d0d0",
+						"type": "text/javascript",
+						"exec": [
+							""
+						]
+					}
+				}
+			]
+		},
+		{
+			"name": "7. Set Up Outbound to Truck 3",
+			"item": [
+				{
+					"name": "Add Truck 3 to Server",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "f8383bf4-7b08-42e1-9c02-5066a88b8772",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"add_node\",\n\t\"name\":\"{{TRUCK_3_NAME}}\" ,\n\t\"port\": \"{{TRUCK_3_CLUSTER_PORT}}\",\n\t\"host\":\"{{TRUCK_3_HOST}}\"\n}"
+						},
+						"url": {
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{SERVER_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": []
+				}
+			],
+			"event": [
+				{
+					"listen": "prerequest",
+					"script": {
+						"id": "eb095265-95c5-4026-9095-e9aa379b34cf",
+						"type": "text/javascript",
+						"exec": [
+							""
+						]
+					}
+				},
+				{
+					"listen": "test",
+					"script": {
+						"id": "3e10e90c-7585-41ce-ba61-3ca31d18d0d0",
+						"type": "text/javascript",
+						"exec": [
+							""
+						]
+					}
+				}
+			]
+		},
+		{
+			"name": "8. Add data for bidirectional test",
+			"item": [
+				{
+					"name": "Create Shema on truck 1",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "2a5ef5ae-021f-4808-9a35-f5522e7e47fe",
+								"exec": [
+									"tests[\"Create Schema\"] = responseBody.has(\"successfully created\");",
+									"",
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
 						"method": "POST",
 						"header": [
 							{
@@ -25,14 +3047,435 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\r\n\"operation\":\"remove_node\",\r\n\"name\":\"{{node1_name}}\"\r\n}"
+							"raw": "{\r\n  \"operation\":\"create_schema\",\r\n  \"schema\": \"{{TRUCK_1_SCHEMA}}\"\r\n}\r\n"
 						},
 						"url": {
-							"raw": "{{node2_host}}:{{node2_port}}",
+							"raw": "http://{{TRUCK_1_HOST}}:{{TRUCK_1_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
-								"{{node2_host}}"
+								"{{TRUCK_1_HOST}}"
 							],
-							"port": "{{node2_port}}"
+							"port": "{{TRUCK_1_HDB_PORT}}"
+						},
+						"description": "Add node to truck 1, expect replicate on server"
+					},
+					"response": []
+				},
+				{
+					"name": "Check truck 1 for schema",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "19082d37-0a49-4a21-878a-b5f5782c0198",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test(\"Should not error\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.response.to.not.have.jsonBody(\"error\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46QWJjMTIzNCE="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n  \"operation\":\"describe_schema\",\r\n  \"schema\": \"{{TRUCK_1_SCHEMA}}\"\r\n}\r\n"
+						},
+						"url": {
+							"raw": "http://{{TRUCK_1_HOST}}:{{TRUCK_1_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{TRUCK_1_HOST}}"
+							],
+							"port": "{{TRUCK_1_HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Check server for schema",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "cde70d96-e6ee-48f3-8465-93b40516b9f3",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test(\"Should not error\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.response.to.not.have.jsonBody(\"error\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46QWJjMTIzNCE="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n  \"operation\":\"describe_schema\",\r\n  \"schema\": \"{{TRUCK_1_SCHEMA}}\"\r\n}\r\n"
+						},
+						"url": {
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{SERVER_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Create table on truck 1 w/ residence *",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "32e99799-6478-4016-a7c1-cc8a1ce4f8dd",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46QWJjMTIzNCE="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n\"operation\":\"create_table\",\r\n\"schema\":\"{{TRUCK_1_SCHEMA}}\",\r\n\"table\":\"{{TRUCK_1_TABLE}}\",\r\n\"hash_attribute\": \"id\",\r\n\"residence\":[\"*\"]\r\n}\r\n"
+						},
+						"url": {
+							"raw": "http://{{TRUCK_1_HOST}}:{{TRUCK_1_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{TRUCK_1_HOST}}"
+							],
+							"port": "{{TRUCK_1_HDB_PORT}}"
+						},
+						"description": "Req to node 2\nAdding node 1 and registered node."
+					},
+					"response": []
+				},
+				{
+					"name": "Check SERVER for schema and table.",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "e9d896be-6ddb-4b6d-8d10-9d1b8b4dbb14",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test(\"Should not error\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.response.to.not.have.jsonBody(\"error\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46QWJjMTIzNCE="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n  \"operation\":\"describe_schema\",\r\n  \"schema\": \"{{TRUCK_1_SCHEMA}}\"\r\n}\r\n"
+						},
+						"url": {
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{SERVER_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Check truck 1 for schema and table.",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "7cb46c6e-14d9-4580-bb2d-372e4689a4e8",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test(\"Should not error\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.response.to.not.have.jsonBody(\"error\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46QWJjMTIzNCE="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n  \"operation\":\"describe_schema\",\r\n  \"schema\": \"{{TRUCK_1_SCHEMA}}\"\r\n}\r\n"
+						},
+						"url": {
+							"raw": "http://{{TRUCK_1_HOST}}:{{TRUCK_1_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{TRUCK_1_HOST}}"
+							],
+							"port": "{{TRUCK_1_HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "add data to server table {{TRUCK_1_TABLE}}",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "f61b6d3f-407f-4e83-a22a-44a136ce9956",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46QWJjMTIzNCE="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"{{TRUCK_1_SCHEMA}}\",\n\"table\":\"{{TRUCK_1_TABLE}}\",\n\"records\": [\n  {\n  \t\"id\":\"{{$guid}}\",\n  \t\"temperature\":{{$randomInt}},\n  \t\"timestamp\":{{$timestamp}}\n  }\n]\n}"
+						},
+						"url": {
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{SERVER_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
 						},
 						"description": "Req to node 2\nAdding node 1 and registered node."
 					},
@@ -43,7 +3486,7 @@
 				{
 					"listen": "prerequest",
 					"script": {
-						"id": "74b00d6e-1745-4f50-b1cf-a1c43fb9dc65",
+						"id": "eb095265-95c5-4026-9095-e9aa379b34cf",
 						"type": "text/javascript",
 						"exec": [
 							""
@@ -53,7 +3496,7 @@
 				{
 					"listen": "test",
 					"script": {
-						"id": "ed0578bf-2f14-4eba-9479-df304790a644",
+						"id": "3e10e90c-7585-41ce-ba61-3ca31d18d0d0",
 						"type": "text/javascript",
 						"exec": [
 							""
@@ -63,173 +3506,51 @@
 			]
 		},
 		{
-			"name": "add_node1",
+			"name": "9. Add data for inbound test",
 			"item": [
 				{
-					"name": "Add node 1 to Node 2",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							},
-							{
-								"key": "Authorization",
-								"value": "Basic YWRtaW46QWJjMTIzNCE="
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\r\n\"operation\":\"add_node\",\r\n\"name\":\"{{node1_name}}\" ,\r\n\"port\": \"{{node1_clustering_port}}\",\r\n\"host\":\"{{node1_host}}\"\r\n}"
-						},
-						"url": {
-							"raw": "{{node2_host}}:{{node2_port}}",
-							"host": [
-								"{{node2_host}}"
-							],
-							"port": "{{node2_port}}"
-						},
-						"description": "Req to node 2\nAdding node 1 and registered node."
-					},
-					"response": []
-				}
-			]
-		},
-		{
-			"name": "clustered",
-			"item": [
-				{
-					"name": "Create Shema on node 1",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							},
-							{
-								"key": "Authorization",
-								"value": "Basic YWRtaW46QWJjMTIzNCE="
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\r\n  \"operation\":\"create_schema\",\r\n  \"schema\": \"{{dev_schema}}\"\r\n}\r\n"
-						},
-						"url": {
-							"raw": "{{node1_host}}:{{node1_port}}",
-							"host": [
-								"{{node1_host}}"
-							],
-							"port": "{{node1_port}}"
-						},
-						"description": "Req to node 2\nAdding node 1 and registered node."
-					},
-					"response": []
-				},
-				{
-					"name": "Create table on node 1 w/ residence *",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							},
-							{
-								"key": "Authorization",
-								"value": "Basic YWRtaW46QWJjMTIzNCE="
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\r\n\"operation\":\"create_table\",\r\n\"schema\":\"{{dev_schema}}\",\r\n\"table\":\"{{dev_test_table}}\",\r\n\"hash_attribute\": \"id\",\r\n\"residence\":[\"*\"]\r\n}\r\n"
-						},
-						"url": {
-							"raw": "{{node1_host}}:{{node1_port}}",
-							"host": [
-								"{{node1_host}}"
-							],
-							"port": "{{node1_port}}"
-						},
-						"description": "Req to node 2\nAdding node 1 and registered node."
-					},
-					"response": []
-				},
-				{
-					"name": "Check Node 2 for schema and table.",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							},
-							{
-								"key": "Authorization",
-								"value": "Basic YWRtaW46QWJjMTIzNCE="
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\r\n  \"operation\":\"describe_schema\",\r\n  \"schema\": \"{{dev_schema}}\"\r\n}\r\n"
-						},
-						"url": {
-							"raw": "{{node2_host}}:{{node2_port}}",
-							"host": [
-								"{{node2_host}}"
-							],
-							"port": "{{node2_port}}"
-						},
-						"description": "Req to node 2\nAdding node 1 and registered node."
-					},
-					"response": []
-				},
-				{
-					"name": "Check Node 1 for schema and table.",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							},
-							{
-								"key": "Authorization",
-								"value": "Basic YWRtaW46QWJjMTIzNCE="
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\r\n  \"operation\":\"describe_schema\",\r\n  \"schema\": \"{{dev_schema}}\"\r\n}\r\n"
-						},
-						"url": {
-							"raw": "{{node1_host}}:{{node1_port}}",
-							"host": [
-								"{{node1_host}}"
-							],
-							"port": "{{node1_port}}"
-						},
-						"description": "Req to node 2\nAdding node 1 and registered node."
-					},
-					"response": []
-				},
-				{
-					"name": "add data to node_2",
+					"name": "Create Shema on truck 2",
 					"event": [
 						{
 							"listen": "test",
 							"script": {
-								"id": "f61b6d3f-407f-4e83-a22a-44a136ce9956",
+								"id": "2a5ef5ae-021f-4808-9a35-f5522e7e47fe",
 								"exec": [
-									"//pm.environment.set(\"variable_key\", \"variable_value\");"
+									"tests[\"Create Schema\"] = responseBody.has(\"successfully created\");",
+									"",
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
 								],
 								"type": "text/javascript"
 							}
 						}
 					],
 					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
 						"method": "POST",
 						"header": [
 							{
@@ -243,34 +3564,65 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"{{dev_schema}}\",\n\"table\":\"{{dev_test_table}}\",\n\"records\": [\n  {\n  \t\"id\":\"{{$guid}}\",\n  \t\"temperature\":{{$randomInt}},\n  \t\"timestamp\":{{$timestamp}}\n  }\n]\n}"
+							"raw": "{\r\n  \"operation\":\"create_schema\",\r\n  \"schema\": \"{{TRUCK_2_SCHEMA}}\"\r\n}\r\n"
 						},
 						"url": {
-							"raw": "{{node2_host}}:{{node2_port}}",
+							"raw": "http://{{TRUCK_2_HOST}}:{{TRUCK_2_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
-								"{{node2_host}}"
+								"{{TRUCK_2_HOST}}"
 							],
-							"port": "{{node2_port}}"
+							"port": "{{TRUCK_2_HDB_PORT}}"
 						},
-						"description": "Req to node 2\nAdding node 1 and registered node."
+						"description": "Add node to truck 1, expect replicate on server"
 					},
 					"response": []
 				},
 				{
-					"name": "add data to node_1",
+					"name": "Check truck 2 for schema",
 					"event": [
 						{
 							"listen": "test",
 							"script": {
-								"id": "f61b6d3f-407f-4e83-a22a-44a136ce9956",
+								"id": "19082d37-0a49-4a21-878a-b5f5782c0198",
 								"exec": [
-									"//pm.environment.set(\"variable_key\", \"variable_value\");"
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test(\"Should not error\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.response.to.not.have.jsonBody(\"error\");",
+									"});"
 								],
 								"type": "text/javascript"
 							}
 						}
 					],
 					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
 						"method": "POST",
 						"header": [
 							{
@@ -284,27 +3636,438 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"{{dev_schema}}\",\n\"table\":\"{{dev_test_table}}\",\n\"records\": [\n  {\n  \t\"id\":\"{{$guid}}\",\n  \t\"temperature\":{{$randomInt}},\n  \t\"timestamp\":{{$timestamp}}\n  }\n]\n}"
+							"raw": "{\r\n  \"operation\":\"describe_schema\",\r\n  \"schema\": \"{{TRUCK_2_SCHEMA}}\"\r\n}\r\n"
 						},
 						"url": {
-							"raw": "{{node1_host}}:{{node1_port}}",
+							"raw": "http://{{TRUCK_2_HOST}}:{{TRUCK_2_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
-								"{{node1_host}}"
+								"{{TRUCK_2_HOST}}"
 							],
-							"port": "{{node1_port}}"
+							"port": "{{TRUCK_2_HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Check server for schema",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "cde70d96-e6ee-48f3-8465-93b40516b9f3",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test(\"Should not error\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.response.to.not.have.jsonBody(\"error\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46QWJjMTIzNCE="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n  \"operation\":\"describe_schema\",\r\n  \"schema\": \"{{TRUCK_2_SCHEMA}}\"\r\n}\r\n"
+						},
+						"url": {
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{SERVER_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Create table on truck 2 w/ residence *",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "32e99799-6478-4016-a7c1-cc8a1ce4f8dd",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46QWJjMTIzNCE="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n\"operation\":\"create_table\",\r\n\"schema\":\"{{TRUCK_2_SCHEMA}}\",\r\n\"table\":\"{{TRUCK_2_TABLE}}\",\r\n\"hash_attribute\": \"id\",\r\n\"residence\":[\"*\"]\r\n}\r\n"
+						},
+						"url": {
+							"raw": "http://{{TRUCK_2_HOST}}:{{TRUCK_2_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{TRUCK_2_HOST}}"
+							],
+							"port": "{{TRUCK_2_HDB_PORT}}"
+						},
+						"description": "Req to node 2\nAdding node 1 and registered node."
+					},
+					"response": []
+				},
+				{
+					"name": "Check SERVER for schema and table. Copy",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "e9d896be-6ddb-4b6d-8d10-9d1b8b4dbb14",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test(\"Should not error\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.response.to.not.have.jsonBody(\"error\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46QWJjMTIzNCE="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n  \"operation\":\"describe_schema\",\r\n  \"schema\": \"{{TRUCK_2_SCHEMA}}\"\r\n}\r\n"
+						},
+						"url": {
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{SERVER_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Check truck 2 for schema and table.",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "7cb46c6e-14d9-4580-bb2d-372e4689a4e8",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test(\"Should not error\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.response.to.not.have.jsonBody(\"error\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46QWJjMTIzNCE="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n  \"operation\":\"describe_schema\",\r\n  \"schema\": \"{{TRUCK_2_SCHEMA}}\"\r\n}\r\n"
+						},
+						"url": {
+							"raw": "http://{{TRUCK_2_HOST}}:{{TRUCK_2_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{TRUCK_2_HOST}}"
+							],
+							"port": "{{TRUCK_2_HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "add data to Truck 2 table {{TRUCK_2_TABLE}}",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "f61b6d3f-407f-4e83-a22a-44a136ce9956",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46QWJjMTIzNCE="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"{{TRUCK_2_SCHEMA}}\",\n\"table\":\"{{TRUCK_2_TABLE}}\",\n\"records\": [\n  {\n  \t\"id\":\"{{$guid}}\",\n  \t\"temperature\":{{$randomInt}},\n  \t\"timestamp\":{{$timestamp}}\n  }\n]\n}"
+						},
+						"url": {
+							"raw": "http://{{TRUCK_2_HOST}}:{{TRUCK_2_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{TRUCK_2_HOST}}"
+							],
+							"port": "{{TRUCK_2_HDB_PORT}}"
 						},
 						"description": "Req to node 2\nAdding node 1 and registered node."
 					},
 					"response": []
 				}
+			],
+			"event": [
+				{
+					"listen": "prerequest",
+					"script": {
+						"id": "eb095265-95c5-4026-9095-e9aa379b34cf",
+						"type": "text/javascript",
+						"exec": [
+							""
+						]
+					}
+				},
+				{
+					"listen": "test",
+					"script": {
+						"id": "3e10e90c-7585-41ce-ba61-3ca31d18d0d0",
+						"type": "text/javascript",
+						"exec": [
+							""
+						]
+					}
+				}
 			]
 		},
 		{
-			"name": "data_wait",
+			"name": "10. Add data for outbound test",
 			"item": [
 				{
-					"name": "Select data from node2",
+					"name": "Create truck 3 schema on Server",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "2a5ef5ae-021f-4808-9a35-f5522e7e47fe",
+								"exec": [
+									"tests[\"Create Schema\"] = responseBody.has(\"successfully created\");",
+									"",
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
 					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
 						"method": "POST",
 						"header": [
 							{
@@ -318,22 +4081,204 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\"operation\":\"search_by_value\",\n\"schema\":\"{{dev_schema}}\",\n\"table\":\"{{dev_test_table}}\",\n\"search_attribute\":\"id\",\n\"search_value\":\"*\",\n\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\r\n  \"operation\":\"create_schema\",\r\n  \"schema\": \"{{TRUCK_3_SCHEMA}}\"\r\n}\r\n"
 						},
 						"url": {
-							"raw": "{{node2_host}}:{{node2_port}}",
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
-								"{{node2_host}}"
+								"{{SERVER_HOST}}"
 							],
-							"port": "{{node2_port}}"
+							"port": "{{SERVER_HDB_PORT}}"
+						},
+						"description": "Add node to truck 1, expect replicate on server"
+					},
+					"response": []
+				},
+				{
+					"name": "Check server for schema",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "cde70d96-e6ee-48f3-8465-93b40516b9f3",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test(\"Should not error\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.response.to.not.have.jsonBody(\"error\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46QWJjMTIzNCE="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n  \"operation\":\"describe_schema\",\r\n  \"schema\": \"{{TRUCK_3_SCHEMA}}\"\r\n}\r\n"
+						},
+						"url": {
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{SERVER_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Create table on server w/ residence *",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "32e99799-6478-4016-a7c1-cc8a1ce4f8dd",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46QWJjMTIzNCE="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n\"operation\":\"create_table\",\r\n\"schema\":\"{{TRUCK_3_SCHEMA}}\",\r\n\"table\":\"{{TRUCK_3_TABLE}}\",\r\n\"hash_attribute\": \"id\",\r\n\"residence\":[\"*\"]\r\n}\r\n"
+						},
+						"url": {
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{SERVER_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
 						},
 						"description": "Req to node 2\nAdding node 1 and registered node."
 					},
 					"response": []
 				},
 				{
-					"name": "Select data from node1",
+					"name": "Check SERVER for schema and table.",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "e9d896be-6ddb-4b6d-8d10-9d1b8b4dbb14",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test(\"Should not error\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.response.to.not.have.jsonBody(\"error\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
 					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
 						"method": "POST",
 						"header": [
 							{
@@ -347,22 +4292,64 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\"operation\":\"search_by_value\",\n\"schema\":\"{{dev_schema}}\",\n\"table\":\"{{dev_test_table}}\",\n\"search_attribute\":\"id\",\n\"search_value\":\"*\",\n\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\r\n  \"operation\":\"describe_schema\",\r\n  \"schema\": \"{{TRUCK_3_SCHEMA}}\"\r\n}\r\n"
 						},
 						"url": {
-							"raw": "{{node2_host}}:{{node2_port}}",
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
-								"{{node2_host}}"
+								"{{SERVER_HOST}}"
 							],
-							"port": "{{node2_port}}"
-						},
-						"description": "Req to node 2\nAdding node 1 and registered node."
+							"port": "{{SERVER_HDB_PORT}}"
+						}
 					},
 					"response": []
 				},
 				{
-					"name": "Select data by hash",
+					"name": "Check truck 3 for schema and table.",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "7cb46c6e-14d9-4580-bb2d-372e4689a4e8",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test(\"Should not error\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.response.to.not.have.jsonBody(\"error\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
 					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
 						"method": "POST",
 						"header": [
 							{
@@ -376,18 +4363,1739 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n \"operation\":\"search_by_hash\",\n  \"schema\": \"dev\",\n  \"table\": \"dog\",\n  \"hash_attribute\": \"id\",\n  \"hash_values\":[1,2],\n  \"get_attributes\": [\"name\", \"breed\"]\n}"
+							"raw": "{\r\n  \"operation\":\"describe_schema\",\r\n  \"schema\": \"{{TRUCK_3_SCHEMA}}\"\r\n}\r\n"
 						},
 						"url": {
-							"raw": "{{url_node2}}:{{port_node2}}",
+							"raw": "http://{{TRUCK_3_HOST}}:{{TRUCK_3_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
-								"{{url_node2}}"
+								"{{TRUCK_3_HOST}}"
 							],
-							"port": "{{port_node2}}"
-						},
-						"description": "Req to node 2\nAdding node 1 and registered node."
+							"port": "{{TRUCK_3_HDB_PORT}}"
+						}
 					},
 					"response": []
+				},
+				{
+					"name": "add data to server, Truck 3 table {{TRUCK_3_TABLE}}",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "f61b6d3f-407f-4e83-a22a-44a136ce9956",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46QWJjMTIzNCE="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"{{TRUCK_3_SCHEMA}}\",\n\"table\":\"{{TRUCK_3_TABLE}}\",\n\"records\": [\n  {\n  \t\"id\":\"{{$guid}}\",\n  \t\"temperature\":{{$randomInt}},\n  \t\"timestamp\":{{$timestamp}}\n  }\n]\n}"
+						},
+						"url": {
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{SERVER_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": []
+				}
+			],
+			"event": [
+				{
+					"listen": "prerequest",
+					"script": {
+						"id": "eb095265-95c5-4026-9095-e9aa379b34cf",
+						"type": "text/javascript",
+						"exec": [
+							""
+						]
+					}
+				},
+				{
+					"listen": "test",
+					"script": {
+						"id": "3e10e90c-7585-41ce-ba61-3ca31d18d0d0",
+						"type": "text/javascript",
+						"exec": [
+							""
+						]
+					}
+				}
+			]
+		},
+		{
+			"name": "11. Check for data",
+			"item": [
+				{
+					"name": "Select truck 1 data from server",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "b2797571-42e4-40f5-88e8-21c041611432",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46QWJjMTIzNCE="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"{{TRUCK_1_SCHEMA}}\",\n\t\"table\":\"{{TRUCK_1_TABLE}}\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+						},
+						"url": {
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{SERVER_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Select truck 1 data from truck 1",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "84c01b84-1577-4b74-8352-bcf86ec45e75",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46QWJjMTIzNCE="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"{{TRUCK_1_SCHEMA}}\",\n\t\"table\":\"{{TRUCK_1_TABLE}}\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+						},
+						"url": {
+							"raw": "http://{{TRUCK_1_HOST}}:{{TRUCK_1_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{TRUCK_1_HOST}}"
+							],
+							"port": "{{TRUCK_1_HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Select truck 2 data from server",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "c2f160cf-1f7e-4c21-a29c-bd7006ec8084",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46QWJjMTIzNCE="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"{{TRUCK_2_SCHEMA}}\",\n\t\"table\":\"{{TRUCK_2_TABLE}}\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+						},
+						"url": {
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{SERVER_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Select truck 3 data from truck 3",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "161833ff-f4f0-4159-a7f3-ce76b935c945",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46QWJjMTIzNCE="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"{{TRUCK_3_SCHEMA}}\",\n\t\"table\":\"{{TRUCK_3_TABLE}}\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+						},
+						"url": {
+							"raw": "http://{{TRUCK_3_HOST}}:{{TRUCK_3_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{TRUCK_3_HOST}}"
+							],
+							"port": "{{TRUCK_3_HDB_PORT}}"
+						}
+					},
+					"response": []
+				}
+			],
+			"event": [
+				{
+					"listen": "prerequest",
+					"script": {
+						"id": "3fb6e77e-a37a-469c-bd3e-87efc44e70b7",
+						"type": "text/javascript",
+						"exec": [
+							""
+						]
+					}
+				},
+				{
+					"listen": "test",
+					"script": {
+						"id": "37fadf39-df6f-4e2b-b60b-ab60baf4355a",
+						"type": "text/javascript",
+						"exec": [
+							""
+						]
+					}
+				}
+			]
+		},
+		{
+			"name": "12.  Validate connection status",
+			"item": [
+				{
+					"name": "Cluster status on Server",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "0369ee5d-c0b4-417a-b838-91e4b97dedf5",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"verify 1 bidirectional connection\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.status.bidirectional_connections.length).to.eql(1);",
+									"});",
+									"",
+									"pm.test(\"verify 1 outbound connection\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.status.outbound_connections.length).to.eql(1);",
+									"});",
+									"",
+									"pm.test(\"verify 1 inbound connection\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.status.inbound_connections.length).to.eql(1);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"cluster_status\"\n}"
+						},
+						"url": {
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{SERVER_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						},
+						"description": "Asks for status from a cluster node.  The response will return with an array of inbound, outbound, and bidirectional connections.  The data direction is in relation to the node in question.\n\n<b><i> This is a HarperDB Enterprise version only feature </i></b>\n<p>\n<a href=\"https://harperdbhelp.zendesk.com/hc/en-us/articles/115003583194\">See this article for more info</a>\n</p>\n<ul>\n<li>\n<b>operation</b> <i> (required) </i> - must always be 'add_node'\n</li>\n<li>\n<b>name</b> <i> (required) </i> - The name of the node you are registering with this node.  Must match exactly. \n</li>\n<li>\n<b>port</b> <i> (required) </i> - The clustering port for the node you are registering with this node.  Not to be confused with HTTP/S PORTS.\n</li>\n<li>\n<b>host</b> <i> (required) </i> - the uri where the node you are adding to the cluster resides. \n</li>\n\n\n\n\n</ul>"
+					},
+					"response": []
+				},
+				{
+					"name": "Cluster status on Truck 1",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "6bc81062-3c2e-4dfb-bad8-6f5dffa9f535",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"verify 1 bidirectional connection\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.status.bidirectional_connections.length).to.eql(1);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"cluster_status\"\n}"
+						},
+						"url": {
+							"raw": "http://{{TRUCK_1_HOST}}:{{TRUCK_1_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{TRUCK_1_HOST}}"
+							],
+							"port": "{{TRUCK_1_HDB_PORT}}"
+						},
+						"description": "Asks for status from a cluster node.  The response will return with an array of inbound, outbound, and bidirectional connections.  The data direction is in relation to the node in question.\n\n<b><i> This is a HarperDB Enterprise version only feature </i></b>\n<p>\n<a href=\"https://harperdbhelp.zendesk.com/hc/en-us/articles/115003583194\">See this article for more info</a>\n</p>\n<ul>\n<li>\n<b>operation</b> <i> (required) </i> - must always be 'add_node'\n</li>\n<li>\n<b>name</b> <i> (required) </i> - The name of the node you are registering with this node.  Must match exactly. \n</li>\n<li>\n<b>port</b> <i> (required) </i> - The clustering port for the node you are registering with this node.  Not to be confused with HTTP/S PORTS.\n</li>\n<li>\n<b>host</b> <i> (required) </i> - the uri where the node you are adding to the cluster resides. \n</li>\n\n\n\n\n</ul>"
+					},
+					"response": []
+				},
+				{
+					"name": "Cluster status on Truck 2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "07b583aa-b93a-4a64-9384-2d5b32f71556",
+								"exec": [
+									"pm.test(\"verify 1 outbound connection\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.status.outbound_connections.length).to.eql(1);",
+									"});",
+									"",
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"cluster_status\"\n}"
+						},
+						"url": {
+							"raw": "http://{{TRUCK_2_HOST}}:{{TRUCK_2_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{TRUCK_2_HOST}}"
+							],
+							"port": "{{TRUCK_2_HDB_PORT}}"
+						},
+						"description": "Asks for status from a cluster node.  The response will return with an array of inbound, outbound, and bidirectional connections.  The data direction is in relation to the node in question.\n\n<b><i> This is a HarperDB Enterprise version only feature </i></b>\n<p>\n<a href=\"https://harperdbhelp.zendesk.com/hc/en-us/articles/115003583194\">See this article for more info</a>\n</p>\n<ul>\n<li>\n<b>operation</b> <i> (required) </i> - must always be 'add_node'\n</li>\n<li>\n<b>name</b> <i> (required) </i> - The name of the node you are registering with this node.  Must match exactly. \n</li>\n<li>\n<b>port</b> <i> (required) </i> - The clustering port for the node you are registering with this node.  Not to be confused with HTTP/S PORTS.\n</li>\n<li>\n<b>host</b> <i> (required) </i> - the uri where the node you are adding to the cluster resides. \n</li>\n\n\n\n\n</ul>"
+					},
+					"response": []
+				},
+				{
+					"name": "Cluster status on Truck 3",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "0e05aec3-b7f4-46b7-a511-13870039b441",
+								"exec": [
+									"pm.test(\"verify 1 inbound connection\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.status.inbound_connections.length).to.eql(1);",
+									"});",
+									"",
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"cluster_status\"\n}"
+						},
+						"url": {
+							"raw": "http://{{TRUCK_3_HOST}}:{{TRUCK_3_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{TRUCK_3_HOST}}"
+							],
+							"port": "{{TRUCK_3_HDB_PORT}}"
+						},
+						"description": "Asks for status from a cluster node.  The response will return with an array of inbound, outbound, and bidirectional connections.  The data direction is in relation to the node in question.\n\n<b><i> This is a HarperDB Enterprise version only feature </i></b>\n<p>\n<a href=\"https://harperdbhelp.zendesk.com/hc/en-us/articles/115003583194\">See this article for more info</a>\n</p>\n<ul>\n<li>\n<b>operation</b> <i> (required) </i> - must always be 'add_node'\n</li>\n<li>\n<b>name</b> <i> (required) </i> - The name of the node you are registering with this node.  Must match exactly. \n</li>\n<li>\n<b>port</b> <i> (required) </i> - The clustering port for the node you are registering with this node.  Not to be confused with HTTP/S PORTS.\n</li>\n<li>\n<b>host</b> <i> (required) </i> - the uri where the node you are adding to the cluster resides. \n</li>\n\n\n\n\n</ul>"
+					},
+					"response": []
+				}
+			],
+			"event": [
+				{
+					"listen": "prerequest",
+					"script": {
+						"id": "3fb6e77e-a37a-469c-bd3e-87efc44e70b7",
+						"type": "text/javascript",
+						"exec": [
+							""
+						]
+					}
+				},
+				{
+					"listen": "test",
+					"script": {
+						"id": "37fadf39-df6f-4e2b-b60b-ab60baf4355a",
+						"type": "text/javascript",
+						"exec": [
+							""
+						]
+					}
+				}
+			]
+		},
+		{
+			"name": "13. Clean Up",
+			"item": [
+				{
+					"name": "drop truck 1 schema on server",
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"drop_schema\",\n\t\"schema\":\"{{TRUCK_1_SCHEMA}}\"\n}"
+						},
+						"url": {
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{SERVER_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						},
+						"description": "This method is used for dropping a schema.  NOTE: Dropping a schema will delete all tables and all of their records in that schema. \n\n<ul>\n<li><b>operation</b><i> (required)</i> - this should always be \"drop_table\"</li>\n\n<li><b>schema</b><i> (required)</i> - name of the schema you are dropping. </li>\n</ul>"
+					},
+					"response": [
+						{
+							"name": "Drop dev Schema",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic SERCX0FETUlOOjE0MDA="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"drop_schema\",\n\"schema\":\"dev\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "37",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 01 Sep 2017 16:54:29 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"25-PimhvvsUauiRfSAGNB/OXJVFwsY\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": "{\"message\":\"successfully delete dev\"}"
+						}
+					]
+				},
+				{
+					"name": "drop truck 2 schema on server",
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"drop_schema\",\n\t\"schema\":\"{{TRUCK_2_SCHEMA}}\"\n}"
+						},
+						"url": {
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{SERVER_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						},
+						"description": "This method is used for dropping a schema.  NOTE: Dropping a schema will delete all tables and all of their records in that schema. \n\n<ul>\n<li><b>operation</b><i> (required)</i> - this should always be \"drop_table\"</li>\n\n<li><b>schema</b><i> (required)</i> - name of the schema you are dropping. </li>\n</ul>"
+					},
+					"response": [
+						{
+							"name": "Drop dev Schema",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic SERCX0FETUlOOjE0MDA="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"drop_schema\",\n\"schema\":\"dev\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "37",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 01 Sep 2017 16:54:29 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"25-PimhvvsUauiRfSAGNB/OXJVFwsY\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": "{\"message\":\"successfully delete dev\"}"
+						}
+					]
+				},
+				{
+					"name": "drop truck 3 schema on server",
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"drop_schema\",\n\t\"schema\":\"{{TRUCK_3_SCHEMA}}\"\n}"
+						},
+						"url": {
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{SERVER_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						},
+						"description": "This method is used for dropping a schema.  NOTE: Dropping a schema will delete all tables and all of their records in that schema. \n\n<ul>\n<li><b>operation</b><i> (required)</i> - this should always be \"drop_table\"</li>\n\n<li><b>schema</b><i> (required)</i> - name of the schema you are dropping. </li>\n</ul>"
+					},
+					"response": [
+						{
+							"name": "Drop dev Schema",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic SERCX0FETUlOOjE0MDA="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"drop_schema\",\n\"schema\":\"dev\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "37",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 01 Sep 2017 16:54:29 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"25-PimhvvsUauiRfSAGNB/OXJVFwsY\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": "{\"message\":\"successfully delete dev\"}"
+						}
+					]
+				},
+				{
+					"name": "drop truck 1 schema on truck 1",
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"drop_schema\",\n\t\"schema\":\"{{TRUCK_1_SCHEMA}}\"\n}"
+						},
+						"url": {
+							"raw": "http://{{TRUCK_1_HOST}}:{{TRUCK_1_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{TRUCK_1_HOST}}"
+							],
+							"port": "{{TRUCK_1_HDB_PORT}}"
+						},
+						"description": "This method is used for dropping a schema.  NOTE: Dropping a schema will delete all tables and all of their records in that schema. \n\n<ul>\n<li><b>operation</b><i> (required)</i> - this should always be \"drop_table\"</li>\n\n<li><b>schema</b><i> (required)</i> - name of the schema you are dropping. </li>\n</ul>"
+					},
+					"response": [
+						{
+							"name": "Drop dev Schema",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic SERCX0FETUlOOjE0MDA="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"drop_schema\",\n\"schema\":\"dev\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "37",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 01 Sep 2017 16:54:29 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"25-PimhvvsUauiRfSAGNB/OXJVFwsY\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": "{\"message\":\"successfully delete dev\"}"
+						}
+					]
+				},
+				{
+					"name": "drop truck 2 schema on truck 2",
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"drop_schema\",\n\t\"schema\":\"{{TRUCK_2_SCHEMA}}\"\n}"
+						},
+						"url": {
+							"raw": "http://{{TRUCK_2_HOST}}:{{TRUCK_2_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{TRUCK_2_HOST}}"
+							],
+							"port": "{{TRUCK_2_HDB_PORT}}"
+						},
+						"description": "This method is used for dropping a schema.  NOTE: Dropping a schema will delete all tables and all of their records in that schema. \n\n<ul>\n<li><b>operation</b><i> (required)</i> - this should always be \"drop_table\"</li>\n\n<li><b>schema</b><i> (required)</i> - name of the schema you are dropping. </li>\n</ul>"
+					},
+					"response": [
+						{
+							"name": "Drop dev Schema",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic SERCX0FETUlOOjE0MDA="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"drop_schema\",\n\"schema\":\"dev\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "37",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 01 Sep 2017 16:54:29 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"25-PimhvvsUauiRfSAGNB/OXJVFwsY\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": "{\"message\":\"successfully delete dev\"}"
+						}
+					]
+				},
+				{
+					"name": "drop truck 3 schema on truck 3",
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"drop_schema\",\n\t\"schema\":\"{{TRUCK_3_SCHEMA}}\"\n}"
+						},
+						"url": {
+							"raw": "http://{{TRUCK_3_HOST}}:{{TRUCK_3_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{TRUCK_3_HOST}}"
+							],
+							"port": "{{TRUCK_3_HDB_PORT}}"
+						},
+						"description": "This method is used for dropping a schema.  NOTE: Dropping a schema will delete all tables and all of their records in that schema. \n\n<ul>\n<li><b>operation</b><i> (required)</i> - this should always be \"drop_table\"</li>\n\n<li><b>schema</b><i> (required)</i> - name of the schema you are dropping. </li>\n</ul>"
+					},
+					"response": [
+						{
+							"name": "Drop dev Schema",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic SERCX0FETUlOOjE0MDA="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"drop_schema\",\n\"schema\":\"dev\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "37",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 01 Sep 2017 16:54:29 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"25-PimhvvsUauiRfSAGNB/OXJVFwsY\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": "{\"message\":\"successfully delete dev\"}"
+						}
+					]
+				},
+				{
+					"name": "Remove truck 1 node from server",
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"{{TRUCK_1_NAME}}\"\n}"
+						},
+						"url": {
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{SERVER_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						},
+						"description": "Method for registering a node for HarperDB Clustering.  Each node must be aware of all other nodes. <b><i> This is a HarperDB Enterprise version only feature </i></b>\n<p>\n<a href=\"https://harperdbhelp.zendesk.com/hc/en-us/articles/115003583194\">See this article for more info</a>\n</p>\n<ul>\n<li>\n<b>operation</b> <i> (required) </i> - must always be 'add_node'\n</li>\n<li>\n<b>name</b> <i> (required) </i> - The name of the node you are registering with this node.  Must match exactly. \n</li>\n<li>\n<b>port</b> <i> (required) </i> - The clustering port for the node you are registering with this node.  Not to be confused with HTTP/S PORTS.\n</li>\n<li>\n<b>host</b> <i> (required) </i> - the uri where the node you are adding to the cluster resides. \n</li>\n\n\n\n\n</ul>"
+					},
+					"response": []
+				},
+				{
+					"name": "Remove server from truck 1",
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"{{SERVER_NAME}}\"\n}"
+						},
+						"url": {
+							"raw": "http://{{TRUCK_1_HOST}}:{{TRUCK_1_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{TRUCK_1_HOST}}"
+							],
+							"port": "{{TRUCK_1_HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Remove server from truck 2",
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"{{SERVER_NAME}}\"\n}"
+						},
+						"url": {
+							"raw": "http://{{TRUCK_2_HOST}}:{{TRUCK_2_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{TRUCK_2_HOST}}"
+							],
+							"port": "{{TRUCK_2_HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Remove truck  3 node from server",
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{HDB_PASS}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{HDB_USER}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"{{TRUCK_3_NAME}}\"\n}"
+						},
+						"url": {
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{SERVER_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": []
+				}
+			],
+			"event": [
+				{
+					"listen": "prerequest",
+					"script": {
+						"id": "dd29b200-47f2-4586-b0b8-245c94f9bcf5",
+						"type": "text/javascript",
+						"exec": [
+							""
+						]
+					}
+				},
+				{
+					"listen": "test",
+					"script": {
+						"id": "2f086b7f-0208-46c5-9e01-efaaf33d9138",
+						"type": "text/javascript",
+						"exec": [
+							""
+						]
+					}
 				}
 			]
 		}

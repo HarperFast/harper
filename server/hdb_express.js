@@ -21,6 +21,7 @@ const hdb_terms = require('../utility/hdbTerms');
 const global_schema = require('../utility/globalSchema');
 const fs = require('fs');
 const cluster_utilities = require('./clustering/clusterUtilities');
+const cluster_event = require('../events/ClusterStatusEmitter');
 
 const DEFAULT_SERVER_TIMEOUT = 120000;
 const PROPS_SERVER_TIMEOUT_KEY = 'SERVER_TIMEOUT_MS';
@@ -454,6 +455,10 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                         process.send({"type": "delegate_thread_response", "err": err, "data": data, "id": msg.id});
                     });
                 });
+                break;
+            case hdb_terms.CLUSTER_MESSAGE_TYPE_ENUM.CLUSTER_STATUS:
+                harper_logger.info('Got cluster status message via IPC');
+                cluster_event.clusterEmitter.emit(cluster_event.EVENT_NAME, msg.status);
                 break;
             default:
                 harper_logger.error(`Received unknown signaling message ${msg.type}, ignoring message`);

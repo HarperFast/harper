@@ -31,11 +31,14 @@ printf  "\nCLUSTERING = TRUE\nCLUSTERING_PORT = %s\nNODE_NAME = node_%s" "$clust
 #Set Log LEVeL TO INFO
 sed -i 's/LOG_LEVEL = error/LOG_LEVEL = info/' $target_dir/node_$node_count/data/hdb/config/settings.js
 
+#Allow self signed Certs.
+sed -i 's/ALLOW_SELF_SIGNED_SSL_CERTS = false/ALLOW_SELF_SIGNED_SSL_CERTS=TRUE/' $target_dir/node_$node_count/data/hdb/config/settings.js
+
 #License register
 /opt/harperdb/utility/devops/script_register.exp $target_dir/node_$node_count/harperdb
 
 #KILL only this node
-kill $(ps -ef | grep "$target_dir/node_$node_count" | awk '{print $2}')
+#kill $(ps -ef | grep "$target_dir/node_$node_count" | awk '{print $2}')
 
 ./linux-harperdb run
 sleep 7s
@@ -44,7 +47,7 @@ sleep 7s
 newman run https://api.getpostman.com/collections/4f5d17b0-e923-e7c0-feb9-f80dbcf1764a?apikey=fe1dfb2c3647474f8f3e9d836783e694 --environment https://api.getpostman.com/environments/e8201aee-1a99-7de7-4910-62c0e0e6b755?apikey=fe1dfb2c3647474f8f3e9d836783e694 --folder add_node$node_count
 
 #Kill only this node
-kill $(ps -ef | grep "$target_dir/node_$node_count" | awk '{print $2}')
+#kill $(ps -ef | grep "$target_dir/node_$node_count" | awk '{print $2}')
 
 #sleep 10s
 #./linux-harperdb run
@@ -54,17 +57,17 @@ http_port=$(($http_port + $port_offset));
 cluster_port=$(($cluster_port + $port_offset));
 
 done
-echo "CLUSTER BUILT NOTHING SHOULD BE RUNNING: $(ps -ef | grep $target_dir)"
+#echo "CLUSTER BUILT NOTHING SHOULD BE RUNNING: $(ps -ef | grep $target_dir)"
 
-cd $target_dir/node_1/harperdb/bin/
-./linux-harperdb run
+#cd $target_dir/node_1/harperdb/bin/
+#./linux-harperdb run
 
-sleep 7s
+#sleep 7s
 
-cd $target_dir/node_2/harperdb/bin/
-./linux-harperdb run
+#cd $target_dir/node_2/harperdb/bin/
+#./linux-harperdb run
 
-sleep 5s
+#sleep 5s
 
 #Add Schema
 newman run https://api.getpostman.com/collections/4f5d17b0-e923-e7c0-feb9-f80dbcf1764a?apikey=fe1dfb2c3647474f8f3e9d836783e694 --environment https://api.getpostman.com/environments/e8201aee-1a99-7de7-4910-62c0e0e6b755?apikey=fe1dfb2c3647474f8f3e9d836783e694 --folder create_schema

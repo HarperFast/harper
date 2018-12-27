@@ -29,9 +29,6 @@ const SYSTEM_SCHEMA_NAME = 'system';
 
 const HASH_FOLDER_NAME = '__hdb_hash';
 
-//this variable defines operations that should only run locally and not pass over clustering to another node(s)
-const LOCAL_HARPERDB_OPERATIONS = ['describe_all', 'describe_table', 'describe_schema', 'read_log', 'add_node', 'list_users', 'list_roles', 'user_info', 'sql', 'get_job', 'search_jobs_by_start_date', 'delete_files_before', 'export_local', 'export_to_s3'];
-
 const SYSTEM_TABLE_NAMES = {
     JOB_TABLE_NAME : 'hdb_job',
     NODE_TABLE_NAME :'hdb_nodes',
@@ -117,9 +114,16 @@ const OPERATIONS_ENUM = {
     GET_FINGERPRINT: 'get_fingerprint',
     SET_LICENSE: 'set_license',
     CONFIGURE_CLUSTER: 'configure_cluster',
+    CLUSTER_STATUS: 'cluster_status',
     DROP_ATTRIBUTE: 'drop_attribute',
     REMOVE_NODE: 'remove_node'
 };
+
+//this variable defines operations that should only run locally and not pass over clustering to another node(s)
+const LOCAL_HARPERDB_OPERATIONS = [OPERATIONS_ENUM.DESCRIBE_ALL, OPERATIONS_ENUM.DESCRIBE_TABLE, OPERATIONS_ENUM.DESCRIBE_SCHEMA,
+    OPERATIONS_ENUM.READ_LOG, OPERATIONS_ENUM.ADD_NODE, OPERATIONS_ENUM.LIST_USERS, OPERATIONS_ENUM.LIST_ROLES, OPERATIONS_ENUM.USER_INFO,
+    OPERATIONS_ENUM.SQL, OPERATIONS_ENUM.GET_JOB, OPERATIONS_ENUM.SEARCH_JOBS_BY_START_DATE, OPERATIONS_ENUM.DELETE_FILES_BEFORE,
+    OPERATIONS_ENUM.EXPORT_LOCAL, OPERATIONS_ENUM.EXPORT_TO_S3, OPERATIONS_ENUM.CLUSTER_STATUS];
 
 const SERVICE_ACTIONS_ENUM = {
     RUN:'run',
@@ -193,6 +197,26 @@ const JOB_TYPE_ENUM = {
     delete_files_before: 'delete_files_before'
 };
 
+const CLUSTER_MESSAGE_TYPE_ENUM = {
+    CLUSTERING_PAYLOAD: 'clustering_payload',
+    DELEGATE_THREAD_RESPONSE: 'delegate_thread_response',
+    CLUSTERING: 'clustering',
+    SCHEMA: 'schema',
+    NODE_ADDED: 'node_added',
+    NODE_REMOVED: 'node_removed',
+    CLUSTER_STATUS: 'cluster_status',
+    JOB: 'job'
+};
+const CLUSTER_CONNECTION_DIRECTION_ENUM = {
+    // Data flows to both the client and this server
+    BIDIRECTIONAL: "BIDIRECTIONAL",
+    // This server only sends data to its client, it doesn't up update from received data
+    OUTBOUND: "OUTBOUND",
+    // This server only receives data, it does not send updated data
+    INBOUND: "INBBOUND"
+};
+
+
 module.exports = {
     HDB_PROC_NAME,
     SYSTEM_SCHEMA_NAME,
@@ -206,6 +230,8 @@ module.exports = {
     HDB_SETTINGS_NAMES,
     HDB_SETTINGS_DEFAULT_VALUES,
     SERVICE_ACTIONS_ENUM,
+    CLUSTER_MESSAGE_TYPE_ENUM,
+    CLUSTER_CONNECTION_DIRECTION_ENUM,
     PERIOD_REGEX,
     DOUBLE_PERIOD_REGEX,
     UNICODE_PERIOD,

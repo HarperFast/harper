@@ -54,43 +54,57 @@ class SocketServer {
             let node = this.node;
             this.io = sio.listen(server);
             this.io.sockets.on("connection", function (socket) {
-                socket.on("identify", function (msg, callback) {
+                socket.on("identify", function (msg) {
                     log.info(`${msg.name} connected to cluster`);
                     //this is the remote ip address of the client connecting to this server.
-                    let raw_remote_ip = socket.conn.remoteAddress;
-                    let raw_remote_ip_array = raw_remote_ip ? raw_remote_ip.split(':') : [];
-                    msg.host = Array.isArray(raw_remote_ip_array) && raw_remote_ip_array.length > 0 ?  raw_remote_ip_array[raw_remote_ip_array.length - 1] : '';
-                    let new_client = new SocketClient(node, msg);
-                    new_client.client = socket;
-                    new_client.createClientMessageHandlers();
+                    try {
+                        let raw_remote_ip = socket.conn.remoteAddress;
+                        let raw_remote_ip_array = raw_remote_ip ? raw_remote_ip.split(':') : [];
+                        msg.host = Array.isArray(raw_remote_ip_array) && raw_remote_ip_array.length > 0 ? raw_remote_ip_array[raw_remote_ip_array.length - 1] : '';
+                        let new_client = new SocketClient(node, msg, terms.CLUSTER_CONNECTION_DIRECTION_ENUM.INBOUND);
+                        new_client.client = socket;
+                        new_client.createClientMessageHandlers();
 
-                    let found_client = global.cluster_server.socket_client.filter((client)=>{
-                        return client.other_node.name === msg.name;
-                    });
-
-                    // if we do not have a client connection for this other node we need to ask it for what we may have missed since last connection
-                    let catchup_request = true;
-                    for(let k = 0; k < node.other_nodes.length; k++){
-                        if(node.other_nodes[k].name === msg.name){
-                            catchup_request = false;
-                            return;
+                        let found_client = undefined;
+                        if(global.cluster_server.socket_client) {
+                            found_client = global.cluster_server.socket_client.filter((client) => {
+                                return client.other_node.host === msg.host && client.other_node.port === msg.port;
+                            });
                         }
-                    }
 
-                    if(catchup_request){
-                        socket.emit('catchup_request', {name: node.name});
-                    }
+                        // if we do not have a client connection for this other node we need to ask it for what we may have missed since last connection
+                        let catchup_request = true;
+                        for(let k = 0; k < node.other_nodes.length; k++) {
+                            if(node.other_nodes[k].host === msg.host && node.other_nodes[k].port === msg.port) {
+                                catchup_request = false;
+                                break;
+                            }
+                        }
 
-                    if(!found_client || found_client.length === 0){
-                        global.cluster_server.socket_client.push(new_client);
+                        if(catchup_request) {
+                            socket.emit('catchup_request', {name: node.name});
+                        }
+
+                        if (!found_client || found_client.length === 0) {
+                            global.cluster_server.socket_client.push(new_client);
+                        } else {
+                            // This client already exists and is connected, this means we are establishing a bidirectional connection.
+                            // We probably should never return more than 1, but set them all just in case.
+                            if (found_client.length > 1) {
+                                log.warn(`Multiple socket clients with the same host: ${found_client[0].host} and port: ${found_client[0].port} were found`);
+                            }
+                            for (let client of found_client) {
+                                client.direction = terms.CLUSTER_CONNECTION_DIRECTION_ENUM.BIDIRECTIONAL;
+                            }
+                        }
+                    } catch(err) {
+                        log.error(err);
                     }
 
                     socket.join(msg.name, async () => {
-
                         log.info(node.name + ' joined room ' + msg.name);
                         // retrieve the queue and send to this node.
-                        await cluster_handlers.fetchQueue(msg, socket)
-
+                        await cluster_handlers.fetchQueue(msg, socket);
                     });
                 });
 
@@ -98,8 +112,6 @@ class SocketServer {
                     log.info(msg.name + ' catchup_request');
                     await cluster_handlers.fetchQueue(msg, socket);
                 });
-
-
 
                 socket.on('confirm_msg', async msg => {
                     await cluster_handlers.onConfirmMessageHandler(msg);
@@ -122,10 +134,7 @@ class SocketServer {
                         log.error(e);
                     }
                 });
-
-
             });
-
             next();
 
         } catch (e) {
