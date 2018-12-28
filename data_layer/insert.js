@@ -49,7 +49,6 @@ const  p_fs_access = promisify(fs.access);
  * This validation is called before an insert or update is performed with the write_object.
  *
  * @param write_object - the object that will be written post-validation
- * @param callback - The caller
  */
 async function validation(write_object) {
     // Need to validate these outside of the validator as the getTableSchema call will fail with
@@ -151,6 +150,11 @@ async function validation(write_object) {
     };
 }
 
+/**
+ * Callback function for inserting data, remove when we are fully promised
+ * @param insert_object
+ * @param callback
+ */
 function insertDataCB(insert_object, callback){
     try{
         insertData(insert_object).then((results)=>{
@@ -164,9 +168,14 @@ function insertDataCB(insert_object, callback){
     }
 }
 
-function updateDataCB(insert_object, callback){
+/**
+ * Callback function for updating data, remove when we are fully promised
+ * @param update_object
+ * @param callback
+ */
+function updateDataCB(update_object, callback){
     try{
-        updateData(insert_object).then((results)=>{
+        updateData(update_object).then((results)=>{
             callback(null, results);
         }).catch(err=>{
             callback(err);
@@ -204,7 +213,6 @@ async function insertData(insert_object){
             inserted_hashes: inserted_records,
             skipped_hashes: skipped_records
         };
-        //TODO add new attributes here
 
         return return_object;
     } catch(e){
@@ -281,6 +289,13 @@ async function updateData(update_object){
     }
 }
 
+/**
+ * checks what records and attributes need to be updated
+ * @param update_object
+ * @param hash_attribute
+ * @param existing_records
+ * @returns {*}
+ */
 function compareUpdatesToExistingRecords(update_object, hash_attribute, existing_records) {
 
     if(!existing_records || existing_records.length === 0) { return callback('No Records Found'); }
@@ -330,7 +345,7 @@ function compareUpdatesToExistingRecords(update_object, hash_attribute, existing
 }
 
 /**
- *
+ *deletes files in bulk
  * @param unlink_paths
  */
 async function unlinkFiles(unlink_paths) {
@@ -507,7 +522,7 @@ async function processData(data_wrapper) {
 }
 
 /**
- * Iterates the rows and row by row writes the raw data plust the associated hard links.  The limit is set manage the event loop.  on large batches the event loop will get bogged down.
+ * Iterates the rows and row by row writes the raw data plust the associated hard links.
  * @param data
  */
 async function writeRecords(data){
@@ -524,7 +539,6 @@ async function writeRecords(data){
 /**
  * writes the raw data files to disk
  * @param data
- * @param callback
  */
 async function writeRawDataFiles(data) {
     await Promise.all(
@@ -537,7 +551,6 @@ async function writeRawDataFiles(data) {
 /**
  * creates the hard links to the raw data files
  * @param links
- * @param callback
  */
 async function writeLinkFiles(links) {
     await Promise.all(
@@ -556,7 +569,6 @@ async function writeLinkFiles(links) {
 /**
  * creates all of the folders necessary to hold the raw files and hard links
  * @param folders
- * @param callback
  */
 async function createFolders(data_wrapper,folders) {
     await Promise.all(
