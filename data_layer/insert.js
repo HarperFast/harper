@@ -614,8 +614,10 @@ async function checkForNewAttributes(hdb_auth_header, table_schema, data_attribu
 
 /**
  *
- * @param data_wrapper
- * @param folder
+ * @param hdb_auth_header
+ * @param schema
+ * @param table
+ * @param attribute
  */
 async function createNewAttribute(hdb_auth_header,schema, table, attribute) {
     let attribute_object = {
