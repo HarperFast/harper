@@ -181,7 +181,6 @@ function updateDataCB(insert_object, callback){
  * Inserts data specified in the insert_object parameter.  Currently if even a single entity in insert_object already exists,
  * the function will return and no other inserts will be performed.
  * @param insert_object
- * @param callback
  */
 async function insertData(insert_object){
     try {
