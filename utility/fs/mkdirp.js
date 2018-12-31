@@ -1,4 +1,5 @@
 let fs_mkdirp = require('fs-extra').mkdirp;
+const logger = require('../logging/harper_logger');
 
 /**
  *
@@ -8,7 +9,11 @@ let fs_mkdirp = require('fs-extra').mkdirp;
 module.exports = async folders =>{
     await Promise.all(
         folders.map(async folder=>{
-            await fs_mkdirp(folder);
+            try {
+                await fs_mkdirp(folder);
+            } catch(err){
+                logger.error(err);
+            }
         })
     );
 };

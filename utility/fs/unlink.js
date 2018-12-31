@@ -13,7 +13,7 @@ module.exports = async paths => {
                 await fs_unlink(path);
             } catch(e){
                 if(e.code !== 'ENOENT'){
-                    logger.error(err);
+                    logger.error(e);
                 }
             }
         })

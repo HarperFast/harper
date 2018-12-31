@@ -40,6 +40,7 @@ const HDB_PATH_KEY = hdb_terms.INSERT_MODULE_ENUM.HDB_PATH_KEY;
 const HDB_AUTH_HEADER = hdb_terms.INSERT_MODULE_ENUM.HDB_AUTH_HEADER;
 const HDB_USER_DATA_KEY = hdb_terms.INSERT_MODULE_ENUM.HDB_USER_DATA_KEY;
 const CHUNK_SIZE = hdb_terms.INSERT_MODULE_ENUM.CHUNK_SIZE;
+const MAX_CHARACTER_SIZE = 250;
 
 module.exports = {
     insertCB: insertDataCB,
@@ -77,7 +78,6 @@ async function validation(write_object) {
     let validator = insert_validator(write_object);
     if (validator) {
         throw new Error(validator);
-        return;
     }
 
     if(!Array.isArray(write_object.records)) {
@@ -105,7 +105,7 @@ async function validation(write_object) {
         } else if(hdb_terms.FORWARD_SLASH_REGEX.test(hash_value)) {
             bad_hash_value = true;
             break;
-        } else if(Buffer.byteLength(String(hash_value)) > 250){
+        } else if(Buffer.byteLength(String(hash_value)) > MAX_CHARACTER_SIZE){
             long_hash = true;
             break;
         }
@@ -118,7 +118,7 @@ async function validation(write_object) {
                 break;
             }
 
-            if(Buffer.byteLength(String(record_keys[k])) > 250) {
+            if(Buffer.byteLength(String(record_keys[k])) > MAX_CHARACTER_SIZE) {
                 long_attribute = true;
                 break;
             }
@@ -146,7 +146,7 @@ async function validation(write_object) {
     }
 
     if (long_hash) {
-        throw new Error('transaction aborted due to record(s) with a hash value that exceeds 250 bytes.');
+        throw new Error(`transaction aborted due to record(s) with a hash value that exceeds ${MAX_CHARACTER_SIZE} bytes.`);
     }
 
     if (bad_hash_value) {
@@ -154,7 +154,7 @@ async function validation(write_object) {
     }
 
     if (long_attribute) {
-        throw new Error('transaction aborted due to record(s) with an attribute that exceeds 250 bytes.');
+        throw new Error(`transaction aborted due to record(s) with an attribute that exceeds ${MAX_CHARACTER_SIZE} bytes.`);
     }
 
     if (blank_attribute) {
@@ -315,7 +315,9 @@ async function updateData(update_object){
  */
 function compareUpdatesToExistingRecords(update_object, hash_attribute, existing_records) {
 
-    if(!existing_records || existing_records.length === 0) { return callback('No Records Found'); }
+    if(!existing_records || existing_records.length === 0) {
+        throw new Error('No Records Found');
+    }
     let base_path = hdb_path + '/' + update_object.schema + '/' + update_object.table + '/';
 
     let unlink_paths = [];
