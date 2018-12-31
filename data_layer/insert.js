@@ -8,7 +8,6 @@
  */
 
 const insert_validator = require('../validation/insertValidator.js');
-const fs = require('fs-extra');
 const path = require('path');
 const h_utils = require('../utility/common_utils');
 const search = require('./search');
@@ -17,9 +16,18 @@ const _ = require('lodash');
 const truncate = require('truncate-utf8-bytes');
 const PropertiesReader = require('properties-reader');
 const autocast = require('autocast');
-const signalling = require('../utility/signalling');
 const hdb_terms = require('../utility/hdbTerms');
+const file_access = require('../utility/fs/insertFileAccess');
+const mkdirp = require('../utility/fs/mkdirp');
+const write_file = require('../utility/fs/writeFile');
+const link = require('../utility/fs/link');
+const unlink = require('../utility/fs/unlink');
+const pool_handler = require('../utility/threads/poolHandler');
 const {promisify} = require('util');
+const Pool = require('threads').Pool;
+const FileObject = require('../utility/fs/FileObject');
+const LinkObject = require('../utility/fs/LinkObject');
+let pool = new Pool();
 
 let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
 hdb_properties.append(hdb_properties.get('settings_path'));
@@ -28,9 +36,10 @@ hdb_properties.append(hdb_properties.get('settings_path'));
 const hdb_path = path.join(hdb_properties.get('HDB_ROOT'), '/schema');
 
 //This is an internal value that should not be written to the DB.
-const HDB_PATH_KEY = 'HDB_INTERNAL_PATH';
-const HDB_AUTH_HEADER = 'hdb_auth_header';
-const HDB_USER_DATA_KEY = 'hdb_user';
+const HDB_PATH_KEY = hdb_terms.INSERT_MODULE_ENUM.HDB_PATH_KEY;
+const HDB_AUTH_HEADER = hdb_terms.INSERT_MODULE_ENUM.HDB_AUTH_HEADER;
+const HDB_USER_DATA_KEY = hdb_terms.INSERT_MODULE_ENUM.HDB_USER_DATA_KEY;
+const CHUNK_SIZE = hdb_terms.INSERT_MODULE_ENUM.CHUNK_SIZE;
 
 module.exports = {
     insertCB: insertDataCB,
@@ -43,7 +52,6 @@ const global_schema = require('../utility/globalSchema');
 
 const p_global_schema = promisify(global_schema.getTableSchema);
 const p_search_by_hash = promisify(search.searchByHash);
-const  p_fs_access = promisify(fs.access);
 
 /**
  * This validation is called before an insert or update is performed with the write_object.
@@ -83,6 +91,7 @@ async function validation(write_object) {
     let long_hash = false;
     let long_attribute = false;
     let bad_hash_value = false;
+    let blank_attribute = false;
     write_object.dup_check = {};
     let attributes = new Set();
     let hashes = [];
@@ -104,6 +113,11 @@ async function validation(write_object) {
         //evaluate that there are no attributes who have a name longer than 250 characters
         let record_keys = Object.keys(record);
         for(let k = 0; k < record_keys.length; k++){
+            if(h_utils.isEmpty(record_keys[k]) || record_keys[k].trim() === ''){
+                blank_attribute = true;
+                break;
+            }
+
             if(Buffer.byteLength(String(record_keys[k])) > 250) {
                 long_attribute = true;
                 break;
@@ -111,7 +125,7 @@ async function validation(write_object) {
             attributes.add(record_keys[k]);
         }
 
-        if(long_attribute){
+        if(long_attribute || blank_attribute){
             break;
         }
 
@@ -141,6 +155,10 @@ async function validation(write_object) {
 
     if (long_attribute) {
         throw new Error('transaction aborted due to record(s) with an attribute that exceeds 250 bytes.');
+    }
+
+    if (blank_attribute) {
+        throw new Error('transaction aborted due to record(s) with an attribute name that is null, undefined or empty string');
     }
 
     return {
@@ -196,22 +214,21 @@ async function insertData(insert_object){
         if (insert_object.operation !== 'insert') {
             throw new Error('invalid operation, must be insert');
         }
-        let inserted_records = [];
-        let skipped_records = [];
 
-        let {table_schema, attributes} = await validation(insert_object);
+        let {table_schema, attributes, hashes} = await validation(insert_object);
 
-        await checkRecordsExist(insert_object, skipped_records, inserted_records, table_schema);
+        await checkRecordsExist(insert_object, table_schema);
 
         await checkForNewAttributes(insert_object.hdb_auth_header, table_schema, attributes);
 
         let data_wrapper = checkAttributeSchema(insert_object, table_schema);
         await processData(data_wrapper);
 
+        let inserted_hashes = _.difference(hashes, data_wrapper.skipped);
         let return_object = {
-            message: `inserted ${inserted_records.length} of ${insert_object.records.length} records`,
-            inserted_hashes: inserted_records,
-            skipped_hashes: skipped_records
+            message: `inserted ${data_wrapper.data.length} of ${insert_object.records.length} records`,
+            inserted_hashes: inserted_hashes,
+            skipped_hashes: data_wrapper.skipped
         };
 
         return return_object;
@@ -349,17 +366,11 @@ function compareUpdatesToExistingRecords(update_object, hash_attribute, existing
  * @param unlink_paths
  */
 async function unlinkFiles(unlink_paths) {
-    await Promise.all(
-        unlink_paths.map(async path=>{
-            try {
-                await fs.unlink(path);
-            } catch(e){
-                if(e.code !== 'ENOENT'){
-                    logger.error(err);
-                }
-            }
-        })
-    );
+    if(unlink_paths.length > CHUNK_SIZE){
+        await pool_handler(pool, unlink_paths,  CHUNK_SIZE, '../utility/fs/unlink');
+    } else {
+        await unlink(unlink_paths);
+    }
 }
 
 /**
@@ -398,8 +409,11 @@ function checkAttributeSchema(insert_object, table_schema) {
     let hash_paths = {};
     let base_path = hdb_path + '/' + insert_object.schema + '/' + insert_object.table + '/';
     let operation = insert_object.operation;
+    let skipped = [];
+
     insert_object.records.forEach((record) => {
         if (record[HDB_PATH_KEY] === undefined && operation !== 'update') {
+            skipped.push(record[hash_attribute]);
             return;
         }
         let exploded_row = {
@@ -421,25 +435,21 @@ function checkAttributeSchema(insert_object, table_schema) {
             let attribute_path = base_path + property + '/' + value_path;
 
             folders[`${base_path}__hdb_hash/${property}`] = "";
-            exploded_row.raw_data.push({
-                file_name: `${base_path}__hdb_hash/${property}/${attribute_file_name}`,
-                value: value
-            });
+            exploded_row.raw_data.push(
+                new FileObject(`${base_path}__hdb_hash/${property}/${attribute_file_name}`, value)
+            );
             if (property !== hash_attribute) {
                 folders[attribute_path] = "";
 
-                exploded_row.links.push({
-                    link: `${base_path}__hdb_hash/${property}/${attribute_file_name}`,
-                    file_name: `${attribute_path}/${attribute_file_name}`
-                });
+                exploded_row.links.push(
+                    new LinkObject(`${base_path}__hdb_hash/${property}/${attribute_file_name}`, `${attribute_path}/${attribute_file_name}`)
+                );
             } else {
                 folders[attribute_path] = "";
                 exploded_row.hash_value = value;
-                exploded_row.raw_data.push({
-                    file_name: `${attribute_path}/${epoch}.hdb`,
-                    // Need to use the filter to remove the HDB_INTERNAL_PATH from the record before it is added to a file.
-                    value: JSON.stringify(record, filterHDBValues)
-                });
+                exploded_row.raw_data.push(
+                    new FileObject(`${attribute_path}/${epoch}.hdb`,JSON.stringify(record, filterHDBValues))
+                );
             }
         }
         insert_objects.push(exploded_row);
@@ -449,7 +459,8 @@ function checkAttributeSchema(insert_object, table_schema) {
         data_folders: Object.keys(folders),
         data: insert_objects,
         hash_paths: hash_paths,
-        operation: insert_object.operation
+        operation: insert_object.operation,
+        skipped: skipped
     };
 
     if (insert_object.hdb_auth_header) {
@@ -481,6 +492,8 @@ function valueConverter(raw_value){
     };
 }
 
+
+
 /**
  * Checks to verify which records already exist in the database
  * @param insert_object
@@ -488,28 +501,14 @@ function valueConverter(raw_value){
  * @param inserted_records
  * @param table_schema
  */
-async function checkRecordsExist(insert_object, skipped_records, inserted_records, table_schema) {
-    let hash_attribute = table_schema.hash_attribute;
-    await Promise.all(
-        insert_object.records.map(async record => {
-            if(record[HDB_PATH_KEY]) {
-                try {
-                    await p_fs_access(record[HDB_PATH_KEY]);
-                    record[HDB_PATH_KEY] = undefined;
-                    skipped_records.push(autocast(record[hash_attribute]));
-                } catch(err){
-                    if (err.code === 'ENOENT') {
-                        inserted_records.push(autocast(record[hash_attribute]));
-                    } else {
-                        record[HDB_PATH_KEY] = undefined;
-                        skipped_records.push(autocast(record[hash_attribute]));
-                    }
-                }
-            } else {
-                skipped_records.push(autocast(record[hash_attribute]));
-            }
-        })
-    );
+async function checkRecordsExist(insert_object, table_schema) {
+    if(insert_object.records.length > CHUNK_SIZE) {
+        let results = await pool_handler(pool, insert_object.records, CHUNK_SIZE, '../utility/fs/insertFileAccess');
+
+        insert_object.records = results;
+    } else {
+        insert_object.records = await file_access(insert_object.records);
+    }
 }
 
 /**
@@ -517,7 +516,7 @@ async function checkRecordsExist(insert_object, skipped_records, inserted_record
  * @param data_wrapper
  */
 async function processData(data_wrapper) {
-    await createFolders(data_wrapper, data_wrapper.data_folders);
+    await createFolders(data_wrapper.data_folders);
     await writeRecords(data_wrapper.data);
 }
 
@@ -541,11 +540,11 @@ async function writeRecords(data){
  * @param data
  */
 async function writeRawDataFiles(data) {
-    await Promise.all(
-        data.map(async attribute => {
-            await fs.writeFile(attribute.file_name, attribute.value);
-        })
-    );
+    if(data.length > CHUNK_SIZE){
+        await pool_handler(pool, data,  CHUNK_SIZE, '../utility/fs/writeFile');
+    } else {
+        await write_file(data);
+    }
 }
 
 /**
@@ -553,29 +552,23 @@ async function writeRawDataFiles(data) {
  * @param links
  */
 async function writeLinkFiles(links) {
-    await Promise.all(
-        links.map(async link => {
-            try {
-                await fs.link(link.link, link.file_name);
-            } catch(e){
-                if (e.code !== 'EEXIST') {
-                    throw e;
-                }
-            }
-        })
-    );
+    if(links.length > CHUNK_SIZE) {
+        await pool_handler(pool, links, CHUNK_SIZE, '../utility/fs/link');
+    } else {
+        await link(links);
+    }
 }
 
 /**
  * creates all of the folders necessary to hold the raw files and hard links
  * @param folders
  */
-async function createFolders(data_wrapper,folders) {
-    await Promise.all(
-        folders.map(async folder=>{
-            await fs.mkdirp(folder);
-        })
-    );
+async function createFolders(folders) {
+    if(folders.length > CHUNK_SIZE) {
+        await pool_handler(pool, folders, CHUNK_SIZE, '../utility/fs/mkdirp');
+    } else {
+        await mkdirp(folders);
+    }
 }
 
 /**

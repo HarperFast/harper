@@ -130,6 +130,9 @@
       },
       {
         "attribute":"message"
+      },
+      {
+        "attribute": "created_datetime"
       }
     ]
   },

@@ -29,6 +29,13 @@ const SYSTEM_SCHEMA_NAME = 'system';
 
 const HASH_FOLDER_NAME = '__hdb_hash';
 
+const INSERT_MODULE_ENUM = {
+    HDB_PATH_KEY: 'HDB_INTERNAL_PATH',
+    HDB_AUTH_HEADER: 'hdb_auth_header',
+    HDB_USER_DATA_KEY: 'hdb_user',
+    CHUNK_SIZE: 1000
+};
+
 const SYSTEM_TABLE_NAMES = {
     JOB_TABLE_NAME : 'hdb_job',
     NODE_TABLE_NAME :'hdb_nodes',
@@ -241,6 +248,7 @@ module.exports = {
     ESCAPED_PERIOD_REGEX,
     ESCAPED_DOUBLE_PERIOD_REGEX,
     REG_KEY_FILE_NAME,
-    LOCAL_HARPERDB_OPERATIONS
+    LOCAL_HARPERDB_OPERATIONS,
+    INSERT_MODULE_ENUM
 };
 
