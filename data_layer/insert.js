@@ -24,10 +24,8 @@ const link = require('../utility/fs/link');
 const unlink = require('../utility/fs/unlink');
 const pool_handler = require('../utility/threads/poolHandler');
 const {promisify} = require('util');
-const Pool = require('threads').Pool;
 const FileObject = require('../utility/fs/FileObject');
 const LinkObject = require('../utility/fs/LinkObject');
-let pool = new Pool();
 
 let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
 hdb_properties.append(hdb_properties.get('settings_path'));
@@ -369,7 +367,7 @@ function compareUpdatesToExistingRecords(update_object, hash_attribute, existing
  */
 async function unlinkFiles(unlink_paths) {
     if(unlink_paths.length > CHUNK_SIZE){
-        await pool_handler(pool, unlink_paths,  CHUNK_SIZE, '../utility/fs/unlink');
+        await pool_handler(global.hdb_pool, unlink_paths,  CHUNK_SIZE, '../utility/fs/unlink');
     } else {
         await unlink(unlink_paths);
     }
@@ -505,7 +503,7 @@ function valueConverter(raw_value){
  */
 async function checkRecordsExist(insert_object, table_schema) {
     if(insert_object.records.length > CHUNK_SIZE) {
-        let results = await pool_handler(pool, insert_object.records, CHUNK_SIZE, '../utility/fs/insertFileAccess');
+        let results = await pool_handler(global.hdb_pool, insert_object.records, CHUNK_SIZE, '../utility/fs/insertFileAccess');
 
         insert_object.records = results;
     } else {
@@ -543,7 +541,7 @@ async function writeRecords(data){
  */
 async function writeRawDataFiles(data) {
     if(data.length > CHUNK_SIZE){
-        await pool_handler(pool, data,  CHUNK_SIZE, '../utility/fs/writeFile');
+        await pool_handler(global.hdb_pool, data,  CHUNK_SIZE, '../utility/fs/writeFile');
     } else {
         await write_file(data);
     }
@@ -555,7 +553,7 @@ async function writeRawDataFiles(data) {
  */
 async function writeLinkFiles(links) {
     if(links.length > CHUNK_SIZE) {
-        await pool_handler(pool, links, CHUNK_SIZE, '../utility/fs/link');
+        await pool_handler(global.hdb_pool, links, CHUNK_SIZE, '../utility/fs/link');
     } else {
         await link(links);
     }
@@ -567,7 +565,7 @@ async function writeLinkFiles(links) {
  */
 async function createFolders(folders) {
     if(folders.length > CHUNK_SIZE) {
-        await pool_handler(pool, folders, CHUNK_SIZE, '../utility/fs/mkdirp');
+        await pool_handler(global.hdb_pool, folders, CHUNK_SIZE, '../utility/fs/mkdirp');
     } else {
         await mkdirp(folders);
     }
