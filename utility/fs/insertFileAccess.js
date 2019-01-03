@@ -1,11 +1,17 @@
+"use strict";
+
 const fs_access = require('fs-extra').access;
 const {promisify} = require('util');
 const p_fs_access = promisify(fs_access);
 const hdb_terms = require('../hdbTerms');
 const HDB_PATH_KEY = hdb_terms.INSERT_MODULE_ENUM.HDB_PATH_KEY;
 
+/**
+ *
+ * @param records
+ * @returns {Promise<*>}
+ */
 module.exports = async (records) => {
-
     await Promise.all(
         records.map(async record => {
             if(record[HDB_PATH_KEY]) {

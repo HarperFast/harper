@@ -212,86 +212,34 @@ function validateColumnNames(created_record) {
  * @param callback - The caller
  */
 function bulkLoad(records, schema, table, action, callback){
-   // let chunks = _.chunk(records, RECORD_BATCH_SIZE);
-//    let write_hashes = 0;
-    //TODO: Noone remember why we have this here.  We should refactor this when
-    // we have more benchmarks for comparison.  Might be able to leverage cores once
-    // the process pool is ready.
-    if( !action )
+    if( !action ) {
         action = 'insert';
+    }
 
+    let target_object = {
+        operation: action,
+        schema: schema,
+        table: table,
+        records: records
+    };
 
-    //async.eachLimit(chunks, 4, (record_chunk, caller)=>{
-        let target_object = {
-            operation: action,
-            schema: schema,
-            table: table,
-            records: records
-        };
+    let write_function;
+    if(action === 'insert'){
+        write_function = insert.insertCB;
+    } else {
+        write_function = insert.updateCB;
+    }
 
-        let write_function;
-        if(action === 'insert'){
-            write_function = insert.insertCB;
-        } else {
-            write_function = insert.updateCB;
-        }
-
-        write_function(target_object, (err, data)=>{
-            if(err){
-                callback(err);
-                return;
-            }
-
-            let number_written = hdb_utils.isEmptyOrZeroLength(data.inserted_hashes) ? 0 : data.inserted_hashes.length;
-            let update_status = {
-                message: `successfully loaded ${number_written} of ${records.length} records`
-            };
-            callback(null,update_status);
-
-        });/*
-
-
-
-        switch (action) {
-            case 'insert':
-                target_object.operation = 'insert';
-                insert.insertCB(target_object, (err, data)=>{
-                    if(err){
-                        caller(err);
-                        return;
-                    }
-                    if(!hdb_utils.isEmptyOrZeroLength(data.inserted_hashes)) {
-                        write_hashes += data.inserted_hashes.length;
-                    }
-
-                    caller(null, data);
-                });
-                break;
-            case 'update':
-                target_object.operation = 'update';
-                insert.updateCB(target_object, (err, data)=>{
-                    if(err){
-                        caller(err);
-                        return;
-                    }
-                    if(!hdb_utils.isEmptyOrZeroLength(data.update_hashes)) {
-                        write_hashes += data.update_hashes.length;
-                    }
-
-                    caller(null, data);
-                });
-                break;
-        }*/
-
-   /* }, (err)=>{
-        if(err){
+    write_function(target_object, (err, data)=> {
+        if (err) {
             callback(err);
             return;
         }
 
+        let number_written = hdb_utils.isEmptyOrZeroLength(data.inserted_hashes) ? 0 : data.inserted_hashes.length;
         let update_status = {
-            message: `successfully loaded ${write_hashes} of ${records.length} records`
+            message: `successfully loaded ${number_written} of ${records.length} records`
         };
-        callback(null,update_status);
-    });*/
+        callback(null, update_status);
+    });
 }

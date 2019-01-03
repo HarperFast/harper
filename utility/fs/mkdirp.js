@@ -1,3 +1,5 @@
+"use strict";
+
 let fs_mkdirp = require('fs-extra').mkdirp;
 const logger = require('../logging/harper_logger');
 

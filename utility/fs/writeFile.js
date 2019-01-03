@@ -1,3 +1,5 @@
+"use strict";
+
 const fs_write_file = require('fs-extra').writeFile;
 
 /**

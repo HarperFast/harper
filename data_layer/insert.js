@@ -26,7 +26,6 @@ const pool_handler = require('../utility/threads/poolHandler');
 const exploder = require('./exploder');
 const {promisify} = require('util');
 const FileObject = require('../utility/fs/FileObject');
-const LinkObject = require('../utility/fs/LinkObject');
 const ExplodedObject = require('./ExplodedObject');
 
 let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
@@ -37,8 +36,6 @@ const hdb_path = path.join(hdb_properties.get('HDB_ROOT'), '/schema');
 
 //This is an internal value that should not be written to the DB.
 const HDB_PATH_KEY = hdb_terms.INSERT_MODULE_ENUM.HDB_PATH_KEY;
-const HDB_AUTH_HEADER = hdb_terms.INSERT_MODULE_ENUM.HDB_AUTH_HEADER;
-const HDB_USER_DATA_KEY = hdb_terms.INSERT_MODULE_ENUM.HDB_USER_DATA_KEY;
 const CHUNK_SIZE = hdb_terms.INSERT_MODULE_ENUM.CHUNK_SIZE;
 const MAX_CHARACTER_SIZE = 250;
 
@@ -313,7 +310,7 @@ async function explodeRows(insert_object, hash_attribute){
         let data_folders = new Set();
         let raw_data = [];
         let skipped = [];
-console.time('explodeRows');
+
         await Promise.all(
             chunks.map(async chunk => {
                 let exploder_object = {
@@ -352,7 +349,6 @@ console.time('explodeRows');
         };
         data_wrapper = await exploder(exploder_object);
     }
-    console.timeEnd('explodeRows');
     return data_wrapper;
 }
 

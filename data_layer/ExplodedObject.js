@@ -1,8 +1,11 @@
 "use strict";
 
 /**
+ * defines the results from exploding json into the HDB data model
  * @param operation
  * @param data_folders
+ * @param raw_data
+ * @param skipped
  *
  */
 class ExplodedObject {

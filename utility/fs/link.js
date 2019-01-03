@@ -1,3 +1,5 @@
+"use strict";
+
 const fs_link = require('fs-extra').link;
 
 /**

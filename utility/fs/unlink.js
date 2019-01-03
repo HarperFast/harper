@@ -1,3 +1,5 @@
+"use strict";
+
 const fs_unlink = require('fs-extra').unlink;
 const logger = require('../logging/harper_logger');
 
