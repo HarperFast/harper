@@ -7,7 +7,7 @@ const hdb_terms = require('../hdbTerms');
 const HDB_PATH_KEY = hdb_terms.INSERT_MODULE_ENUM.HDB_PATH_KEY;
 
 /**
- *
+ * checks to see which records already exist in the file system
  * @param records
  * @returns {Promise<*>}
  */

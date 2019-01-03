@@ -1,7 +1,7 @@
 "use strict";
 
 /**
- *
+ * represents an object which will be used to write a file or symlink to the file system
  */
 class FileObject {
     constructor(path, value, link_path) {

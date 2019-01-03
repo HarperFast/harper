@@ -4,7 +4,7 @@ const fs_unlink = require('fs-extra').unlink;
 const logger = require('../logging/harper_logger');
 
 /**
- * takes an
+ * removes files from the file system
  * @param {Array.<string>} paths
  * @returns {Promise<void>}
  */

@@ -3,7 +3,7 @@
 const fs_link = require('fs-extra').link;
 
 /**
- * takes an
+ * writes symlinks to the file system
  * @param {Array.<./FileObject>} files
  * @returns {Promise<void>}
  */

@@ -218,7 +218,7 @@ async function insertData(insert_object){
 
         await checkForNewAttributes(insert_object.hdb_auth_header, table_schema, attributes);
 
-        let data_wrapper = await explodeRows(insert_object, table_schema.hash_attribute);
+        let data_wrapper = await explodeRows(insert_object, table_schema.hash_attribute, attributes);
         await processData(data_wrapper);
 
         let inserted_hashes = _.difference(hashes, data_wrapper.skipped);
@@ -287,7 +287,7 @@ async function updateData(update_object){
 
             await checkForNewAttributes(update_object.hdb_auth_header, table_schema, attributes);
 
-            let data_wrapper = await explodeRows(update_object, hash_attribute);
+            let data_wrapper = await explodeRows(update_object, hash_attribute, attributes);
             await processData(data_wrapper);
         }
 
@@ -303,7 +303,7 @@ async function updateData(update_object){
     }
 }
 
-async function explodeRows(insert_object, hash_attribute){
+async function explodeRows(insert_object, hash_attribute, attributes){
     let data_wrapper;
     if(insert_object.records.length > CHUNK_SIZE){
         let chunks = _.chunk(insert_object.records, CHUNK_SIZE);
@@ -319,7 +319,8 @@ async function explodeRows(insert_object, hash_attribute){
                     schema: insert_object.schema,
                     table: insert_object.table,
                     hash_attribute: hash_attribute,
-                    hdb_path: hdb_path
+                    hdb_path: hdb_path,
+                    attributes: attributes
                 };
 
                 let result = await global.hdb_pool.run('../data_layer/exploder').send(exploder_object).promise();
@@ -345,7 +346,8 @@ async function explodeRows(insert_object, hash_attribute){
             schema: insert_object.schema,
             table: insert_object.table,
             hash_attribute: hash_attribute,
-            hdb_path: hdb_path
+            hdb_path: hdb_path,
+            attributes: attributes
         };
         data_wrapper = await exploder(exploder_object);
     }

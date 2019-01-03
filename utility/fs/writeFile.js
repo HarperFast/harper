@@ -3,7 +3,7 @@
 const fs_write_file = require('fs-extra').writeFile;
 
 /**
- * takes an
+ * writes files to the file system
  * @param {Array.<./FileObject>} files
  * @returns {Promise<void>}
  */

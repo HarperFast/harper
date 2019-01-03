@@ -1,14 +1,13 @@
 "use strict";
 
 const _ = require('lodash');
-const os = require('os');
-const cpus = os.cpus().length;
 /**
- *
+ * general handler for multi-process pooling, this handler chunks the_array into desired size,
+ * executes a module/function  to the pool and sends each chunk.  the handler then puts each returned result (if any) in an array
  * @param pool
  * @param the_array
  * @param chunk_size
- * @param run_module
+ * @param run_module - path to the module or the function to execute in the pool
  * @returns {Promise<Array>}
  */
 module.exports = async (pool, the_array, chunk_size, run_module) => {

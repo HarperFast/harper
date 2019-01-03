@@ -4,7 +4,7 @@ let fs_mkdirp = require('fs-extra').mkdirp;
 const logger = require('../logging/harper_logger');
 
 /**
- *
+ * creates folders
  * @param {Array.<string>} folders
  * @returns {Promise<void>}
  */
