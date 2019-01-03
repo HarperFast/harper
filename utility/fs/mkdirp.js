@@ -16,5 +16,6 @@ module.exports = async folders =>{
             }
         })
     );
+    folders = null;
 };
 

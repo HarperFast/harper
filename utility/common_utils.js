@@ -1,9 +1,9 @@
 "use strict"
 const path = require('path');
 const cast = require('autocast');
-const fs = require('fs');
 const log = require('./logging/harper_logger');
 const fs_extra = require('fs-extra');
+const truncate = require('truncate-utf8-bytes');
 const os = require('os');
 const { promisify } = require('util');
 const {PERIOD_REGEX,
@@ -16,11 +16,6 @@ const {PERIOD_REGEX,
     ESCAPED_DOUBLE_PERIOD_REGEX} = require('./hdbTerms');
 
 const EMPTY_STRING = '';
-
-//Promisify functions
-const p_fs_stat = promisify(fs.stat);
-const p_fs_readdir = promisify(fs.readdir);
-const p_fs_unlink = promisify(fs.unlink);
 
 
 module.exports = {
@@ -37,7 +32,8 @@ module.exports = {
     compareVersions: compareVersions,
     escapeRawValue: escapeRawValue,
     unescapeValue: unescapeValue,
-    stringifyProps: stringifyProps
+    stringifyProps: stringifyProps,
+    valueConverter: valueConverter
 };
 
 /**
@@ -304,4 +300,27 @@ function stringifyProps(prop_reader_object, comments) {
         }
     });
     return lines;
+}
+
+/**
+ * takes a raw value from an attribute, replaces "/", ".", ".." with unicode equivalents and returns the value, escaped value & the value path
+ * @param raw_value
+ * @returns {{value: string, value_stripped: string, value_path: string}}
+ */
+function valueConverter(raw_value){
+    let value;
+    try {
+        value = typeof raw_value === 'object' ? JSON.stringify(raw_value) : raw_value;
+    } catch(e){
+        logger.error(e);
+        value = raw_value;
+    }
+    let value_stripped = String(escapeRawValue(value));
+    let value_path = Buffer.byteLength(value_stripped) > 255 ? truncate(value_stripped, 255) + '/blob' : value_stripped;
+
+    return {
+        value: value,
+        value_stripped: value_stripped,
+        value_path: value_path
+    };
 }

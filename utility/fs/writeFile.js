@@ -11,4 +11,5 @@ module.exports = async files => {
             await fs_write_file(file.path, file.value);
         })
     );
+    files = null;
 };

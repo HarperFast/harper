@@ -212,19 +212,45 @@ function validateColumnNames(created_record) {
  * @param callback - The caller
  */
 function bulkLoad(records, schema, table, action, callback){
-    let chunks = _.chunk(records, RECORD_BATCH_SIZE);
-    let write_hashes = 0;
+   // let chunks = _.chunk(records, RECORD_BATCH_SIZE);
+//    let write_hashes = 0;
     //TODO: Noone remember why we have this here.  We should refactor this when
     // we have more benchmarks for comparison.  Might be able to leverage cores once
     // the process pool is ready.
     if( !action )
         action = 'insert';
-    async.eachLimit(chunks, 4, (record_chunk, caller)=>{
+
+
+    //async.eachLimit(chunks, 4, (record_chunk, caller)=>{
         let target_object = {
+            operation: action,
             schema: schema,
             table: table,
-            records: record_chunk
+            records: records
         };
+
+        let write_function;
+        if(action === 'insert'){
+            write_function = insert.insertCB;
+        } else {
+            write_function = insert.updateCB;
+        }
+
+        write_function(target_object, (err, data)=>{
+            if(err){
+                callback(err);
+                return;
+            }
+
+            let number_written = hdb_utils.isEmptyOrZeroLength(data.inserted_hashes) ? 0 : data.inserted_hashes.length;
+            let update_status = {
+                message: `successfully loaded ${number_written} of ${records.length} records`
+            };
+            callback(null,update_status);
+
+        });/*
+
+
 
         switch (action) {
             case 'insert':
@@ -255,9 +281,9 @@ function bulkLoad(records, schema, table, action, callback){
                     caller(null, data);
                 });
                 break;
-        }
+        }*/
 
-    }, (err)=>{
+   /* }, (err)=>{
         if(err){
             callback(err);
             return;
@@ -267,5 +293,5 @@ function bulkLoad(records, schema, table, action, callback){
             message: `successfully loaded ${write_hashes} of ${records.length} records`
         };
         callback(null,update_status);
-    });
+    });*/
 }

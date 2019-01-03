@@ -1,0 +1,89 @@
+const h_utils = require('../utility/common_utils');
+const hdb_terms = require('../utility/hdbTerms');
+const INSERT_ENUM =  hdb_terms.INSERT_MODULE_ENUM;
+const FileObject = require('../utility/fs/FileObject');
+const LinkObject = require('../utility/fs/LinkObject');
+const ExplodedObject = require('./ExplodedObject');
+
+
+/**
+ * This function takes every row, explodes it by attribute and sends the data on to be written to disk
+ * @param exploder_object
+ * @returns {ExplodedObject}
+ */
+module.exports = async (exploder_object) => {
+    let epoch = Date.now();
+
+    //let insert_objects = [];
+
+    let folders = new Set();
+    //let hash_paths = {};
+    let base_path = exploder_object.hdb_path + '/' + exploder_object.schema + '/' + exploder_object.table + '/';
+    let skipped = [];
+    let raw_data = [];
+    //let links = [];
+
+    exploder_object.records.forEach((record) => {
+        if (record[INSERT_ENUM.HDB_PATH_KEY] === undefined && exploder_object.operation !== 'update') {
+            skipped.push(record[exploder_object.hash_attribute]);
+            return;
+        }
+        /*let exploded_row = {
+            hash_value: null,
+            raw_data: [],
+            links: []
+        };*/
+
+
+        //hash_paths[`${base_path}__hdb_hash/${hash_attribute}/${record[hash_attribute]}.hdb`] = '';
+        for (let property in record) {
+            if (record[property] === null || record[property] === undefined || record[property] === '' || property === INSERT_ENUM.HDB_PATH_KEY
+                || property === INSERT_ENUM.HDB_AUTH_HEADER || property === INSERT_ENUM.HDB_USER_DATA_KEY) {
+                continue;
+            }
+
+            let {value, value_path} = h_utils.valueConverter(record[property]);
+            let attribute_file_name = record[exploder_object.hash_attribute] + '.hdb';
+            let attribute_path = base_path + property + '/' + value_path;
+//TODO add this path based on all attributes
+            folders.add(`${base_path}__hdb_hash/${property}`);
+            let file_obj = new FileObject(`${base_path}__hdb_hash/${property}/${attribute_file_name}`, value);
+            raw_data.push(file_obj);
+            folders.add(attribute_path);
+            if (property !== exploder_object.hash_attribute) {
+                //folders.add(attribute_path);
+                file_obj.link_path = `${attribute_path}/${attribute_file_name}`;
+                /*links.push(
+                    new LinkObject(`${base_path}__hdb_hash/${property}/${attribute_file_name}`, `${attribute_path}/${attribute_file_name}`)
+                );*/
+            } else {
+                //folders.add(attribute_path);
+                //exploded_row.hash_value = value;
+                raw_data.push(
+                    new FileObject(`${attribute_path}/${epoch}.hdb`,JSON.stringify(record, filterHDBValues))
+                );
+            }
+        }
+        // insert_objects.push(exploded_row);
+    });
+
+    let data_wrapper = new ExplodedObject(exploder_object.operation, Array.from(folders), raw_data, skipped);
+    exploder_object = null;
+    return  data_wrapper;
+};
+
+/**
+ * This function is used to remove HDB internal values (such as HDB_INTERNAL_PATH) from the record when it
+ * is stringified.
+ * @param key - the key of the record
+ * @param value - the value of the record
+ * @returns {*}
+ */
+function filterHDBValues(key, value) {
+    if(key === INSERT_ENUM.HDB_PATH_KEY) {
+        return undefined;
+    }
+    else {
+        return value;
+    }
+}

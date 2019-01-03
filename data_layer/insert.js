@@ -23,9 +23,11 @@ const write_file = require('../utility/fs/writeFile');
 const link = require('../utility/fs/link');
 const unlink = require('../utility/fs/unlink');
 const pool_handler = require('../utility/threads/poolHandler');
+const exploder = require('./exploder');
 const {promisify} = require('util');
 const FileObject = require('../utility/fs/FileObject');
 const LinkObject = require('../utility/fs/LinkObject');
+const ExplodedObject = require('./ExplodedObject');
 
 let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
 hdb_properties.append(hdb_properties.get('settings_path'));
@@ -219,12 +221,12 @@ async function insertData(insert_object){
 
         await checkForNewAttributes(insert_object.hdb_auth_header, table_schema, attributes);
 
-        let data_wrapper = checkAttributeSchema(insert_object, table_schema);
+        let data_wrapper = await explodeRows(insert_object, table_schema.hash_attribute);
         await processData(data_wrapper);
 
         let inserted_hashes = _.difference(hashes, data_wrapper.skipped);
         let return_object = {
-            message: `inserted ${data_wrapper.data.length} of ${insert_object.records.length} records`,
+            message: `inserted ${inserted_hashes.length} of ${insert_object.records.length} records`,
             inserted_hashes: inserted_hashes,
             skipped_hashes: data_wrapper.skipped
         };
@@ -288,7 +290,7 @@ async function updateData(update_object){
 
             await checkForNewAttributes(update_object.hdb_auth_header, table_schema, attributes);
 
-            let data_wrapper = checkAttributeSchema(update_object, table_schema);
+            let data_wrapper = await explodeRows(update_object, hash_attribute);
             await processData(data_wrapper);
         }
 
@@ -302,6 +304,56 @@ async function updateData(update_object){
     } catch(e){
         throw (e);
     }
+}
+
+async function explodeRows(insert_object, hash_attribute){
+    let data_wrapper;
+    if(insert_object.records.length > CHUNK_SIZE){
+        let chunks = _.chunk(insert_object.records, CHUNK_SIZE);
+        let data_folders = new Set();
+        let raw_data = [];
+        let skipped = [];
+console.time('explodeRows');
+        await Promise.all(
+            chunks.map(async chunk => {
+                let exploder_object = {
+                    records: chunk,
+                    operation: insert_object.operation,
+                    schema: insert_object.schema,
+                    table: insert_object.table,
+                    hash_attribute: hash_attribute,
+                    hdb_path: hdb_path
+                };
+
+                let result = await global.hdb_pool.run('../data_layer/exploder').send(exploder_object).promise();
+                if(result) {
+                    result.data_folders.forEach((folder)=>{
+                        data_folders.add(folder);
+                    });
+                    result.raw_data.forEach((data)=>{
+                        raw_data.push(data);
+                    });
+                    result.skipped.forEach((data)=>{
+                        skipped.push(data);
+                    });
+                }
+            })
+        );
+        chunks = undefined;
+        data_wrapper = new ExplodedObject(insert_object.operation, Array.from(data_folders), raw_data, skipped);
+    } else{
+        let exploder_object = {
+            records: insert_object.records,
+            operation: insert_object.operation,
+            schema: insert_object.schema,
+            table: insert_object.table,
+            hash_attribute: hash_attribute,
+            hdb_path: hdb_path
+        };
+        data_wrapper = await exploder(exploder_object);
+    }
+    console.timeEnd('explodeRows');
+    return data_wrapper;
 }
 
 /**
@@ -337,7 +389,7 @@ function compareUpdatesToExistingRecords(update_object, hash_attribute, existing
                 if (autocast(existing_record[attr]) !== autocast(update_record[attr])) {
                     update[attr] = update_record[attr];
 
-                    let {value_path} = valueConverter(existing_record[attr]);
+                    let {value_path} = h_utils.valueConverter(existing_record[attr]);
 
                     if (!h_utils.isEmpty(existing_record[attr]) && !h_utils.isEmpty(value_path)) {
                         unlink_paths.push(`${base_path}${attr}/${value_path}/${existing_record[hash_attribute]}.hdb`);
@@ -374,131 +426,8 @@ async function unlinkFiles(unlink_paths) {
 }
 
 /**
- * This function is used to remove HDB internal values (such as HDB_INTERNAL_PATH) from the record when it
- * is stringified.
- * @param key - the key of the record
- * @param value - the value of the record
- * @returns {*}
- */
-function filterHDBValues(key, value) {
-    if(key === HDB_PATH_KEY) {
-        return undefined;
-    }
-    else {
-        return value;
-    }
-}
-
-
-/**
- * This function takes every row, explodes it by attribute and sends the data on to be written to disk
- * @param insert_object
- * @param table_schema
- */
-function checkAttributeSchema(insert_object, table_schema) {
-    if(!insert_object) {
-        throw new Error("Empty Object");
-    }
-
-    let hash_attribute = table_schema.hash_attribute;
-    let epoch = Date.now();
-
-    let insert_objects = [];
-
-    let folders = {};
-    let hash_paths = {};
-    let base_path = hdb_path + '/' + insert_object.schema + '/' + insert_object.table + '/';
-    let operation = insert_object.operation;
-    let skipped = [];
-
-    insert_object.records.forEach((record) => {
-        if (record[HDB_PATH_KEY] === undefined && operation !== 'update') {
-            skipped.push(record[hash_attribute]);
-            return;
-        }
-        let exploded_row = {
-            hash_value: null,
-            raw_data: [],
-            links: []
-        };
-
-        hash_paths[`${base_path}__hdb_hash/${hash_attribute}/${record[hash_attribute]}.hdb`] = '';
-        for (let property in record) {
-            if (record[property] === null || record[property] === undefined || record[property] === '' || property === HDB_PATH_KEY || property === HDB_AUTH_HEADER ||
-                property === HDB_USER_DATA_KEY)
-            {
-                continue;
-            }
-
-            let {value, value_path} = valueConverter(record[property]);
-            let attribute_file_name = record[hash_attribute] + '.hdb';
-            let attribute_path = base_path + property + '/' + value_path;
-
-            folders[`${base_path}__hdb_hash/${property}`] = "";
-            exploded_row.raw_data.push(
-                new FileObject(`${base_path}__hdb_hash/${property}/${attribute_file_name}`, value)
-            );
-            if (property !== hash_attribute) {
-                folders[attribute_path] = "";
-
-                exploded_row.links.push(
-                    new LinkObject(`${base_path}__hdb_hash/${property}/${attribute_file_name}`, `${attribute_path}/${attribute_file_name}`)
-                );
-            } else {
-                folders[attribute_path] = "";
-                exploded_row.hash_value = value;
-                exploded_row.raw_data.push(
-                    new FileObject(`${attribute_path}/${epoch}.hdb`,JSON.stringify(record, filterHDBValues))
-                );
-            }
-        }
-        insert_objects.push(exploded_row);
-    });
-
-    let data_wrapper = {
-        data_folders: Object.keys(folders),
-        data: insert_objects,
-        hash_paths: hash_paths,
-        operation: insert_object.operation,
-        skipped: skipped
-    };
-
-    if (insert_object.hdb_auth_header) {
-        data_wrapper.hdb_auth_header = insert_object.hdb_auth_header;
-    }
-    return  data_wrapper;
-}
-
-/**
- * takes a raw value from an attribute, replaces "/", ".", ".." with unicode equivalents and returns the value, escaped value & the value path
- * @param raw_value
- * @returns {{value: string, value_stripped: string, value_path: string}}
- */
-function valueConverter(raw_value){
-    let value;
-    try {
-        value = typeof raw_value === 'object' ? JSON.stringify(raw_value) : raw_value;
-    } catch(e){
-        logger.error(e);
-        value = raw_value;
-    }
-    let value_stripped = String(h_utils.escapeRawValue(value));
-    let value_path = Buffer.byteLength(value_stripped) > 255 ? truncate(value_stripped, 255) + '/blob' : value_stripped;
-
-    return {
-        value: value,
-        value_stripped: value_stripped,
-        value_path: value_path
-    };
-}
-
-
-
-/**
  * Checks to verify which records already exist in the database
  * @param insert_object
- * @param skipped_records
- * @param inserted_records
  * @param table_schema
  */
 async function checkRecordsExist(insert_object, table_schema) {
@@ -517,22 +446,9 @@ async function checkRecordsExist(insert_object, table_schema) {
  */
 async function processData(data_wrapper) {
     await createFolders(data_wrapper.data_folders);
-    await writeRecords(data_wrapper.data);
-}
-
-/**
- * Iterates the rows and row by row writes the raw data plust the associated hard links.
- * @param data
- */
-async function writeRecords(data){
-    await Promise.all(data.map(async (record) => {
-        try {
-            await writeRawDataFiles(record.raw_data);
-            await writeLinkFiles(record.links);
-        } catch(e) {
-            logger.error(e);
-        }
-    }));
+    await writeRawDataFiles(data_wrapper.raw_data);
+    await writeLinkFiles(data_wrapper.raw_data);
+    //await writeRecords(data_wrapper.data);
 }
 
 /**
