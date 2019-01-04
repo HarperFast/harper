@@ -4,16 +4,18 @@ const delete_ = require('../../data_layer/delete');
 const schema = require('../../data_layer/schema');
 const {promisify} = require('util');
 const clone = require('clone');
+const insert = require('../../data_layer/insert');
 
 const p_search_by_value = promisify(search.searchByValue);
 const p_delete = promisify(delete_.delete);
 const p_schema_describe_all = promisify(schema.describeAll);
+const p_insert = promisify(insert.insert);
 
 module.exports = {
     fetchQueue: fetchQueue,
-    onConfirmMessageHandler: onConfirmMessageHandler
+    onConfirmMessageHandler: onConfirmMessageHandler,
+    addToHDBQueue: addToHDBQueue
 };
-
 
 async function fetchQueue(msg, socket){
     try {
@@ -31,7 +33,6 @@ async function fetchQueue(msg, socket){
                     global.forkClusterMsgQueue[disk_catch_up[item].id] = disk_catch_up[item].payload;
                     global.cluster_queue[msg.name][disk_catch_up[item].id] = disk_catch_up[item].payload;
                 }
-
             }
         }
 
@@ -105,4 +106,21 @@ async function getFromDisk(node) {
     let data = await p_search_by_value(search_obj);
 
     return data;
+}
+
+async function addToHDBQueue(item) {
+    try {
+        let insert_object = {
+            operation: 'insert',
+            schema: 'system',
+            table: 'hdb_queue',
+            records: [item]
+        };
+
+        let results = await p_insert(insert_object);
+
+        return results;
+    } catch (e) {
+        harper_logger.error(e);
+    }
 }
