@@ -263,7 +263,11 @@ async function clusterStatus(cluster_status_json) {
         const event_promise = new Promise((resolve) => {
             cluster_status_event.clusterEmitter.on(cluster_status_event.EVENT_NAME, (msg) => {
                 log.info(`Got cluster status event response: ${inspect(msg)}`);
-                timeout_promise.cancel();
+                try {
+                    timeout_promise.cancel();
+                } catch(err) {
+                    log.error('Error trying to cancel timeout.');
+                }
                 resolve(msg);
             });
         });
