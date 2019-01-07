@@ -37,7 +37,8 @@ module.exports = {
     compareVersions: compareVersions,
     escapeRawValue: escapeRawValue,
     unescapeValue: unescapeValue,
-    stringifyProps: stringifyProps
+    stringifyProps: stringifyProps,
+    timeoutPromise: timeoutPromise
 };
 
 /**
@@ -304,4 +305,28 @@ function stringifyProps(prop_reader_object, comments) {
         }
     });
     return lines;
+}
+
+/**
+ * Creates a promisified timeout that exposes a cancel() function in case the timeout needs to be cancelled.
+ * @param ms
+ * @param msg - The message to resolve the promise with should it timeout
+ * @param action_function - Function that will be run after the timeout and before the promise is resolved.
+ * @returns {{promise: (Promise|Promise<any>), cancel: cancel}}
+ */
+function timeoutPromise(ms, msg, action_function) {
+    let timeout, promise;
+
+    promise = new Promise(function(resolve, reject) {
+        timeout = setTimeout(function() {
+            resolve(msg);
+        }, ms);
+    });
+
+    return {
+        promise: promise,
+        cancel: function() {
+            clearTimeout(timeout);
+        }
+    };
 }
