@@ -33,7 +33,8 @@ const INSERT_MODULE_ENUM = {
     HDB_PATH_KEY: 'HDB_INTERNAL_PATH',
     HDB_AUTH_HEADER: 'hdb_auth_header',
     HDB_USER_DATA_KEY: 'hdb_user',
-    CHUNK_SIZE: 1000
+    CHUNK_SIZE: 1000,
+    MAX_CHARACTER_SIZE: 250
 };
 
 const SYSTEM_TABLE_NAMES = {
