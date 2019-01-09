@@ -21,6 +21,8 @@ const p_auth_authorize = promisify(auth.authorize);
 const iface = os.networkInterfaces();
 const addresses = [];
 
+const STATUS_TIMEOUT_MS = 2000;
+
 const DUPLICATE_ERR_MSG = 'Cannot add a node that matches the hosts clustering config.';
 
 for (let k in iface) {
@@ -230,7 +232,7 @@ function clusterStatusCB(cluster_status_json, callback) {
         response = result;
         return callback(null, response);
     }).catch((err) => {
-        log.error(`There was an error removing node ${err}`);
+        log.error(`There was an error getting cluster status ${err}`);
         return callback(err, null);
     });
 }
@@ -243,8 +245,6 @@ function clusterStatusCB(cluster_status_json, callback) {
 async function clusterStatus(cluster_status_json) {
     let response = {};
     try {
-
-        let get_status_msg = {};
         let clustering_enabled = env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY);
         response["is_enabled"] = clustering_enabled;
         if (!clustering_enabled) {
@@ -255,20 +255,32 @@ async function clusterStatus(cluster_status_json) {
             response["status"] = JSON.stringify(getClusterStatus());
             return response;
         }
+
+        // If we have more than 1 process, we need to get the status from the master process which has that info stored
+        // in global.  We subscribe to an event that master will emit once it has gathered the data.  We want to build
+        // in a timeout in case the event never comes.
+        const timeout_promise = hdb_utils.timeoutPromise(STATUS_TIMEOUT_MS, 'Timeout trying to get cluster status.');
         const event_promise = new Promise((resolve) => {
             cluster_status_event.clusterEmitter.on(cluster_status_event.EVENT_NAME, (msg) => {
                 log.info(`Got cluster status event response: ${inspect(msg)}`);
-                response["status"] = msg;
-                resolve(response);
+                try {
+                    timeout_promise.cancel();
+                } catch(err) {
+                    log.error('Error trying to cancel timeout.');
+                }
+                resolve(msg);
             });
         });
-        signalling.signalClusterStatus();
-        await event_promise;
-        return response;
 
+        // send a signal to master to gather cluster data.
+        signalling.signalClusterStatus();
+        // use race to incorporate the timeout.  There is no way to cancel the event_promise, but at least we can
+        // keep this code from waiting indefinitely.
+        response["status"] = await Promise.race([event_promise, timeout_promise.promise]);
     } catch(err) {
         log.error(`Got an error getting cluster status ${err}`);
     }
+    return response;
 }
 
 /**
@@ -385,18 +397,21 @@ function clusterMessageHandler(msg) {
                 });
                 break;
             case terms.CLUSTER_MESSAGE_TYPE_ENUM.CLUSTER_STATUS:
+                let status = undefined;
+                let target_process = undefined;
                 try {
-                    let status = getClusterStatus();
-                    let target_process = selectProcess(msg.target_process_id);
-                    if(!target_process) {
-                        throw new Error(`Failed to select a process to respond to with cluster status.`);
-                    }
-                    msg["cluster_status"] = status;
-                    target_process.process.send({"type": terms.CLUSTER_MESSAGE_TYPE_ENUM.CLUSTER_STATUS, "status": status});
-                }catch (err) {
+                    target_process = selectProcess(msg.target_process_id);
+                    status = getClusterStatus();
+                } catch (err) {
                     log.error(err);
-                    throw err;
+                    status = err.message;
                 }
+                if(!target_process) {
+                    log.error(`Failed to select a process to respond to with cluster status.`);
+                    target_process = global.forks[0];
+                }
+                msg["cluster_status"] = status;
+                target_process.process.send({"type": terms.CLUSTER_MESSAGE_TYPE_ENUM.CLUSTER_STATUS, "status": status});
                 break;
             case terms.CLUSTER_MESSAGE_TYPE_ENUM.JOB:
                 if (!hdb_utils.isEmptyOrZeroLength(msg.target_process_id)) {
