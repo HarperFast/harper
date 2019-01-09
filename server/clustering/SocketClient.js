@@ -304,7 +304,7 @@ class SocketClient {
             }
             global.cluster_queue[this.other_node.name][payload.id] = payload;
 
-            let results = await saveToDisk({
+            let results = await cluster_handlers.addToHDBQueue({
                 "payload": payload,
                 "id": payload.id,
                 "node": msg.node,
@@ -400,23 +400,5 @@ function checkWhitelistedErrors(error){
 
     return false;
 }
-
-async function saveToDisk(item) {
-    try {
-        let insert_object = {
-            operation: 'insert',
-            schema: 'system',
-            table: 'hdb_queue',
-            records: [item]
-        };
-
-        let results = await p_insert(insert_object);
-
-        return results;
-    } catch (e) {
-        harper_logger.error(e);
-    }
-}
-
 
 module.exports = SocketClient;
