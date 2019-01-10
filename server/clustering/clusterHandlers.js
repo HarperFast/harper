@@ -70,22 +70,27 @@ async function onConfirmMessageHandler(msg){
                 global.forks[f].send(msg);
             }
         }
-
-        // delete from memory
+    } catch(e) {
+        harper_logger.error(e);
+    }
+    try {
+        // delete from memory, this is OK if this fails.
         delete global.cluster_queue[msg.node.name][msg.id];
         delete global.forkClusterMsgQueue[msg.id];
-        // delete from disk
-        let delete_obj = {
-            "table": "hdb_queue",
-            "schema": "system",
-            "hash_values": [msg.id]
-
-        };
-        harper_logger.info("delete from queue: " + JSON.stringify(delete_obj));
-        await p_delete(delete_obj);
     } catch(e){
         harper_logger.error(e);
     }
+
+    // delete from disk
+    let delete_obj = {
+        "table": "hdb_queue",
+        "schema": "system",
+        "hash_values": [msg.id]
+    };
+    harper_logger.info("delete from queue: " + JSON.stringify(delete_obj));
+    await p_delete(delete_obj).catch((err) => {
+        harper_logger.error(err);
+    });
 }
 
 async function getFromDisk(node) {

@@ -39,15 +39,15 @@ function kickOffEnterprise(callback) {
             global.cluster_server.init(function (err) {
                 if (err) {
                     harper_logger.error(err);
-                    return callback({"clustering":false});
+                    return callback(null, {"clustering":false});
                 }
-                return callback({"clustering":true});
+                return callback(null, { "clustering":true});
             });
 
         });
     } else {
         // default to clustering not set response
-        return callback({"clustering": false});
+        return callback(null, {"clustering": false});
     }
 }
 

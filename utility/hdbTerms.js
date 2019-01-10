@@ -205,7 +205,8 @@ const CLUSTER_MESSAGE_TYPE_ENUM = {
     NODE_ADDED: 'node_added',
     NODE_REMOVED: 'node_removed',
     CLUSTER_STATUS: 'cluster_status',
-    JOB: 'job'
+    JOB: 'job',
+    CHILD_STARTED: 'child_started'
 };
 const CLUSTER_CONNECTION_DIRECTION_ENUM = {
     // Data flows to both the client and this server
