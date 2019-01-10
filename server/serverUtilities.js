@@ -34,6 +34,15 @@ module.exports = {
     UNAUTHORIZED_TEXT
 };
 
+/**
+ * This will process a command message on this receiving node rather than sending it to a remote node.  NOTE: this function
+ * handles the response to the sender.
+ * @param req
+ * @param res
+ * @param operation_function
+ * @param callback
+ * @returns {*}
+ */
 function processLocalTransaction(req, res, operation_function, callback) {
     try {
         if (req.body.operation !== 'read_log') {

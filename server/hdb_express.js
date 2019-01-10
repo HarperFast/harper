@@ -292,6 +292,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                                         "id": id,
                                         "body": req.body
                                     });
+
                                 }
                             });
                         }
@@ -342,15 +343,24 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                                     } else {
                                         for (let node in residence) {
                                             if (residence[node] !== hdb_properties.get('NODE_NAME')) {
+                                                harper_logger.debug(`Got a message for a table with a remote residence ${residence[node]}.  Broadcasting to cluster`);
                                                 let id = uuidv1();
                                                 global.clusterMsgQueue[id] = res;
-                                                process.send({
-                                                    "type": "clustering_payload", "pid": process.pid,
-                                                    "clustering_type": "send",
-                                                    "id": id,
-                                                    "body": req.body,
-                                                    "node": {"name": residence[node]}
-                                                });
+
+                                                try {
+                                                    process.send({
+                                                        "type": "clustering_payload", "pid": process.pid,
+                                                        "clustering_type": "send",
+                                                        "id": id,
+                                                        "body": req.body,
+                                                        "node": {"name": residence[node]}
+                                                    });
+                                                    // We need to manually set and send the status here, as processLocal isn't called.
+                                                    return res.status(hdb_terms.HTTP_STATUS_CODES.OK).send({message: `Specified table has residence on node: ${residence[node]}, broadcasting message to cluster.`});
+                                                } catch(err) {
+                                                    harper_logger.error(err);
+                                                    return res.status(hdb_terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send({error: err.message});
+                                                }
                                             }
                                         }
                                     }

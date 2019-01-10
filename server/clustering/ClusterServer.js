@@ -6,6 +6,7 @@ const clone = require('clone');
 const log = require('../../utility/logging/harper_logger');
 const {promisify} = require('util');
 const terms = require('../../utility/hdbTerms');
+const cluster_handler = require('./clusterHandlers');
 
 const SCHEMA_OPERATIONS = ['create_schema', 'drop_schema', 'create_table', 'drop_table', 'create_attribute', 'cluster_status'];
 
@@ -77,6 +78,25 @@ class ClusterServer {
             let found_node = this.socket_client.filter((client) => {
                 return client.other_node.name;
             });
+
+            if(!found_node || found_node.length === 0) {
+                log.warn(`No cluster node matching the name ${msg.node.name} was connected.  This message will not be broadcast, adding to hdb_queue.`);
+                if(!global.cluster_queue[msg.node.name]) {
+                    global.cluster_queue[msg.node.name] = {};
+                }
+                global.cluster_queue[msg.node.name][payload.id] = payload;
+                try {
+                    cluster_handler.addToHDBQueue({
+                        "payload": payload,
+                        "id": payload.id,
+                        "node": msg.node,
+                        "node_name": msg.node.name
+                    });
+                } catch(e) {
+                    log.error(e);
+                    throw e;
+                }
+            }
 
             if (found_node && Array.isArray(found_node) && found_node.length > 0) {
                 found_node[0].send(payload).
