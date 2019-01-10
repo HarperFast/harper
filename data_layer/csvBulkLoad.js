@@ -129,7 +129,7 @@ async function csvFileLoad(json_message) {
 
 /**
  * Grab the file specified in the URL parameter.
- * @param url - URL to file.
+ * @param {string} url - URL to file.
  * @returns {Promise<*>}
  */
 async function createReadStreamFromURL(url) {

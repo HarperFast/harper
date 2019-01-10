@@ -4,7 +4,7 @@ const fs_write_file = require('fs-extra').writeFile;
 const fs_link= require('fs-extra').link;
 
 /**
- * writes files to the file system
+ * writes files to the file system & if the file has a link also writes the link
  * @param {Array.<./FileObject>} files
  * @returns {Promise<void>}
  */

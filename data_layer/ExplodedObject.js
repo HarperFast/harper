@@ -2,11 +2,11 @@
 
 /**
  * defines the results from exploding json into the HDB data model
- * @param operation
- * @param data_folders
- * @param raw_data
- * @param skipped
- *
+ * @param {Array.<string>} written_hashes
+ * @param {Array.<string>} skipped
+ * @param {Array.<string>} folders
+ * @param {Array.<FileObject>} raw_data
+ * @param unlinks
  */
 class ExplodedObject {
     constructor(written_hashes, skipped, folders, raw_data, unlinks) {

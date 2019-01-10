@@ -1,9 +1,19 @@
 "use strict";
 
 /**
- * defines the data used to from explode json into the HDB data model
+ * defines the data used to explode json into the HDB data model
  */
 class WriteProcessorObject {
+    /**
+     *
+     * @param {string} hdb_path
+     * @param {string} operation
+     * @param {Array.<Object>} records
+     * @param {Object} table_schema
+     * @param {Array.<string>} attributes
+     * @param {Number} epoch
+     * @param {Array.<Object>} existing_rows
+     */
     constructor(hdb_path, operation, records, table_schema, attributes, epoch, existing_rows) {
         this.operation =  operation;
         this.records = records;

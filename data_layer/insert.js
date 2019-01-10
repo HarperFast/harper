@@ -46,6 +46,11 @@ const global_schema = require('../utility/globalSchema');
 const p_global_schema = promisify(global_schema.getTableSchema);
 const p_search_by_hash = promisify(search.searchByHash);
 
+/**
+ *  Takes an insert/update object and validates attributes, also looks for dups and get a list of all attributes from the record set
+ * @param {Object} write_object
+ * @returns {Promise<{table_schema, hashes: any[], attributes: string[]}>}
+ */
 async function validation(write_object){
     // Need to validate these outside of the validator as the getTableSchema call will fail with
     // invalid values.
@@ -133,8 +138,7 @@ function updateDataCB(update_object, callback){
 }
 
 /**
- * Inserts data specified in the insert_object parameter.  Currently if even a single entity in insert_object already exists,
- * the function will return and no other inserts will be performed.
+ * Inserts data specified in the insert_object parameter.
  * @param insert_object
  */
 async function insertData(insert_object){
@@ -209,6 +213,13 @@ async function updateData(update_object){
     }
 }
 
+/**
+ * performs a bulk search_by_hash for the defined hashes
+ * @param table_schema
+ * @param hashes
+ * @param attributes
+ * @returns {Promise<void>}
+ */
 async function getExistingRows(table_schema, hashes, attributes){
     let existing_attributes = checkForExistingAttributes(table_schema, attributes);
     if(h_utils.isEmptyOrZeroLength(existing_attributes)){
@@ -226,6 +237,15 @@ async function getExistingRows(table_schema, hashes, attributes){
     return existing_records;
 }
 
+/**
+ * wrapper function which orchestrates the multi-process pool, if needed, or calls the function directly
+ * @param insert_object
+ * @param attributes
+ * @param table_schema
+ * @param epoch
+ * @param existing_rows
+ * @returns {Promise<ExplodedObject|ExplodedObject>}
+ */
 async function processRows(insert_object, attributes, table_schema, epoch, existing_rows){
     let data_wrapper;
     if(insert_object.records.length > CHUNK_SIZE){
@@ -378,7 +398,7 @@ function checkForExistingAttributes(table_schema, data_attributes){
 }
 
 /**
- *
+ * check the existing schema and creates new attributes based on what the incoming records have
  * @param hdb_auth_header
  * @param schema
  * @param table

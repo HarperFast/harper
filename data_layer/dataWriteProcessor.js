@@ -10,7 +10,7 @@ const uuid = require('uuid/v4');
 const file_exists = require('../utility/fs/fileExists');
 
 /**
- *
+ * does row and attribute level validation. verifies record does not exist for inserts and does exist for updates.  explodes rows for writing to disk
  * @param {WriteProcessorObject} process_wrapper
  * @returns {Promise<ExplodedObject>}
  */
@@ -175,10 +175,11 @@ function filterHDBValues(key, value) {
 
 /**
  * checks what records and attributes need to be updated
- * @param update_object
- * @param hash_attribute
- * @param existing_records
- * @returns {*}
+ * @param update_record
+ * @param existing_record
+ * @param table_schema
+ * @param hdb_path
+ * @returns {{unlink_paths: Array, write_keys: Array}}
  */
 function compareUpdatesToExistingRecords(update_record, existing_record, table_schema, hdb_path) {
     let base_path = hdb_path + '/' + table_schema.schema + '/' + table_schema.name + '/';
