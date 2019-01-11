@@ -78,7 +78,7 @@ async function onConfirmMessageHandler(msg){
         delete global.cluster_queue[msg.node.name][msg.id];
         delete global.forkClusterMsgQueue[msg.id];
     } catch(e){
-        harper_logger.error(e);
+        // No-op, This failure is OK
     }
 
     // delete from disk
@@ -89,6 +89,7 @@ async function onConfirmMessageHandler(msg){
     };
     harper_logger.info("delete from queue: " + JSON.stringify(delete_obj));
     await p_delete(delete_obj).catch((err) => {
+        harper_logger.error(`Got an error deleting a confirmed message from hdb_queue.`);
         harper_logger.error(err);
     });
 }

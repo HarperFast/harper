@@ -127,9 +127,9 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                         cluster_utilities.setEnterprise(true);
                         if (num_workers > numCPUs) {
                             if (numCPUs === 4) {
-                                numCPUs = 16;
+                                numCPUs = 4;
                             } else {
-                                numCPUs += 16;
+                                numCPUs += 4;
                             }
                         }
                     }
@@ -167,7 +167,6 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     const pjson = require('../package.json');
     const server_utilities = require('./serverUtilities');
     const cors = require('cors');
-    global.isMaster = cluster.isMaster;
 
     const app = express();
     hdb_properties.append(hdb_properties.get('settings_path'));
@@ -485,6 +484,8 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         const server_timeout = hdb_properties.get(PROPS_SERVER_TIMEOUT_KEY);
         const props_http_secure_on = hdb_properties.get(PROPS_HTTP_SECURE_ON_KEY);
         const props_http_on = hdb_properties.get(PROPS_HTTP_ON_KEY);
+
+        global.isMaster = cluster.isMaster;
 
         let httpServer = undefined;
         let secureServer = undefined;

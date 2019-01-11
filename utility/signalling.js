@@ -30,7 +30,7 @@ class ChildStartedSignalObject {
 function signalSchemaChange(message){
     try {
         // if process.send is undefined we are running a single instance of the process.
-        if (process.send === undefined) {
+        if (process.send === undefined || global.isMaster) {
             global_schema.schemaSignal((err) => {
                 if (err) {
                     harper_logger.error(err);
@@ -39,7 +39,7 @@ function signalSchemaChange(message){
         } else if(!global.isMaster){
             process.send(message);
         } else {
-            harper_logger.warn(`Got schema change, but process.send is undefined and I am not master.`);
+            harper_logger.warn(`Got schema change, but process.send is undefined and I am not master. My pid is ${process.pid}.  Global.isMaster is: ${global.isMaster}`);
         }
     }catch(e){
         harper_logger.error(e);
