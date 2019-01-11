@@ -22,6 +22,7 @@ const global_schema = require('../utility/globalSchema');
 const fs = require('fs');
 const cluster_utilities = require('./clustering/clusterUtilities');
 const cluster_event = require('../events/ClusterStatusEmitter');
+const moment = require('moment');
 
 const DEFAULT_SERVER_TIMEOUT = 120000;
 const PROPS_SERVER_TIMEOUT_KEY = 'SERVER_TIMEOUT_MS';
@@ -382,7 +383,8 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                                         "payload": {"body":req.body, "id": id},
                                         "id": id,
                                         "node": {"node": residence},
-                                        "node_name": residence
+                                        "node_name": residence,
+                                        "timestamp": moment().valueOf()
                                     };
 
                                     let insert_object = {

@@ -126,6 +126,23 @@
   },
   "hdb_queue":{
     "hash_attribute":"id",
+    "attributes":[
+      {
+        "attribute":"id"
+      },
+      {
+        "attribute":"node"
+      },
+      {
+        "attribute":"node_name"
+      },
+      {
+        "attribute":"payload"
+      },
+      {
+        "attribute":"timestamp"
+      }
+    ],
     "name":"hdb_queue",
     "schema":"system",
     "residence":["*"]

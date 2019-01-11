@@ -5,6 +5,7 @@ const schema = require('../../data_layer/schema');
 const {promisify} = require('util');
 const clone = require('clone');
 const insert = require('../../data_layer/insert');
+const terms = require('../../utility/hdbTerms');
 
 const p_search_by_value = promisify(search.searchByValue);
 const p_delete = promisify(delete_.delete);
@@ -90,6 +91,7 @@ async function onConfirmMessageHandler(msg){
 
 async function getFromDisk(node) {
     let search_obj = {};
+    /*
     search_obj.schema = 'system';
     search_obj.table = 'hdb_queue';
     search_obj.hash_attribute = 'id';
@@ -101,10 +103,11 @@ async function getFromDisk(node) {
     }
 
     search_obj.get_attributes = ['*'];
-
-    //we do no catching instaead let the error bubble out
+*/
+    search_obj.operation = 'sql';
+    search_obj.sql = `SELECT FROM system.hdb_queue ${node ? `WHERE name = ${node.name}` : ``} ORDERBY timestamp`;
+    //we do no catching instead let the error bubble out
     let data = await p_search_by_value(search_obj);
-
     return data;
 }
 

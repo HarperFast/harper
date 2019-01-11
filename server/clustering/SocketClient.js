@@ -11,6 +11,7 @@ const harper_logger = require('../../utility/logging/harper_logger');
 const ioc = require('socket.io-client');
 const schema = require('../../data_layer/schema');
 const _ = require('lodash');
+const moment = require('moment');
 
 const common_utils = require('../../utility/common_utils');
 const terms = require('../../utility/hdbTerms');
@@ -153,7 +154,7 @@ class SocketClient {
                         if (cluster_schema[this_schema][table].residence) {
                             residence_table_map[this_schema + "." + table] = [];
                             Object.keys(cluster_schema[this_schema][table].residence).forEach(function (r) {
-                                residence_table_map[this_schema + "." + table].push(cluster_schema[this_schema][table].residence[r])
+                                residence_table_map[this_schema + "." + table].push(cluster_schema[this_schema][table].residence[r]);
                             });
                         }
 
@@ -169,7 +170,7 @@ class SocketClient {
                             if (cluster_schema[this_schema][table].residence) {
                                 residence_table_map[this_schema + "." + table] = [];
                                 Object.keys(cluster_schema[this_schema][table].residence).forEach(function (r) {
-                                    residence_table_map[this_schema + "." + table].push(cluster_schema[this_schema][table].residence[r])
+                                    residence_table_map[this_schema + "." + table].push(cluster_schema[this_schema][table].residence[r]);
                                 });
 
                             }
@@ -308,6 +309,7 @@ class SocketClient {
                 "payload": payload,
                 "id": payload.id,
                 "node": msg.node,
+                "timestamp": moment.valueOf(),
                 "node_name": msg.node.name
             });
 
@@ -352,7 +354,7 @@ async function createMissingTables(missing_tables, residence_table_map){
     }));
 }
 
-async function createMissingAttributes(missing_attributes, callback2) {
+async function createMissingAttributes(missing_attributes) {
     await Promise.all(missing_attributes.map(async(attribute) =>{
         try {
             let tokens = attribute.split(".");
@@ -375,7 +377,7 @@ async function createMissingAttributes(missing_attributes, callback2) {
     }));
 }
 
-function checkWhitelistedErrors(error){
+function checkWhitelistedErrors(error) {
     let error_msg = '';
     if(common_utils.isEmpty(error)){
         return true;

@@ -7,6 +7,7 @@ const log = require('../../utility/logging/harper_logger');
 const {promisify} = require('util');
 const terms = require('../../utility/hdbTerms');
 const cluster_handler = require('./clusterHandlers');
+const moment = require('moment');
 
 const SCHEMA_OPERATIONS = ['create_schema', 'drop_schema', 'create_table', 'drop_table', 'create_attribute', 'cluster_status'];
 
@@ -90,6 +91,7 @@ class ClusterServer {
                         "payload": payload,
                         "id": payload.id,
                         "node": msg.node,
+                        "timestamp": moment.valueOf(),
                         "node_name": msg.node.name
                     });
                 } catch(e) {
