@@ -127,9 +127,9 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                         cluster_utilities.setEnterprise(true);
                         if (num_workers > numCPUs) {
                             if (numCPUs === 4) {
-                                numCPUs = 4;
+                                numCPUs = 16;
                             } else {
-                                numCPUs += 4;
+                                numCPUs += 16;
                             }
                         }
                     }
