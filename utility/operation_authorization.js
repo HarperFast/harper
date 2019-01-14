@@ -77,7 +77,7 @@ required_permissions.set(role.listRoles.name, new permission(true, []));
 required_permissions.set(role.addRole.name, new permission(true, []));
 required_permissions.set(role.alterRole.name, new permission(true, []));
 required_permissions.set(role.dropRole.name, new permission(true, []));
-required_permissions.set(user.userInfo.name, new permission(true, []));
+required_permissions.set(user.userInfo.name, new permission(false, []));
 required_permissions.set(read_log.read_log.name, new permission(true, []));
 required_permissions.set(cluster_utilities.addNode.name, new permission(true, []));
 required_permissions.set(cluster_utilities.removeNode.name, new permission(true, []));
