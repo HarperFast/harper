@@ -70,7 +70,11 @@ if(DEBUG){
 }
 
 cluster.on('exit', (dead_worker, code, signal) => {
-    global.hdb_pool.killAll();
+    try {
+        global.hdb_pool.killAll();
+    } catch (e){
+        harper_logger.error(e);
+    }
     harper_logger.info(`worker ${dead_worker.process.pid} died with signal ${signal} and code ${code}`);
     let new_worker = undefined;
     try {
@@ -100,7 +104,11 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         let message = `Found an uncaught exception with message: os.EOL ${err.message}.  Stack: ${err.stack} ${os.EOL} Terminating HDB.`;
         console.error(message);
         harper_logger.fatal(message);
-        global.hdb_pool.killAll();
+        try {
+            global.hdb_pool.killAll();
+        } catch(e){
+            harper_logger.error(e);
+        }
         process.exit(1);
     });
 
@@ -487,7 +495,11 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         let message = `Found an uncaught exception with message: os.EOL ${err.message}.  Stack: ${err.stack} ${os.EOL} Terminating HDB.`;
         console.error(message);
         harper_logger.fatal(message);
-        global.hdb_pool.killAll();
+        try {
+            global.hdb_pool.killAll();
+        } catch(e) {
+            harper_logger.error(e);
+        }
         process.exit(1);
     });
 

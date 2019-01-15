@@ -3,21 +3,24 @@
 let fs_mkdirp = require('fs-extra').mkdirp;
 const logger = require('../logging/harper_logger');
 
+
+module.exports = makeDirectories;
+
 /**
  * creates folders
  * @param {Array.<string>} folders
  * @returns {Promise<void>}
  */
-module.exports = async folders =>{
+async function makeDirectories(folders) {
     await Promise.all(
-        folders.map(async folder=>{
+        folders.map(async folder => {
             try {
                 await fs_mkdirp(folder);
-            } catch(err){
+            } catch (err) {
                 logger.error(err);
             }
         })
     );
     folders = null;
-};
+}
 

@@ -3,12 +3,14 @@
 const fs_unlink = require('fs-extra').unlink;
 const logger = require('../logging/harper_logger');
 
+module.exports = unlink;
+
 /**
  * removes files from the file system
  * @param {Array.<string>} paths
  * @returns {Promise<void>}
  */
-module.exports = async paths => {
+async function unlink(paths) {
     await Promise.all(
         paths.map(async path => {
             try {
@@ -20,4 +22,4 @@ module.exports = async paths => {
             }
         })
     );
-};
+}

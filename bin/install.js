@@ -5,7 +5,11 @@ const Pool = require('threads').Pool;
 function install (callback) {
     global.hdb_pool = new Pool();
     installer.install(function(err) {
-        global.hdb_pool.killAll();
+        try {
+            global.hdb_pool.killAll();
+        } catch(e){
+            logger.error(e);
+        }
         if(err) {
             if(err === 'REFUSED') {
                 console.log("Terms & Conditions refused, closing installer.");

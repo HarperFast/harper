@@ -9,13 +9,13 @@ const autocast = require('autocast');
 const uuid = require('uuid/v4');
 const file_exists = require('../utility/fs/fileExists');
 
+module.exports = processData;
+
 /**
  * does row and attribute level validation. verifies record does not exist for inserts and does exist for updates.  explodes rows for writing to disk
  * @param {WriteProcessorObject} process_wrapper
  * @returns {Promise<ExplodedObject>}
  */
-module.exports = processData;
-
 async function processData(process_wrapper) {
     let {hdb_path, operation, records, table_schema, attributes, epoch, existing_rows} = process_wrapper;
 

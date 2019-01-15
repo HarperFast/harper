@@ -17,6 +17,8 @@ const {PERIOD_REGEX,
 
 const EMPTY_STRING = '';
 
+const CHARACTER_LIMIT = 255;
+
 
 module.exports = {
     isEmpty:isEmpty,
@@ -313,11 +315,11 @@ function valueConverter(raw_value){
     try {
         value = typeof raw_value === 'object' ? JSON.stringify(raw_value) : raw_value;
     } catch(e){
-        logger.error(e);
+        log.error(e);
         value = raw_value;
     }
     let value_stripped = String(escapeRawValue(value));
-    let value_path = Buffer.byteLength(value_stripped) > 255 ? truncate(value_stripped, 255) + '/blob' : value_stripped;
+    let value_path = Buffer.byteLength(value_stripped) > CHARACTER_LIMIT ? truncate(value_stripped, CHARACTER_LIMIT) + '/blob' : value_stripped;
 
     return {
         value: value,

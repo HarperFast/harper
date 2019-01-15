@@ -34,6 +34,8 @@ const hdb_path = path.join(hdb_properties.get('HDB_ROOT'), '/schema');
 //const HDB_PATH_KEY = hdb_terms.INSERT_MODULE_ENUM.HDB_PATH_KEY;
 const CHUNK_SIZE = hdb_terms.INSERT_MODULE_ENUM.CHUNK_SIZE;
 
+const INTERNAL_ERROR_MESSAGE = 'An internal error occurred, please check the logs for more information.';
+
 module.exports = {
     insertCB: insertDataCB,
     updateCB: updateDataCB,
@@ -221,20 +223,25 @@ async function updateData(update_object){
  * @returns {Promise<void>}
  */
 async function getExistingRows(table_schema, hashes, attributes){
-    let existing_attributes = checkForExistingAttributes(table_schema, attributes);
-    if(h_utils.isEmptyOrZeroLength(existing_attributes)){
-        throw new Error('no attributes to update');
+    try {
+        let existing_attributes = checkForExistingAttributes(table_schema, attributes);
+        if (h_utils.isEmptyOrZeroLength(existing_attributes)) {
+            throw new Error('no attributes to update');
+        }
+
+        let search_object = {
+            schema: table_schema.schema,
+            table: table_schema.name,
+            hash_values: hashes,
+            get_attributes: existing_attributes
+        };
+
+        let existing_records = await p_search_by_hash(search_object);
+        return existing_records;
+    } catch(e) {
+        logger.error(e);
+        throw new Error(INTERNAL_ERROR_MESSAGE);
     }
-
-    let search_object = {
-        schema: table_schema.schema,
-        table: table_schema.name,
-        hash_values: hashes,
-        get_attributes: existing_attributes
-    };
-
-    let existing_records = await p_search_by_hash(search_object);
-    return existing_records;
 }
 
 /**
@@ -259,26 +266,30 @@ async function processRows(insert_object, attributes, table_schema, epoch, exist
 
         await Promise.all(
             chunks.map(async chunk => {
-                let exploder_object = new WriteProcessorObject(hdb_path, insert_object.operation, chunk, table_schema, attributes, epoch, existing_rows);
+                try {
+                    let exploder_object = new WriteProcessorObject(hdb_path, insert_object.operation, chunk, table_schema, attributes, epoch, existing_rows);
 
-                let result = await global.hdb_pool.run('../data_layer/dataWriteProcessor').send(exploder_object).promise();
-                //each process returns an instance of its data we need to consolidate each result
-                if(result) {
-                    result.folders.forEach((folder)=>{
-                        folders.add(folder);
-                    });
-                    result.raw_data.forEach((data)=>{
-                        raw_data.push(data);
-                    });
-                    result.skipped.forEach((data)=>{
-                        skipped.push(data);
-                    });
-                    result.written_hashes.forEach((data)=>{
-                        written_hashes.push(data);
-                    });
-                    result.unlinks.forEach((data)=>{
-                        unlinks.push(data);
-                    });
+                    let result = await global.hdb_pool.run('../data_layer/dataWriteProcessor').send(exploder_object).promise();
+                    //each process returns an instance of its data we need to consolidate each result
+                    if (result) {
+                        result.folders.forEach((folder) => {
+                            folders.add(folder);
+                        });
+                        result.raw_data.forEach((data) => {
+                            raw_data.push(data);
+                        });
+                        result.skipped.forEach((data) => {
+                            skipped.push(data);
+                        });
+                        result.written_hashes.forEach((data) => {
+                            written_hashes.push(data);
+                        });
+                        result.unlinks.forEach((data) => {
+                            unlinks.push(data);
+                        });
+                    }
+                } catch(e) {
+                    logger.error(e);
                 }
             })
         );
@@ -297,10 +308,14 @@ async function processRows(insert_object, attributes, table_schema, epoch, exist
  * @param unlink_paths
  */
 async function unlinkFiles(unlink_paths) {
-    if(unlink_paths.length > CHUNK_SIZE){
-        await pool_handler(global.hdb_pool, unlink_paths,  CHUNK_SIZE, '../utility/fs/unlink');
-    } else {
-        await unlink(unlink_paths);
+    try {
+        if (unlink_paths.length > CHUNK_SIZE) {
+            await pool_handler(global.hdb_pool, unlink_paths, CHUNK_SIZE, '../utility/fs/unlink');
+        } else {
+            await unlink(unlink_paths);
+        }
+    } catch(e) {
+        logger.error(e);
     }
 }
 
@@ -318,10 +333,14 @@ async function processData(data_wrapper) {
  * @param data
  */
 async function writeRawDataFiles(data) {
-    if(data.length > CHUNK_SIZE){
-        await pool_handler(global.hdb_pool, data,  CHUNK_SIZE, '../utility/fs/writeFile');
-    } else {
-        await write_file(data);
+    try {
+        if (data.length > CHUNK_SIZE) {
+            await pool_handler(global.hdb_pool, data, CHUNK_SIZE, '../utility/fs/writeFile');
+        } else {
+            await write_file(data);
+        }
+    } catch(e) {
+        logger.error(e);
     }
 }
 
@@ -330,11 +349,14 @@ async function writeRawDataFiles(data) {
  * @param folders
  */
 async function createFolders(folders) {
-
-    if(folders.length > CHUNK_SIZE) {
-        await pool_handler(global.hdb_pool, folders, CHUNK_SIZE, '../utility/fs/mkdirp');
-    } else {
-        await mkdirp(folders);
+    try {
+        if (folders.length > CHUNK_SIZE) {
+            await pool_handler(global.hdb_pool, folders, CHUNK_SIZE, '../utility/fs/mkdirp');
+        } else {
+            await mkdirp(folders);
+        }
+    } catch (e) {
+        logger.error(e);
     }
 }
 
@@ -346,30 +368,35 @@ async function createFolders(folders) {
  * @returns {Promise<void>}
  */
 async function checkForNewAttributes(hdb_auth_header, table_schema, data_attributes){
-    if(h_utils.isEmptyOrZeroLength(data_attributes)){
-        return;
-    }
+    try {
+        if (h_utils.isEmptyOrZeroLength(data_attributes)) {
+            return;
+        }
 
-    let raw_attributes = [];
-    if(!h_utils.isEmptyOrZeroLength(table_schema.attributes)){
-        table_schema.attributes.forEach((attribute)=>{
-            raw_attributes.push(attribute.attribute);
+        let raw_attributes = [];
+        if (!h_utils.isEmptyOrZeroLength(table_schema.attributes)) {
+            table_schema.attributes.forEach((attribute) => {
+                raw_attributes.push(attribute.attribute);
+            });
+        }
+
+        let new_attributes = data_attributes.filter(attribute => {
+            return raw_attributes.indexOf(attribute) < 0;
         });
+
+        if (new_attributes.length === 0) {
+            return;
+        }
+
+        await Promise.all(
+            new_attributes.map(async attribute => {
+                await createNewAttribute(hdb_auth_header, table_schema.schema, table_schema.name, attribute);
+            })
+        );
+    } catch(e){
+        logger.error(e);
+        throw new Error(INTERNAL_ERROR_MESSAGE);
     }
-
-   let new_attributes = data_attributes.filter(attribute =>{
-       return raw_attributes.indexOf(attribute) < 0;
-   });
-
-   if(new_attributes.length === 0) {
-        return;
-   }
-
-   await Promise.all(
-       new_attributes.map(async attribute=>{
-           await createNewAttribute(hdb_auth_header, table_schema.schema, table_schema.name, attribute);
-       })
-   );
 }
 
 /**
