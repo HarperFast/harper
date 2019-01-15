@@ -31,7 +31,7 @@ const p_schema_describe_all = promisify(schema.describeAll);
 const p_schema_create_schema = promisify(schema.createSchema);
 const p_schema_create_table = promisify(schema.createTable);
 const p_schema_create_attribute = promisify(schema.createAttribute);
-const p_insert = promisify(insert.insert);
+const p_insert = insert.insert;
 
 const WHITELISTED_ERRORS = 'already exists';
 const ERROR_NO_HDB_USER = 'there is no hdb_user';
@@ -93,7 +93,6 @@ class SocketClient {
 
     async onCatchupHandler(queue) {
         harper_logger.info('catchup' + queue);
-        //let queue = JSON.parse(queue_string);
 
         await this.onSchemaUpdateResponseHandler(queue.schema);
 

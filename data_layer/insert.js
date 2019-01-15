@@ -8,665 +8,446 @@
  */
 
 const insert_validator = require('../validation/insertValidator.js');
-const fs = require('graceful-fs');
-const async = require('async');
 const path = require('path');
-const mkdirp = require('mkdirp');
 const h_utils = require('../utility/common_utils');
 const search = require('./search');
 const logger = require('../utility/logging/harper_logger');
 const _ = require('lodash');
-const truncate = require('truncate-utf8-bytes');
 const PropertiesReader = require('properties-reader');
 const autocast = require('autocast');
-const signalling = require('../utility/signalling');
 const hdb_terms = require('../utility/hdbTerms');
+const mkdirp = require('../utility/fs/mkdirp');
+const write_file = require('../utility/fs/writeFile');
+const unlink = require('../utility/fs/unlink');
+const pool_handler = require('../utility/threads/poolHandler');
+const exploder = require('./dataWriteProcessor');
+const {promisify} = require('util');
+const ExplodedObject = require('./ExplodedObject');
+const WriteProcessorObject = require('./WriteProcessorObject');
 
 let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
 hdb_properties.append(hdb_properties.get('settings_path'));
 
-
 const hdb_path = path.join(hdb_properties.get('HDB_ROOT'), '/schema');
 
-const unicode_slash = 'U+002F';
-
-const WRITE_RECORDS_ASYNC_EACH_LIMIT = 2500;
-const CREATE_FOLDERS_ASYNC_EACH_LIMIT = 2000;
-
-//TODO: This is ugly and string compare is slow.  Refactor this when we bring in promises.
-const NO_RESULTS = 'NR';
 //This is an internal value that should not be written to the DB.
-const HDB_PATH_KEY = 'HDB_INTERNAL_PATH';
-const HDB_AUTH_HEADER = 'hdb_auth_header';
-const HDB_USER_DATA_KEY = 'hdb_user';
+//const HDB_PATH_KEY = hdb_terms.INSERT_MODULE_ENUM.HDB_PATH_KEY;
+const CHUNK_SIZE = hdb_terms.INSERT_MODULE_ENUM.CHUNK_SIZE;
+
+const INTERNAL_ERROR_MESSAGE = 'An internal error occurred, please check the logs for more information.';
 
 module.exports = {
+    insertCB: insertDataCB,
+    updateCB: updateDataCB,
     insert: insertData,
-    update:updateData
+    update: updateData
 };
 //this must stay after the export to correct a circular dependency issue
 const global_schema = require('../utility/globalSchema');
 
+const p_global_schema = promisify(global_schema.getTableSchema);
+const p_search_by_hash = promisify(search.searchByHash);
+
 /**
- * This validation is called before an insert or update is performed with the write_object.
- *
- * @param write_object - the object that will be written post-validation
- * @param callback - The caller
+ *  Takes an insert/update object and validates attributes, also looks for dups and get a list of all attributes from the record set
+ * @param {Object} write_object
+ * @returns {Promise<{table_schema, hashes: any[], attributes: string[]}>}
  */
-function validation(write_object, callback) {
+async function validation(write_object){
     // Need to validate these outside of the validator as the getTableSchema call will fail with
     // invalid values.
     if(h_utils.isEmpty(write_object)) {
-        return callback(`invalid update parameters defined.`);
+        throw new Error('invalid update parameters defined.');
     }
     if(h_utils.isEmptyOrZeroLength(write_object.schema) ) {
-        return callback(`invalid schema specified.`);
+        throw new Error('invalid schema specified.');
     }
     if(h_utils.isEmptyOrZeroLength(write_object.table) ) {
-        return callback(`invalid table specified.`);
+        throw new Error('invalid table specified.');
     }
 
-    global_schema.getTableSchema(write_object.schema, write_object.table, (err, table_schema) => {
-        if (err) {
-            return callback(err);
+    let table_schema = await p_global_schema(write_object.schema, write_object.table);
+
+    //validate insert_object for required attributes
+    let validator = insert_validator(write_object);
+    if (validator) {
+        throw new Error(validator);
+    }
+
+    if(!Array.isArray(write_object.records)) {
+        throw new Error('records must be an array');
+    }
+
+    let hash_attribute = table_schema.hash_attribute;
+    let dups = new Set();
+    let attributes = {};
+    write_object.records.forEach((record)=>{
+        if(!h_utils.isEmpty(record[hash_attribute]) && record[hash_attribute] !== '' && dups.has(autocast(record[hash_attribute]))){
+            record.skip = true;
         }
 
-        //validate insert_object for required attributes
-        let validator = insert_validator(write_object);
-        if (validator) {
-            callback(validator);
-            return;
+        dups.add(autocast(record[hash_attribute]));
+
+        for (let attr in record) {
+            attributes[attr] = 1;
         }
-
-        if(!Array.isArray(write_object.records)) {
-            return callback('records must be an array');
-        }
-
-        let hash_attribute = table_schema.hash_attribute;
-
-        //validate that every record has hash_attribute populated
-        let no_hash = false;
-        let long_hash = false;
-        let long_attribute = false;
-        let bad_hash_value = false;
-        write_object.records.forEach((record)=>{
-            if(record[hash_attribute] === null || record[hash_attribute] === undefined){
-                no_hash = true;
-                return;
-            } else if(hdb_terms.FORWARD_SLASH_REGEX.test(record[hash_attribute])) {
-                bad_hash_value = true;
-                return;
-            } else if(Buffer.byteLength(String(record[hash_attribute])) > 250){
-                long_hash = true;
-                return;
-            }
-
-            //evaluate that there are no attributes who have a name longer than 250 characters
-            Object.keys(record).forEach((attribute)=>{
-                if(Buffer.byteLength(String(attribute)) > 250) {
-                    long_attribute = true;
-                }
-            });
-            if(long_attribute) {
-                return;
-            }
-        });
-
-        if (no_hash) {
-            return callback(`transaction aborted due to record(s) with no hash value.`);
-        }
-
-        if (long_hash) {
-            return callback(`transaction aborted due to record(s) with a hash value that exceeds 250 bytes.`);
-        }
-
-        if (bad_hash_value) {
-            return callback(`transaction aborted due to record(s) with a hash value that contains a forward slash.`);
-        }
-
-        if (long_hash) {
-            return callback(`transaction aborted due to record(s) with an attribute that exceeds 250 bytes.`);
-        }
-
-        callback(null, table_schema);
     });
+
+    //in case the hash_attribute was not on the object(s) for inserts where they want to auto-key we manually add the hash_attribute to attributes
+    attributes[hash_attribute] = 1;
+
+    return {
+        table_schema: table_schema,
+        hashes: Array.from(dups),
+        attributes: Object.keys(attributes)
+    };
 }
 
 /**
- * Inserts data specified in the insert_object parameter.  Currently if even a single entity in insert_object already exists,
- * the function will return and no other inserts will be performed.
+ * Callback function for inserting data, remove when we are fully promised
  * @param insert_object
  * @param callback
  */
-function insertData(insert_object, callback){
-    try {
-        if (insert_object.operation !== 'insert') {
-            callback('invalid operation, must be insert');
-        }
-        let inserted_records = [];
-        let skipped_records = [];
-
-        async.waterfall([
-            validation.bind(null, insert_object),
-            (table_schema, caller) => {
-                let hash_attribute = table_schema.hash_attribute;
-                let base_path = hdb_path + '/' + insert_object.schema + '/' + insert_object.table + '/';
-                insert_object.dup_check = {};
-
-                for (let r in insert_object.records) {
-                    let hash_val = insert_object.records[r][hash_attribute];
-                    // If duplicate, we don't assign the HDB_INTERNAL_PATH internal attribute so it will be skipped later.
-                    if(insert_object.dup_check[hash_val]) {
-                        continue;
-                    }
-                    insert_object.dup_check[hash_val] = {};
-                    let record = insert_object.records[r];
-                    let path = `${base_path}__hdb_hash/${hash_attribute}/${record[hash_attribute]}.hdb`;
-                    //Internal record that is removed if the record exists.  Should not be written to the DB.
-                    insert_object.records[r][HDB_PATH_KEY] = path;
-
-                }
-                caller(null);
-            },
-            checkRecordsExist.bind(null, insert_object, skipped_records, inserted_records),
-            checkAttributeSchema.bind(null, insert_object),
-            processData
-        ], (err) => {
-            if (err) {
-                return callback(err);
-            }
-            let return_object = {
-                message: `inserted ${inserted_records.length} of ${insert_object.records.length} records`,
-                inserted_hashes: inserted_records,
-                skipped_hashes: skipped_records
-            };
-            callback(null, return_object);
+function insertDataCB(insert_object, callback){
+    try{
+        insertData(insert_object).then((results)=>{
+            callback(null, results);
+        }).catch(err=>{
+            callback(err);
         });
+
     } catch(e){
         callback(e);
+    }
+}
+
+/**
+ * Callback function for updating data, remove when we are fully promised
+ * @param update_object
+ * @param callback
+ */
+function updateDataCB(update_object, callback){
+    try{
+        updateData(update_object).then((results)=>{
+            callback(null, results);
+        }).catch(err=>{
+            callback(err);
+        });
+
+    } catch(e){
+        callback(e);
+    }
+}
+
+/**
+ * Inserts data specified in the insert_object parameter.
+ * @param insert_object
+ */
+async function insertData(insert_object){
+    try {
+        let epoch = Date.now();
+        if (insert_object.operation !== 'insert') {
+            throw new Error('invalid operation, must be insert');
+        }
+
+        let {table_schema, attributes} = await validation(insert_object);
+
+        let { written_hashes, skipped, ...data_wrapper} = await processRows(insert_object, attributes, table_schema, epoch);
+
+        await checkForNewAttributes(insert_object.hdb_auth_header, table_schema, attributes);
+
+        await processData(data_wrapper);
+
+        let return_object = {
+            message: `inserted ${written_hashes.length} of ${insert_object.records.length} records`,
+            inserted_hashes: written_hashes,
+            skipped_hashes: skipped
+        };
+
+        return return_object;
+    } catch(e){
+        throw (e);
     }
 }
 
 /**
  * Updates the data in the update_object parameter.
  * @param update_object - The data that will be updated in the database
- * @param callback - The caller
  */
-function updateData(update_object, callback){
+async function updateData(update_object){
     try {
+        let epoch = Date.now();
+
         if (update_object.operation !== 'update') {
-            return callback('invalid operation, must be update');
+            throw new Error('invalid operation, must be update');
         }
-        let tracker = {
-            all_ids:[],
-            update_ids:[]
-        };
-        let hash_attribute;
 
-        async.waterfall([
-            validation.bind(null, update_object),
-            (table_schema, caller) => {
-                let attributes = new Set();
-                let hashes = [];
-                update_object.records.forEach((record) => {
-                    hashes.push(autocast(record[table_schema.hash_attribute]));
-                    Object.keys(record).forEach((attribute) => {
-                        attributes.add(attribute);
-                    });
-                });
+        let {table_schema, hashes, attributes} = await validation(update_object);
 
-                tracker.all_ids = hashes;
+        let existing_rows = await getExistingRows(table_schema, hashes, attributes);
 
-                let search_obj = {
-                    schema: update_object.schema,
-                    table: update_object.table,
-                    hash_attribute: 'id',
-                    hash_values: hashes,
-                    get_attributes: Array.from(attributes)
-                };
-
-                caller(null, search_obj);
-            },
-            (search_obj, caller) => {
-                // We need to filter out any new attributes from the update statement, as they will not be found in the searchByHash
-                // call below and cause a validation error.
-                let valid_attributes = search_obj.get_attributes.filter(function (item) {
-                    let attributes = global.hdb_schema[search_obj.schema][search_obj.table].attributes;
-                    if(attributes && Array.isArray(attributes)) {
-                        let picked = global.hdb_schema[search_obj.schema][search_obj.table].attributes.find(o => o.attribute === item);
-                        if(picked) return picked;
-                    }
-                });
-                if(valid_attributes && valid_attributes.length > 0) {
-                    search_obj.get_attributes = valid_attributes;
-                }
-                caller(null, search_obj);
-            },
-            search.searchByHash,
-            (existing_records, caller) => {
-                if( existing_records.length === 0) {
-                    return caller(NO_RESULTS);
-                }
-                hash_attribute = global.hdb_schema[update_object.schema][update_object.table].hash_attribute;
-                caller(null, update_object, hash_attribute, existing_records);
-            },
-            compareUpdatesToExistingRecords,
-            unlinkFiles,
-            (update_objects, caller) => {
-                update_object.records = update_objects;
-
-                update_objects.forEach((record)=>{
-                    // need to make sure the attribute is a string for the lodash comparison below.
-                    tracker.update_ids.push(autocast(record[hash_attribute]));
-                });
-
-                caller(null, update_object);
-            },
-            checkAttributeSchema,
-            processData
-        ], (err) => {
-            //TODO: This is ugly and string compare is slow.  Refactor this when we bring in promises.
-            if (err && NO_RESULTS !== err) {
-                callback(err);
-                return;
-            }
-
-            let skipped_hashes = _.difference(tracker.all_ids, tracker.update_ids);
-            let return_object = {
-                message: `updated ${tracker.update_ids.length} of ${tracker.all_ids.length} records`,
-                update_hashes: tracker.update_ids,
-                skipped_hashes: skipped_hashes
-            };
-
-            callback(null, return_object);
+        if(h_utils.isEmptyOrZeroLength(existing_rows)){
+            //TODO finish this return
             return;
+        }
+
+        let existing_map =  _.keyBy(existing_rows, function(record) {
+            return record[table_schema.hash_attribute];
         });
+
+        let { written_hashes, skipped, unlinks, ...data_wrapper} = await processRows(update_object, attributes, table_schema, epoch, existing_map);
+
+        await checkForNewAttributes(update_object.hdb_auth_header, table_schema, attributes);
+
+        await unlinkFiles(unlinks);
+
+        await processData(data_wrapper);
+
+        let return_object = {
+            message: `updated ${written_hashes.length} of ${update_object.records.length} records`,
+            update_hashes: written_hashes,
+            skipped_hashes: skipped
+        };
+
+        return return_object;
     } catch(e){
-        callback(e);
+        throw (e);
     }
 }
 
-function compareUpdatesToExistingRecords(update_object, hash_attribute, existing_records, callback) {
-
-    if(!existing_records || existing_records.length === 0) { return callback('No Records Found'); }
-    let base_path = hdb_path + '/' + update_object.schema + '/' + update_object.table + '/';
-
-    let unlink_paths = [];
-    let update_objects = [];
-
+/**
+ * performs a bulk search_by_hash for the defined hashes
+ * @param table_schema
+ * @param hashes
+ * @param attributes
+ * @returns {Promise<void>}
+ */
+async function getExistingRows(table_schema, hashes, attributes){
     try {
-        let update_map = _.keyBy(update_object.records, function(record) {
-            return record[hash_attribute];
-        });
+        let existing_attributes = checkForExistingAttributes(table_schema, attributes);
+        if (h_utils.isEmptyOrZeroLength(existing_attributes)) {
+            throw new Error('no attributes to update');
+        }
 
-        existing_records.forEach((existing_record) => {
-            let update_record = update_map[existing_record[hash_attribute]];
-            if (!update_record) {
-                return;
-            }
-            let update = {};
+        let search_object = {
+            schema: table_schema.schema,
+            table: table_schema.name,
+            hash_values: hashes,
+            get_attributes: existing_attributes
+        };
 
-            for (let attr in update_record) {
-                if (autocast(existing_record[attr]) !== autocast(update_record[attr])) {
-                    update[attr] = update_record[attr];
-
-                    let {value_path} = valueConverter(existing_record[attr]);
-
-                    if (!h_utils.isEmpty(existing_record[attr]) && !h_utils.isEmpty(value_path)) {
-                        unlink_paths.push(`${base_path}${attr}/${value_path}/${existing_record[hash_attribute]}.hdb`);
-                    }
-
-                    if (h_utils.isEmpty(update_record[attr])) {
-                        unlink_paths.push(`${base_path}__hdb_hash/${attr}/${existing_record[hash_attribute]}.hdb`);
-                    }
-                }
-            }
-
-            if (Object.keys(update).length > 0) {
-                update[hash_attribute] = existing_record[hash_attribute];
-                update_objects.push(update);
-            }
-        });
-
-        callback(null, unlink_paths, update_objects);
+        let existing_records = await p_search_by_hash(search_object);
+        return existing_records;
     } catch(e) {
-        callback(e);
-    }
-}
-
-/**
- *
- * @param unlink_paths
- * @param update_objects
- * @param callback
- */
-function unlinkFiles(unlink_paths, update_objects, callback) {
-    async.each(unlink_paths, (path, caller)=>{
-        fs.unlink(path, (err)=>{
-            if(err){
-                if(err.code === 'ENOENT'){
-                    return caller();
-                }
-                logger.error(err);
-            }
-            caller();
-        });
-    }, (error)=>{
-        if(error){
-            callback(error);
-            return;
-        }
-        callback(null, update_objects);
-    });
-}
-
-/**
- * This function is used to remove HDB internal values (such as HDB_INTERNAL_PATH) from the record when it
- * is stringified.
- * @param key - the key of the record
- * @param value - the value of the record
- * @returns {*}
- */
-function filterHDBValues(key, value) {
-    if(key === HDB_PATH_KEY) {
-        return undefined;
-    }
-    else {
-        return value;
-    }
-}
-
-
-/**
- * This function takes every row, explodes it by attribute and sends the data on to be written to disk
- * @param insert_object
- * @param callerback
- */
-function checkAttributeSchema(insert_object, callerback) {
-    if(!insert_object) { return callerback("Empty Object", null); }
-
-    try {
-        let table_schema = global.hdb_schema[insert_object.schema][insert_object.table];
-        let hash_attribute = table_schema.hash_attribute;
-        let epoch = new Date().valueOf();
-
-        let insert_objects = [];
-
-        let folders = {};
-        let hash_paths = {};
-        let base_path = hdb_path + '/' + insert_object.schema + '/' + insert_object.table + '/';
-        let operation = insert_object.operation;
-        insert_object.records.forEach((record) => {
-            if (record[HDB_PATH_KEY] === undefined && operation !== 'update') {
-                return;
-            }
-            let exploded_row = {
-                hash_value: null,
-                raw_data: [],
-                links: []
-            };
-
-            hash_paths[`${base_path}__hdb_hash/${hash_attribute}/${record[hash_attribute]}.hdb`] = '';
-            for (let property in record) {
-                if (record[property] === null || record[property] === undefined || record[property] === '' || property === HDB_PATH_KEY || property === HDB_AUTH_HEADER ||
-                    property === HDB_USER_DATA_KEY)
-                {
-                    continue;
-                }
-
-                let {value, value_path} = valueConverter(record[property]);
-                let attribute_file_name = record[hash_attribute] + '.hdb';
-                let attribute_path = base_path + property + '/' + value_path;
-
-                folders[`${base_path}__hdb_hash/${property}`] = "";
-                exploded_row.raw_data.push({
-                    file_name: `${base_path}__hdb_hash/${property}/${attribute_file_name}`,
-                    value: value
-                });
-                if (property !== hash_attribute) {
-                    folders[attribute_path] = "";
-
-                    exploded_row.links.push({
-                        link: `${base_path}__hdb_hash/${property}/${attribute_file_name}`,
-                        file_name: `${attribute_path}/${attribute_file_name}`
-                    });
-                } else {
-                    folders[attribute_path] = "";
-                    exploded_row.hash_value = value;
-                    exploded_row.raw_data.push({
-                        file_name: `${attribute_path}/${epoch}.hdb`,
-                        // Need to use the filter to remove the HDB_INTERNAL_PATH from the record before it is added to a file.
-                        value: JSON.stringify(record, filterHDBValues)
-                    });
-                }
-            }
-            insert_objects.push(exploded_row);
-        });
-
-        let data_wrapper = {
-            data_folders: Object.keys(folders),
-            data: insert_objects,
-            hash_paths: hash_paths,
-            operation: insert_object.operation
-        };
-
-        if (insert_object.hdb_auth_header) {
-            data_wrapper.hdb_auth_header = insert_object.hdb_auth_header;
-        }
-        return callerback(null, data_wrapper);
-    } catch(e){
-        return callerback(e);
-    }
-}
-
-/**
- * takes a raw value from an attribute, replaces "/", ".", ".." with unicode equivalents and returns the value, escaped value & the value path
- * @param raw_value
- * @returns {{value: string, value_stripped: string, value_path: string}}
- */
-function valueConverter(raw_value){
-    let value;
-    try {
-        value = typeof raw_value === 'object' ? JSON.stringify(raw_value) : raw_value;
-    } catch(e){
         logger.error(e);
-        value = raw_value;
+        throw new Error(INTERNAL_ERROR_MESSAGE);
     }
-    let value_stripped = String(h_utils.escapeRawValue(value));
-    let value_path = Buffer.byteLength(value_stripped) > 255 ? truncate(value_stripped, 255) + '/blob' : value_stripped;
-
-    return {
-        value: value,
-        value_stripped: value_stripped,
-        value_path: value_path
-    };
 }
 
 /**
- * Checks to verify which records already exist in the database
- * @param hash_paths
- * @param callback
+ * wrapper function which orchestrates the multi-process pool, if needed, or calls the function directly
+ * @param insert_object
+ * @param attributes
+ * @param table_schema
+ * @param epoch
+ * @param existing_rows
+ * @returns {Promise<ExplodedObject|ExplodedObject>}
  */
-function checkRecordsExist(insert_object, skipped_records, inserted_records, callback) {
-    let table_schema = global.hdb_schema[insert_object.schema][insert_object.table];
-    async.map(insert_object.records, function(record, inner_callback) {
-        if(record[HDB_PATH_KEY]) {
-            fs.access(record[HDB_PATH_KEY], (err) => {
-                if (err && err.code === 'ENOENT') {
-                    inserted_records.push(autocast(record[table_schema.hash_attribute]));
-                    inner_callback();
-                } else {
-                    record[HDB_PATH_KEY] = undefined;
-                    skipped_records.push(autocast(record[table_schema.hash_attribute]));
-                    inner_callback();
+async function processRows(insert_object, attributes, table_schema, epoch, existing_rows){
+    let data_wrapper;
+    if(insert_object.records.length > CHUNK_SIZE){
+        let chunks = _.chunk(insert_object.records, CHUNK_SIZE);
+        let folders = new Set();
+        let raw_data = [];
+        let skipped = [];
+        let written_hashes = [];
+        let unlinks = [];
+
+
+        await Promise.all(
+            chunks.map(async chunk => {
+                try {
+                    let exploder_object = new WriteProcessorObject(hdb_path, insert_object.operation, chunk, table_schema, attributes, epoch, existing_rows);
+
+                    let result = await global.hdb_pool.run('../data_layer/dataWriteProcessor').send(exploder_object).promise();
+                    //each process returns an instance of its data we need to consolidate each result
+                    if (result) {
+                        result.folders.forEach((folder) => {
+                            folders.add(folder);
+                        });
+                        result.raw_data.forEach((data) => {
+                            raw_data.push(data);
+                        });
+                        result.skipped.forEach((data) => {
+                            skipped.push(data);
+                        });
+                        result.written_hashes.forEach((data) => {
+                            written_hashes.push(data);
+                        });
+                        result.unlinks.forEach((data) => {
+                            unlinks.push(data);
+                        });
+                    }
+                } catch(e) {
+                    logger.error(e);
                 }
-            });
-        } else {
-            skipped_records.push(autocast(record[table_schema.hash_attribute]));
-            inner_callback();
-        }
-    }, function(err){
-        if (err) {
-            callback(err);
-        } else {
-            callback();
-        }
-    });
+            })
+        );
+        chunks = undefined;
+        data_wrapper = new ExplodedObject(written_hashes, skipped, Array.from(folders), raw_data, unlinks);
+
+    } else{
+        let exploder_object = new WriteProcessorObject(hdb_path, insert_object.operation, insert_object.records, table_schema, attributes, epoch, existing_rows);
+        data_wrapper = await exploder(exploder_object);
+    }
+    return data_wrapper;
 }
 
 /**
- * wrapper function that orchestrates the record creattion on disk
+ *deletes files in bulk
+ * @param unlink_paths
+ */
+async function unlinkFiles(unlink_paths) {
+    try {
+        if (unlink_paths.length > CHUNK_SIZE) {
+            await pool_handler(global.hdb_pool, unlink_paths, CHUNK_SIZE, '../utility/fs/unlink');
+        } else {
+            await unlink(unlink_paths);
+        }
+    } catch(e) {
+        logger.error(e);
+    }
+}
+
+/**
+ * wrapper function that orchestrates the record creation on disk
  * @param data_wrapper
- * @param callback
  */
-function processData(data_wrapper, callback) {
-    async.waterfall([
-        createFolders.bind(null, data_wrapper, data_wrapper.data_folders),
-        writeRecords.bind(null, data_wrapper.data)
-    ], (err) => {
-        if (err) {
-            callback(err);
-            return;
-        }
-        callback();
-    });
-}
-
-/**
- * Iterates the rows and row by row writes the raw data plust the associated hard links.  The limit is set manage the event loop.  on large batches the event loop will get bogged down.
- * @param data
- * @param callback
- */
-function writeRecords(data, callback){
-    async.eachLimit(data, WRITE_RECORDS_ASYNC_EACH_LIMIT, (record, callback2)=>{
-        async.waterfall([
-            writeRawDataFiles.bind(null, record.raw_data),
-            writeLinkFiles.bind(null, record.links)
-        ], (err)=>{
-            if(err){
-                logger.error(err);
-            }
-            callback2();
-        });
-    }, (error)=>{
-        if(error){
-            return callback(error);
-        }
-
-        callback();
-    });
+async function processData(data_wrapper) {
+    await createFolders(data_wrapper.folders);
+    await writeRawDataFiles(data_wrapper.raw_data);
 }
 
 /**
  * writes the raw data files to disk
  * @param data
- * @param callback
  */
-function writeRawDataFiles(data, callback) {
-    async.each(data, (attribute, caller) => {
-        fs.writeFile(attribute.file_name, attribute.value, (err) => {
-            if (err) {
-                caller(err);
-                return;
-            }
-            caller();
-        });
-    }, function (err) {
-        if (err) {
-            callback(err);
-            return;
+async function writeRawDataFiles(data) {
+    try {
+        if (data.length > CHUNK_SIZE) {
+            await pool_handler(global.hdb_pool, data, CHUNK_SIZE, '../utility/fs/writeFile');
+        } else {
+            await write_file(data);
         }
-        callback();
-    });
-}
-
-/**
- * creates the hard links to the raw data files
- * @param links
- * @param callback
- */
-function writeLinkFiles(links, callback) {
-    async.each(links, (link, caller) => {
-        fs.link(link.link, link.file_name, (err) => {
-            if (err && err.code !== 'EEXIST') {
-                caller(err);
-                return;
-            }
-            caller();
-        });
-    }, function (err) {
-        if (err) {
-            callback(err);
-            return;
-        }
-        callback();
-    });
+    } catch(e) {
+        logger.error(e);
+    }
 }
 
 /**
  * creates all of the folders necessary to hold the raw files and hard links
  * @param folders
- * @param callback
  */
-function createFolders(data_wrapper,folders, callback) {
-
-    let folder_created_flag = false;
-    async.eachLimit(folders, CREATE_FOLDERS_ASYNC_EACH_LIMIT, (folder, caller) => {
-        mkdirp(folder, (err, created_folder) => {
-            if (err) {
-                caller(err);
-                return;
-            }
-
-            if(folder.indexOf('/__hdb_hash/') >= 0 && created_folder) {
-                folder_created_flag = true;
-
-                createNewAttribute(data_wrapper,folder, (error)=>{
-                    return caller();
-                });
-            } else {
-                return caller();
-            }
-        });
-    }, function (err) {
-        if (err) {
-            callback(err);
-            return;
+async function createFolders(folders) {
+    try {
+        if (folders.length > CHUNK_SIZE) {
+            await pool_handler(global.hdb_pool, folders, CHUNK_SIZE, '../utility/fs/mkdirp');
+        } else {
+            await mkdirp(folders);
         }
-
-        if( folder_created_flag ) {
-            signalling.signalSchemaChange({type: 'schema'});
-        }
-
-        callback();
-    });
+    } catch (e) {
+        logger.error(e);
+    }
 }
 
 /**
- *
- * @param base_folder
- * @param callback
+ * Compares the existing schema attributes to the
+ * @param hdb_auth_header
+ * @param table_schema
+ * @param data_attributes
+ * @returns {Promise<void>}
  */
-function createNewAttribute(data_wrapper,folder, callback) {
-
-    let base_parts = folder.replace(hdb_path, '').split('/');
-    let attribute_object = {
-        schema:base_parts[1],
-        table:base_parts[2],
-        attribute:base_parts[base_parts.length - 1]
-    };
-
-    if(data_wrapper.hdb_auth_header){
-        attribute_object.hdb_auth_header = data_wrapper.hdb_auth_header;
-    }
-
-    schema.createAttribute(attribute_object, (err, data)=> {
-        if(err) {
-            logger.error(err);
+async function checkForNewAttributes(hdb_auth_header, table_schema, data_attributes){
+    try {
+        if (h_utils.isEmptyOrZeroLength(data_attributes)) {
+            return;
         }
 
-        callback();
+        let raw_attributes = [];
+        if (!h_utils.isEmptyOrZeroLength(table_schema.attributes)) {
+            table_schema.attributes.forEach((attribute) => {
+                raw_attributes.push(attribute.attribute);
+            });
+        }
+
+        let new_attributes = data_attributes.filter(attribute => {
+            return raw_attributes.indexOf(attribute) < 0;
+        });
+
+        if (new_attributes.length === 0) {
+            return;
+        }
+
+        await Promise.all(
+            new_attributes.map(async attribute => {
+                await createNewAttribute(hdb_auth_header, table_schema.schema, table_schema.name, attribute);
+            })
+        );
+    } catch(e){
+        logger.error(e);
+        throw new Error(INTERNAL_ERROR_MESSAGE);
+    }
+}
+
+/**
+ * Compares the existing schema attributes to attributes from a record set and returns only the ones that exist
+ * @param table_schema
+ * @param data_attributes
+ * @returns {*[]}
+ */
+function checkForExistingAttributes(table_schema, data_attributes){
+    if(h_utils.isEmptyOrZeroLength(data_attributes)){
+        return;
+    }
+
+    let raw_attributes = [];
+    if(!h_utils.isEmptyOrZeroLength(table_schema.attributes)){
+        table_schema.attributes.forEach((attribute)=>{
+            raw_attributes.push(attribute.attribute);
+        });
+    }
+
+    let existing_attributes = data_attributes.filter(attribute =>{
+        return raw_attributes.indexOf(attribute) >= 0;
     });
+
+    return existing_attributes;
+}
+
+/**
+ * check the existing schema and creates new attributes based on what the incoming records have
+ * @param hdb_auth_header
+ * @param schema
+ * @param table
+ * @param attribute
+ */
+async function createNewAttribute(hdb_auth_header,schema, table, attribute) {
+    let attribute_object = {
+        schema:schema,
+        table:table,
+        attribute:attribute
+    };
+
+    if(hdb_auth_header){
+        attribute_object.hdb_auth_header = hdb_auth_header;
+    }
+
+    try {
+        await p_create_attribute(attribute_object);
+    } catch(e) {
+        logger.error(e);
+    }
 }
 
 const schema = require('../data_layer/schema');
+const p_create_attribute = promisify(schema.createAttribute);

@@ -10,7 +10,7 @@ const terms = require('../hdbTerms');
 const fs = require('fs-extra');
 
 //Promisified function
-let p_insert_insert = promisify(insert.insert);
+let p_insert_insert = insert.insert;
 let p_prompt_get = promisify(prompt.get);
 
 module.exports = {

@@ -52,8 +52,8 @@ class permission {
     }
 }
 
-required_permissions.set(write.insert.name, new permission(false, [INSERT_PERM]));
-required_permissions.set(write.update.name, new permission(false, [UPDATE_PERM]));
+required_permissions.set(write.insertCB.name, new permission(false, [INSERT_PERM]));
+required_permissions.set(write.updateCB.name, new permission(false, [UPDATE_PERM]));
 required_permissions.set(search.searchByHash.name, new permission(false, [READ_PERM]));
 required_permissions.set(search.searchByValue.name, new permission(false, [READ_PERM]));
 required_permissions.set(search.search.name, new permission(false, [READ_PERM]));
