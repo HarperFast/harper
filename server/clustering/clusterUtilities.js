@@ -372,6 +372,11 @@ function clusterMessageHandler(msg) {
                     fork.send(msg);
                 });
                 break;
+            case terms.CLUSTER_MESSAGE_TYPE_ENUM.USER:
+                global.forks.forEach((fork) => {
+                    fork.send(msg);
+                });
+                break;
             case terms.CLUSTER_MESSAGE_TYPE_ENUM.NODE_ADDED:
                 if(hdb_utils.isEmptyOrZeroLength(global.cluster_server)) {
                     log.error('Cluster Server has not been initialized.  Do you have CLUSTERING=true in your config/settings file?');
