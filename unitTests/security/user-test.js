@@ -151,7 +151,7 @@ describe('Test addUser', function () {
     beforeEach( function() {
         // We are not testing these other functions, so we stub them.
         search_stub = sinon.stub(search, "searchByHash").yields("", TEST_ADD_USER_SEARCH_OBJ);
-        insert_stub = sinon.stub(insert, "insert").yields("", true);
+        insert_stub = sinon.stub(insert, "insertCB").yields("", true);
         validate_stub = sinon.stub(validation, "addUserValidation").callsFake(function() {
             return null;
         });
@@ -207,7 +207,7 @@ describe('Test alterUser', function () {
     let signal_spy = undefined;
     beforeEach( function() {
         // We are not testing these other functions, so we stub them.
-        insert_stub = sinon.stub(insert, "update").yields("", true);
+        insert_stub = sinon.stub(insert, "updateCB").yields("", true);
         validate_stub = sinon.stub(validation, "alterUserValidation").callsFake(function() {
             return null;
         });

@@ -29,6 +29,14 @@ const SYSTEM_SCHEMA_NAME = 'system';
 
 const HASH_FOLDER_NAME = '__hdb_hash';
 
+const INSERT_MODULE_ENUM = {
+    HDB_PATH_KEY: 'HDB_INTERNAL_PATH',
+    HDB_AUTH_HEADER: 'hdb_auth_header',
+    HDB_USER_DATA_KEY: 'hdb_user',
+    CHUNK_SIZE: 1000,
+    MAX_CHARACTER_SIZE: 250
+};
+
 const SYSTEM_TABLE_NAMES = {
     JOB_TABLE_NAME : 'hdb_job',
     NODE_TABLE_NAME :'hdb_nodes',
@@ -205,7 +213,8 @@ const CLUSTER_MESSAGE_TYPE_ENUM = {
     NODE_ADDED: 'node_added',
     NODE_REMOVED: 'node_removed',
     CLUSTER_STATUS: 'cluster_status',
-    JOB: 'job'
+    JOB: 'job',
+    USER: 'user'
 };
 const CLUSTER_CONNECTION_DIRECTION_ENUM = {
     // Data flows to both the client and this server
@@ -241,6 +250,7 @@ module.exports = {
     ESCAPED_PERIOD_REGEX,
     ESCAPED_DOUBLE_PERIOD_REGEX,
     REG_KEY_FILE_NAME,
-    LOCAL_HARPERDB_OPERATIONS
+    LOCAL_HARPERDB_OPERATIONS,
+    INSERT_MODULE_ENUM
 };
 

@@ -19,7 +19,7 @@ let insert_object = {
 };
 
 console.time('insertTest');
-insert.update(insert_object, function(err, data){
+insert.updateCB(insert_object, function(err, data){
     if(err) {
         console.error(err);
     } else {

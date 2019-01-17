@@ -24,10 +24,10 @@ const hdb_delete = require('../data_layer/delete');
 
 //Promisified functions
 const p_search_by_value = promisify(search.searchByValue);
-const p_insert = promisify(insert.insert);
+const p_insert = insert.insert;
 const p_sql_evaluate = promisify(hdb_sql.evaluateSQL);
 const p_delete = promisify(hdb_delete.delete);
-const p_insert_update = promisify(insert.update);
+const p_insert_update = insert.update;
 
 module.exports = {
 	jobHandler: jobHandler,

@@ -161,7 +161,7 @@ function convertInsert(statement, callback) {
         return callback(e);
     }
 
-    insert.insert(insert_object, (err, data) => {
+    insert.insertCB(insert_object, (err, data) => {
         if (err) {
             return callback(err);
         }

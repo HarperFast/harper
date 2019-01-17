@@ -52,8 +52,8 @@ class permission {
     }
 }
 
-required_permissions.set(write.insert.name, new permission(false, [INSERT_PERM]));
-required_permissions.set(write.update.name, new permission(false, [UPDATE_PERM]));
+required_permissions.set(write.insertCB.name, new permission(false, [INSERT_PERM]));
+required_permissions.set(write.updateCB.name, new permission(false, [UPDATE_PERM]));
 required_permissions.set(search.searchByHash.name, new permission(false, [READ_PERM]));
 required_permissions.set(search.searchByValue.name, new permission(false, [READ_PERM]));
 required_permissions.set(search.search.name, new permission(false, [READ_PERM]));
@@ -77,7 +77,7 @@ required_permissions.set(role.listRoles.name, new permission(true, []));
 required_permissions.set(role.addRole.name, new permission(true, []));
 required_permissions.set(role.alterRole.name, new permission(true, []));
 required_permissions.set(role.dropRole.name, new permission(true, []));
-required_permissions.set(user.userInfo.name, new permission(true, []));
+required_permissions.set(user.userInfo.name, new permission(false, []));
 required_permissions.set(read_log.read_log.name, new permission(true, []));
 required_permissions.set(cluster_utilities.addNode.name, new permission(true, []));
 required_permissions.set(cluster_utilities.removeNode.name, new permission(true, []));

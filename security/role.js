@@ -50,7 +50,7 @@ function addRole(role, callback){
             records: [role]
         };
 
-        insert.insert(insert_object, function(err, success){
+        insert.insertCB(insert_object, function(err, success){
             if(err){
                 callback(err);
                 return;
@@ -81,7 +81,7 @@ function alterRole(role, callback){
         records: [role]
     };
 
-    insert.update(update_object, function(err, success){
+    insert.updateCB(update_object, function(err, success){
         if(err) {
             callback(err);
             return;

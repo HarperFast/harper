@@ -99,7 +99,7 @@ function updateRecords(table, records, callback){
         records:records
     };
 
-    write.update(update_object, (err, results)=>{
+    write.updateCB(update_object, (err, results)=>{
         if(err){
             callback(err);
             return;
