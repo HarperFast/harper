@@ -304,12 +304,12 @@ class SocketClient {
                 global.cluster_queue[this.other_node.name] = {};
             }
             global.cluster_queue[this.other_node.name][payload.id] = payload;
-
+            let timestamp = moment().valueOf();
             let results = await cluster_handlers.addToHDBQueue({
                 "payload": payload,
                 "id": payload.id,
                 "node": msg.node,
-                "timestamp": moment.valueOf(),
+                "timestamp": timestamp,
                 "node_name": msg.node.name
             });
 

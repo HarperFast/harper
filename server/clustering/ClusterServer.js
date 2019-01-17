@@ -86,12 +86,13 @@ class ClusterServer {
                     global.cluster_queue[msg.node.name] = {};
                 }
                 global.cluster_queue[msg.node.name][payload.id] = payload;
+                let timestamp = moment().valueOf();
                 try {
                     cluster_handler.addToHDBQueue({
                         "payload": payload,
                         "id": payload.id,
                         "node": msg.node,
-                        "timestamp": moment.valueOf(),
+                        "timestamp": timestamp,
                         "node_name": msg.node.name
                     });
                 } catch(e) {

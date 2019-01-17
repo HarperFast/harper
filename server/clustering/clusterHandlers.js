@@ -6,8 +6,12 @@ const {promisify} = require('util');
 const clone = require('clone');
 const insert = require('../../data_layer/insert');
 const terms = require('../../utility/hdbTerms');
+const SQL_Search_Object = require('../../data_layer/SqlSearchObject');
+const hdb_sql = require('../../sqlTranslator/index');
 
 const p_search_by_value = promisify(search.searchByValue);
+const p_search = promisify(search.search);
+const p_sql_evaluate = promisify(hdb_sql.evaluateSQL);
 const p_delete = promisify(delete_.delete);
 const p_schema_describe_all = promisify(schema.describeAll);
 const p_insert = promisify(insert.insert);
@@ -89,9 +93,14 @@ async function onConfirmMessageHandler(msg){
     }
 }
 
+/**
+ * Performs a search against hdb_queue by node name to get any pending messages meant for that node.  Sort by timestamp.
+ * @param node
+ * @returns {Promise<*>}
+ */
 async function getFromDisk(node) {
     let search_obj = {};
-    /*
+
     search_obj.schema = 'system';
     search_obj.table = 'hdb_queue';
     search_obj.hash_attribute = 'id';
@@ -103,12 +112,30 @@ async function getFromDisk(node) {
     }
 
     search_obj.get_attributes = ['*'];
-*/
-    search_obj.operation = 'sql';
-    search_obj.sql = `SELECT FROM system.hdb_queue ${node ? `WHERE name = ${node.name}` : ``} ORDERBY timestamp`;
-    //we do no catching instead let the error bubble out
+
     let data = await p_search_by_value(search_obj);
+    try {
+        if (data && data.length > 0) {
+            data.sort(compare);
+        }
+    } catch(err) {
+        harper_logger.error(err);
+    }
     return data;
+}
+
+/**
+ * Comparator function for sorting by timestamp.
+ * @param a
+ * @param b
+ * @returns {number}
+ */
+function compare(a,b) {
+    if (a.timestamp < b.timestamp)
+        return -1;
+    if (a.timestamp > b.timestamp)
+        return 1;
+    return 0;
 }
 
 async function addToHDBQueue(item) {
