@@ -3,9 +3,9 @@
 const search = require('./search');
 const sql = require('../sqlTranslator/index');
 const AWS = require('aws-sdk');
-const Json2csvParser = require('json2csv').Parser;
+const alasql = require('alasql');
 const hdb_utils = require('../utility/common_utils');
-const fs = require('graceful-fs');
+const fs = require('fs-extra');
 const path =  require('path');
 const hdb_logger = require('../utility/logging/harper_logger');
 const {promisify} = require('util');
@@ -17,8 +17,6 @@ const JSON_TEXT = 'json';
 const CSV = 'csv';
 
 // Promisified function
-const p_fs_stat = promisify(fs.stat);
-const p_fs_writefile = promisify(fs.writeFile);
 const p_search_by_hash = promisify(search.searchByHash);
 const p_search_by_value = promisify(search.searchByValue);
 const p_sql = promisify(sql.evaluateSQL);
@@ -76,7 +74,7 @@ async function confirmPath(path) {
     }
     let stats = undefined;
     try {
-        stats = await p_fs_stat(path);
+        stats = await fs.stat(path);
     } catch(err) {
         let error_message;
         if (err.code === 'ENOENT') {
@@ -118,7 +116,7 @@ async function saveToLocal(file_path, source_data_format, data) {
         data = JSON.stringify(data);
     }
     try {
-        await p_fs_writefile(file_path, data);
+        await fs.writeFile(file_path, data);
     } catch(err) {
         hdb_logger.error(err);
         throw err;
@@ -256,14 +254,9 @@ async function searchAndConvert(export_object){
     if(export_object.format === JSON_TEXT) {
         return results;
     } else if (export_object.format === CSV) {
-        let fields = [];
-        for (let key in results[0]) {
-            fields.push(key);
-        }
         let csv_results = undefined;
         try {
-            let parser = new Json2csvParser({fields});
-            csv_results = parser.parse(results);
+            csv_results = await alasql.promise('SELECT * INTO CSV({headers:true, separator:","}) FROM ?', [results]);
         } catch(e){
             hdb_logger.error(e);
             throw e;

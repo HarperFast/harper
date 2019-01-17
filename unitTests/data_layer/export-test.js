@@ -155,9 +155,9 @@ describe('Test saveToLocal', function() {
     });
     it('Simulate exception from writing', async function() {
         file_name = test_path + 'test_file.json';
-        let write_orig = hdb_export.__get__('p_fs_writefile');
+        let write_orig = hdb_export.__get__('fs.writeFile');
         let write_stub = sandbox.stub().throws(new Error('booo error'));
-        hdb_export.__set__('p_fs_writefile', write_stub);
+        hdb_export.__set__('fs.writeFile', write_stub);
         let err = undefined;
         let wrote_data = undefined;
         try {
@@ -167,7 +167,7 @@ describe('Test saveToLocal', function() {
         }
         assert.ok(err.message.length > 0, "Expected error message");
         assert.ok(err.message.indexOf('booo error') >= 0, "Incorrect error found");
-        hdb_export.__set__('p_fs_writefile', write_orig);
+        hdb_export.__set__('fs.writeFile', write_orig);
     });
 });
 
