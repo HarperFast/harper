@@ -1,195 +1,183 @@
 {
-  "id": "5070d71a-dc1f-459e-aa51-44389d0e042b",
+  "id": "54cca537-a03e-4940-a379-4294470afc0c",
   "name": "HarperDB Integration Tests Environment Variables",
   "values": [
     {
       "key": "host",
       "value": "http://localhost",
-      "enabled": true,
-      "type": "text"
+      "enabled": true
     },
     {
       "key": "port",
       "value": "9925",
-      "enabled": true,
-      "type": "text"
+      "enabled": true
     },
     {
       "key": "username",
       "value": "admin",
-      "enabled": true,
-      "type": "text"
+      "enabled": true
     },
     {
       "key": "password",
       "value": "Abc1234!",
-      "enabled": true,
-      "type": "text"
+      "enabled": true
     },
     {
       "key": "schema",
       "value": "northnwd",
-      "enabled": true,
-      "type": "text"
+      "enabled": true
     },
     {
       "key": "files_location",
       "value": "/home/harperdb/mycos_csv/",
-      "enabled": true,
-      "type": "text"
+      "enabled": true
     },
     {
       "key": "emps_tb",
       "value": "employees",
-      "enabled": true,
-      "type": "text"
+      "enabled": true
     },
     {
       "key": "emps_id",
       "value": "employeeid",
-      "enabled": true,
-      "type": "text"
+      "enabled": true
     },
     {
       "key": "ords_tb",
       "value": "orders",
-      "enabled": true,
-      "type": "text"
+      "enabled": true
     },
     {
       "key": "ords_id",
       "value": "orderid",
-      "enabled": true,
-      "type": "text"
+      "enabled": true
     },
     {
       "key": "ordd_tb",
       "value": "order_details",
-      "enabled": true,
-      "type": "text"
+      "enabled": true
     },
     {
       "key": "ordd_id",
       "value": "orderid",
-      "enabled": true,
-      "type": "text"
+      "enabled": true
     },
     {
       "key": "prod_tb",
       "value": "products",
-      "enabled": true,
-      "type": "text"
+      "enabled": true
     },
     {
       "key": "prod_id",
       "value": "productid",
-      "enabled": true,
-      "type": "text"
+      "enabled": true
     },
     {
       "key": "cust_tb",
       "value": "customers",
-      "enabled": true,
-      "type": "text"
+      "enabled": true
     },
     {
       "key": "cust_id",
       "value": "customerid",
-      "enabled": true,
-      "type": "text"
+      "enabled": true
     },
     {
       "key": "cate_tb",
       "value": "categories",
-      "enabled": true,
-      "type": "text"
+      "enabled": true
     },
     {
       "key": "cate_id",
       "value": "categoryid",
-      "enabled": true,
-      "type": "text"
+      "enabled": true
     },
     {
       "key": "supp_tb",
       "value": "suppliers",
-      "enabled": true,
-      "type": "text"
+      "enabled": true
     },
     {
       "key": "supp_id",
       "value": "supplierid",
-      "enabled": true,
-      "type": "text"
+      "enabled": true
     },
     {
       "key": "ship_tb",
       "value": "shippers",
-      "enabled": true,
-      "type": "text"
+      "enabled": true
     },
     {
       "key": "ship_id",
       "value": "shipperid",
-      "enabled": true,
-      "type": "text"
+      "enabled": true
     },
     {
       "key": "empt_tb",
       "value": "employeeterritories",
-      "enabled": true,
-      "type": "text"
+      "enabled": true
     },
     {
       "key": "empt_id",
       "value": "employeeid",
-      "enabled": true,
-      "type": "text"
+      "enabled": true
     },
     {
       "key": "terr_tb",
       "value": "territories",
-      "enabled": true,
-      "type": "text"
+      "enabled": true
     },
     {
       "key": "terr_id",
       "value": "territoryid",
-      "enabled": true,
-      "type": "text"
+      "enabled": true
     },
     {
       "key": "regi_tb",
       "value": "region",
-      "enabled": true,
-      "type": "text"
+      "enabled": true
     },
     {
       "key": "regi_id",
       "value": "regionid",
-      "enabled": true,
-      "type": "text"
+      "enabled": true
     },
     {
       "key": "user_id",
       "value": "",
-      "enabled": true,
-      "type": "text"
+      "enabled": true
     },
     {
       "key": "test_user_name",
       "value": "test_user",
-      "enabled": true,
-      "type": "text"
+      "enabled": true
     },
     {
       "key": "role_id",
       "value": "fa05a5b8-b505-4bef-83e5-873ff53e6f67",
-      "enabled": true,
-      "type": "text"
+      "enabled": true
+    },
+    {
+      "key": "job_id",
+      "value": "",
+      "description": "",
+      "enabled": true
+    },
+    {
+      "key": "next_request",
+      "value": "",
+      "description": "",
+      "enabled": true
+    },
+    {
+      "key": "function:getJobId",
+      "value": "",
+      "type": "text",
+      "description": "",
+      "enabled": true
     }
   ],
   "_postman_variable_scope": "environment",
-  "_postman_exported_at": "2018-06-13T18:23:12.397Z",
-  "_postman_exported_using": "Postman/6.1.3"
+  "_postman_exported_at": "2019-01-16T22:29:45.434Z",
+  "_postman_exported_using": "Postman/6.7.1"
 }
