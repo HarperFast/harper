@@ -21,7 +21,7 @@ module.exports = {
             search.searchByValue(schema_search, function(err, schemas){
 
                 let schema_list = {};
-                for(s in schemas){
+                for(let s in schemas){
                     schema_list[schemas[s].name] = true;
                 }
 
@@ -53,7 +53,7 @@ module.exports = {
                             t_results.push(desc);
                             caller();
 
-                        })
+                        });
 
                     }, function (err, data) {
                         if (err) {
@@ -62,7 +62,7 @@ module.exports = {
                         }
 
                         let hdb_description = {};
-                        for (t in t_results) {
+                        for (let t in t_results) {
                             if (hdb_description[t_results[t].schema] == null) {
                                 hdb_description[t_results[t].schema] = {};
 
@@ -75,7 +75,7 @@ module.exports = {
 
                         }
 
-                        for(schema in schema_list){
+                        for(let schema in schema_list){
                             hdb_description[schema] = {};
                         }
                         callback(null, hdb_description);

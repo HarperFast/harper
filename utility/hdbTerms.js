@@ -214,6 +214,7 @@ const CLUSTER_MESSAGE_TYPE_ENUM = {
     NODE_REMOVED: 'node_removed',
     CLUSTER_STATUS: 'cluster_status',
     JOB: 'job',
+    CHILD_STARTED: 'child_started',
     USER: 'user'
 };
 const CLUSTER_CONNECTION_DIRECTION_ENUM = {

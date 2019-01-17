@@ -20,6 +20,8 @@ const p_auth_authorize = promisify(auth.authorize);
 
 const iface = os.networkInterfaces();
 const addresses = [];
+const started_forks = {};
+let is_enterprise = false;
 
 const STATUS_TIMEOUT_MS = 2000;
 
@@ -31,6 +33,27 @@ for (let k in iface) {
         if (address.family === 'IPv4' && !address.internal) {
             addresses.push(address.address);
         }
+    }
+}
+
+function setEnterprise(enterprise) {
+    is_enterprise = enterprise;
+}
+
+async function kickOffEnterprise() {
+    const enterprise_util = require('../../utility/enterpriseInitialization');
+    const p_kick_off_enterprise = promisify(enterprise_util.kickOffEnterprise);
+
+    global.forks.forEach((fork) => {
+        fork.send({"type": "enterprise", "enterprise": is_enterprise});
+    });
+
+    let enterprise_msg = await p_kick_off_enterprise();
+    if (enterprise_msg.clustering) {
+        global.clustering_on = true;
+        global.forks.forEach((fork) => {
+            fork.send({"type": "clustering"});
+        });
     }
 }
 
@@ -351,6 +374,10 @@ function getClusterStatus() {
     return status_obj;
 }
 
+/**
+ * This function describes messages the master process expects to recieve from child processes.
+ * @param msg
+ */
 function clusterMessageHandler(msg) {
     try {
         switch(msg.type) {
@@ -429,6 +456,18 @@ function clusterMessageHandler(msg) {
                     target_process.send(msg);
                 }
                 break;
+            case terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STARTED:
+                log.info('Received child started event.');
+                if(started_forks[msg.pid]) {
+                    log.warn(`Got a duplicate child started event for pid ${msg.pid}`);
+                } else {
+                    started_forks[msg.pid] = true;
+                    if(Object.keys(started_forks).length === global.forks.length) {
+                        //all children are started, kick off enterprise.
+                        kickOffEnterprise();
+                    }
+                }
+                break;
             default:
                 log.error(`Got an unhandled cluster message type ${msg.type}`);
                 break;
@@ -459,5 +498,6 @@ module.exports = {
     removeNode: removeNodeCB,
     payloadHandler: payloadHandler,
     clusterMessageHandler: clusterMessageHandler,
-    authHeaderToUser: authHeaderToUser
+    authHeaderToUser: authHeaderToUser,
+    setEnterprise: setEnterprise
 };
