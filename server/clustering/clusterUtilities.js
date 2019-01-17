@@ -95,7 +95,7 @@ function addNode(new_node, callback) {
         "records": [new_node]
     };
 
-    insert.insert(new_node_insert, function(err, results){
+    insert.insertCB(new_node_insert, function(err, results){
         if(err) {
             log.error(`Error adding new cluster node ${new_node_insert}.  ${err}`);
             return callback(err);
@@ -395,6 +395,11 @@ function clusterMessageHandler(msg) {
                 });
                 break;
             case terms.CLUSTER_MESSAGE_TYPE_ENUM.SCHEMA:
+                global.forks.forEach((fork) => {
+                    fork.send(msg);
+                });
+                break;
+            case terms.CLUSTER_MESSAGE_TYPE_ENUM.USER:
                 global.forks.forEach((fork) => {
                     fork.send(msg);
                 });

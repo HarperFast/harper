@@ -23,6 +23,7 @@ const fs = require('fs');
 const cluster_utilities = require('./clustering/clusterUtilities');
 const cluster_event = require('../events/ClusterStatusEmitter');
 const signalling = require('../utility/signalling');
+const Pool = require('threads').Pool;
 
 const DEFAULT_SERVER_TIMEOUT = 120000;
 const PROPS_SERVER_TIMEOUT_KEY = 'SERVER_TIMEOUT_MS';
@@ -70,6 +71,11 @@ if(DEBUG){
 }
 
 cluster.on('exit', (dead_worker, code, signal) => {
+    try {
+        global.hdb_pool.killAll();
+    } catch (e){
+        harper_logger.error(e);
+    }
     harper_logger.info(`worker ${dead_worker.process.pid} died with signal ${signal} and code ${code}`);
     let new_worker = undefined;
     try {
@@ -93,11 +99,18 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     const search = require('../data_layer/search');
     const enterprise_util = require('../utility/enterpriseInitialization');
 
+    global.hdb_pool = new Pool();
+
     process.on('uncaughtException', function (err) {
         let os = require('os');
         let message = `Found an uncaught exception with message: os.EOL ${err.message}.  Stack: ${err.stack} ${os.EOL} Terminating HDB.`;
         console.error(message);
         harper_logger.fatal(message);
+        try {
+            global.hdb_pool.killAll();
+        } catch(e){
+            harper_logger.error(e);
+        }
         process.exit(1);
     });
 
@@ -158,6 +171,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         });
     });
 } else {
+    global.hdb_pool = new Pool();
     harper_logger.info('In express' + process.cwd());
     harper_logger.info(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
     const express = require('express');
@@ -382,7 +396,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                                         records: [item]
                                     };
 
-                                    insert.insert(insert_object, function (err) {
+                                    insert.insertCB(insert_object, function (err) {
                                         if (err) {
                                             harper_logger.error(err);
                                             return callback_(err);
@@ -471,6 +485,11 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         let message = `Found an uncaught exception with message: os.EOL ${err.message}.  Stack: ${err.stack} ${os.EOL} Terminating HDB.`;
         console.error(message);
         harper_logger.fatal(message);
+        try {
+            global.hdb_pool.killAll();
+        } catch(e) {
+            harper_logger.error(e);
+        }
         process.exit(1);
     });
 

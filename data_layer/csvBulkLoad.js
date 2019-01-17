@@ -129,7 +129,7 @@ async function csvFileLoad(json_message) {
 
 /**
  * Grab the file specified in the URL parameter.
- * @param url - URL to file.
+ * @param {string} url - URL to file.
  * @returns {Promise<*>}
  */
 async function createReadStreamFromURL(url) {
@@ -212,60 +212,34 @@ function validateColumnNames(created_record) {
  * @param callback - The caller
  */
 function bulkLoad(records, schema, table, action, callback){
-    let chunks = _.chunk(records, RECORD_BATCH_SIZE);
-    let write_hashes = 0;
-    //TODO: Noone remember why we have this here.  We should refactor this when
-    // we have more benchmarks for comparison.  Might be able to leverage cores once
-    // the process pool is ready.
-    if( !action )
+    if( !action ) {
         action = 'insert';
-    async.eachLimit(chunks, 4, (record_chunk, caller)=>{
-        let target_object = {
-            schema: schema,
-            table: table,
-            records: record_chunk
-        };
+    }
 
-        switch (action) {
-            case 'insert':
-                target_object.operation = 'insert';
-                insert.insert(target_object, (err, data)=>{
-                    if(err){
-                        caller(err);
-                        return;
-                    }
-                    if(!hdb_utils.isEmptyOrZeroLength(data.inserted_hashes)) {
-                        write_hashes += data.inserted_hashes.length;
-                    }
+    let target_object = {
+        operation: action,
+        schema: schema,
+        table: table,
+        records: records
+    };
 
-                    caller(null, data);
-                });
-                break;
-            case 'update':
-                target_object.operation = 'update';
-                insert.update(target_object, (err, data)=>{
-                    if(err){
-                        caller(err);
-                        return;
-                    }
-                    if(!hdb_utils.isEmptyOrZeroLength(data.update_hashes)) {
-                        write_hashes += data.update_hashes.length;
-                    }
+    let write_function;
+    if(action === 'insert'){
+        write_function = insert.insertCB;
+    } else {
+        write_function = insert.updateCB;
+    }
 
-                    caller(null, data);
-                });
-                break;
-        }
-
-    }, (err)=>{
-        if(err){
+    write_function(target_object, (err, data)=> {
+        if (err) {
             callback(err);
             return;
         }
 
+        let number_written = hdb_utils.isEmptyOrZeroLength(data.inserted_hashes) ? 0 : data.inserted_hashes.length;
         let update_status = {
-            message: `successfully loaded ${write_hashes} of ${records.length} records`
+            message: `successfully loaded ${number_written} of ${records.length} records`
         };
-        callback(null,update_status);
+        callback(null, update_status);
     });
 }
