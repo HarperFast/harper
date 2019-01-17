@@ -20,17 +20,26 @@ class ClusterStatusSignalObject {
     }
 }
 
+class ChildStartedSignalObject {
+    constructor(pid) {
+        this.type = terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STARTED;
+        this.pid = pid;
+    }
+}
+
 function signalSchemaChange(message){
     try {
         // if process.send is undefined we are running a single instance of the process.
-        if (process.send === undefined) {
+        if (process.send === undefined || global.isMaster) {
             global_schema.schemaSignal((err) => {
                 if (err) {
                     harper_logger.error(err);
                 }
             });
-        } else {
+        } else if(!global.isMaster){
             process.send(message);
+        } else {
+            harper_logger.warn(`Got schema change, but process.send is undefined and I am not master. My pid is ${process.pid}.  Global.isMaster is: ${global.isMaster}`);
         }
     }catch(e){
         harper_logger.error(e);
@@ -45,7 +54,7 @@ function signalSchemaChange(message){
 function signalUserChange(message){
     try {
         // if process.send is undefined we are running a single instance of the process.
-        if (process.send !== undefined) {
+        if (process.send !== undefined && !global.isMaster) {
             process.send(message);
         } else {
             //TODO: Can't call user schema directly, circular dependency.  FIX THIS,
@@ -58,7 +67,7 @@ function signalUserChange(message){
 function signalJobAdded(job_added_signal_object){
     try {
         // if process.send is undefined we are running a single instance of the process.
-        if (process.send !== undefined) {
+        if (process.send !== undefined && !global.isMaster) {
             process.send(job_added_signal_object);
         } else {
             harper_logger.warn('Only 1 process is running, but a signal has been invoked.  Signals will be ignored when only 1 process is running.');
@@ -72,8 +81,21 @@ function signalJobAdded(job_added_signal_object){
 function signalClusterStatus(){
     try {
         // if process.send is undefined we are running a single instance of the process.
-        if (process.send !== undefined) {
+        if (process.send !== undefined && !global.isMaster) {
             process.send(new ClusterStatusSignalObject());
+        } else {
+            harper_logger.warn('Only 1 process is running, but a signal has been invoked.  Signals will be ignored when only 1 process is running.');
+        }
+    } catch(e){
+        harper_logger.error(e);
+    }
+}
+
+function signalChildStarted() {
+    try {
+        // if process.send is undefined we are running a single instance of the process.
+        if (process.send !== undefined && !global.isMaster) {
+            process.send(new ChildStartedSignalObject(process.pid));
         } else {
             harper_logger.warn('Only 1 process is running, but a signal has been invoked.  Signals will be ignored when only 1 process is running.');
         }
@@ -87,5 +109,6 @@ module.exports = {
     signalUserChange,
     signalJobAdded: signalJobAdded,
     signalClusterStatus: signalClusterStatus,
-    JobAddedSignalObject: JobAddedSignalObject
+    JobAddedSignalObject: JobAddedSignalObject,
+    signalChildStarted: signalChildStarted
 };

@@ -22,6 +22,7 @@ const global_schema = require('../utility/globalSchema');
 const fs = require('fs');
 const cluster_utilities = require('./clustering/clusterUtilities');
 const cluster_event = require('../events/ClusterStatusEmitter');
+const signalling = require('../utility/signalling');
 const moment = require('moment');
 const Pool = require('threads').Pool;
 
@@ -95,6 +96,7 @@ cluster.on('exit', (dead_worker, code, signal) => {
 });
 
 if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
+    global.isMaster = cluster.isMaster;
     const search = require('../data_layer/search');
     const enterprise_util = require('../utility/enterpriseInitialization');
 
@@ -136,6 +138,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                     let license_validation = await hdb_license.validateLicense(license.license_key, license.company);
                     if (license_validation.valid_machine && license_validation.valid_date && license_validation.valid_license) {
                         enterprise = true;
+                        cluster_utilities.setEnterprise(true);
                         if (num_workers > numCPUs) {
                             if (numCPUs === 4) {
                                 numCPUs = 16;
@@ -155,6 +158,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                 for (let i = 0; i < numCPUs; i++) {
                     try {
                         let forked = cluster.fork();
+                        // assign handler for messages expected from child processes.
                         forked.on('message', cluster_utilities.clusterMessageHandler);
                         forks.push(forked);
                     } catch (e) {
@@ -163,20 +167,6 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                 }
 
                 global.forks = forks;
-                //TODO change all of this to be environment variables
-                if (enterprise) {
-                    forks.forEach((fork) => {
-                        fork.send({"type": "enterprise", "enterprise": enterprise});
-                    });
-                    enterprise_util.kickOffEnterprise(function (enterprise_msg) {
-                        if (enterprise_msg.clustering) {
-                            global.clustering_on = true;
-                            forks.forEach((fork) => {
-                                fork.send({"type": "clustering"});
-                            });
-                        }
-                    });
-                }
                 global.forkClusterMsgQueue = {};
             });
         });
@@ -516,6 +506,8 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         const props_http_secure_on = hdb_properties.get(PROPS_HTTP_SECURE_ON_KEY);
         const props_http_on = hdb_properties.get(PROPS_HTTP_ON_KEY);
 
+        global.isMaster = cluster.isMaster;
+
         let httpServer = undefined;
         let secureServer = undefined;
 
@@ -528,7 +520,8 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                 async.parallel(
                     [
                         global_schema.setSchemaDataToGlobal,
-                        user_schema.setUsersToGlobal
+                        user_schema.setUsersToGlobal,
+                        signalling.signalChildStarted
                     ], (error) => {
                         if (error) {
                             harper_logger.error(error);
@@ -546,7 +539,8 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                 async.parallel(
                     [
                         global_schema.setSchemaDataToGlobal,
-                        user_schema.setUsersToGlobal
+                        user_schema.setUsersToGlobal,
+                        signalling.signalChildStarted
                     ], (error) => {
                         if (error) {
                             harper_logger.error(error);

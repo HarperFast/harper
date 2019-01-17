@@ -113,7 +113,7 @@ describe('Test kickOffEnterprise', function () {
         hdb_properties.set('CLUSTERING_PORT', '1115');
         hdb_properties.set('NODE_NAME', 'node_1');
         
-        enterprise_initialization.kickOffEnterprise(function(result){
+        enterprise_initialization.kickOffEnterprise(function(err, result){
             assert.equal(ClusterServerStub.calledWithNew(), true, 'new ClusterServer(...) should have been called');
 
             // get arg of new ClusterServer(..) and validate
@@ -139,7 +139,7 @@ describe('Test kickOffEnterprise', function () {
         hdb_properties.set('CLUSTERING_PORT', '1115');
         hdb_properties.set('NODE_NAME', 'node_1');
         
-        enterprise_initialization.kickOffEnterprise(function(result){
+        enterprise_initialization.kickOffEnterprise(function(err, result){
             assert.deepEqual(ClusterServerStub.calledWithNew(), true, 'new ClusterServer(...) should have been called');
             assert.notEqual(null, global.cluster_server, 'global.cluster_server should be set');
             assert.deepEqual(result.clustering, true, 'function should return clustering = true');
@@ -158,7 +158,7 @@ describe('Test kickOffEnterprise', function () {
         if (hdb_properties.get('CLUSTERING')) {
             hdb_properties.set('CLUSTERING', '');
         }
-        enterprise_initialization.kickOffEnterprise(function(result){
+        enterprise_initialization.kickOffEnterprise(function(err, result){
             assert.deepEqual(ClusterServerStub.calledWithNew(), false, 'new ClusterServer(...) should have not been called');                
             assert.deepEqual(null, global.cluster_server, 'global.cluster_server should not be set');
             assert.deepEqual(result.clustering, false, 'function should return clustering = false');
@@ -177,7 +177,7 @@ describe('Test kickOffEnterprise', function () {
         hdb_properties.set('CLUSTERING_PORT', '1115');
         hdb_properties.set('NODE_NAME', 'node_1');
 
-        enterprise_initialization.kickOffEnterprise(function(result){
+        enterprise_initialization.kickOffEnterprise(function(err, result){
             assert.deepEqual(ClusterServerStub.calledWithNew(), false, 'new ClusterServer(...) should have not been called');                
             assert.deepEqual(null, global.cluster_server, 'global.cluster_server should not be set');
             assert.deepEqual(result.clustering, false, 'function should return clustering = false');
@@ -196,7 +196,7 @@ describe('Test kickOffEnterprise', function () {
         hdb_properties.set('CLUSTERING_PORT', '1115');
         hdb_properties.set('NODE_NAME', 'node_1');
 
-        enterprise_initialization.kickOffEnterprise(function(result){
+        enterprise_initialization.kickOffEnterprise(function(err, result){
             assert.equal(ClusterServerStub.calledWithNew(), true, 'new ClusterServer(...) should have been called');           
             assert.notDeepEqual(null, global.cluster_server, 'global.cluster_server should be set and not be null');
             assert.deepEqual(result.clustering, false, 'function should return clustering = false');
@@ -215,7 +215,7 @@ describe('Test kickOffEnterprise', function () {
         hdb_properties.set('CLUSTERING_PORT', '1115');
         hdb_properties.set('NODE_NAME', 'node_1');
 
-        enterprise_initialization.kickOffEnterprise(function(result){
+        enterprise_initialization.kickOffEnterprise(function(err, result){
             assert.equal(ClusterServerStub.calledWithNew(), true, 'new ClusterServer(...) should have been called');           
             assert.notDeepEqual(null, global.cluster_server, 'global.cluster_server should be set and not be null');
             assert.deepEqual(result.clustering, false, 'function should return clustering = false');
