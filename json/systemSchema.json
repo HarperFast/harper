@@ -22,12 +22,6 @@
       }
     ]
   },
-  "hdb_drop_schema":{
-    "hash_attribute":"id",
-    "name":"hdb_drop_schema",
-    "schema":"system",
-    "residence":["*"]
-  },
   "hdb_attribute":{
     "hash_attribute":"id",
     "name":"hdb_attribute",
@@ -139,10 +133,20 @@
   "hdb_license":{
     "hash_attribute":"license_key",
     "name":"hdb_license",
-    "schema":"system"
+    "schema":"system",
+    "attributes": [
+      {
+        "attribute": "license_key"
+      },
+      {
+        "attribute": "company"
+      }
+    ]
   },
   "hdb_nodes":{
     "hash_attribute": "name",
+    "name": "hdb_nodes",
+    "schema": "system",
     "attributes":[
       {
         "attribute":"name"
@@ -160,6 +164,23 @@
   },
   "hdb_queue":{
     "hash_attribute":"id",
+    "attributes":[
+      {
+        "attribute":"id"
+      },
+      {
+        "attribute":"node"
+      },
+      {
+        "attribute":"node_name"
+      },
+      {
+        "attribute":"payload"
+      },
+      {
+        "attribute":"timestamp"
+      }
+    ],
     "name":"hdb_queue",
     "schema":"system",
     "residence":["*"]
