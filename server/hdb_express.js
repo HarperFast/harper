@@ -388,7 +388,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                                         "id": id,
                                         "node": {"node": residence},
                                         "node_name": residence,
-                                        "timestamp": moment().valueOf()
+                                        "timestamp": moment.utc().valueOf()
                                     };
 
                                     let insert_object = {

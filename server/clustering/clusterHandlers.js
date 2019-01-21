@@ -10,8 +10,6 @@ const SQL_Search_Object = require('../../data_layer/SqlSearchObject');
 const hdb_sql = require('../../sqlTranslator/index');
 
 const p_search_by_value = promisify(search.searchByValue);
-const p_search = promisify(search.search);
-const p_sql_evaluate = promisify(hdb_sql.evaluateSQL);
 const p_delete = promisify(delete_.delete);
 const p_schema_describe_all = promisify(schema.describeAll);
 const p_insert = promisify(insert.insert);
