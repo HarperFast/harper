@@ -23,6 +23,7 @@ const fs = require('fs');
 const cluster_utilities = require('./clustering/clusterUtilities');
 const cluster_event = require('../events/ClusterStatusEmitter');
 const signalling = require('../utility/signalling');
+const moment = require('moment');
 const Pool = require('threads').Pool;
 
 const DEFAULT_SERVER_TIMEOUT = 120000;
@@ -386,7 +387,8 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                                         "payload": {"body":req.body, "id": id},
                                         "id": id,
                                         "node": {"node": residence},
-                                        "node_name": residence
+                                        "node_name": residence,
+                                        "timestamp": moment.utc().valueOf()
                                     };
 
                                     let insert_object = {
