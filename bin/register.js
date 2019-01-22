@@ -4,12 +4,10 @@ const Pool = require('threads').Pool;
 
 async function register() {
     try {
-        global.hdb_pool = new Pool();
         let result = await registrationHandler.register().catch((err) => {
-            global.hdb_pool.killAll();
             return logger.error(`Registration error ${err}`);
         });
-        global.hdb_pool.killAll();
+
         if (!result) {
             return (`Registration failed.`);
         }
@@ -21,4 +19,4 @@ async function register() {
 
 module.exports = {
     register: register
-}
+};

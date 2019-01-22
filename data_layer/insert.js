@@ -24,6 +24,7 @@ const exploder = require('./dataWriteProcessor');
 const {promisify} = require('util');
 const ExplodedObject = require('./ExplodedObject');
 const WriteProcessorObject = require('./WriteProcessorObject');
+const Pool = require('threads').Pool;
 
 let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
 hdb_properties.append(hdb_properties.get('settings_path'));
@@ -144,19 +145,22 @@ function updateDataCB(update_object, callback){
  * @param insert_object
  */
 async function insertData(insert_object){
+    let pool = undefined;
     try {
         let epoch = Date.now();
+
         if (insert_object.operation !== 'insert') {
             throw new Error('invalid operation, must be insert');
         }
 
         let {table_schema, attributes} = await validation(insert_object);
 
-        let { written_hashes, skipped, ...data_wrapper} = await processRows(insert_object, attributes, table_schema, epoch);
+        let { written_hashes, skipped, ...data_wrapper} = await processRows(insert_object, attributes, table_schema, epoch, null, pool);
+        pool = data_wrapper.pool;
 
         await checkForNewAttributes(insert_object.hdb_auth_header, table_schema, attributes);
 
-        await processData(data_wrapper);
+        pool = await processData(data_wrapper, pool);
 
         let return_object = {
             message: `inserted ${written_hashes.length} of ${insert_object.records.length} records`,
@@ -164,8 +168,14 @@ async function insertData(insert_object){
             skipped_hashes: skipped
         };
 
+        if(pool instanceof Pool){
+            pool.killAll();
+        }
         return return_object;
     } catch(e){
+        if(pool instanceof Pool){
+            pool.killAll();
+        }
         throw (e);
     }
 }
@@ -175,6 +185,7 @@ async function insertData(insert_object){
  * @param update_object - The data that will be updated in the database
  */
 async function updateData(update_object){
+    let pool = undefined;
     try {
         let epoch = Date.now();
 
@@ -195,13 +206,14 @@ async function updateData(update_object){
             return record[table_schema.hash_attribute];
         });
 
-        let { written_hashes, skipped, unlinks, ...data_wrapper} = await processRows(update_object, attributes, table_schema, epoch, existing_map);
+        let { written_hashes, skipped, unlinks, ...data_wrapper} = await processRows(update_object, attributes, table_schema, epoch, existing_map, pool);
+        pool = data_wrapper.pool;
 
         await checkForNewAttributes(update_object.hdb_auth_header, table_schema, attributes);
 
-        await unlinkFiles(unlinks);
+        pool = await unlinkFiles(unlinks, pool);
 
-        await processData(data_wrapper);
+        pool = await processData(data_wrapper, pool);
 
         let return_object = {
             message: `updated ${written_hashes.length} of ${update_object.records.length} records`,
@@ -209,8 +221,15 @@ async function updateData(update_object){
             skipped_hashes: skipped
         };
 
+        if(pool instanceof Pool){
+            pool.killAll();
+        }
+
         return return_object;
     } catch(e){
+        if(pool instanceof Pool){
+            pool.killAll();
+        }
         throw (e);
     }
 }
@@ -251,11 +270,16 @@ async function getExistingRows(table_schema, hashes, attributes){
  * @param table_schema
  * @param epoch
  * @param existing_rows
+ * @param pool
  * @returns {Promise<ExplodedObject|ExplodedObject>}
  */
-async function processRows(insert_object, attributes, table_schema, epoch, existing_rows){
+async function processRows(insert_object, attributes, table_schema, epoch, existing_rows, pool){
     let data_wrapper;
     if(insert_object.records.length > CHUNK_SIZE){
+        if(!(pool instanceof Pool)){
+            pool = new Pool();
+        }
+
         let chunks = _.chunk(insert_object.records, CHUNK_SIZE);
         let folders = new Set();
         let raw_data = [];
@@ -263,13 +287,12 @@ async function processRows(insert_object, attributes, table_schema, epoch, exist
         let written_hashes = [];
         let unlinks = [];
 
-
         await Promise.all(
             chunks.map(async chunk => {
                 try {
                     let exploder_object = new WriteProcessorObject(hdb_path, insert_object.operation, chunk, table_schema, attributes, epoch, existing_rows);
 
-                    let result = await global.hdb_pool.run('../data_layer/dataWriteProcessor').send(exploder_object).promise();
+                    let result = await pool.run('../data_layer/dataWriteProcessor').send(exploder_object).promise();
                     //each process returns an instance of its data we need to consolidate each result
                     if (result) {
                         result.folders.forEach((folder) => {
@@ -295,25 +318,31 @@ async function processRows(insert_object, attributes, table_schema, epoch, exist
         );
         chunks = undefined;
         data_wrapper = new ExplodedObject(written_hashes, skipped, Array.from(folders), raw_data, unlinks);
-
     } else{
         let exploder_object = new WriteProcessorObject(hdb_path, insert_object.operation, insert_object.records, table_schema, attributes, epoch, existing_rows);
         data_wrapper = await exploder(exploder_object);
     }
+    data_wrapper.pool = pool;
     return data_wrapper;
 }
 
 /**
  *deletes files in bulk
  * @param unlink_paths
+ * @param pool
  */
-async function unlinkFiles(unlink_paths) {
+async function unlinkFiles(unlink_paths, pool) {
     try {
         if (unlink_paths.length > CHUNK_SIZE) {
-            await pool_handler(global.hdb_pool, unlink_paths, CHUNK_SIZE, '../utility/fs/unlink');
+            if(!(pool instanceof Pool)){
+                pool = new Pool();
+            }
+            await pool_handler(pool, unlink_paths, CHUNK_SIZE, '../utility/fs/unlink');
         } else {
             await unlink(unlink_paths);
         }
+
+        return pool;
     } catch(e) {
         logger.error(e);
     }
@@ -322,23 +351,32 @@ async function unlinkFiles(unlink_paths) {
 /**
  * wrapper function that orchestrates the record creation on disk
  * @param data_wrapper
+ * @param pool
  */
-async function processData(data_wrapper) {
-    await createFolders(data_wrapper.folders);
-    await writeRawDataFiles(data_wrapper.raw_data);
+async function processData(data_wrapper, pool) {
+    pool = await createFolders(data_wrapper.folders, pool);
+    pool = await writeRawDataFiles(data_wrapper.raw_data, pool);
+
+    return pool;
 }
 
 /**
  * writes the raw data files to disk
  * @param data
+ * @param pool
  */
-async function writeRawDataFiles(data) {
+async function writeRawDataFiles(data, pool) {
     try {
         if (data.length > CHUNK_SIZE) {
-            await pool_handler(global.hdb_pool, data, CHUNK_SIZE, '../utility/fs/writeFile');
+            if(!(pool instanceof Pool)){
+                pool = new Pool();
+            }
+            await pool_handler(pool, data, CHUNK_SIZE, '../utility/fs/writeFile');
         } else {
             await write_file(data);
         }
+
+        return pool;
     } catch(e) {
         logger.error(e);
     }
@@ -347,14 +385,20 @@ async function writeRawDataFiles(data) {
 /**
  * creates all of the folders necessary to hold the raw files and hard links
  * @param folders
+ * @param pool
  */
-async function createFolders(folders) {
+async function createFolders(folders, pool) {
     try {
         if (folders.length > CHUNK_SIZE) {
-            await pool_handler(global.hdb_pool, folders, CHUNK_SIZE, '../utility/fs/mkdirp');
+            if(!(pool instanceof Pool)){
+                pool = new Pool();
+            }
+            await pool_handler(pool, folders, CHUNK_SIZE, '../utility/fs/mkdirp');
         } else {
             await mkdirp(folders);
         }
+
+        return pool;
     } catch (e) {
         logger.error(e);
     }
