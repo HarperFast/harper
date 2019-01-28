@@ -79,7 +79,13 @@ function harperDBService() {
                 result = run.run();
                 break;
             case hdb_terms.SERVICE_ACTIONS_ENUM.INSTALL:
-                install.install();
+                install.install((err, response)=>{
+                    if(err){
+                        console.error(err);
+                    } else {
+                        console.log(response);
+                    }
+                });
                 break;
             case hdb_terms.SERVICE_ACTIONS_ENUM.REGISTER:
                 // register requires a lot of imports that could fail during install, so only bring it in when needed.
