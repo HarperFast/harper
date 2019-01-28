@@ -174,7 +174,8 @@ const HDB_SETTINGS_NAMES = {
     CLUSTERING_PORT_KEY: 'CLUSTERING_PORT',
     CLUSTERING_NODE_NAME_KEY: 'NODE_NAME',
     CLUSTERING_ENABLED_KEY: 'CLUSTERING',
-    ALLOW_SELF_SIGNED_SSL_CERTS: 'ALLOW_SELF_SIGNED_SSL_CERTS'
+    ALLOW_SELF_SIGNED_SSL_CERTS: 'ALLOW_SELF_SIGNED_SSL_CERTS',
+    MAX_HDB_PROCESSES: 'MAX_HDB_PROCESSES'
 };
 
 // Default values for the Settings, some do not have a default.
@@ -191,7 +192,8 @@ const HDB_SETTINGS_DEFAULT_VALUES = {
     LOG_PATH: './harper_log.log',
     NODE_ENV: 'production',
     CLUSTERING_PORT: '5545',
-    CLUSTERING: 'false'
+    CLUSTERING: 'false',
+    MAX_HDB_PROCESSES: 4
 };
 
 // Describes all available job types
