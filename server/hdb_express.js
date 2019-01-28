@@ -64,7 +64,7 @@ let os_cpus = undefined;
 try {
     num_hdb_processes = hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES);
     os_cpus = os.cpus().length;
-    num_workers = (num_hdb_processes ? num_hdb_processes: os_cpus);
+    num_workers = ((num_hdb_processes && num_hdb_processes > 0) ? num_hdb_processes: os_cpus);
     // don't allow more processes than the machine has cores.
     if(num_workers > os_cpus) {
         num_workers = os_cpus;
