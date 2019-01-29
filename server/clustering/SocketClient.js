@@ -115,7 +115,7 @@ class SocketClient {
                 if (!queue.queue[item].body.hdb_user) {
                     queue.queue[item].err = ERROR_NO_HDB_USER;
                     harper_logger.error(`${ERROR_NO_HDB_USER}: ` + JSON.stringify(json));
-                    the_client.emit('error', queue.queue[item]);
+                    the_client.emit(terms.CLUSTER_EVENTS_DEFS_ENUM.ERROR, queue.queue[item]);
                 } else {
                     let operation_function = await p_server_utilities_choose_operation(json);
 

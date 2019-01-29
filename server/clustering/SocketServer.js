@@ -134,7 +134,7 @@ class SocketServer {
                 socket.on('schema_update_request', async () => {
                     try {
                         let schema = await p_schema_describe_all({});
-                        socket.emit('schema_update_response', schema);
+                        socket.emit(terms.CLUSTER_EVENTS_DEFS_ENUM.SCHEMA_UPDATE_RES, schema);
                     } catch(e){
                         log.error(e);
                     }
