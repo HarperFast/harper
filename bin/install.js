@@ -1,6 +1,5 @@
 const installer = require('../utility/install/installer');
 const logger = require('../utility/logging/harper_logger');
-const Pool = require('threads').Pool;
 
 function install (callback) {
     installer.install(function(err) {

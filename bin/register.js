@@ -1,6 +1,5 @@
 const registrationHandler = require('../utility/registration/registrationHandler');
 const logger = require('../utility/logging/harper_logger');
-const Pool = require('threads').Pool;
 
 async function register() {
     try {
