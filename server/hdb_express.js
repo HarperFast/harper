@@ -54,8 +54,8 @@ if (node_env_value === undefined || node_env_value === null || node_env_value ==
 }
 
 process.env['NODE_ENV'] = node_env_value;
-let num_hdb_processes = undefined;
 
+let num_hdb_processes = undefined;
 let numCPUs = 4;
 let num_workers = undefined;
 let os_cpus = undefined;
@@ -72,6 +72,9 @@ try {
     }
 } catch(e){
     num_workers = hdb_terms.HDB_SETTINGS_DEFAULT_VALUES.MAX_HDB_PROCESSES;
+    if(num_hdb_processes) {
+        num_workers = num_hdb_processes;
+    }
     harper_logger.info(e);
 }
 
