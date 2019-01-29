@@ -37,11 +37,15 @@ const p_insert = insert.insert;
 const WHITELISTED_ERRORS = 'already exists';
 const ERROR_NO_HDB_USER = 'there is no hdb_user';
 
+const ATTRIBUTE_INDEX = 2;
+const TABLE_INDEX = 1;
+const SCHEMA_INDEX = 0;
+
 const CLIENT_CONNECTION_OPTIONS = {
     reconnectionDelay: 5000,
     reconnectionDelayMax: 20000,
     secure: true,
-    reconnect: true,
+    reconnection: true,
     rejectUnauthorized :
         ((ALLOW_SELF_SIGNED_CERTS && ALLOW_SELF_SIGNED_CERTS.toString().toLowerCase() === 'true') ? false : true)
 };
@@ -76,7 +80,7 @@ class SocketClient {
             name: this.node.name,
             port: this.node.port
         };
-        this.client.emit('identify', node_info);
+        this.client.emit(terms.CLUSTER_EVENTS_DEFS_ENUM.IDENTIFY, node_info);
     }
 
     onConnectErrorHandler(error){
@@ -123,11 +127,11 @@ class SocketClient {
                             }
                         });
 
-                    the_client.emit('confirm_msg', queue.queue[item]);
+                    the_client.emit(terms.CLUSTER_EVENTS_DEFS_ENUM.CONFIRM_MSG, queue.queue[item]);
                 }
             } catch (e) {
                 queue.queue[item].err = e;
-                the_client.emit('error', queue.queue[item]);
+                the_client.emit(terms.CLUSTER_EVENTS_DEFS_ENUM.ERROR, queue.queue[item]);
                 return harper_logger.error(e);
             }
         }
@@ -210,11 +214,6 @@ class SocketClient {
         }
     }
 
-    onConfirmIdentity(msg) {
-
-    }
-
-
     async onMsgHandler(msg) {
         try {
             harper_logger.info(`received by ${this.node.name} : msg = ${JSON.stringify(msg)}`);
@@ -243,7 +242,7 @@ class SocketClient {
                 });
 
             payload.data = data;
-            the_client.emit('confirm_msg', payload);
+            the_client.emit(terms.CLUSTER_EVENTS_DEFS_ENUM.CONFIRM_MSG, payload);
         } catch(e){
             harper_logger.error(e);
         }
@@ -269,25 +268,23 @@ class SocketClient {
 
 
     createClientMessageHandlers() {
-        this.client.on("connect", this.onConnectHandler.bind(this));
+        this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.CONNECT, this.onConnectHandler.bind(this));
 
-        this.client.on("reconnect_attempt", this.onReconnectHandler.bind(this));
+        this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.RECONNECT_ATTEMPT, this.onReconnectHandler.bind(this));
 
-        this.client.on('connect_error', this.onConnectErrorHandler.bind(this));
+        this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.CONNECT_ERROR, this.onConnectErrorHandler.bind(this));
 
-        this.client.on('catchup', this.onCatchupHandler.bind(this));
+        this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.CATCHUP_RESPONSE, this.onCatchupHandler.bind(this));
 
-        this.client.on('catchup_request', this.onCatchupRequestHandler.bind(this));
+        this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.CATCHUP_REQUEST, this.onCatchupRequestHandler.bind(this));
 
-        this.client.on('confirm_msg', this.onConfirmMessageHandler.bind(this));
+        this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.CONFIRM_MSG, this.onConfirmMessageHandler.bind(this));
 
-        this.client.on('schema_update_response', this.onSchemaUpdateResponseHandler.bind(this));
+        this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.SCHEMA_UPDATE_RES, this.onSchemaUpdateResponseHandler.bind(this));
 
-        this.client.on('confirm_identity', this.onConfirmIdentity.bind(this));
+        this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.MESSAGE, this.onMsgHandler.bind(this));
 
-        this.client.on('msg', this.onMsgHandler.bind(this));
-
-        this.client.on('disconnect', this.onDisconnectHandler.bind(this));
+        this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.DISCONNECT, this.onDisconnectHandler.bind(this));
     }
 
     async send(msg) {
@@ -312,7 +309,7 @@ class SocketClient {
             });
 
             if(!common_utils.isEmpty(results)) {
-                the_client.emit('msg', payload);
+                the_client.emit(terms.CLUSTER_EVENTS_DEFS_ENUM.MESSAGE, payload);
             }
         } catch (e) {
             harper_logger.error(e);
@@ -335,9 +332,9 @@ async function createMissingTables(missing_tables, residence_table_map){
     await Promise.all(missing_tables.map(async(table) =>{
         let tokens = table.split(".");
         let table_create_object = {
-            "schema": tokens[0],
-            "table":tokens[1],
-            "hash_attribute":tokens[2]
+            "schema": tokens[SCHEMA_INDEX],
+            "table":tokens[TABLE_INDEX],
+            "hash_attribute":tokens[ATTRIBUTE_INDEX]
         };
         if(residence_table_map[tokens[0] + "." + tokens[1]]){
             table_create_object.residence = residence_table_map[tokens[0] + "." + tokens[1]];
@@ -357,9 +354,9 @@ async function createMissingAttributes(missing_attributes) {
         try {
             let tokens = attribute.split(".");
             let attr_create_object = {
-                "schema": tokens[0],
-                "table": tokens[1],
-                "attribute": tokens[2]
+                "schema": tokens[SCHEMA_INDEX],
+                "table": tokens[TABLE_INDEX],
+                "attribute": tokens[ATTRIBUTE_INDEX]
             };
 
             await p_schema_create_attribute(attr_create_object)

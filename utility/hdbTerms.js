@@ -228,6 +228,24 @@ const CLUSTER_CONNECTION_DIRECTION_ENUM = {
     INBOUND: "INBBOUND"
 };
 
+const CLUSTER_EVENTS_DEFS_ENUM = {
+    IDENTIFY : 'identify',
+    AUTHENTICATE : 'authenticate',
+    AUTHENTICATE_OK: 'authenticated',
+    AUTHENTICATE_FAIL: 'authenticate_fail',
+    CONNECTION: 'connection',
+    CONNECT: 'connect',
+    CATCHUP_REQUEST : 'catchup_request',
+    CATCHUP_RESPONSE: 'catchup',
+    CONFIRM_MSG: 'confirm_msg',
+    ERROR: 'error',
+    DISCONNECT: 'disconnect',
+    SCHEMA_UPDATE_REQ: 'schema_update_request',
+    SCHEMA_UPDATE_RES: 'schema_update_response',
+    RECONNECT_ATTEMPT: 'reconnect_attempt',
+    CONNECT_ERROR: 'connect_error',
+    MESSAGE: 'msg',
+};
 
 module.exports = {
     HDB_PROC_NAME,
@@ -244,6 +262,7 @@ module.exports = {
     SERVICE_ACTIONS_ENUM,
     CLUSTER_MESSAGE_TYPE_ENUM,
     CLUSTER_CONNECTION_DIRECTION_ENUM,
+    CLUSTER_EVENTS_DEFS_ENUM,
     PERIOD_REGEX,
     DOUBLE_PERIOD_REGEX,
     UNICODE_PERIOD,

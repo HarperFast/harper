@@ -14,8 +14,7 @@
       "unix"
     ],
     "quotes": [
-      "warn",
-      "single"
+      "off"
     ],
     "semi": [
       "error",
@@ -25,7 +24,7 @@
       "error"
     ],
     "no-use-before-define": ["error", { "functions": false, "classes": true, "variables":true }],
-    "consistent-return": ["error"],
+    "consistent-return": ["off"],
     "default-case": ["error"],
     "block-scoped-var": ["error"],
     "no-eval":"error",

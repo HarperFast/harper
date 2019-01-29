@@ -53,8 +53,8 @@ class SocketServer {
             }
             let node = this.node;
             this.io = sio.listen(server);
-            this.io.sockets.on("connection", function (socket) {
-                socket.on("identify", function (msg) {
+            this.io.sockets.on(terms.CLUSTER_EVENTS_DEFS_ENUM.CONNECTION, function (socket) {
+                socket.on(terms.CLUSTER_EVENTS_DEFS_ENUM.IDENTIFY, function (msg) {
                     log.info(`${msg.name} connected to cluster`);
                     //this is the remote ip address of the client connecting to this server.
                     try {
@@ -82,7 +82,7 @@ class SocketServer {
                         }
 
                         if(catchup_request) {
-                            socket.emit('catchup_request', {name: node.name});
+                            socket.emit(terms.CLUSTER_EVENTS_DEFS_ENUM.CATCHUP_REQUEST, {name: node.name});
                         }
 
                         if (!found_client || found_client.length === 0) {
@@ -108,22 +108,27 @@ class SocketServer {
                     });
                 });
 
-                socket.on('catchup_request', async msg => {
+
+                socket.on(terms.CLUSTER_EVENTS_DEFS_ENUM.CATCHUP_REQUEST, async msg => {
                     log.info(msg.name + ' catchup_request');
                     await cluster_handlers.fetchQueue(msg, socket);
                 });
 
-                socket.on('confirm_msg', async msg => {
+                socket.on(terms.CLUSTER_EVENTS_DEFS_ENUM.CONFIRM_MSG, async msg => {
+                    log.debug(`Got confirm message`);
                     await cluster_handlers.onConfirmMessageHandler(msg);
                 });
 
-                socket.on('error', error => {
-                    log.error(error);
+                socket.on(terms.CLUSTER_EVENTS_DEFS_ENUM.ERROR, error => {
+                    log.error(`Clustering error: ${error}`);
                 });
 
-                socket.on('disconnect', error => {
-                    if (error !== 'transport close')
+                socket.on(terms.CLUSTER_EVENTS_DEFS_ENUM.DISCONNECT, error => {
+                    if (error !== 'transport close') {
                         log.error(error);
+                    } else {
+                        log.error(`Got transport close message ${error}`);
+                    }
                 });
 
                 socket.on('schema_update_request', async () => {
