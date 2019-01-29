@@ -55,16 +55,28 @@ if (node_env_value === undefined || node_env_value === null || node_env_value ==
 
 process.env['NODE_ENV'] = node_env_value;
 
+let num_hdb_processes = undefined;
 let numCPUs = 4;
-let num_workers = 4;
+let num_workers = undefined;
+let os_cpus = undefined;
 
 //in an instance of having HDB installed on an android devices we don't have access to the cpu info so we need to handle the error and move on
 try {
-    num_workers = os.cpus().length;
+    num_hdb_processes = hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES);
+    os_cpus = os.cpus().length;
+    num_workers = ((num_hdb_processes && num_hdb_processes > 0) ? num_hdb_processes: os_cpus);
+    // don't allow more processes than the machine has cores.
+    if(num_workers > os_cpus) {
+        num_workers = os_cpus;
+        harper_logger.info(`${hdb_terms.HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES} setting is higher than the number of cores on this machine (${os_cpus}).  Settings number of processes to ${os_cpus}`);
+    }
 } catch(e){
+    num_workers = hdb_terms.HDB_SETTINGS_DEFAULT_VALUES.MAX_HDB_PROCESSES;
+    if(num_hdb_processes) {
+        num_workers = num_hdb_processes;
+    }
     harper_logger.info(e);
 }
-numCPUs = num_workers < numCPUs ? num_workers : numCPUs;
 
 if(DEBUG){
     numCPUs = 1;
@@ -141,6 +153,10 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
             })).then(() => {
                 harper_logger.info(`Master ${process.pid} is running`);
                 harper_logger.info(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
+                harper_logger.info(`Number of processes allowed by license is:${numCPUs}, number of cores on this machine: ${num_workers}`);
+                numCPUs = (numCPUs > num_workers ? num_workers : numCPUs);
+                harper_logger.info(`Kicking off ${numCPUs} HDB processes.`);
+
                 // Fork workers.
                 let forks = [];
                 for (let i = 0; i < numCPUs; i++) {
