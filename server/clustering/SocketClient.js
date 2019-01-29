@@ -132,7 +132,7 @@ class SocketClient {
             } catch (e) {
                 queue.queue[item].err = e;
                 the_client.emit(terms.CLUSTER_EVENTS_DEFS_ENUM.ERROR, queue.queue[item]);
-                return harper_logger.error(e);
+                harper_logger.error(e);
             }
         }
 
