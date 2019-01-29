@@ -128,7 +128,7 @@ class SocketClient {
             } catch (e) {
                 queue.queue[item].err = e;
                 the_client.emit('error', queue.queue[item]);
-                return harper_logger.error(e);
+                harper_logger.error(e);
             }
         }
 
