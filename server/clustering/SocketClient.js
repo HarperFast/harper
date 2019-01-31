@@ -15,6 +15,7 @@ const moment = require('moment');
 
 const common_utils = require('../../utility/common_utils');
 const terms = require('../../utility/hdbTerms');
+const version = require('../../bin/version');
 
 const PropertiesReader = require('properties-reader');
 let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
@@ -46,12 +47,12 @@ const CLIENT_CONNECTION_OPTIONS = {
     reconnectionDelayMax: 20000,
     secure: true,
     reconnection: true,
-    extraHeaders: {
-        hdb_version: '1234'
-    },
+    extraHeaders: {},
     rejectUnauthorized :
         ((ALLOW_SELF_SIGNED_CERTS && ALLOW_SELF_SIGNED_CERTS.toString().toLowerCase() === 'true') ? false : true)
 };
+
+CLIENT_CONNECTION_OPTIONS['extraHeaders'][terms.CLUSTERING_VERSION_HEADER_NAME] = version.version();
 
 class SocketClient {
     constructor(node, other_node, direction_enum) {

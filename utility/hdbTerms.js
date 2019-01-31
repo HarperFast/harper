@@ -29,6 +29,8 @@ const SYSTEM_SCHEMA_NAME = 'system';
 
 const HASH_FOLDER_NAME = '__hdb_hash';
 
+const CLUSTERING_VERSION_HEADER_NAME = 'hdb_version';
+
 const INSERT_MODULE_ENUM = {
     HDB_PATH_KEY: 'HDB_INTERNAL_PATH',
     HDB_AUTH_HEADER: 'hdb_auth_header',
@@ -251,6 +253,7 @@ module.exports = {
     HDB_PROC_NAME,
     SYSTEM_SCHEMA_NAME,
     HASH_FOLDER_NAME,
+    CLUSTERING_VERSION_HEADER_NAME,
     JOB_TYPE_ENUM,
     JOB_STATUS_ENUM,
     SYSTEM_TABLE_NAMES,

@@ -55,7 +55,7 @@ class SocketServer {
             let node = this.node;
             this.io = sio.listen(server);
             this.io.sockets.on(terms.CLUSTER_EVENTS_DEFS_ENUM.CONNECTION, function (socket) {
-                let client_version = this.io.sockets.handshake.headers['hdb_version'];
+                let client_version = socket.handshake.headers[terms.CLUSTERING_VERSION_HEADER_NAME];
                 let this_version = version.version();
                 if(client_version !== this_version) {
                     log.warn(`HDB version mismatch with connecting client.  Client is using version ${client_version}. This server is using version ${this_version}`);
