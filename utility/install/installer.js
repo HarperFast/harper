@@ -283,7 +283,7 @@ function createSettingsFile(mount_status, callback) {
             `CORS_ON = TRUE\n` +
             `CORS_WHITELIST =\n` +
             `SERVER_TIMEOUT_MS = 120000\n` +
-            `LOG_LEVEL = error\n` +
+            `LOG_LEVEL = warn\n` +
             `   ;Setting LOGGER to 1 uses the WINSTON logger.\n` +
             `   ; 2 Uses the more performant PINO logger.\n` +
             `LOGGER = 1\n` +

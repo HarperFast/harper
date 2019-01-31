@@ -59,7 +59,9 @@ class SocketServer {
                     let client_version = socket.handshake.headers[terms.CLUSTERING_VERSION_HEADER_NAME];
                     let this_version = version.version();
                     if (client_version !== this_version) {
-                        log.warn(`HDB version mismatch with connecting client.  Client is using version: ${client_version}. This server is using version: ${this_version}`);
+                        let msg = `HDB version mismatch with connecting client.  Client is using version: ${client_version}. This server is using version: ${this_version}. There may be a loss of functionality.`;
+                        log.warn(msg);
+                        socket.emit(terms.CLUSTER_EVENTS_DEFS_ENUM.VERSION_MISMATCH, msg);
                     }
                 } catch(err) {
                     log.error(`Error trying to read client version.  ${err}`);

@@ -98,6 +98,10 @@ class SocketClient {
         harper_logger.debug(': attempting to connect to ' + JSON.stringify(this.other_node) + ' for the ' + attempt_number + ' time');
     }
 
+    onVersionMismatch(msg) {
+        harper_logger.warn(msg);
+    }
+
     async onCatchupRequestHandler(msg){
         harper_logger.info('catchup_request from :' + msg.name);
         await cluster_handlers.fetchQueue(msg, this.client);
@@ -292,6 +296,8 @@ class SocketClient {
         this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.MESSAGE, this.onMsgHandler.bind(this));
 
         this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.DISCONNECT, this.onDisconnectHandler.bind(this));
+
+        this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.VERSION_MISMATCH, this.onVersionMismatch.bind(this));
     }
 
     async send(msg) {
