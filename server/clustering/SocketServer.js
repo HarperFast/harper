@@ -55,11 +55,14 @@ class SocketServer {
             let node = this.node;
             this.io = sio.listen(server);
             this.io.sockets.on(terms.CLUSTER_EVENTS_DEFS_ENUM.CONNECTION, function (socket) {
-                let client_version = socket.handshake.headers[terms.CLUSTERING_VERSION_HEADER_NAME];
-                let this_version = version.version();
-                if(client_version !== this_version) {
-                    log.warn(`HDB version mismatch with connecting client.  Client is using version ${client_version}. This server is using version ${this_version}`);
-
+                try {
+                    let client_version = socket.handshake.headers[terms.CLUSTERING_VERSION_HEADER_NAME];
+                    let this_version = version.version();
+                    if (client_version !== this_version) {
+                        log.warn(`HDB version mismatch with connecting client.  Client is using version ${client_version}. This server is using version ${this_version}`);
+                    }
+                } catch(err) {
+                    log.error(`Error trying to read client version.  ${err}`);
                 }
                 socket.on(terms.CLUSTER_EVENTS_DEFS_ENUM.IDENTIFY, function (msg) {
                     log.info(`${msg.name} connected to cluster`);
