@@ -12,7 +12,6 @@ const hdb_sql = require('../../sqlTranslator/index');
 const p_search_by_value = promisify(search.searchByValue);
 const p_delete = promisify(delete_.delete);
 const p_schema_describe_all = promisify(schema.describeAll);
-const p_insert = promisify(insert.insert);
 
 module.exports = {
     fetchQueue: fetchQueue,
@@ -151,7 +150,7 @@ async function addToHDBQueue(item) {
             records: [item]
         };
 
-        let results = await p_insert(insert_object);
+        let results = await insert.insert(insert_object);
 
         return results;
     } catch (e) {
