@@ -52,6 +52,9 @@ const CLIENT_CONNECTION_OPTIONS = {
         ((ALLOW_SELF_SIGNED_CERTS && ALLOW_SELF_SIGNED_CERTS.toString().toLowerCase() === 'true') ? false : true)
 };
 
+//NOTE This will only work as long as we use the reconnect "polling" option (which is default).  If we change that,
+// or move to websockets, this header will no longer be sent.
+// https://socket.io/docs/client-api/#With-extraHeaders
 CLIENT_CONNECTION_OPTIONS['extraHeaders'][terms.CLUSTERING_VERSION_HEADER_NAME] = version.version();
 
 class SocketClient {
