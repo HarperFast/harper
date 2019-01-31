@@ -10,6 +10,7 @@ const fs = require('fs');
 const terms = require('../../utility/hdbTerms');
 const SocketClient = require('./SocketClient');
 const cluster_handlers = require('./clusterHandlers');
+const version = require('../../bin/version');
 
 const p_schema_describe_all = promisify(schema.describeAll);
 
@@ -54,6 +55,12 @@ class SocketServer {
             let node = this.node;
             this.io = sio.listen(server);
             this.io.sockets.on(terms.CLUSTER_EVENTS_DEFS_ENUM.CONNECTION, function (socket) {
+                let client_version = this.io.sockets.handshake.headers['hdb_version'];
+                let this_version = version.version();
+                if(client_version !== this_version) {
+                    log.warn(`HDB version mismatch with connecting client.  Client is using version ${client_version}. This server is using version ${this_version}`);
+
+                }
                 socket.on(terms.CLUSTER_EVENTS_DEFS_ENUM.IDENTIFY, function (msg) {
                     log.info(`${msg.name} connected to cluster`);
                     //this is the remote ip address of the client connecting to this server.

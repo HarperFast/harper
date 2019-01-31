@@ -46,6 +46,9 @@ const CLIENT_CONNECTION_OPTIONS = {
     reconnectionDelayMax: 20000,
     secure: true,
     reconnection: true,
+    extraHeaders: {
+        hdb_version: '1234'
+    },
     rejectUnauthorized :
         ((ALLOW_SELF_SIGNED_CERTS && ALLOW_SELF_SIGNED_CERTS.toString().toLowerCase() === 'true') ? false : true)
 };
