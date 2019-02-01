@@ -24,7 +24,7 @@ const exploder = require('./dataWriteProcessor');
 const {promisify} = require('util');
 const ExplodedObject = require('./ExplodedObject');
 const WriteProcessorObject = require('./WriteProcessorObject');
-const Pool = require('threads').Pool;
+const HDB_Pool = require('threads').Pool;
 
 let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
 hdb_properties.append(hdb_properties.get('settings_path'));
@@ -168,12 +168,12 @@ async function insertData(insert_object){
             skipped_hashes: skipped
         };
 
-        if(pool instanceof Pool){
+        if(pool instanceof HDB_Pool){
             pool.killAll();
         }
         return return_object;
     } catch(e){
-        if(pool instanceof Pool){
+        if(pool instanceof HDB_Pool){
             pool.killAll();
         }
         throw (e);
@@ -221,13 +221,13 @@ async function updateData(update_object){
             skipped_hashes: skipped
         };
 
-        if(pool instanceof Pool){
+        if(pool instanceof HDB_Pool){
             pool.killAll();
         }
 
         return return_object;
     } catch(e){
-        if(pool instanceof Pool){
+        if(pool instanceof HDB_Pool){
             pool.killAll();
         }
         throw (e);
@@ -276,8 +276,8 @@ async function getExistingRows(table_schema, hashes, attributes){
 async function processRows(insert_object, attributes, table_schema, epoch, existing_rows, pool){
     let data_wrapper;
     if(insert_object.records.length > CHUNK_SIZE){
-        if(!(pool instanceof Pool)){
-            pool = new Pool();
+        if(!(pool instanceof HDB_Pool)){
+            pool = new HDB_Pool();
         }
 
         let chunks = _.chunk(insert_object.records, CHUNK_SIZE);
@@ -334,8 +334,8 @@ async function processRows(insert_object, attributes, table_schema, epoch, exist
 async function unlinkFiles(unlink_paths, pool) {
     try {
         if (unlink_paths.length > CHUNK_SIZE) {
-            if(!(pool instanceof Pool)){
-                pool = new Pool();
+            if(!(pool instanceof HDB_Pool)){
+                pool = new HDB_Pool();
             }
             await pool_handler(pool, unlink_paths, CHUNK_SIZE, '../utility/fs/unlink');
         } else {
@@ -368,8 +368,8 @@ async function processData(data_wrapper, pool) {
 async function writeRawDataFiles(data, pool) {
     try {
         if (data.length > CHUNK_SIZE) {
-            if(!(pool instanceof Pool)){
-                pool = new Pool();
+            if(!(pool instanceof HDB_Pool)){
+                pool = new HDB_Pool();
             }
             await pool_handler(pool, data, CHUNK_SIZE, '../utility/fs/writeFile');
         } else {
@@ -390,8 +390,8 @@ async function writeRawDataFiles(data, pool) {
 async function createFolders(folders, pool) {
     try {
         if (folders.length > CHUNK_SIZE) {
-            if(!(pool instanceof Pool)){
-                pool = new Pool();
+            if(!(pool instanceof HDB_Pool)){
+                pool = new HDB_Pool();
             }
             await pool_handler(pool, folders, CHUNK_SIZE, '../utility/fs/mkdirp');
         } else {
