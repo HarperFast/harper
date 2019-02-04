@@ -22,9 +22,12 @@ const global_schema = require('../utility/globalSchema');
 const fs = require('fs');
 const cluster_utilities = require('./clustering/clusterUtilities');
 const cluster_event = require('../events/ClusterStatusEmitter');
+const all_children_stopped_event = require('../events/AllChildrenStoppedEvent');
+const sio_server_stopped_event = require('../events/SioServerStoppedEvent');
 const signalling = require('../utility/signalling');
 const moment = require('moment');
 const terms = require('../utility/hdbTerms');
+const RestartEventObject = require('./RestartEventObject');
 
 const DEFAULT_SERVER_TIMEOUT = 120000;
 const PROPS_SERVER_TIMEOUT_KEY = 'SERVER_TIMEOUT_MS';
@@ -130,6 +133,34 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         search_value: "*",
         get_attributes: ["*"]
     };
+
+    let restart_event_tracker = new RestartEventObject();
+
+    // Consume AllChildrenStopped Event.
+    all_children_stopped_event.allChildrenStoppedEmitter.on(all_children_stopped_event.EVENT_NAME, (msg) => {
+        harper_logger.info(`Got all children stopped event.`);
+        try {
+            restart_event_tracker.express_connections_stopped = true;
+            if(restart_event_tracker.isReadyForRestart()) {
+                // TODO: Call restart function
+            }
+        } catch(err) {
+            harper_logger.error(`Error tracking allchildrenstopped event.`);
+        }
+    });
+
+    sio_server_stopped_event.sioServerStoppedEmitter.on(sio_server_stopped_event.EVENT_NAME, (msg) => {
+        harper_logger.info(`Got sio server stopped event.`);
+        try {
+            restart_event_tracker.sio_connections_stopped = true;
+            if(restart_event_tracker.isReadyForRestart()) {
+                // TODO: Call restart function
+            }
+        } catch(err) {
+            harper_logger.error(`Error tracking sio server stopped event.`);
+        }
+    });
+
     global_schema.setSchemaDataToGlobal((err, data)=> {
         search.searchByValue(licenseKeySearch, function (err, licenses) {
             const hdb_license = require('../utility/registration/hdb_license');

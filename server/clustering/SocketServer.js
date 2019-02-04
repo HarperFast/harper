@@ -10,6 +10,7 @@ const fs = require('fs');
 const terms = require('../../utility/hdbTerms');
 const SocketClient = require('./SocketClient');
 const cluster_handlers = require('./clusterHandlers');
+const sio_server_stopped = require('../../events/SioServerStoppedEvent');
 
 const p_schema_describe_all = promisify(schema.describeAll);
 
@@ -38,6 +39,7 @@ class SocketServer {
         global.msg_queue = [];
         global.o_nodes = [];
         global.cluster_queue = {};
+        this.server = undefined;
     }
 
     init(next) {
@@ -51,6 +53,7 @@ class SocketServer {
 
                 }).listen(this.port);
             }
+            this.server = server;
             let node = this.node;
             this.io = sio.listen(server);
             this.io.sockets.on(terms.CLUSTER_EVENTS_DEFS_ENUM.CONNECTION, function (socket) {
@@ -146,6 +149,19 @@ class SocketServer {
             log.error(e);
             next(e);
         }
+    }
+    async disconnect() {
+        try {
+            log.warn('Stopping the SocketServer.');
+            let p_server_close = promisify(this.server.close);
+            await p_server_close();
+            log.info('Socket server closed, emitting server stopped event');
+            return true;
+            //sio_server_stopped.sioServerStoppedEmitter.emit(sio_server_stopped.EVENT_NAME, new sio_server_stopped.SioServerStoppedMessage());
+        } catch(err) {
+            log.error(`Error disconnecting the sio server. ${err}`);
+        }
+        return false;
     }
 }
 

@@ -13,6 +13,8 @@ const auth = require('../../security/auth');
 const ClusterStatusObject = require('../../server/clustering/ClusterStatusObject');
 const signalling = require('../../utility/signalling');
 const cluster_status_event = require('../../events/ClusterStatusEmitter');
+const stop = require('../../bin/stop');
+const run = require('../../bin/run');
 
 //Promisified functions
 const p_delete_delete = promisify(del.delete);
@@ -468,8 +470,34 @@ function clusterMessageHandler(msg) {
                     }
                 }
                 break;
+            case terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STOPPED:
+                log.info('Received child stopped event.');
+                if(started_forks[msg.pid]) {
+                    log.warn(`Got a duplicate child started event for pid ${msg.pid}`);
+                } else {
+                    started_forks[msg.pid] = false;
+                    for(let i=0; i<started_forks.length; i++) {
+                        if(started_forks[i] === true) {
+                            // We still have children running, break;
+                            return;
+                        }
+                    }
+                    //All children are stopped, emit event
+
+
+                    // All children are stopped, all clustering has stopped, restart everything.
+                    /*log.warn(`All child processes stopped, restarting.`);
+                    try {
+                        stop.stop(function () {
+                            run.run();
+                        });
+                    } catch(err) {
+                        log.error(`Got an error restarting HarperDB.  Please restart manually using bin/harperdb restart.`);
+                    } */
+                }
+                break;
             case terms.CLUSTER_MESSAGE_TYPE_ENUM.RESTART:
-                log.info('Received child started event.');
+                log.info('Received restart event.');
                 if(!global.forks || global.forks.length === 0) {
                     log.info('No processes found');
                 } else {
@@ -485,6 +513,15 @@ function clusterMessageHandler(msg) {
                             log.error(`Got an error trying to send ${terms.RESTART_CODE} to process ${global.forks[i].process.pid}.`);
                         }
                     }
+                }
+                // Try to shutdown all SocketServer and SocketClient connections.
+                if(global.cluster_server) {
+                    global.cluster_server.closeServer().then((result) => {
+                        //TODO: Do we need to worry about socket clients??
+                        /*for (let conn of global.cluster_server.socket_client) {
+
+                        } */
+                    });
                 }
                 break;
             default:

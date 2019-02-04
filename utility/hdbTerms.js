@@ -222,6 +222,7 @@ const CLUSTER_MESSAGE_TYPE_ENUM = {
     CLUSTER_STATUS: 'cluster_status',
     JOB: 'job',
     CHILD_STARTED: 'child_started',
+    CHILD_STOPPED: 'child_stopped',
     USER: 'user',
     RESTART: 'restart'
 };
