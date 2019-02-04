@@ -468,6 +468,25 @@ function clusterMessageHandler(msg) {
                     }
                 }
                 break;
+            case terms.CLUSTER_MESSAGE_TYPE_ENUM.RESTART:
+                log.info('Received child started event.');
+                if(!global.forks || global.forks.length === 0) {
+                    log.info('No processes found');
+                } else {
+                    log.info(`Shutting down ${global.forks.length} process.`);
+                }
+                for(let i=0; i<global.forks.length; i++) {
+                    if(global.forks[i]) {
+                        try {
+                            log.warn(`Sending ${terms.RESTART_CODE} signal to process with pid:${global.forks[i].process.pid}`);
+                            global.forks[i].process.signalCode = terms.RESTART_CODE;
+                            process.kill(global.forks[i].process.pid, terms.RESTART_CODE);
+                        } catch(err) {
+                            log.error(`Got an error trying to send ${terms.RESTART_CODE} to process ${global.forks[i].process.pid}.`);
+                        }
+                    }
+                }
+                break;
             default:
                 log.error(`Got an unhandled cluster message type ${msg.type}`);
                 break;

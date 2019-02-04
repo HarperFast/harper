@@ -24,6 +24,7 @@ const cluster_utilities = require('./clustering/clusterUtilities');
 const cluster_event = require('../events/ClusterStatusEmitter');
 const signalling = require('../utility/signalling');
 const moment = require('moment');
+const terms = require('../utility/hdbTerms');
 
 const DEFAULT_SERVER_TIMEOUT = 120000;
 const PROPS_SERVER_TIMEOUT_KEY = 'SERVER_TIMEOUT_MS';
@@ -83,6 +84,9 @@ if(DEBUG){
 }
 
 cluster.on('exit', (dead_worker, code, signal) => {
+    if(signal === terms.RESTART_CODE || dead_worker.process.signalCode === terms.RESTART_CODE) {
+        return;
+    }
     harper_logger.info(`worker ${dead_worker.process.pid} died with signal ${signal} and code ${code}`);
     let new_worker = undefined;
     try {
@@ -164,6 +168,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                         let forked = cluster.fork();
                         // assign handler for messages expected from child processes.
                         forked.on('message', cluster_utilities.clusterMessageHandler);
+                        forked['httpServer'] =
                         forks.push(forked);
                     } catch (e) {
                         harper_logger.fatal(`Had trouble kicking off new HDB processes.  ${e}`);
@@ -493,6 +498,28 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         process.exit(1);
     });
 
+    let httpServer = undefined;
+    let secureServer = undefined;
+
+    process.on( terms.RESTART_CODE, function() {
+        if(httpServer) {
+            harper_logger.warn(`Process pid:${process.pid} - SIGINT received, closing connections and finishing existing work.`);
+            //process.exitCode = 1;
+            httpServer.close(function () {
+                harper_logger.warn(`Process pid:${process.pid} - Work completed, shutting down`);
+                process.exit(terms.RESTART_CODE_NUM);
+            });
+        }
+        if(secureServer) {
+            harper_logger.warn(`Process pid:${process.pid} - SIGINT received, closing connections and finishing existing work.`);
+            //process.exitCode = 1;
+            secureServer.close(function () {
+                harper_logger.warn(`Process pid:${process.pid} - Work completed, shutting down`);
+                process.exit(terms.RESTART_CODE_NUM);
+            });
+        }
+    });
+
     try {
         const http = require('http');
         const httpsecure = require('https');
@@ -505,9 +532,6 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         const props_http_on = hdb_properties.get(PROPS_HTTP_ON_KEY);
 
         global.isMaster = cluster.isMaster;
-
-        let httpServer = undefined;
-        let secureServer = undefined;
 
         if (props_http_secure_on &&
             (props_http_secure_on === true || props_http_secure_on.toUpperCase() === TRUE_COMPARE_VAL)) {

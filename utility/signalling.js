@@ -12,6 +12,13 @@ class JobAddedSignalObject {
     }
 }
 
+class RestartSignalObject {
+    constructor(force) {
+        this.force_shutdown = force;
+        this.type = terms.CLUSTER_MESSAGE_TYPE_ENUM.RESTART;
+    }
+}
+
 class ClusterStatusSignalObject {
     constructor() {
         this.type = terms.CLUSTER_MESSAGE_TYPE_ENUM.CLUSTER_STATUS;
@@ -104,11 +111,33 @@ function signalChildStarted() {
     }
 }
 
+function signalRestart(force, callback) {
+    let err = null;
+    let result = 'Sent a restart signal to HarperDB.  This may take up to 2 minutes.';
+    try {
+
+        // if process.send is undefined we are running a single instance of the process.
+        if (process.send !== undefined && !global.isMaster) {
+            process.send(new RestartSignalObject(force));
+        } else {
+            err = 'Only 1 process is running, but a signal has been invoked.  Signals will be ignored when only 1 process is running.';
+            harper_logger.warn(err);
+            result = null;
+        }
+    } catch(e){
+        err = 'Got an error restarting HarperDB.  Please check the logs and try again.';
+        harper_logger.error(e);
+        result = null;
+    }
+    //return callback(err, result);
+}
+
 module.exports = {
     signalSchemaChange,
     signalUserChange,
     signalJobAdded: signalJobAdded,
     signalClusterStatus: signalClusterStatus,
     JobAddedSignalObject: JobAddedSignalObject,
-    signalChildStarted: signalChildStarted
+    signalChildStarted: signalChildStarted,
+    signalRestart: signalRestart
 };

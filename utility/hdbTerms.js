@@ -29,6 +29,10 @@ const SYSTEM_SCHEMA_NAME = 'system';
 
 const HASH_FOLDER_NAME = '__hdb_hash';
 
+const CLUSTERING_VERSION_HEADER_NAME = 'hdb_version';
+
+const RESTART_CODE = 'SIGTERM';
+
 const INSERT_MODULE_ENUM = {
     HDB_PATH_KEY: 'HDB_INTERNAL_PATH',
     HDB_AUTH_HEADER: 'hdb_auth_header',
@@ -124,7 +128,8 @@ const OPERATIONS_ENUM = {
     CONFIGURE_CLUSTER: 'configure_cluster',
     CLUSTER_STATUS: 'cluster_status',
     DROP_ATTRIBUTE: 'drop_attribute',
-    REMOVE_NODE: 'remove_node'
+    REMOVE_NODE: 'remove_node',
+    RESTART: 'restart'
 };
 
 //this variable defines operations that should only run locally and not pass over clustering to another node(s)
@@ -217,7 +222,8 @@ const CLUSTER_MESSAGE_TYPE_ENUM = {
     CLUSTER_STATUS: 'cluster_status',
     JOB: 'job',
     CHILD_STARTED: 'child_started',
-    USER: 'user'
+    USER: 'user',
+    RESTART: 'restart'
 };
 const CLUSTER_CONNECTION_DIRECTION_ENUM = {
     // Data flows to both the client and this server
@@ -273,6 +279,8 @@ module.exports = {
     ESCAPED_DOUBLE_PERIOD_REGEX,
     REG_KEY_FILE_NAME,
     LOCAL_HARPERDB_OPERATIONS,
-    INSERT_MODULE_ENUM
+    INSERT_MODULE_ENUM,
+    RESTART_CODE,
+    RESTART_CODE_NUM
 };
 
