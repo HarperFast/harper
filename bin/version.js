@@ -2,8 +2,8 @@ const pjson = require('../package.json');
 
 module.exports = {
    version: version,
-    printVersion, printVersion
-}
+    printVersion: printVersion
+};
 
 function version(){
     return pjson.version;

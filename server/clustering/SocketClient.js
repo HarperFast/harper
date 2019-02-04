@@ -15,6 +15,7 @@ const moment = require('moment');
 
 const common_utils = require('../../utility/common_utils');
 const terms = require('../../utility/hdbTerms');
+const version = require('../../bin/version');
 
 const PropertiesReader = require('properties-reader');
 let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
@@ -46,9 +47,15 @@ const CLIENT_CONNECTION_OPTIONS = {
     reconnectionDelayMax: 20000,
     secure: true,
     reconnection: true,
+    extraHeaders: {},
     rejectUnauthorized :
         ((ALLOW_SELF_SIGNED_CERTS && ALLOW_SELF_SIGNED_CERTS.toString().toLowerCase() === 'true') ? false : true)
 };
+
+//NOTE This will only work as long as we use the reconnect "polling" option (which is default).  If we change that,
+// or move to websockets, this header will no longer be sent.
+// https://socket.io/docs/client-api/#With-extraHeaders
+CLIENT_CONNECTION_OPTIONS['extraHeaders'][terms.CLUSTERING_VERSION_HEADER_NAME] = version.version();
 
 class SocketClient {
     constructor(node, other_node, direction_enum) {
@@ -89,6 +96,10 @@ class SocketClient {
 
     onReconnectHandler(attempt_number){
         harper_logger.debug(': attempting to connect to ' + JSON.stringify(this.other_node) + ' for the ' + attempt_number + ' time');
+    }
+
+    onVersionMismatch(msg) {
+        harper_logger.warn(msg);
     }
 
     async onCatchupRequestHandler(msg){
@@ -285,6 +296,8 @@ class SocketClient {
         this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.MESSAGE, this.onMsgHandler.bind(this));
 
         this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.DISCONNECT, this.onDisconnectHandler.bind(this));
+
+        this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.VERSION_MISMATCH, this.onVersionMismatch.bind(this));
     }
 
     async send(msg) {
