@@ -121,12 +121,10 @@ function signalRestart(force) {
         } else {
             err = 'Only 1 process is running, but a signal has been invoked.  Signals will be ignored when only 1 process is running.';
             harper_logger.warn(err);
-            result = null;
         }
     } catch(e){
         err = 'Got an error restarting HarperDB.  Please check the logs and try again.';
         harper_logger.error(e);
-        result = null;
     }
 }
 
