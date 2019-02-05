@@ -12,7 +12,7 @@ const ioc = require('socket.io-client');
 const schema = require('../../data_layer/schema');
 const _ = require('lodash');
 const moment = require('moment');
-
+const {inspect} = require('util');
 const common_utils = require('../../utility/common_utils');
 const terms = require('../../utility/hdbTerms');
 
@@ -97,7 +97,7 @@ class SocketClient {
     }
 
     async onCatchupHandler(queue) {
-        harper_logger.info('catchup' + queue);
+        harper_logger.info('catchup' + inspect(queue));
 
         await this.onSchemaUpdateResponseHandler(queue.schema);
 
@@ -135,7 +135,7 @@ class SocketClient {
                 harper_logger.error(e);
             }
         }
-
+        log.debug('finished catchup request');
     }
 
     async onSchemaUpdateResponseHandler(cluster_schema){

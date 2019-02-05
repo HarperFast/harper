@@ -61,15 +61,15 @@ class ClusterServer {
         }
     }
 
-    async closeServer() {
+    closeServer() {
         let result = undefined;
         try {
-            result = await this.socket_server.disconnect();
+            result = this.socket_server.disconnect();
         } catch(err) {
             log.error(`Error closing sio server ${err}`);
             result = false;
         }
-        return result;
+        //return result;
     }
 
     establishAllConnections(){

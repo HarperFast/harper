@@ -516,12 +516,9 @@ function clusterMessageHandler(msg) {
                 }
                 // Try to shutdown all SocketServer and SocketClient connections.
                 if(global.cluster_server) {
-                    global.cluster_server.closeServer().then((result) => {
+                    // Close server will emit an event once it is done
+                    global.cluster_server.closeServer();
                         //TODO: Do we need to worry about socket clients??
-                        /*for (let conn of global.cluster_server.socket_client) {
-
-                        } */
-                    });
                 }
                 break;
             default:

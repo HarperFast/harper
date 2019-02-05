@@ -150,18 +150,23 @@ class SocketServer {
             next(e);
         }
     }
-    async disconnect() {
+    disconnect() {
         try {
             log.warn('Stopping the SocketServer.');
-            let p_server_close = promisify(this.server.close);
-            await p_server_close();
-            log.info('Socket server closed, emitting server stopped event');
-            return true;
-            //sio_server_stopped.sioServerStoppedEmitter.emit(sio_server_stopped.EVENT_NAME, new sio_server_stopped.SioServerStoppedMessage());
+
+            // Promisifying server.close() caused an exception about a missing _handle, so instead of using async/await
+            // We are relying on the event to notify when the stop is done.
+            this.server.close( () => {
+                log.info("Done shutting down");
+                log.info('Socket server closed, emitting server stopped event');
+                sio_server_stopped.sioServerStoppedEmitter.emit(sio_server_stopped.EVENT_NAME, new sio_server_stopped.SioServerStoppedMessage());
+            });
+
+
         } catch(err) {
             log.error(`Error disconnecting the sio server. ${err}`);
         }
-        return false;
+
     }
 }
 

@@ -500,7 +500,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                         break;
                     }
 
-                    global.clusterMsgQueue[msg.id].status(hdb_terms.HTTP_STATUS_CODES.OK).json(msg.data);
+                    //global.clusterMsgQueue[msg.id].status(hdb_terms.HTTP_STATUS_CODES.OK).json(msg.data);
                     delete global.clusterMsgQueue[msg.id];
                 }
                 break;
