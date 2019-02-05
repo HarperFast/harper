@@ -111,9 +111,8 @@ function signalChildStarted() {
     }
 }
 
-function signalRestart(force, callback) {
+function signalRestart(force) {
     let err = null;
-    let result = 'Sent a restart signal to HarperDB.  This may take up to 2 minutes.';
     try {
 
         // if process.send is undefined we are running a single instance of the process.
@@ -129,7 +128,6 @@ function signalRestart(force, callback) {
         harper_logger.error(e);
         result = null;
     }
-    //return callback(err, result);
 }
 
 module.exports = {

@@ -13,6 +13,7 @@ const auth = require('../../security/auth');
 const ClusterStatusObject = require('../../server/clustering/ClusterStatusObject');
 const signalling = require('../../utility/signalling');
 const cluster_status_event = require('../../events/ClusterStatusEmitter');
+const children_stopped_event = require('../../events/AllChildrenStoppedEvent');
 const stop = require('../../bin/stop');
 const run = require('../../bin/run');
 
@@ -483,17 +484,7 @@ function clusterMessageHandler(msg) {
                         }
                     }
                     //All children are stopped, emit event
-
-
-                    // All children are stopped, all clustering has stopped, restart everything.
-                    /*log.warn(`All child processes stopped, restarting.`);
-                    try {
-                        stop.stop(function () {
-                            run.run();
-                        });
-                    } catch(err) {
-                        log.error(`Got an error restarting HarperDB.  Please restart manually using bin/harperdb restart.`);
-                    } */
+                    children_stopped_event.allChildrenStoppedEmitter.emit(children_stopped_event.EVENT_NAME, new children_stopped_event.AllChildrenStoppedMessage());
                 }
                 break;
             case terms.CLUSTER_MESSAGE_TYPE_ENUM.RESTART:

@@ -136,6 +136,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
 
     let restart_event_tracker = new RestartEventObject();
 
+    //TODO: These onMessage events should be moved into clusterUtiities to keep stuff out of this module.
     // Consume AllChildrenStopped Event.
     all_children_stopped_event.allChildrenStoppedEmitter.on(all_children_stopped_event.EVENT_NAME, (msg) => {
         harper_logger.info(`Got all children stopped event.`);
@@ -199,7 +200,6 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                         let forked = cluster.fork();
                         // assign handler for messages expected from child processes.
                         forked.on('message', cluster_utilities.clusterMessageHandler);
-                        forked['httpServer'] =
                         forks.push(forked);
                     } catch (e) {
                         harper_logger.fatal(`Had trouble kicking off new HDB processes.  ${e}`);
@@ -500,7 +500,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                         break;
                     }
 
-                    //global.clusterMsgQueue[msg.id].status(hdb_terms.HTTP_STATUS_CODES.OK).json(msg.data);
+                    global.clusterMsgQueue[msg.id].status(hdb_terms.HTTP_STATUS_CODES.OK).json(msg.data);
                     delete global.clusterMsgQueue[msg.id];
                 }
                 break;
@@ -535,7 +535,6 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     process.on( terms.RESTART_CODE, function() {
         if(httpServer) {
             harper_logger.warn(`Process pid:${process.pid} - SIGINT received, closing connections and finishing existing work.`);
-            //process.exitCode = 1;
             httpServer.close(function () {
                 harper_logger.warn(`Process pid:${process.pid} - Work completed, shutting down`);
                 process.exit(terms.RESTART_CODE_NUM);
@@ -543,7 +542,6 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         }
         if(secureServer) {
             harper_logger.warn(`Process pid:${process.pid} - SIGINT received, closing connections and finishing existing work.`);
-            //process.exitCode = 1;
             secureServer.close(function () {
                 harper_logger.warn(`Process pid:${process.pid} - Work completed, shutting down`);
                 process.exit(terms.RESTART_CODE_NUM);
