@@ -252,12 +252,14 @@ const CLUSTER_EVENTS_DEFS_ENUM = {
     RECONNECT_ATTEMPT: 'reconnect_attempt',
     CONNECT_ERROR: 'connect_error',
     MESSAGE: 'msg',
+    VERSION_MISMATCH: 'version_mismatch'
 };
 
 module.exports = {
     HDB_PROC_NAME,
     SYSTEM_SCHEMA_NAME,
     HASH_FOLDER_NAME,
+    CLUSTERING_VERSION_HEADER_NAME,
     JOB_TYPE_ENUM,
     JOB_STATUS_ENUM,
     SYSTEM_TABLE_NAMES,

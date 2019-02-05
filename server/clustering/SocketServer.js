@@ -11,6 +11,7 @@ const terms = require('../../utility/hdbTerms');
 const SocketClient = require('./SocketClient');
 const cluster_handlers = require('./clusterHandlers');
 const sio_server_stopped = require('../../events/SioServerStoppedEvent');
+const version = require('../../bin/version');
 
 const p_schema_describe_all = promisify(schema.describeAll);
 
@@ -57,6 +58,17 @@ class SocketServer {
             let node = this.node;
             this.io = sio.listen(server);
             this.io.sockets.on(terms.CLUSTER_EVENTS_DEFS_ENUM.CONNECTION, function (socket) {
+                try {
+                    let client_version = socket.handshake.headers[terms.CLUSTERING_VERSION_HEADER_NAME];
+                    let this_version = version.version();
+                    if (client_version !== this_version) {
+                        let msg = `HDB version mismatch with connecting client.  Client is using version: ${client_version}. This server is using version: ${this_version}. There may be a loss of functionality.`;
+                        log.warn(msg);
+                        socket.emit(terms.CLUSTER_EVENTS_DEFS_ENUM.VERSION_MISMATCH, msg);
+                    }
+                } catch(err) {
+                    log.error(`Error trying to read client version.  ${err}`);
+                }
                 socket.on(terms.CLUSTER_EVENTS_DEFS_ENUM.IDENTIFY, function (msg) {
                     log.info(`${msg.name} connected to cluster`);
                     //this is the remote ip address of the client connecting to this server.
@@ -85,7 +97,7 @@ class SocketServer {
                         }
 
                         if(catchup_request) {
-                            log.debug(`emitting ${terms.CLUSTER_EVENTS_DEFS_ENUM.CATCHUP_REQUEST}`);
+                            log.trace(`emitting ${terms.CLUSTER_EVENTS_DEFS_ENUM.CATCHUP_REQUEST}`);
                             socket.emit(terms.CLUSTER_EVENTS_DEFS_ENUM.CATCHUP_REQUEST, {name: node.name});
                         }
 
