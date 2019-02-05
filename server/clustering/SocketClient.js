@@ -106,9 +106,11 @@ class SocketClient {
     async onCatchupHandler(queue) {
         harper_logger.info('catchup' + inspect(queue));
 
+        harper_logger.debug(`calling onSchemaUpdateResponseHandler`);
         await this.onSchemaUpdateResponseHandler(queue.schema);
-
-        if(!queue.queue){
+        harper_logger.debug(`done calling onSchemaUpdateResponseHandler`);
+        if(!queue.queue) {
+            harper_logger.debug(`Nothing in the queue, all done here`);
             return;
         }
 

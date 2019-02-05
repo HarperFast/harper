@@ -85,6 +85,7 @@ class SocketServer {
                         }
 
                         if(catchup_request) {
+                            log.debug(`emitting ${terms.CLUSTER_EVENTS_DEFS_ENUM.CATCHUP_REQUEST}`);
                             socket.emit(terms.CLUSTER_EVENTS_DEFS_ENUM.CATCHUP_REQUEST, {name: node.name});
                         }
 
