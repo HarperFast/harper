@@ -127,6 +127,7 @@ class SocketClient {
                     let operation_function = await p_server_utilities_choose_operation(json);
 
                     queue.queue[item].node = the_node;
+                    harper_logger.debug(`Calling delegate transaction on operation: ${operation_function}`);
                     await p_server_utilities_proccess_delegated_transaction(json, operation_function)
                         .catch(err => {
                             if (!checkWhitelistedErrors(err)) {
@@ -134,12 +135,14 @@ class SocketClient {
                             }
                         });
 
+                    harper_logger.debug(`Emitting ${terms.CLUSTER_EVENTS_DEFS_ENUM.CONFIRM_MSG} event.`);
                     the_client.emit(terms.CLUSTER_EVENTS_DEFS_ENUM.CONFIRM_MSG, queue.queue[item]);
+                    harper_logger.debug(`DONE Emitting ${terms.CLUSTER_EVENTS_DEFS_ENUM.CONFIRM_MSG} event.`);
                 }
             } catch (e) {
+                harper_logger.error(e);
                 queue.queue[item].err = e;
                 the_client.emit(terms.CLUSTER_EVENTS_DEFS_ENUM.ERROR, queue.queue[item]);
-                harper_logger.error(e);
             }
         }
         harper_logger.debug('finished catchup request');
