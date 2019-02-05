@@ -64,12 +64,20 @@ class ClusterServer {
     closeServer() {
         let result = undefined;
         try {
+            this.other_nodes.forEach((o_node)=>{
+                this.removeConnection(o_node);
+            });
+            //TODO: Need to listen for the close event for each socket client.  Once we have gotten all of them, call
+            // disconnect on the server.
+            global.cluster_server.socket_client.forEach((client) => {
+                this.removeConnection(client);
+                client.disconnectNode();
+            });
             result = this.socket_server.disconnect();
         } catch(err) {
             log.error(`Error closing sio server ${err}`);
             result = false;
         }
-        //return result;
     }
 
     establishAllConnections(){

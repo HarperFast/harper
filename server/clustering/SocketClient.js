@@ -69,6 +69,7 @@ class SocketClient {
         }
         harper_logger.info(`disconnecting node ${this.other_node.name}`);
         this.client.disconnect();
+        this.client.destroy();
     }
 
     onConnectHandler() {
