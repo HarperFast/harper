@@ -71,7 +71,8 @@ class SocketClient {
         this.client.disconnect();
     }
 
-    onConnectHandler(){
+    onConnectHandler() {
+        harper_logger.info(`Handling ${terms.CLUSTER_EVENTS_DEFS_ENUM.CONNECT}`);
         this.other_node.status = 'connected';
 
         harper_logger.info(`Client: Connected to port ${this.other_node.port} on host ${this.other_node.host}`);
@@ -81,19 +82,25 @@ class SocketClient {
             port: this.node.port
         };
         this.client.emit(terms.CLUSTER_EVENTS_DEFS_ENUM.IDENTIFY, node_info);
+        harper_logger.debug(`Done handling ${terms.CLUSTER_EVENTS_DEFS_ENUM.CONNECT}`);
     }
 
-    onConnectErrorHandler(error){
+    onConnectErrorHandler(error) {
+        harper_logger.info(`Handling ${terms.CLUSTER_EVENTS_DEFS_ENUM.CONNECT_ERROR}`);
         harper_logger.debug('cannot connect to ' + this.other_node.name + ' due to ' + error);
+        harper_logger.debug(`Done handling ${terms.CLUSTER_EVENTS_DEFS_ENUM.CONNECT_ERROR}`);
     }
 
-    onReconnectHandler(attempt_number){
+    onReconnectHandler(attempt_number) {
+        harper_logger.info(`Handling ${terms.CLUSTER_EVENTS_DEFS_ENUM.RECONNECT_ATTEMPT}`);
         harper_logger.debug(': attempting to connect to ' + JSON.stringify(this.other_node) + ' for the ' + attempt_number + ' time');
+        harper_logger.debug(`Done handling ${terms.CLUSTER_EVENTS_DEFS_ENUM.RECONNECT_ATTEMPT}`);
     }
 
     async onCatchupRequestHandler(msg){
-        harper_logger.info('catchup_request from :' + msg.name);
+        harper_logger.info(`Handling ${terms.CLUSTER_EVENTS_DEFS_ENUM.CATCHUP_REQUEST} from: ${msg.name}`);
         await cluster_handlers.fetchQueue(msg, this.client);
+        harper_logger.debug(`Done handling ${terms.CLUSTER_EVENTS_DEFS_ENUM.CATCHUP_REQUEST}`);
     }
 
     async onCatchupHandler(queue) {
@@ -138,7 +145,8 @@ class SocketClient {
         harper_logger.debug('finished catchup request');
     }
 
-    async onSchemaUpdateResponseHandler(cluster_schema){
+    async onSchemaUpdateResponseHandler(cluster_schema) {
+        harper_logger.debug(`Handling ${terms.CLUSTER_EVENTS_DEFS_ENUM.SCHEMA_UPDATE_RES}`);
         let my_schema;
         try {
             my_schema = await p_schema_describe_all({});
@@ -212,9 +220,11 @@ class SocketClient {
         } catch(e){
             return harper_logger.error(e);
         }
+        harper_logger.debug(`Done handling ${terms.CLUSTER_EVENTS_DEFS_ENUM.SCHEMA_UPDATE_RES}`);
     }
 
     async onMsgHandler(msg) {
+        harper_logger.debug(`Handling ${terms.CLUSTER_EVENTS_DEFS_ENUM.MESSAGE}`);
         try {
             harper_logger.info(`received by ${this.node.name} : msg = ${JSON.stringify(msg)}`);
             let the_client = this.client;
@@ -246,15 +256,20 @@ class SocketClient {
         } catch(e){
             harper_logger.error(e);
         }
+        harper_logger.debug(`Done handling ${terms.CLUSTER_EVENTS_DEFS_ENUM.MESSAGE}`);
     }
 
     onDisconnectHandler(reason) {
+        harper_logger.debug(`Handling ${terms.CLUSTER_EVENTS_DEFS_ENUM.DISCONNECT}`);
         this.other_node.status = 'disconnected';
         harper_logger.info(`server ${this.other_node.name} down`);
+        harper_logger.debug(`Done handling ${terms.CLUSTER_EVENTS_DEFS_ENUM.DISCONNECT}`);
     }
 
     async onConfirmMessageHandler(msg){
+        harper_logger.debug(`Handling ${terms.CLUSTER_EVENTS_DEFS_ENUM.CONFIRM_MSG}`);
         await cluster_handlers.onConfirmMessageHandler(msg);
+        harper_logger.debug(`Done handling ${terms.CLUSTER_EVENTS_DEFS_ENUM.CONFIRM_MSG}`);
     }
 
     connectToNode() {
