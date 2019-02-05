@@ -135,7 +135,7 @@ class SocketClient {
                 harper_logger.error(e);
             }
         }
-        log.debug('finished catchup request');
+        harper_logger.debug('finished catchup request');
     }
 
     async onSchemaUpdateResponseHandler(cluster_schema){
