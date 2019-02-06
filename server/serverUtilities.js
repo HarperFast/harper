@@ -20,7 +20,7 @@ const signal = require('../utility/signalling');
 const job_runner = require('./jobRunner');
 const terms = require('../utility/hdbTerms');
 const reg = require('../utility/registration/registrationHandler');
-const stop = require('../bin/stop');
+const restart = require('../data_layer/restart');
 
 const UNAUTH_RESPONSE = 403;
 const UNAUTHORIZED_TEXT = 'You are not authorized to perform the operation specified';
@@ -286,7 +286,7 @@ function chooseOperation(json, callback) {
             operation_function = reg.setLicense;
             break;
         case terms.OPERATIONS_ENUM.RESTART:
-            operation_function = stop.restartProcesses
+            operation_function = restart.restartProcesses;
             break;
         default:
             break;

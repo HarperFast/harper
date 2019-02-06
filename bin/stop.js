@@ -4,11 +4,9 @@ const ps = require('find-process');
 const hdb_terms = require('../utility/hdbTerms');
 const os = require('os');
 const log = require('../utility/logging/harper_logger');
-const signal = require('../utility/signalling');
 
 module.exports = {
-    stop: stop,
-    restartProcesses: restartProcesses
+    stop: stop
 };
 
 /**
@@ -42,16 +40,5 @@ function stop(callback) {
             return callback(err);
         }
     });
-}
-
-function restartProcesses(json_message, callback) {
-    try {
-        signal.signalRestart(json_message.force_restart, () => {
-            return callback(null, 'Sent restart signal.');
-        });
-    } catch(err) {
-        log.error(`There was an error getting the fingerprint for this machine ${err}`);
-        return callback(err, null);
-    }
 }
 
