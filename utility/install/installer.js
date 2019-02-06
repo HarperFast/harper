@@ -294,7 +294,7 @@ function createSettingsFile(mount_status, callback) {
             `   ;The HDB install creates a self signed certficate, if you use that cert this must be set to true.\n` +
             `ALLOW_SELF_SIGNED_SSL_CERTS = false\n` +
             `   ;Set the max number of processes HarperDB will kick off.  This can also be limited by number of cores and licenses.\n` +
-            `MAX_HDBB_PROCESSES = 4\n`;
+            `MAX_HDB_PROCESSES = 4\n`;
 
         winston.info('info', `hdb_props_value ${JSON.stringify(hdb_props_value)}`);
         winston.info('info', `settings path: ${hdb_boot_properties.get('settings_path')}`);
