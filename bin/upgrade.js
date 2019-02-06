@@ -47,8 +47,8 @@ const p_fs_readdir = promisify(fs.readdir);
 const p_fs_copyfile = promisify(fs.copyFile);
 const p_fs_chmod = promisify(fs.chmod);
 
-const VERSIONS_URL = 'http://products.harperdb.io:7777/api/latestVersion?os=';
-const DOWNLOAD_URL = 'http://products.harperdb.io:7777/api/update?os=';
+const VERSIONS_URL = 'http://products.harperdb.io/api/latestVersion?os=';
+const DOWNLOAD_URL = 'http://products.harperdb.io/api/update?os=';
 
 let hdb_properties;
 
@@ -392,7 +392,7 @@ function startUpgradeDirectives(old_version_number, new_version_number) {
 function backupCurrInstall() {
     console.log('Backing up current install files.');
     let curr_install_base = path.join(process.cwd(), '../');
-    let data_base = hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.HDB_ROOT);
+    let data_base = hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY);
     log.info(`Current install path is: ${curr_install_base}`);
 
     let backup_path = path.join(data_base, 'backup', `version${(version.version().replace('/./g', '-'))}`);
