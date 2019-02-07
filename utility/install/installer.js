@@ -17,7 +17,6 @@ const optimist = require('optimist');
 const forge = require('node-forge');
 const terms_address = 'http://legal.harperdb.io/Software+License+Subscription+Agreement+110317.pdf';
 const PropertiesReader = require('properties-reader');
-const os = require('os');
 
 let hdb_boot_properties = null;
 let hdb_properties = null;
@@ -271,13 +270,7 @@ function createSettingsFile(mount_status, callback) {
             console.error('There was a problem creating the boot file.  Please check the install log for details.');
             return callback(err);
         }
-        let num_cores = 4;
-        try {
-            num_cores = os.cpus().length;
-            winston.info(`Detected ${num_cores} on this machine, defaulting MAX_HDB_PROCESSES to that.  This can be changed later in the settings.js file.`);
-        } catch (err) {
-            //No-op, should only get here in the case of android.  Defaulted to 4.
-        }
+
         const path = require('path');
         let hdb_props_value = `PROJECT_DIR = ${path.resolve(process.cwd(),'../')}\n` +
             `HDB_ROOT = ${wizard_result.HDB_ROOT}\n` +
@@ -301,7 +294,7 @@ function createSettingsFile(mount_status, callback) {
             `   ;The HDB install creates a self signed certficate, if you use that cert this must be set to true.\n` +
             `ALLOW_SELF_SIGNED_SSL_CERTS = false\n` +
             `   ;Set the max number of processes HarperDB will kick off.  This can also be limited by number of cores and licenses.\n` +
-            `MAX_HDB_PROCESSES = ${num_cores}\n`;
+            `MAX_HDB_PROCESSES = 4\n`;
 
         winston.info('info', `hdb_props_value ${JSON.stringify(hdb_props_value)}`);
         winston.info('info', `settings path: ${hdb_boot_properties.get('settings_path')}`);
