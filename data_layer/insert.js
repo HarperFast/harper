@@ -35,6 +35,9 @@ const hdb_path = path.join(hdb_properties.get('HDB_ROOT'), '/schema');
 //const HDB_PATH_KEY = hdb_terms.INSERT_MODULE_ENUM.HDB_PATH_KEY;
 const CHUNK_SIZE = hdb_terms.INSERT_MODULE_ENUM.CHUNK_SIZE;
 
+//for release 2.0 we need to turn off threading.  this variable will control the enable/disable
+const ENABLE_THREADING = false;
+
 const INTERNAL_ERROR_MESSAGE = 'An internal error occurred, please check the logs for more information.';
 
 module.exports = {
@@ -275,7 +278,7 @@ async function getExistingRows(table_schema, hashes, attributes){
  */
 async function processRows(insert_object, attributes, table_schema, epoch, existing_rows, pool){
     let data_wrapper;
-    if(insert_object.records.length > CHUNK_SIZE){
+    if(ENABLE_THREADING === true && insert_object.records.length > CHUNK_SIZE){
         if(!(pool instanceof HDB_Pool)){
             pool = new HDB_Pool();
         }
@@ -333,7 +336,7 @@ async function processRows(insert_object, attributes, table_schema, epoch, exist
  */
 async function unlinkFiles(unlink_paths, pool) {
     try {
-        if (unlink_paths.length > CHUNK_SIZE) {
+        if (ENABLE_THREADING === true && unlink_paths.length > CHUNK_SIZE) {
             if(!(pool instanceof HDB_Pool)){
                 pool = new HDB_Pool();
             }
@@ -367,7 +370,7 @@ async function processData(data_wrapper, pool) {
  */
 async function writeRawDataFiles(data, pool) {
     try {
-        if (data.length > CHUNK_SIZE) {
+        if (ENABLE_THREADING === true && data.length > CHUNK_SIZE) {
             if(!(pool instanceof HDB_Pool)){
                 pool = new HDB_Pool();
             }
@@ -389,7 +392,7 @@ async function writeRawDataFiles(data, pool) {
  */
 async function createFolders(folders, pool) {
     try {
-        if (folders.length > CHUNK_SIZE) {
+        if (ENABLE_THREADING === true && folders.length > CHUNK_SIZE) {
             if(!(pool instanceof HDB_Pool)){
                 pool = new HDB_Pool();
             }

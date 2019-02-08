@@ -64,7 +64,7 @@
     "winston": "^2.4.4"
   },
   "pkg": {
-    "scripts":  [],
+    "scripts": [],
     "assets": [
       "./upgrade/*.js",
       "./utility/install/*.txt",
@@ -81,7 +81,9 @@
       "./validation/*.js",
       "./validation/**/*.js",
       "./bin/*.js",
-      "./events/*.js","lib/**/*.js","lib/*.js"
+      "./events/*.js",
+      "lib/**/*.js",
+      "lib/*.js"
     ]
   },
   "devDependencies": {
