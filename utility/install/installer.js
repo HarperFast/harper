@@ -283,7 +283,7 @@ function createSettingsFile(mount_status, callback) {
             `CORS_ON = TRUE\n` +
             `CORS_WHITELIST =\n` +
             `SERVER_TIMEOUT_MS = 120000\n` +
-            `LOG_LEVEL = error\n` +
+            `LOG_LEVEL = warn\n` +
             `   ;Setting LOGGER to 1 uses the WINSTON logger.\n` +
             `   ; 2 Uses the more performant PINO logger.\n` +
             `LOGGER = 1\n` +
@@ -292,7 +292,9 @@ function createSettingsFile(mount_status, callback) {
             `   ;This allows self signed certificates to be used in clustering.  This is a security risk\n` +
             `   ;as clustering will not validate the cert, so should only be used internally.\n` +
             `   ;The HDB install creates a self signed certficate, if you use that cert this must be set to true.\n` +
-            `ALLOW_SELF_SIGNED_SSL_CERTS = false\n`;
+            `ALLOW_SELF_SIGNED_SSL_CERTS = false\n` +
+            `   ;Set the max number of processes HarperDB will kick off.  This can also be limited by number of cores and licenses.\n` +
+            `MAX_HDB_PROCESSES = 4\n`;
 
         winston.info('info', `hdb_props_value ${JSON.stringify(hdb_props_value)}`);
         winston.info('info', `settings path: ${hdb_boot_properties.get('settings_path')}`);

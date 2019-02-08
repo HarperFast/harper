@@ -457,15 +457,20 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                 global.clustering_on = true;
                 break;
             case 'cluster_response':
-                if (global.clusterMsgQueue[msg.id]) {
-                    if (msg.err) {
-                        global.clusterMsgQueue[msg.id].status(hdb_terms.HTTP_STATUS_CODES.UNAUTHORIZED).json({"error": msg.err});
-                        delete global.clusterMsgQueue[msg.id];
-                        break;
-                    }
+                try {
+                    if (global.clusterMsgQueue[msg.id]) {
+                        if (msg.err) {
+                            global.clusterMsgQueue[msg.id].status(hdb_terms.HTTP_STATUS_CODES.UNAUTHORIZED).json({"error": msg.err});
+                            delete global.clusterMsgQueue[msg.id];
+                            break;
+                        }
 
-                    global.clusterMsgQueue[msg.id].status(hdb_terms.HTTP_STATUS_CODES.OK).json(msg.data);
-                    delete global.clusterMsgQueue[msg.id];
+
+                            global.clusterMsgQueue[msg.id].status(hdb_terms.HTTP_STATUS_CODES.OK).json(msg.data);
+                            delete global.clusterMsgQueue[msg.id];
+                    }
+                } catch(err) {
+                    harper_logger.error(err);
                 }
                 break;
             case 'delegate_transaction':
