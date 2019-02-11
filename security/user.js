@@ -11,7 +11,7 @@ module.exports = {
     alterUser:alterUserCB,
     dropUser: dropUserCB,
     userInfo: userinfoCB,
-    listUsers: list_usersCB,
+    listUsers: listUsersCB,
     listUsersExternal : listUsersExternalCB,
     setUsersToGlobal: setUsersToGlobalCB,
     USERNAME_REQUIRED: USERNAME_REQUIRED,
@@ -31,7 +31,7 @@ const signalling = require('../utility/signalling');
 const hdb_utility = require('../utility/common_utils');
 const validate = require('validate.js');
 const logger = require('../utility/logging/harper_logger');
-const {promisify} = require('utils');
+const {promisify} = require('util');
 
 const USER_ATTRIBUTE_WHITELIST = {
     username: true,
@@ -46,7 +46,7 @@ const p_delete_delete = promisify(delete_.delete);
 
 function addUserCB(user, callback){
     let add_result = {};
-    addUser().then((result) => {
+    addUser(user).then((result) => {
         add_result = result;
         return callback(null, add_result);
     }).catch((err) => {
@@ -55,12 +55,12 @@ function addUserCB(user, callback){
     });
 }
 
-async function addUser(user, callback){
+async function addUser(user){
     let clean_user = validate.cleanAttributes(user, USER_ATTRIBUTE_WHITELIST);
 
     let validation_resp = validation.addUserValidation(clean_user);
     if(validation_resp){
-        return callback(validation_resp);
+        throw new Error(validation_resp);
     }
 
     let search_obj = {
@@ -77,7 +77,7 @@ async function addUser(user, callback){
         throw err;
     });
     if(!search_role || search_role.length < 1){
-        return callback("Role not found.");
+        throw new Error("Role not found.");
     }
 
     clean_user.password = password.hash(clean_user.password);
@@ -109,8 +109,8 @@ async function addUser(user, callback){
 
 function alterUserCB(json_message, callback) {
     let alter_result = {};
-    alterUser().then((result) => {
-        alter_result['message'] = result;
+    alterUser(json_message).then((result) => {
+        alter_result = result;
         return callback(null, alter_result);
     }).catch((err) => {
         logger.error(`There was an error getting the fingerprint for this machine ${err}`);
@@ -118,24 +118,24 @@ function alterUserCB(json_message, callback) {
     });
 }
 
-async function alterUser(user, callback) {
+async function alterUser(user) {
     let clean_user = validate.cleanAttributes(user, USER_ATTRIBUTE_WHITELIST);
 
     if(hdb_utility.isEmptyOrZeroLength(clean_user.username)){
-        return callback(Error(USERNAME_REQUIRED));
+        throw new Error(USERNAME_REQUIRED);
     }
 
     if(hdb_utility.isEmptyOrZeroLength(clean_user.password) && hdb_utility.isEmptyOrZeroLength(clean_user.role)
         && hdb_utility.isEmptyOrZeroLength(clean_user.active)){
-        return callback(Error(ALTERUSER_NOTHING_TO_UPDATE));
+        throw new Error(ALTERUSER_NOTHING_TO_UPDATE);
     }
 
     if(!hdb_utility.isEmpty(clean_user.password) && hdb_utility.isEmptyOrZeroLength(clean_user.password.trim())) {
-        return callback(Error(EMPTY_PASSWORD));
+        throw new Error(EMPTY_PASSWORD);
     }
 
     if(!hdb_utility.isEmpty(clean_user.active) && !hdb_utility.isBoolean(clean_user.active)) {
-        return callback(Error(ACTIVE_BOOLEAN));
+        throw new Error(ACTIVE_BOOLEAN);
     }
 
     if(!hdb_utility.isEmpty(clean_user.password) && !hdb_utility.isEmptyOrZeroLength(clean_user.password.trim())) {
@@ -143,7 +143,7 @@ async function alterUser(user, callback) {
     }
 
     if(!hdb_utility.isEmpty(clean_user.role) && hdb_utility.isEmptyOrZeroLength(clean_user.role.trim())){
-        return callback(Error(EMPTY_ROLE));
+        throw new Error(EMPTY_ROLE);
     }
 
     let update_object = {
@@ -172,8 +172,8 @@ async function alterUser(user, callback) {
 
 function dropUserCB(user, callback){
     let drop_result = {};
-    dropUser().then((result) => {
-        drop_result['message'] = result;
+    dropUser(user).then((result) => {
+        drop_result = result;
         return callback(null, drop_result);
     }).catch((err) => {
         logger.error(`There was an error getting the fingerprint for this machine ${err}`);
@@ -185,7 +185,7 @@ async function dropUser(user) {
     try {
         let validation_resp = validation.dropUserValidation(user);
         if (validation_resp) {
-            return validation_resp;
+            throw new Error(validation_resp);
         }
         let delete_object = {
             table: "hdb_user",
@@ -214,7 +214,7 @@ async function dropUser(user) {
 
 function userinfoCB(body, callback) {
     let user_info = {};
-    userInfo().then((result) => {
+    userInfo(body).then((result) => {
         user_info = result;
         return callback(null, user_info);
     }).catch((err) => {
@@ -246,7 +246,7 @@ async function userInfo(body) {
         delete user.password;
     } catch(err) {
         logger.error(err);
-        return user;
+        throw err;
     }
     return user;
 }
@@ -260,7 +260,7 @@ async function userInfo(body) {
 function listUsersExternalCB(body, callback) {
     let list_result = {};
     listUsersExternal().then((result) => {
-        list_result['message'] = result;
+        list_result = result;
         return callback(null, list_result);
     }).catch((err) => {
         logger.error(`There was an error getting the fingerprint for this machine ${err}`);
@@ -269,7 +269,7 @@ function listUsersExternalCB(body, callback) {
 }
 
 async function listUsersExternal() {
-    let user_data = await list_users().catch((err) => {
+    let user_data = await listUsers().catch((err) => {
        logger.error('Got an error listing users.');
        logger.error(err);
        throw err;
@@ -284,10 +284,10 @@ async function listUsersExternal() {
     return user_data;
 }
 
-function list_usersCB(body, callback){
+function listUsersCB(body, callback){
     let list_result = {};
-    list_users().then((result) => {
-        list_result['message'] = result;
+    listUsers().then((result) => {
+        list_result = result;
         return callback(null, list_result);
     }).catch((err) => {
         logger.error(`There was an error getting the fingerprint for this machine ${err}`);
@@ -295,7 +295,7 @@ function list_usersCB(body, callback){
     });
 }
 
-async function list_users() {
+async function listUsers() {
 
     let role_search_obj = {};
     role_search_obj.schema = 'system';
@@ -341,7 +341,7 @@ async function list_users() {
 function setUsersToGlobalCB(callback){
     let set_result = {};
     setUsersToGlobal().then((result) => {
-        set_result['message'] = result;
+        set_result = result;
         return callback(null, set_result);
     }).catch((err) => {
         logger.error(`There was an error getting the fingerprint for this machine ${err}`);
@@ -350,7 +350,7 @@ function setUsersToGlobalCB(callback){
 }
 
 async function setUsersToGlobal() {
-    global.hdb_users = await list_users().catch((err) => {
+    global.hdb_users = await listUsers().catch((err) => {
        throw err;
     });
 }
