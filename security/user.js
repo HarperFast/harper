@@ -50,7 +50,7 @@ function addUserCB(user, callback){
         add_result = result;
         return callback(null, add_result);
     }).catch((err) => {
-        logger.error(`There was an error getting the fingerprint for this machine ${err}`);
+        logger.error(`There was an error getting adding a user ${err}`);
         return callback(err, null);
     });
 }
@@ -113,7 +113,7 @@ function alterUserCB(json_message, callback) {
         alter_result = result;
         return callback(null, alter_result);
     }).catch((err) => {
-        logger.error(`There was an error getting the fingerprint for this machine ${err}`);
+        logger.error(`There was an error altering user ${err}`);
         return callback(err, null);
     });
 }
@@ -154,7 +154,7 @@ async function alterUser(json_message) {
     role_search_obj.hash_values = [json_message.role];
     role_search_obj.get_attributes = ['*'];
     let role_data = await p_search_search_by_hash(role_search_obj).catch((err) => {
-        logger.error('Got an error searching for a user.');
+        logger.error('Got an error searching for a role.');
         logger.error(err);
         throw err;
     });
@@ -194,7 +194,7 @@ function dropUserCB(user, callback){
         drop_result = result;
         return callback(null, drop_result);
     }).catch((err) => {
-        logger.error(`There was an error getting the fingerprint for this machine ${err}`);
+        logger.error(`There was an error dropping a user ${err}`);
         return callback(err, null);
     });
 }
@@ -236,7 +236,7 @@ function userinfoCB(body, callback) {
         user_info = result;
         return callback(null, user_info);
     }).catch((err) => {
-        logger.error(`There was an error getting the fingerprint for this machine ${err}`);
+        logger.error(`There was an error getting user info ${err}`);
         return callback(err, null);
     });
 }
@@ -256,7 +256,7 @@ async function userInfo(body) {
         search_obj.hash_values = [user.role.id];
         search_obj.get_attributes = ['*'];
         let role_data = await p_search_search_by_hash(search_obj).catch((err) => {
-            logger.error('Got an error searching for a user.');
+            logger.error('Got an error searching for a role.');
             logger.error(err);
             throw err;
         });
@@ -281,7 +281,7 @@ function listUsersExternalCB(body, callback) {
         list_result = result;
         return callback(null, list_result);
     }).catch((err) => {
-        logger.error(`There was an error getting the fingerprint for this machine ${err}`);
+        logger.error(`There was an error with listUsersExternal ${err}`);
         return callback(err, null);
     });
 }
@@ -308,7 +308,7 @@ function listUsersCB(body, callback){
         list_result = result;
         return callback(null, list_result);
     }).catch((err) => {
-        logger.error(`There was an error getting the fingerprint for this machine ${err}`);
+        logger.error(`There was an error listing the users for this machine ${err}`);
         return callback(err, null);
     });
 }
@@ -362,7 +362,7 @@ function setUsersToGlobalCB(callback){
         set_result = result;
         return callback(null, set_result);
     }).catch((err) => {
-        logger.error(`There was an error getting the fingerprint for this machine ${err}`);
+        logger.error(`There was an error setting users to global ${err}`);
         return callback(err, null);
     });
 }

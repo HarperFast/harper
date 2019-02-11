@@ -215,15 +215,20 @@ describe('Test addUser', function () {
 
 describe('Test alterUser', function () {
     let insert_stub = undefined;
+    let role_search_stub = undefined;
     let validate_stub = undefined;
     let signal_spy = undefined;
+    let search_orig = user.__get__('p_search_search_by_hash');
     beforeEach( function() {
+
         // We are not testing these other functions, so we stub them.
         insert_stub = sinon.stub(insert, "update").resolves(TEST_UPDATE_RESPONSE);
         validate_stub = sinon.stub(validation, "alterUserValidation").callsFake(function() {
             return null;
         });
         signal_spy = sinon.spy(signalling, "signalUserChange");
+        role_search_stub = sinon.stub().resolves([TEST_LIST_USER_ROLE_SEARCH_RESPONSE]);
+        user.__set__('p_search_search_by_hash', role_search_stub);
     });
     afterEach( function() {
         insert_stub.restore();
@@ -300,6 +305,24 @@ describe('Test alterUser', function () {
         });
         user.alterUser(TEST_ALTER_USER_ACTIVE_NOT_BOOLEAN_JSON, function(err, results) {
             assert.equal(err.message, user.ACTIVE_BOOLEAN, 'Expected success result not returned.');
+            assert.equal(signal_spy.called, false);
+            done();
+        });
+    });
+    it('Test no role found', function (done) {
+        role_search_stub = sinon.stub().resolves([]);
+        user.__set__('p_search_search_by_hash', role_search_stub);
+        user.alterUser(TEST_ALTER_USER_JSON, function(err, results) {
+            assert.equal(err.message, `Update failed.  Requested role id ${TEST_ALTER_USER_NO_USERNAME_JSON.role} not found.`, 'Expected success result not returned.');
+            assert.equal(signal_spy.called, false);
+            done();
+        });
+    });
+    it('Test exception during role search', function (done) {
+        role_search_stub = sinon.stub().throws(new Error('Role Search Error'));
+        user.__set__('p_search_search_by_hash', role_search_stub);
+        user.alterUser(TEST_ALTER_USER_JSON, function(err, results) {
+            assert.equal(err.message, 'Role Search Error', 'Expected success result not returned.');
             assert.equal(signal_spy.called, false);
             done();
         });
