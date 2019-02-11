@@ -133,7 +133,7 @@ const TEST_LIST_USER_SEARCH_RESPONSE = {
 
 const TEST_UPDATE_RESPONSE = {
     message: `updated 1 of 1 records`,
-    update_hashes: '',
+    update_hashes: '[test_user]',
     skipped_hashes: ''
 }
 

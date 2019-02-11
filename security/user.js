@@ -118,8 +118,8 @@ function alterUserCB(json_message, callback) {
     });
 }
 
-async function alterUser(user) {
-    let clean_user = validate.cleanAttributes(user, USER_ATTRIBUTE_WHITELIST);
+async function alterUser(json_message) {
+    let clean_user = validate.cleanAttributes(json_message, USER_ATTRIBUTE_WHITELIST);
 
     if(hdb_utility.isEmptyOrZeroLength(clean_user.username)){
         throw new Error(USERNAME_REQUIRED);
@@ -144,6 +144,24 @@ async function alterUser(user) {
 
     if(!hdb_utility.isEmpty(clean_user.role) && hdb_utility.isEmptyOrZeroLength(clean_user.role.trim())){
         throw new Error(EMPTY_ROLE);
+    }
+
+    // Make sure assigned role exists.
+    let role_search_obj = {};
+    role_search_obj.schema = 'system';
+    role_search_obj.table = 'hdb_role';
+    role_search_obj.hash_attribute = 'id';
+    role_search_obj.hash_values = [json_message.role];
+    role_search_obj.get_attributes = ['*'];
+    let role_data = await p_search_search_by_hash(role_search_obj).catch((err) => {
+        logger.error('Got an error searching for a user.');
+        logger.error(err);
+        throw err;
+    });
+    if(!role_data || role_data.length === 0) {
+        let msg = `Update failed.  Requested role id ${clean_user.role} not found.`;
+        logger.error(msg);
+        throw new Error(msg);
     }
 
     let update_object = {
