@@ -9,7 +9,7 @@ const prompt = require('prompt');
 const spawn = require('child_process').spawn;
 const path = require('path');
 const mount = require('./../mount_hdb');
-const fs = require('fs.extra');
+const fs = require('fs-extra');
 const colors = require("colors/safe");
 const winston = require('winston');
 const async = require('async');
@@ -24,7 +24,7 @@ let hdb_properties = null;
 
 const LOG_LOCATION = ('../install_log.log');
 module.exports = {
-    "install": run_install
+    install: run_install
 };
 
 let wizard_result;
@@ -129,7 +129,7 @@ function checkInstall(callback) {
             if( err ) { callback(err); }
 
             if(result.REINSTALL === 'yes' || result.REINSTALL === 'y') {
-                fs.rmrf(hdb_properties.get('HDB_ROOT'), function (err) {
+                fs.remove(hdb_properties.get('HDB_ROOT'), function (err) {
                     if (err) {
                         winston.error(err);
                         console.log('There was a problem removing the existing installation.  Please check the install log for details.');
