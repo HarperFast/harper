@@ -18,6 +18,7 @@ const forge = require('node-forge');
 const terms_address = 'http://legal.harperdb.io/Software+License+Subscription+Agreement+110317.pdf';
 const PropertiesReader = require('properties-reader');
 const os = require('os');
+const comm = require('../common_utils');
 
 let hdb_boot_properties = null;
 let hdb_properties = null;
@@ -43,6 +44,13 @@ function run_install(callback) {
             })
         ], exitOnError: false
     });
+
+    if(comm.isEmptyOrZeroLength(os.userInfo().uid) ) {
+        let msg = `Installing user: ${os.userInfo().username} has no pid.  Please install with a properly created user. Cancelling install.`;
+        winston.error(msg);
+        console.log(msg);
+        return callback(msg, null);
+    }
 
     prompt.override = optimist.argv;
     prompt.start();
