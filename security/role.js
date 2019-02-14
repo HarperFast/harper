@@ -35,6 +35,12 @@ function scrubRoleDetails(role) {
         if(role.HDB_INTERNAL_PATH) {
             delete role.HDB_INTERNAL_PATH;
         }
+        if(role.operation) {
+            delete role.operation;
+        }
+        if(role.hdb_user) {
+            delete role.hdb_user;
+        }
     } catch(err) {
         //no-op, failure is ok
     }
@@ -55,7 +61,7 @@ async function addRole(role){
         search_attribute : 'role',
         search_value : role.role,
         hash_attribute : 'id',
-        get_attributes: ['id']
+        get_attributes: ['*']
     };
 
     let search_role = await p_search_search_by_value(search_obj).catch((err) => {
@@ -64,7 +70,7 @@ async function addRole(role){
 
     if(search_role && search_role.length > 0) {
         search_role = scrubRoleDetails(search_role);
-        return search_role;
+        return search_role[0];
     }
 
     if(!role.id)
