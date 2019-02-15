@@ -357,14 +357,15 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                                                         "body": req.body,
                                                         "node": {"name": residence[node]}
                                                     });
-                                                    // We need to manually set and send the status here, as processLocal isn't called.
-                                                    return res.status(hdb_terms.HTTP_STATUS_CODES.OK).send({message: `Specified table has residence on node: ${residence[node]}, broadcasting message to cluster.`});
+
                                                 } catch(err) {
                                                     harper_logger.error(err);
                                                     return res.status(hdb_terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send({error: err.message});
                                                 }
                                             }
                                         }
+                                        // We need to manually set and send the status here, as processLocal isn't called.
+                                        return res.status(hdb_terms.HTTP_STATUS_CODES.OK).send({message: `Specified table has residence on node(s): ${residence.join()}; broadcasting message to cluster.`});
                                     }
                                 }
                             } else {
