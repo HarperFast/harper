@@ -19,6 +19,7 @@ const terms_address = 'http://legal.harperdb.io/Software+License+Subscription+Ag
 const PropertiesReader = require('properties-reader');
 const os = require('os');
 const schema = require('../../utility/globalSchema');
+const user_schema = require('../../utility/user_schema');
 
 let hdb_boot_properties = null;
 let hdb_properties = null;
@@ -183,6 +184,15 @@ function checkInstall(callback) {
 function wizard(err, callback) {
 
     prompt.message = ``;
+    let curr_users = [];
+    // get a list of current users to validate against in the wizard
+    if(keep_data) {
+        user_schema.setUsersToGlobal((err) => {
+            for(let i=0; i<global.hdb_users.length; i++) {
+                curr_users.push(global.hdb_users[i].username);
+            }
+        });
+    }
 
     let install_schema = {
         properties: {
@@ -209,7 +219,20 @@ function wizard(err, callback) {
             HDB_ADMIN_USERNAME: {
                 description: colors.magenta('[HDB_ADMIN_USERNAME] Please enter a username for the HDB_ADMIN'),
                 default: 'HDB_ADMIN',
-                required: true
+                message: 'Specified username is invalid or already in use.',
+                required: true,
+                // check against the previously built list of existing usernames.
+                conform: function (username) {
+                    if (!keep_data) {
+                        return true;
+                    }
+                    for (let i = 0; i < curr_users.length; i++) {
+                        if (username === curr_users[i]) {
+                            return false;
+                        }
+                    }
+                    return true;
+                }
             },
             HDB_ADMIN_PASSWORD: {
                 description: colors.magenta('[HDB_ADMIN_PASSWORD] Please enter a password for the HDB_ADMIN'),
@@ -238,10 +261,7 @@ function wizard(err, callback) {
                 return callback('~ was specified in the path, but the HOME environment variable is not defined.');
             }
         }
-        if (err) {
-            return callback(err);
-        }
-        callback(null, wizard_result.HDB_ROOT);
+        return callback(err, wizard_result.HDB_ROOT);
     });
 }
 
