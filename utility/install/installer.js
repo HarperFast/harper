@@ -21,6 +21,7 @@ const os = require('os');
 const schema = require('../../utility/globalSchema');
 const user_schema = require('../../utility/user_schema');
 
+
 let hdb_boot_properties = null;
 let hdb_properties = null;
 
@@ -30,6 +31,7 @@ module.exports = {
 };
 
 let wizard_result;
+let existing_users;
 let keep_data = false;
 
 /**
@@ -107,72 +109,97 @@ function termsAgreement(callback) {
  */
 function checkInstall(callback) {
     try {
-        if( hdb_boot_properties ) {
+        if (hdb_boot_properties) {
             return callback(null, false);
         }
 
         hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
         hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
-        if( !hdb_properties.get('HDB_ROOT') ) {
+        if (!hdb_properties.get('HDB_ROOT')) {
             return callback(null, true);
         }
+        promptForReinstall((err, result) => {
+            return callback(err, result);
+        });
+    } catch(err) {
+        return callback(err, true);
+    }
+}
 
-        let resinstall_schema = {
-            properties: {
-                REINSTALL: {
-                    message: colors.red('It appears HarperDB is already installed.  Enter \'y/yes\'to reinstall. (yes/no)'),
-                    validator: /y[es]*|n[o]?/,
-                    warning: 'Must respond yes or no',
-                    default: 'no'
-                }
+function promptForReinstall(callback) {
+    let resinstall_schema = {
+        properties: {
+            REINSTALL: {
+                message: colors.red('It appears HarperDB is already installed.  Enter \'y/yes\'to reinstall. (yes/no)'),
+                validator: /y[es]*|n[o]?/,
+                warning: 'Must respond yes or no',
+                default: 'no'
             }
-        };
-        let overwrite_schema = {
-            properties: {
-                KEEP_DATA: {
-                    message: colors.red('Would you like to keep existing data?  You will still need to create a new admin user. (yes/no)'),
-                    validator: /y[es]*|n[o]?/,
-                    warning: 'Must respond yes or no',
-                    default: 'no'
-                }
+        }
+    };
+    let overwrite_schema = {
+        properties: {
+            KEEP_DATA: {
+                message: colors.red('Would you like to keep existing data?  You will still need to create a new admin user. (yes/no)'),
+                validator: /y[es]*|n[o]?/,
+                warning: 'Must respond yes or no',
+                default: 'no'
             }
-        };
+        }
+    };
 
-        prompt.get(resinstall_schema, function (err, reinstall_result) {
-            if( err ) { callback(err); }
+    prompt.get(resinstall_schema, function (err, reinstall_result) {
+        if( err ) { return callback(err); }
 
-            if(reinstall_result.REINSTALL === 'yes' || reinstall_result.REINSTALL === 'y') {
-                prompt.get(overwrite_schema, function (err, overwrite_result) {
-                    if(overwrite_result.KEEP_DATA === 'no' || overwrite_result.KEEP_DATA === 'n' ) {
-                        // don't keep data, tear it all out.
-                        fs.remove(hdb_properties.get('HDB_ROOT'), function (err) {
+        if(reinstall_result.REINSTALL === 'yes' || reinstall_result.REINSTALL === 'y') {
+            prompt.get(overwrite_schema, function (err, overwrite_result) {
+                if(overwrite_result.KEEP_DATA === 'no' || overwrite_result.KEEP_DATA === 'n' ) {
+                    // don't keep data, tear it all out.
+                    fs.remove(hdb_properties.get('HDB_ROOT'), function (err) {
+                        if (err) {
+                            winston.error(err);
+                            console.log('There was a problem removing the existing installation.  Please check the install log for details.');
+                            return callback(err);
+                        }
+                        fs.unlink(`${process.cwd()}/../hdb_boot_properties.file`, function (err) {
                             if (err) {
                                 winston.error(err);
                                 console.log('There was a problem removing the existing installation.  Please check the install log for details.');
                                 return callback(err);
                             }
-                            fs.unlink(`${process.cwd()}/../hdb_boot_properties.file`, function (err) {
-                                if (err) {
-                                    winston.error(err);
-                                    console.log('There was a problem removing the existing installation.  Please check the install log for details.');
-                                    return callback(err);
-                                }
-                                return callback(null, true);
-                            });
+                            return callback(null, true);
                         });
-                    } else {
-                        // keep data
-                        keep_data = true;
-                        // we need the global.hdb_schema set so we can find existing roles when we add the new user.
-                        schema.setSchemaDataToGlobal(() => callback(null, true));
-                    }
-                });
+                    });
+                } else {
+                    // keep data
+                    keep_data = true;
+                    // we need the global.hdb_schema set so we can find existing roles when we add the new user.
+                    prepForReinstall(() => callback(null, true));
+                }
+            });
+        }
+        callback(null, false);
+    });
+}
+
+
+/**
+ * Prepare all data needed to perform a reinstall.
+ * @param callback
+ * @returns {*}
+ */
+function prepForReinstall(callback) {
+    const schema = require('../../utility/globalSchema');
+    const user_schema = require('../../utility/user_schema');
+    if(!global.hdb_users || !global.hdb_schema) {
+        user_schema.setUsersToGlobal((err) => {
+            for (let i = 0; i < global.hdb_users.length; i++) {
+                existing_users.push(global.hdb_users[i].username);
             }
-            callback(null, false);
+            schema.setSchemaDataToGlobal(() => callback(null, true));
         });
-    }
-    catch (e) {
-        return callback(null, true);
+    } else {
+        return callback(null, null);
     }
 }
 
@@ -184,15 +211,6 @@ function checkInstall(callback) {
 function wizard(err, callback) {
 
     prompt.message = ``;
-    let curr_users = [];
-    // get a list of current users to validate against in the wizard
-    if(keep_data) {
-        user_schema.setUsersToGlobal((err) => {
-            for(let i=0; i<global.hdb_users.length; i++) {
-                curr_users.push(global.hdb_users[i].username);
-            }
-        });
-    }
 
     let install_schema = {
         properties: {
@@ -226,8 +244,8 @@ function wizard(err, callback) {
                     if (!keep_data) {
                         return true;
                     }
-                    for (let i = 0; i < curr_users.length; i++) {
-                        if (username === curr_users[i]) {
+                    for (let i = 0; i < existing_users.length; i++) {
+                        if (username === existing_users[i]) {
                             return false;
                         }
                     }
@@ -259,6 +277,23 @@ function wizard(err, callback) {
             }
             else {
                 return callback('~ was specified in the path, but the HOME environment variable is not defined.');
+            }
+        }
+        // Dig around the provided path to see if an existing install is already there.
+        if(fs.existsSync(wizard_result.HDB_ROOT)) {
+            if(fs.existsSync(wizard_result.HDB_ROOT + '/config/settings.js')) {
+                if(fs.existsSync(wizard_result.HDB_ROOT + '/schema/system')) {
+                    // we have an existing install, prompt for reinstall.
+                    promptForReinstall((err, reinstall) => {
+                        if(reinstall) {
+                            prepForReinstall((err) => {
+                               return callback(null, wizard_result.HDB_ROOT);
+                            });
+                        } else {
+                            return callback(null, wizard_result.HDB_ROOT);
+                        }
+                    });
+                }
             }
         }
         return callback(err, wizard_result.HDB_ROOT);
