@@ -230,7 +230,7 @@ async function configureCluster(enable_cluster_json) {
         env_mgr.setProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY, enable_cluster_json.clustering_enabled);
         env_mgr.setProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY, enable_cluster_json.clustering_port);
         env_mgr.setProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY, enable_cluster_json.clustering_node_name);
-        await env_mgr.writeSettingsFile(true);
+        await env_mgr.writeSettingsFileSync(true);
     } catch(err) {
         log.error(err);
         throw err;

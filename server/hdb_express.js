@@ -1,10 +1,10 @@
 const cluster = require('cluster');
 const DEBUG = false;
 const harper_logger = require('../utility/logging/harper_logger');
-// We want to kick off the mgr init as soon as possible.
+// We want to kick off the mgr initSync as soon as possible.
 const env_mgr = require('../utility/environment/environmentManager');
 try {
-    env_mgr.init();
+    env_mgr.initSync();
 } catch(err) {
     harper_logger.error(`Got an error loading the environment.  Exiting.${err}`);
     process.exit(0);

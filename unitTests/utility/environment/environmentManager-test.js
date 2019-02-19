@@ -8,7 +8,7 @@ const test_utils = require('../../test_utils');
 test_utils.preTestPrep();
 const terms = require('../../../utility/hdbTerms');
 const PropertiesReader = require('properties-reader');
-const fs = require('fs');
+const fs = require('fs-extra');
 
 const TEST_PROP_1_NAME = 'root';
 const TEST_PROP_2_NAME = 'path';
@@ -23,9 +23,6 @@ const ACCESS_RESPONSE = {
 };
 
 //These are used to restore the promisified functions.  sandbox.restore isn't working for these cases.
-let access_orig = env_rw.__get__('p_fs_access');
-let copy_orig = env_rw.__get__('p_fs_copy');
-let write_orig = env_rw.__get__('p_fs_write');
 let read_props_orig = env_rw.__get__('readPropsFile');
 let cert_path_orig = env_rw.__get__('readRootPath');
 let private_path_orig = env_rw.__get__('readCertPath');
@@ -38,7 +35,6 @@ describe('Test getProperty', () => {
     afterEach(() => {
         test_properties = {};
         env_rw.__set__('property_values', test_properties);
-        env_rw.__set__('p_fs_access', access_orig);
     });
     it('Nominal, return property', () => {
         test_properties[TEST_PROP_1_NAME] = TEST_PROP_1_VAL;
@@ -77,7 +73,6 @@ describe('Test setProperty', () => {
     afterEach(() => {
         test_properties = {};
         env_rw.__set__('property_values', test_properties);
-        env_rw.__set__('p_fs_access', access_orig);
     });
     it('Nominal, set properties', () => {
         env_rw.__set__('hdb_properties', props);
@@ -112,7 +107,6 @@ describe('Test storeVariableValue', () => {
     afterEach(() => {
         test_properties = {};
         env_rw.__set__('property_values', test_properties);
-        env_rw.__set__('p_fs_access', access_orig);
     });
     it('Nominal, store property', () => {
         test_properties[TEST_PROP_1_NAME] = TEST_PROP_1_VAL;
@@ -175,7 +169,6 @@ describe('Test readEnvVariable', () => {
     afterEach(() => {
         test_properties = {};
         env_rw.__set__('property_values', test_properties);
-        env_rw.__set__('p_fs_access', access_orig);
     });
     it('Nominal, return property', () => {
         props.set(terms.HDB_SETTINGS_NAMES.PROPS_ENV_KEY, 'blob');
@@ -217,14 +210,14 @@ describe('Test readSettingsFile', () => {
     afterEach(() => {
         test_properties = {};
         env_rw.__set__('property_values', test_properties);
-        env_rw.__set__('p_fs_access', access_orig);
+        sandbox.restore();
     });
-    it('Nominal, store key path', async () => {
+    it('Nominal, store key path', () => {
         props.set(terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, TEST_SETTINGS_FILE_PATH);
         env_rw.__set__('PROPS_FILE_PATH', TEST_SETTINGS_FILE_PATH);
         env_rw.__set__('hdb_properties', props);
         try {
-            await readSettingsFile();
+            readSettingsFile();
         } catch(e) {
             throw e;
         }
@@ -233,15 +226,15 @@ describe('Test readSettingsFile', () => {
         assert.equal(prop1, TEST_SETTINGS_FILE_PATH);
         assert.equal(props.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY), 'node_name');
     });
-    it('invalid key path', async () => {
-        access_stub = sandbox.stub().throws(new Error('INVALID PATH'));
+    it('invalid key path', () => {
+        access_stub = sandbox.stub(fs, 'accessSync').throws(new Error('INVALID PATH'));
         props.set(terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, './thisisabadpath');
         env_rw.__set__('PROPS_FILE_PATH', TEST_PROPS_FILE_PATH);
         env_rw.__set__('hdb_properties', props);
-        env_rw.__set__('p_fs_access', access_stub);
+
         let err = undefined;
         try {
-            await readSettingsFile();
+            readSettingsFile();
         } catch(e) {
             err = e;
         }
@@ -270,18 +263,17 @@ describe('Test readPropsFile', () => {
     afterEach(() => {
         test_properties = {};
         env_rw.__set__('property_values', test_properties);
-        env_rw.__set__('p_fs_access', access_orig);
+        sandbox.restore();
     });
-    it('Nominal, store key path', async () => {
-        access_stub = sandbox.stub().onFirstCall().resolves(ACCESS_RESPONSE);
+    it('Nominal, store key path', () => {
+        access_stub = sandbox.stub(fs, 'accessSync').resolves(ACCESS_RESPONSE);
         read_settings_stub = sandbox.stub().resolves('');
-        //props.set(terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, './thisisavalidpath');
+        props.set(terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, './thisisavalidpath');
         env_rw.__set__('PROPS_FILE_PATH', TEST_PROPS_FILE_PATH);
         env_rw.__set__('hdb_properties', props);
-        env_rw.__set__('p_fs_access', access_stub);
         env_rw.__set__('readSettingsFile', read_settings_stub);
         try {
-            await readPropsFile();
+            readPropsFile();
         } catch(e) {
             throw e;
         }
@@ -289,17 +281,16 @@ describe('Test readPropsFile', () => {
 
         assert.equal(prop1, './settings.tstFile');
     });
-    it('invalid key path', async () => {
-        access_stub = sandbox.stub().throws(new Error('INVALID PATH'));
+    it('invalid key path', () => {
+        access_stub = sandbox.stub(fs, 'accessSync').throws(new Error('INVALID PATH'));
         props.set(terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, './thisisabadpath');
         read_settings_stub = sandbox.stub().resolves('');
         env_rw.__set__('PROPS_FILE_PATH', TEST_PROPS_FILE_PATH);
         env_rw.__set__('hdb_properties', props);
-        env_rw.__set__('p_fs_access', access_stub);
         env_rw.__set__('readSettingsFile', read_settings_stub);
         let err = undefined;
         try {
-            await readPropsFile();
+            readPropsFile();
         } catch(e) {
             err = e;
         }
@@ -325,13 +316,13 @@ describe('Test readRootPath', () => {
     afterEach(() => {
         test_properties = {};
         env_rw.__set__('property_values', test_properties);
-        env_rw.__set__('p_fs_access', access_orig);
+        sandbox.restore();
     });
-    it('Nominal, store key path', async () => {
+    it('Nominal, store key path', () => {
         props.set(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, './');
         env_rw.__set__('hdb_properties', props);
         try {
-            await readRootPath();
+            readRootPath();
         } catch(e) {
             throw e;
         }
@@ -339,12 +330,12 @@ describe('Test readRootPath', () => {
 
         assert.equal(prop1, './');
     });
-    it('invalid key path', async () => {
+    it('invalid key path', () => {
         props.set(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, './blahblahblah');
         env_rw.__set__('hdb_properties', props);
         let err = undefined;
         try {
-            await readRootPath();
+            readRootPath();
         } catch(e) {
             err = e;
         }
@@ -370,15 +361,14 @@ describe('Test readPrivateKeyPath', () => {
     afterEach(() => {
         test_properties = {};
         env_rw.__set__('property_values', test_properties);
-        env_rw.__set__('p_fs_access', access_orig);
+        sandbox.restore();
     });
-    it('Nominal, store key path', async () => {
-        access_stub = sandbox.stub().resolves(ACCESS_RESPONSE);
+    it('Nominal, store key path', () => {
+        access_stub = sandbox.stub(fs, 'accessSync').resolves(ACCESS_RESPONSE);
         props.set(terms.HDB_SETTINGS_NAMES.PRIVATE_KEY_KEY, './thisisavalidpath');
         env_rw.__set__('hdb_properties', props);
-        env_rw.__set__('p_fs_access', access_stub);
         try {
-            await readPrivateKeyPath();
+            readPrivateKeyPath();
         } catch(e) {
             throw e;
         }
@@ -386,14 +376,13 @@ describe('Test readPrivateKeyPath', () => {
 
         assert.equal(prop1, './thisisavalidpath');
     });
-    it('invalid key path', async () => {
-        access_stub = sandbox.stub().throws(new Error('INVALID PATH'));
+    it('invalid key path', () => {
+        access_stub = sandbox.stub(fs, 'accessSync').throws(new Error('INVALID PATH'));
         props.set(terms.HDB_SETTINGS_NAMES.PRIVATE_KEY_KEY, './thisisabadpath');
         env_rw.__set__('hdb_properties', props);
-        env_rw.__set__('p_fs_access', access_stub);
         let err = undefined;
         try {
-            await readPrivateKeyPath();
+            readPrivateKeyPath();
         } catch(e) {
             err = e;
         }
@@ -418,15 +407,14 @@ describe('Test readCertPath', () => {
     afterEach(() => {
         test_properties = {};
         env_rw.__set__('property_values', test_properties);
-        env_rw.__set__('p_fs_access', access_orig);
+        sandbox.restore();
     });
-    it('Nominal, store key path', async () => {
-        access_stub = sandbox.stub().resolves(ACCESS_RESPONSE);
+    it('Nominal, store key path', () => {
+        access_stub = sandbox.stub(fs, 'accessSync').resolves(ACCESS_RESPONSE);
         props.set(terms.HDB_SETTINGS_NAMES.CERT_KEY, './thisisavalidpath');
         env_rw.__set__('hdb_properties', props);
-        env_rw.__set__('p_fs_access', access_stub);
         try {
-            await readCertPath();
+            readCertPath();
         } catch(e) {
             throw e;
         }
@@ -434,14 +422,13 @@ describe('Test readCertPath', () => {
 
         assert.equal(prop1, './thisisavalidpath');
     });
-    it('invalid key path', async () => {
-        access_stub = sandbox.stub().throws(new Error('INVALID PATH'));
+    it('invalid key path', () => {
+        access_stub = sandbox.stub(fs, 'accessSync').throws(new Error('INVALID PATH'));
         props.set(terms.HDB_SETTINGS_NAMES.CERT_KEY, './thisisabadpath');
         env_rw.__set__('hdb_properties', props);
-        env_rw.__set__('p_fs_access', access_stub);
         let err = undefined;
         try {
-            await readCertPath();
+            readCertPath();
         } catch(e) {
             err = e;
         }
@@ -452,7 +439,7 @@ describe('Test readCertPath', () => {
     });
 });
 
-describe('Test init', () => {
+describe('Test initSync', () => {
     let test_properties = {};
     let props = undefined;
     let sandbox = null;
@@ -466,22 +453,19 @@ describe('Test init', () => {
         props = new PropertiesReader();
         sandbox = sinon.createSandbox();
         env_rw.__set__('hdb_properties', props);
-        env_rw.__set__('p_fs_access', access_stub);
-
     });
     afterEach(() => {
         test_properties = {};
         sandbox.restore();
         env_rw.__set__('property_values', test_properties);
-        env_rw.__set__('p_fs_access', access_orig);
         env_rw.__set__('readPropsFile', read_props_orig);
         env_rw.__set__('readRootPath', root_path_orig);
         env_rw.__set__('readCertPath', cert_path_orig);
         env_rw.__set__('readPrivateKeyPath', private_path_orig);
     });
-    // There is no good way to inject a value for the settings path during the init run, so just replacing
+    // There is no good way to inject a value for the settings path during the initSync run, so just replacing
     // readPropsFile with this function that will point to a valid path.
-    async function loadThisInstead() {
+    function loadThisInstead() {
         let props = env_rw.__get__('hdb_properties');
         let found = new PropertiesReader(TEST_SETTINGS_FILE_PATH);
         found.each((key, value) => {
@@ -494,16 +478,15 @@ describe('Test init', () => {
         cert_path_stub = sandbox.stub().resolves('');
         private_path_stub = sandbox.stub().resolves('');
         root_path_stub = sandbox.stub().resolves('');
-        access_stub = sandbox.stub().resolves(ACCESS_RESPONSE);
+        access_stub = sandbox.stub(fs, 'accessSync').resolves(ACCESS_RESPONSE);
         props.set(terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, TEST_SETTINGS_FILE_PATH);
         env_rw.__set__('PROPS_FILE_PATH', TEST_PROPS_FILE_PATH);
-        env_rw.__set__('p_fs_access', access_orig);
         env_rw.__set__('readPropsFile', loadThisInstead);
         env_rw.__set__('readRootPath', root_path_stub);
         env_rw.__set__('readCertPath', cert_path_stub);
         env_rw.__set__('readPrivateKeyPath', private_path_stub);
         try {
-            await env_rw.init();
+            await env_rw.initSync();
         } catch(e) {
             throw e;
         }
@@ -516,9 +499,9 @@ describe('Test init', () => {
     });
 });
 
-describe('Test writeSettingsFile', () => {
+describe('Test writeSettingsFileSync', () => {
     let test_properties = {};
-    let writeSettingsFile = env_rw.__get__('writeSettingsFile');
+    let writeSettingsFile = env_rw.__get__('writeSettingsFileSync');
     let props = undefined;
     let sandbox = null;
     let copy_stub = undefined;
@@ -532,48 +515,40 @@ describe('Test writeSettingsFile', () => {
         test_properties = {};
         sandbox.restore();
         env_rw.__set__('property_values', test_properties);
-        env_rw.__set__('p_fs_copy', copy_orig);
-        env_rw.__set__('p_fs_write', write_orig);
     });
-    it('Nominal, write to file, copy not called', async () => {
-        copy_stub = sandbox.stub().resolves('');
-        write_stub = sandbox.stub().resolves('');
+    it('Nominal, write to file, copy not called', () => {
+        copy_stub = sandbox.stub(fs, 'copyFileSync').resolves('');
+        write_stub = sandbox.stub(fs, 'writeFileSync').resolves('');
         props.set(terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, './thisisavalidpath');
         env_rw.__set__('hdb_properties', props);
-        env_rw.__set__('p_fs_copy', copy_stub);
-        env_rw.__set__('p_fs_write', write_stub);
         try {
-            await writeSettingsFile(false);
+            writeSettingsFile(false);
         } catch(e) {
             throw e;
         }
         assert.equal(write_stub.called, true, 'expected write to be called');
         assert.equal(copy_stub.called, false, 'copy should not have been called');
     });
-    it('Nominal, write to file, copy called', async () => {
-        copy_stub = sandbox.stub().resolves('');
-        write_stub = sandbox.stub().resolves('');
+    it('Nominal, write to file, copy called', () => {
+        copy_stub = sandbox.stub(fs, 'copyFileSync').resolves('');
+        write_stub = sandbox.stub(fs, 'writeFileSync').resolves('');
         props.set(terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, './thisisavalidpath');
         env_rw.__set__('hdb_properties', props);
-        env_rw.__set__('p_fs_copy', copy_stub);
-        env_rw.__set__('p_fs_write', write_stub);
         try {
-            await writeSettingsFile(true);
+            writeSettingsFile(true);
         } catch(e) {
             throw e;
         }
         assert.equal(write_stub.called, true, 'expected write to be called');
         assert.equal(copy_stub.called, true, 'copy should not have been called');
     });
-    it('Exception expected, no path defined.', async () => {
-        copy_stub = sandbox.stub().throws(new Error('BAD COPY'));
-        write_stub = sandbox.stub().resolves('');
+    it('Exception expected, no path defined.', () => {
+        copy_stub = sandbox.stub(fs, 'copyFileSync').throws(new Error('BAD COPY'));
+        write_stub = sandbox.stub(fs, 'writeFileSync').resolves('');
         env_rw.__set__('hdb_properties', props);
-        env_rw.__set__('p_fs_copy', copy_stub);
-        env_rw.__set__('p_fs_write', write_stub);
         let result = undefined;
         try {
-            await writeSettingsFile(true);
+            writeSettingsFile(true);
         } catch(e) {
             result = e;
         }
@@ -581,16 +556,14 @@ describe('Test writeSettingsFile', () => {
         assert.equal(copy_stub.called, false, 'copy should have been called');
         assert.equal((result instanceof Error), true, 'expected exception');
     });
-    it('write to file, exception during copy', async () => {
-        copy_stub = sandbox.stub().throws(new Error('BAD COPY'));
-        write_stub = sandbox.stub().resolves('');
+    it('write to file, exception during copy', () => {
+        copy_stub = sandbox.stub(fs, 'copyFileSync').throws(new Error('BAD COPY'));
+        write_stub = sandbox.stub(fs, 'writeFileSync').resolves('');
         props.set(terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, './thisisavalidpath');
         env_rw.__set__('hdb_properties', props);
-        env_rw.__set__('p_fs_copy', copy_stub);
-        env_rw.__set__('p_fs_write', write_stub);
         let result = undefined;
         try {
-            await writeSettingsFile(true);
+            writeSettingsFile(true);
         } catch(e) {
             result = e;
         }

@@ -1,6 +1,6 @@
 'use strict';
 /**
- * Test the enterprise init module.
+ * Test the enterprise initSync module.
  */
 const test_util = require('../test_utils');
 test_util.preTestPrep();
@@ -105,7 +105,7 @@ describe('Test kickOffEnterprise', function () {
         // stub searchByValue to return 4 default cluster nodes
         search_nodes_stub = sinon.stub(search, 'searchByValue').yields('', SEARCH_RESULT_OBJECT);
         // stub ClusterServer class methods to yield callback without error
-        ClusterServerStub.prototype.init = sinon.stub().yields(null);
+        ClusterServerStub.prototype.initSync = sinon.stub().yields(null);
         ClusterServerStub.prototype.establishAllConnections = sinon.stub().yields(null);
         // inject necessary properties for clustering
         let hdb_properties = enterprise_initialization.__get__('hdb_properties');        
@@ -131,7 +131,7 @@ describe('Test kickOffEnterprise', function () {
         // stub searchByValue to return 4 default cluster nodes
         search_nodes_stub = sinon.stub(search, 'searchByValue').yields('', []);
         // stub ClusterServer class methods to yield callback without error
-        ClusterServerStub.prototype.init = sinon.stub().yields(null);
+        ClusterServerStub.prototype.initSync = sinon.stub().yields(null);
         ClusterServerStub.prototype.establishAllConnections = sinon.stub().yields(null);
         // inject necessary properties for clustering
         let hdb_properties = enterprise_initialization.__get__('hdb_properties');        
@@ -150,7 +150,7 @@ describe('Test kickOffEnterprise', function () {
         // stub searchByValue to return 4 default cluster nodes
         search_nodes_stub = sinon.stub(search, 'searchByValue').yields('', SEARCH_RESULT_OBJECT);
         // stub ClusterServer class methods to yield callback without error
-        ClusterServerStub.prototype.init = sinon.stub().yields(null);
+        ClusterServerStub.prototype.initSync = sinon.stub().yields(null);
         ClusterServerStub.prototype.establishAllConnections = sinon.stub().yields(null);
         // inject necessary properties for clustering
         let hdb_properties = enterprise_initialization.__get__('hdb_properties');  
@@ -169,7 +169,7 @@ describe('Test kickOffEnterprise', function () {
         // stub searchByValue to return 4 default cluster nodes
         search_nodes_stub = sinon.stub(search, 'searchByValue').yields('', SEARCH_RESULT_OBJECT);
         // stub ClusterServer class methods to yield callback without error
-        ClusterServerStub.prototype.init = sinon.stub().yields(null);
+        ClusterServerStub.prototype.initSync = sinon.stub().yields(null);
         ClusterServerStub.prototype.establishAllConnections = sinon.stub().yields(null);
         // inject necessary properties for clustering
         let hdb_properties = enterprise_initialization.__get__('hdb_properties');  
@@ -184,11 +184,11 @@ describe('Test kickOffEnterprise', function () {
             done();
         });
     });
-    it('Cluster Server failed to init, expect no cluster node initiated', function (done) {
+    it('Cluster Server failed to initSync, expect no cluster node initiated', function (done) {
         // stub searchByValue to return 4 default cluster nodes
         search_nodes_stub = sinon.stub(search, 'searchByValue').yields('', SEARCH_RESULT_OBJECT);
-        // stub ClusterServer class methods to yield callback with error for init but without error for establishAllConnections
-        ClusterServerStub.prototype.init = sinon.stub().yields('error: unable to init');
+        // stub ClusterServer class methods to yield callback with error for initSync but without error for establishAllConnections
+        ClusterServerStub.prototype.initSync = sinon.stub().yields('error: unable to initSync');
         ClusterServerStub.prototype.establishAllConnections = sinon.stub().yields(null);
         // inject necessary properties for clustering
         let hdb_properties = enterprise_initialization.__get__('hdb_properties');  
@@ -206,8 +206,8 @@ describe('Test kickOffEnterprise', function () {
     it('Cluster Server failed to establishAllConnections, expect no cluster node initiated', function (done) {
         // stub searchByValue to return 4 default cluster nodes
         search_nodes_stub = sinon.stub(search, 'searchByValue').yields('', SEARCH_RESULT_OBJECT);
-        // stub ClusterServer class methods to yield callback without error for init but error for establishAllConnections
-        ClusterServerStub.prototype.init = sinon.stub().yields('error: unable to establishAllConnections');
+        // stub ClusterServer class methods to yield callback without error for initSync but error for establishAllConnections
+        ClusterServerStub.prototype.initSync = sinon.stub().yields('error: unable to establishAllConnections');
         ClusterServerStub.prototype.establishAllConnections = sinon.stub().yields('error: unable to establishAllConnections');
         // inject necessary properties for clustering
         let hdb_properties = enterprise_initialization.__get__('hdb_properties');  
