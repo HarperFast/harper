@@ -18,6 +18,7 @@ const forge = require('node-forge');
 const terms_address = 'http://legal.harperdb.io/Software+License+Subscription+Agreement+110317.pdf';
 const PropertiesReader = require('properties-reader');
 const os = require('os');
+const schema = require('../../utility/globalSchema');
 
 let hdb_boot_properties = null;
 let hdb_properties = null;
@@ -28,6 +29,7 @@ module.exports = {
 };
 
 let wizard_result;
+let keep_data = false;
 
 /**
  * Stars the install process by first checking for an existing installation, then firing the steps to complete the install.
@@ -114,10 +116,20 @@ function checkInstall(callback) {
             return callback(null, true);
         }
 
-        let schema = {
+        let resinstall_schema = {
             properties: {
                 REINSTALL: {
-                    message: colors.red('It appears HarperDB is already installed.  Enter \'y/yes\'to reinstall. Data loss may occur! (yes/no)'),
+                    message: colors.red('It appears HarperDB is already installed.  Enter \'y/yes\'to reinstall. (yes/no)'),
+                    validator: /y[es]*|n[o]?/,
+                    warning: 'Must respond yes or no',
+                    default: 'no'
+                }
+            }
+        };
+        let overwrite_schema = {
+            properties: {
+                KEEP_DATA: {
+                    message: colors.red('Would you like to keep existing data?  You will still need to create a new admin user. (yes/no)'),
                     validator: /y[es]*|n[o]?/,
                     warning: 'Must respond yes or no',
                     default: 'no'
@@ -125,24 +137,34 @@ function checkInstall(callback) {
             }
         };
 
-        prompt.get(schema, function (err, result) {
+        prompt.get(resinstall_schema, function (err, reinstall_result) {
             if( err ) { callback(err); }
 
-            if(result.REINSTALL === 'yes' || result.REINSTALL === 'y') {
-                fs.remove(hdb_properties.get('HDB_ROOT'), function (err) {
-                    if (err) {
-                        winston.error(err);
-                        console.log('There was a problem removing the existing installation.  Please check the install log for details.');
-                        return callback(err);
+            if(reinstall_result.REINSTALL === 'yes' || reinstall_result.REINSTALL === 'y') {
+                prompt.get(overwrite_schema, function (err, overwrite_result) {
+                    if(overwrite_result.KEEP_DATA === 'no' || overwrite_result.KEEP_DATA === 'n' ) {
+                        // don't keep data, tear it all out.
+                        fs.remove(hdb_properties.get('HDB_ROOT'), function (err) {
+                            if (err) {
+                                winston.error(err);
+                                console.log('There was a problem removing the existing installation.  Please check the install log for details.');
+                                return callback(err);
+                            }
+                            fs.unlink(`${process.cwd()}/../hdb_boot_properties.file`, function (err) {
+                                if (err) {
+                                    winston.error(err);
+                                    console.log('There was a problem removing the existing installation.  Please check the install log for details.');
+                                    return callback(err);
+                                }
+                                return callback(null, true);
+                            });
+                        });
+                    } else {
+                        // keep data
+                        keep_data = true;
+                        // we need the global.hdb_schema set so we can find existing roles when we add the new user.
+                        schema.setSchemaDataToGlobal(() => callback(null, true));
                     }
-                    fs.unlink(`${process.cwd()}/../hdb_boot_properties.file`, function (err) {
-                        if (err) {
-                            winston.error(err);
-                            console.log('There was a problem removing the existing installation.  Please check the install log for details.');
-                            return callback(err);
-                        }
-                        return callback(null, true);
-                    });
                 });
             }
             callback(null, false);
@@ -233,28 +255,74 @@ function createAdminUser(callback) {
     role.permission = {};
     role.permission.super_user = true;
 
-    role_ops.addRole(role, function (err, result) {
-        if (err) {
-            winston.error('role failed to create ' + err);
-            console.log('There was a problem creating the default role.  Please check the install log for details.');
-            return callback(err);
-        }
+    // Look for existing role if this is a reinstall
+    if(keep_data) {
+        // 1.  Get list of all roles that are su
+        // 2.  IFF > 1, Show list to user and require selection of primary su role
 
-        let admin_user = {};
-        admin_user.username = wizard_result.HDB_ADMIN_USERNAME;
-        admin_user.password = wizard_result.HDB_ADMIN_PASSWORD;
-        admin_user.role = result.id;
-        admin_user.active = true;
+        role_ops.listRoles((null), function(err, result) {
+            winston.info(`found existing roles: ${result}`);
+            let role_list = 'There is more than one existing super_user role.  Please select the number assigned to the role that should be assigned to the new user.';
+            if(result && result.length > 1) {
+                for(let i = 1; i<result.length; i++) {
+                    role_list += `\n ${i}. ${result[i].role}`;
+                }
+            }
 
-        user_ops.addUser(admin_user, function (err) {
+            let role_schema = {
+                properties: {
+                    ROLE: {
+                        message: colors.red(role_list),
+                        type: 'number',
+                        exclusiveMinimum: 1,
+                        exclusiveMaximum: result.length,
+                        warning: 'Must select the number corresponding to the desired role.',
+                        default: '1'
+                    }
+                }
+            };
+            prompt.get(role_schema, function(err, selected_role) {
+                let admin_user = {};
+                admin_user.username = wizard_result.HDB_ADMIN_USERNAME;
+                admin_user.password = wizard_result.HDB_ADMIN_PASSWORD;
+                admin_user.role = result[selected_role.ROLE].id;
+                admin_user.active = true;
+
+                user_ops.addUser(admin_user, function (err) {
+                    if (err) {
+                        winston.error('user creation error' + err);
+                        console.error('There was a problem creating the admin user.  Please check the install log for details.');
+                        return callback(err);
+                    }
+                    return callback(null);
+                });
+            });
+        });
+    } else {
+
+        role_ops.addRole(role, function (err, result) {
             if (err) {
-                winston.error('user creation error' + err);
-                console.error('There was a problem creating the admin user.  Please check the install log for details.');
+                winston.error('role failed to create ' + err);
+                console.log('There was a problem creating the default role.  Please check the install log for details.');
                 return callback(err);
             }
-            return callback(null);
+
+            let admin_user = {};
+            admin_user.username = wizard_result.HDB_ADMIN_USERNAME;
+            admin_user.password = wizard_result.HDB_ADMIN_PASSWORD;
+            admin_user.role = result.id;
+            admin_user.active = true;
+
+            user_ops.addUser(admin_user, function (err) {
+                if (err) {
+                    winston.error('user creation error' + err);
+                    console.error('There was a problem creating the admin user.  Please check the install log for details.');
+                    return callback(err);
+                }
+                return callback(null);
+            });
         });
-    });
+    }
 }
 
 function createSettingsFile(mount_status, callback) {
@@ -263,9 +331,25 @@ function createSettingsFile(mount_status, callback) {
         return callback('mount failed');
     }
 
-    createBootPropertiesFile(`${wizard_result.HDB_ROOT}/config/settings.js`, (err) => {
-        winston.info('info', `creating settings file....`);
+    if(keep_data) {
+        console.log('Existing settings.js file will be moved to settings.js.backup.  Remember to update the new settings file with your old settings.');
+    }
+    let settings_path = `${wizard_result.HDB_ROOT}/config/settings.js`;
+    createBootPropertiesFile(settings_path, (err) => {
+        // copy settings file to backup.
+        if(keep_data) {
+            if(fs.existsSync(settings_path)) {
+                try {
+                    fs.copySync(settings_path, settings_path+'.back');
+                } catch(err) {
+                    console.log(`There was a problem backing up current settings.js file.  Please check the logs.  Exiting.`);
+                    winston.fatal(err);
+                    throw err;
+                }
+            }
+        }
 
+        winston.info('info', `creating settings file....`);
         if (err) {
             winston.info('info', 'boot properties error' + err);
             console.error('There was a problem creating the boot file.  Please check the install log for details.');
