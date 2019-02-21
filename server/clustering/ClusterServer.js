@@ -77,7 +77,7 @@ class ClusterServer {
             payload.node = msg.node;
 
             let found_node = this.socket_client.filter((client) => {
-                return client.other_node.name;
+                return client.other_node.name === msg.node.name;
             });
 
             if(!found_node || found_node.length === 0) {
