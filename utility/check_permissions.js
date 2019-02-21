@@ -1,14 +1,12 @@
 const os = require("os");
-const PropertiesReader = require('properties-reader');
+const env = require('../utility/environment/environmentManager');
 
 module.exports = {
     checkPermission: checkPermission,
 };
 
 function checkPermission () {
-    let hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
-
-    if(os.userInfo().username !== hdb_boot_properties.get('install_user')){
-        throw new Error(`Error: Must execute as ${hdb_boot_properties.get('install_user')}`);
+    if(os.userInfo().username !== env.get('install_user')){
+        throw new Error(`Error: Must execute as ${env.get('install_user')}`);
     }
 }

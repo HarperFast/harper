@@ -6,15 +6,13 @@
  * LOGGER = 1
  * LOG_PATH = /Users/elipalmer/harperdb/unitTests/testlog.log
  */
-
+const test_utils = require('./test_utils');
+test_utils.preTestPrep();
 const assert = require('assert');
 let sinon = require('sinon');
 let fs = require('fs');
 let rewire = require('rewire');
 let harper_log = rewire('../utility/logging/harper_logger.js');
-const test_utils = require('./test_utils');
-test_utils.preTestPrep();
-const PropertiesReader = require('properties-reader');
 
 let output_file_name = global.log_location;
 let file_change_results = false;

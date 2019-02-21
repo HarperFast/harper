@@ -6,7 +6,7 @@ const log = require('../logging/harper_logger');
 const common_utils = require('../common_utils');
 const hdb_terms = require('../hdbTerms');
 
-const PROPS_FILE_PATH = `${process.cwd()}/../hdb_boot_properties.file`;
+let PROPS_FILE_PATH = `${process.cwd()}/../hdb_boot_properties.file`;
 
 const defaults = {};
 
@@ -20,14 +20,32 @@ for(let key of Object.keys(hdb_terms.HDB_SETTINGS_NAMES)) {
 
 module.exports = {
     PROPS_FILE_PATH,
+    get:get,
     getProperty:getProperty,
     initSync: initSync,
     setProperty: setProperty,
+    append: append,
     writeSettingsFileSync: writeSettingsFileSync
 };
 
 let hdb_properties = undefined;
 let property_values = Object.create(null);
+
+/**
+ * Wrapper for getProperty to make replacing PropertiesReader easier in the code base.
+ */
+function get(prop_name) {
+    if(common_utils.isEmptyOrZeroLength(prop_name)) {
+        log.info(`Invalid parameter ${prop_name} passed in getProperty().`);
+        return null;
+    }
+    try {
+        return getProperty(prop_name);
+    } catch (e) {
+        log.warn(`Property ${prop_name} is undefined.`);
+        return null;
+    }
+}
 
 /**
  * Used to get a value of a stored HDB property.  Will return null if the name parameter is invalid or undefined.
@@ -44,6 +62,22 @@ function getProperty(prop_name) {
     } catch (e) {
         log.warn(`Property ${prop_name} is undefined.`);
         return null;
+    }
+}
+
+/**
+ * Set a property, name matches PropertiesReader for easier migration
+ */
+function append(prop_name, value) {
+    if(common_utils.isEmptyOrZeroLength(prop_name)) {
+        log.info(`Invalid parameter for setProperty`);
+        throw new Error('Null property specified');
+    }
+    try {
+        setProperty(prop_name, value);
+    } catch(e) {
+        log.error(`Failed to set property ${prop_name}.`);
+        throw e;
     }
 }
 
@@ -172,7 +206,7 @@ function readRootPath() {
 // This function always needs to be called first during initSync, as it loads the settings file.
 function readPropsFile() {
     try {
-        //await p_fs_access(PROPS_FILE_PATH, fs.constants.F_OK | fs.constants.R_OK);
+        PROPS_FILE_PATH = `${process.cwd()}/../hdb_boot_properties.file`;
         fs.accessSync(PROPS_FILE_PATH, fs.constants.F_OK | fs.constants.R_OK);
     } catch(e) {
         let error_msg = `The properties file at path ${PROPS_FILE_PATH} does not exist.  Exiting Harper DB.`;

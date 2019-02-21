@@ -16,12 +16,9 @@ const async = require('async');
 const optimist = require('optimist');
 const forge = require('node-forge');
 const terms_address = 'http://legal.harperdb.io/Software+License+Subscription+Agreement+110317.pdf';
-const PropertiesReader = require('properties-reader');
+const env = require('../../utility/environment/environmentManager');
 const os = require('os');
 const comm = require('../common_utils');
-
-let hdb_boot_properties = null;
-let hdb_properties = null;
 
 const LOG_LOCATION = ('../install_log.log');
 module.exports = {
@@ -111,14 +108,14 @@ function termsAgreement(callback) {
  * @param callback
  */
 function checkInstall(callback) {
+    // check for props file path
     try {
-        if( hdb_boot_properties ) {
-            return callback(null, false);
-        }
-
-        hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
-        hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
-        if( !hdb_properties.get('HDB_ROOT') ) {
+        fs.accessSync(env.PROPS_FILE_PATH, fs.constants.F_OK | fs.constants.R_OK);
+    } catch (err) {
+        return callback(null, false)
+    }
+    try {
+        if( !env.get('HDB_ROOT') ) {
             return callback(null, true);
         }
 
@@ -137,7 +134,7 @@ function checkInstall(callback) {
             if( err ) { callback(err); }
 
             if(result.REINSTALL === 'yes' || result.REINSTALL === 'y') {
-                fs.rmrf(hdb_properties.get('HDB_ROOT'), function (err) {
+                fs.rmrf(env.get('HDB_ROOT'), function (err) {
                     if (err) {
                         winston.error(err);
                         console.log('There was a problem removing the existing installation.  Please check the install log for details.');
@@ -312,15 +309,17 @@ function createSettingsFile(mount_status, callback) {
             `MAX_HDB_PROCESSES = ${num_cores}\n`;
 
         winston.info('info', `hdb_props_value ${JSON.stringify(hdb_props_value)}`);
-        winston.info('info', `settings path: ${hdb_boot_properties.get('settings_path')}`);
+        winston.info('info', `settings path: ${env.get('settings_path')}`);
         try {
-            fs.writeFile(hdb_boot_properties.get('settings_path'), hdb_props_value, function (err, data) {
+            fs.writeFile(env.get('settings_path'), hdb_props_value, function (err, data) {
                 if (err) {
                     console.error('There was a problem writing the settings file.  Please check the install log for details.');
                     winston.error(err);
                     return callback(err);
                 }
-                hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
+                //hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
+                // load props
+                env.initSync();
                 return callback(null);
             });
         } catch (e) {
@@ -402,13 +401,13 @@ function generateKeys(callback) {
     cert.sign(keys.privateKey);
 
     // convert a Forge certificate to PEM
-    fs.writeFile(hdb_properties.get('CERTIFICATE'), pki.certificateToPem(cert), function (err, data) {
+    fs.writeFile(env.get('CERTIFICATE'), pki.certificateToPem(cert), function (err, data) {
         if (err) {
             winston.error(err);
             console.error('There was a problem creating the PEM file.  Please check the install log for details.');
             return callback(err);
         }
-        fs.writeFile(hdb_properties.get('PRIVATE_KEY'), forge.pki.privateKeyToPem(keys.privateKey), function (err, data) {
+        fs.writeFile(env.get('PRIVATE_KEY'), forge.pki.privateKeyToPem(keys.privateKey), function (err, data) {
             if (err) {
                 winston.error(err);
                 console.error('There was a problem creating the private key file.  Please check the install log for details.');
@@ -422,8 +421,8 @@ function generateKeys(callback) {
 
 function setupService(callback) {
     fs.readFile(`./utility/install/harperdb.service`, 'utf8', function (err, data) {
-        let fileData = data.replace('{{project_dir}}', `${hdb_properties.get('PROJECT_DIR')}`).replace('{{hdb_directory}}',
-            hdb_properties.get('HDB_ROOT'));
+        let fileData = data.replace('{{project_dir}}', `${env.get('PROJECT_DIR')}`).replace('{{hdb_directory}}',
+            env.get('HDB_ROOT'));
         fs.writeFile('/etc/systemd/system/harperdb.service', fileData, function (err, result) {
 
             if (err) {
@@ -461,7 +460,8 @@ function createBootPropertiesFile(settings_path, callback) {
             return callback(err);
         }
         winston.info('info', `props path ${process.cwd()}/../hdb_boot_properties.file`);
-        hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
+        //hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
+        env.initSync();
         return callback(null, 'success');
     });
 }

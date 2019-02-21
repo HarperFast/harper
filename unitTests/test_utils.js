@@ -2,6 +2,7 @@
 const path = require('path');
 const sinon = require('sinon');
 const fs = require('fs');
+const env = require('../utility/environment/environmentManager');
 
 /**
  * This needs to be called near the top of our unit tests.  Most will fail when loading harper modules due to the
@@ -54,6 +55,7 @@ function preTestPrep() {
     });
     // Try to change to bin
     changeProcessToBinDir();
+    env.initSync();
 }
 
 /**

@@ -2,18 +2,15 @@
 
 const search = require('../data_layer/search');
 const harper_logger = require('../utility/logging/harper_logger');
-const PropertiesReader = require('properties-reader');
-const hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
+const env = require('../utility/environment/environmentManager');
 const ClusterServer = require('../server/clustering/ClusterServer');
 
-hdb_properties.append(hdb_properties.get('settings_path'));
-
 function kickOffEnterprise(callback) {
-    let clustering_setting = hdb_properties.get('CLUSTERING');
+    let clustering_setting = env.get('CLUSTERING');
     if (clustering_setting && clustering_setting.toString().toLowerCase() === 'true') {
         let node = {
-            "name": hdb_properties.get('NODE_NAME'),
-            "port": hdb_properties.get('CLUSTERING_PORT'),
+            "name": env.get('NODE_NAME'),
+            "port": env.get('CLUSTERING_PORT'),
         };
 
         let search_obj = {

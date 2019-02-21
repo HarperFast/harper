@@ -2,9 +2,9 @@ const cluster = require('cluster');
 const DEBUG = false;
 const harper_logger = require('../utility/logging/harper_logger');
 // We want to kick off the mgr initSync as soon as possible.
-const env_mgr = require('../utility/environment/environmentManager');
+const env = require('../utility/environment/environmentManager');
 try {
-    env_mgr.initSync();
+    env.initSync();
 } catch(err) {
     harper_logger.error(`Got an error loading the environment.  Exiting.${err}`);
     process.exit(0);
@@ -40,11 +40,7 @@ const ENV_PROD_VAL = 'production';
 const ENV_DEV_VAL = 'development';
 const TRUE_COMPARE_VAL = 'TRUE';
 
-const PropertiesReader = require('properties-reader');
-let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
-hdb_properties.append(hdb_properties.get('settings_path'));
-
-let node_env_value = hdb_properties.get(PROPS_ENV_KEY);
+let node_env_value = env.get(PROPS_ENV_KEY);
 
 // If NODE_ENV is empty, it will show up here as '0' rather than '' or length of 0.
 if (node_env_value === undefined || node_env_value === null || node_env_value === 0) {
@@ -62,7 +58,7 @@ let os_cpus = undefined;
 
 //in an instance of having HDB installed on an android devices we don't have access to the cpu info so we need to handle the error and move on
 try {
-    num_hdb_processes = hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES);
+    num_hdb_processes = env.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES);
     os_cpus = os.cpus().length;
     num_workers = ((num_hdb_processes && num_hdb_processes > 0) ? num_hdb_processes: os_cpus);
     // don't allow more processes than the machine has cores.
@@ -187,12 +183,11 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     const cors = require('cors');
 
     const app = express();
-    hdb_properties.append(hdb_properties.get('settings_path'));
     global.clusterMsgQueue = [];
     let enterprise = false;
     global.clustering_on = false;
-    let props_cors = hdb_properties.get(PROPS_CORS_KEY);
-    let props_cors_whitelist = hdb_properties.get(PROPS_CORS_WHITELIST_KEY);
+    let props_cors = env.get(PROPS_CORS_KEY);
+    let props_cors_whitelist = env.get(PROPS_CORS_WHITELIST_KEY);
 
     if (props_cors && (props_cors === true || props_cors.toUpperCase() === TRUE_COMPARE_VAL)) {
         let cors_options = {
@@ -324,11 +319,11 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                                     });
                                 } else {
 
-                                    if (residence.indexOf(hdb_properties.get('NODE_NAME')) > -1) {
+                                    if (residence.indexOf(env.get('NODE_NAME')) > -1) {
                                         server_utilities.processLocalTransaction(req, res, operation_function, function (err) {
                                             if (residence.length > 1) {
                                                 for (let node in residence) {
-                                                    if (residence[node] !== hdb_properties.get('NODE_NAME')) {
+                                                    if (residence[node] !== env.get('NODE_NAME')) {
 
                                                         let id = uuidv1();
                                                         process.send({
@@ -344,7 +339,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                                         });
                                     } else {
                                         for (let node in residence) {
-                                            if (residence[node] !== hdb_properties.get('NODE_NAME')) {
+                                            if (residence[node] !== env.get('NODE_NAME')) {
                                                 harper_logger.debug(`Got a message for a table with a remote residence ${residence[node]}.  Broadcasting to cluster`);
                                                 let id = uuidv1();
                                                 global.clusterMsgQueue[id] = res;
@@ -379,7 +374,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
 
                     global_schema.getTableSchema(req.body.schema, req.body.table, function (err, table) {
 
-                        if(!table || !table.residence || table.residence.indexOf(hdb_properties.get('NODE_NAME')) > -1){
+                        if(!table || !table.residence || table.residence.indexOf(env.get('NODE_NAME')) > -1){
                             server_utilities.processLocalTransaction(req, res, operation_function, function () {
                             });
                         }else{
@@ -502,12 +497,12 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         const http = require('http');
         const httpsecure = require('https');
 
-        const privateKey = hdb_properties.get(PROPS_PRIVATE_KEY);
-        const certificate = hdb_properties.get(PROPS_CERT_KEY);
+        const privateKey = env.get(PROPS_PRIVATE_KEY);
+        const certificate = env.get(PROPS_CERT_KEY);
         const credentials = {key: fs.readFileSync(`${privateKey}`), cert: fs.readFileSync(`${certificate}`)};
-        const server_timeout = hdb_properties.get(PROPS_SERVER_TIMEOUT_KEY);
-        const props_http_secure_on = hdb_properties.get(PROPS_HTTP_SECURE_ON_KEY);
-        const props_http_on = hdb_properties.get(PROPS_HTTP_ON_KEY);
+        const server_timeout = env.get(PROPS_SERVER_TIMEOUT_KEY);
+        const props_http_secure_on = env.get(PROPS_HTTP_SECURE_ON_KEY);
+        const props_http_on = env.get(PROPS_HTTP_ON_KEY);
 
         global.isMaster = cluster.isMaster;
 
@@ -518,8 +513,8 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
             (props_http_secure_on === true || props_http_secure_on.toUpperCase() === TRUE_COMPARE_VAL)) {
             secureServer = httpsecure.createServer(credentials, app);
             secureServer.setTimeout(server_timeout ? server_timeout : DEFAULT_SERVER_TIMEOUT);
-            secureServer.listen(hdb_properties.get(PROPS_HTTP_SECURE_PORT_KEY), function () {
-                harper_logger.info(`HarperDB ${pjson.version} HTTPS Server running on ${hdb_properties.get(PROPS_HTTP_SECURE_PORT_KEY)}`);
+            secureServer.listen(env.get(PROPS_HTTP_SECURE_PORT_KEY), function () {
+                harper_logger.info(`HarperDB ${pjson.version} HTTPS Server running on ${env.get(PROPS_HTTP_SECURE_PORT_KEY)}`);
                 async.parallel(
                     [
                         global_schema.setSchemaDataToGlobal,
@@ -537,8 +532,8 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
             (props_http_on === true || props_http_on.toUpperCase() === TRUE_COMPARE_VAL)) {
             httpServer = http.createServer(app);
             httpServer.setTimeout(server_timeout ? server_timeout : DEFAULT_SERVER_TIMEOUT);
-            httpServer.listen(hdb_properties.get(PROPS_HTTP_PORT_KEY), function () {
-                harper_logger.info(`HarperDB ${pjson.version} HTTP Server running on ${hdb_properties.get(PROPS_HTTP_PORT_KEY)}`);
+            httpServer.listen(env.get(PROPS_HTTP_PORT_KEY), function () {
+                harper_logger.info(`HarperDB ${pjson.version} HTTP Server running on ${env.get(PROPS_HTTP_PORT_KEY)}`);
                 async.parallel(
                     [
                         global_schema.setSchemaDataToGlobal,

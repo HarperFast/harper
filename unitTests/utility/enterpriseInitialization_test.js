@@ -4,11 +4,12 @@
  */
 const test_util = require('../test_utils');
 test_util.preTestPrep();
-
+const env = require('../../utility/environment/environmentManager');
+const search = require('../../data_layer/search');
 const assert = require('assert');
 const rewire = require('rewire');
 const sinon = require('sinon');
-const search = require('../../data_layer/search');
+
 
 const SEARCH_RESULT_OBJECT = [
     {
@@ -108,10 +109,10 @@ describe('Test kickOffEnterprise', function () {
         ClusterServerStub.prototype.initSync = sinon.stub().yields(null);
         ClusterServerStub.prototype.establishAllConnections = sinon.stub().yields(null);
         // inject necessary properties for clustering
-        let hdb_properties = enterprise_initialization.__get__('hdb_properties');        
-        hdb_properties.set('CLUSTERING', 'TRUE');
-        hdb_properties.set('CLUSTERING_PORT', '1115');
-        hdb_properties.set('NODE_NAME', 'node_1');
+        //let hdb_properties = enterprise_initialization.__get__('hdb_properties');
+        env.set('CLUSTERING', 'TRUE');
+        env.set('CLUSTERING_PORT', '1115');
+        env.set('NODE_NAME', 'node_1');
         
         enterprise_initialization.kickOffEnterprise(function(err, result){
             assert.equal(ClusterServerStub.calledWithNew(), true, 'new ClusterServer(...) should have been called');
@@ -134,10 +135,10 @@ describe('Test kickOffEnterprise', function () {
         ClusterServerStub.prototype.initSync = sinon.stub().yields(null);
         ClusterServerStub.prototype.establishAllConnections = sinon.stub().yields(null);
         // inject necessary properties for clustering
-        let hdb_properties = enterprise_initialization.__get__('hdb_properties');        
-        hdb_properties.set('CLUSTERING', 'TRUE');
-        hdb_properties.set('CLUSTERING_PORT', '1115');
-        hdb_properties.set('NODE_NAME', 'node_1');
+        //let hdb_properties = enterprise_initialization.__get__('hdb_properties');
+        env.set('CLUSTERING', 'TRUE');
+        env.set('CLUSTERING_PORT', '1115');
+        env.set('NODE_NAME', 'node_1');
         
         enterprise_initialization.kickOffEnterprise(function(err, result){
             assert.deepEqual(ClusterServerStub.calledWithNew(), true, 'new ClusterServer(...) should have been called');
@@ -153,10 +154,10 @@ describe('Test kickOffEnterprise', function () {
         ClusterServerStub.prototype.initSync = sinon.stub().yields(null);
         ClusterServerStub.prototype.establishAllConnections = sinon.stub().yields(null);
         // inject necessary properties for clustering
-        let hdb_properties = enterprise_initialization.__get__('hdb_properties');  
+        //let hdb_properties = enterprise_initialization.__get__('hdb_properties');
         // make sure no clustering config is there     
-        if (hdb_properties.get('CLUSTERING')) {
-            hdb_properties.set('CLUSTERING', '');
+        if (env.get('CLUSTERING')) {
+            env.set('CLUSTERING', '');
         }
         enterprise_initialization.kickOffEnterprise(function(err, result){
             assert.deepEqual(ClusterServerStub.calledWithNew(), false, 'new ClusterServer(...) should have not been called');                
@@ -172,10 +173,10 @@ describe('Test kickOffEnterprise', function () {
         ClusterServerStub.prototype.initSync = sinon.stub().yields(null);
         ClusterServerStub.prototype.establishAllConnections = sinon.stub().yields(null);
         // inject necessary properties for clustering
-        let hdb_properties = enterprise_initialization.__get__('hdb_properties');  
-        hdb_properties.set('CLUSTERING', 'FALSE');
-        hdb_properties.set('CLUSTERING_PORT', '1115');
-        hdb_properties.set('NODE_NAME', 'node_1');
+        //let hdb_properties = enterprise_initialization.__get__('hdb_properties');
+        env.set('CLUSTERING', 'FALSE');
+        env.set('CLUSTERING_PORT', '1115');
+        env.set('NODE_NAME', 'node_1');
 
         enterprise_initialization.kickOffEnterprise(function(err, result){
             assert.deepEqual(ClusterServerStub.calledWithNew(), false, 'new ClusterServer(...) should have not been called');                
@@ -191,10 +192,10 @@ describe('Test kickOffEnterprise', function () {
         ClusterServerStub.prototype.initSync = sinon.stub().yields('error: unable to initSync');
         ClusterServerStub.prototype.establishAllConnections = sinon.stub().yields(null);
         // inject necessary properties for clustering
-        let hdb_properties = enterprise_initialization.__get__('hdb_properties');  
-        hdb_properties.set('CLUSTERING', 'TRUE');
-        hdb_properties.set('CLUSTERING_PORT', '1115');
-        hdb_properties.set('NODE_NAME', 'node_1');
+        //let hdb_properties = enterprise_initialization.__get__('hdb_properties');
+        env.set('CLUSTERING', 'TRUE');
+        env.set('CLUSTERING_PORT', '1115');
+        env.set('NODE_NAME', 'node_1');
 
         enterprise_initialization.kickOffEnterprise(function(err, result){
             assert.equal(ClusterServerStub.calledWithNew(), true, 'new ClusterServer(...) should have been called');           
@@ -210,10 +211,10 @@ describe('Test kickOffEnterprise', function () {
         ClusterServerStub.prototype.initSync = sinon.stub().yields('error: unable to establishAllConnections');
         ClusterServerStub.prototype.establishAllConnections = sinon.stub().yields('error: unable to establishAllConnections');
         // inject necessary properties for clustering
-        let hdb_properties = enterprise_initialization.__get__('hdb_properties');  
-        hdb_properties.set('CLUSTERING', 'TRUE');
-        hdb_properties.set('CLUSTERING_PORT', '1115');
-        hdb_properties.set('NODE_NAME', 'node_1');
+        //let hdb_properties = enterprise_initialization.__get__('hdb_properties');
+        env.set('CLUSTERING', 'TRUE');
+        env.set('CLUSTERING_PORT', '1115');
+        env.set('NODE_NAME', 'node_1');
 
         enterprise_initialization.kickOffEnterprise(function(err, result){
             assert.equal(ClusterServerStub.calledWithNew(), true, 'new ClusterServer(...) should have been called');           
