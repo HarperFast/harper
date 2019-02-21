@@ -10,7 +10,11 @@
 const assert = require('assert');
 let sinon = require('sinon');
 let fs = require('fs');
-let harper_log = require('../utility/logging/harper_logger.js');
+let rewire = require('rewire');
+let harper_log = rewire('../utility/logging/harper_logger.js');
+const test_utils = require('./test_utils');
+test_utils.preTestPrep();
+const PropertiesReader = require('properties-reader');
 
 let output_file_name = global.log_location;
 let file_change_results = false;
@@ -447,5 +451,79 @@ describe(`Test setLogType`, function (done) {
             assert.equal(file_change_results, true, "Did not detect a file change passing bad argument to setLogType.");
             done();
         }, 100);
+    });
+});
+
+describe(`Test setLogLocation`, function (done) {
+    let new_output_file = undefined;
+    before(function () {
+        harper_log.setLogType(WINSTON);
+        file_change_results = false;
+
+    });
+
+    afterEach(function () {
+        try {
+            zeroizeOutputFile();
+            fs.unlinkSync(new_output_file);
+            fs.unlinkSync(output_file_name);
+        } catch(err) {
+            // no-op
+        }
+    });
+    it('set log location', function (done) {
+        new_output_file = '../unitTests/testlog.log';
+        harper_log.__set__('log_location', '../run_log.log');
+        harper_log.error('test');
+        harper_log.setLogLocation(new_output_file);
+        harper_log.error('new log path was set');
+        // need to wait for the logger to create and write to the file.
+        setTimeout( function () {
+            try {
+                watcher = fs.watch(new_output_file, {persistent: false}, (eventType, filename) => {
+                    if (filename) {
+                        file_change_results = true;
+                    } else {
+                        console.log(`filename not found`);
+                    }
+                });
+            } catch(err) {
+                console.error(err);
+            }
+            harper_log.error('test in new path');
+            setTimeout( function () {
+                // Had to play with the timing on this to make it constantly pass.  Might need to be slower depending on the
+                // event loop and specs of any given system the test is run on.  Not the best way to test, but works for now.
+                assert.equal(file_change_results, true, "Did not detect a file change to new log file. This might be a timing issue with the test, not the functionality.");
+                done();
+            }, 1200);
+        }, 500);
+    });
+    it('set log location with bad path, expect log written to default path', function (done) {
+        new_output_file = undefined;
+        let default_path = '../run_log.log';
+        harper_log.__set__('log_location', default_path);
+        harper_log.error('test');
+        harper_log.setLogLocation(new_output_file);
+        harper_log.error('bad log path was set');
+        // need to wait for the logger to create and write to the file.
+        try {
+                watcher = fs.watch(default_path, {persistent: false}, (eventType, filename) => {
+                    if (filename) {
+                        file_change_results = true;
+                    } else {
+                        console.log(`filename not found`);
+                    }
+                });
+            } catch(err) {
+                console.error(err);
+            }
+            harper_log.error('test in new path');
+            setTimeout( function () {
+                // Had to play with the timing on this to make it constantly pass.  Might need to be slower depending on the
+                // event loop and specs of any given system the test is run on.  Not the best way to test, but works for now.
+                assert.equal(file_change_results, true, 'Expected log written to default path.');
+                done();
+            }, 1200);
     });
 });
