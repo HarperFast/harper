@@ -5937,6 +5937,225 @@
 					"response": []
 				},
 				{
+					"name": "get user info",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "caf1d588-cd9f-4f53-bff0-c43e65d7ab21",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"responseData = JSON.parse(responseBody);",
+									"for(let user of responseData) {",
+									"    if(user.username === 'test_user') {",
+									"        postman.setEnvironmentVariable(\"user_role_id\", user.role.id);",
+									"    }",
+									"}",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46cGFzc3dvcmQ="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"list_users\"\n}"
+						},
+						"url": {
+							"raw": "http://localhost:9925",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "9925"
+						},
+						"description": "Method for getting user info.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'user_info'</li>"
+					},
+					"response": []
+				},
+				{
+					"name": "try to set bad role to user",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "57e538a9-bc36-42ca-88ba-388c0e675144",
+								"exec": [
+									"pm.test(\"Status code is 500\", function () {",
+									"    pm.response.to.have.status(500);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46cGFzc3dvcmQ="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"alter_user\",\n\"role\":\"blahblah\",\n\"username\":\"test_user\"\n\n}"
+						},
+						"url": {
+							"raw": "http://localhost:9925",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "9925"
+						},
+						"description": "Method for altering users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  Use this method to change password as well.  \n\n<ul>\n\n<li><b>operation</b> <i>(required)</i> - must always be 'alter_user'</li>\n\n<li><b>role</b> <i>(optional) </i>- id of the role you wish to assign to the user.  See add_role for more detail. </li> \n\n<li><b>username </b><i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li> <b>password</b><i> (optional) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n</ul>"
+					},
+					"response": []
+				},
+				{
+					"name": "get user info make sure role was not changed",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "caf1d588-cd9f-4f53-bff0-c43e65d7ab21",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"responseData = JSON.parse(responseBody);",
+									"pm.test(\"ensure role not changed\", function () {",
+									"    for(let user of responseData) {",
+									"    if(user.username === 'test_user') {",
+									"        pm.expect(postman.getEnvironmentVariable(\"user_role_id\")).to.eql(user.role.id);",
+									"    }",
+									"}",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46cGFzc3dvcmQ="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"list_users\"\n}"
+						},
+						"url": {
+							"raw": "http://localhost:9925",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "9925"
+						},
+						"description": "Method for getting user info.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'user_info'</li>"
+					},
+					"response": []
+				},
+				{
 					"name": "SQL Try to read suppliers table as SU",
 					"event": [
 						{

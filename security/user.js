@@ -147,12 +147,13 @@ async function alterUser(json_message) {
     }
 
     // Make sure assigned role exists.
-    let role_search_obj = {};
-    role_search_obj.schema = 'system';
-    role_search_obj.table = 'hdb_role';
-    role_search_obj.hash_attribute = 'id';
-    role_search_obj.hash_values = [json_message.role];
-    role_search_obj.get_attributes = ['*'];
+    let role_search_obj = {
+        schema: 'system',
+        table: 'hdb_role',
+        hash_attribute: 'id',
+        hash_values: [json_message.role],
+        get_attributes: ['*']
+    };
     let role_data = await p_search_search_by_hash(role_search_obj).catch((err) => {
         logger.error('Got an error searching for a role.');
         logger.error(err);
@@ -315,14 +316,15 @@ function listUsersCB(body, callback){
 
 async function listUsers() {
 
-    let role_search_obj = {};
-    role_search_obj.schema = 'system';
-    role_search_obj.table = 'hdb_role';
-    role_search_obj.hash_attribute = 'id';
-    role_search_obj.search_value = '*';
-    role_search_obj.search_attribute = 'role';
+    let role_search_obj = {
+        schema: 'system',
+        table: 'hdb_role',
+        hash_attribute: 'id',
+        search_value: '*',
+        search_attribute: 'role',
+        get_attributes: ['*']
+    };
 
-    role_search_obj.get_attributes = ['*'];
     let roles = await p_search_search_by_value(role_search_obj).catch((err) => {
        logger.error(`Got an error searching for roles.`);
        logger.error(err);
