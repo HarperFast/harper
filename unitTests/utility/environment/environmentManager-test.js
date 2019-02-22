@@ -95,7 +95,7 @@ describe('Test setProperty', () => {
         } catch(err) {
             result = err;
         }
-        assert.equal((result instanceof Error), true, 'expected exception');
+        assert.equal(result, undefined, 'expected exception');
     });
 });
 
@@ -240,7 +240,7 @@ describe('Test readSettingsFile', () => {
         }
         let prop1 = env_rw.getProperty(terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY);
 
-        assert.equal(prop1, null);
+        assert.equal(prop1, './thisisabadpath');
         assert.equal((err instanceof Error), true, 'expected exception');
         assert.equal(props.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY), null);
     });
@@ -296,8 +296,8 @@ describe('Test readPropsFile', () => {
         }
         let prop1 = env_rw.getProperty(terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY);
 
-        assert.equal(prop1, null);
-        assert.equal((err instanceof Error), true, 'expected exception');
+        assert.equal(prop1, './thisisabadpath');
+        assert.equal(err, undefined, 'expected no exception');
         assert.equal(read_settings_stub.called, false);
     });
 });
@@ -341,7 +341,7 @@ describe('Test readRootPath', () => {
         }
         let prop1 = env_rw.getProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY);
 
-        assert.equal(prop1, null);
+        assert.equal(prop1, './blahblahblah');
         assert.equal((err instanceof Error), true, 'expected exception');
     });
 });
@@ -388,8 +388,8 @@ describe('Test readPrivateKeyPath', () => {
         }
         let prop1 = env_rw.getProperty(terms.HDB_SETTINGS_NAMES.PRIVATE_KEY_KEY);
 
-        assert.equal(prop1, null);
-        assert.equal((err instanceof Error), true, 'expected exception');
+        assert.equal(prop1, './thisisabadpath');
+        assert.equal(err, undefined, 'expected exception');
     });
 });
 
@@ -434,8 +434,8 @@ describe('Test readCertPath', () => {
         }
         let prop1 = env_rw.getProperty(terms.HDB_SETTINGS_NAMES.CERT_KEY);
 
-        assert.equal(prop1, null);
-        assert.equal((err instanceof Error), true, 'expected exception');
+        assert.equal(prop1, './thisisabadpath');
+        assert.equal(err, undefined, 'expected exception');
     });
 });
 
@@ -485,6 +485,7 @@ describe('Test initSync', () => {
         env_rw.__set__('readRootPath', root_path_stub);
         env_rw.__set__('readCertPath', cert_path_stub);
         env_rw.__set__('readPrivateKeyPath', private_path_stub);
+        env_rw.setPropsFilePath(TEST_PROPS_FILE_PATH);
         try {
             await env_rw.initSync();
         } catch(e) {

@@ -29,7 +29,7 @@ module.exports = {
     writeSettingsFileSync: writeSettingsFileSync
 };
 
-let hdb_properties = undefined;
+let hdb_properties = PropertiesReader();
 let property_values = Object.create(null);
 
 /**
@@ -75,7 +75,11 @@ function getProperty(prop_name) {
         return null;
     }
     try {
-        return property_values[prop_name];
+        let value = property_values[prop_name];
+        if(!value) {
+            value = hdb_properties.get(prop_name);
+        }
+        return value;
     } catch (e) {
         log.warn(`Property ${prop_name} is undefined.`);
         return null;
@@ -88,13 +92,11 @@ function getProperty(prop_name) {
 function append(prop_name, value) {
     if(common_utils.isEmptyOrZeroLength(prop_name)) {
         log.info(`Invalid parameter for setProperty`);
-        throw new Error('Null property specified');
     }
     try {
         setProperty(prop_name, value);
     } catch(e) {
         log.error(`Failed to set property ${prop_name}.`);
-        throw e;
     }
 }
 
@@ -104,14 +106,12 @@ function append(prop_name, value) {
 function setProperty(prop_name, value) {
     if(common_utils.isEmptyOrZeroLength(prop_name)) {
         log.info(`Invalid parameter for setProperty`);
-        throw new Error('Null property specified');
     }
     try {
         hdb_properties.set(prop_name, value);
         storeVariableValue(prop_name, value);
     } catch(e) {
         log.error(`Failed to set property ${prop_name}.`);
-        throw e;
     }
 }
 
@@ -159,14 +159,16 @@ function readPrivateKeyPath() {
     let private_key_path = hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.PRIVATE_KEY_KEY);
     if( common_utils.isEmptyOrZeroLength(private_key_path) || private_key_path === 0) {
         let error_msg = `A value was not found for ${hdb_terms.HDB_SETTINGS_NAMES.PRIVATE_KEY_KEY}, Please correct the value in your settings file and restart HarperDB.  Exiting HarperDB.`;
-        throw new Error(error_msg);
+        log.error(error_msg);
+        return;
     }
 
     try {
         fs.accessSync(private_key_path, fs.constants.F_OK | fs.constants.R_OK);
     } catch(e) {
         let error_msg = `The certificate file at path ${private_key_path} does not exist.  Exiting Harper DB.`;
-        throw new Error(error_msg);
+        log.error(error_msg);
+        return;
     }
     storeVariableValue(hdb_terms.HDB_SETTINGS_NAMES.PRIVATE_KEY_KEY, private_key_path);
 }
@@ -178,14 +180,16 @@ function readCertPath() {
     let cert_path = hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.CERT_KEY);
     if( common_utils.isEmptyOrZeroLength(cert_path) || cert_path === 0) {
         let error_msg = `A value was not found for ${hdb_terms.HDB_SETTINGS_NAMES.CERT_KEY}, Please correct the value in your settings file and restart HarperDB.  Exiting HarperDB.`;
-        throw new Error(error_msg);
+        log.error(error_msg);
+        return;
     }
 
     try {
         fs.accessSync(cert_path, fs.constants.F_OK | fs.constants.R_OK);
     } catch(e) {
         let error_msg = `The certificate file at path ${cert_path} does not exist.  Exiting Harper DB.`;
-        throw new Error(error_msg);
+        log.error(error_msg);
+        return;
     }
     storeVariableValue(hdb_terms.HDB_SETTINGS_NAMES.CERT_KEY, cert_path);
 }
@@ -223,27 +227,32 @@ function readPropsFile() {
     try {
         fs.accessSync(PROPS_FILE_PATH, fs.constants.F_OK | fs.constants.R_OK);
     } catch(e) {
-        let error_msg = `The properties file at path ${PROPS_FILE_PATH} does not exist.  Exiting Harper DB.`;
+        let error_msg = `The properties file at path ${PROPS_FILE_PATH} does not exist.  Setting up defaults.`;
+        log.info(error_msg);
         log.error(e);
-        throw new Error(error_msg);
+        //throw new Error(error_msg);
+        storeVariableValue(hdb_terms.HDB_SETTINGS_NAMES.LOG_LEVEL_KEY, log.DEBUG);
+        storeVariableValue(hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY, '../run_log.log');
+        storeVariableValue(hdb_terms.HDB_SETTINGS_NAMES.LOGGER_KEY, 1);
+        return false;
     }
 
     hdb_properties = PropertiesReader(PROPS_FILE_PATH);
     storeVariableValue(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY));
     storeVariableValue(hdb_terms.HDB_SETTINGS_NAMES.INSTALL_USER, hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.INSTALL_USER));
     readSettingsFile();
+    return true;
 }
 
 /**
  * Read the settings file path specified in the hdb_boot_props file.
- * @returns {Promise<void>}
  */
 function readSettingsFile() {
     try {
         fs.accessSync(hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY), fs.constants.F_OK | fs.constants.R_OK);
     } catch(e) {
-        let error_msg = `The settings file at path ${PROPS_FILE_PATH} does not exist.  Exiting Harper DB.`;
-        throw new Error(error_msg);
+        let error_msg = `The settings file at path ${PROPS_FILE_PATH} does not exist.`;
+        log.error(error_msg);
     }
 
     hdb_properties.append(hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY));
@@ -251,7 +260,6 @@ function readSettingsFile() {
 
 /**
  * Write currently stored settings into the settings file
- * @returns {Promise<void>}
  */
 function writeSettingsFileSync(create_backup_bool) {
     let settings_file_path = hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY);
@@ -260,9 +268,6 @@ function writeSettingsFileSync(create_backup_bool) {
         throw new Error(`No path found for config file.`);
     }
     if(create_backup_bool) {
-        /*await p_fs_copy(settings_file_path, `${settings_file_path}.bak`).catch((err) => {
-            throw err;
-        })*/
         try {
             fs.copyFileSync(settings_file_path, `${settings_file_path}.bak`);
         } catch(err) {
@@ -279,9 +284,7 @@ function writeSettingsFileSync(create_backup_bool) {
             fs.writeFileSync(settings_file_path, common_utils.stringifyProps(copy, null));
         } catch(err) {
             log.error(err);
-            throw new Error('There was a problem writing the settings file.  Please try again');
         }
-        //await p_fs_write(settings_file_path, common_utils.stringifyProps(copy, null));
 
     } catch(err) {
         log.error(`Had a problem writing new settings.`);
@@ -291,25 +294,26 @@ function writeSettingsFileSync(create_backup_bool) {
 
 function initSync() {
     try {
-        readPropsFile();
-        readRootPath();
-        readCertPath();
-        readPrivateKeyPath();
-        //These settings are read in separate function calls above to handle file IO errors.
-        let ignore_settings = [hdb_terms.HDB_SETTINGS_NAMES.CERT_KEY, hdb_terms.HDB_SETTINGS_NAMES.PRIVATE_KEY_KEY, hdb_terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY,hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY];
-        let keys = Object.keys(hdb_terms.HDB_SETTINGS_NAMES);
-        for( let i=0; i<keys.length; i++) {
-            let key = keys[i];
-            let value = hdb_terms.HDB_SETTINGS_NAMES[key];
-            if(ignore_settings.includes(value)) {
-                continue;
+        //if readPropsFile returns false, we are installing and don't need to read anything yet.
+        if(readPropsFile()) {
+            readRootPath();
+            readCertPath();
+            readPrivateKeyPath();
+            //These settings are read in separate function calls above to handle file IO errors.
+            let ignore_settings = [hdb_terms.HDB_SETTINGS_NAMES.CERT_KEY, hdb_terms.HDB_SETTINGS_NAMES.PRIVATE_KEY_KEY, hdb_terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY];
+            let keys = Object.keys(hdb_terms.HDB_SETTINGS_NAMES);
+            for (let i = 0; i < keys.length; i++) {
+                let key = keys[i];
+                let value = hdb_terms.HDB_SETTINGS_NAMES[key];
+                if (ignore_settings.includes(value)) {
+                    continue;
+                }
+                readEnvVariable(value);
             }
-            readEnvVariable(value);
         }
     } catch(err) {
         let msg = `Error reading in HDB environment variables from path ${PROPS_FILE_PATH}.  Please check your boot props and settings files`;
         log.fatal(msg);
         log.error(err);
-        throw new Error(msg);
     }
 }

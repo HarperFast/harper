@@ -19,13 +19,15 @@ const terms_address = 'http://legal.harperdb.io/Software+License+Subscription+Ag
 const env = require('../../utility/environment/environmentManager');
 const os = require('os');
 const comm = require('../common_utils');
+const hdb_terms = require('../hdbTerms');
 
 const LOG_LOCATION = ('../install_log.log');
 module.exports = {
-    "install": run_install
+    install: run_install
 };
 
 let wizard_result;
+env.initSync();
 
 /**
  * Stars the install process by first checking for an existing installation, then firing the steps to complete the install.
@@ -51,7 +53,7 @@ function run_install(callback) {
 
     prompt.override = optimist.argv;
     prompt.start();
-    winston.info('info', 'starting install');
+    winston.info('starting install');
     checkInstall(function (err, keepGoing) {
         if (keepGoing) {
             async.waterfall([
@@ -108,12 +110,6 @@ function termsAgreement(callback) {
  * @param callback
  */
 function checkInstall(callback) {
-    // check for props file path
-    try {
-        fs.accessSync(env.PROPS_FILE_PATH, fs.constants.F_OK | fs.constants.R_OK);
-    } catch (err) {
-        return callback(null, false)
-    }
     try {
         if( !env.get('HDB_ROOT') ) {
             return callback(null, true);
@@ -461,7 +457,9 @@ function createBootPropertiesFile(settings_path, callback) {
         }
         winston.info('info', `props path ${process.cwd()}/../hdb_boot_properties.file`);
         //hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
-        env.initSync();
+        //env.initSync();
+        env.setProperty(hdb_terms.HDB_SETTINGS_NAMES.INSTALL_USER, `${require("os").userInfo().username}`);
+        env.setProperty(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, settings_path);
         return callback(null, 'success');
     });
 }
