@@ -20,6 +20,7 @@ for(let key of Object.keys(hdb_terms.HDB_SETTINGS_NAMES)) {
 
 module.exports = {
     PROPS_FILE_PATH,
+    setPropsFilePath: setPropsFilePath,
     get:get,
     getProperty:getProperty,
     initSync: initSync,
@@ -30,6 +31,22 @@ module.exports = {
 
 let hdb_properties = undefined;
 let property_values = Object.create(null);
+
+/**
+ * Wrapper for getProperty to make replacing PropertiesReader easier in the code base.
+ */
+function setPropsFilePath(path) {
+    if(common_utils.isEmptyOrZeroLength(path)) {
+        log.info(`Invalid parameter ${path} passed to props setter.`);
+        return null;
+    }
+    try {
+        PROPS_FILE_PATH = path;
+    } catch (e) {
+        log.warn(`Path is invalid.`);
+        return null;
+    }
+}
 
 /**
  * Wrapper for getProperty to make replacing PropertiesReader easier in the code base.
@@ -165,7 +182,6 @@ function readCertPath() {
     }
 
     try {
-        //await p_fs_access(cert_path, fs.constants.F_OK | fs.constants.R_OK);
         fs.accessSync(cert_path, fs.constants.F_OK | fs.constants.R_OK);
     } catch(e) {
         let error_msg = `The certificate file at path ${cert_path} does not exist.  Exiting Harper DB.`;
@@ -186,7 +202,6 @@ function readRootPath() {
     let stats = undefined;
     try {
         stats = fs.statSync(root_path);
-        //stats = await p_fs_stat(root_path);
     } catch(e) {
         let error_msg = `The specified root path ${root_path} does not exist.  Please change this to the correct path to HarperDB. in your settings file. Exiting Harper DB.`;
         throw new Error(error_msg);
@@ -206,7 +221,6 @@ function readRootPath() {
 // This function always needs to be called first during initSync, as it loads the settings file.
 function readPropsFile() {
     try {
-        PROPS_FILE_PATH = `${process.cwd()}/../hdb_boot_properties.file`;
         fs.accessSync(PROPS_FILE_PATH, fs.constants.F_OK | fs.constants.R_OK);
     } catch(e) {
         let error_msg = `The properties file at path ${PROPS_FILE_PATH} does not exist.  Exiting Harper DB.`;
@@ -216,6 +230,7 @@ function readPropsFile() {
 
     hdb_properties = PropertiesReader(PROPS_FILE_PATH);
     storeVariableValue(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY));
+    storeVariableValue(hdb_terms.HDB_SETTINGS_NAMES.INSTALL_USER, hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.INSTALL_USER));
     readSettingsFile();
 }
 
@@ -225,7 +240,6 @@ function readPropsFile() {
  */
 function readSettingsFile() {
     try {
-        //await p_fs_access(hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY), fs.constants.F_OK | fs.constants.R_OK);
         fs.accessSync(hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY), fs.constants.F_OK | fs.constants.R_OK);
     } catch(e) {
         let error_msg = `The settings file at path ${PROPS_FILE_PATH} does not exist.  Exiting Harper DB.`;

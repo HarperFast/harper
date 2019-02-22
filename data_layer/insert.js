@@ -495,4 +495,3 @@ async function createNewAttribute(hdb_auth_header,schema, table, attribute) {
 
 const schema = require('../data_layer/schema');
 const p_create_attribute = promisify(schema.createAttribute);
-console.log('test');

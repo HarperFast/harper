@@ -55,6 +55,7 @@ function preTestPrep() {
     });
     // Try to change to bin
     changeProcessToBinDir();
+    env.setPropsFilePath(`${process.cwd()}/../hdb_boot_properties.file`);
     env.initSync();
 }
 
