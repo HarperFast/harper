@@ -1,5 +1,5 @@
 "use strict";
-const PropertiesReader = require('properties-reader');
+const env = require('../utility/environment/environmentManager');
 const bulk_delete_validator = require('../validation/bulkDeleteValidator');
 const conditional_delete_validator = require('../validation/conditionalDeleteValidator');
 const search = require('./search');
@@ -13,10 +13,8 @@ const moment = require('moment');
 const harper_logger = require('../utility/logging/harper_logger');
 const { promisify } = require('util');
 
-let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
-hdb_properties.append(hdb_properties.get('settings_path'));
 const slash_regex = /\//g;
-const BASE_PATH = common_utils.buildFolderPath(hdb_properties.get('HDB_ROOT'), "schema");
+const BASE_PATH = common_utils.buildFolderPath(env.get('HDB_ROOT'), "schema");
 const HDB_HASH_FOLDER_NAME = '__hdb_hash';
 const BLOB_FOLDER_NAME = 'blob';
 const MAX_BYTES = '255';

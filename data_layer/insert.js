@@ -13,7 +13,7 @@ const h_utils = require('../utility/common_utils');
 const search = require('./search');
 const logger = require('../utility/logging/harper_logger');
 const _ = require('lodash');
-const PropertiesReader = require('properties-reader');
+const env = require('../utility/environment/environmentManager');
 const autocast = require('autocast');
 const hdb_terms = require('../utility/hdbTerms');
 const mkdirp = require('../utility/fs/mkdirp');
@@ -26,10 +26,7 @@ const ExplodedObject = require('./ExplodedObject');
 const WriteProcessorObject = require('./WriteProcessorObject');
 const HDB_Pool = require('threads').Pool;
 
-let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
-hdb_properties.append(hdb_properties.get('settings_path'));
-
-const hdb_path = path.join(hdb_properties.get('HDB_ROOT'), '/schema');
+const hdb_path = path.join(env.get('HDB_ROOT'), '/schema');
 
 //This is an internal value that should not be written to the DB.
 //const HDB_PATH_KEY = hdb_terms.INSERT_MODULE_ENUM.HDB_PATH_KEY;

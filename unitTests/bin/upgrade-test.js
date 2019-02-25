@@ -4,6 +4,7 @@ const test_util = require('../test_utils');
 
 test_util.preTestPrep();
 
+const env = require('../../utility/environment/environmentManager');
 const assert = require('assert');
 const sinon = require('sinon');
 const version = require('../../bin/version');
@@ -109,6 +110,7 @@ describe('Upgrade Test - Test upgrade', async function() {
         upgrade_rw.__set__('p_fs_readdir', p_read_dir_stub_orig);
         upgrade_rw.__set__('getBuild', get_build_stub_orig);
         spinner.stop();
+        env.initSync();
     });
 
     it('test upgrade nominal path', async function() {
@@ -120,13 +122,13 @@ describe('Upgrade Test - Test upgrade', async function() {
     });
     it('test upgrade with missing properties', async function() {
         let exep = undefined;
-        let props_orig = upgrade_rw.__get__('hdb_properties');
-        upgrade_rw.__set__('hdb_properties', undefined);
+        //let props_orig = upgrade_rw.__get__('hdb_properties');
+        upgrade_rw.__set__('env', undefined);
         await upgrade('1.1.0', '2.1.0').catch((e) => {
             exep = e;
         });
-        upgrade_rw.__set__('hdb_properties', props_orig);
         assert.equal((exep instanceof Error), true, 'expected exception');
+        upgrade_rw.__set__('env', env);
     });
     it('test upgrade hdb running', async function() {
         let exep = undefined;

@@ -1,6 +1,6 @@
 'use strict';
-const fs = require('graceful-fs'),
-    PropertiesReader = require('properties-reader');
+const fs = require('graceful-fs');
+const env = require('../utility/environment/environmentManager');
 
 const search_validator = require('../validation/searchValidator.js'),
     async = require('async'),
@@ -14,9 +14,7 @@ const search_validator = require('../validation/searchValidator.js'),
     system_schema = require('../json/systemSchema.json'),
     SelectValidator = require('../sqlTranslator/SelectValidator');
 
-let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
-hdb_properties.append(hdb_properties.get('settings_path'));
-const base_path = hdb_properties.get('HDB_ROOT') + "/schema/";
+const base_path = env.get('HDB_ROOT') + "/schema/";
 
 math.import([
     require('../utility/functions/math/count'),

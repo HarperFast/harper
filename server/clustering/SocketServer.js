@@ -13,13 +13,10 @@ const cluster_handlers = require('./clusterHandlers');
 const version = require('../../bin/version');
 
 const p_schema_describe_all = promisify(schema.describeAll);
+const env = require('../../utility/environment/environmentManager');
 
-const PropertiesReader = require('properties-reader');
-let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
-hdb_properties.append(hdb_properties.get('settings_path'));
-
-const privateKeyPath = hdb_properties.get(terms.HDB_SETTINGS_NAMES.PRIVATE_KEY_KEY);
-const certificatePath = hdb_properties.get(terms.HDB_SETTINGS_NAMES.CERT_KEY);
+const privateKeyPath = env.get(terms.HDB_SETTINGS_NAMES.PRIVATE_KEY_KEY);
+const certificatePath = env.get(terms.HDB_SETTINGS_NAMES.CERT_KEY);
 
 let credentials = undefined;
 try {

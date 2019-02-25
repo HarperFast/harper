@@ -24,9 +24,9 @@ let log_location = undefined;
 
 // read environment settings to get preferred logger and default log level
 const PropertiesReader = require('properties-reader');
-
+let hdb_properties = undefined;
 try {
-    let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
+    hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
     hdb_properties.append(hdb_properties.get('settings_path'));
 
     // read environment settings to get log level
@@ -90,6 +90,7 @@ module.exports = {
     setLogLevel:setLogLevel,
     setLogType:setLogType,
     write_log:write_log,
+    setLogLocation:setLogLocation,
     log_level,
     FATAL,
     ERR,
@@ -106,19 +107,26 @@ let win_logger = undefined;
  * initialize the winston logger
  */
 function initWinstonLogger() {
-    win_logger = new (winston.Logger)({
-        transports: [
-            new(winston.transports.File)({
-                level: log_level,
-                filename: log_location,
-                handleExceptions: true,
-                prettyPrint:true
-            })
-        ],
-        levels: winston_log_levels,
-        level: log_level,
-        exitOnError:false
-    });
+    try {
+        win_logger = new (winston.Logger)({
+            transports: [
+                new (winston.transports.File)({
+                    level: log_level,
+                    filename: log_location,
+                    handleExceptions: true,
+                    prettyPrint: true
+                })
+            ],
+            levels: winston_log_levels,
+            level: log_level,
+            exitOnError: false
+        });
+    } catch(err) {
+        // if this fails we have no logger, so just write to the console and rethrow so everything fails.
+        console.error('There was an error initializing the logger.');
+        console.error(err);
+        throw err;
+    }
 }
 
 /**
@@ -282,4 +290,42 @@ function setLogType(type) {
         return;
     }
     log_type = type;
+}
+
+/**
+ * Set a location for the log file to be written.  Will stop writing to any existing logs and start writing to the new location.
+ * @param path
+ */
+function setLogLocation(path) {
+    if(!path || path.length === 0) {
+        error(`An invalid log path was sent to the logger.`);
+        return;
+    }
+    win_logger = undefined;
+    log_location = path;
+    global.log_location = path;
+    switch(log_type) {
+        case WIN:
+            //WINSTON
+            if(!win_logger) {
+                initWinstonLogger();
+                trace(`initialized winston logger writing to ${log_location}`);
+            }
+            break;
+        case PIN:
+            //PINO
+            if(!pin_logger) {
+                initPinoLogger();
+                trace(`initialized winston logger writing to ${log_location}`);
+            }
+            break;
+        default:
+            //WINSTON is default
+            if(!win_logger) {
+                initWinstonLogger();
+                trace(`initialized winston logger writing to ${log_location}`);
+            }
+            break;
+    }
+
 }
