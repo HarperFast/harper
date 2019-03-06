@@ -66,7 +66,7 @@ function arePortsInUse(callback) {
     // If this fails to find the boot props file, this must be a new install.  This will fall through,
     // pass the process and port check, and then hit the install portion of startHarper().
     try {
-        hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
+        hdb_properties = PropertiesReader(`${__dirname}/../hdb_boot_properties.file`);
         hdb_properties.append(hdb_properties.get('settings_path'));
         httpsecure_on = hdb_properties.get(HTTPSECURE_ON_KEY);
         http_on = hdb_properties.get(HTTP_ON_KEY);
@@ -130,7 +130,7 @@ function isPortTaken(port, callback) {
  * Helper function to start HarperDB.  If the hdb_boot properties file is not found, an install is started.
  */
 function startHarper() {
-    fs.stat(`${process.cwd()}/../hdb_boot_properties.file`, function(err, stats) {
+    fs.stat(`${__dirname}/../hdb_boot_properties.file`, function(err, stats) {
         if(err) {
             if(err.errno === -2) {
                 install.install(function (err) {
@@ -138,7 +138,7 @@ function startHarper() {
                         logger.error(err);
                         return;
                     }
-                    hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
+                    hdb_boot_properties = PropertiesReader(`${__dirname}/../hdb_boot_properties.file`);
                     completeRun();
                     return;
                 });
@@ -147,7 +147,7 @@ function startHarper() {
                 return;
             }
         } else {
-            hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
+            hdb_boot_properties = PropertiesReader(`${__dirname}/../hdb_boot_properties.file`);
             try {
                 fs.stat(hdb_boot_properties.get('settings_path'), function (err, stats) {
                     if (err) {
@@ -157,7 +157,7 @@ function startHarper() {
                                     logger.error(err);
                                     return;
                                 }
-                                hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
+                                hdb_boot_properties = PropertiesReader(`${__dirname}/../hdb_boot_properties.file`);
                                 completeRun();
                                 return;
                             });

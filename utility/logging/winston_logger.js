@@ -2,7 +2,7 @@
 const winston = require('winston');
 
 const PropertiesReader = require('properties-reader');
-let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
+let hdb_properties = PropertiesReader(`${__dirname}/../../hdb_boot_properties.file`);
 hdb_properties.append(hdb_properties.get('settings_path'));
 
 const logger = new (winston.Logger)({

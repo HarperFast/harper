@@ -34,7 +34,7 @@ function read_log(read_log_object, callback){
             basic_winston.configure({
                 transports: [
 
-                    new (basic_winston.transports.File)({ filename: `${process.cwd()}/../install_log.log`,  level: 'verbose', handleExceptions: true,
+                    new (basic_winston.transports.File)({ filename: `${__dirname}/../../install_log.log`,  level: 'verbose', handleExceptions: true,
                         prettyPrint:true })
                 ],exitOnError:false
             });
@@ -44,7 +44,7 @@ function read_log(read_log_object, callback){
             basic_winston.configure({
                 transports: [
 
-                    new (basic_winston.transports.File)({ filename: `${process.cwd()}/../run_log.log`,  level: 'verbose', handleExceptions: true,
+                    new (basic_winston.transports.File)({ filename: `${__dirname}/../../run_log.log`,  level: 'verbose', handleExceptions: true,
                         prettyPrint:true })
                 ],exitOnError:false
             });

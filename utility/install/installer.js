@@ -136,7 +136,7 @@ function checkInstall(callback) {
                         console.log('There was a problem removing the existing installation.  Please check the install log for details.');
                         return callback(err);
                     }
-                    fs.unlink(`${process.cwd()}/../hdb_boot_properties.file`, function (err) {
+                    fs.unlink(`${__dirname}/../../hdb_boot_properties.file`, function (err) {
                         if (err) {
                             winston.error(err);
                             console.log('There was a problem removing the existing installation.  Please check the install log for details.');
@@ -280,7 +280,7 @@ function createSettingsFile(mount_status, callback) {
             //No-op, should only get here in the case of android.  Defaulted to 4.
         }
         const path = require('path');
-        let hdb_props_value = `PROJECT_DIR = ${path.resolve(process.cwd(),'../')}\n` +
+        let hdb_props_value = `PROJECT_DIR = ${path.resolve(__dirname,'../../')}\n` +
             `HDB_ROOT = ${wizard_result.HDB_ROOT}\n` +
             `HTTP_PORT = ${wizard_result.HTTP_PORT}\n` +
             `HTTPS_PORT = ${wizard_result.HTTPS_PORT}\n` +
@@ -448,14 +448,14 @@ function createBootPropertiesFile(settings_path, callback) {
     let boot_props_value = `settings_path = ${settings_path}
     install_user = ${require("os").userInfo().username}`;
 
-    fs.writeFile(`${process.cwd()}/../hdb_boot_properties.file`, boot_props_value, function (err) {
+    fs.writeFile(`${__dirname}/../../hdb_boot_properties.file`, boot_props_value, function (err) {
 
         if (err) {
             winston.error('info', `Bootloader error ${err}`);
             console.error('There was a problem creating the boot file.  Please check the install log for details.');
             return callback(err);
         }
-        winston.info('info', `props path ${process.cwd()}/../hdb_boot_properties.file`);
+        winston.info('info', `props path ${__dirname}/../hdb_boot_properties.file`);
         //hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
         //env.initSync();
         env.setProperty(hdb_terms.HDB_SETTINGS_NAMES.INSTALL_USER, `${require("os").userInfo().username}`);

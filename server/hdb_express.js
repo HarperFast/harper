@@ -172,7 +172,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         });
     });
 } else {
-    harper_logger.info('In express' + process.cwd());
+    harper_logger.info('In express' + __dirname);
     harper_logger.info(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
     const express = require('express');
     const bodyParser = require('body-parser');

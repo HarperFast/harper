@@ -6,7 +6,7 @@ const log = require('../logging/harper_logger');
 const common_utils = require('../common_utils');
 const hdb_terms = require('../hdbTerms');
 
-let PROPS_FILE_PATH = `${process.cwd()}/../hdb_boot_properties.file`;
+let PROPS_FILE_PATH = `${__dirname}/../../hdb_boot_properties.file`;
 
 const defaults = {};
 

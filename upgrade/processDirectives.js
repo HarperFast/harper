@@ -20,7 +20,7 @@ let hdb_boot_properties = undefined;
 let hdb_properties = undefined;
 
 try {
-    hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
+    hdb_boot_properties = PropertiesReader(`${__dirname}/../hdb_boot_properties.file`);
     hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
 } catch(e) {
     log.info(`Couldn't read settings files.`);

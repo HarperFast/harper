@@ -15,8 +15,8 @@ const TEST_PROP_2_NAME = 'path';
 const TEST_PROP_1_VAL = 'I am root';
 const TEST_PROP_2_VAL = '$HOME/users';
 
-const TEST_PROPS_FILE_PATH = `${process.cwd()}/../unitTests/hdb_boot_properties.file`;
-const TEST_SETTINGS_FILE_PATH = `${process.cwd()}/../unitTests/settings.tstFile`;
+const TEST_PROPS_FILE_PATH = `${__dirname}/../../hdb_boot_properties.file`;
+const TEST_SETTINGS_FILE_PATH = `${__dirname}/../../settings.tstFile`;
 
 const ACCESS_RESPONSE = {
     'stats': 'true'

@@ -26,7 +26,7 @@ let log_location = undefined;
 const PropertiesReader = require('properties-reader');
 let hdb_properties = undefined;
 try {
-    hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
+    hdb_properties = PropertiesReader(`${__dirname}/../../hdb_boot_properties.file`);
     hdb_properties.append(hdb_properties.get('settings_path'));
 
     // read environment settings to get log level
