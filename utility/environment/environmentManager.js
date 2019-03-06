@@ -20,6 +20,7 @@ for(let key of Object.keys(hdb_terms.HDB_SETTINGS_NAMES)) {
 
 module.exports = {
     PROPS_FILE_PATH,
+    getHdbBasePath: getHdbBasePath,
     setPropsFilePath: setPropsFilePath,
     get:get,
     getProperty:getProperty,
@@ -31,6 +32,15 @@ module.exports = {
 
 let hdb_properties = PropertiesReader();
 let property_values = Object.create(null);
+
+/**
+ * The base path of the HDB install is often referenced, but is referenced as a const variable at the top of many
+ * modules.  This is a problem during install, as the path may not yet be defined.  We offer a function to get the
+ * currently known base path here to help with this case.
+ */
+function getHdbBasePath() {
+    return property_values['HDB_ROOT'];
+}
 
 /**
  * Wrapper for getProperty to make replacing PropertiesReader easier in the code base.

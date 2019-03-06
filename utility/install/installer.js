@@ -23,17 +23,15 @@ const user_schema = require('../../utility/user_schema');
 const comm = require('../common_utils');
 const hdb_terms = require('../hdbTerms');
 
-let hdb_boot_properties = null;
-let hdb_properties = null;
-
 const LOG_LOCATION = ('../install_log.log');
 module.exports = {
     install: run_install
 };
 
 let wizard_result;
-let existing_users;
+let existing_users = [];
 let keep_data = false;
+let check_install_path = false;
 env.initSync();
 
 /**
@@ -73,6 +71,7 @@ function run_install(callback) {
                 () => {
                     console.log("HarperDB Installation was successful");
                     winston.info("Installation Successful");
+                    process.exit(0);
                 }
             ], function (err) {
                 if (err) {
@@ -118,13 +117,10 @@ function termsAgreement(callback) {
  */
 function checkInstall(callback) {
     try {
-        if (hdb_boot_properties) {
-            return callback(null, false);
-        }
-
-        hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
-        hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
-        if (!hdb_properties.get('HDB_ROOT')) {
+        fs.accessSync(`${process.cwd()}/../hdb_boot_properties.file`, fs.constants.F_OK | fs.constants.R_OK);
+        env.setPropsFilePath(`${process.cwd()}/../hdb_boot_properties.file`);
+        env.initSync();
+        if (!env.get('HDB_ROOT')) {
             return callback(null, true);
         }
         promptForReinstall((err, result) => {
@@ -161,10 +157,11 @@ function promptForReinstall(callback) {
         if( err ) { return callback(err); }
 
         if(reinstall_result.REINSTALL === 'yes' || reinstall_result.REINSTALL === 'y') {
+            check_install_path = true;
             prompt.get(overwrite_schema, function (err, overwrite_result) {
                 if(overwrite_result.KEEP_DATA === 'no' || overwrite_result.KEEP_DATA === 'n' ) {
                     // don't keep data, tear it all out.
-                    fs.remove(hdb_properties.get('HDB_ROOT'), function (err) {
+                    fs.remove(env.get('HDB_ROOT'), function (err) {
                         if (err) {
                             winston.error(err);
                             console.log('There was a problem removing the existing installation.  Please check the install log for details.');
@@ -186,8 +183,9 @@ function promptForReinstall(callback) {
                     prepForReinstall(() => callback(null, true));
                 }
             });
+        } else {
+            return callback(null, false);
         }
-        callback(null, false);
     });
 }
 
@@ -198,10 +196,12 @@ function promptForReinstall(callback) {
  * @returns {*}
  */
 function prepForReinstall(callback) {
-    const schema = require('../../utility/globalSchema');
-    const user_schema = require('../../utility/user_schema');
-    if(!global.hdb_users || !global.hdb_schema) {
+    if (!global.hdb_users || !global.hdb_schema) {
         user_schema.setUsersToGlobal((err) => {
+            if (err) {
+                winston.error(err);
+                return callback(err, null);
+            }
             for (let i = 0; i < global.hdb_users.length; i++) {
                 existing_users.push(global.hdb_users[i].username);
             }
@@ -277,35 +277,39 @@ function wizard(err, callback) {
         //Support the tilde command for HOME.
         if (wizard_result.HDB_ROOT.indexOf('~') > -1) {
             let home = process.env['HOME'];
-            if( home !== undefined) {
+            if (home !== undefined) {
                 // Replaces ~ with env home and removes any tabs created from user hoping to use autocomplete.
                 let replacement = wizard_result.HDB_ROOT.replace('~', process.env['HOME']).replace(new RegExp('\t', 'g'), '');
-                if( replacement && replacement.length > 0) {
+                if (replacement && replacement.length > 0) {
                     wizard_result.HDB_ROOT = replacement;
                 }
-            }
-            else {
+            } else {
                 return callback('~ was specified in the path, but the HOME environment variable is not defined.');
             }
         }
-        // Dig around the provided path to see if an existing install is already there.
-        if(fs.existsSync(wizard_result.HDB_ROOT)) {
-            if(fs.existsSync(wizard_result.HDB_ROOT + '/config/settings.js')) {
-                if(fs.existsSync(wizard_result.HDB_ROOT + '/schema/system')) {
-                    // we have an existing install, prompt for reinstall.
-                    promptForReinstall((err, reinstall) => {
-                        if(reinstall) {
-                            prepForReinstall((err) => {
-                               return callback(null, wizard_result.HDB_ROOT);
-                            });
-                        } else {
-                            return callback(null, wizard_result.HDB_ROOT);
-                        }
-                    });
-                }
+        if(!check_install_path) {
+            // Only if reinstall not detected by presence of hdb_boot_props file.  Dig around the provided path to see if an existing install is already there.
+            if (!fs.existsSync(wizard_result.HDB_ROOT) ||
+                !fs.existsSync(wizard_result.HDB_ROOT + '/config/settings.js') ||
+                !fs.existsSync(wizard_result.HDB_ROOT + '/schema/system')) {
+                return callback(err, wizard_result.HDB_ROOT);
             }
+            // we have an existing install, prompt for reinstall.
+            promptForReinstall((err, reinstall) => {
+                if (reinstall) {
+                    env.setPropsFilePath(wizard_result.HDB_ROOT + '/config/settings.js');
+                    env.initSync();
+                    prepForReinstall((err) => {
+                        winston.error(err);
+                        return callback(null, wizard_result.HDB_ROOT);
+                    });
+                } else {
+                    return callback(null, wizard_result.HDB_ROOT);
+                }
+            });
+        } else {
+            return callback(null, wizard_result.HDB_ROOT);
         }
-        return callback(err, wizard_result.HDB_ROOT);
     });
 }
 
@@ -325,11 +329,12 @@ function createAdminUser(callback) {
         // 2.  IFF > 1, Show list to user and require selection of primary su role
 
         role_ops.listRoles((null), function(err, result) {
-            winston.info(`found existing roles: ${result}`);
-            let role_list = 'There is more than one existing super_user role.  Please select the number assigned to the role that should be assigned to the new user.';
+            winston.info(`found ${result.length} existing roles.`);
+            let role_list = 'Please select the number assigned to the role that should be assigned to the new user.';
             if(result && result.length > 1) {
-                for(let i = 1; i<result.length; i++) {
-                    role_list += `\n ${i}. ${result[i].role}`;
+                for(let i = 0; i<result.length; i++) {
+                    // It would be confusing to offer 0 as a number for the user to select, so offset by 1 to start at 1.
+                    role_list += `\n ${i+1}. ${result[i].role}`;
                 }
             }
 
@@ -338,8 +343,8 @@ function createAdminUser(callback) {
                     ROLE: {
                         message: colors.red(role_list),
                         type: 'number',
-                        exclusiveMinimum: 1,
-                        exclusiveMaximum: result.length,
+                        minimum: 1,
+                        maximum: result.length,
                         warning: 'Must select the number corresponding to the desired role.',
                         default: '1'
                     }
@@ -349,7 +354,8 @@ function createAdminUser(callback) {
                 let admin_user = {};
                 admin_user.username = wizard_result.HDB_ADMIN_USERNAME;
                 admin_user.password = wizard_result.HDB_ADMIN_PASSWORD;
-                admin_user.role = result[selected_role.ROLE].id;
+                // account for the offset
+                admin_user.role = result[selected_role.ROLE-1].id;
                 admin_user.active = true;
 
                 user_ops.addUser(admin_user, function (err) {
@@ -460,7 +466,6 @@ function createSettingsFile(mount_status, callback) {
                     winston.error(err);
                     return callback(err);
                 }
-                //hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
                 // load props
                 env.initSync();
                 return callback(null);
@@ -603,8 +608,6 @@ function createBootPropertiesFile(settings_path, callback) {
             return callback(err);
         }
         winston.info('info', `props path ${process.cwd()}/../hdb_boot_properties.file`);
-        //hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
-        //env.initSync();
         env.setProperty(hdb_terms.HDB_SETTINGS_NAMES.INSTALL_USER, `${require("os").userInfo().username}`);
         env.setProperty(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, settings_path);
         return callback(null, 'success');
