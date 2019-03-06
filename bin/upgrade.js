@@ -20,7 +20,8 @@ const tar = require('tar-fs');
 const CLI = require('clui');
 const request = require("request");
 const request_promise = require("request-promise-native");
-const PropertiesReader = require('properties-reader');
+//const PropertiesReader = require('properties-reader');
+const env = require('../utility/environment/environmentManager');
 const log = require('../utility/logging/harper_logger');
 const hdb_util = require('../utility/common_utils');
 const hdb_terms = require('../utility/hdbTerms');
@@ -49,15 +50,6 @@ const p_fs_chmod = promisify(fs.chmod);
 
 const VERSIONS_URL = 'http://products.harperdb.io/api/latestVersion?os=';
 const DOWNLOAD_URL = 'http://products.harperdb.io/api/update?os=';
-
-let hdb_properties;
-
-try {
-    hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
-    hdb_properties.append(hdb_properties.get('settings_path'));
-} catch (e) {
-    log.fatal(`There was an error reading settings the properties & settings file. ${e}`);
-}
 
 let Spinner = CLI.Spinner;
 let countdown = new Spinner(`Upgrading HarperDB `, ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷']);
@@ -124,7 +116,7 @@ async function upgradeFromFilePath(file_path) {
 async function upgrade() {
     log.setLogLevel(log.INFO);
     printToLogAndConsole(`This version of HarperDB is ${version.version()}`, log.INFO);
-    if(hdb_util.isEmptyOrZeroLength(hdb_properties) ) {
+    if(hdb_util.isEmptyOrZeroLength(env) ) {
         printToLogAndConsole('the hdb_boot_properties file was not found.  Please install HDB.', log.ERR);
         throw new Error('the hdb_boot_properties file was not found.  Please install HDB.');
     }
@@ -392,7 +384,7 @@ function startUpgradeDirectives(old_version_number, new_version_number) {
 function backupCurrInstall() {
     console.log('Backing up current install files.');
     let curr_install_base = path.join(process.cwd(), '../');
-    let data_base = hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY);
+    let data_base = env.get(hdb_terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY);
     log.info(`Current install path is: ${curr_install_base}`);
 
     let backup_path = path.join(data_base, 'backup', `version${(version.version().replace('/./g', '-'))}`);

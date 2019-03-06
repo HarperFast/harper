@@ -240,6 +240,11 @@ function verifyPerms(request_json, operation) {
     let schema_table_map = new Map();
     schema_table_map.set(schema, [table]);
 
+    if(common_utils.isEmptyOrZeroLength(request_json.hdb_user.role) || common_utils.isEmptyOrZeroLength(request_json.hdb_user.role.permission)) {
+        harper_logger.error(`User ${request_json.hdb_user.username }has no role or permissions.  Please assign the user a valid role.`);
+        return false;
+    }
+
     if(request_json.hdb_user.role.permission.super_user) {
         //admins can do anything through the hole in sheet!
         return true;

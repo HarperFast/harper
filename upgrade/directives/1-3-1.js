@@ -5,7 +5,7 @@ const upgrade_directive = require('../UpgradeDirective');
 const os = require('os');
 
 let sep = path.sep;
-let directive = new upgrade_directive('2.0.0');
+let directive = new upgrade_directive('1.3.1');
 let num_cores = 4;
 try {
     num_cores = os.cpus().length;

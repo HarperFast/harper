@@ -9,13 +9,11 @@ const log = require('../logging/harper_logger');
 
 const LICENSE_HASH_PREFIX = '061183';
 const LICENSE_KEY_DELIMITER = 'mofi25';
-const PropertiesReader = require('properties-reader');
+const env = require('../../utility/environment/environmentManager');
 
 let FINGER_PRINT_FILE = undefined;
 try {
-    let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
-    hdb_properties.append(hdb_properties.get('settings_path'));
-    FINGER_PRINT_FILE = `${hdb_properties.get('PROJECT_DIR')}/utility/keys/060493.ks`;
+    FINGER_PRINT_FILE = `${env.get('PROJECT_DIR')}/utility/keys/060493.ks`;
 } catch(err) {
     // no-op, this should only fail during installation as the
 }

@@ -16,12 +16,8 @@ const moment = require('moment');
 const common_utils = require('../../utility/common_utils');
 const terms = require('../../utility/hdbTerms');
 const version = require('../../bin/version');
-
-const PropertiesReader = require('properties-reader');
-let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
-hdb_properties.append(hdb_properties.get('settings_path'));
-
-const ALLOW_SELF_SIGNED_CERTS = hdb_properties.get(terms.HDB_SETTINGS_NAMES.ALLOW_SELF_SIGNED_SSL_CERTS);
+const env = require('../../utility/environment/environmentManager');
+const ALLOW_SELF_SIGNED_CERTS = env.get(terms.HDB_SETTINGS_NAMES.ALLOW_SELF_SIGNED_SSL_CERTS);
 const insert = require('../../data_layer/insert');
 const uuidv4 = require('uuid/v1');
 const {promisify} = require('util');
