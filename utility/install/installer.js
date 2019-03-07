@@ -88,6 +88,7 @@ function run_install(callback) {
  * @param {*} callback 
  */
 function termsAgreement(callback) {
+    winston.info('Asking for terms agreement.');
     prompt.message = ``;
     let terms_schema = {
         properties: {
@@ -116,6 +117,7 @@ function termsAgreement(callback) {
  * @param callback
  */
 function checkInstall(callback) {
+    winston.info('Checking for previous installation.');
     try {
         fs.accessSync(`${process.cwd()}/../hdb_boot_properties.file`, fs.constants.F_OK | fs.constants.R_OK);
         env.setPropsFilePath(`${process.cwd()}/../hdb_boot_properties.file`);
@@ -132,6 +134,7 @@ function checkInstall(callback) {
 }
 
 function promptForReinstall(callback) {
+    winston.info('Previous install detected, asking for reinstall.');
     let resinstall_schema = {
         properties: {
             REINSTALL: {
@@ -196,6 +199,7 @@ function promptForReinstall(callback) {
  * @returns {*}
  */
 function prepForReinstall(callback) {
+    winston.info('Preparing for reinstall.');
     if (!global.hdb_users || !global.hdb_schema) {
         user_schema.setUsersToGlobal((err) => {
             if (err) {
@@ -218,15 +222,22 @@ function prepForReinstall(callback) {
  * @param callback
  */
 function wizard(err, callback) {
-
     prompt.message = ``;
-
+    winston.info('Starting install wizard');
     let install_schema = {
         properties: {
             HDB_ROOT: {
                 description: colors.magenta(`[HDB_ROOT] Please enter the destination for HarperDB`),
                 message: 'HDB_ROOT cannot contain /',
-                default: process.env['HOME'] + '/hdb',
+                default: (env.getHdbBasePath() ? env.getHdbBasePath() : process.env['HOME'] + '/hdb'),
+                ask: function() {
+                    // only ask for HDB_ROOT if it is not defined.
+                    if(env.getHdbBasePath()) {
+                        console.log(`Using previous install path: ${env.getHdbBasePath()}`);
+                        return false;
+                    }
+                    return true;
+                },
                 required: false
             },
             HTTP_PORT: {
@@ -314,6 +325,7 @@ function wizard(err, callback) {
 }
 
 function createAdminUser(callback) {
+    winston.info('Creating admin user.');
     // These need to be defined here since they use the hdb_boot_properties file, but it has not yet been created
     // in the installer.
     const user_ops = require('../../security/user');
@@ -413,12 +425,15 @@ function createAdminUser(callback) {
 
 function createSettingsFile(mount_status, callback) {
     console.log('Starting HarperDB Install...');
+    winston.info('Creating settings file.');
     if (mount_status !== 'complete') {
+        winston.error('mount failed.');
         return callback('mount failed');
     }
 
     if(keep_data) {
         console.log('Existing settings.js file will be moved to settings.js.backup.  Remember to update the new settings file with your old settings.');
+        winston.info('Existing settings.js file will be moved to settings.js.backup.  Remember to update the new settings file with your old settings.');
     }
     let settings_path = `${wizard_result.HDB_ROOT}/config/settings.js`;
     createBootPropertiesFile(settings_path, (err) => {
@@ -493,6 +508,7 @@ function createSettingsFile(mount_status, callback) {
 }
 
 function generateKeys(callback) {
+    winston.info('Generating keys files.');
     let pki = forge.pki;
     let keys = pki.rsa.generateKeyPair(2048);
     let cert = pki.createCertificate();
@@ -609,7 +625,7 @@ function setupService(callback) {
 function createBootPropertiesFile(settings_path, callback) {
     winston.info('info', 'creating boot file');
     if (!settings_path) {
-        winston.info('info', 'missing settings path');
+        winston.error('info', 'missing settings path');
         return callback('missing setings');
     }
 
