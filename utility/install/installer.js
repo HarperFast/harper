@@ -332,30 +332,46 @@ function createAdminUser(callback) {
             winston.info(`found ${result.length} existing roles.`);
             let role_list = 'Please select the number assigned to the role that should be assigned to the new user.';
             if(result && result.length > 1) {
-                for(let i = 0; i<result.length; i++) {
+                for (let i = 0; i < result.length; i++) {
                     // It would be confusing to offer 0 as a number for the user to select, so offset by 1 to start at 1.
-                    role_list += `\n ${i+1}. ${result[i].role}`;
+                    role_list += `\n ${i + 1}. ${result[i].role}`;
                 }
-            }
 
-            let role_schema = {
-                properties: {
-                    ROLE: {
-                        message: colors.red(role_list),
-                        type: 'number',
-                        minimum: 1,
-                        maximum: result.length,
-                        warning: 'Must select the number corresponding to the desired role.',
-                        default: '1'
+
+                let role_schema = {
+                    properties: {
+                        ROLE: {
+                            message: colors.red(role_list),
+                            type: 'number',
+                            minimum: 1,
+                            maximum: result.length,
+                            warning: 'Must select the number corresponding to the desired role.',
+                            default: '1'
+                        }
                     }
-                }
-            };
-            prompt.get(role_schema, function(err, selected_role) {
+                };
+                prompt.get(role_schema, function (err, selected_role) {
+                    let admin_user = {};
+                    admin_user.username = wizard_result.HDB_ADMIN_USERNAME;
+                    admin_user.password = wizard_result.HDB_ADMIN_PASSWORD;
+                    // account for the offset
+                    admin_user.role = result[selected_role.ROLE - 1].id;
+                    admin_user.active = true;
+
+                    user_ops.addUser(admin_user, function (err) {
+                        if (err) {
+                            winston.error('user creation error' + err);
+                            console.error('There was a problem creating the admin user.  Please check the install log for details.');
+                            return callback(err);
+                        }
+                        return callback(null);
+                    });
+                });
+            } else {
                 let admin_user = {};
                 admin_user.username = wizard_result.HDB_ADMIN_USERNAME;
                 admin_user.password = wizard_result.HDB_ADMIN_PASSWORD;
-                // account for the offset
-                admin_user.role = result[selected_role.ROLE-1].id;
+                admin_user.role = result[0].id;
                 admin_user.active = true;
 
                 user_ops.addUser(admin_user, function (err) {
@@ -366,7 +382,7 @@ function createAdminUser(callback) {
                     }
                     return callback(null);
                 });
-            });
+            }
         });
     } else {
 
