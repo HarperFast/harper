@@ -108,7 +108,7 @@ function addNode(new_node, callback) {
 
         // Send IPC message so master will command forks to rescan for new nodes.
         process.send({
-            "type": "node_added"
+            "type": terms.CLUSTER_MESSAGE_TYPE_ENUM.NODE_ADDED
         });
         return callback(null, `successfully added ${new_node.name} to manifest`);
     });
@@ -169,7 +169,7 @@ async function removeNode(remove_json_message) {
 
     // Send IPC message so master will command forks to rescan for new nodes.
     process.send({
-        "type": "node_added"
+        "type": terms.CLUSTER_MESSAGE_TYPE_ENUM.NODE_REMOVED
     });
     return `successfully removed ${remove_json_message.name} from manifest`;
 }

@@ -190,6 +190,13 @@ class ClusterServer {
                     for( let i = 0; i < this.node.other_nodes.length; i++){
                         if ( this.node.other_nodes[i].name === removed_node.name) {
                             this.node.other_nodes.splice(i, 1);
+                            break;
+                        }
+                    }
+                    for( let i=0; i<this.socket_client.length; i++) {
+                        if(this.socket_client[i].other_node.name === removed_node.name) {
+                            this.socket_client.splice(i,1);
+                            break;
                         }
                     }
                 }
