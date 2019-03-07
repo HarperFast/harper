@@ -2,8 +2,8 @@
 
 #REMOVE FOR PRODUCTION
 #sed -i "/HDB_PROC_NAME/ s/ =.*/ = 'no_oneis_here';/" /opt/harperdb/bin/run.js
-sed -i "s/\#\!\/usr\/bin\/env node//" /opt/harperdb/bin/run.js
-sed -i "s/\#\!\/usr\/bin\/env node//" /opt/harperdb/bin/stop.js
+#sed -i "s/\#\!\/usr\/bin\/env node//" /opt/harperdb/bin/run.js
+#sed -i "s/\#\!\/usr\/bin\/env node//" /opt/harperdb/bin/stop.js
 #Change into each Directory generate an array of the Javascript; js_files
 #Itterate through js_files, Obfuscate each file send output to file mirrored HarperDB directory; mirrored_dir
 #Change directory back to this scripts working directory to prepare for next directory; working_dir
@@ -59,5 +59,5 @@ echo "done obfuscating $z"
 
    cd $working_dir
 done
-#sed -i "1s/^/\#\!\/usr\/bin\/env node\n/" $mirrored_dir/bin/harperdb.js
+sed -i "1s/^/\#\!\/usr\/bin\/env node\n/" $mirrored_dir/bin/harperdb.js
 

@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 "use strict";
 const ps = require('find-process');
 const hdb_terms = require('../utility/hdbTerms');
