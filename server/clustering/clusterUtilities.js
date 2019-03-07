@@ -349,8 +349,8 @@ function getClusterStatus() {
             let new_status = new ClusterStatusObject.ConnectionStatus();
             new_status.direction = conn.direction;
             if (conn.other_node) {
-                new_status.host = conn.other_node.hostname;
-                new_status.port = conn.other_node.host;
+                new_status.host = conn.other_node.host;
+                new_status.port = conn.other_node.port;
             }
             let status = conn.client.connected;
             new_status.connection_status = (status ? ClusterStatusObject.CONNECTION_STATUS_ENUM.CONNECTED :
