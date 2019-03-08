@@ -135,7 +135,7 @@ function checkInstall(callback) {
 
 function promptForReinstall(callback) {
     winston.info('Previous install detected, asking for reinstall.');
-    let resinstall_schema = {
+    let reinstall_schema = {
         properties: {
             REINSTALL: {
                 message: colors.red('It appears HarperDB is already installed.  Enter \'y/yes\'to reinstall. (yes/no)'),
@@ -156,7 +156,7 @@ function promptForReinstall(callback) {
         }
     };
 
-    prompt.get(resinstall_schema, function (err, reinstall_result) {
+    prompt.get(reinstall_schema, function (err, reinstall_result) {
         if( err ) { return callback(err); }
 
         if(reinstall_result.REINSTALL === 'yes' || reinstall_result.REINSTALL === 'y') {
