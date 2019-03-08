@@ -117,7 +117,6 @@ class SocketServer {
                     });
                 });
 
-
                 socket.on(terms.CLUSTER_EVENTS_DEFS_ENUM.CATCHUP_REQUEST, async msg => {
                     log.info(msg.name + ' catchup_request');
                     await cluster_handlers.fetchQueue(msg, socket);
@@ -137,6 +136,13 @@ class SocketServer {
                         log.error(error);
                     } else {
                         log.error(`Got transport close message ${error}`);
+                    }
+                    log.info('Tearing down socket client.');
+                    for(let i=0; i<global.cluster_server.socket_client.length; i++) {
+                        if(global.cluster_server.socket_client[i].client === socket) {
+                            global.cluster_server.socket_client[i].stop_reconnect = true;
+                            global.cluster_server.socket_client.splice(i,1);
+                        }
                     }
                 });
 

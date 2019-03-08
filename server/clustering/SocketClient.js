@@ -60,6 +60,7 @@ class SocketClient {
         this.client = null;
         // The direction data is flowing regarding this node.
         this.direction = direction_enum;
+        this.stop_reconnect = false;
     }
 
     /**
@@ -258,6 +259,13 @@ class SocketClient {
     onDisconnectHandler(reason) {
         this.other_node.status = 'disconnected';
         harper_logger.info(`server ${this.other_node.name} down`);
+        if(this.stop_reconnect) {
+            try {
+                this.client.disconnect();
+            } catch(err) {
+                harper_logger.error('Got an error disconnecting the client.');
+            }
+        }
     }
 
     async onConfirmMessageHandler(msg){
