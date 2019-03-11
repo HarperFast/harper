@@ -38,6 +38,8 @@ class ClusterServer {
                 this.socket_client.push(new_client);
                 new_client.connectToNode();
                 new_client.createClientMessageHandlers();
+            } else {
+                found_client[0].direction = terms.CLUSTER_CONNECTION_DIRECTION_ENUM.BIDIRECTIONAL;
             }
         } catch(e) {
             log.error(`Error establishing connection with ${o_node.name} at address ${o_node.host}`);
