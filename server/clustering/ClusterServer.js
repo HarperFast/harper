@@ -39,7 +39,9 @@ class ClusterServer {
                 new_client.connectToNode();
                 new_client.createClientMessageHandlers();
             } else {
+                log.info(`Emitting direction change to direction: ${terms.CLUSTER_CONNECTION_DIRECTION_ENUM.BIDIRECTIONAL}`);
                 found_client[0].direction = terms.CLUSTER_CONNECTION_DIRECTION_ENUM.BIDIRECTIONAL;
+                found_client[0].client.emit(terms.CLUSTER_EVENTS_DEFS_ENUM.DIRECTION_CHANGE, {'direction': terms.CLUSTER_CONNECTION_DIRECTION_ENUM.BIDIRECTIONAL});
             }
         } catch(e) {
             log.error(`Error establishing connection with ${o_node.name} at address ${o_node.host}`);
@@ -61,6 +63,8 @@ class ClusterServer {
             if(found_client && found_client[0]) {
                 if(found_client[0].direction === terms.CLUSTER_CONNECTION_DIRECTION_ENUM.BIDIRECTIONAL) {
                     found_client[0].direction = terms.CLUSTER_CONNECTION_DIRECTION_ENUM.INBOUND;
+                    log.info(`Emitting direction change to direction: ${terms.CLUSTER_CONNECTION_DIRECTION_ENUM.OUTBOUND}`);
+                    found_client[0].client.emit(terms.CLUSTER_EVENTS_DEFS_ENUM.DIRECTION_CHANGE, {'direction': terms.CLUSTER_CONNECTION_DIRECTION_ENUM.OUTBOUND});
                     return false;
                 }
                 found_client[0].disconnectNode();

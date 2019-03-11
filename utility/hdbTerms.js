@@ -249,7 +249,8 @@ const CLUSTER_EVENTS_DEFS_ENUM = {
     RECONNECT_ATTEMPT: 'reconnect_attempt',
     CONNECT_ERROR: 'connect_error',
     MESSAGE: 'msg',
-    VERSION_MISMATCH: 'version_mismatch'
+    VERSION_MISMATCH: 'version_mismatch',
+    DIRECTION_CHANGE: 'direction_change'
 };
 
 module.exports = {

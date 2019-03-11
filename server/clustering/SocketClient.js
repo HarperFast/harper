@@ -100,6 +100,14 @@ class SocketClient {
         harper_logger.warn(msg);
     }
 
+    onDirectionChange(msg) {
+        harper_logger.info('Received direction change instruction from server.');
+        if(!msg.direction) {
+            return;
+        }
+        this.direction = msg.direction;
+    }
+
     async onCatchupRequestHandler(msg){
         harper_logger.info('catchup_request from :' + msg.name);
         await cluster_handlers.fetchQueue(msg, this.client);
@@ -264,6 +272,8 @@ class SocketClient {
             try {
                 if(this.direction === terms.CLUSTER_CONNECTION_DIRECTION_ENUM.BIDIRECTIONAL) {
                     this.direction = terms.CLUSTER_CONNECTION_DIRECTION_ENUM.INBOUND;
+                    harper_logger.info(`Emitting direction change to direction: ${terms.CLUSTER_CONNECTION_DIRECTION_ENUM.OUTBOUND}`);
+                    this.client.emit(terms.CLUSTER_EVENTS_DEFS_ENUM.DIRECTION_CHANGE, {'direction': terms.CLUSTER_CONNECTION_DIRECTION_ENUM.OUTBOUND});
                 } else {
                     this.disconnectNode();
                 }
