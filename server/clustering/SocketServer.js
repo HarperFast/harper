@@ -103,7 +103,7 @@ class SocketServer {
                                 log.warn(`Multiple socket clients with the same host: ${found_client[0].host} and port: ${found_client[0].port} were found`);
                             }
                             for (let client of found_client) {
-                                log.info('Setting direction to bidirectional.').
+                                log.info('Setting direction to bidirectional.');
                                 log.info(`Emitting direction change to direction: ${terms.CLUSTER_CONNECTION_DIRECTION_ENUM.BIDIRECTIONAL}`);
                                 socket.emit(terms.CLUSTER_EVENTS_DEFS_ENUM.DIRECTION_CHANGE, {direction: terms.CLUSTER_CONNECTION_DIRECTION_ENUM.BIDIRECTIONAL});
                                 client.direction = terms.CLUSTER_CONNECTION_DIRECTION_ENUM.BIDIRECTIONAL;
