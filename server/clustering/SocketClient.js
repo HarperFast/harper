@@ -317,6 +317,8 @@ class SocketClient {
         this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.DISCONNECT, this.onDisconnectHandler.bind(this));
 
         this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.VERSION_MISMATCH, this.onVersionMismatch.bind(this));
+
+        this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.DIRECTION_CHANGE, this.onDirectionChange.bind(this));
     }
 
     async send(msg) {

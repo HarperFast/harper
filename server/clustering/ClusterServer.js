@@ -34,6 +34,7 @@ class ClusterServer {
             });
 
             if(!found_client || found_client.length === 0) {
+                log.info('creating new socket client.');
                 let new_client = new SocketClient(this.node, o_node, terms.CLUSTER_CONNECTION_DIRECTION_ENUM.OUTBOUND);
                 this.socket_client.push(new_client);
                 new_client.connectToNode();
