@@ -72,6 +72,7 @@ class SocketClient {
             return;
         }
         harper_logger.info(`disconnecting node ${this.other_node.name}`);
+        this.stop_reconnect = true;
         this.client.disconnect();
     }
 
@@ -258,10 +259,14 @@ class SocketClient {
 
     onDisconnectHandler(reason) {
         this.other_node.status = 'disconnected';
-        harper_logger.info(`server ${this.other_node.name} down`);
+        harper_logger.info(`server ${this.other_node.name} down.`);
         if(this.stop_reconnect) {
             try {
-                this.client.disconnect();
+                if(this.direction === terms.CLUSTER_CONNECTION_DIRECTION_ENUM.BIDIRECTIONAL) {
+                    this.direction = terms.CLUSTER_CONNECTION_DIRECTION_ENUM.INBOUND;
+                } else {
+                    this.disconnectNode();
+                }
             } catch(err) {
                 harper_logger.error('Got an error disconnecting the client.');
             }

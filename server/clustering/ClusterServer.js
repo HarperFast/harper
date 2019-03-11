@@ -47,6 +47,11 @@ class ClusterServer {
         }
     }
 
+    /**
+     * Remove a connection to a remote client.  Will return true if the socket was disconnected (if the client was
+     * inbound or outbound only), or false if the client was bi-directional.
+     * @param o_node
+     */
     removeConnection(o_node) {
         try {
             let found_client = this.socket_client.filter((client)=>{
@@ -54,12 +59,18 @@ class ClusterServer {
             });
 
             if(found_client && found_client[0]) {
+                if(found_client[0].direction === terms.CLUSTER_CONNECTION_DIRECTION_ENUM.BIDIRECTIONAL) {
+                    found_client[0].direction = terms.CLUSTER_CONNECTION_DIRECTION_ENUM.INBOUND;
+                    return false;
+                }
                 found_client[0].disconnectNode();
+                return true;
             }
 
         } catch(err) {
             log.error(`Error removing connection with ${o_node.name} at address ${o_node.host}`);
             log.error(err);
+            return false;
         }
     }
 
@@ -188,17 +199,20 @@ class ClusterServer {
             if(removed_nodes) {
                 for (let removed_node of removed_nodes) {
                     log.info(`Removing connection with cluster node ${removed_node.name}`);
-                    this.removeConnection(removed_node);
-                    for( let i = 0; i < this.node.other_nodes.length; i++){
-                        if ( this.node.other_nodes[i].name === removed_node.name) {
-                            this.node.other_nodes.splice(i, 1);
-                            break;
+                    // remove connection will return true if this was a 1 way connection, meaning the client was
+                    // disconnected and needs to be removed.
+                    if(this.removeConnection(removed_node)) {
+                        for (let i = 0; i < this.node.other_nodes.length; i++) {
+                            if (this.node.other_nodes[i].name === removed_node.name) {
+                                this.node.other_nodes.splice(i, 1);
+                                break;
+                            }
                         }
-                    }
-                    for( let i=0; i<this.socket_client.length; i++) {
-                        if(this.socket_client[i].other_node.name === removed_node.name) {
-                            this.socket_client.splice(i,1);
-                            break;
+                        for (let i = 0; i < this.socket_client.length; i++) {
+                            if (this.socket_client[i].other_node.name === removed_node.name) {
+                                this.socket_client.splice(i, 1);
+                                break;
+                            }
                         }
                     }
                 }
