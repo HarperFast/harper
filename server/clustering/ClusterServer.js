@@ -154,6 +154,30 @@ class ClusterServer {
         }
     }
 
+    nodeRemoved(node_name) {
+        log.debug(`Trying to remove node ${node_name}`);
+        for (let i = 0; i < this.socket_client.length; i++) {
+            if(this.socket_client[i].other_node.name === node_name) {
+                if(this.socket_client[i].direction === terms.CLUSTER_CONNECTION_DIRECTION_ENUM.BIDIRECTIONAL) {
+                    this.socket_client[i].direction = terms.CLUSTER_CONNECTION_DIRECTION_ENUM.INBOUND;
+                }
+                break;
+            }
+        }
+    }
+    nodeAdded(node_name) {
+        log.debug(`Trying to remove node ${node_name}`);
+        for (let i = 0; i < this.socket_client.length; i++) {
+            if(this.socket_client[i].other_node.name === node_name) {
+                if(this.socket_client[i].direction === terms.CLUSTER_CONNECTION_DIRECTION_ENUM.OUTBOUND ||
+                    this.socket_client[i].direction === terms.CLUSTER_CONNECTION_DIRECTION_ENUM.INBOUND) {
+                    this.socket_client[i].direction = terms.CLUSTER_CONNECTION_DIRECTION_ENUM.BIDIRECTIONAL;
+                }
+                break;
+            }
+        }
+    }
+
     /**
      * Scan nodes does a comparison between a search against hdb_nodes and any existing connections that exist in
      * this.other_nodes.  If there are nodes found in one but not the other, we need to either connect or disconnect
@@ -193,6 +217,7 @@ class ClusterServer {
             log.info('Had a problem detecting node changes.');
         } finally {
             if(added_nodes) {
+                log.debug(`Found ${added_nodes.length} new nodes.`);
                 for (let curr_node of added_nodes) {
                     this.node.other_nodes.push(curr_node);
                     // establishConnection handles any exceptions thrown.
@@ -202,6 +227,7 @@ class ClusterServer {
             }
 
             if(removed_nodes) {
+                log.debug(`Found ${removed_nodes.length} new nodes.`);
                 for (let removed_node of removed_nodes) {
                     log.info(`Removing connection with cluster node ${removed_node.name}`);
                     // remove connection will return true if this was a 1 way connection, meaning the client was
