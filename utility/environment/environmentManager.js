@@ -151,7 +151,7 @@ function readEnvVariable(variable_name) {
         }
         let env_value = hdb_properties.get(variable_name);
         if (common_utils.isEmptyOrZeroLength(env_value) || env_value === 0) {
-            log.warn(`A value was not found for ${variable_name}, using default value: ${defaults[variable_name]}`);
+            log.info(`A value was not found for ${variable_name}, using default value: ${defaults[variable_name]}`);
             env_value = defaults[variable_name];
         }
         if(env_value) {

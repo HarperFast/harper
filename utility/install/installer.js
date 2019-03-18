@@ -22,6 +22,7 @@ const schema = require('../../utility/globalSchema');
 const user_schema = require('../../utility/user_schema');
 const comm = require('../common_utils');
 const hdb_terms = require('../hdbTerms');
+const crypto = require('crypto');
 
 const LOG_LOCATION = ('../install_log.log');
 module.exports = {
@@ -32,6 +33,8 @@ let wizard_result;
 let existing_users = [];
 let keep_data = false;
 let check_install_path = false;
+const NODE_NAME_BYTE_LENGTH = 4;
+
 env.initSync();
 
 /**
@@ -464,29 +467,59 @@ function createSettingsFile(mount_status, callback) {
             //No-op, should only get here in the case of android.  Defaulted to 4.
         }
         const path = require('path');
-        let hdb_props_value = `PROJECT_DIR = ${path.resolve(process.cwd(),'../')}\n` +
+        let node_name = null;
+        try {
+            node_name = crypto.randomBytes(NODE_NAME_BYTE_LENGTH).toString('hex');
+        } catch(err) {
+            winston.error('There was an error generating a random name for node name.  Defaulting to some_node.');
+            node_name = 'some_node';
+        }
+        let hdb_props_value = `;Settings for the HarperDB process.  Some values may be disabled with a semi-colon(;).\n` +
+            `;To enable, remove the semi colon and save changes to the file.\n` +
+            `\n` +
+            `;The directory harperdb has been installed in.\n` +
+            `PROJECT_DIR = ${path.resolve(process.cwd(),'../')}\n` +
+            `;The directory selected during install where the database files reside.\n` +
             `HDB_ROOT = ${wizard_result.HDB_ROOT}\n` +
+            `;The port the HarperDB REST interface will listen on.\n` +
             `HTTP_PORT = ${wizard_result.HTTP_PORT}\n` +
+            `;If HTTPS is enabled, the port the HarperDB REST interface will listen on.\n` +
             `HTTPS_PORT = ${wizard_result.HTTPS_PORT}\n` +
+            `;The path to the SSL certificate used when running with HTTPS enabled.\n` +
             `CERTIFICATE = ${wizard_result.HDB_ROOT}/keys/certificate.pem\n` +
+            `;The path to the SSL private key used when running with HTTPS enabled.\n` +
             `PRIVATE_KEY = ${wizard_result.HDB_ROOT}/keys/privateKey.pem\n` +
+            `;Set to true to enable HTTPS on the HarperDB REST endpoint.  Requires a valid certificate and key.\n` +
             `HTTPS_ON = FALSE\n` +
+            `;Set to true to have HarperDB run using standard HTTP.\n` +
             `HTTP_ON = TRUE \n` +
+            `;Set to true to enable Cross Origin Resource Sharing, which allows requests across a domain.\n` +
             `CORS_ON = TRUE\n` +
+            `;Allows for setting allowable domains with CORS. Comma separated list.\n` +
             `CORS_WHITELIST =\n` +
+            `;Length of time in milliseconds after which a request will timeout.  Defaults to 120,000 ms (2 minutes).\n` +
             `SERVER_TIMEOUT_MS = 120000\n` +
+            `;Set to control amount of logging generated.  Accepted levels are trace, debug, warn, error, fatal.\n` +
             `LOG_LEVEL = warn\n` +
             `   ;Setting LOGGER to 1 uses the WINSTON logger.\n` +
             `   ; 2 Uses the more performant PINO logger.\n` +
             `LOGGER = 1\n` +
+            `;The path where log files will be written.\n` +
             `LOG_PATH = ${wizard_result.HDB_ROOT}/log/hdb_log.log\n` +
+            `;The environment used by NodeJS.  Setting to production will be the most performant, settings to development will generate more logging.\n` +
             `NODE_ENV = production\n` +
             `   ;This allows self signed certificates to be used in clustering.  This is a security risk\n` +
             `   ;as clustering will not validate the cert, so should only be used internally.\n` +
             `   ;The HDB install creates a self signed certficate, if you use that cert this must be set to true.\n` +
             `ALLOW_SELF_SIGNED_SSL_CERTS = false\n` +
-            `   ;Set the max number of processes HarperDB will kick off.  This can also be limited by number of cores and licenses.\n` +
-            `MAX_HDB_PROCESSES = ${num_cores}\n`;
+            `   ;Set the max number of processes HarperDB will start.  This can also be limited by number of cores and licenses.\n` +
+            `MAX_HDB_PROCESSES = ${num_cores}\n` +
+            `;Set to true to enable clustering.  Requires a valid enterprise license. Disabled by default.\n` +
+            `;CLUSTERING=false\n` +
+            `;The port that will be used for HarperDB clustering.\n` +
+            `;CLUSTERING_PORT=12345\n` +
+            `;The name of this node in your HarperDB cluster topology.  This must be a value unique from the rest of your cluster node names.\n` +
+            `;NODE_NAME=${node_name}\n`;
 
         winston.info('info', `hdb_props_value ${JSON.stringify(hdb_props_value)}`);
         winston.info('info', `settings path: ${env.get('settings_path')}`);
