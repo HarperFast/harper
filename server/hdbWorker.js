@@ -146,13 +146,6 @@ function init() {
                                         "id": id,
                                         "body": req.body
                                     });
-                                    /*process.send({
-                                        "type": "clustering_payload", "pid": process.pid,
-                                        "clustering_type": "broadcast",
-                                        "id": id,
-                                        "body": req.body
-                                    }); */
-
                                 }
                             });
                         }
@@ -178,12 +171,6 @@ function init() {
                                                 "id": id,
                                                 "body": req.body
                                             });
-                                            /*process.send({
-                                                "type": "clustering_payload", "pid": process.pid,
-                                                "clustering_type": "broadcast",
-                                                "id": id,
-                                                "body": req.body
-                                            });*/
                                         }
                                     });
                                 } else {
@@ -196,7 +183,6 @@ function init() {
                                             if (residence.length > 1) {
                                                 for (let node in residence) {
                                                     if (residence[node] !== env.get('NODE_NAME')) {
-
                                                         let id = uuidv1();
                                                         common.callProcessSend({
                                                             "type": "clustering_payload", "pid": process.pid,
@@ -205,13 +191,6 @@ function init() {
                                                             "body": req.body,
                                                             "node": {"name": residence[node]}
                                                         });
-                                                        /*process.send({
-                                                            "type": "clustering_payload", "pid": process.pid,
-                                                            "clustering_type": "send",
-                                                            "id": id,
-                                                            "body": req.body,
-                                                            "node": {"name": residence[node]}
-                                                        });*/
                                                     }
                                                 }
                                             }
@@ -231,14 +210,6 @@ function init() {
                                                             "body": req.body,
                                                             "node": {"name": residence[node]}
                                                     });
-                                                    /*process.send({
-                                                        "type": "clustering_payload", "pid": process.pid,
-                                                        "clustering_type": "send",
-                                                        "id": id,
-                                                        "body": req.body,
-                                                        "node": {"name": residence[node]}
-                                                    });*/
-
                                                 } catch(err) {
                                                     harper_logger.error(err);
                                                     return res.status(hdb_terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send({error: err.message});
@@ -358,7 +329,6 @@ function init() {
             case 'delegate_transaction':
                 server_utilities.chooseOperation(msg.body, function (err, operation_function) {
                     server_utilities.processInThread(msg.body, operation_function, function (err, data) {
-                        //process.send({"type": "delegate_thread_response", "err": err, "data": data, "id": msg.id});
                         common.callProcessSend({"type": "delegate_thread_response", "err": err, "data": data, "id": msg.id});
                     });
                 });

@@ -108,9 +108,6 @@ function addNode(new_node, callback) {
         }
 
         // Send IPC message so master will command forks to rescan for new nodes.
-        /*process.send({
-            "type": "node_added"
-        });*/
         common.callProcessSend({
             "type": "node_added"
         });
@@ -173,11 +170,8 @@ async function removeNode(remove_json_message) {
 
     // Send IPC message so master will command forks to rescan for new nodes.
     common.callProcessSend({
-        "type": "node_added"
+        "type": "node_removed"
     });
-    /*process.send({
-        "type": "node_added"
-    });*/
     return `successfully removed ${remove_json_message.name} from manifest`;
 }
 

@@ -809,8 +809,7 @@ function createAttribute(create_attribute_object, callback) {
 
                 try {
                     common.callProcessSend(payload);
-                    //process.send(payload);
-                } catch(e){
+                } catch(e) {
                     logger.error(e);
                 }
 
