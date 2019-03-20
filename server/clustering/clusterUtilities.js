@@ -13,6 +13,7 @@ const auth = require('../../security/auth');
 const ClusterStatusObject = require('../../server/clustering/ClusterStatusObject');
 const signalling = require('../../utility/signalling');
 const cluster_status_event = require('../../events/ClusterStatusEmitter');
+const common = require('../../utility/common_utils');
 
 //Promisified functions
 const p_delete_delete = promisify(del.delete);
@@ -107,7 +108,10 @@ function addNode(new_node, callback) {
         }
 
         // Send IPC message so master will command forks to rescan for new nodes.
-        process.send({
+        /*process.send({
+            "type": "node_added"
+        });*/
+        common.callProcessSend({
             "type": "node_added"
         });
         return callback(null, `successfully added ${new_node.name} to manifest`);
@@ -168,9 +172,12 @@ async function removeNode(remove_json_message) {
     }
 
     // Send IPC message so master will command forks to rescan for new nodes.
-    process.send({
+    common.callProcessSend({
         "type": "node_added"
     });
+    /*process.send({
+        "type": "node_added"
+    });*/
     return `successfully removed ${remove_json_message.name} from manifest`;
 }
 

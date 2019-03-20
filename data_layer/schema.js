@@ -21,6 +21,7 @@ const {promisify} = require('util');
 const {inspect} = require('util');
 const hdb_util = require('../utility/common_utils');
 const terms = require('../utility/hdbTerms');
+const common = require('../utility/common_utils');
 
 // Promisified functions
 let p_search_search_by_value = promisify(search.searchByValue);
@@ -806,14 +807,11 @@ function createAttribute(create_attribute_object, callback) {
                     "body": create_attribute_object
                 };
 
-                if(process.send === undefined){
-                    logger.debug('trying to send payload: ' + JSON.stringify(payload) + ' but there is no process.send for pid ');
-                } else {
-                    try {
-                        process.send(payload);
-                    } catch(e){
-                        logger.error(e);
-                    }
+                try {
+                    common.callProcessSend(payload);
+                    //process.send(payload);
+                } catch(e){
+                    logger.error(e);
                 }
 
                 signalling.signalSchemaChange({type: 'schema'});

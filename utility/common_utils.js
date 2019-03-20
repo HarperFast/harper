@@ -36,7 +36,8 @@ module.exports = {
     unescapeValue: unescapeValue,
     stringifyProps: stringifyProps,
     valueConverter: valueConverter,
-    timeoutPromise: timeoutPromise
+    timeoutPromise: timeoutPromise,
+    callProcessSend: callProcessSend
 };
 
 /**
@@ -350,4 +351,12 @@ function timeoutPromise(ms, msg, action_function) {
             clearTimeout(timeout);
         }
     };
+}
+
+function callProcessSend(process_msg) {
+    if(process.send === undefined || global.isMaster) {
+        log.error('Tried to call process.send() but process.send is undefined.');
+        return;
+    }
+    process.send(process_msg);
 }
