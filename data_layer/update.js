@@ -1,10 +1,12 @@
-const search = require('../data_layer/search'),
-    async = require('async'),
-    global_schema = require('../utility/globalSchema'),
-    logger = require('../utility/logging/harper_logger'),
-    write = require('./insert'),
-    clone = require('clone'),
-    alasql = require('alasql');
+"use strict";
+
+const search = require('../data_layer/search');
+const async = require('async');
+const global_schema = require('../utility/globalSchema');
+const logger = require('../utility/logging/harper_logger');
+const write = require('./insert');
+const clone = require('clone');
+const alasql = require('alasql');
 
 module.exports = {
     update: update
@@ -53,11 +55,16 @@ function update(statement, callback){
 
 }
 
+/**
+ * creates a json object based on the AST
+ * @param columns
+ */
 function createUpdateRecord(columns){
     let record = {};
 
     columns.forEach((column)=>{
-        record[column.column.columnid] = column.expression.value ? column.expression.value : column.expression.columnid;
+        //we want to check to validate that the value attribute exists on column.expression, if it doesn't we use the columnid
+        record[column.column.columnid] = "value" in column.expression ? column.expression.value : column.expression.columnid;
     });
 
     return record;
