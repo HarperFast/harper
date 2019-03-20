@@ -457,13 +457,14 @@ function clusterMessageHandler(msg) {
                 }
                 break;
             case terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STARTED:
-                log.info('Received child started event.');
                 if(started_forks[msg.pid]) {
                     log.warn(`Got a duplicate child started event for pid ${msg.pid}`);
                 } else {
                     started_forks[msg.pid] = true;
+                    log.info(`Received ${Object.keys(started_forks).length} child started event(s).`);
                     if(Object.keys(started_forks).length === global.forks.length) {
                         //all children are started, kick off enterprise.
+                        log.info(`Received all child started events.  Initializing clustering.`);
                         kickOffEnterprise();
                     }
                 }
