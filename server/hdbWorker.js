@@ -73,9 +73,9 @@ function init() {
     app.use(bodyParser.urlencoded({extended: true}));
     app.use(function (error, req, res, next) {
         if (error instanceof SyntaxError) {
-            res.status(hdb_terms.HTTP_STATUS_CODES.BAD_REQUEST).send({error: 'invalid JSON: ' + error.message.replace('\n', '')});
+            return sendHeaderResponse(req, res, hdb_terms.HTTP_STATUS_CODES.BAD_REQUEST, {error: 'invalid JSON: ' + error.message.replace('\n', '')});
         } else if (error) {
-            res.status(hdb_terms.HTTP_STATUS_CODES.BAD_REQUEST).send({error: error.message});
+            return sendHeaderResponse(req, res, hdb_terms.HTTP_STATUS_CODES.BAD_REQUEST, {error: error.message});
         } else {
             return next();
         }
@@ -95,17 +95,17 @@ function init() {
             // Per the body-parser docs, any request which does not match the bodyParser.json middleware will be returned with
             // an empty body object.
             if(!req.body || Object.keys(req.body).length === 0) {
-                return res.status(hdb_terms.HTTP_STATUS_CODES.BAD_REQUEST).send({error: "Invalid JSON."});
+                return sendHeaderResponse(req, res, hdb_terms.HTTP_STATUS_CODES.BAD_REQUEST,{error: "Invalid JSON."});
             }
             let enterprise_operations = ['add_node'];
             if ((req.headers.harperdb_connection || enterprise_operations.indexOf(req.body.operation) > -1) && !enterprise) {
-                return res.status(hdb_terms.HTTP_STATUS_CODES.UNAUTHORIZED).json({"error": "This feature requires an enterprise license.  Please register or contact us at hello@harperdb.io for more info."});
+                return sendHeaderResponse(req, res, hdb_terms.HTTP_STATUS_CODES.UNAUTHORIZED, {"error": "This feature requires an enterprise license.  Please register or contact us at hello@harperdb.io for more info."});
             }
 
             let user = await auth.authorize(req, res, handleAuth);
             if(!user) {
                 // TODO: make sure this response matches old failed log in response.
-                return res.status(hdb_terms.HTTP_STATUS_CODES.UNAUTHORIZED).json({"error": "User not authorized."});
+                return sendHeaderResponse(req, res, hdb_terms.HTTP_STATUS_CODES.UNAUTHORIZED,{"error": "User not authorized."});
             }
             let response = await processMessage(req, res, user);
             log.debug('Finished processing message.');
@@ -120,19 +120,19 @@ function init() {
         // Per the body-parser docs, any request which does not match the bodyParser.json middleware will be returned with
         // an empty body object.
         if(!req.body || Object.keys(req.body).length === 0) {
-            return res.status(hdb_terms.HTTP_STATUS_CODES.BAD_REQUEST).send({error: "Invalid JSON."});
+            return sendHeaderResponse(req, res, hdb_terms.HTTP_STATUS_CODES.BAD_REQUEST, {error: "Invalid JSON."});
         }
         let enterprise_operations = ['add_node'];
         if ((req.headers.harperdb_connection || enterprise_operations.indexOf(req.body.operation) > -1) && !enterprise) {
-            return res.status(hdb_terms.HTTP_STATUS_CODES.UNAUTHORIZED).json({"error": "This feature requires an enterprise license.  Please register or contact us at hello@harperdb.io for more info."});
+            return sendHeaderResponse(req, res, hdb_terms.HTTP_STATUS_CODES.UNAUTHORIZED, {"error": "This feature requires an enterprise license.  Please register or contact us at hello@harperdb.io for more info."});
         }
         auth.authorize(req, res, function (err, user) {
             if (err) {
                 log.warn(`{"ip":"${req.connection.remoteAddress}", "error":"${err.stack}"`);
                 if (typeof err === 'string') {
-                    return res.status(hdb_terms.HTTP_STATUS_CODES.UNAUTHORIZED).send({error: err});
+                    return sendHeaderResponse(req, res, hdb_terms.HTTP_STATUS_CODES.UNAUTHORIZED, {error: err});
                 }
-                return res.status(hdb_terms.HTTP_STATUS_CODES.UNAUTHORIZED).send(err);
+                return sendHeaderResponse(req, res, hdb_terms.HTTP_STATUS_CODES.UNAUTHORIZED, {error: err});
             }
             req.body.hdb_user = user;
             req.body.hdb_auth_header = req.headers.authorization;
@@ -141,12 +141,12 @@ function init() {
                 if (err) {
                     log.error(err);
                     if(err === server_utilities.UNAUTH_RESPONSE) {
-                        return res.status(hdb_terms.HTTP_STATUS_CODES.FORBIDDEN).send({error: server_utilities.UNAUTHORIZED_TEXT});
+                        return sendHeaderResponse(req, res, hdb_terms.HTTP_STATUS_CODES.FORBIDDEN, {error: server_utilities.UNAUTHORIZED_TEXT});
                     }
                     if (typeof err === 'string') {
-                        return res.status(hdb_terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send({error: err});
+                        return sendHeaderResponse(req, res, hdb_terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, {error: err});
                     }
-                    return res.status(hdb_terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send(err);
+                    return sendHeaderResponse(req, res, hdb_terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, {error: err});
                 }
 
                 if (global.clustering_on && req.body.operation !== 'sql') {
@@ -270,8 +270,7 @@ function init() {
                             });
                         }else{
                             try {
-                                async.forEach(table.residence, function(residence, callback_){
-                                    let id = uuidv1();
+                                async.forEach(table.residence, function(residence, callback_){let id = uuidv1();
                                     let item = {
                                         "payload": {"body":req.body, "id": id},
                                         "id": id,
@@ -438,6 +437,12 @@ function init() {
     }
 }
 
+/**
+ * Called as next() during auth so we can return the found user.
+ * @param err - Errors found during auth
+ * @param user - User found during auth.
+ * @returns {*}
+ */
 function handleAuth(err, user) {
     if(err) {
         log.error('There was an error with auth.');
@@ -446,53 +451,123 @@ function handleAuth(err, user) {
     }
 }
 
+/**
+ * Helper function to determine the residence for the inbound message.  For messages that do not require a table to be
+ * specified, we assume * for non local operations, and NODE_NAME for local operations.
+ * @param req
+ * @returns {Promise<Array>}
+ */
+async function determineMessageResidence(req) {
+    let residences = [];
+    if(!req.body.table) {
+        // If no table is specified, and the operation is local only, this message is meant for this node.
+        if(!hdb_terms.LOCAL_HARPERDB_OPERATIONS.includes(req.body.operation)) {
+            residences.push('*');
+        } else {
+            // There was no table specified, but the message is meant for the cluster.
+            residences.push(env.get('NODE_NAME'));
+        }
+    } else {
+        // table was specified, get the residences for this table.
+        let table = await p_schema_get_table_schema(req.body.schema, req.body.table);
+        residences = table.residence;
+    }
+    return residences;
+}
+
+/**
+ * Function the defines how an inbound message meant for the cluster is handled.
+ * @param req - request object
+ * @param res - response object
+ * @param operation_function - function specified in the inbound object.
+ * @returns {Promise<*>}
+ */
 async function processClusterMessage(req, res, operation_function) {
     log.trace('processing cluster message');
 
     let result = null;
+    let cluster_msg_id = uuidv1();
     try {
-        let table = await p_schema_get_table_schema(req.body.schema, req.body.table);
+        let residences = await determineMessageResidence(req);
+
         // We are going to reference this later when we decide how to respond to the requestor.  If we didn't process any
         // local tables, we will respond by saying the message has been broadcast.  Otherwise respond as normal.
         let against_local_table = false;
-        for (let node of table.residence) {
-            if (node !== env.get('NODE_NAME')) {
+        for (let node of residences) {
+            if (node !== "*" && node !== env.get('NODE_NAME')) {
                 log.debug(`Got a message for a table with a remote residence ${node}.  Broadcasting to cluster`);
-                let id = uuidv1();
                 global.clusterMsgQueue[id] = res;
                 process.send({
                     "type": "clustering_payload", "pid": process.pid,
                     "clustering_type": "send",
-                    "id": id,
+                    "id": cluster_msg_id,
                     "body": req.body,
                     "node": {"name": node}
                 });
             } else if(node === "*" || node === env.get('NODE_NAME')) {
-                result = await p_server_utils_process_local(req, res);
+                result = await p_server_utils_process_local(req, res, operation_function);
                 against_local_table = true;
                 if(node === "*" && !hdb_terms.LOCAL_HARPERDB_OPERATIONS.includes(req.body.operation)) {
-                    let id = uuidv1();
                     process.send({
                         "type": "clustering_payload", "pid": process.pid,
                         "clustering_type": "broadcast",
-                        "id": id,
+                        "id": cluster_msg_id,
                         "body": req.body
                     });
                 }
             }
+            // Add to hdb_queue
+            if(!hdb_terms.LOCAL_HARPERDB_OPERATIONS.includes(req.body.operation)) {
+                let item = {
+                    "payload": {"body": req.body, "id": cluster_msg_id},
+                    "id": cluster_msg_id,
+                    "node": {"node": node},
+                    "node_name": node,
+                    "timestamp": moment.utc().valueOf()
+                };
+
+                let insert_object = {
+                    operation: 'insert',
+                    schema: 'system',
+                    table: 'hdb_queue',
+                    records: [item]
+                };
+                let insert_result = await insert.insert(insert_object);
+                log.trace(`Inserted ${insert_result} into hdb_queue`);
+            }
         }
+
         if(!against_local_table) {
             // We need to manually set and send the status here, as processLocal isn't called.
             log.debug('only processed remote table residence, notifying of broadcast');
-            return res.status(hdb_terms.HTTP_STATUS_CODES.OK).send({message: `Specified table has residence on node(s): ${residence.join()}; broadcasting message to cluster.`});
+            return res.status(hdb_terms.HTTP_STATUS_CODES.OK).send({message: `Specified table has residence on node(s): ${residences.join()}; broadcasting message to cluster.`});
         }
     } catch(err) {
         log.error(err);
-        return res.status(hdb_terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send({error: err.message});
+        return sendHeaderResponse(req, res, hdb_terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR,{error: err.message});
     }
     return result;
 }
 
+/**
+ * This should be called in order to respond to a requestor.  ProcessLocal should handle most cases, but if anything
+ * falls through we want to make sure to respond.  This provides a check to ensure the header has not already been sent.
+ * @param err_code - error code as defined in hdb_terms.HTTP_STATUS_CODES
+ * @param err_json - json formatted error message.
+ */
+function sendHeaderResponse(req, res, err_code, err_json) {
+    if(!res._headerSent) {
+        return res.status(err_code).send(err_json);
+    }
+}
+
+/**
+ * Processes messages meant only for this local node, will not be sent to the cluster.
+ * @param req - request object
+ * @param res - response object
+ * @param operation_function - function specified in the inbound object.
+ * @returns {Promise<*>}
+ */
 async function processLocalMessage(req, res, operation_function) {
     let result = null;
     try {
@@ -503,6 +578,13 @@ async function processLocalMessage(req, res, operation_function) {
     return result;
 }
 
+/**
+ * Helper function to decide how to process the inbound message.
+ * @param req - the request
+ * @param res - the response
+ * @param user - User returned from auth call.
+ * @returns {Promise<*>}
+ */
 async function processMessage(req, res, user) {
     try {
         req.body.hdb_user = user;
@@ -524,12 +606,12 @@ async function processMessage(req, res, user) {
     } catch(err) {
         log.error(err);
         if (err === server_utilities.UNAUTH_RESPONSE) {
-            return res.status(hdb_terms.HTTP_STATUS_CODES.FORBIDDEN).send({error: server_utilities.UNAUTHORIZED_TEXT});
+            return sendHeaderResponse(req, res, hdb_terms.HTTP_STATUS_CODES.FORBIDDEN, {error: server_utilities.UNAUTHORIZED_TEXT});
         }
         if (typeof err === 'string') {
-            return res.status(hdb_terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send({error: err});
+            return sendHeaderResponse(req, res, hdb_terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, {error: err})
         }
-        return res.status(hdb_terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send(err);
+        return sendHeaderResponse(req, res, hdb_terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR,{error: err});
     }
 }
 
