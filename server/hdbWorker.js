@@ -108,15 +108,15 @@ function init() {
                 return res.status(hdb_terms.HTTP_STATUS_CODES.UNAUTHORIZED).json({"error": "User not authorized."});
             }
             let response = await processMessage(req, res, user);
-            log.info('Were here.');
+            log.debug('Finished processing message.');
         } catch(err) {
             log.error('There was an error in post to path "/".');
             log.error(err);
         }
     });
 
-    /*
-    app.post('/', function (req, res) {
+
+    app.post('/old', function (req, res) {
         // Per the body-parser docs, any request which does not match the bodyParser.json middleware will be returned with
         // an empty body object.
         if(!req.body || Object.keys(req.body).length === 0) {
@@ -311,7 +311,7 @@ function init() {
                 }
             });
         });
-    }); */
+    });
 
     process.on('message', (msg) => {
         switch (msg.type) {
@@ -446,7 +446,7 @@ function handleAuth(err, user) {
     }
 }
 
-async function processClusterMessage(req, res) {
+async function processClusterMessage(req, res, operation_function) {
     log.trace('processing cluster message');
 
     let result = null;
@@ -493,19 +493,10 @@ async function processClusterMessage(req, res) {
     return result;
 }
 
-async function processLocalMessage(req, res) {
+async function processLocalMessage(req, res, operation_function) {
     let result = null;
     try {
-        result = await p_server_utils_process_local(req, res);
-        if (!hdb_terms.LOCAL_HARPERDB_OPERATIONS.includes(req.body.operation)) {
-            let id = uuidv1();
-            process.send({
-                "type": "clustering_payload", "pid": process.pid,
-                "clustering_type": "broadcast",
-                "id": id,
-                "body": req.body
-            });
-        }
+        result = await p_server_utils_process_local(req, res, operation_function);
     } catch(err) {
         log.error(err);
     }
@@ -514,15 +505,6 @@ async function processLocalMessage(req, res) {
 
 async function processMessage(req, res, user) {
     try {
-        /*if (err) {
-            log.warn(`{"ip":"${req.connection.remoteAddress}", "error":"${err.stack}"`);
-            if (typeof err === 'string') {
-                return res.status(hdb_terms.HTTP_STATUS_CODES.UNAUTHORIZED).send({error: err});
-            }
-            return res.status(hdb_terms.HTTP_STATUS_CODES.UNAUTHORIZED).send(err);
-        }*/
-
-
         req.body.hdb_user = user;
         req.body.hdb_auth_header = req.headers.authorization;
 
@@ -532,174 +514,12 @@ async function processMessage(req, res, user) {
         // check for clustering
         if(global.clustering_on) {
             if(req.body.operation === 'sql') {
-                process_result = processLocalMessage(req,res);
+                process_result = await processLocalMessage(req,res, operation_function);
             } else {
-                process_result = processClusterMessage(req, res);
+                process_result = await processClusterMessage(req, res, operation_function);
             }
         } else {
-            process_result = processLocalMessage(req, res);
-        }
-
-        if (global.clustering_on && req.body.operation !== 'sql') {
-            if (!req.body.schema
-                || !req.body.table
-                || req.body.operation === 'create_table'
-                || req.body.operation === 'drop_table'
-                || req.body.operation === 'delete_files_before'
-            ) {
-                //let result = await p_server_utils_process_local(req, res, operation_function);
-                if (hdb_terms.LOCAL_HARPERDB_OPERATIONS.includes(req.body.operation)) {
-                    log.info('local only operation: ' + req.body.operation);
-                    server_utilities.processLocalTransaction(req, res, operation_function, function (err) {
-                        if (err) {
-                            log.error(err);
-                        }
-                    });
-                } else {
-                    log.info('local & delegated operation: ' + req.body.operation);
-                    server_utilities.processLocalTransaction(req, res, operation_function, function (err) {
-                        if (err) {
-                            log.error('error from local & delegated: ' + JSON.stringify(err));
-                        } else {
-                            let id = uuidv1();
-                            process.send({
-                                "type": "clustering_payload", "pid": process.pid,
-                                "clustering_type": "broadcast",
-                                "id": id,
-                                "body": req.body
-                            });
-
-                        }
-                    });
-                }
-            } else {
-                global_schema.getTableSchema(req.body.schema, req.body.table, function (err, table) {
-                    if (err) {
-                        log.error(err);
-                        return res.status(hdb_terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send(err);
-                    }
-                    if (table.residence) {
-                        let residence = table.residence;
-                        if (typeof table.residence === 'string') {
-                            residence = JSON.parse(table.residence);
-                        }
-
-                        if (residence.indexOf('*') > -1) {
-                            server_utilities.processLocalTransaction(req, res, operation_function, function (err) {
-                                if (!err) {
-                                    let id = uuidv1();
-                                    process.send({
-                                        "type": "clustering_payload", "pid": process.pid,
-                                        "clustering_type": "broadcast",
-                                        "id": id,
-                                        "body": req.body
-                                    });
-                                }
-                            });
-                        } else {
-
-                            if (residence.indexOf(env.get('NODE_NAME')) > -1) {
-                                server_utilities.processLocalTransaction(req, res, operation_function, function (err) {
-                                    if (err) {
-                                        log.error(err);
-                                    }
-                                    if (residence.length > 1) {
-                                        for (let node in residence) {
-                                            if (residence[node] !== env.get('NODE_NAME')) {
-
-                                                let id = uuidv1();
-                                                process.send({
-                                                    "type": "clustering_payload", "pid": process.pid,
-                                                    "clustering_type": "send",
-                                                    "id": id,
-                                                    "body": req.body,
-                                                    "node": {"name": residence[node]}
-                                                });
-                                            }
-                                        }
-                                    }
-                                });
-                            } else {
-                                for (let node in residence) {
-                                    if (residence[node] !== env.get('NODE_NAME')) {
-                                        log.debug(`Got a message for a table with a remote residence ${residence[node]}.  Broadcasting to cluster`);
-                                        let id = uuidv1();
-                                        global.clusterMsgQueue[id] = res;
-
-                                        try {
-                                            process.send({
-                                                "type": "clustering_payload", "pid": process.pid,
-                                                "clustering_type": "send",
-                                                "id": id,
-                                                "body": req.body,
-                                                "node": {"name": residence[node]}
-                                            });
-
-                                        } catch (err) {
-                                            log.error(err);
-                                            return res.status(hdb_terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send({error: err.message});
-                                        }
-                                    }
-                                }
-                                // We need to manually set and send the status here, as processLocal isn't called.
-                                return res.status(hdb_terms.HTTP_STATUS_CODES.OK).send({message: `Specified table has residence on node(s): ${residence.join()}; broadcasting message to cluster.`});
-                            }
-                        }
-                    } else {
-                        server_utilities.processLocalTransaction(req, res, operation_function, function () {
-                            //no-op
-                        });
-                    }
-                });
-            }
-        } else if (req.body.schema && req.body.table
-            && req.body.operation !== 'create_table' && req.body.operation !== 'drop_table' && !hdb_terms.LOCAL_HARPERDB_OPERATIONS.includes(req.body.operation)) {
-
-            global_schema.getTableSchema(req.body.schema, req.body.table, function (err, table) {
-
-                if (!table || !table.residence || table.residence.indexOf(env.get('NODE_NAME')) > -1) {
-                    server_utilities.processLocalTransaction(req, res, operation_function, function () {
-                    });
-                } else {
-                    try {
-                        async.forEach(table.residence, function (residence, callback_) {
-                            let id = uuidv1();
-                            let item = {
-                                "payload": {"body": req.body, "id": id},
-                                "id": id,
-                                "node": {"node": residence},
-                                "node_name": residence,
-                                "timestamp": moment.utc().valueOf()
-                            };
-
-                            let insert_object = {
-                                operation: 'insert',
-                                schema: 'system',
-                                table: 'hdb_queue',
-                                records: [item]
-                            };
-
-                            insert.insertCB(insert_object, function (err) {
-                                if (err) {
-                                    log.error(err);
-                                    return callback_(err);
-                                }
-                                return callback_();
-                            });
-                        }, function (err) {
-                            if (err) {
-                                return res.status(hdb_terms.HTTP_STATUS_CODES.NOT_IMPLEMENTED).send(err);
-                            }
-                            return res.status(hdb_terms.HTTP_STATUS_CODES.CREATED).send('{"message":"clustering is down. request has been queued and will be processed when clustering reestablishes.  "}');
-                        });
-                    } catch (e) {
-                        log.error(e);
-                    }
-                }
-            });
-        } else {
-            server_utilities.processLocalTransaction(req, res, operation_function, function () {
-            });
+            process_result = await processLocalMessage(req, res, operation_function);
         }
     } catch(err) {
         log.error(err);
