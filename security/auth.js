@@ -76,7 +76,7 @@ router.post('/',
     });
 
 function authorize(req, res, next) {
-
+    let found_user = null;
     let strategy;
     if (req.headers && req.headers.authorization) {
         strategy = req.headers.authorization.split(' ')[0];
@@ -94,14 +94,13 @@ function authorize(req, res, next) {
                 if (err) {
                     return next(err);
                 }
+                found_user = user;
                 return next(null, user);
             });
         } else {
+            found_user = user;
             return next(null, user);
-
         }
-
-
     }
 
     switch (strategy) {
@@ -117,7 +116,7 @@ function authorize(req, res, next) {
             break;
 
     }
-
+    return found_user;
 
 }
 
