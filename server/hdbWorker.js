@@ -23,6 +23,7 @@ const hdb_terms = require('../utility/hdbTerms');
 const global_schema = require('../utility/globalSchema');
 const http = require('http');
 const httpsecure = require('https');
+const common = require('../utility/common_utils');
 
 const DEFAULT_SERVER_TIMEOUT = 120000;
 const PROPS_SERVER_TIMEOUT_KEY = 'SERVER_TIMEOUT_MS';
@@ -139,13 +140,12 @@ function init() {
                                     harper_logger.error('error from local & delegated: ' + JSON.stringify(err));
                                 }else {
                                     let id = uuidv1();
-                                    process.send({
+                                    common.callProcessSend({
                                         "type": "clustering_payload", "pid": process.pid,
                                         "clustering_type": "broadcast",
                                         "id": id,
                                         "body": req.body
                                     });
-
                                 }
                             });
                         }
@@ -165,7 +165,7 @@ function init() {
                                     server_utilities.processLocalTransaction(req, res, operation_function, function (err) {
                                         if (!err) {
                                             let id = uuidv1();
-                                            process.send({
+                                            common.callProcessSend({
                                                 "type": "clustering_payload", "pid": process.pid,
                                                 "clustering_type": "broadcast",
                                                 "id": id,
@@ -183,9 +183,8 @@ function init() {
                                             if (residence.length > 1) {
                                                 for (let node in residence) {
                                                     if (residence[node] !== env.get('NODE_NAME')) {
-
                                                         let id = uuidv1();
-                                                        process.send({
+                                                        common.callProcessSend({
                                                             "type": "clustering_payload", "pid": process.pid,
                                                             "clustering_type": "send",
                                                             "id": id,
@@ -204,14 +203,13 @@ function init() {
                                                 global.clusterMsgQueue[id] = res;
 
                                                 try {
-                                                    process.send({
+                                                    common.callProcessSend({
                                                         "type": "clustering_payload", "pid": process.pid,
-                                                        "clustering_type": "send",
-                                                        "id": id,
-                                                        "body": req.body,
-                                                        "node": {"name": residence[node]}
+                                                            "clustering_type": "send",
+                                                            "id": id,
+                                                            "body": req.body,
+                                                            "node": {"name": residence[node]}
                                                     });
-
                                                 } catch(err) {
                                                     harper_logger.error(err);
                                                     return res.status(hdb_terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send({error: err.message});
@@ -331,7 +329,7 @@ function init() {
             case 'delegate_transaction':
                 server_utilities.chooseOperation(msg.body, function (err, operation_function) {
                     server_utilities.processInThread(msg.body, operation_function, function (err, data) {
-                        process.send({"type": "delegate_thread_response", "err": err, "data": data, "id": msg.id});
+                        common.callProcessSend({"type": "delegate_thread_response", "err": err, "data": data, "id": msg.id});
                     });
                 });
                 break;
