@@ -24,6 +24,7 @@ const global_schema = require('../utility/globalSchema');
 const http = require('http');
 const httpsecure = require('https');
 const {promisify} = require('util');
+const common = require('../utility/common_utils');
 
 const DEFAULT_SERVER_TIMEOUT = 120000;
 const PROPS_SERVER_TIMEOUT_KEY = 'SERVER_TIMEOUT_MS';
@@ -76,9 +77,8 @@ function init() {
             return sendHeaderResponse(req, res, hdb_terms.HTTP_STATUS_CODES.BAD_REQUEST, {error: 'invalid JSON: ' + error.message.replace('\n', '')});
         } else if (error) {
             return sendHeaderResponse(req, res, hdb_terms.HTTP_STATUS_CODES.BAD_REQUEST, {error: error.message});
-        } else {
-            return next();
         }
+        return next();
     });
 
     app.use(passport.initialize());

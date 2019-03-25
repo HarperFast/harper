@@ -41,6 +41,8 @@ const ENABLE_THREADING = false;
 
 const INTERNAL_ERROR_MESSAGE = 'An internal error occurred, please check the logs for more information.';
 
+const ATTRIBUTE_ALREADY_EXISTS = 'attribute already exists';
+
 module.exports = {
     insertCB: insertDataCB,
     updateCB: updateDataCB,
@@ -443,7 +445,7 @@ async function checkForNewAttributes(hdb_auth_header, table_schema, data_attribu
         );
     } catch(e){
         logger.error(e);
-        throw new Error(INTERNAL_ERROR_MESSAGE);
+        throw new Error(e);
     }
 }
 
@@ -492,8 +494,13 @@ async function createNewAttribute(hdb_auth_header,schema, table, attribute) {
 
     try {
         await p_create_attribute(attribute_object);
-    } catch(e) {
-        logger.error(e);
+    } catch(e){
+        //if the attribute already exists we do not want to stop the insert
+        if(typeof e === 'string' && e.indexOf(ATTRIBUTE_ALREADY_EXISTS) > -1){
+            logger.warn(e);
+        } else {
+            throw e;
+        }
     }
 }
 
