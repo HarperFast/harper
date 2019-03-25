@@ -19,6 +19,14 @@ const EMPTY_STRING = '';
 
 const CHARACTER_LIMIT = 255;
 
+const AUTOCAST_COMMON_STRINGS = {
+    'true': true,
+    'false': false,
+    'undefined': undefined,
+    'null': null,
+    'NaN': NaN
+};
+
 
 module.exports = {
     isEmpty:isEmpty,
@@ -157,7 +165,25 @@ function autoCast(data){
         return data;
     }
 
-    let value = cast(data);
+    if(typeof data !== 'string'){
+        return data;
+    }
+
+    // Don't cast Date objects
+    if (s instanceof Date) return s;
+
+    // Try to make it a common string
+    for (key in common_strings) {
+        if (s === key) return common_strings[key];
+    }
+
+    // Try to cast it to a number
+    if ((key = +s) == key) return key;
+
+
+
+    // Give up
+    return s;
 
     //in order to handle json and arrays we test the string to see if it seems minimally like an object or array and perform a JSON.parse on it.
     //if it fails we assume it is just a regular string

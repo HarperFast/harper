@@ -5,7 +5,7 @@ const hdb_terms = require('../utility/hdbTerms');
 const INSERT_ENUM =  hdb_terms.INSERT_MODULE_ENUM;
 const FileObject = require('../utility/fs/FileObject');
 const ExplodedObject = require('./ExplodedObject');
-const autocast = require('autocast');
+const {autoCast} = require('../utility/common_utils');
 const uuid = require('uuid/v4');
 const file_exists = require('../utility/fs/fileExists');
 
@@ -197,7 +197,7 @@ function compareUpdatesToExistingRecords(update_record, existing_record, table_s
                 continue;
             }
 
-            if (autocast(existing_record[attr]) !== autocast(update_record[attr])) {
+            if (autoCast(existing_record[attr]) !== update_record[attr]) {
                 attributes.push(attr);
                 let {value_path} = h_utils.valueConverter(existing_record[attr]);
 
