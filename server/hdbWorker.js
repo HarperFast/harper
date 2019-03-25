@@ -104,7 +104,6 @@ function init() {
 
             let user = await auth.authorize(req, res, handleAuth);
             if(!user) {
-                // TODO: make sure this response matches old failed log in response.
                 return sendHeaderResponse(req, res, hdb_terms.HTTP_STATUS_CODES.UNAUTHORIZED,{"error": "User not authorized."});
             }
             let response = await processMessage(req, res, user);
