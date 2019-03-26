@@ -101,7 +101,7 @@ class SocketClient {
     }
 
     onDirectionChange(msg) {
-        harper_logger.info('Received direction change instruction from server.');
+        harper_logger.info(`Received direction change instruction from server to ${msg.direction}.`);
         if(!msg.direction) {
             return;
         }

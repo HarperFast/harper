@@ -337,7 +337,7 @@ function selectProcess(target_process_id) {
  * This will build and populate a ClusterStatusObject and send it back to the process that requested it.
  */
 function getClusterStatus() {
-
+    log.debug('getting cluster status.');
     if(!global.cluster_server) {
         log.error(`Tried to get cluster status, but the cluster is not initialized.`);
         throw new Error(`Tried to get cluster status, but the cluster is not initialized.`);
@@ -346,7 +346,7 @@ function getClusterStatus() {
     try {
         status_obj.my_node_port = global.cluster_server.socket_server.port;
         status_obj.my_node_name = global.cluster_server.socket_server.name;
-
+        log.debug(`There are ${global.cluster_server.socket_client.length} socket clients.`);
         for (let conn of global.cluster_server.socket_client) {
             let new_status = new ClusterStatusObject.ConnectionStatus();
             new_status.direction = conn.direction;
