@@ -257,6 +257,11 @@ describe(`Test autoCast`, function(){
         assert.deepEqual(cu.autoCast(assert_array), assert_array);
     });
 
+    it(`Pass in array of various values , expect array back`, function(){
+        let assert_array = [1, null, undefined, NaN, 2];
+        assert.deepEqual(cu.autoCast(assert_array), assert_array);
+    });
+
     it(`Pass in object , expect object back`, function(){
         let assert_object = {id:1, stuff: 'here'};
         assert.deepEqual(cu.autoCast(assert_object), assert_object);

@@ -170,9 +170,8 @@ function autoCast(data){
     }
 
     // Try to make it a common string
-    for (let key in AUTOCAST_COMMON_STRINGS) {
-        if (data === key)
-            return AUTOCAST_COMMON_STRINGS[key];
+    if (AUTOCAST_COMMON_STRINGS[data]) {
+        return AUTOCAST_COMMON_STRINGS[data];
     }
 
     // Try to cast it to a number
