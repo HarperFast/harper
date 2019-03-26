@@ -197,8 +197,8 @@ function compareUpdatesToExistingRecords(update_record, existing_record, table_s
                 continue;
             }
 
-            //we don't autocast the update record because it has already be cast
-            if (autoCast(existing_record[attr]) !== update_record[attr]) {
+            //we don't autocast the existing record because it has already been cast from the search to get the record
+            if (existing_record[attr] !== autoCast(update_record[attr])) {
                 attributes.push(attr);
                 let {value_path} = h_utils.valueConverter(existing_record[attr]);
 
