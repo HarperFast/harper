@@ -16,6 +16,10 @@
 							"script": {
 								"type": "text/javascript",
 								"exec": [
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    pm.response.to.have.status(200);\r",
+									"});\r",
+									"\r",
 									"tests[\"Create Schema\"] = responseBody.has(\"successfully created\");\r",
 									"\r",
 									"\r",
@@ -68,6 +72,79 @@
 					"response": []
 				},
 				{
+					"name": "create_schema confirm schema exists",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "14217742-15b0-45ec-adb4-520255b9b911",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"schema northnwd exists\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(Object.keys(jsonData)[0]).to.eql(\"northnwd\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3Q="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
 					"name": "create_schema_dev",
 					"event": [
 						{
@@ -75,6 +152,10 @@
 							"script": {
 								"type": "text/javascript",
 								"exec": [
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    pm.response.to.have.status(200);\r",
+									"});\r",
+									"\r",
 									"tests[\"Create Schema\"] = responseBody.has(\"successfully created\");\r",
 									"\r",
 									"\r",
@@ -134,6 +215,10 @@
 							"script": {
 								"type": "text/javascript",
 								"exec": [
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    pm.response.to.have.status(200);\r",
+									"});\r",
+									"\r",
 									"tests[\"Create Schema\"] = responseBody.has(\"successfully created\");\r",
 									"\r",
 									"\r",
@@ -193,7 +278,9 @@
 							"script": {
 								"type": "text/javascript",
 								"exec": [
-									"",
+									"pm.test(\"Status code is 500\", function () {",
+									"    pm.response.to.have.status(500);",
+									"});",
 									"",
 									"/*pm.test(\"sql select where (like) and (unitprice>100)\", function () {",
 									"    var jsonData = pm.response.json();",
@@ -264,6 +351,10 @@
 							"script": {
 								"type": "text/javascript",
 								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
 									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
 								]
 							}
@@ -317,6 +408,79 @@
 					"response": []
 				},
 				{
+					"name": "create_table confirm table exists",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "14217742-15b0-45ec-adb4-520255b9b911",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"table customers exists\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[0].name).to.eql(\"customers\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3Q="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"describe_schema\",\n\t\"schema\":\"northnwd\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
 					"name": "create_table_suppliers",
 					"event": [
 						{
@@ -324,6 +488,10 @@
 							"script": {
 								"type": "text/javascript",
 								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
 									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
 								]
 							}
@@ -388,6 +556,10 @@
 							"script": {
 								"type": "text/javascript",
 								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
 									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
 								]
 							}
@@ -462,6 +634,10 @@
 							"script": {
 								"type": "text/javascript",
 								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
 									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
 								]
 							}
@@ -526,6 +702,10 @@
 							"script": {
 								"type": "text/javascript",
 								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
 									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
 								]
 							}
@@ -590,6 +770,10 @@
 							"script": {
 								"type": "text/javascript",
 								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
 									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
 								]
 							}
@@ -654,6 +838,10 @@
 							"script": {
 								"type": "text/javascript",
 								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
 									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
 								]
 							}
@@ -718,6 +906,10 @@
 							"script": {
 								"type": "text/javascript",
 								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
 									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
 								]
 							}
@@ -782,6 +974,10 @@
 							"script": {
 								"type": "text/javascript",
 								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
 									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
 								]
 							}
@@ -846,6 +1042,10 @@
 							"script": {
 								"type": "text/javascript",
 								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
 									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
 								]
 							}
@@ -910,6 +1110,10 @@
 							"script": {
 								"type": "text/javascript",
 								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
 									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
 								]
 							}
@@ -974,6 +1178,10 @@
 							"script": {
 								"type": "text/javascript",
 								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
 									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
 								]
 							}
@@ -1034,6 +1242,10 @@
 							"script": {
 								"type": "text/javascript",
 								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
 									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
 								]
 							}
@@ -1094,6 +1306,10 @@
 							"script": {
 								"id": "14e5c33d-740c-4b17-94ed-d2e03239931b",
 								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
 									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
 								],
 								"type": "text/javascript"
@@ -1155,6 +1371,10 @@
 							"script": {
 								"type": "text/javascript",
 								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
 									"pm.test(\"test schema name\", function() {",
 									"    var jsonData = pm.response.json();",
 									"    pm.expect(jsonData[0].schema).to.eql(\"northnwd\");",
