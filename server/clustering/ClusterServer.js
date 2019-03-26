@@ -56,21 +56,24 @@ class ClusterServer {
      * @param o_node
      */
     removeConnection(o_node) {
+        log.debug(`Removing connection for host ${o_node.host}`);
         try {
             let found_client = this.socket_client.filter((client)=>{
                 return client.other_node.host === o_node.host && client.other_node.port === o_node.port;
             });
 
             if(found_client && found_client[0]) {
+                log.debug(`Found existing client for host ${found_client[0].host} with direction ${found_client[0].direction}. Changing direction.`)
                 if(found_client[0].direction === terms.CLUSTER_CONNECTION_DIRECTION_ENUM.BIDIRECTIONAL) {
                     found_client[0].direction = terms.CLUSTER_CONNECTION_DIRECTION_ENUM.INBOUND;
                     log.info(`Emitting direction change to direction: ${terms.CLUSTER_CONNECTION_DIRECTION_ENUM.OUTBOUND}`);
                     found_client[0].client.emit(terms.CLUSTER_EVENTS_DEFS_ENUM.DIRECTION_CHANGE, {'direction': terms.CLUSTER_CONNECTION_DIRECTION_ENUM.OUTBOUND});
                     return false;
                 }
-                found_client[0].disconnectNode();
-                return true;
             }
+            log.debug(`Didn't find existing client, disconnecting node.`);
+            found_client[0].disconnectNode();
+            return true;
 
         } catch(err) {
             log.error(`Error removing connection with ${o_node.name} at address ${o_node.host}`);
@@ -154,28 +157,23 @@ class ClusterServer {
         }
     }
 
-    nodeRemoved(node_name) {
-        log.debug(`Trying to remove node ${node_name}`);
-        for (let i = 0; i < this.socket_client.length; i++) {
-            if(this.socket_client[i].other_node.name === node_name) {
-                if(this.socket_client[i].direction === terms.CLUSTER_CONNECTION_DIRECTION_ENUM.BIDIRECTIONAL) {
-                    this.socket_client[i].direction = terms.CLUSTER_CONNECTION_DIRECTION_ENUM.INBOUND;
-                }
-                break;
-            }
-        }
-    }
-    nodeAdded(node_name) {
-        log.debug(`Trying to remove node ${node_name}`);
-        for (let i = 0; i < this.socket_client.length; i++) {
-            if(this.socket_client[i].other_node.name === node_name) {
-                if(this.socket_client[i].direction === terms.CLUSTER_CONNECTION_DIRECTION_ENUM.OUTBOUND ||
-                    this.socket_client[i].direction === terms.CLUSTER_CONNECTION_DIRECTION_ENUM.INBOUND) {
-                    this.socket_client[i].direction = terms.CLUSTER_CONNECTION_DIRECTION_ENUM.BIDIRECTIONAL;
-                }
-                break;
-            }
-        }
+    async refreshNodes() {
+        log.debug(`Refreshing cache of hdb_nodes`);
+        let search_obj = {
+            "table": "hdb_nodes",
+            "schema": "system",
+            "search_attribute": "host",
+            "hash_attribute": "name",
+            "search_value": "*",
+            "get_attributes": ["*"]
+        };
+
+        let nodes = await p_search_searchbyvalue(search_obj).catch((e) => {
+            log.error(`Error searching for nodes.`);
+            throw e;
+        });
+
+        this.node.other_nodes = nodes;
     }
 
     /**
@@ -247,6 +245,10 @@ class ClusterServer {
                         }
                     }
                 }
+            }
+            if((added_nodes && added_nodes.length > 0) || (removed_nodes && removed_nodes.length > 0)) {
+                log.debug(`Found change in node cache, refreshing cache.`);
+                await this.refreshNodes();
             }
         }
     }

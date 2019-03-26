@@ -411,7 +411,6 @@ function clusterMessageHandler(msg) {
                     log.error('Cluster Server has not been initialized.  Do you have CLUSTERING=true in your config/settings file?');
                     return;
                 }
-                global.cluster_server.nodeAdded(msg.node_name);
                 global.cluster_server.scanNodes().then( () => {
                     log.info('Done scanning for new cluster nodes');
                 }).catch( (e) => {
@@ -425,7 +424,6 @@ function clusterMessageHandler(msg) {
                     return;
                 }
                 let name = msg.node_name;
-                global.cluster_server.nodeRemoved(msg.node_name);
                 global.cluster_server.scanNodes().then( () => {
                     log.info('Done scanning for removed cluster nodes');
                 }).catch( (e) => {
