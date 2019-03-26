@@ -22,7 +22,6 @@
     "@turf/length": "^6.0.2",
     "alasql": "^0.4.11",
     "async": "^2.6.1",
-    "autocast": "0.0.4",
     "aws-sdk": "^2.389.0",
     "body-parser": "^1.18.3",
     "clone": "^2.1.1",

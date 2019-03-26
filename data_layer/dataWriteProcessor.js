@@ -53,7 +53,7 @@ async function processData(process_wrapper) {
         let hash_value = record[hash_attribute];
 
         if (record.skip) {
-            skipped.push(autocast(hash_value));
+            skipped.push(autoCast(hash_value));
             continue;
         }
 
@@ -67,7 +67,7 @@ async function processData(process_wrapper) {
 
 
         if ((operation === 'insert' && exists) || (operation === 'update' && !exists)) {
-            skipped.push(autocast(hash_value));
+            skipped.push(autoCast(hash_value));
             continue;
         }
 
@@ -85,7 +85,7 @@ async function processData(process_wrapper) {
 
         //compare update to existing row
         if (h_utils.isEmptyOrZeroLength(record_keys)) {
-            skipped.push(autocast(hash_value));
+            skipped.push(autoCast(hash_value));
             continue;
         }
 
@@ -197,6 +197,7 @@ function compareUpdatesToExistingRecords(update_record, existing_record, table_s
                 continue;
             }
 
+            //we don't autocast the update record because it has already be cast
             if (autoCast(existing_record[attr]) !== update_record[attr]) {
                 attributes.push(attr);
                 let {value_path} = h_utils.valueConverter(existing_record[attr]);

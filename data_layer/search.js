@@ -2,17 +2,17 @@
 const fs = require('graceful-fs');
 const env = require('../utility/environment/environmentManager');
 
-const search_validator = require('../validation/searchValidator.js'),
-    async = require('async'),
-    logger = require('../utility/logging/harper_logger'),
-    file_search = require('../lib/fileSystem/fileSearch'),
-    FileSearch = require('../lib/fileSystem/SQLSearch'),
-    _ = require('lodash'),
-    condition_patterns = require('../sqlTranslator/conditionPatterns'),
-    autocast = require('autocast'),
-    math = require('mathjs'),
-    system_schema = require('../json/systemSchema.json'),
-    SelectValidator = require('../sqlTranslator/SelectValidator');
+const search_validator = require('../validation/searchValidator.js');
+const async = require('async');
+const logger = require('../utility/logging/harper_logger');
+const file_search = require('../lib/fileSystem/fileSearch');
+const FileSearch = require('../lib/fileSystem/SQLSearch');
+const _ = require('lodash');
+const condition_patterns = require('../sqlTranslator/conditionPatterns');
+const {autoCast} = require('../utility/common_utils');
+const math = require('mathjs');
+const system_schema = require('../json/systemSchema.json');
+const SelectValidator = require('../sqlTranslator/SelectValidator');
 
 //let base_path = env.get('HDB_ROOT') + "/schema/";
 // Search is used in the installer, and the base path may be undefined when search is instantiated.  Dynamically
@@ -322,16 +322,7 @@ function readAttributeFiles(table_path, attribute, hash_files, callback){
                 return;
             }
 
-            let value = autocast(data.toString());
-            //autocast is unable to convert string to object/array so we need to figure it out
-            if(typeof value === 'string'){
-                if((value.startsWith('{') && value.endsWith('}')) || (value.startsWith('[') && value.endsWith(']'))){
-                    try{
-                        value = JSON.parse(value);
-                    }catch(e){
-                    }
-                }
-            }
+            let value = autoCast(data.toString());
 
             attribute_data[file]=value;
             caller();

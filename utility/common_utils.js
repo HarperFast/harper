@@ -1,6 +1,5 @@
 "use strict"
 const path = require('path');
-const cast = require('autocast');
 const log = require('./logging/harper_logger');
 const fs_extra = require('fs-extra');
 const truncate = require('truncate-utf8-bytes');
@@ -165,37 +164,32 @@ function autoCast(data){
         return data;
     }
 
+    //if this is already typed other than string, return data
     if(typeof data !== 'string'){
         return data;
     }
 
-    // Don't cast Date objects
-    if (s instanceof Date) return s;
-
     // Try to make it a common string
-    for (key in common_strings) {
-        if (s === key) return common_strings[key];
+    for (let key in AUTOCAST_COMMON_STRINGS) {
+        if (data === key)
+            return AUTOCAST_COMMON_STRINGS[key];
     }
 
     // Try to cast it to a number
-    if ((key = +s) == key) return key;
-
-
-
-    // Give up
-    return s;
+    let to_number;
+    if ((to_number = +data) == to_number) {
+        return to_number;
+    }
 
     //in order to handle json and arrays we test the string to see if it seems minimally like an object or array and perform a JSON.parse on it.
     //if it fails we assume it is just a regular string
-    if(typeof value === 'string'){
-        if((value.startsWith('{') && value.endsWith('}')) || (value.startsWith('[') && value.endsWith(']'))){
-            try{
-                value = JSON.parse(value);
-            } catch(e) {
-            }
+    if((data.startsWith('{') && data.endsWith('}')) || (data.startsWith('[') && data.endsWith(']'))){
+        try{
+            data = JSON.parse(data);
+        } catch(e) {
         }
     }
-    return value;
+    return data;
 }
 
 /**
