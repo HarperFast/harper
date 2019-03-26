@@ -3895,6 +3895,136 @@
 						}
 					},
 					"response": []
+				},
+				{
+					"name": "update employee with falsey data",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "853acc52-10d0-4652-b5d7-fd976a5d3887",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"address is false and hireDate is 0\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.update_hashes[0]).to.eql(1);",
+									"});",
+									"",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"UPDATE {{schema}}.{{emps_tb}} SET address = false, hireDate = 0, notes = null, birthdate = undefined WHERE {{emps_id}} = 1\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Update employee attributes to false/0/null/undefined to validate values are stored correctly."
+					},
+					"response": []
+				},
+				{
+					"name": "select employee to confirm falsey update",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "5d1eab1c-73f5-448f-8dea-b3887585ef84",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"address is false and hireDate is 0\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[0].address).to.be.false;",
+									"    pm.expect(jsonData[0].hireDate).to.eql(0);",
+									"});",
+									"",
+									"pm.test(\"notes and birthdate do not exist afting being set to null and undefined\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.not.have.property('notes');",
+									"    pm.expect(jsonData).to.not.have.property('birthdate');",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"SELECT * FROM {{schema}}.{{emps_tb}} WHERE {{emps_id}} = 1\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
 				}
 			]
 		},
