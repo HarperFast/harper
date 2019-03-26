@@ -107,12 +107,11 @@ function addNode(new_node, callback) {
         }
 
         // Send IPC message so master will command forks to rescan for new nodes.
-        process.send({
+        common.callProcessSend({
             "type": terms.CLUSTER_MESSAGE_TYPE_ENUM.NODE_ADDED,
             "node_name": new_node.name
         });
         return callback(null, `successfully added ${new_node.name} to manifest`);
-    });
 }
 
 /**
@@ -169,7 +168,7 @@ async function removeNode(remove_json_message) {
     }
 
     // Send IPC message so master will command forks to rescan for new nodes.
-    process.send({
+    common.callProcessSend({
         "type": terms.CLUSTER_MESSAGE_TYPE_ENUM.NODE_REMOVED,
         "node_name": remove_json_message.name
     });
@@ -423,7 +422,6 @@ function clusterMessageHandler(msg) {
                     log.error('Cluster Server has not been initialized.  Do you have CLUSTERING=true in your config/settings file?');
                     return;
                 }
-                let name = msg.node_name;
                 global.cluster_server.scanNodes().then( () => {
                     log.info('Done scanning for removed cluster nodes');
                 }).catch( (e) => {
