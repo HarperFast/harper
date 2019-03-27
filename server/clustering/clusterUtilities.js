@@ -24,9 +24,24 @@ const addresses = [];
 const started_forks = {};
 let is_enterprise = false;
 
-const STATUS_TIMEOUT_MS = 2000;
-
+const STATUS_TIMEOUT_MS = 4000;
 const DUPLICATE_ERR_MSG = 'Cannot add a node that matches the hosts clustering config.';
+
+// If we have more than 1 process, we need to get the status from the master process which has that info stored
+// in global.  We subscribe to an event that master will emit once it has gathered the data.  We want to build
+// in a timeout in case the event never comes.
+const timeout_promise = hdb_utils.timeoutPromise(STATUS_TIMEOUT_MS, 'Timeout trying to get cluster status.');
+const event_promise = new Promise((resolve) => {
+    cluster_status_event.clusterEmitter.on(cluster_status_event.EVENT_NAME, (msg) => {
+        log.info(`Got cluster status event response: ${inspect(msg)}`);
+        try {
+            timeout_promise.cancel();
+        } catch(err) {
+            log.error('Error trying to cancel timeout.');
+        }
+        resolve(msg);
+    });
+});
 
 for (let k in iface) {
     for (let k2 in iface[k]) {
@@ -267,6 +282,7 @@ function clusterStatusCB(cluster_status_json, callback) {
  * @returns {Promise<void>}
  */
 async function clusterStatus(cluster_status_json) {
+    log.debug(`getting cluster status`);
     let response = {};
     try {
         let clustering_enabled = env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY);
@@ -279,22 +295,6 @@ async function clusterStatus(cluster_status_json) {
             response["status"] = JSON.stringify(getClusterStatus());
             return response;
         }
-
-        // If we have more than 1 process, we need to get the status from the master process which has that info stored
-        // in global.  We subscribe to an event that master will emit once it has gathered the data.  We want to build
-        // in a timeout in case the event never comes.
-        const timeout_promise = hdb_utils.timeoutPromise(STATUS_TIMEOUT_MS, 'Timeout trying to get cluster status.');
-        const event_promise = new Promise((resolve) => {
-            cluster_status_event.clusterEmitter.on(cluster_status_event.EVENT_NAME, (msg) => {
-                log.info(`Got cluster status event response: ${inspect(msg)}`);
-                try {
-                    timeout_promise.cancel();
-                } catch(err) {
-                    log.error('Error trying to cancel timeout.');
-                }
-                resolve(msg);
-            });
-        });
 
         // send a signal to master to gather cluster data.
         signalling.signalClusterStatus();
