@@ -2378,11 +2378,20 @@
 											"",
 											"pm.test(\"Verify csv data load was successful\", function () {",
 											"    var jsonData = pm.response.json();",
-											"    var remarksText = \"Lovely updated home in desired gated community.  Large corner lot with new paver circular driveway. Great first impression entryway to open floor plan with warm wood floors. Separate Dining room, huge Family room with gas fireplace and custom mantel, and sitting or casual eating area. Spacious Kitchen with quartz countertops, stainless steel appliances, gas range, and breakfast bar. Large laundry room between garage and kitchen. Split bedrooms with private Master Bedroom overlooking fenced, landscaped backyard and screened lanai. Master Bath has granite countertops, double sinks, wood grain tile floors, tub and separate shower. Two guest Bedrooms and Bath opposite the master along with a 4th Bedroom or Bonus room upstairs with another full Bath. Close to Beaches and Shopping!\"",
-											"    pm.expect(jsonData[0].remarks).to.eql(remarksText);",
+											"    pm.expect(jsonData[0].remarks.includes(\"Lovely updated home\")).to.be.true;",
 											"    pm.expect(jsonData[0].id).to.eql(10);",
 											"});",
 											""
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "f98d1e00-5ab4-447a-bb89-d4b79a98cd84",
+										"exec": [
+											"setTimeout(() =>{}, 200);"
 										],
 										"type": "text/javascript"
 									}
