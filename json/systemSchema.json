@@ -63,6 +63,7 @@
     "hash_attribute":"username",
     "name":"hdb_user",
     "schema":"system",
+    "residence":["*"],
     "attributes": [
       {
         "attribute": "username"
