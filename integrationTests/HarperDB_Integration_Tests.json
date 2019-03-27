@@ -2365,6 +2365,77 @@
 							"response": []
 						},
 						{
+							"name": "Import data bulk confirm specific value exists",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "f652fa3d-1652-4455-827f-fdfeb5f11003",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"Verify csv data load was successful\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    var remarksText = \"Lovely updated home in desired gated community.  Large corner lot with new paver circular driveway. Great first impression entryway to open floor plan with warm wood floors. Separate Dining room, huge Family room with gas fireplace and custom mantel, and sitting or casual eating area. Spacious Kitchen with quartz countertops, stainless steel appliances, gas range, and breakfast bar. Large laundry room between garage and kitchen. Split bedrooms with private Master Bedroom overlooking fenced, landscaped backyard and screened lanai. Master Bath has granite countertops, double sinks, wood grain tile floors, tub and separate shower. Two guest Bedrooms and Bath opposite the master along with a 4th Bedroom or Bonus room upstairs with another full Bath. Close to Beaches and Shopping!\"",
+											"    pm.expect(jsonData[0].remarks).to.eql(remarksText);",
+											"    pm.expect(jsonData[0].id).to.eql(10);",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\":\"dev\",\n  \"table\":\"long_text\",\n  \"hash_attribute\": \"id\",\n  \"hash_values\":[10],\n  \"get_attributes\": [\"id\", \"remarks\"]\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "Search and confirm row 10 exists in schema dev table long_text\n"
+							},
+							"response": []
+						},
+						{
 							"name": "Import data bulk insert into call.aggr",
 							"event": [
 								{
@@ -2491,6 +2562,77 @@
 							"response": []
 						},
 						{
+							"name": "Insert confirm dot & double data",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "f652fa3d-1652-4455-827f-fdfeb5f11003",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"Verify csv data load was successful\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData[0].all).to.eql(11);",
+											"    pm.expect(jsonData[0].dog_name).to.eql(\".\");",
+											"    pm.expect(jsonData[0].owner_name).to.eql(\"..\");",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\":\"call\",\n  \"table\":\"aggr\",\n  \"hash_attribute\": \"all\",\n  \"hash_values\":[11],\n  \"get_attributes\": [\"all\", \"dog_name\", \"owner_name\"]\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "Search and confirm that insert dot & double data worked as expected. "
+							},
+							"response": []
+						},
+						{
 							"name": "Insert attributes into DropAttributeTest",
 							"event": [
 								{
@@ -2552,9 +2694,375 @@
 								}
 							},
 							"response": []
+						},
+						{
+							"name": "Insert confirm attributes added",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "f652fa3d-1652-4455-827f-fdfeb5f11003",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"Verify csv data load was successful\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    var jsonDataKeys = Object.keys(jsonData[0])",
+											"    pm.expect(jsonData.length).to.eql(2);",
+											"    pm.expect(jsonDataKeys.includes(\"hashid\")).to.be.true;",
+											"    pm.expect(jsonDataKeys.includes(\"some_attribute\")).to.be.true;",
+											"    pm.expect(jsonDataKeys.includes(\"another_attribute\")).to.be.true;",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "85b54472-8b5d-42c7-9ff3-47f1017e558d",
+										"exec": [
+											"setTimeout(() => {}, 200)",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\":\"dev\",\n  \"table\":\"AttributeDropTest\",\n  \"hash_attribute\": \"hashid\",\n  \"hash_values\":[1, 2],\n  \"get_attributes\": [\"hashid\", \"some_attribute\", \"another_attribute\"]\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "Search and confirm that insert attributes worked as expected."
+							},
+							"response": []
 						}
 					],
 					"_postman_isSubFolder": true
+				},
+				{
+					"name": "CSV Bulk Load Tests",
+					"item": [
+						{
+							"name": "search for specific value from CSV load",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "f652fa3d-1652-4455-827f-fdfeb5f11003",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"Verify csv data load was successful\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData[0].supplierid).to.eql(10);",
+											"    pm.expect(jsonData[0].contactname).to.eql(\"Carlos Diaz\");",
+											"    pm.expect(jsonData[0].companyname).to.eql(\"Refrescos Americanas LTDA\");",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{supp_tb}}\",\n  \"hash_attribute\": \"{{supp_id}}\",\n  \"hash_values\":[10],\n  \"get_attributes\": [\"supplierid\", \"companyname\", \"contactname\"]\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "Search for supplier id 10 and confirm it matches the source CSV file"
+							},
+							"response": []
+						},
+						{
+							"name": "search for random value from CSV load",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "f652fa3d-1652-4455-827f-fdfeb5f11003",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"Verify csv data load was successful\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    var randomNumber = Math.floor(Math.random() * 29) + 1;",
+											"    pm.expect(jsonData[randomNumber]).to.not.eql(null)",
+											"    pm.expect(jsonData.length).to.eql(29);",
+											"    pm.expect(Object.keys(jsonData[randomNumber]).length).to.eql(12);",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"SELECT * FROM {{schema}}.{{supp_tb}}\"\n}\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "SQL select all from supplier table and confirm that a random row exists and attributes match source file."
+							},
+							"response": []
+						}
+					],
+					"description": "Test a designated and random row from bulk CSV upload",
+					"_postman_isSubFolder": true
+				},
+				{
+					"name": "Insert object into table",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "83493efa-2538-4d2d-85dd-765f55db06fe",
+								"exec": [
+									"pm.test(\"Status code is 400\", function () {",
+									"    pm.response.to.have.status(400);",
+									"});",
+									"",
+									"pm.test(\"insert object into table\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(Object.keys(jsonData)[0]).to.eql(\"error\");",
+									"});",
+									"",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"insert\",\n\t\"schema\":\"northnwd\",\n\t\"table\":\"customers\",\n\t\"records\": [\n\t\t{\n\t\t\t\"postalcode\": { house: \"30\", street: \"South St\"},\n\t\t\t\"customerid\": \"TEST1\"\n\t\t}\n\t]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Insert object into northnwd.customers and confirm error"
+					},
+					"response": []
+				},
+				{
+					"name": "Insert array into table",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "83493efa-2538-4d2d-85dd-765f55db06fe",
+								"exec": [
+									"pm.test(\"Status code is 400\", function () {",
+									"    pm.response.to.have.status(400);",
+									"});",
+									"",
+									"pm.test(\"insert array into table\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(Object.keys(jsonData)[0]).to.eql(\"error\");",
+									"});",
+									"",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"insert\",\n\t\"schema\":\"northnwd\",\n\t\"table\":\"customers\",\n\t\"records\": [\n\t\t{\n\t\t\t\"postalcode\": [1, 2, 3],\n\t\t\t\"customerid\": \"TEST2\"\n\t\t}\n\t]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Insert an array into northnwd.customers table and confirm error"
+					},
+					"response": []
 				}
 			]
 		},
