@@ -12,18 +12,10 @@ const clone = require('clone');
 const systemSchema = require('../json/systemSchema');
 const terms = require('../utility/hdbTerms');
 
-// This is a 'hidden' role that is appended to all users found during auth.  It is used to prevent updating
-// system table data via UPDATE calls.
-let SYSTEM_TABLE_ROLE = {
-    "system":
-        {
-            "tables":
-                {
-
-                }
-        }
-};
-
+/**
+ * adds system table permissions to the logged in user.  This is used to protect system tables by leveraging operationAuthoriation.
+ * @param user_role - Role of the user found during auth.
+ */
 function appendSystemTablesToRole(user_role) {
     if(!user_role.permission["system"]) {
         user_role.permission["system"] = {};
@@ -69,7 +61,6 @@ function findAndValidateUser(username, password, done) {
             return done('Cannot complete request:  Invalid password', false);
         }
         delete user.password;
-        //user.role.permission["system"].["tables"]
         appendSystemTablesToRole(user.role);
         return done(null, user);
     }

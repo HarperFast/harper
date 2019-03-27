@@ -316,16 +316,6 @@ function chooseOperation(json, callback) {
     return callback(null, operation_function);
 }
 
-/**
- * Wrapper to be called before operation function in order to validate searches against system calls.
- * @param json
- * @param operation_function
- * @param callback
- */
-function searchWrapper(json, operation_function, callback) {
-
-}
-
 function nullOperation(json, callback) {
     callback('Invalid operation');
 }
