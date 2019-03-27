@@ -136,7 +136,7 @@ function verifyPermsAst(ast, user, operation) {
         // set to true if this operation affects a system table.  Only su can read from system tables, but can't update/delete.
         let is_su_system_operation = schemas.includes('system');
         if(user.role.permission.super_user && !is_su_system_operation) {
-            //admins can do anything through the hole in sheet!
+            //admins can do (almost) anything through the hole in sheet!
             return true;
         }
 
@@ -177,7 +177,7 @@ function hasPermissions(user, op, schema_table_map ) {
     // set to true if this operation affects a system table.  Only su can read from system tables, but can't update/delete.
     let is_su_system_operation = schema_table_map.has('system');
     if(user.role.permission.super_user && !is_su_system_operation) {
-         //admins can do anything through the hole in sheet!
+         //admins can do (almost) anything through the hole in sheet!
         return true;
     }
     if(!required_permissions.get(op) || (required_permissions.get(op) && required_permissions.get(op).requires_su)) {
@@ -252,7 +252,7 @@ function verifyPerms(request_json, operation) {
     // set to true if this operation affects a system table.  Only su can read from system tables, but can't update/delete.
     let is_su_system_operation = schema_table_map.has('system');
     if(request_json.hdb_user.role.permission.super_user && !is_su_system_operation) {
-        //admins can do anything through the hole in sheet!
+        //admins can do (almost) anything through the hole in sheet!
         return true;
     }
     // go
