@@ -33,55 +33,54 @@ let active_basic_request = {
     headers: {
         authorization: 'Basic ' + Buffer.from("nook:1234!").toString('base64')
     }
-}
+};
 
 let invalid_password_basic_request = {
     headers: {
         authorization: 'Basic ' + Buffer.from("nook:1234").toString('base64')
     }
-}
+};
 
 let unactive_basic_request = {
     headers: {
         authorization: 'Basic ' + Buffer.from("unactivenook:1234!").toString('base64')
 
     }
-}
+};
 
 let invalid_basic_user = {
     headers: {
         authorization: 'Basic ' + Buffer.from("nonook:1234").toString('base64')
     }
-}
+};
 
 let active_other_request = {
     body: {
         username: 'nook',
         password: '1234!'
     }
-}
+};
 
 let invalid_password_other_request = {
     body: {
         username: 'nook',
         password: '1234'
     }
-}
+};
 
 let unactive_other_request = {
     body: {
         username: 'unactivenook',
         password: '1234!'
     }
-}
+};
 
 let invalid_other_user = {
     body: {
         username: 'nouser',
         password: '1234!'
     }
-}
-
+};
 
 describe('Test authorize function', function () {
     it('Cannot complete request Basic authorization: User not found ', function (done) {
@@ -151,7 +150,6 @@ describe('Test authorize function', function () {
     });
 });
 
-
 let check_permission_empty_object = {
     user: {
     },
@@ -160,14 +158,15 @@ let check_permission_empty_object = {
     table: {
     }
 
-}
+};
+
 let no_schema_user = {
     role: {
         permission: JSON.stringify({
             super_user: false,
         })
     }
-}
+};
 
 let no_table_user = {
     role: {
@@ -179,7 +178,7 @@ let no_table_user = {
             }
         })
     }
-}
+};
 
 let no_insert_permission_user = {
     role: {
@@ -194,7 +193,7 @@ let no_insert_permission_user = {
             }
         })
     }
-}
+};
 
 let missing_attribute_user = {
     role: {
@@ -212,7 +211,7 @@ let missing_attribute_user = {
             }
         })
     }
-}
+};
 
 let attribute_read_all_false_user = {
     role: {
@@ -238,7 +237,7 @@ let attribute_read_all_false_user = {
             }
         })
     }
-}
+};
 
 let attribute_read_some_false_user = {
     role: {
@@ -264,7 +263,7 @@ let attribute_read_some_false_user = {
             }
         })
     }
-}
+};
 
 let user = {
     role: {
@@ -290,7 +289,7 @@ let user = {
             }
         })
     }
-}
+};
 
 let no_restrict_attribute_user = {
     role: {
@@ -306,14 +305,14 @@ let no_restrict_attribute_user = {
             }
         })
     }
-}
+};
 
 let check_permission_no_attributes_object = {
     schema: "dev",
     table: "dog",
     operation: "insert",
     attributes: false
-}
+};
 
 let check_permission_object = {
 
@@ -324,7 +323,7 @@ let check_permission_object = {
         "name",
         "id"
     ]
-}
+};
 
 let super_user = {
     role: {
@@ -339,13 +338,13 @@ let super_user = {
             }
         })
     }
-}
+};
 
 let check_super_user_permission_object = {
     schema: "dev",
     table: "dog",
     operation: "insert"
-}
+};
 
 let permission_object_no_role = {
     user: {
@@ -366,7 +365,7 @@ let permission_object_no_role = {
         insert: {
         }
     }
-}
+};
 
 describe('Test appendSystemTablesToRole function', function () {
     it('validate permissions are added for system tables.', function (done) {
