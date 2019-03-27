@@ -248,7 +248,11 @@ class ClusterServer {
             }
             if((added_nodes && added_nodes.length > 0) || (removed_nodes && removed_nodes.length > 0)) {
                 log.debug(`Found change in node cache, refreshing cache.`);
-                await this.refreshNodes();
+                try {
+                    await this.refreshNodes();
+                } catch(err) {
+                    log.error('Got an error refreshing hdb_node cache.');
+                }
             }
         }
     }
