@@ -1,24 +1,33 @@
 "use strict";
-
+const test_utils = require('../test_utils');
+test_utils.preTestPrep();
 const assert = require('assert');
-const sinon = require('sinon');
-const auth = require('../../security/auth');
-const user_functions = require('../../security/user');
+const rewire = require('rewire');
+const auth = rewire('../../security/auth');
 const password_function = require('../../utility/password');
+
+const VALID_ROLE = {
+    "permission": {
+        "super_user": true
+    },
+    "id": "c7035e09-5f5b-43b1-8ba9-c945f8c9da35",
+    "role": "super_user"
+};
 
 global.hdb_users = [
     {
         username: 'nook',
         active: true,
         password: password_function.hash('1234!'),
+        role: VALID_ROLE
     },
     {
         username: 'unactivenook',
         active: false,
         password: password_function.hash('1234!'),
+        role: VALID_ROLE
     }
 ];
-
 
 let active_basic_request = {
     headers: {
@@ -97,8 +106,11 @@ describe('Test authorize function', function () {
     });
 
     it('Can authorize with correct username and password Basic authorization', function (done) {
-        auth.authorize(active_basic_request, null, function (err, user) {            
-            assert.deepEqual(user, { username: 'nook', active: true }, 'equal object');
+        auth.authorize(active_basic_request, null, function (err, user) {
+            let role_temp = test_utils.deepClone(VALID_ROLE);
+            let temp_append = auth.__get__('appendSystemTablesToRole');
+            temp_append(role_temp);
+            assert.deepEqual(user, { username: 'nook', active: true, role: role_temp }, 'equal object');
             assert.equal(err, null, 'no error');
             done();
         });
@@ -129,7 +141,10 @@ describe('Test authorize function', function () {
 
     it('Can authorize with correct username and password Other authorization', function (done) {
         auth.authorize(active_other_request, null, function (err, user) {
-            assert.deepEqual(user, { username: 'nook', active: true }, 'equal object');
+            let role_temp = test_utils.deepClone(VALID_ROLE);
+            let temp_append = auth.__get__('appendSystemTablesToRole');
+            temp_append(role_temp);
+            assert.deepEqual(user, { username: 'nook', active: true, role: role_temp }, 'equal object');
             assert.equal(err, null, 'no error');
             done();
         });
@@ -353,6 +368,17 @@ let permission_object_no_role = {
     }
 }
 
+describe('Test appendSystemTablesToRole function', function () {
+    it('validate permissions are added for system tables.', function (done) {
+        let role_temp = test_utils.deepClone(VALID_ROLE);
+        let temp_append = auth.__get__('appendSystemTablesToRole');
+        temp_append(role_temp);
+        assert.notEqual(role_temp.permission.system.tables, undefined, 'expected system tables to be created');
+        assert.notEqual(role_temp.permission.system.tables.hdb_role, undefined, 'expected system tables to be created');
+        done();
+    });
+});
+
 describe('Test checkPermissions function', function () {
     it('validate permission object, should get error when object is incomplete ', function (done) {
         auth.checkPermissions(check_permission_empty_object, function (err, result) {
@@ -448,5 +474,4 @@ describe('Test checkPermissions function', function () {
             done();
         });
     });
-        
 });
