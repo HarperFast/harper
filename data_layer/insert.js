@@ -264,7 +264,7 @@ async function getExistingRows(table_schema, hashes, attributes){
         return existing_records;
     } catch(e) {
         logger.error(e);
-        throw new Error(INTERNAL_ERROR_MESSAGE);
+        throw new Error(e);
     }
 }
 
