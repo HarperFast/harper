@@ -3079,6 +3079,489 @@
 			"name": "3. SQLTests",
 			"item": [
 				{
+					"name": "insert value into table",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "403b6b08-c231-4fe5-9afb-96a01c338612",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"SQL insert successful reponse\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message).to.eql(\"inserted 1 of 1 records\");",
+									"    pm.expect(jsonData.inserted_hashes[0]).to.eql(\"TEST3\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"id": "6f3757ba-a910-40f7-bdf2-4fac031bdcd8",
+								"exec": [
+									"setTimeout(() => {}, 100);"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"INSERT INTO northnwd.customers (customerid, postalcode, companyname) VALUES ('TEST3', '11385', 'Microsoft')\"\n}\n"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "insert value into table confirm",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "403b6b08-c231-4fe5-9afb-96a01c338612",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"SQL insert value exists\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[0].customerid).to.eql(\"TEST3\");",
+									"    pm.expect(jsonData[0].postalcode).to.eql(11385);",
+									"    pm.expect(jsonData[0].companyname).to.eql(\"Microsoft\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"id": "ae9ff63c-d3d4-482a-8acd-d44c46d27a23",
+								"exec": [
+									"setTimeout(() => {}, 100);"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"SELECT customerid, postalcode, companyname FROM northnwd.customers WHERE customerid = 'TEST3'\"\n}\n"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Confirm inserted value exists in table."
+					},
+					"response": []
+				},
+				{
+					"name": "update value in table",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "403b6b08-c231-4fe5-9afb-96a01c338612",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"SQL update successful reponse\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message).to.eql(\"updated 1 of 1 records\");",
+									"    pm.expect(jsonData.update_hashes[0]).to.eql(\"TEST3\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"id": "ea5ae6e8-2279-40d9-9a03-39e91e9206d0",
+								"exec": [
+									"setTimeout(() => {}, 100);"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"UPDATE northnwd.customers SET companyname = 'Google' WHERE customerid = 'TEST3'\"\n}\n"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Update a value in a table and test for success message"
+					},
+					"response": []
+				},
+				{
+					"name": "update value in table confirm",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "403b6b08-c231-4fe5-9afb-96a01c338612",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"SQL insert value exists\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[0].customerid).to.eql(\"TEST3\");",
+									"    pm.expect(jsonData[0].postalcode).to.eql(11385);",
+									"    pm.expect(jsonData[0].companyname).to.eql(\"Google\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"id": "a14817bc-335b-4f98-9d38-a8be1ed5dce7",
+								"exec": [
+									"setTimeout(() => {}, 100);"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"SELECT customerid, postalcode, companyname FROM northnwd.customers WHERE customerid = 'TEST3'\"\n}\n"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Confirm updated value exists in table."
+					},
+					"response": []
+				},
+				{
+					"name": "delete value from table",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "403b6b08-c231-4fe5-9afb-96a01c338612",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"SQL delete successful reponse\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message).to.eql(\"records successfully deleted\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"id": "1e7639d4-4ebf-47fc-a65f-b91779aa7e72",
+								"exec": [
+									"setTimeout(() => {}, 100);"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"DELETE FROM northnwd.customers WHERE customerid = 'TEST3'\"\n}\n"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Using SQL, delete a value and confirm success response"
+					},
+					"response": []
+				},
+				{
+					"name": "delete value from table confirm",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "403b6b08-c231-4fe5-9afb-96a01c338612",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"SQL delete value does not exists\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.eql([]);",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"id": "f2c66d92-eba8-485b-a6a2-ca298aa386dd",
+								"exec": [
+									"setTimeout(() => {}, 100);"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"SELECT customerid, postalcode, companyname FROM northnwd.customers WHERE companyname = 'Microsoft'\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Confirm deleted value does not exist in table."
+					},
+					"response": []
+				},
+				{
 					"name": "select employees orderby id asc",
 					"event": [
 						{
