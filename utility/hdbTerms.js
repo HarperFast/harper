@@ -229,7 +229,7 @@ const CLUSTER_CONNECTION_DIRECTION_ENUM = {
     // This server only sends data to its client, it doesn't up update from received data
     OUTBOUND: "OUTBOUND",
     // This server only receives data, it does not send updated data
-    INBOUND: "INBBOUND"
+    INBOUND: "INBOUND"
 };
 
 const CLUSTER_EVENTS_DEFS_ENUM = {
@@ -249,7 +249,8 @@ const CLUSTER_EVENTS_DEFS_ENUM = {
     RECONNECT_ATTEMPT: 'reconnect_attempt',
     CONNECT_ERROR: 'connect_error',
     MESSAGE: 'msg',
-    VERSION_MISMATCH: 'version_mismatch'
+    VERSION_MISMATCH: 'version_mismatch',
+    DIRECTION_CHANGE: 'direction_change'
 };
 
 module.exports = {

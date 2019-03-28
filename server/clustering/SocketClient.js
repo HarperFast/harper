@@ -60,6 +60,7 @@ class SocketClient {
         this.client = null;
         // The direction data is flowing regarding this node.
         this.direction = direction_enum;
+        this.stop_reconnect = false;
     }
 
     /**
@@ -71,6 +72,7 @@ class SocketClient {
             return;
         }
         harper_logger.info(`disconnecting node ${this.other_node.name}`);
+        this.stop_reconnect = true;
         this.client.disconnect();
     }
 
@@ -96,6 +98,14 @@ class SocketClient {
 
     onVersionMismatch(msg) {
         harper_logger.warn(msg);
+    }
+
+    onDirectionChange(msg) {
+        harper_logger.info(`Received direction change instruction from server to ${msg.direction}.`);
+        if(!msg.direction) {
+            return;
+        }
+        this.direction = msg.direction;
     }
 
     async onCatchupRequestHandler(msg){
@@ -257,7 +267,20 @@ class SocketClient {
 
     onDisconnectHandler(reason) {
         this.other_node.status = 'disconnected';
-        harper_logger.info(`server ${this.other_node.name} down`);
+        harper_logger.info(`server ${this.other_node.name} down.`);
+        if(this.stop_reconnect) {
+            try {
+                if(this.direction === terms.CLUSTER_CONNECTION_DIRECTION_ENUM.BIDIRECTIONAL) {
+                    this.direction = terms.CLUSTER_CONNECTION_DIRECTION_ENUM.INBOUND;
+                    harper_logger.info(`Emitting direction change to direction: ${terms.CLUSTER_CONNECTION_DIRECTION_ENUM.OUTBOUND}`);
+                    this.client.emit(terms.CLUSTER_EVENTS_DEFS_ENUM.DIRECTION_CHANGE, {'direction': terms.CLUSTER_CONNECTION_DIRECTION_ENUM.OUTBOUND});
+                } else {
+                    this.disconnectNode();
+                }
+            } catch(err) {
+                harper_logger.error('Got an error disconnecting the client.');
+            }
+        }
     }
 
     async onConfirmMessageHandler(msg){
@@ -294,6 +317,8 @@ class SocketClient {
         this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.DISCONNECT, this.onDisconnectHandler.bind(this));
 
         this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.VERSION_MISMATCH, this.onVersionMismatch.bind(this));
+
+        this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.DIRECTION_CHANGE, this.onDirectionChange.bind(this));
     }
 
     async send(msg) {

@@ -13,7 +13,6 @@ const auth = require('../../security/auth');
 const ClusterStatusObject = require('../../server/clustering/ClusterStatusObject');
 const signalling = require('../../utility/signalling');
 const cluster_status_event = require('../../events/ClusterStatusEmitter');
-const common = require('../../utility/common_utils');
 
 //Promisified functions
 const p_delete_delete = promisify(del.delete);
@@ -124,10 +123,10 @@ function addNode(new_node, callback) {
 
         // Send IPC message so master will command forks to rescan for new nodes.
         common.callProcessSend({
-            "type": "node_added"
+            "type": terms.CLUSTER_MESSAGE_TYPE_ENUM.NODE_ADDED,
+            "node_name": new_node.name
         });
         return callback(null, `successfully added ${new_node.name} to manifest`);
-    });
 }
 
 /**
@@ -185,7 +184,8 @@ async function removeNode(remove_json_message) {
 
     // Send IPC message so master will command forks to rescan for new nodes.
     common.callProcessSend({
-        "type": "node_removed"
+        "type": terms.CLUSTER_MESSAGE_TYPE_ENUM.NODE_REMOVED,
+        "node_name": remove_json_message.name
     });
     return `successfully removed ${remove_json_message.name} from manifest`;
 }
@@ -336,7 +336,7 @@ function selectProcess(target_process_id) {
  * This will build and populate a ClusterStatusObject and send it back to the process that requested it.
  */
 function getClusterStatus() {
-
+    log.debug('getting cluster status.');
     if(!global.cluster_server) {
         log.error(`Tried to get cluster status, but the cluster is not initialized.`);
         throw new Error(`Tried to get cluster status, but the cluster is not initialized.`);
@@ -345,13 +345,13 @@ function getClusterStatus() {
     try {
         status_obj.my_node_port = global.cluster_server.socket_server.port;
         status_obj.my_node_name = global.cluster_server.socket_server.name;
-
+        log.debug(`There are ${global.cluster_server.socket_client.length} socket clients.`);
         for (let conn of global.cluster_server.socket_client) {
             let new_status = new ClusterStatusObject.ConnectionStatus();
             new_status.direction = conn.direction;
             if (conn.other_node) {
-                new_status.host = conn.other_node.hostname;
-                new_status.port = conn.other_node.host;
+                new_status.host = conn.other_node.host;
+                new_status.port = conn.other_node.port;
             }
             let status = conn.client.connected;
             new_status.connection_status = (status ? ClusterStatusObject.CONNECTION_STATUS_ENUM.CONNECTED :
@@ -458,14 +458,13 @@ function clusterMessageHandler(msg) {
                 }
                 break;
             case terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STARTED:
+                log.info('Received child started event.');
                 if(started_forks[msg.pid]) {
                     log.warn(`Got a duplicate child started event for pid ${msg.pid}`);
                 } else {
                     started_forks[msg.pid] = true;
-                    log.info(`Received ${Object.keys(started_forks).length} child started event(s).`);
                     if(Object.keys(started_forks).length === global.forks.length) {
                         //all children are started, kick off enterprise.
-                        log.info(`Received all child started events.  Initializing clustering.`);
                         kickOffEnterprise();
                     }
                 }
