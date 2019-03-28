@@ -399,7 +399,8 @@ async function processMessage(req, res, user) {
 
         let process_result = null;
         // check for clustering
-        if(env.get('NODE_NAME').toLowerCase() === 'true') {
+        let temp = env.get(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY);
+        if(env.get(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY)) {
             if(req.body.operation === 'sql') {
                 process_result = await processLocalMessage(req,res, operation_function);
             } else {
