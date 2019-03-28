@@ -258,22 +258,20 @@ function handleAuth(err, user) {
  * Helper function to determine the residence for the inbound message.  For messages that do not require a table to be
  * specified, we assume * for non local operations, and NODE_NAME for local operations.
  * @param req
- * @returns {Promise<Array>}
+ * @returns Array
  */
-async function determineMessageResidence(req) {
+function determineMessageResidence(req) {
     let residences = [];
-    if(!req.body.table) {
-        // If no table is specified, and the operation is local only, this message is meant for this node.
-        if(!hdb_terms.LOCAL_HARPERDB_OPERATIONS.includes(req.body.operation)) {
-            residences.push('*');
-        } else {
-            // There was no table specified, but the message is meant for the cluster.
-            residences.push(env.get('NODE_NAME'));
+        // table was specified, try to get the residences for this table.
+    try {
+        let table = global.hdb_schema[req.body.schema][req.body.table];
+        if(table) {
+            if(table.residence) {
+                residences = table.residence;
+            }
         }
-    } else {
-        // table was specified, get the residences for this table.
-        let table = await p_schema_get_table_schema(req.body.schema, req.body.table);
-        residences = table.residence;
+    } catch(err) {
+        log.info(`Could not find existing table residence.  Assuming *.`);
     }
     return residences;
 }
@@ -291,7 +289,11 @@ async function processClusterMessage(req, res, operation_function) {
     let result = null;
     let cluster_msg_id = uuidv1();
     try {
-        let residences = await determineMessageResidence(req);
+        let residences = determineMessageResidence(req);
+        if(!residences || residences.length === 0) {
+            let result = await processLocalMessage(req, res, operation_function);
+            return result;
+        }
 
         // We are going to reference this later when we decide how to respond to the requestor.  If we didn't process any
         // local tables, we will respond by saying the message has been broadcast.  Otherwise respond as normal.
@@ -300,7 +302,7 @@ async function processClusterMessage(req, res, operation_function) {
             if (node !== "*" && node !== env.get('NODE_NAME')) {
                 log.debug(`Got a message for a table with a remote residence ${node}.  Broadcasting to cluster`);
                 global.clusterMsgQueue[cluster_msg_id] = res;
-                process.send({
+                common.callProcessSennd({
                     "type": "clustering_payload", "pid": process.pid,
                     "clustering_type": "send",
                     "id": cluster_msg_id,
@@ -311,7 +313,7 @@ async function processClusterMessage(req, res, operation_function) {
                 result = await p_server_utils_process_local(req, res, operation_function);
                 against_local_table = true;
                 if(node === "*" && !hdb_terms.LOCAL_HARPERDB_OPERATIONS.includes(req.body.operation)) {
-                    process.send({
+                    common.callProcessSend({
                         "type": "clustering_payload", "pid": process.pid,
                         "clustering_type": "broadcast",
                         "id": cluster_msg_id,
@@ -343,7 +345,7 @@ async function processClusterMessage(req, res, operation_function) {
         if(!against_local_table) {
             // We need to manually set and send the status here, as processLocal isn't called.
             log.debug('only processed remote table residence, notifying of broadcast');
-            return res.status(hdb_terms.HTTP_STATUS_CODES.OK).send({message: `Specified table has residence on node(s): ${residences.join()}; broadcasting message to cluster.`});
+            return sendHeaderResponse(req, res, hdb_terms.HTTP_STATUS_CODES.OK).send({message: `Specified table has residence on node(s): ${residences.join()}; broadcasting message to cluster.`});
         }
     } catch(err) {
         log.error(err);
@@ -397,7 +399,7 @@ async function processMessage(req, res, user) {
 
         let process_result = null;
         // check for clustering
-        if(global.clustering_on) {
+        if(env.get(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY)) {
             if(req.body.operation === 'sql') {
                 process_result = await processLocalMessage(req,res, operation_function);
             } else {
