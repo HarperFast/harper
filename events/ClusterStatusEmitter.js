@@ -8,5 +8,6 @@ let clusterEmitter = new ClusterStatusEmitter();
 
 module.exports = {
     clusterEmitter,
-    EVENT_NAME
+    EVENT_NAME,
+    ClusterStatusEmitter
 };

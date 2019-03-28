@@ -41,6 +41,7 @@ class SocketServer {
     init(next) {
         try {
             let server = undefined;
+            log.debug('Starting Socket Server.');
             if(!credentials) {
                 server = http.createServer().listen(this.port, function () {
                 });
@@ -53,6 +54,7 @@ class SocketServer {
             this.io = sio.listen(server);
             this.io.sockets.on(terms.CLUSTER_EVENTS_DEFS_ENUM.CONNECTION, function (socket) {
                 try {
+                    log.debug('Received Connection request.  Validating handshake.');
                     let client_version = socket.handshake.headers[terms.CLUSTERING_VERSION_HEADER_NAME];
                     let this_version = version.version();
                     if (client_version !== this_version) {
@@ -71,6 +73,7 @@ class SocketServer {
                         let raw_remote_ip_array = raw_remote_ip ? raw_remote_ip.split(':') : [];
                         msg.host = Array.isArray(raw_remote_ip_array) && raw_remote_ip_array.length > 0 ? raw_remote_ip_array[raw_remote_ip_array.length - 1] : '';
                         let new_client = new SocketClient(node, msg, terms.CLUSTER_CONNECTION_DIRECTION_ENUM.INBOUND);
+                        log.debug('Creating socket client.');
                         new_client.client = socket;
                         new_client.createClientMessageHandlers();
 
@@ -91,10 +94,12 @@ class SocketServer {
                         }
 
                         if(catchup_request) {
+                            log.debug('emitting catchup request event.');
                             socket.emit(terms.CLUSTER_EVENTS_DEFS_ENUM.CATCHUP_REQUEST, {name: node.name});
                         }
 
                         if (!found_client || found_client.length === 0) {
+                            log.debug('No existing client found.  Adding client to server list.');
                             global.cluster_server.socket_client.push(new_client);
                         } else {
                             // This client already exists and is connected, this means we are establishing a bidirectional connection.
@@ -103,6 +108,9 @@ class SocketServer {
                                 log.warn(`Multiple socket clients with the same host: ${found_client[0].host} and port: ${found_client[0].port} were found`);
                             }
                             for (let client of found_client) {
+                                log.info('Setting direction to bidirectional.');
+                                log.info(`Emitting direction change to direction: ${terms.CLUSTER_CONNECTION_DIRECTION_ENUM.BIDIRECTIONAL}`);
+                                socket.emit(terms.CLUSTER_EVENTS_DEFS_ENUM.DIRECTION_CHANGE, {direction: terms.CLUSTER_CONNECTION_DIRECTION_ENUM.BIDIRECTIONAL});
                                 client.direction = terms.CLUSTER_CONNECTION_DIRECTION_ENUM.BIDIRECTIONAL;
                             }
                         }
@@ -110,13 +118,14 @@ class SocketServer {
                         log.error(err);
                     }
 
+                    log.debug('Attemping to join room.');
+
                     socket.join(msg.name, async () => {
                         log.info(node.name + ' joined room ' + msg.name);
                         // retrieve the queue and send to this node.
                         await cluster_handlers.fetchQueue(msg, socket);
                     });
                 });
-
 
                 socket.on(terms.CLUSTER_EVENTS_DEFS_ENUM.CATCHUP_REQUEST, async msg => {
                     log.info(msg.name + ' catchup_request');
@@ -137,6 +146,13 @@ class SocketServer {
                         log.error(error);
                     } else {
                         log.error(`Got transport close message ${error}`);
+                    }
+                    log.info('Tearing down socket client.');
+                    for(let i=0; i<global.cluster_server.socket_client.length; i++) {
+                        if(global.cluster_server.socket_client[i].client === socket) {
+                            global.cluster_server.socket_client[i].stop_reconnect = true;
+                            global.cluster_server.socket_client.splice(i,1);
+                        }
                     }
                 });
 

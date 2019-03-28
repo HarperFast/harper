@@ -84,7 +84,10 @@ cluster.on('exit', (dead_worker, code, signal) => {
 
 if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     try {
-        parent.init(cluster, numCPUs, num_workers);
+        parent.init(cluster, numCPUs, num_workers).then(() => {
+            harper_logger.debug('Finished init of parent process.');
+
+        });
     } catch(err) {
         harper_logger.error(`Got an error initializing the HDB Parent. ${err}`);
     }

@@ -24,9 +24,24 @@ const addresses = [];
 const started_forks = {};
 let is_enterprise = false;
 
-const STATUS_TIMEOUT_MS = 2000;
-
+const STATUS_TIMEOUT_MS = 4000;
 const DUPLICATE_ERR_MSG = 'Cannot add a node that matches the hosts clustering config.';
+
+// If we have more than 1 process, we need to get the status from the master process which has that info stored
+// in global.  We subscribe to an event that master will emit once it has gathered the data.  We want to build
+// in a timeout in case the event never comes.
+const timeout_promise = hdb_utils.timeoutPromise(STATUS_TIMEOUT_MS, 'Timeout trying to get cluster status.');
+const event_promise = new Promise((resolve) => {
+    cluster_status_event.clusterEmitter.on(cluster_status_event.EVENT_NAME, (msg) => {
+        log.info(`Got cluster status event response: ${inspect(msg)}`);
+        try {
+            timeout_promise.cancel();
+        } catch(err) {
+            log.error('Error trying to cancel timeout.');
+        }
+        resolve(msg);
+    });
+});
 
 for (let k in iface) {
     for (let k2 in iface[k]) {
@@ -96,7 +111,7 @@ function addNode(new_node, callback) {
         "records": [new_node]
     };
 
-    insert.insertCB(new_node_insert, function(err, results){
+    insert.insertCB(new_node_insert, function(err, results) {
         if(err) {
             log.error(`Error adding new cluster node ${new_node_insert}.  ${err}`);
             return callback(err);
@@ -109,7 +124,8 @@ function addNode(new_node, callback) {
 
         // Send IPC message so master will command forks to rescan for new nodes.
         common.callProcessSend({
-            "type": "node_added"
+            "type": terms.CLUSTER_MESSAGE_TYPE_ENUM.NODE_ADDED,
+            "node_name": new_node.name
         });
         return callback(null, `successfully added ${new_node.name} to manifest`);
     });
@@ -170,7 +186,8 @@ async function removeNode(remove_json_message) {
 
     // Send IPC message so master will command forks to rescan for new nodes.
     common.callProcessSend({
-        "type": "node_removed"
+        "type": terms.CLUSTER_MESSAGE_TYPE_ENUM.NODE_REMOVED,
+        "node_name": remove_json_message.name
     });
     return `successfully removed ${remove_json_message.name} from manifest`;
 }
@@ -263,10 +280,11 @@ function clusterStatusCB(cluster_status_json, callback) {
 
 /**
  * Get the status of this hosts clustering configuration and connections.
- * @param enable_cluster_json
+ * @param cluster_status_json - Inbound message json.
  * @returns {Promise<void>}
  */
 async function clusterStatus(cluster_status_json) {
+    log.debug(`getting cluster status`);
     let response = {};
     try {
         let clustering_enabled = env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY);
@@ -279,22 +297,6 @@ async function clusterStatus(cluster_status_json) {
             response["status"] = JSON.stringify(getClusterStatus());
             return response;
         }
-
-        // If we have more than 1 process, we need to get the status from the master process which has that info stored
-        // in global.  We subscribe to an event that master will emit once it has gathered the data.  We want to build
-        // in a timeout in case the event never comes.
-        const timeout_promise = hdb_utils.timeoutPromise(STATUS_TIMEOUT_MS, 'Timeout trying to get cluster status.');
-        const event_promise = new Promise((resolve) => {
-            cluster_status_event.clusterEmitter.on(cluster_status_event.EVENT_NAME, (msg) => {
-                log.info(`Got cluster status event response: ${inspect(msg)}`);
-                try {
-                    timeout_promise.cancel();
-                } catch(err) {
-                    log.error('Error trying to cancel timeout.');
-                }
-                resolve(msg);
-            });
-        });
 
         // send a signal to master to gather cluster data.
         signalling.signalClusterStatus();
@@ -336,7 +338,7 @@ function selectProcess(target_process_id) {
  * This will build and populate a ClusterStatusObject and send it back to the process that requested it.
  */
 function getClusterStatus() {
-
+    log.debug('getting cluster status.');
     if(!global.cluster_server) {
         log.error(`Tried to get cluster status, but the cluster is not initialized.`);
         throw new Error(`Tried to get cluster status, but the cluster is not initialized.`);
@@ -345,13 +347,13 @@ function getClusterStatus() {
     try {
         status_obj.my_node_port = global.cluster_server.socket_server.port;
         status_obj.my_node_name = global.cluster_server.socket_server.name;
-
+        log.debug(`There are ${global.cluster_server.socket_client.length} socket clients.`);
         for (let conn of global.cluster_server.socket_client) {
             let new_status = new ClusterStatusObject.ConnectionStatus();
             new_status.direction = conn.direction;
             if (conn.other_node) {
-                new_status.host = conn.other_node.hostname;
-                new_status.port = conn.other_node.host;
+                new_status.host = conn.other_node.host;
+                new_status.port = conn.other_node.port;
             }
             let status = conn.client.connected;
             new_status.connection_status = (status ? ClusterStatusObject.CONNECTION_STATUS_ENUM.CONNECTED :
@@ -458,14 +460,13 @@ function clusterMessageHandler(msg) {
                 }
                 break;
             case terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STARTED:
+                log.info('Received child started event.');
                 if(started_forks[msg.pid]) {
                     log.warn(`Got a duplicate child started event for pid ${msg.pid}`);
                 } else {
                     started_forks[msg.pid] = true;
-                    log.info(`Received ${Object.keys(started_forks).length} child started event(s).`);
                     if(Object.keys(started_forks).length === global.forks.length) {
                         //all children are started, kick off enterprise.
-                        log.info(`Received all child started events.  Initializing clustering.`);
                         kickOffEnterprise();
                     }
                 }
