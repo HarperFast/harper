@@ -13,6 +13,7 @@ const auth = require('../../security/auth');
 const ClusterStatusObject = require('../../server/clustering/ClusterStatusObject');
 const signalling = require('../../utility/signalling');
 const cluster_status_event = require('../../events/ClusterStatusEmitter');
+const common = require('../../utility/common_utils');
 
 //Promisified functions
 const p_delete_delete = promisify(del.delete);
@@ -110,7 +111,7 @@ function addNode(new_node, callback) {
         "records": [new_node]
     };
 
-    insert.insertCB(new_node_insert, function(err, results){
+    insert.insertCB(new_node_insert, function(err, results) {
         if(err) {
             log.error(`Error adding new cluster node ${new_node_insert}.  ${err}`);
             return callback(err);
@@ -127,6 +128,7 @@ function addNode(new_node, callback) {
             "node_name": new_node.name
         });
         return callback(null, `successfully added ${new_node.name} to manifest`);
+    });
 }
 
 /**
@@ -278,7 +280,7 @@ function clusterStatusCB(cluster_status_json, callback) {
 
 /**
  * Get the status of this hosts clustering configuration and connections.
- * @param enable_cluster_json
+ * @param cluster_status_json - Inbound message json.
  * @returns {Promise<void>}
  */
 async function clusterStatus(cluster_status_json) {
