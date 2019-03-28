@@ -170,7 +170,7 @@ function autoCast(data){
     }
 
     // Try to make it a common string
-    if (AUTOCAST_COMMON_STRINGS[data]) {
+    if (data in AUTOCAST_COMMON_STRINGS) {
         return AUTOCAST_COMMON_STRINGS[data];
     }
 
