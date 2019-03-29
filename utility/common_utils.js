@@ -170,7 +170,7 @@ function autoCast(data){
     }
 
     // Try to make it a common string
-    if (data in AUTOCAST_COMMON_STRINGS) {
+    if ((data === 'undefined' && AUTOCAST_COMMON_STRINGS[data] === undefined) || AUTOCAST_COMMON_STRINGS[data] !== undefined) {
         return AUTOCAST_COMMON_STRINGS[data];
     }
 
