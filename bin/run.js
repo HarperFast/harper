@@ -5,6 +5,7 @@ const util = require('util');
 const path = require('path');
 const net = require('net');
 const ps = require('find-process');
+const psList = require('ps-list');
 const install = require('../utility/install/installer.js');
 const colors = require("colors/safe");
 const logger = require('../utility/logging/harper_logger');
@@ -32,28 +33,49 @@ let child = undefined;
  * start.  If the hdb_boot_props file is not found, it is assumed an install needs to be performed.
  */
 function run() {
+  isHarperRunning().then(hdb_running=>{
+      if(hdb_running){
+          let run_err = 'HarperDB is already running.';
+          console.log(run_err);
+          logger.info(run_err);
+          return;
+      }
+
+      try {
+          arePortsInUse((err) => {
+              if (err) {
+                  console.log(err);
+                  logger.info(err);
+                  return;
+              }
+              startHarper();
+          });
+      } catch(err) {
+          console.log(err);
+          logger.info(err);
+
+      }
+  }).catch(err => {
+      logger.error(err);
+  });
+}
+
+async function isHarperRunning(){
     try {
-        ps('name', HDB_PROC_NAME).then(function (list) {
-            if (list.length === 0) {
-                arePortsInUse((err) => {
-                    if (err) {
-                        console.log(err);
-                        logger.info(err);
-                        return;
-                    }
-                    startHarper();
-                });
-            } else {
-                let run_err = 'HarperDB is already running.';
-                console.log(run_err);
-                logger.info(run_err);
+        const list = await psList();
+
+        let hdb_running = false;
+
+        for (let i = 0; i < list.length; i++) {
+            if (list[i].cmd.includes(HDB_PROC_NAME)) {
+                hdb_running = true;
+                break;
             }
-        }, function (err) {
-            console.log(err.stack || err);
-            logger.error(err.stack || err);
-        });
-    } catch(e){
-        logger.error(e);
+        }
+
+        return hdb_running;
+    } catch(err){
+        throw err;
     }
 }
 
