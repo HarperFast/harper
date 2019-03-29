@@ -14,7 +14,6 @@ const search = require('./search');
 const logger = require('../utility/logging/harper_logger');
 const _ = require('lodash');
 const env = require('../utility/environment/environmentManager');
-const autocast = require('autocast');
 const hdb_terms = require('../utility/hdbTerms');
 const mkdirp = require('../utility/fs/mkdirp');
 const write_file = require('../utility/fs/writeFile');
@@ -89,11 +88,11 @@ async function validation(write_object){
     let dups = new Set();
     let attributes = {};
     write_object.records.forEach((record)=>{
-        if(!h_utils.isEmpty(record[hash_attribute]) && record[hash_attribute] !== '' && dups.has(autocast(record[hash_attribute]))){
+        if(!h_utils.isEmpty(record[hash_attribute]) && record[hash_attribute] !== '' && dups.has(h_utils.autoCast(record[hash_attribute]))){
             record.skip = true;
         }
 
-        dups.add(autocast(record[hash_attribute]));
+        dups.add(h_utils.autoCast(record[hash_attribute]));
 
         for (let attr in record) {
             attributes[attr] = 1;
@@ -265,7 +264,7 @@ async function getExistingRows(table_schema, hashes, attributes){
         return existing_records;
     } catch(e) {
         logger.error(e);
-        throw new Error(INTERNAL_ERROR_MESSAGE);
+        throw new Error(e);
     }
 }
 

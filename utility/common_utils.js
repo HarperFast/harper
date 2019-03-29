@@ -1,6 +1,5 @@
 "use strict"
 const path = require('path');
-const cast = require('autocast');
 const log = require('./logging/harper_logger');
 const fs_extra = require('fs-extra');
 const truncate = require('truncate-utf8-bytes');
@@ -18,6 +17,14 @@ const {PERIOD_REGEX,
 const EMPTY_STRING = '';
 
 const CHARACTER_LIMIT = 255;
+
+const AUTOCAST_COMMON_STRINGS = {
+    'true': true,
+    'false': false,
+    'undefined': undefined,
+    'null': null,
+    'NaN': NaN
+};
 
 
 module.exports = {
@@ -157,19 +164,31 @@ function autoCast(data){
         return data;
     }
 
-    let value = cast(data);
+    //if this is already typed other than string, return data
+    if(typeof data !== 'string'){
+        return data;
+    }
+
+    // Try to make it a common string
+    if ((data === 'undefined' && AUTOCAST_COMMON_STRINGS[data] === undefined) || AUTOCAST_COMMON_STRINGS[data] !== undefined) {
+        return AUTOCAST_COMMON_STRINGS[data];
+    }
+
+    // Try to cast it to a number
+    let to_number;
+    if ((to_number = +data) == to_number) {
+        return to_number;
+    }
 
     //in order to handle json and arrays we test the string to see if it seems minimally like an object or array and perform a JSON.parse on it.
     //if it fails we assume it is just a regular string
-    if(typeof value === 'string'){
-        if((value.startsWith('{') && value.endsWith('}')) || (value.startsWith('[') && value.endsWith(']'))){
-            try{
-                value = JSON.parse(value);
-            } catch(e) {
-            }
+    if((data.startsWith('{') && data.endsWith('}')) || (data.startsWith('[') && data.endsWith(']'))){
+        try{
+            data = JSON.parse(data);
+        } catch(e) {
         }
     }
-    return value;
+    return data;
 }
 
 /**
