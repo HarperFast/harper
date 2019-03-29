@@ -78,7 +78,7 @@ async function validation(write_object){
     //validate insert_object for required attributes
     let validator = insert_validator(write_object);
     if (validator) {
-        throw new Error(validator);
+        throw validator;
     }
 
     if(!Array.isArray(write_object.records)) {
