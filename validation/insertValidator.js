@@ -28,9 +28,9 @@ const constraints = {
     },
     records: function(value, attributes, attributeName, options, constraints) {
             for (let record of attributes.records) {
-                for (let val of Object.keys(record)) {
-                    if (!val || val.length === 0 || INVALID_ATTRIBUTE_NAMES[val] !== undefined) {
-                        return {format: {message: `Invalid attribute name: ${val}`}};
+                for (let attribute_name of Object.keys(record)) {
+                    if (!attribute_name || attribute_name.length === 0 || INVALID_ATTRIBUTE_NAMES[attribute_name] !== undefined) {
+                        return {format: {message: `Invalid attribute name: ${attribute_name}`}};
                     }
                 }
             }
