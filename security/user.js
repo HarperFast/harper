@@ -3,7 +3,7 @@
 const USERNAME_REQUIRED = 'username is required';
 const ALTERUSER_NOTHING_TO_UPDATE = 'nothing to update, must supply active, role or password to update';
 const EMPTY_PASSWORD = 'password cannot be an empty string';
-const EMPTY_ROLE = 'role cannot be an empty string';
+const EMPTY_ROLE = 'If role is specified, it cannot be empty.';
 const ACTIVE_BOOLEAN = 'active must be true or false';
 
 module.exports = {
@@ -142,27 +142,29 @@ async function alterUser(json_message) {
         clean_user.password = password.hash(clean_user.password);
     }
 
-    if(!hdb_utility.isEmpty(clean_user.role) && hdb_utility.isEmptyOrZeroLength(clean_user.role.trim())){
-        throw new Error(EMPTY_ROLE);
+    if(clean_user.role === "") {
+        throw new Error("If role is specified, it cannot be empty.");
     }
-
-    // Make sure assigned role exists.
-    let role_search_obj = {
-        schema: 'system',
-        table: 'hdb_role',
-        hash_attribute: 'id',
-        hash_values: [json_message.role],
-        get_attributes: ['*']
-    };
-    let role_data = await p_search_search_by_hash(role_search_obj).catch((err) => {
-        logger.error('Got an error searching for a role.');
-        logger.error(err);
-        throw err;
-    });
-    if(!role_data || role_data.length === 0) {
-        let msg = `Update failed.  Requested role id ${clean_user.role} not found.`;
-        logger.error(msg);
-        throw new Error(msg);
+    // Invalid or empty roles will be found in the role search
+    if(clean_user.role) {
+        // Make sure assigned role exists.
+        let role_search_obj = {
+            schema: 'system',
+            table: 'hdb_role',
+            hash_attribute: 'id',
+            hash_values: [json_message.role],
+            get_attributes: ['*']
+        };
+        let role_data = await p_search_search_by_hash(role_search_obj).catch((err) => {
+            logger.error('Got an error searching for a role.');
+            logger.error(err);
+            throw err;
+        });
+        if (!role_data || role_data.length === 0) {
+            let msg = `Update failed.  Requested role id ${clean_user.role} not found.`;
+            logger.error(msg);
+            throw new Error(msg);
+        }
     }
 
     let update_object = {
