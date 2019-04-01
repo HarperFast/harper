@@ -29,9 +29,10 @@ const { promisify } = require('util');
 const version = require('./version');
 const process_directives = require('../upgrade/processDirectives');
 const {spawn} = require('child_process');
-const ps = require('find-process');
 const path = require('path');
 const fs_extra = require('fs-extra');
+const { isHarperRunning } = require('../utility/common_utils');
+
 
 const UPGRADE_DIR_NAME= 'hdb_upgrade'
 const TAR_FILE_NAME = 'hdb-latest.tar';
@@ -65,19 +66,18 @@ let CURRENT_VERSION_NUM = undefined;
 
 /**
  * Check to see if an instance of HDB is running. Throws an error if running, otherwise it will just return to resolve the promise.
- * @returns {Promise<void>}
+ * @throws
  */
-async function checkIfRunning() {
-    let list = await ps('name', hdb_terms.HDB_PROC_NAME).catch((e) => {
-        let run_err = 'HarperDB is running, please stop HarperDB with /bin/harperdb stop and run the upgrade command again.';
-        printToLogAndConsole(run_err, log.ERR);
-        throw new Error(run_err);
+function checkIfRunning() {
+    isHarperRunning().then(hdb_running => {
+        if(hdb_running) {
+            let run_err = 'HarperDB is running, please stop HarperDB with /bin/harperdb stop and run the upgrade command again.';
+            printToLogAndConsole(run_err, log.ERR);
+            throw new Error(run_err);
+        }
+    }).catch(err => {
+        throw err;
     });
-
-    if( list.length !== 0 ) {
-        printToLogAndConsole('HarperDB is running, please stop HarperDB with /bin/harperdb stop and run the upgrade command again.', log.ERR);
-        throw new Error('An instance of harperdb is running.');
-    }
 }
 
 /**

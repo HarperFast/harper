@@ -31,7 +31,6 @@
     "daterange": "^0.3.0",
     "express": "^4.16.4",
     "fill-range": "^4.0.0",
-    "find-process": "^1.2.1",
     "fs-extra": "^7.0.1",
     "graceful-fs": "^4.1.15",
     "lodash": "^4.17.11",

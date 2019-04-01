@@ -1,23 +1,19 @@
-#!/usr/bin/env node
 "use strict";
 const fs = require('fs');
 const util = require('util');
 const path = require('path');
 const net = require('net');
-const ps = require('find-process');
-const psList = require('ps-list');
 const install = require('../utility/install/installer.js');
 const colors = require("colors/safe");
 const logger = require('../utility/logging/harper_logger');
 const PropertiesReader = require('properties-reader');
 const async = require('async');
 const pjson = require('../package.json');
+const { isHarperRunning } = require('../utility/common_utils');
 const HTTPSECURE_PORT_KEY = 'HTTPS_PORT';
 const HTTP_PORT_KEY = 'HTTP_PORT';
 const HTTPSECURE_ON_KEY = 'HTTPS_ON';
 const HTTP_ON_KEY = 'HTTP_ON';
-const HDB_PROC_NAME = 'hdb_express.js';
-
 const stop = require('./stop');
 
 const FOREGROUND_ARG = 'foreground';
@@ -33,8 +29,8 @@ let child = undefined;
  * start.  If the hdb_boot_props file is not found, it is assumed an install needs to be performed.
  */
 function run() {
-  isHarperRunning().then(hdb_running=>{
-      if(hdb_running){
+  isHarperRunning().then(hdb_running => {
+      if(hdb_running) {
           let run_err = 'HarperDB is already running.';
           console.log(run_err);
           logger.info(run_err);
@@ -53,30 +49,12 @@ function run() {
       } catch(err) {
           console.log(err);
           logger.info(err);
-
       }
+
   }).catch(err => {
+      console.log(err);
       logger.error(err);
   });
-}
-
-async function isHarperRunning(){
-    try {
-        const list = await psList();
-
-        let hdb_running = false;
-
-        for (let i = 0; i < list.length; i++) {
-            if (list[i].cmd.includes(HDB_PROC_NAME)) {
-                hdb_running = true;
-                break;
-            }
-        }
-
-        return hdb_running;
-    } catch(err){
-        throw err;
-    }
 }
 
 function arePortsInUse(callback) {

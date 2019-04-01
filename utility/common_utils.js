@@ -4,6 +4,7 @@ const log = require('./logging/harper_logger');
 const fs_extra = require('fs-extra');
 const truncate = require('truncate-utf8-bytes');
 const os = require('os');
+const ps_list = require('ps-list');
 const { promisify } = require('util');
 const {PERIOD_REGEX,
     DOUBLE_PERIOD_REGEX,
@@ -17,6 +18,8 @@ const {PERIOD_REGEX,
 const EMPTY_STRING = '';
 
 const CHARACTER_LIMIT = 255;
+
+const HDB_PROC_NAME = 'hdb_express.js';
 
 const AUTOCAST_COMMON_STRINGS = {
     'true': true,
@@ -44,7 +47,8 @@ module.exports = {
     stringifyProps: stringifyProps,
     valueConverter: valueConverter,
     timeoutPromise: timeoutPromise,
-    callProcessSend: callProcessSend
+    callProcessSend: callProcessSend,
+    isHarperRunning: isHarperRunning
 };
 
 /**
@@ -378,4 +382,28 @@ function callProcessSend(process_msg) {
         return;
     }
     process.send(process_msg);
+}
+
+/**
+ * Uses npm module ps-list to check if hdb process is running
+ * @param none
+ * @returns {boolean}
+ */
+async function isHarperRunning(){
+    try {
+        const list = await ps_list();
+
+        let hdb_running = false;
+
+        for (let i = 0; i < list.length; i++) {
+            if (list[i].cmd.includes(HDB_PROC_NAME)) {
+                hdb_running = true;
+                break;
+            }
+        }
+
+        return hdb_running;
+    } catch(err) {
+        throw err;
+    }
 }
