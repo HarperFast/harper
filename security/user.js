@@ -142,10 +142,11 @@ async function alterUser(json_message) {
         clean_user.password = password.hash(clean_user.password);
     }
 
+    // the not operator will consider an empty string as undefined, so we need to check for an empty string explicitly
     if(clean_user.role === "") {
         throw new Error(EMPTY_ROLE);
     }
-    // Invalid or empty roles will be found in the role search
+    // Invalid roles will be found in the role search
     if(clean_user.role) {
         // Make sure assigned role exists.
         let role_search_obj = {
