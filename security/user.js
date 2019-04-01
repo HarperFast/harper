@@ -143,7 +143,7 @@ async function alterUser(json_message) {
     }
 
     if(clean_user.role === "") {
-        throw new Error("If role is specified, it cannot be empty.");
+        throw new Error(EMPTY_ROLE);
     }
     // Invalid or empty roles will be found in the role search
     if(clean_user.role) {
