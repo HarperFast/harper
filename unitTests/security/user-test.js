@@ -5,12 +5,9 @@ const assert = require('assert');
 const sinon = require('sinon');
 const rewire = require('rewire');
 const user = rewire('../../security/user');
-
-const insert = require('../../data_layer/insert'),
-    delete_ = require('../../data_layer/delete'),
-    validation = require('../../validation/user_validation'),
-    search = require('../../data_layer/search'),
-    signalling = require('../../utility/signalling');
+const insert = require('../../data_layer/insert');
+const validation = require('../../validation/user_validation');
+const signalling = require('../../utility/signalling');
 
 const TEST_ADD_USER_JSON = {
     "operation": "add_user",
@@ -107,11 +104,6 @@ const TEST_USER_INFO_SEARCH_RESPONSE = [
     }
 ];
 
-const TEST_USER_INFO_RESPONSE = {
-    "active": true,
-    "username": "blah"
-}
-
 const TEST_LIST_USER_JSON = {
     "operation": "list_users",
 };
@@ -135,7 +127,7 @@ const TEST_UPDATE_RESPONSE = {
     message: `updated 1 of 1 records`,
     update_hashes: '[test_user]',
     skipped_hashes: ''
-}
+};
 
 const TEST_USER_INFO_SEARCH_FAIL_RESPONSE = "Role Not Found";
 
