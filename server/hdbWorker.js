@@ -108,6 +108,8 @@ function init() {
             }
             let response = await processMessage(req, res, user);
             log.debug('Finished processing message.');
+            // This should cover any missed responses.
+            return sendHeaderResponse(req, res, hdb_terms.HTTP_STATUS_CODES.OK, {message: "Processing Complete."});
         } catch(err) {
             log.error('There was an error in post to path "/".');
             log.error(err);
@@ -358,6 +360,7 @@ async function processClusterMessage(req, res, operation_function) {
                     "body": req.body,
                     "node": {"name": node}
                 });
+                return sendHeaderResponse(req, res, hdb_terms.HTTP_STATUS_CODES.OK, {message: `Specified table has residence on node(s): ${residences.join()}; sending message to nodes.`});
             } else if(node === "*" || node === env.get('NODE_NAME')) {
                 result = await p_server_utils_process_local(req, res, operation_function);
                 broadcast_message = true;
