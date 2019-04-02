@@ -8,7 +8,7 @@ const terms = require('./hdbTerms');
 const { promisify } = require('util');
 
 const EMPTY_STRING = '';
-
+const FILE_EXTENSION_LEGNTH = 4;
 const CHARACTER_LIMIT = 255;
 
 const AUTOCAST_COMMON_STRINGS = {
@@ -131,7 +131,6 @@ function isBoolean(value){
     if(value === true || value === false){
         return true;
     }
-
     return false;
 }
 
@@ -145,7 +144,7 @@ function stripFileExtension(file_name) {
     if(isEmptyOrZeroLength(file_name)) {
         return EMPTY_STRING;
     }
-    return file_name.substr(0, file_name.length-4);
+    return file_name.substr(0, file_name.length-FILE_EXTENSION_LEGNTH);
 }
 
 /**
@@ -180,6 +179,7 @@ function autoCast(data){
         try{
             data = JSON.parse(data);
         } catch(e) {
+            //no-op
         }
     }
     return data;
@@ -250,14 +250,14 @@ function escapeRawValue(value){
     let the_value = String(value);
 
     if(the_value === '.') {
-        return UNICODE_PERIOD;
+        return terms.UNICODE_PERIOD;
     }
 
     if(the_value === '..') {
-        return UNICODE_PERIOD + UNICODE_PERIOD;
+        return terms.UNICODE_PERIOD + terms.UNICODE_PERIOD;
     }
 
-    return the_value.replace(FORWARD_SLASH_REGEX, UNICODE_FORWARD_SLASH);
+    return the_value.replace(terms.FORWARD_SLASH_REGEX, terms.UNICODE_FORWARD_SLASH);
 }
 
 /**
@@ -272,15 +272,15 @@ function unescapeValue(value){
 
     let the_value = String(value);
 
-    if(the_value === UNICODE_PERIOD) {
+    if(the_value === terms.UNICODE_PERIOD) {
         return '.';
     }
 
-    if(the_value === UNICODE_PERIOD + UNICODE_PERIOD) {
+    if(the_value === terms.UNICODE_PERIOD + terms.UNICODE_PERIOD) {
         return '..';
     }
 
-    return String(value).replace(ESCAPED_FORWARD_SLASH_REGEX, '/');
+    return String(value).replace(terms.ESCAPED_FORWARD_SLASH_REGEX, '/');
 }
 
 /**
@@ -296,7 +296,6 @@ function stringifyProps(prop_reader_object, comments) {
         return '';
     }
     let lines = '';
-    let section = null;
     prop_reader_object.each(function (key, value) {
         try {
             if (comments && comments[key]) {
@@ -366,6 +365,10 @@ function timeoutPromise(ms, msg, action_function) {
     };
 }
 
+/**
+ * Wrapper function for process.send, will catch cases where master tries to send an IPC message.
+ * @param process_msg - The message to send.
+ */
 function callProcessSend(process_msg) {
     if(process.send === undefined || global.isMaster) {
         log.error('Tried to call process.send() but process.send is undefined.');

@@ -249,6 +249,7 @@ function init() {
 function handleAuth(err, user) {
     if(err) {
         log.error('There was an error with auth.');
+        return null;
     } else {
         return user;
     }
@@ -262,9 +263,14 @@ function handleAuth(err, user) {
  */
 function determineMessageResidence(req) {
     let residences = [];
-        // table was specified, try to get the residences for this table.
+    if(!common.isClusterOperation(req.body.operation)) {
+        return residences;
+    }
     try {
-        if(req.table) {
+        // table was specified, try to get the residences for this table.
+        if(req.body.table) {
+            // in case of create table, check for residences defined in the message.
+            residences = (req.body.residence ? req.body.residence : []);
             let table = global.hdb_schema[req.body.schema][req.body.table];
             if (table) {
                 if (table.residence) {
@@ -274,9 +280,7 @@ function determineMessageResidence(req) {
         } else {
             // some messages are meant for the cluster but don't target a table such as create_schema.  In these cases inject a *
             // so this message will go to the cluster.
-            if(req.body.operation && common.isClusterOperation(req.body.operation)) {
-                residences.push('*');
-            }
+            residences.push('*');
         }
     } catch(err) {
         log.info(`Could not find existing table residence.  Assuming *.`);
@@ -321,12 +325,12 @@ async function processClusterMessage(req, res, operation_function) {
         let residences = determineMessageResidence(req);
         if(!residences || residences.length === 0) {
             let result = await processLocalMessage(req, res, operation_function);
-            //return result;
+            return result;
         }
 
         // We are going to reference this later when we decide how to respond to the requestor.  If we didn't process any
         // local tables, we will respond by saying the message has been broadcast.  Otherwise respond as normal.
-        let against_local_table = false;
+        let broadcast_message = false;
         for (let node of residences) {
             if (node !== "*" && node !== env.get('NODE_NAME')) {
                 log.debug(`Got a message for a table with a remote residence ${node}.  Broadcasting to cluster`);
@@ -340,7 +344,7 @@ async function processClusterMessage(req, res, operation_function) {
                 });
             } else if(node === "*" || node === env.get('NODE_NAME')) {
                 result = await p_server_utils_process_local(req, res, operation_function);
-                against_local_table = true;
+                broadcast_message = true;
                 if(node === "*" && common.isClusterOperation(req.body.operation)) {
                     common.callProcessSend({
                         "type": "clustering_payload", "pid": process.pid,
@@ -354,10 +358,10 @@ async function processClusterMessage(req, res, operation_function) {
             await addToHdbQueue(req, res, cluster_msg_id, node);
         }
 
-        if(against_local_table) {
+        if(broadcast_message) {
             // We need to manually set and send the status here, as processLocal isn't called.
             log.debug('only processed remote table residence, notifying of broadcast');
-            return sendHeaderResponse(req, res, hdb_terms.HTTP_STATUS_CODES.OK).send({message: `Specified table has residence on node(s): ${residences.join()}; broadcasting message to cluster.`});
+            return sendHeaderResponse(req, res, hdb_terms.HTTP_STATUS_CODES.OK, {message: `Specified table has residence on node(s): ${residences.join()}; broadcasting message to cluster.`});
         }
     } catch(err) {
         log.error(err);
