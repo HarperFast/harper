@@ -90,8 +90,10 @@ class ClusterServer {
     }
 
     send(msg, res) {
+        let { hdb_user, hdb_auth_header, ...clean_body } = msg.body;
+
         try {
-            log.debug('node cluster msg out: ' + JSON.stringify(msg));
+            log.debug('node cluster msg out: ' + JSON.stringify(clean_body));
             let payload = {};
             payload.body = msg.body;
             payload.id = msg.id;
