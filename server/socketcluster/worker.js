@@ -1,0 +1,147 @@
+'use strict';
+
+const SCWorker = require('socketcluster/scworker');
+const SCServer = require('./handlers/SCServer');
+const log = require('../../utility/logging/harper_logger');
+const url = require('url');
+const AuthenticationError = require('../../utility/errors/AuthenticationError');
+const AuthorizationError = require('../../utility/errors/AuthorizationError');
+
+//need to detect i isLeader and add the socketclient logic in there to talk to other servers.  look into distributing it later.
+class Worker extends SCWorker{
+    run(){
+        this.registerWorkerHandlers();
+        this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_IN, this.publishInMiddleware.bind(this));
+        this.scServer.addMiddleware(this.scServer.MIDDLEWARE_HANDSHAKE_SC, this.handshakeSCMiddleware.bind(this));
+        this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_OUT, this.publishOutMiddleware.bind(this));
+        let sc_server = new SCServer(this);
+
+        this.exchange.subscribe('hdb_schema');
+        this.exchange.publish('hdb_schema', 'stuff');
+    }
+
+    /**
+     * here we want to block any unauthed clients and destroy them.  also mark a message with the originator client so we don't send it back
+     * @param req
+     * @param next
+     */
+    publishInMiddleware(req, next){
+
+
+        this.addExchangeData(req.channel, req.data);
+
+        next();
+    }
+
+    publishInValidation(req){
+        //only allow JSON object sent in
+        if(typeof req.data !== 'object' || Array.isArray(req.data)){
+            return next(new Error('data must be an object'));
+        }
+
+        //refuse unauthorized sockets
+        if(req.socket.authState === req.socket.UNAUTHENTICATED){
+            return next(new AuthorizationError('not authorized'));
+        }
+
+        //add a
+        if(!req.data.timestamp){
+            req.data.timestamp = Date.now();
+        }
+
+        //the __originator attribute is added so we can filter out sending back the same object to the sender
+        req.data.__originator = req.socket.id;
+    }
+
+    addExchangeData(channel, data){
+        this.exchange.add([channel, data.timestamp], data);
+        this.exchange.expire([[channel, data.timestamp]], 5);
+    }
+
+
+    publishOutMiddleware(req, next){
+        if(req.socket.authState === req.socket.UNAUTHENTICATED){
+            return next(new AuthorizationError('not authorized'));
+        }
+        next();
+    }
+
+    /**
+     * this middleware will be used to handle the authentication.  we will grab req.socket.request.url which is where users will send their credentials
+     * @param req
+     * @param next
+     */
+    handshakeSCMiddleware(req, next){
+        console.log('sc shaking hands');
+
+        req.socket.emit('login', 'send login credentials', (error, credentials)=>{
+            if(error){
+                return console.error(error);
+            }
+            console.log(credentials);
+            if(!credentials || !credentials.username || !credentials.password){
+                return console.error('Invalid credentials');
+            }
+
+            //right now setting a dummy token, we do need to handle this scenario: https://github.com/SocketCluster/socketcluster/issues/343
+            req.socket.setAuthToken({username: 'hdb'}, {expiresIn: 2000});
+        });
+
+        next();
+    }
+
+    /**
+     * registers this worker to it's event handlers
+     */
+    registerWorkerHandlers(){
+        this.on('error', this.errorHandler);
+        this.on('notice', this.noticeHandler);
+        this.on('exit', this.exitHandler);
+        this.on('ready', this.readyHandler);
+    }
+
+    /**
+     * This gets triggered when fatal error occurs on this worker.
+     * @param error
+     */
+    errorHandler(error){
+        log.error(error);
+    }
+
+    /**
+     * A notice carries potentially useful information but isn't quite an error.
+     * @param notice
+     */
+    noticeHandler(notice){
+        log.warn(notice);
+    }
+
+    /**
+     * Happens when this worker exits (sometimes due to error).
+     */
+    exitHandler(){
+        log.fatal('Worker ' + this.id + ' is about to crash');
+    }
+
+    /**
+     *This signals that the worker is ready to accept requests from users.
+     */
+    readyHandler(){
+        console.log('Worker ' + this.id + ' is ready to accept requests');
+    }
+
+    /**
+     * Emitted when the master process sends a message to this worker. The handler function accepts two arguments;
+     * the first is the data which was sent by the master process, the second is a respond callback function which you can call to respond to the event using IPC.
+     * The respond function should be invoked as respond(error, data); it is recommended that you pass an instance of the Error object as the first argument; if you don't want to send back an error,
+     * then the first argument should be null: respond(null, data). See sendToWorker(...) method in SocketCluster (master) API for details on how to send a message to a worker
+     * from the master process (and how to handle the response from the worker).
+     * @param data
+     * @param callback
+     */
+    masterMessageHandler(data, callback){
+
+    }
+}
+
+new Worker();
