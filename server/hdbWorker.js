@@ -281,7 +281,7 @@ function determineMessageResidence(req) {
             // Create table and schema should always be created locally even with a remote residence, so we add a *
             // to residence so it will be processed locally. Need to loop and store separate so we
             // don't pollute the original residence if residence[] changes.
-            if(req.body.operation === hdb_terms.OPERATIONS_ENUM.CREATE_TABLE || req.body.operation === hdb_terms.OPERATIONS_ENUM.CREATE_SCHEMA) {
+            if(req.body.operation === hdb_terms.OPERATIONS_ENUM.CREATE_TABLE) {
                 if(!residences.includes("*")) {
                     residences.push("*");
                 }
