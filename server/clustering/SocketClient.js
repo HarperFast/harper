@@ -296,7 +296,6 @@ class SocketClient {
         this.client = ioc.connect(`https://${this.other_node.host}:${this.other_node.port}`, CLIENT_CONNECTION_OPTIONS);
     }
 
-
     createClientMessageHandlers() {
         this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.CONNECT, this.onConnectHandler.bind(this));
 
