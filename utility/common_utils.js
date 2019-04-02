@@ -384,11 +384,9 @@ function callProcessSend(process_msg) {
  */
 function isClusterOperation(operation_name) {
     try {
-        let op_name = operation_name.toLowerCase();
-        return terms.CLUSTER_OPERATIONS[op_name];
+        return terms.CLUSTER_OPERATIONS[operation_name.toLowerCase()] !== undefined;
     } catch(err) {
         log.error(`Error checking operation against cluster ops ${err}`);
     }
     return false;
-
 }
