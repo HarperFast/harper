@@ -269,12 +269,28 @@ function determineMessageResidence(req) {
     try {
         // table was specified, try to get the residences for this table.
         if(req.body.table) {
-            // in case of create table, check for residences defined in the message.
-            residences = (req.body.residence ? req.body.residence : []);
+            // in case of create table, check for residences defined in the message.  Need to loop and store separate so we
+            // don't pollute the original residence if residence[] changes.
+            if(req.body.residence) {
+                req.body.residence.forEach((res) => {
+                   residences.push(res);
+                });
+            }
+            // Create table and schema should always be created locally even with a remote residence, so we add a *
+            // to residence so it will be processed locally. Need to loop and store separate so we
+            // don't pollute the original residence if residence[] changes.
+            if(req.body.operation === hdb_terms.OPERATIONS_ENUM.CREATE_TABLE || req.body.operation === hdb_terms.OPERATIONS_ENUM.CREATE_SCHEMA) {
+                if(!residences.includes("*")) {
+                    residences.push("*");
+                }
+            }
             let table = global.hdb_schema[req.body.schema][req.body.table];
             if (table) {
                 if (table.residence) {
-                    residences = table.residence;
+                    table.residence.forEach((res) => {
+                        // Need to loop and store separate so wdon't pollute the original residence if residence[] changes.
+                       residences.push(res);
+                    });
                 }
             }
         } else {
@@ -335,7 +351,7 @@ async function processClusterMessage(req, res, operation_function) {
             if (node !== "*" && node !== env.get('NODE_NAME')) {
                 log.debug(`Got a message for a table with a remote residence ${node}.  Broadcasting to cluster`);
                 global.clusterMsgQueue[cluster_msg_id] = res;
-                common.callProcessSennd({
+                common.callProcessSend({
                     "type": "clustering_payload", "pid": process.pid,
                     "clustering_type": "send",
                     "id": cluster_msg_id,
