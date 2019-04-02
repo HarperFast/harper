@@ -4,8 +4,6 @@ const SCWorker = require('socketcluster/scworker');
 const SCServer = require('./handlers/SCServer');
 const log = require('../../utility/logging/harper_logger');
 const url = require('url');
-const AuthenticationError = require('../../utility/errors/AuthenticationError');
-const AuthorizationError = require('../../utility/errors/AuthorizationError');
 
 //need to detect i isLeader and add the socketclient logic in there to talk to other servers.  look into distributing it later.
 class Worker extends SCWorker{
@@ -26,22 +24,29 @@ class Worker extends SCWorker{
      * @param next
      */
     publishInMiddleware(req, next){
-
-
-        this.addExchangeData(req.channel, req.data);
+        try{
+            this.publishInValidation(req);
+        } catch(e){
+            next(e);
+        }
 
         next();
     }
 
+    /**
+     * intended to validate the
+     * @param req
+     * @returns {*}
+     */
     publishInValidation(req){
         //only allow JSON object sent in
         if(typeof req.data !== 'object' || Array.isArray(req.data)){
-            return next(new Error('data must be an object'));
+            throw new Error('data must be an object');
         }
 
         //refuse unauthorized sockets
         if(req.socket.authState === req.socket.UNAUTHENTICATED){
-            return next(new AuthorizationError('not authorized'));
+             throw new Error('not authorized');
         }
 
         //add a
@@ -53,16 +58,12 @@ class Worker extends SCWorker{
         req.data.__originator = req.socket.id;
     }
 
-    addExchangeData(channel, data){
-        this.exchange.add([channel, data.timestamp], data);
-        this.exchange.expire([[channel, data.timestamp]], 5);
-    }
-
 
     publishOutMiddleware(req, next){
         if(req.socket.authState === req.socket.UNAUTHENTICATED){
-            return next(new AuthorizationError('not authorized'));
+            return next(new Error('not authorized'));
         }
+
         next();
     }
 

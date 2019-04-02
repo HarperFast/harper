@@ -1,7 +1,10 @@
 'use strict';
 const SocketCluster = require('socketcluster');
+const env = require('../../utility/environment/environmentManager');
 const log = require('../../utility/logging/harper_logger');
 
+const PORT = env.get('CLUSTERING_PORT');
+//initializes a new socket cluster all options can be seen here: https://socketcluster.io/#!/docs/api-socketcluster
 let socketCluster = new SocketCluster({
     // Number of worker processes, this will be config based
     workers: 1,
@@ -9,8 +12,8 @@ let socketCluster = new SocketCluster({
     // Number of broker processes
     brokers: 1,
 
-    // The port number on which your server should listen, this will be config based
-    port: 1111,
+    // The port number on which your server should listen, this is config based
+    port: PORT ? PORT : 1111,
 
     appName: 'socket_server',
 
@@ -47,7 +50,7 @@ let socketCluster = new SocketCluster({
     ackTimeout: 10000,
 
     // will always be https
-    protocol: 'https',
+    protocol: 'http',
 
     /* A JS file which you can use to configure each of your
      * workers/servers - This is where most of your backend code should go
@@ -60,12 +63,12 @@ let socketCluster = new SocketCluster({
     brokerController: __dirname + '/broker.js',
 
     // Whether or not to reboot the worker in case it crashes (defaults to true)
-    rebootWorkerOnCrash: true
+    rebootWorkerOnCrash: true,
 
     // This can be the name of an npm module or a path to a Node.js module
     // to use as the WebSocket server engine.
     // You can now set this to 'sc-uws' for a speedup.
-    wsEngine: 'sc-uws'
+    wsEngine: 'ws'
 });
 
 registerHandlers();
