@@ -111,7 +111,7 @@ function init() {
         } catch(err) {
             log.error('There was an error in post to path "/".');
             log.error(err);
-            return sendHeaderResponse(req, res, hdb_terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, {error: err});
+            return sendHeaderResponse(req, res, hdb_terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, {error: err.message});
         }
     });
 
@@ -248,8 +248,8 @@ function init() {
  */
 function handleAuth(err, user) {
     if(err) {
-        log.error('There was an error with auth.');
-        return null;
+        log.error('There was an error with auth.' + err);
+        throw new Error('User not authorized.');
     } else {
         return user;
     }
