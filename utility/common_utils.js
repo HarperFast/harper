@@ -4,15 +4,8 @@ const log = require('./logging/harper_logger');
 const fs_extra = require('fs-extra');
 const truncate = require('truncate-utf8-bytes');
 const os = require('os');
+const terms = require('./hdbTerms');
 const { promisify } = require('util');
-const {PERIOD_REGEX,
-    DOUBLE_PERIOD_REGEX,
-    UNICODE_PERIOD,
-    FORWARD_SLASH_REGEX,
-    UNICODE_FORWARD_SLASH,
-    ESCAPED_FORWARD_SLASH_REGEX,
-    ESCAPED_PERIOD_REGEX,
-    ESCAPED_DOUBLE_PERIOD_REGEX} = require('./hdbTerms');
 
 const EMPTY_STRING = '';
 
@@ -44,7 +37,8 @@ module.exports = {
     stringifyProps: stringifyProps,
     valueConverter: valueConverter,
     timeoutPromise: timeoutPromise,
-    callProcessSend: callProcessSend
+    callProcessSend: callProcessSend,
+    isClusterOperation: isClusterOperation
 };
 
 /**
@@ -378,4 +372,20 @@ function callProcessSend(process_msg) {
         return;
     }
     process.send(process_msg);
+}
+
+/**
+ * Returns true if a given operation name is a cluster operation.  Should always return a boolean.
+ * @param operation_name - the operation name being called
+ * @returns {boolean|*}
+ */
+function isClusterOperation(operation_name) {
+    try {
+        let op_name = operation_name.toLowerCase();
+        return terms.CLUSTER_OPERATIONS[op_name];
+    } catch(err) {
+        log.error(`Error checking operation against cluster ops ${err}`);
+    }
+    return false;
+
 }

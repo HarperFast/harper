@@ -264,16 +264,45 @@ function determineMessageResidence(req) {
     let residences = [];
         // table was specified, try to get the residences for this table.
     try {
-        let table = global.hdb_schema[req.body.schema][req.body.table];
-        if(table) {
-            if(table.residence) {
-                residences = table.residence;
+        if(req.table) {
+            let table = global.hdb_schema[req.body.schema][req.body.table];
+            if (table) {
+                if (table.residence) {
+                    residences = table.residence;
+                }
+            }
+        } else {
+            // some messages are meant for the cluster but don't target a table such as create_schema.  In these cases inject a *
+            // so this message will go to the cluster.
+            if(req.body.operation && common.isClusterOperation(req.body.operation)) {
+                residences.push('*');
             }
         }
     } catch(err) {
         log.info(`Could not find existing table residence.  Assuming *.`);
     }
     return residences;
+}
+
+async function addToHdbQueue(req, res, cluster_msg_id, node) {
+    if(common.isClusterOperation(req.body.operation)) {
+        let item = {
+            "payload": {"body": req.body, "id": cluster_msg_id},
+            "id": cluster_msg_id,
+            "node": {"node": node},
+            "node_name": node,
+            "timestamp": moment.utc().valueOf()
+        };
+
+        let insert_object = {
+            operation: 'insert',
+            schema: 'system',
+            table: 'hdb_queue',
+            records: [item]
+        };
+        let insert_result = await insert.insert(insert_object);
+        log.trace(`Inserted ${insert_result} into hdb_queue`);
+    }
 }
 
 /**
@@ -292,7 +321,7 @@ async function processClusterMessage(req, res, operation_function) {
         let residences = determineMessageResidence(req);
         if(!residences || residences.length === 0) {
             let result = await processLocalMessage(req, res, operation_function);
-            return result;
+            //return result;
         }
 
         // We are going to reference this later when we decide how to respond to the requestor.  If we didn't process any
@@ -312,7 +341,7 @@ async function processClusterMessage(req, res, operation_function) {
             } else if(node === "*" || node === env.get('NODE_NAME')) {
                 result = await p_server_utils_process_local(req, res, operation_function);
                 against_local_table = true;
-                if(node === "*" && !hdb_terms.LOCAL_HARPERDB_OPERATIONS.includes(req.body.operation)) {
+                if(node === "*" && common.isClusterOperation(req.body.operation)) {
                     common.callProcessSend({
                         "type": "clustering_payload", "pid": process.pid,
                         "clustering_type": "broadcast",
@@ -322,27 +351,10 @@ async function processClusterMessage(req, res, operation_function) {
                 }
             }
             // Add to hdb_queue
-            if(!hdb_terms.LOCAL_HARPERDB_OPERATIONS.includes(req.body.operation)) {
-                let item = {
-                    "payload": {"body": req.body, "id": cluster_msg_id},
-                    "id": cluster_msg_id,
-                    "node": {"node": node},
-                    "node_name": node,
-                    "timestamp": moment.utc().valueOf()
-                };
-
-                let insert_object = {
-                    operation: 'insert',
-                    schema: 'system',
-                    table: 'hdb_queue',
-                    records: [item]
-                };
-                let insert_result = await insert.insert(insert_object);
-                log.trace(`Inserted ${insert_result} into hdb_queue`);
-            }
+            await addToHdbQueue(req, res, cluster_msg_id, node);
         }
 
-        if(!against_local_table) {
+        if(against_local_table) {
             // We need to manually set and send the status here, as processLocal isn't called.
             log.debug('only processed remote table residence, notifying of broadcast');
             return sendHeaderResponse(req, res, hdb_terms.HTTP_STATUS_CODES.OK).send({message: `Specified table has residence on node(s): ${residences.join()}; broadcasting message to cluster.`});
