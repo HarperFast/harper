@@ -51,6 +51,11 @@ const p_schema_get_table_schema = promisify(global_schema.getTableSchema);
 
 function init() {
     log.info('In express' + process.cwd());
+
+    //initialize the internal socket client
+    //TODO only create this if clustering is active &  licensed
+    require('./socketcluster/internalClient').init();
+
     log.info(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
     if (props_cors && (props_cors === true || props_cors.toUpperCase() === TRUE_COMPARE_VAL)) {
         let cors_options = {

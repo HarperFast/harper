@@ -68,10 +68,6 @@
         port:1111
     });
 
-    socket.subscribe('hdb_schema').watch(data => {
-        console.log(data);
-    });
-
     socket.on('error', function (err) {
         console.error(err);
     });
@@ -80,29 +76,21 @@
         res(null, {username: 'kyle', password: 'test'});
     });
 
-    /*var socket = socketCluster.connect({port:1111});
+    function publish(channel, data){
+        socket.publish(channel, data, (err, ackData)=>{
+            if(err){
+                console.error(err);
+            }
 
-    socket.on('error', function (err) {
-      console.error(err);
-    });
+            console.log(ackData);
+        });
+    }
 
-    socket.on('connect', function () {
-      console.log('Socket is connected');
-    });
-
-   /!* socket.on('random', function (data) {
-      console.log('Received "random" event with data: ' + data.number);
-    });*!/
-
-    var sampleChannel = socket.subscribe('sample');
-
-    sampleChannel.on('subscribeFail', function (err) {
-      console.error('Failed to subscribe to the sample channel due to error: ' + err);
-    });
-
-    sampleChannel.watch(function (num) {
-      console.log('Sample channel message:', num);
-    });*/
+    function subscribe(channel){
+        socket.subscribe(channel).watch(data => {
+            console.log(data);
+        });
+    }
 </script>
 </body>
 </html>

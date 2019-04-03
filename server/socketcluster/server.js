@@ -4,6 +4,8 @@ const env = require('../../utility/environment/environmentManager');
 const log = require('../../utility/logging/harper_logger');
 
 const PORT = env.get('CLUSTERING_PORT');
+const DEFAULT_PORT = 1111;
+
 //initializes a new socket cluster all options can be seen here: https://socketcluster.io/#!/docs/api-socketcluster
 let socketCluster = new SocketCluster({
     // Number of worker processes, this will be config based
@@ -13,7 +15,7 @@ let socketCluster = new SocketCluster({
     brokers: 1,
 
     // The port number on which your server should listen, this is config based
-    port: PORT ? PORT : 1111,
+    port: PORT ? PORT : DEFAULT_PORT,
 
     appName: 'socket_server',
 

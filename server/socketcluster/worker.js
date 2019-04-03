@@ -3,9 +3,7 @@
 const SCWorker = require('socketcluster/scworker');
 const SCServer = require('./handlers/SCServer');
 const log = require('../../utility/logging/harper_logger');
-const url = require('url');
 
-//need to detect i isLeader and add the socketclient logic in there to talk to other servers.  look into distributing it later.
 class Worker extends SCWorker{
     run(){
         this.registerWorkerHandlers();
@@ -13,9 +11,6 @@ class Worker extends SCWorker{
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_HANDSHAKE_SC, this.handshakeSCMiddleware.bind(this));
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_OUT, this.publishOutMiddleware.bind(this));
         let sc_server = new SCServer(this);
-
-        this.exchange.subscribe('hdb_schema');
-        this.exchange.publish('hdb_schema', 'stuff');
     }
 
     /**
@@ -27,6 +22,7 @@ class Worker extends SCWorker{
         try{
             this.publishInValidation(req);
         } catch(e){
+            console.error(e);
             next(e);
         }
 
@@ -60,9 +56,11 @@ class Worker extends SCWorker{
 
 
     publishOutMiddleware(req, next){
+
         if(req.socket.authState === req.socket.UNAUTHENTICATED){
             return next(new Error('not authorized'));
         }
+        console.log('publish out');
 
         next();
     }

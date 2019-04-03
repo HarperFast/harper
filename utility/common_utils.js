@@ -44,7 +44,8 @@ module.exports = {
     stringifyProps: stringifyProps,
     valueConverter: valueConverter,
     timeoutPromise: timeoutPromise,
-    callProcessSend: callProcessSend
+    callProcessSend: callProcessSend,
+    sendTransactionToSocketCluster: sendTransactionToSocketCluster
 };
 
 /**
@@ -378,4 +379,15 @@ function callProcessSend(process_msg) {
         return;
     }
     process.send(process_msg);
+}
+
+/**
+ * sends a transaction to the local socketserver which needs to broadcast to the cluster
+ * @param transaction
+ */
+function sendTransactionToSocketCluster(transaction){
+    //we do not want to send system level transactions over the wire
+    if(global.hdb_socket_client !== undefined && transaction.schema !== 'system'){
+        global.hdb_socket_client.publish(`${transaction.schema}.${transaction.table}`, transaction);
+    }
 }

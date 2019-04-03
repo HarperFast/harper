@@ -393,6 +393,8 @@ function deleteRecord(delete_object, callback){
                 return callback(err);
             }
 
+            common_utils.sendTransactionToSocketCluster(delete_object);
+
             return callback(null, SUCCESS_MESSAGE);
         });
     } catch(e){

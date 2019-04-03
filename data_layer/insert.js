@@ -176,6 +176,9 @@ async function insertData(insert_object){
         if(pool instanceof HDB_Pool){
             pool.killAll();
         }
+
+        h_utils.sendTransactionToSocketCluster(insert_object);
+
         return return_object;
     } catch(e){
         if(pool instanceof HDB_Pool){
@@ -229,6 +232,8 @@ async function updateData(update_object){
         if(pool instanceof HDB_Pool){
             pool.killAll();
         }
+
+        h_utils.sendTransactionToSocketCluster(update_object);
 
         return return_object;
     } catch(e){
