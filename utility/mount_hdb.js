@@ -60,8 +60,3 @@ module.exports = function (logger, hdb_path, callback) {
     callback(null, 'complete');
 };
 
-
-
-
-
-

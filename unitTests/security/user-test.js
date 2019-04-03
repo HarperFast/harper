@@ -1,14 +1,13 @@
 "use strict";
-
+const test_utils = require('../test_utils');
+test_utils.preTestPrep();
 const assert = require('assert');
 const sinon = require('sinon');
-const user = require('../../security/user');
-
-const insert = require('../../data_layer/insert'),
-    delete_ = require('../../data_layer/delete'),
-    validation = require('../../validation/user_validation'),
-    search = require('../../data_layer/search'),
-    signalling  = require('../../utility/signalling');
+const rewire = require('rewire');
+const user = rewire('../../security/user');
+const insert = require('../../data_layer/insert');
+const validation = require('../../validation/user_validation');
+const signalling = require('../../utility/signalling');
 
 const TEST_ADD_USER_JSON = {
     "operation": "add_user",
@@ -105,11 +104,6 @@ const TEST_USER_INFO_SEARCH_RESPONSE = [
     }
 ];
 
-const TEST_USER_INFO_RESPONSE = {
-    "active": true,
-    "username": "blah"
-}
-
 const TEST_LIST_USER_JSON = {
     "operation": "list_users",
 };
@@ -129,10 +123,16 @@ const TEST_LIST_USER_SEARCH_RESPONSE = {
     "username": "bad_user"
 };
 
+const TEST_UPDATE_RESPONSE = {
+    message: `updated 1 of 1 records`,
+    update_hashes: '[test_user]',
+    skipped_hashes: ''
+};
+
 const TEST_USER_INFO_SEARCH_FAIL_RESPONSE = "Role Not Found";
 
 const ADD_USER_RESULT = 'test_user successfully added';
-const BAD_ROLE_SEARCH_RESULT = 'Role not found!';
+const BAD_ROLE_SEARCH_RESULT = 'Role not found.';
 const ADD_USER_INSERT_FAILED_RESULT = 'Insert Failed.';
 const FAILED_VALIDATE_MESSAGE = "Failed Validation";
 const DROP_USER_RESULT = 'test_user successfully deleted';
@@ -148,21 +148,25 @@ describe('Test addUser', function () {
     let insert_stub = undefined;
     let validate_stub = undefined;
     let signal_spy = undefined;
+    let search_orig = user.__get__('p_search_search_by_hash');
     beforeEach( function() {
         // We are not testing these other functions, so we stub them.
-        search_stub = sinon.stub(search, "searchByHash").yields("", TEST_ADD_USER_SEARCH_OBJ);
-        insert_stub = sinon.stub(insert, "insertCB").yields("", true);
+        //search_stub = sinon.stub(search, "searchByHash").yields("", TEST_ADD_USER_SEARCH_OBJ);
+        search_stub = sinon.stub().resolves(TEST_ADD_USER_SEARCH_OBJ);
+        user.__set__('p_search_search_by_hash', search_stub);
+        insert_stub = sinon.stub(insert, "insert").resolves(true);
         validate_stub = sinon.stub(validation, "addUserValidation").callsFake(function() {
             return null;
         });
         signal_spy = sinon.spy(signalling, "signalUserChange");
     });
     afterEach( function() {
-        search_stub.restore();
         insert_stub.restore();
         validate_stub.restore();
         signal_spy.restore();
+        user.__set__('p_search_search_by_hash', search_orig);
     });
+
     it('Nominal path, add a user', function (done) {
         user.addUser(TEST_ADD_USER_JSON, function(err, results) {
             assert.equal(results, ADD_USER_RESULT, 'Expected success result not returned.');
@@ -172,18 +176,18 @@ describe('Test addUser', function () {
     });
     it('Test bad role', function (done) {
         // inject a failed role search
-        search_stub.yields("", null);
+        search_stub.resolves(null);
         user.addUser(TEST_ADD_USER_JSON, function(err, results) {
-            assert.equal(err, BAD_ROLE_SEARCH_RESULT, 'Expected success result not returned.');
+            assert.equal(err.message, BAD_ROLE_SEARCH_RESULT, 'Expected success result not returned.');
             assert.equal(signal_spy.called, false);
             done();
         });
     });
     it('Test failed insert', function (done) {
         // inject a failed insert
-        insert_stub.yields(ADD_USER_INSERT_FAILED_RESULT, false);
+        insert_stub.throws(new Error(ADD_USER_INSERT_FAILED_RESULT));
         user.addUser(TEST_ADD_USER_JSON, function(err, results) {
-            assert.equal(err, ADD_USER_INSERT_FAILED_RESULT, 'Expected success result not returned.');
+            assert.equal(err.message, ADD_USER_INSERT_FAILED_RESULT, 'Expected success result not returned.');
             assert.equal(signal_spy.called, false);
             done();
         });
@@ -194,7 +198,7 @@ describe('Test addUser', function () {
             return FAILED_VALIDATE_MESSAGE;
         });
         user.addUser(TEST_ADD_USER_JSON, function(err, results) {
-            assert.equal(err, FAILED_VALIDATE_MESSAGE, 'Expected success result not returned.');
+            assert.equal(err.message, FAILED_VALIDATE_MESSAGE, 'Expected success result not returned.');
             assert.equal(signal_spy.called, false);
             done();
         });
@@ -203,15 +207,20 @@ describe('Test addUser', function () {
 
 describe('Test alterUser', function () {
     let insert_stub = undefined;
+    let role_search_stub = undefined;
     let validate_stub = undefined;
     let signal_spy = undefined;
+    let search_orig = user.__get__('p_search_search_by_hash');
     beforeEach( function() {
+
         // We are not testing these other functions, so we stub them.
-        insert_stub = sinon.stub(insert, "updateCB").yields("", true);
+        insert_stub = sinon.stub(insert, "update").resolves(TEST_UPDATE_RESPONSE);
         validate_stub = sinon.stub(validation, "alterUserValidation").callsFake(function() {
             return null;
         });
         signal_spy = sinon.spy(signalling, "signalUserChange");
+        role_search_stub = sinon.stub().resolves([TEST_LIST_USER_ROLE_SEARCH_RESPONSE]);
+        user.__set__('p_search_search_by_hash', role_search_stub);
     });
     afterEach( function() {
         insert_stub.restore();
@@ -221,7 +230,7 @@ describe('Test alterUser', function () {
     it('Nominal path, alter a user', function (done) {
         // We are not testing these other functions, so we stub them.
         user.alterUser(TEST_ALTER_USER_JSON, function(err, results) {
-            assert.equal(results, true, 'Expected success result not returned.');
+            assert.equal(results, TEST_UPDATE_RESPONSE, 'Expected success result not returned.');
             assert.equal(signal_spy.called, true);
             done();
         });
@@ -292,24 +301,44 @@ describe('Test alterUser', function () {
             done();
         });
     });
+    it('Test no role found', function (done) {
+        role_search_stub = sinon.stub().resolves([]);
+        user.__set__('p_search_search_by_hash', role_search_stub);
+        user.alterUser(TEST_ALTER_USER_JSON, function(err, results) {
+            assert.equal(err.message, `Update failed.  Requested role id ${TEST_ALTER_USER_NO_USERNAME_JSON.role} not found.`, 'Expected success result not returned.');
+            assert.equal(signal_spy.called, false);
+            done();
+        });
+    });
+    it('Test exception during role search', function (done) {
+        role_search_stub = sinon.stub().throws(new Error('Role Search Error'));
+        user.__set__('p_search_search_by_hash', role_search_stub);
+        user.alterUser(TEST_ALTER_USER_JSON, function(err, results) {
+            assert.equal(err.message, 'Role Search Error', 'Expected success result not returned.');
+            assert.equal(signal_spy.called, false);
+            done();
+        });
+    });
 });
 
 describe('Test dropUser', function () {
     let delete_stub = undefined;
     let validate_stub = undefined;
     let signal_spy = undefined;
+    let delete_orig = user.__get__('p_delete_delete');
     beforeEach( function() {
         // We are not testing these other functions, so we stub them.
-        delete_stub = sinon.stub(delete_, "delete").yields("", true);
+        delete_stub = sinon.stub().resolves(true);
+        user.__set__('p_delete_delete', delete_stub);
         validate_stub = sinon.stub(validation, "dropUserValidation").callsFake(function() {
             return null;
         });
         signal_spy = sinon.spy(signalling, "signalUserChange");
     });
     afterEach( function() {
-        delete_stub.restore();
         validate_stub.restore();
         signal_spy.restore();
+        user.__set__('p_delete_delete', delete_orig);
     });
     it('Nominal path, drop a user', function (done) {
         // We are not testing these other functions, so we stub them.
@@ -325,7 +354,7 @@ describe('Test dropUser', function () {
             return FAILED_VALIDATE_MESSAGE;
         });
         user.dropUser(TEST_ALTER_USER_JSON, function(err, results) {
-            assert.equal(err, FAILED_VALIDATE_MESSAGE, 'Expected success result not returned.');
+            assert.equal(err.message, FAILED_VALIDATE_MESSAGE, 'Expected success result not returned.');
             assert.equal(signal_spy.called, false);
             done();
         });
@@ -334,12 +363,14 @@ describe('Test dropUser', function () {
 
 describe('Test user_info', function () {
     let search_stub = undefined;
+    let search_orig = user.__get__('p_search_search_by_hash');
     beforeEach( function() {
         // We are not testing these other functions, so we stub them.
-        search_stub = sinon.stub(search, "searchByHash").yields("", TEST_USER_INFO_SEARCH_RESPONSE);
+        search_stub = sinon.stub().resolves(TEST_USER_INFO_SEARCH_RESPONSE);
+        user.__set__('p_search_search_by_hash', search_stub);
     });
     afterEach( function() {
-        search_stub.restore();
+        user.__set__('p_search_search_by_hash', search_orig);
     });
     it('Nominal path, get user info', function (done) {
         // We are not testing these other functions, so we stub them.
@@ -355,9 +386,9 @@ describe('Test user_info', function () {
     });
     it('bad search result in user info', function (done) {
         // We are not testing these other functions, so we stub them.
-        search_stub.yields(TEST_USER_INFO_SEARCH_FAIL_RESPONSE, null);
+        search_stub.throws(new Error(TEST_USER_INFO_SEARCH_FAIL_RESPONSE));
         user.userInfo(TEST_USER_INFO_JSON, function(err, results) {
-            assert.equal(err, TEST_USER_INFO_SEARCH_FAIL_RESPONSE, 'Expected success result not returned.');
+            assert.equal(err.message, TEST_USER_INFO_SEARCH_FAIL_RESPONSE, 'Expected success result not returned.');
             done();
         });
     });
@@ -365,16 +396,21 @@ describe('Test user_info', function () {
 
 describe('Test list_users', function () {
     let search_stub = undefined;
+    let search_orig = user.__get__('p_search_search_by_value');
     beforeEach( function() {
+        // reset search_stub just in case.
+        search_stub = undefined;
         // We are not testing these other functions, so we stub them.
         // Need to clone these since the list_users function attaches the role into the user.
         let role_search_response_clone = clone(TEST_LIST_USER_ROLE_SEARCH_RESPONSE);
         let user_search_response_clone = clone(TEST_LIST_USER_SEARCH_RESPONSE);
-        search_stub = sinon.stub(search, "searchByValue").onFirstCall().yields("", [role_search_response_clone]);
-        search_stub.onSecondCall().yields("", [user_search_response_clone]);
+
+        search_stub = sinon.stub().onFirstCall().resolves([role_search_response_clone]);
+        search_stub.onSecondCall().resolves([user_search_response_clone]);
+        user.__set__('p_search_search_by_value', search_stub);
     });
     afterEach( function() {
-        search_stub.restore();
+        user.__set__('p_search_search_by_value', search_orig);
     });
     it('Nominal path, list users', function (done) {
         user.listUsers(TEST_LIST_USER_JSON, function(err, results) {
@@ -385,16 +421,18 @@ describe('Test list_users', function () {
         });
     });
     it('bad role search result', function (done) {
-        search_stub.onFirstCall().yields(BAD_ROLE_SEARCH_RESULT, [null]);
+        search_stub = sinon.stub();
+        search_stub.throws(new Error(BAD_ROLE_SEARCH_RESULT));
+        user.__set__('p_search_search_by_value', search_stub);
         user.listUsers(TEST_LIST_USER_JSON, function(err, results) {
-            assert.equal(err, BAD_ROLE_SEARCH_RESULT);
+            assert.equal(err.message, BAD_ROLE_SEARCH_RESULT);
             done();
         });
     });
     it('bad user search result', function (done) {
-        search_stub.onSecondCall().yields(USER_SEARCH_FAILED_RESULT, [null]);
+        search_stub.onSecondCall().throws(new Error(USER_SEARCH_FAILED_RESULT));
         user.listUsers(TEST_LIST_USER_JSON, function(err, results) {
-            assert.equal(err, USER_SEARCH_FAILED_RESULT);
+            assert.equal(err.message, USER_SEARCH_FAILED_RESULT);
             done();
         });
     });
@@ -402,16 +440,20 @@ describe('Test list_users', function () {
 
 describe('Test listUsersExternal', function () {
     let search_stub = undefined;
+    let search_orig = user.__get__('p_search_search_by_value');
     beforeEach( function() {
+        // reset search_stub just in case.
+        search_stub = undefined;
         // We are not testing these other functions, so we stub them.
         // Need to clone these since the list_users function attaches the role into the user.
         let role_search_response_clone = clone(TEST_LIST_USER_ROLE_SEARCH_RESPONSE);
         let user_search_response_clone = clone(TEST_LIST_USER_SEARCH_RESPONSE);
-        search_stub = sinon.stub(search, "searchByValue").onFirstCall().yields("", [role_search_response_clone]);
-        search_stub.onSecondCall().yields("", [user_search_response_clone]);
+        search_stub = sinon.stub().onFirstCall().resolves([role_search_response_clone]);
+        search_stub.onSecondCall().resolves([user_search_response_clone]);
+        user.__set__('p_search_search_by_value', search_stub);
     });
     afterEach( function() {
-        search_stub.restore();
+        user.__set__('p_search_search_by_value', search_orig);
     });
     it('Nominal path, listUsersExternal', function (done) {
         user.listUsersExternal(null, function(err, results) {
@@ -423,16 +465,19 @@ describe('Test listUsersExternal', function () {
         });
     });
     it('bad role search result', function (done) {
-        search_stub.onFirstCall().yields(BAD_ROLE_SEARCH_RESULT, [null]);
+        search_stub = sinon.stub();
+        search_stub.onFirstCall().throws(new Error(BAD_ROLE_SEARCH_RESULT));
+        user.__set__('p_search_search_by_value', search_stub);
         user.listUsersExternal(TEST_LIST_USER_JSON, function(err, results) {
-            assert.equal(err, BAD_ROLE_SEARCH_RESULT);
+            assert.equal(err.message, BAD_ROLE_SEARCH_RESULT);
             done();
         });
     });
     it('bad user search result', function (done) {
-        search_stub.onSecondCall().yields(USER_SEARCH_FAILED_RESULT, [null]);
+        search_stub.onSecondCall().throws(new Error(USER_SEARCH_FAILED_RESULT));
+        user.__set__('p_search_search_by_value', search_stub);
         user.listUsersExternal(TEST_LIST_USER_JSON, function(err, results) {
-            assert.equal(err, USER_SEARCH_FAILED_RESULT);
+            assert.equal(err.message, USER_SEARCH_FAILED_RESULT);
             done();
         });
     });

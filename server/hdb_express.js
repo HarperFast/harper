@@ -1,10 +1,10 @@
 const cluster = require('cluster');
 const DEBUG = false;
 const harper_logger = require('../utility/logging/harper_logger');
-// We want to kick off the mgr init as soon as possible.
-const env_mgr = require('../utility/environment/environmentManager');
+// We want to kick off the mgr initSync as soon as possible.
+const env = require('../utility/environment/environmentManager');
 try {
-    env_mgr.init();
+    env.initSync();
 } catch(err) {
     harper_logger.error(`Got an error loading the environment.  Exiting.${err}`);
     process.exit(0);
@@ -17,9 +17,10 @@ const os = require('os');
 const job_runner = require('./jobRunner');
 const hdb_util = require('../utility/common_utils');
 const guidePath = require('path');
-const hdb_terms = require('../utility/hdbTerms');
+// Leaving global_schema and search here so we can load them early.  They are used in other modules and should be loaded before.
 const global_schema = require('../utility/globalSchema');
 const fs = require('fs');
+const search = require('../data_layer/search');
 const cluster_utilities = require('./clustering/clusterUtilities');
 const cluster_event = require('../events/ClusterStatusEmitter');
 const all_children_stopped_event = require('../events/AllChildrenStoppedEvent');
@@ -44,11 +45,7 @@ const ENV_PROD_VAL = 'production';
 const ENV_DEV_VAL = 'development';
 const TRUE_COMPARE_VAL = 'TRUE';
 
-const PropertiesReader = require('properties-reader');
-let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
-hdb_properties.append(hdb_properties.get('settings_path'));
-
-let node_env_value = hdb_properties.get(PROPS_ENV_KEY);
+let node_env_value = env.get(PROPS_ENV_KEY);
 
 // If NODE_ENV is empty, it will show up here as '0' rather than '' or length of 0.
 if (node_env_value === undefined || node_env_value === null || node_env_value === 0) {
@@ -66,7 +63,7 @@ let os_cpus = undefined;
 
 //in an instance of having HDB installed on an android devices we don't have access to the cpu info so we need to handle the error and move on
 try {
-    num_hdb_processes = hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES);
+    num_hdb_processes = env.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES);
     os_cpus = os.cpus().length;
     num_workers = ((num_hdb_processes && num_hdb_processes > 0) ? num_hdb_processes: os_cpus);
     // don't allow more processes than the machine has cores.
@@ -85,6 +82,9 @@ try {
 if(DEBUG){
     numCPUs = 1;
 }
+
+global.isMaster = cluster.isMaster;
+global.clustering_on = false;
 
 cluster.on('exit', (dead_worker, code, signal) => {
     if(signal === terms.RESTART_CODE || dead_worker.process.signalCode === terms.RESTART_CODE) {

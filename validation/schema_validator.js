@@ -28,7 +28,7 @@ const constraints = {
         presence: true,
         format: {
             pattern: "^[a-zA-Z0-9_]*$",
-            message: "must be alpha numeric"
+            message: "name can only contain alpha numeric characters or underscores"
         }
 
     },
@@ -36,7 +36,7 @@ const constraints = {
         presence: true,
         format: {
             pattern: "^[a-zA-Z0-9_]*$",
-            message: "must be alpha numeric"
+            message: "name can only contain alpha numeric characters or underscores"
         },
         length: {
             maximum: 250,

@@ -1,78 +1,86 @@
 "use strict";
-
+const test_utils = require('../test_utils');
+test_utils.preTestPrep();
 const assert = require('assert');
-const sinon = require('sinon');
-const auth = require('../../security/auth');
-const user_functions = require('../../security/user');
+const rewire = require('rewire');
+const auth = rewire('../../security/auth');
 const password_function = require('../../utility/password');
+
+const VALID_ROLE = {
+    "permission": {
+        "super_user": true
+    },
+    "id": "c7035e09-5f5b-43b1-8ba9-c945f8c9da35",
+    "role": "super_user"
+};
 
 global.hdb_users = [
     {
         username: 'nook',
         active: true,
         password: password_function.hash('1234!'),
+        role: VALID_ROLE
     },
     {
         username: 'unactivenook',
         active: false,
         password: password_function.hash('1234!'),
+        role: VALID_ROLE
     }
 ];
-
 
 let active_basic_request = {
     headers: {
         authorization: 'Basic ' + Buffer.from("nook:1234!").toString('base64')
     }
-}
+};
 
 let invalid_password_basic_request = {
     headers: {
         authorization: 'Basic ' + Buffer.from("nook:1234").toString('base64')
     }
-}
+};
 
 let unactive_basic_request = {
     headers: {
         authorization: 'Basic ' + Buffer.from("unactivenook:1234!").toString('base64')
 
     }
-}
+};
 
 let invalid_basic_user = {
     headers: {
         authorization: 'Basic ' + Buffer.from("nonook:1234").toString('base64')
     }
-}
+};
 
 let active_other_request = {
     body: {
         username: 'nook',
         password: '1234!'
     }
-}
+};
 
 let invalid_password_other_request = {
     body: {
         username: 'nook',
         password: '1234'
     }
-}
+};
 
 let unactive_other_request = {
     body: {
         username: 'unactivenook',
         password: '1234!'
     }
-}
+};
 
 let invalid_other_user = {
     body: {
         username: 'nouser',
         password: '1234!'
     }
-}
-
+};
 
 describe('Test authorize function', function () {
     it('Cannot complete request Basic authorization: User not found ', function (done) {
@@ -97,8 +105,11 @@ describe('Test authorize function', function () {
     });
 
     it('Can authorize with correct username and password Basic authorization', function (done) {
-        auth.authorize(active_basic_request, null, function (err, user) {            
-            assert.deepEqual(user, { username: 'nook', active: true }, 'equal object');
+        auth.authorize(active_basic_request, null, function (err, user) {
+            let role_temp = test_utils.deepClone(VALID_ROLE);
+            let temp_append = auth.__get__('appendSystemTablesToRole');
+            temp_append(role_temp);
+            assert.deepEqual(user, { username: 'nook', active: true, role: role_temp }, 'equal object');
             assert.equal(err, null, 'no error');
             done();
         });
@@ -129,13 +140,15 @@ describe('Test authorize function', function () {
 
     it('Can authorize with correct username and password Other authorization', function (done) {
         auth.authorize(active_other_request, null, function (err, user) {
-            assert.deepEqual(user, { username: 'nook', active: true }, 'equal object');
+            let role_temp = test_utils.deepClone(VALID_ROLE);
+            let temp_append = auth.__get__('appendSystemTablesToRole');
+            temp_append(role_temp);
+            assert.deepEqual(user, { username: 'nook', active: true, role: role_temp }, 'equal object');
             assert.equal(err, null, 'no error');
             done();
         });
     });
 });
-
 
 let check_permission_empty_object = {
     user: {
@@ -145,14 +158,15 @@ let check_permission_empty_object = {
     table: {
     }
 
-}
+};
+
 let no_schema_user = {
     role: {
         permission: JSON.stringify({
             super_user: false,
         })
     }
-}
+};
 
 let no_table_user = {
     role: {
@@ -164,7 +178,7 @@ let no_table_user = {
             }
         })
     }
-}
+};
 
 let no_insert_permission_user = {
     role: {
@@ -179,7 +193,7 @@ let no_insert_permission_user = {
             }
         })
     }
-}
+};
 
 let missing_attribute_user = {
     role: {
@@ -197,7 +211,7 @@ let missing_attribute_user = {
             }
         })
     }
-}
+};
 
 let attribute_read_all_false_user = {
     role: {
@@ -223,7 +237,7 @@ let attribute_read_all_false_user = {
             }
         })
     }
-}
+};
 
 let attribute_read_some_false_user = {
     role: {
@@ -249,7 +263,7 @@ let attribute_read_some_false_user = {
             }
         })
     }
-}
+};
 
 let user = {
     role: {
@@ -275,7 +289,7 @@ let user = {
             }
         })
     }
-}
+};
 
 let no_restrict_attribute_user = {
     role: {
@@ -291,14 +305,14 @@ let no_restrict_attribute_user = {
             }
         })
     }
-}
+};
 
 let check_permission_no_attributes_object = {
     schema: "dev",
     table: "dog",
     operation: "insert",
     attributes: false
-}
+};
 
 let check_permission_object = {
 
@@ -309,7 +323,7 @@ let check_permission_object = {
         "name",
         "id"
     ]
-}
+};
 
 let super_user = {
     role: {
@@ -324,13 +338,13 @@ let super_user = {
             }
         })
     }
-}
+};
 
 let check_super_user_permission_object = {
     schema: "dev",
     table: "dog",
     operation: "insert"
-}
+};
 
 let permission_object_no_role = {
     user: {
@@ -351,7 +365,18 @@ let permission_object_no_role = {
         insert: {
         }
     }
-}
+};
+
+describe('Test appendSystemTablesToRole function', function () {
+    it('validate permissions are added for system tables.', function (done) {
+        let role_temp = test_utils.deepClone(VALID_ROLE);
+        let temp_append = auth.__get__('appendSystemTablesToRole');
+        temp_append(role_temp);
+        assert.notEqual(role_temp.permission.system.tables, undefined, 'expected system tables to be created');
+        assert.notEqual(role_temp.permission.system.tables.hdb_role, undefined, 'expected system tables to be created');
+        done();
+    });
+});
 
 describe('Test checkPermissions function', function () {
     it('validate permission object, should get error when object is incomplete ', function (done) {
@@ -448,5 +473,4 @@ describe('Test checkPermissions function', function () {
             done();
         });
     });
-        
 });

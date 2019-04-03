@@ -133,10 +133,13 @@ function verifyPermsAst(ast, user, operation) {
             harper_logger.info(`No schemas defined in verifyPermsAst(), will not continue.`);
             throw new Error(ERR_PROCESSING);
         }
-        if(user.role.permission.super_user) {
-            //admins can do anything through the hole in sheet!
+        // set to true if this operation affects a system table.  Only su can read from system tables, but can't update/delete.
+        let is_su_system_operation = schemas.includes('system');
+        if(user.role.permission.super_user && !is_su_system_operation) {
+            //admins can do (almost) anything through the hole in sheet!
             return true;
         }
+
         for(let s = 0; s<schemas.length; s++) {
             let tables = parsed_ast.getTablesBySchemaName(schemas[s]);
             if(!tables) {
@@ -171,8 +174,10 @@ function hasPermissions(user, op, schema_table_map ) {
         harper_logger.info(`hasPermissions has an invalid parameter`);
         throw new Error(ERR_PROCESSING);
     }
-    if(user.role.permission.super_user) {
-         //admins can do anything through the hole in sheet!
+    // set to true if this operation affects a system table.  Only su can read from system tables, but can't update/delete.
+    let is_su_system_operation = schema_table_map.has('system');
+    if(user.role.permission.super_user && !is_su_system_operation) {
+         //admins can do (almost) anything through the hole in sheet!
         return true;
     }
     if(!required_permissions.get(op) || (required_permissions.get(op) && required_permissions.get(op).requires_su)) {
@@ -240,8 +245,14 @@ function verifyPerms(request_json, operation) {
     let schema_table_map = new Map();
     schema_table_map.set(schema, [table]);
 
-    if(request_json.hdb_user.role.permission.super_user) {
-        //admins can do anything through the hole in sheet!
+    if(common_utils.isEmptyOrZeroLength(request_json.hdb_user.role) || common_utils.isEmptyOrZeroLength(request_json.hdb_user.role.permission)) {
+        harper_logger.error(`User ${request_json.hdb_user.username }has no role or permissions.  Please assign the user a valid role.`);
+        return false;
+    }
+    // set to true if this operation affects a system table.  Only su can read from system tables, but can't update/delete.
+    let is_su_system_operation = schema_table_map.has('system');
+    if(request_json.hdb_user.role.permission.super_user && !is_su_system_operation) {
+        //admins can do (almost) anything through the hole in sheet!
         return true;
     }
     // go
@@ -276,7 +287,7 @@ function checkAttributePerms(record_attributes, role_attribute_restrictions, ope
     //TODO: Replace with common utils empty check when it is merged
     // leave early if the role has no attribute permissions set
     if(!role_attribute_restrictions || role_attribute_restrictions.size === 0) {
-        harper_logger.info(`No role restructions set (this is OK).`);
+        harper_logger.info(`No role restrictions set (this is OK).`);
         return true;
     }
 

@@ -3,6 +3,7 @@
 const fs_write_file = require('fs-extra').writeFile;
 const fs_link= require('fs-extra').link;
 const logger = require('../logging/harper_logger');
+const _ = require('lodash');
 
 module.exports = writeFiles;
 
@@ -12,6 +13,14 @@ module.exports = writeFiles;
  * @returns {Promise<void>}
  */
 async function writeFiles(files) {
+    let chunks = _.chunk(files, 10000);
+
+    for(let chunk of chunks){
+        await work(chunk);
+    }
+}
+
+async function work(files){
     await Promise.all(
         files.map(async file => {
             try {
@@ -27,4 +36,4 @@ async function writeFiles(files) {
     );
 
     files = null;
-};
+}

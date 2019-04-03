@@ -13,8 +13,7 @@ const h_utils = require('../utility/common_utils');
 const search = require('./search');
 const logger = require('../utility/logging/harper_logger');
 const _ = require('lodash');
-const PropertiesReader = require('properties-reader');
-const autocast = require('autocast');
+const env = require('../utility/environment/environmentManager');
 const hdb_terms = require('../utility/hdbTerms');
 const mkdirp = require('../utility/fs/mkdirp');
 const write_file = require('../utility/fs/writeFile');
@@ -26,16 +25,22 @@ const ExplodedObject = require('./ExplodedObject');
 const WriteProcessorObject = require('./WriteProcessorObject');
 const HDB_Pool = require('threads').Pool;
 
-let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
-hdb_properties.append(hdb_properties.get('settings_path'));
-
-const hdb_path = path.join(hdb_properties.get('HDB_ROOT'), '/schema');
+// Search is used in the installer, and the base path may be undefined when search is instantiated.  Dynamically
+// get the base path from the environment manager before using it.
+let hdb_path = function() {
+    return `${env.getHdbBasePath()}/schema/`;
+};
 
 //This is an internal value that should not be written to the DB.
 //const HDB_PATH_KEY = hdb_terms.INSERT_MODULE_ENUM.HDB_PATH_KEY;
 const CHUNK_SIZE = hdb_terms.INSERT_MODULE_ENUM.CHUNK_SIZE;
 
+//for release 2.0 we need to turn off threading.  this variable will control the enable/disable
+const ENABLE_THREADING = false;
+
 const INTERNAL_ERROR_MESSAGE = 'An internal error occurred, please check the logs for more information.';
+
+const ATTRIBUTE_ALREADY_EXISTS = 'attribute already exists';
 
 module.exports = {
     insertCB: insertDataCB,
@@ -72,7 +77,7 @@ async function validation(write_object){
     //validate insert_object for required attributes
     let validator = insert_validator(write_object);
     if (validator) {
-        throw new Error(validator);
+        throw validator;
     }
 
     if(!Array.isArray(write_object.records)) {
@@ -83,11 +88,11 @@ async function validation(write_object){
     let dups = new Set();
     let attributes = {};
     write_object.records.forEach((record)=>{
-        if(!h_utils.isEmpty(record[hash_attribute]) && record[hash_attribute] !== '' && dups.has(autocast(record[hash_attribute]))){
+        if(!h_utils.isEmpty(record[hash_attribute]) && record[hash_attribute] !== '' && dups.has(h_utils.autoCast(record[hash_attribute]))){
             record.skip = true;
         }
 
-        dups.add(autocast(record[hash_attribute]));
+        dups.add(h_utils.autoCast(record[hash_attribute]));
 
         for (let attr in record) {
             attributes[attr] = 1;
@@ -259,7 +264,7 @@ async function getExistingRows(table_schema, hashes, attributes){
         return existing_records;
     } catch(e) {
         logger.error(e);
-        throw new Error(INTERNAL_ERROR_MESSAGE);
+        throw new Error(e);
     }
 }
 
@@ -275,7 +280,7 @@ async function getExistingRows(table_schema, hashes, attributes){
  */
 async function processRows(insert_object, attributes, table_schema, epoch, existing_rows, pool){
     let data_wrapper;
-    if(insert_object.records.length > CHUNK_SIZE){
+    if(ENABLE_THREADING === true && insert_object.records.length > CHUNK_SIZE){
         if(!(pool instanceof HDB_Pool)){
             pool = new HDB_Pool();
         }
@@ -290,7 +295,7 @@ async function processRows(insert_object, attributes, table_schema, epoch, exist
         await Promise.all(
             chunks.map(async chunk => {
                 try {
-                    let exploder_object = new WriteProcessorObject(hdb_path, insert_object.operation, chunk, table_schema, attributes, epoch, existing_rows);
+                    let exploder_object = new WriteProcessorObject(hdb_path(), insert_object.operation, chunk, table_schema, attributes, epoch, existing_rows);
 
                     let result = await pool.run('../data_layer/dataWriteProcessor').send(exploder_object).promise();
                     //each process returns an instance of its data we need to consolidate each result
@@ -319,7 +324,7 @@ async function processRows(insert_object, attributes, table_schema, epoch, exist
         chunks = undefined;
         data_wrapper = new ExplodedObject(written_hashes, skipped, Array.from(folders), raw_data, unlinks);
     } else{
-        let exploder_object = new WriteProcessorObject(hdb_path, insert_object.operation, insert_object.records, table_schema, attributes, epoch, existing_rows);
+        let exploder_object = new WriteProcessorObject(hdb_path(), insert_object.operation, insert_object.records, table_schema, attributes, epoch, existing_rows);
         data_wrapper = await exploder(exploder_object);
     }
     data_wrapper.pool = pool;
@@ -333,7 +338,7 @@ async function processRows(insert_object, attributes, table_schema, epoch, exist
  */
 async function unlinkFiles(unlink_paths, pool) {
     try {
-        if (unlink_paths.length > CHUNK_SIZE) {
+        if (ENABLE_THREADING === true && unlink_paths.length > CHUNK_SIZE) {
             if(!(pool instanceof HDB_Pool)){
                 pool = new HDB_Pool();
             }
@@ -367,7 +372,7 @@ async function processData(data_wrapper, pool) {
  */
 async function writeRawDataFiles(data, pool) {
     try {
-        if (data.length > CHUNK_SIZE) {
+        if (ENABLE_THREADING === true && data.length > CHUNK_SIZE) {
             if(!(pool instanceof HDB_Pool)){
                 pool = new HDB_Pool();
             }
@@ -389,7 +394,7 @@ async function writeRawDataFiles(data, pool) {
  */
 async function createFolders(folders, pool) {
     try {
-        if (folders.length > CHUNK_SIZE) {
+        if (ENABLE_THREADING === true && folders.length > CHUNK_SIZE) {
             if(!(pool instanceof HDB_Pool)){
                 pool = new HDB_Pool();
             }
@@ -439,7 +444,7 @@ async function checkForNewAttributes(hdb_auth_header, table_schema, data_attribu
         );
     } catch(e){
         logger.error(e);
-        throw new Error(INTERNAL_ERROR_MESSAGE);
+        throw new Error(e);
     }
 }
 
@@ -488,8 +493,13 @@ async function createNewAttribute(hdb_auth_header,schema, table, attribute) {
 
     try {
         await p_create_attribute(attribute_object);
-    } catch(e) {
-        logger.error(e);
+    } catch(e){
+        //if the attribute already exists we do not want to stop the insert
+        if(typeof e === 'string' && e.indexOf(ATTRIBUTE_ALREADY_EXISTS) > -1){
+            logger.warn(e);
+        } else {
+            throw e;
+        }
     }
 }
 

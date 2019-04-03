@@ -224,7 +224,7 @@ function stringifyProps(prop_reader_object, comments) {
             if (tokens && tokens.length > 1) {
                 if (section !== tokens[0]) {
                     section = tokens[0];
-                    lines += ('[' + section + ']');
+                    lines += ('\t' + section + os.EOL);
                 }
                 key = tokens.slice(1).join('.');
             } else {

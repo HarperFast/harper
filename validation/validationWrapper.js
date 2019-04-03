@@ -22,5 +22,5 @@ function validateObject(object, file_constraints) {
 
     let validate_result = validate(object, file_constraints, {format: 'flat'});
     if (!validate_result) return null;
-    else return new Error(validate_result);
+    return new Error(validate_result);
 }

@@ -1,22 +1,25 @@
 'use strict';
-const fs = require('graceful-fs'),
-    PropertiesReader = require('properties-reader');
+const fs = require('graceful-fs');
+const env = require('../utility/environment/environmentManager');
 
-const search_validator = require('../validation/searchValidator.js'),
-    async = require('async'),
-    logger = require('../utility/logging/harper_logger'),
-    file_search = require('../lib/fileSystem/fileSearch'),
-    FileSearch = require('../lib/fileSystem/SQLSearch'),
-    _ = require('lodash'),
-    condition_patterns = require('../sqlTranslator/conditionPatterns'),
-    autocast = require('autocast'),
-    math = require('mathjs'),
-    system_schema = require('../json/systemSchema.json'),
-    SelectValidator = require('../sqlTranslator/SelectValidator');
+const search_validator = require('../validation/searchValidator.js');
+const async = require('async');
+const logger = require('../utility/logging/harper_logger');
+const file_search = require('../lib/fileSystem/fileSearch');
+const FileSearch = require('../lib/fileSystem/SQLSearch');
+const _ = require('lodash');
+const condition_patterns = require('../sqlTranslator/conditionPatterns');
+const {autoCast} = require('../utility/common_utils');
+const math = require('mathjs');
+const system_schema = require('../json/systemSchema.json');
+const SelectValidator = require('../sqlTranslator/SelectValidator');
 
-let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
-hdb_properties.append(hdb_properties.get('settings_path'));
-const base_path = hdb_properties.get('HDB_ROOT') + "/schema/";
+//let base_path = env.get('HDB_ROOT') + "/schema/";
+// Search is used in the installer, and the base path may be undefined when search is instantiated.  Dynamically
+// get the base path from the environment manager before using it.
+let base_path = function() {
+    return `${env.getHdbBasePath()}/schema/`;
+};
 
 math.import([
     require('../utility/functions/math/count'),
@@ -39,7 +42,7 @@ function searchByHash(search_object, callback){
             return;
         }
         
-        let table_path = `${base_path}${search_object.schema}/${search_object.table}/`;
+        let table_path = `${base_path()}${search_object.schema}/${search_object.table}/`;
         evaluateTableAttributes(search_object.get_attributes, search_object, (error, attributes) => {
             if (error) {
                 callback(error);
@@ -100,7 +103,7 @@ function searchByValue (search_object, callback) {
             name: search_object.table,
             schema: search_object.schema,
             hash_attribute: hash_attribute
-        }, base_path);
+        }, base_path());
 
         evaluateTableAttributes(search_object.get_attributes, search_object, (err, attributes) => {
             if (err) {
@@ -154,7 +157,7 @@ function searchByConditions(search_object, callback){
 
             async.waterfall([
                 multiConditionSearch.bind(null, search_object.conditions, table_schema),
-                getAttributeFiles.bind(null, attributes, `${base_path}${table_schema.schema}/${table_schema.name}/`),
+                getAttributeFiles.bind(null, attributes, `${base_path()}${table_schema.schema}/${table_schema.name}/`),
                 consolidateData.bind(null, table_schema.hash_attribute)
             ], (error, data) => {
                 if (error) {
@@ -185,7 +188,7 @@ function multiConditionSearch(conditions, table_schema, callback){
             }
 
 
-            let pattern = condition_patterns.createPatterns(condition, table_schema, base_path);
+            let pattern = condition_patterns.createPatterns(condition, table_schema, base_path());
 
             file_search.findIDsByRegex(pattern.folder_search_path, pattern.folder_search, pattern.blob_search, (err, results) => {
                 if (err) {
@@ -227,7 +230,7 @@ function search(statement, callback){
         let validator = new SelectValidator(statement);
         validator.validate();
 
-        let search = new FileSearch(validator.statement, validator.attributes, base_path);
+        let search = new FileSearch(validator.statement, validator.attributes, base_path());
         let search_results = undefined;
 
         search.search().then( (data) => {
@@ -319,16 +322,7 @@ function readAttributeFiles(table_path, attribute, hash_files, callback){
                 return;
             }
 
-            let value = autocast(data.toString());
-            //autocast is unable to convert string to object/array so we need to figure it out
-            if(typeof value === 'string'){
-                if((value.startsWith('{') && value.endsWith('}')) || (value.startsWith('[') && value.endsWith(']'))){
-                    try{
-                        value = JSON.parse(value);
-                    }catch(e){
-                    }
-                }
-            }
+            let value = autoCast(data.toString());
 
             attribute_data[file]=value;
             caller();
@@ -370,7 +364,7 @@ function evaluateTableAttributes(get_attributes, table_info, callback){
 }
 
 function getAllAttributeNames(table_info, callback){
-    let search_path = `${base_path}${table_info.schema}/${table_info.table}/__hdb_hash/`;
+    let search_path = `${base_path()}${table_info.schema}/${table_info.table}/__hdb_hash/`;
 
     file_search.findDirectoriesByRegex(search_path, /.*/, (err, folders)=>{
         if(err){

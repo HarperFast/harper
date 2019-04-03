@@ -1,23 +1,23 @@
 "use strict"
 const path = require('path');
-const cast = require('autocast');
 const log = require('./logging/harper_logger');
 const fs_extra = require('fs-extra');
 const truncate = require('truncate-utf8-bytes');
 const os = require('os');
+const terms = require('./hdbTerms');
 const { promisify } = require('util');
-const {PERIOD_REGEX,
-    DOUBLE_PERIOD_REGEX,
-    UNICODE_PERIOD,
-    FORWARD_SLASH_REGEX,
-    UNICODE_FORWARD_SLASH,
-    ESCAPED_FORWARD_SLASH_REGEX,
-    ESCAPED_PERIOD_REGEX,
-    ESCAPED_DOUBLE_PERIOD_REGEX} = require('./hdbTerms');
 
 const EMPTY_STRING = '';
-
+const FILE_EXTENSION_LEGNTH = 4;
 const CHARACTER_LIMIT = 255;
+
+const AUTOCAST_COMMON_STRINGS = {
+    'true': true,
+    'false': false,
+    'undefined': undefined,
+    'null': null,
+    'NaN': NaN
+};
 
 
 module.exports = {
@@ -36,7 +36,9 @@ module.exports = {
     unescapeValue: unescapeValue,
     stringifyProps: stringifyProps,
     valueConverter: valueConverter,
-    timeoutPromise: timeoutPromise
+    timeoutPromise: timeoutPromise,
+    callProcessSend: callProcessSend,
+    isClusterOperation: isClusterOperation
 };
 
 /**
@@ -129,7 +131,6 @@ function isBoolean(value){
     if(value === true || value === false){
         return true;
     }
-
     return false;
 }
 
@@ -143,7 +144,7 @@ function stripFileExtension(file_name) {
     if(isEmptyOrZeroLength(file_name)) {
         return EMPTY_STRING;
     }
-    return file_name.substr(0, file_name.length-4);
+    return file_name.substr(0, file_name.length-FILE_EXTENSION_LEGNTH);
 }
 
 /**
@@ -156,19 +157,32 @@ function autoCast(data){
         return data;
     }
 
-    let value = cast(data);
+    //if this is already typed other than string, return data
+    if(typeof data !== 'string'){
+        return data;
+    }
+
+    // Try to make it a common string
+    if ((data === 'undefined' && AUTOCAST_COMMON_STRINGS[data] === undefined) || AUTOCAST_COMMON_STRINGS[data] !== undefined) {
+        return AUTOCAST_COMMON_STRINGS[data];
+    }
+
+    // Try to cast it to a number
+    let to_number;
+    if ((to_number = +data) == to_number) {
+        return to_number;
+    }
 
     //in order to handle json and arrays we test the string to see if it seems minimally like an object or array and perform a JSON.parse on it.
     //if it fails we assume it is just a regular string
-    if(typeof value === 'string'){
-        if((value.startsWith('{') && value.endsWith('}')) || (value.startsWith('[') && value.endsWith(']'))){
-            try{
-                value = JSON.parse(value);
-            } catch(e) {
-            }
+    if((data.startsWith('{') && data.endsWith('}')) || (data.startsWith('[') && data.endsWith(']'))){
+        try{
+            data = JSON.parse(data);
+        } catch(e) {
+            //no-op
         }
     }
-    return value;
+    return data;
 }
 
 /**
@@ -236,14 +250,14 @@ function escapeRawValue(value){
     let the_value = String(value);
 
     if(the_value === '.') {
-        return UNICODE_PERIOD;
+        return terms.UNICODE_PERIOD;
     }
 
     if(the_value === '..') {
-        return UNICODE_PERIOD + UNICODE_PERIOD;
+        return terms.UNICODE_PERIOD + terms.UNICODE_PERIOD;
     }
 
-    return the_value.replace(FORWARD_SLASH_REGEX, UNICODE_FORWARD_SLASH);
+    return the_value.replace(terms.FORWARD_SLASH_REGEX, terms.UNICODE_FORWARD_SLASH);
 }
 
 /**
@@ -258,15 +272,15 @@ function unescapeValue(value){
 
     let the_value = String(value);
 
-    if(the_value === UNICODE_PERIOD) {
+    if(the_value === terms.UNICODE_PERIOD) {
         return '.';
     }
 
-    if(the_value === UNICODE_PERIOD + UNICODE_PERIOD) {
+    if(the_value === terms.UNICODE_PERIOD + terms.UNICODE_PERIOD) {
         return '..';
     }
 
-    return String(value).replace(ESCAPED_FORWARD_SLASH_REGEX, '/');
+    return String(value).replace(terms.ESCAPED_FORWARD_SLASH_REGEX, '/');
 }
 
 /**
@@ -282,7 +296,6 @@ function stringifyProps(prop_reader_object, comments) {
         return '';
     }
     let lines = '';
-    let section = null;
     prop_reader_object.each(function (key, value) {
         try {
             if (comments && comments[key]) {
@@ -350,4 +363,30 @@ function timeoutPromise(ms, msg, action_function) {
             clearTimeout(timeout);
         }
     };
+}
+
+/**
+ * Wrapper function for process.send, will catch cases where master tries to send an IPC message.
+ * @param process_msg - The message to send.
+ */
+function callProcessSend(process_msg) {
+    if(process.send === undefined || global.isMaster) {
+        log.error('Tried to call process.send() but process.send is undefined.');
+        return;
+    }
+    process.send(process_msg);
+}
+
+/**
+ * Returns true if a given operation name is a cluster operation.  Should always return a boolean.
+ * @param operation_name - the operation name being called
+ * @returns {boolean|*}
+ */
+function isClusterOperation(operation_name) {
+    try {
+        return terms.CLUSTER_OPERATIONS[operation_name.toLowerCase()] !== undefined;
+    } catch(err) {
+        log.error(`Error checking operation against cluster ops ${err}`);
+    }
+    return false;
 }

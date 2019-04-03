@@ -10,8 +10,7 @@ const delete_ = require('../data_layer/delete');
     // insert needs the describe all function but so does this module.
     // as such the functions have been broken out into a separate module.
 const schema_describe = require('./schemaDescribe');
-const schema_ops = require('../utility/schema_ops');
-const PropertiesReader = require('properties-reader');
+const env = require('../utility/environment/environmentManager');
 const clone = require('clone');
 // TODO: Replace this with fs-extra mkdirp and remove module.
 const mkdirp = require('mkdirp');
@@ -22,9 +21,7 @@ const {promisify} = require('util');
 const {inspect} = require('util');
 const hdb_util = require('../utility/common_utils');
 const terms = require('../utility/hdbTerms');
-
-let hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
-hdb_properties.append(hdb_properties.get('settings_path'));
+const common = require('../utility/common_utils');
 
 // Promisified functions
 let p_search_search_by_value = promisify(search.searchByValue);
@@ -38,7 +35,7 @@ const ENTITY_TYPE_ENUM = {
 };
 
 const DATE_SUBSTR_LENGTH = 19;
-const TRASH_BASE_PATH = `${hdb_properties.get('HDB_ROOT')}/trash/`;
+const TRASH_BASE_PATH = `${env.get('HDB_ROOT')}/trash/`;
 
 module.exports = {
     createSchema: createSchema,
@@ -106,7 +103,7 @@ function createSchemaStructure(schema_create_object, callback) {
                     return;
                 }
                 let schema = schema_create_object.schema;
-                fs.mkdir(hdb_properties.get('HDB_ROOT') + '/schema/' + schema, function (err, data) {
+                fs.mkdir(env.get('HDB_ROOT') + '/schema/' + schema, function (err, data) {
                     if (err) {
                         if (err.errno === -17) {
                             callback("schema already exists", null);
@@ -212,7 +209,7 @@ function createTableStructure(create_table_object, callback) {
                     return;
                 }
 
-                fs.mkdir(hdb_properties.get('HDB_ROOT') + '/schema/' + create_table_object.schema + '/' + create_table_object.table, function (err, data) {
+                fs.mkdir(env.get('HDB_ROOT') + '/schema/' + create_table_object.schema + '/' + create_table_object.table, function (err, data) {
                     if (err) {
                         if (err.errno === -2) {
                             callback("schema does not exist", null);
@@ -426,7 +423,7 @@ function buildDropSchemaSearchObject(schema, msg, callback) {
 function moveSchemaToTrash(drop_schema_object, tables, callback) {
     if(!drop_schema_object) { return callback("drop_table_object was not found.");}
     if(!tables) { return callback("tables parameter was null.")}
-    let root_path = hdb_properties.get('HDB_ROOT');
+    let root_path = env.get('HDB_ROOT');
     let path = `${root_path}/schema/${drop_schema_object.schema}`;
     let currDate = new Date().toISOString().substr(0, DATE_SUBSTR_LENGTH);
     let destination_name = `${drop_schema_object.schema}-${currDate}`;
@@ -514,20 +511,19 @@ function buildDropTableObject (drop_table_object, data, callback) {
  * @param callback - Callback function.
  */
 function moveTableToTrash (drop_table_object, msg, callback) {
-    let path = `hdb_properties.get('HDB_ROOT')/schema/${drop_table_object.schema}/${drop_table_object.table}`;
     let currDate = new Date().toISOString().substr(0, DATE_SUBSTR_LENGTH);
     let destination_name = `${drop_table_object.table}-${currDate}`;
-    let trash_path = `${hdb_properties.get('HDB_ROOT')}/trash`;
+    let trash_path = `${env.get('HDB_ROOT')}/trash`;
     mkdirp(trash_path, function checkTrashDir(err) {
         if (err) {
             return callback(err);
         }
-        fs.move(`${hdb_properties.get('HDB_ROOT')}/schema/${drop_table_object.schema}/${drop_table_object.table}`,
-            `${hdb_properties.get('HDB_ROOT')}/trash/${destination_name}`, function moveToTrash(err) {
+        fs.move(`${env.get('HDB_ROOT')}/schema/${drop_table_object.schema}/${drop_table_object.table}`,
+            `${env.get('HDB_ROOT')}/trash/${destination_name}`, function moveToTrash(err) {
                 if (err) {
                     return callback(err);
                 } else {
-                    callback(null, drop_table_object);
+                    return callback(null, drop_table_object);
                 }
             });
     });
@@ -577,10 +573,10 @@ async function dropAttributeFromSystem(drop_attribute_object) {
  */
 async function moveAttributeToTrash (drop_attribute_object) {
     // TODO: Need to do specific rollback actions if any of the actions below fails.  https://harperdb.atlassian.net/browse/HDB-312
-    let path = `${hdb_properties.get('HDB_ROOT')}/schema/${drop_attribute_object.schema}/${drop_attribute_object.table}/${drop_attribute_object.attribute}`;
-    let hash_path = `${hdb_properties.get('HDB_ROOT')}/schema/${drop_attribute_object.schema}/${drop_attribute_object.table}/${terms.HASH_FOLDER_NAME}/${drop_attribute_object.attribute}`;
+    let path = `${env.get('HDB_ROOT')}/schema/${drop_attribute_object.schema}/${drop_attribute_object.table}/${drop_attribute_object.attribute}`;
+    let hash_path = `${env.get('HDB_ROOT')}/schema/${drop_attribute_object.schema}/${drop_attribute_object.table}/${terms.HASH_FOLDER_NAME}/${drop_attribute_object.attribute}`;
     let currDate = new Date().toISOString().substr(0, DATE_SUBSTR_LENGTH);
-    let attribute_trash_path = `${hdb_properties.get('HDB_ROOT')}/trash/${ENTITY_TYPE_ENUM.ATTRIBUTE}/${drop_attribute_object.attribute}-${currDate}`;
+    let attribute_trash_path = `${env.get('HDB_ROOT')}/trash/${ENTITY_TYPE_ENUM.ATTRIBUTE}/${drop_attribute_object.attribute}-${currDate}`;
     let attribute_hash_trash_path = `${attribute_trash_path}/${terms.HASH_FOLDER_NAME}/${drop_attribute_object.attribute}`;
 
     let att_result = await moveFolderToTrash(path, attribute_trash_path).catch((err) => {
@@ -811,14 +807,10 @@ function createAttribute(create_attribute_object, callback) {
                     "body": create_attribute_object
                 };
 
-                if(process.send === undefined){
-                    logger.debug('trying to send payload: ' + JSON.stringify(payload) + ' but there is no process.send for pid ');
-                } else {
-                    try {
-                        process.send(payload);
-                    } catch(e){
-                        logger.error(e);
-                    }
+                try {
+                    common.callProcessSend(payload);
+                } catch(e) {
+                    logger.error(e);
                 }
 
                 signalling.signalSchemaChange({type: 'schema'});
