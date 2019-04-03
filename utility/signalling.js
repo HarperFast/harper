@@ -1,6 +1,7 @@
 const harper_logger = require('../utility/logging/harper_logger');
 const global_schema = require('../utility/globalSchema');
 const terms = require('./hdbTerms');
+const common = require('./common_utils');
 
 class JobAddedSignalObject {
     constructor(job_id, runner_message) {
@@ -117,7 +118,8 @@ function signalRestart(force) {
 
         // if process.send is undefined we are running a single instance of the process.
         if (process.send !== undefined && !global.isMaster) {
-            process.send(new RestartSignalObject(force));
+            //process.send(new RestartSignalObject(force));
+            common.callProcessSend(new RestartSignalObject(force));
         } else {
             err = 'Only 1 process is running, but a signal has been invoked.  Signals will be ignored when only 1 process is running.';
             harper_logger.warn(err);

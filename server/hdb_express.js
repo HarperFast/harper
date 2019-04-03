@@ -63,16 +63,16 @@ let os_cpus = undefined;
 
 //in an instance of having HDB installed on an android devices we don't have access to the cpu info so we need to handle the error and move on
 try {
-    num_hdb_processes = env.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES);
+    num_hdb_processes = env.get(terms.HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES);
     os_cpus = os.cpus().length;
     num_workers = ((num_hdb_processes && num_hdb_processes > 0) ? num_hdb_processes: os_cpus);
     // don't allow more processes than the machine has cores.
     if(num_workers > os_cpus) {
         num_workers = os_cpus;
-        harper_logger.info(`${hdb_terms.HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES} setting is higher than the number of cores on this machine (${os_cpus}).  Settings number of processes to ${os_cpus}`);
+        harper_logger.info(`${terms.HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES} setting is higher than the number of cores on this machine (${os_cpus}).  Settings number of processes to ${os_cpus}`);
     }
 } catch(e){
-    num_workers = hdb_terms.HDB_SETTINGS_DEFAULT_VALUES.MAX_HDB_PROCESSES;
+    num_workers = terms.HDB_SETTINGS_DEFAULT_VALUES.MAX_HDB_PROCESSES;
     if(num_hdb_processes) {
         num_workers = num_hdb_processes;
     }
@@ -155,6 +155,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         try {
             restart_event_tracker.sio_connections_stopped = true;
             if(restart_event_tracker.isReadyForRestart()) {
+                harper_logger.info("*********** READY FOR RESTART ***********");
                 // TODO: Call restart function
             }
         } catch(err) {
@@ -223,12 +224,11 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     const cors = require('cors');
 
     const app = express();
-    hdb_properties.append(hdb_properties.get('settings_path'));
     global.clusterMsgQueue = [];
     let enterprise = false;
     global.clustering_on = false;
-    let props_cors = hdb_properties.get(PROPS_CORS_KEY);
-    let props_cors_whitelist = hdb_properties.get(PROPS_CORS_WHITELIST_KEY);
+    let props_cors = env.get(PROPS_CORS_KEY);
+    let props_cors_whitelist = env.get(PROPS_CORS_WHITELIST_KEY);
 
     if (props_cors && (props_cors === true || props_cors.toUpperCase() === TRUE_COMPARE_VAL)) {
         let cors_options = {
@@ -252,9 +252,9 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     app.use(bodyParser.urlencoded({extended: true}));
     app.use(function (error, req, res, next) {
         if (error instanceof SyntaxError) {
-            res.status(hdb_terms.HTTP_STATUS_CODES.BAD_REQUEST).send({error: 'invalid JSON: ' + error.message.replace('\n', '')});
+            res.status(terms.HTTP_STATUS_CODES.BAD_REQUEST).send({error: 'invalid JSON: ' + error.message.replace('\n', '')});
         } else if (error) {
-            res.status(hdb_terms.HTTP_STATUS_CODES.BAD_REQUEST).send({error: error.message});
+            res.status(terms.HTTP_STATUS_CODES.BAD_REQUEST).send({error: error.message});
         } else {
             next();
         }
@@ -273,19 +273,19 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         // Per the body-parser docs, any request which does not match the bodyParser.json middleware will be returned with
         // an empty body object.
         if(!req.body || Object.keys(req.body).length === 0) {
-            return res.status(hdb_terms.HTTP_STATUS_CODES.BAD_REQUEST).send({error: "Invalid JSON."});
+            return res.status(terms.HTTP_STATUS_CODES.BAD_REQUEST).send({error: "Invalid JSON."});
         }
         let enterprise_operations = ['add_node'];
         if ((req.headers.harperdb_connection || enterprise_operations.indexOf(req.body.operation) > -1) && !enterprise) {
-            return res.status(hdb_terms.HTTP_STATUS_CODES.UNAUTHORIZED).json({"error": "This feature requires an enterprise license.  Please register or contact us at hello@harperdb.io for more info."});
+            return res.status(terms.HTTP_STATUS_CODES.UNAUTHORIZED).json({"error": "This feature requires an enterprise license.  Please register or contact us at hello@harperdb.io for more info."});
         }
         auth.authorize(req, res, function (err, user) {
             if (err) {
                 harper_logger.warn(`{"ip":"${req.connection.remoteAddress}", "error":"${err.stack}"`);
                 if (typeof err === 'string') {
-                    return res.status(hdb_terms.HTTP_STATUS_CODES.UNAUTHORIZED).send({error: err});
+                    return res.status(terms.HTTP_STATUS_CODES.UNAUTHORIZED).send({error: err});
                 }
-                return res.status(hdb_terms.HTTP_STATUS_CODES.UNAUTHORIZED).send(err);
+                return res.status(terms.HTTP_STATUS_CODES.UNAUTHORIZED).send(err);
             }
             req.body.hdb_user = user;
             req.body.hdb_auth_header = req.headers.authorization;
@@ -294,12 +294,12 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                 if (err) {
                     harper_logger.error(err);
                     if(err === server_utilities.UNAUTH_RESPONSE) {
-                        return res.status(hdb_terms.HTTP_STATUS_CODES.FORBIDDEN).send({error: server_utilities.UNAUTHORIZED_TEXT});
+                        return res.status(terms.HTTP_STATUS_CODES.FORBIDDEN).send({error: server_utilities.UNAUTHORIZED_TEXT});
                     }
                     if (typeof err === 'string') {
-                        return res.status(hdb_terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send({error: err});
+                        return res.status(terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send({error: err});
                     }
-                    return res.status(hdb_terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send(err);
+                    return res.status(terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send(err);
                 }
                 let localOnlyOperations = ['describe_all', 'describe_table', 'describe_schema', 'read_log', 'add_node'];
 
@@ -310,7 +310,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                         || req.body.operation === 'drop_table'
                         || req.body.operation === 'delete_files_before'
                     ) {
-                        if (hdb_terms.LOCAL_HARPERDB_OPERATIONS.includes(req.body.operation)) {
+                        if (terms.LOCAL_HARPERDB_OPERATIONS.includes(req.body.operation)) {
                             harper_logger.info('local only operation: ' + req.body.operation);
                             server_utilities.processLocalTransaction(req, res, operation_function, function (err) {
                                 if(err){
@@ -338,7 +338,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                         global_schema.getTableSchema(req.body.schema, req.body.table, function (err, table) {
                             if (err) {
                                 harper_logger.error(err);
-                                return res.status(hdb_terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send(err);
+                                return res.status(terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send(err);
                             }
                             if (table.residence) {
                                 let residence = table.residence;
@@ -360,11 +360,11 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                                     });
                                 } else {
 
-                                    if (residence.indexOf(hdb_properties.get('NODE_NAME')) > -1) {
+                                    if (residence.indexOf(env.get('NODE_NAME')) > -1) {
                                         server_utilities.processLocalTransaction(req, res, operation_function, function (err) {
                                             if (residence.length > 1) {
                                                 for (let node in residence) {
-                                                    if (residence[node] !== hdb_properties.get('NODE_NAME')) {
+                                                    if (residence[node] !== env.get('NODE_NAME')) {
 
                                                         let id = uuidv1();
                                                         process.send({
@@ -380,7 +380,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                                         });
                                     } else {
                                         for (let node in residence) {
-                                            if (residence[node] !== hdb_properties.get('NODE_NAME')) {
+                                            if (residence[node] !== env.get('NODE_NAME')) {
                                                 harper_logger.debug(`Got a message for a table with a remote residence ${residence[node]}.  Broadcasting to cluster`);
                                                 let id = uuidv1();
                                                 global.clusterMsgQueue[id] = res;
@@ -394,10 +394,10 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                                                         "node": {"name": residence[node]}
                                                     });
                                                     // We need to manually set and send the status here, as processLocal isn't called.
-                                                    return res.status(hdb_terms.HTTP_STATUS_CODES.OK).send({message: `Specified table has residence on node: ${residence[node]}, broadcasting message to cluster.`});
+                                                    return res.status(terms.HTTP_STATUS_CODES.OK).send({message: `Specified table has residence on node: ${residence[node]}, broadcasting message to cluster.`});
                                                 } catch(err) {
                                                     harper_logger.error(err);
-                                                    return res.status(hdb_terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send({error: err.message});
+                                                    return res.status(terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send({error: err.message});
                                                 }
                                             }
                                         }
@@ -411,11 +411,11 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                         });
                     }
                 } else if(req.body.schema && req.body.table
-                    && req.body.operation !== 'create_table' && req.body.operation !=='drop_table' && !hdb_terms.LOCAL_HARPERDB_OPERATIONS.includes(req.body.operation) ) {
+                    && req.body.operation !== 'create_table' && req.body.operation !=='drop_table' && !terms.LOCAL_HARPERDB_OPERATIONS.includes(req.body.operation) ) {
 
                     global_schema.getTableSchema(req.body.schema, req.body.table, function (err, table) {
 
-                        if(!table || !table.residence || table.residence.indexOf(hdb_properties.get('NODE_NAME')) > -1){
+                        if(!table || !table.residence || table.residence.indexOf(env.get('NODE_NAME')) > -1){
                             server_utilities.processLocalTransaction(req, res, operation_function, function () {
                             });
                         }else{
@@ -446,9 +446,9 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                                     });
                                 }, function(err){
                                     if(err){
-                                        return res.status(hdb_terms.HTTP_STATUS_CODES.NOT_IMPLEMENTED).send(err);
+                                        return res.status(terms.HTTP_STATUS_CODES.NOT_IMPLEMENTED).send(err);
                                     }
-                                    return res.status(hdb_terms.HTTP_STATUS_CODES.CREATED).send('{"message":"clustering is down. request has been queued and will be processed when clustering reestablishes.  "}');
+                                    return res.status(terms.HTTP_STATUS_CODES.CREATED).send('{"message":"clustering is down. request has been queued and will be processed when clustering reestablishes.  "}');
                                 });
                             } catch (e) {
                                 harper_logger.error(e);
@@ -495,12 +495,12 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
             case 'cluster_response':
                 if (global.clusterMsgQueue[msg.id]) {
                     if (msg.err) {
-                        global.clusterMsgQueue[msg.id].status(hdb_terms.HTTP_STATUS_CODES.UNAUTHORIZED).json({"error": msg.err});
+                        global.clusterMsgQueue[msg.id].status(terms.HTTP_STATUS_CODES.UNAUTHORIZED).json({"error": msg.err});
                         delete global.clusterMsgQueue[msg.id];
                         break;
                     }
 
-                    global.clusterMsgQueue[msg.id].status(hdb_terms.HTTP_STATUS_CODES.OK).json(msg.data);
+                    global.clusterMsgQueue[msg.id].status(terms.HTTP_STATUS_CODES.OK).json(msg.data);
                     delete global.clusterMsgQueue[msg.id];
                 }
                 break;
@@ -511,7 +511,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                     });
                 });
                 break;
-            case hdb_terms.CLUSTER_MESSAGE_TYPE_ENUM.CLUSTER_STATUS:
+            case terms.CLUSTER_MESSAGE_TYPE_ENUM.CLUSTER_STATUS:
                 harper_logger.info('Got cluster status message via IPC');
                 cluster_event.clusterEmitter.emit(cluster_event.EVENT_NAME, msg.status);
                 break;
@@ -553,12 +553,12 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         const http = require('http');
         const httpsecure = require('https');
 
-        const privateKey = hdb_properties.get(PROPS_PRIVATE_KEY);
-        const certificate = hdb_properties.get(PROPS_CERT_KEY);
+        const privateKey = env.get(PROPS_PRIVATE_KEY);
+        const certificate = env.get(PROPS_CERT_KEY);
         const credentials = {key: fs.readFileSync(`${privateKey}`), cert: fs.readFileSync(`${certificate}`)};
-        const server_timeout = hdb_properties.get(PROPS_SERVER_TIMEOUT_KEY);
-        const props_http_secure_on = hdb_properties.get(PROPS_HTTP_SECURE_ON_KEY);
-        const props_http_on = hdb_properties.get(PROPS_HTTP_ON_KEY);
+        const server_timeout = env.get(PROPS_SERVER_TIMEOUT_KEY);
+        const props_http_secure_on = env.get(PROPS_HTTP_SECURE_ON_KEY);
+        const props_http_on = env.get(PROPS_HTTP_ON_KEY);
 
         global.isMaster = cluster.isMaster;
 
@@ -566,8 +566,8 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
             (props_http_secure_on === true || props_http_secure_on.toUpperCase() === TRUE_COMPARE_VAL)) {
             secureServer = httpsecure.createServer(credentials, app);
             secureServer.setTimeout(server_timeout ? server_timeout : DEFAULT_SERVER_TIMEOUT);
-            secureServer.listen(hdb_properties.get(PROPS_HTTP_SECURE_PORT_KEY), function () {
-                harper_logger.info(`HarperDB ${pjson.version} HTTPS Server running on ${hdb_properties.get(PROPS_HTTP_SECURE_PORT_KEY)}`);
+            secureServer.listen(env.get(PROPS_HTTP_SECURE_PORT_KEY), function () {
+                harper_logger.info(`HarperDB ${pjson.version} HTTPS Server running on ${env.get(PROPS_HTTP_SECURE_PORT_KEY)}`);
                 async.parallel(
                     [
                         global_schema.setSchemaDataToGlobal,
@@ -585,8 +585,8 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
             (props_http_on === true || props_http_on.toUpperCase() === TRUE_COMPARE_VAL)) {
             httpServer = http.createServer(app);
             httpServer.setTimeout(server_timeout ? server_timeout : DEFAULT_SERVER_TIMEOUT);
-            httpServer.listen(hdb_properties.get(PROPS_HTTP_PORT_KEY), function () {
-                harper_logger.info(`HarperDB ${pjson.version} HTTP Server running on ${hdb_properties.get(PROPS_HTTP_PORT_KEY)}`);
+            httpServer.listen(env.get(PROPS_HTTP_PORT_KEY), function () {
+                harper_logger.info(`HarperDB ${pjson.version} HTTP Server running on ${env.get(PROPS_HTTP_PORT_KEY)}`);
                 async.parallel(
                     [
                         global_schema.setSchemaDataToGlobal,
