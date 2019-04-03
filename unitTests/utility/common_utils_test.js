@@ -437,3 +437,27 @@ describe('Test compareVersions', function() {
         assert.ok(should_upgrade < 0, `expected returned value less than than 0`);
     });
 });
+
+describe('Test isClusterOperation', function() {
+    it('Test nominal case of isClusterOperation', function() {
+       assert.equal(cu.isClusterOperation('create_schema'), true, 'Expected true result');
+    });
+    it('Test strange casing in isClusterOperation', function() {
+        assert.equal(cu.isClusterOperation('crEaTe_Schema'), true, 'Expected true result');
+    });
+    it('Test operation not in cluster ops, expect false', function() {
+        assert.equal(cu.isClusterOperation('alter_user'), false, 'Expected false result');
+    });
+    it('Test case, expect true', function() {
+        assert.equal(cu.isClusterOperation('CREATE_SCHEMA'), true, 'Expected true result');
+    });
+    it('Test empty operation, expect false', function() {
+        assert.equal(cu.isClusterOperation(null), false, 'Expected false result');
+    });
+    it('Test undefined operation, expect false', function() {
+        assert.equal(cu.isClusterOperation(undefined), false, 'Expected false result');
+    });
+    it('Test numeric operation, expect false', function() {
+        assert.equal(cu.isClusterOperation(42), false, 'Expected false result');
+    });
+});
