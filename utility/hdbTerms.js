@@ -31,8 +31,8 @@ const HASH_FOLDER_NAME = '__hdb_hash';
 
 const CLUSTERING_VERSION_HEADER_NAME = 'hdb_version';
 
-const RESTART_CODE = 'SIGTERM';
-const RESTART_CODE_NUM = 1;
+const RESTART_CODE = 'SIGTSTP';
+const RESTART_CODE_NUM = 24;
 
 const INSERT_MODULE_ENUM = {
     HDB_PATH_KEY: 'HDB_INTERNAL_PATH',

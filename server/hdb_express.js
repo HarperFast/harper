@@ -29,6 +29,8 @@ const signalling = require('../utility/signalling');
 const moment = require('moment');
 const terms = require('../utility/hdbTerms');
 const RestartEventObject = require('./RestartEventObject');
+const { spawn } = require('child_process');
+const {inspect} = require('util');
 
 const DEFAULT_SERVER_TIMEOUT = 120000;
 const PROPS_SERVER_TIMEOUT_KEY = 'SERVER_TIMEOUT_MS';
@@ -87,7 +89,8 @@ global.isMaster = cluster.isMaster;
 global.clustering_on = false;
 
 cluster.on('exit', (dead_worker, code, signal) => {
-    if(signal === terms.RESTART_CODE || dead_worker.process.signalCode === terms.RESTART_CODE) {
+    if(code === terms.RESTART_CODE_NUM) {
+        harper_logger.info(`Received restart code, disabling process auto restart.`);
         return;
     }
     harper_logger.info(`worker ${dead_worker.process.pid} died with signal ${signal} and code ${code}`);
@@ -144,6 +147,10 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
             restart_event_tracker.express_connections_stopped = true;
             if(restart_event_tracker.isReadyForRestart()) {
                 // TODO: Call restart function
+                harper_logger.warn(`************ RESTARTING HDB ************`);
+                let command = (DEBUG? 'node harperdb' : 'harperdb');
+                harper_logger.warn(`EXECUTING ${inspect(command)}`);
+                const child = spawn(command, ['restart']);
             }
         } catch(err) {
             harper_logger.error(`Error tracking allchildrenstopped event.`);
@@ -157,6 +164,9 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
             if(restart_event_tracker.isReadyForRestart()) {
                 harper_logger.info("*********** READY FOR RESTART ***********");
                 // TODO: Call restart function
+                let command = (DEBUG? 'node harperdb' : 'harperdb');
+                harper_logger.warn(`EXECUTING ${inspect(command)}`);
+                const child = spawn(command, ['restart']);
             }
         } catch(err) {
             harper_logger.error(`Error tracking sio server stopped event.`);
@@ -515,10 +525,22 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                 harper_logger.info('Got cluster status message via IPC');
                 cluster_event.clusterEmitter.emit(cluster_event.EVENT_NAME, msg.status);
                 break;
+            case 'restart1':
+                harper_logger.info(`Server close event received for process ${process.pid}`);
+                harper_logger.debug(`calling shutdown`);
+                shutDown(false).then(() => {
+                    harper_logger.info(`Completed shut down`);
+                    process.exit(terms.RESTART_CODE_NUM);
+                });
+                break;
             default:
                 harper_logger.error(`Received unknown signaling message ${msg.type}, ignoring message`);
                 break;
         }
+    });
+
+    process.on("beforeExit", function(err) {
+       harper_logger.info('exiting...........');
     });
 
     process.on('uncaughtException', function (err) {
@@ -531,13 +553,34 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
 
     let httpServer = undefined;
     let secureServer = undefined;
+    let server_connections = {};
+
+    process.on('close', () => {
+       harper_logger.info(`Server close event received for process ${process.pid}`);
+    });
+
+    process.on('restart1', () => {
+        harper_logger.warn(`Process pid:${process.pid} - !!!!!!!!!!!!!!!RESTART received, closing connections and finishing existing work.`);
+    });
 
     process.on( terms.RESTART_CODE, function() {
+
+    });
+
+    async function shutDown(force_bool) {
+        harper_logger.debug(`calling shutdown`);
         if(httpServer) {
             harper_logger.warn(`Process pid:${process.pid} - SIGINT received, closing connections and finishing existing work.`);
+            harper_logger.info(`There are ${Object.keys(server_connections).length} connections.`);
+            for(let conn of Object.keys(server_connections)) {
+                harper_logger.info(`Closing connection ${inspect(server_connections[conn])}`);
+                let temp = server_connections[conn];
+                server_connections[conn].destroy();
+            }
             httpServer.close(function () {
                 harper_logger.warn(`Process pid:${process.pid} - Work completed, shutting down`);
-                process.exit(terms.RESTART_CODE_NUM);
+                //process.exit(terms.RESTART_CODE_NUM);
+                hdb_util.callProcessSend({type:terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STOPPED, pid: process.pid});
             });
         }
         if(secureServer) {
@@ -547,7 +590,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                 process.exit(terms.RESTART_CODE_NUM);
             });
         }
-    });
+    }
 
     try {
         const http = require('http');
@@ -584,6 +627,14 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         if (props_http_on &&
             (props_http_on === true || props_http_on.toUpperCase() === TRUE_COMPARE_VAL)) {
             httpServer = http.createServer(app);
+            httpServer.on('connection', function(conn) {
+                let key = conn.remoteAddress + ':' + conn.remotePort;
+                server_connections[key] = conn;
+                conn.on('close', function() {
+                    harper_logger.debug(`removing connection for ${key}`);
+                    delete server_connections[key];
+                });
+            });
             httpServer.setTimeout(server_timeout ? server_timeout : DEFAULT_SERVER_TIMEOUT);
             httpServer.listen(env.get(PROPS_HTTP_PORT_KEY), function () {
                 harper_logger.info(`HarperDB ${pjson.version} HTTP Server running on ${env.get(PROPS_HTTP_PORT_KEY)}`);

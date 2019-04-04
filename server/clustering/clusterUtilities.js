@@ -500,9 +500,9 @@ function clusterMessageHandler(msg) {
                 for(let i=0; i<global.forks.length; i++) {
                     if(global.forks[i]) {
                         try {
-                            log.warn(`Sending ${terms.RESTART_CODE} signal to process with pid:${global.forks[i].process.pid}`);
-                            global.forks[i].process.signalCode = terms.RESTART_CODE;
-                            process.kill(global.forks[i].process.pid, terms.RESTART_CODE);
+                            log.debug(`Sending ${terms.RESTART_CODE} signal to process with pid:${global.forks[i].process.pid}`);
+                            //global.forks[i].process.signalCode = terms.RESTART_CODE;
+                            global.forks[i].send({type: "restart1"});
                         } catch(err) {
                             log.error(`Got an error trying to send ${terms.RESTART_CODE} to process ${global.forks[i].process.pid}.`);
                         }
