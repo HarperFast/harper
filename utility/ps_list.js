@@ -2,13 +2,11 @@
 const util = require('util');
 const path = require('path');
 const childProcess = require('child_process');
-
-const TEN_MEGABYTES = 1000 * 1000 * 10;
 const exec_file = util.promisify(childProcess.execFile);
 
-module.exports = {
-    findPs: findPs
-}
+const TEN_MEGABYTES = 1000 * 1000 * 10;
+
+module.exports = findPs;
 
 /**
  * Module spawns child process to search for all running processes.
@@ -36,6 +34,7 @@ async function findPs(name) {
                 ps_list[pid][cmd] = val;
             }
         }));
+
     } catch (err) {
         throw err;
     }
@@ -62,4 +61,3 @@ function filterList(name, ps_list) {
     let result = ps_list.filter(list => list.cmd.includes(name));
     return result;
 }
-
