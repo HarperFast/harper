@@ -6,7 +6,7 @@
 const assert = require('assert');
 const chai = require('chai');
 const { spawn } = require('child_process');
-const {cu, isHarperRunning} = require('../../utility/common_utils');
+const cu = require('../../utility/common_utils');
 const test_utils = require('../test_utils');
 // try to move to /bin directory so our properties reader doesn't explode.
 test_utils.changeProcessToBinDir();
@@ -492,9 +492,9 @@ describe('Test isHarperRunning', () => {
 
     it('Should return true - HDB is running', (done)=>{
         child.on('close', () => {
-            let result = isHarperRunning();
+            let result = cu.isHarperRunning();
             result.then((running)=>{
-                assert.equal(running, true);
+                expect(running).to.be.true
                 done();
             });
         });
@@ -508,13 +508,15 @@ describe('Test isHarperRunning', () => {
         });
     });
 
-    it('Should return false - HDB is not unning', (done)=>{
+    it('Should return false - HDB is not running', (done)=>{
         child.on('close', () => {
-            let result = isHarperRunning();
+            let result = cu.isHarperRunning();
             result.then((running)=>{
-                assert.equal(running, false);
+                expect(running).to.be.false;
                 done();
             });
         });
     });
+
+
 });
