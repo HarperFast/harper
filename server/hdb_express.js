@@ -29,7 +29,6 @@ const signalling = require('../utility/signalling');
 const moment = require('moment');
 const terms = require('../utility/hdbTerms');
 const RestartEventObject = require('./RestartEventObject');
-//const { spawn } = require('child_process');
 const child_process = require('child_process');
 const {inspect} = require('util');
 const path = require('path');
@@ -571,10 +570,6 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                 harper_logger.error(`Received unknown signaling message ${msg.type}, ignoring message`);
                 break;
         }
-    });
-
-    process.on("beforeExit", function(err) {
-       harper_logger.info('exiting...........');
     });
 
     process.on('uncaughtException', function (err) {

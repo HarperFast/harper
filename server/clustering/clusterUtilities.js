@@ -24,6 +24,7 @@ const iface = os.networkInterfaces();
 const addresses = [];
 const started_forks = {};
 let is_enterprise = false;
+let child_event_count = 0;
 
 const STATUS_TIMEOUT_MS = 4000;
 const DUPLICATE_ERR_MSG = 'Cannot add a node that matches the hosts clustering config.';
@@ -328,7 +329,6 @@ function selectProcess(target_process_id) {
         }
         if (global.forks[i].process.pid === target_process_id) {
             specified_process = global.forks[i];
-            //specified_process.send(msg);
             log.info(`Processing job on process: ${target_process_id}`);
             return specified_process;
         }
@@ -465,22 +465,27 @@ function clusterMessageHandler(msg) {
                 }
                 break;
             case terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STARTED:
-                log.info('Received child started event.');
+                log.trace(`Got child started event`);
                 if(started_forks[msg.pid]) {
                     log.warn(`Got a duplicate child started event for pid ${msg.pid}`);
                 } else {
+                    child_event_count++;
+                    log.info(`Received ${child_event_count} child started event(s).`);
                     started_forks[msg.pid] = true;
                     if(Object.keys(started_forks).length === global.forks.length) {
                         //all children are started, kick off enterprise.
+                        child_event_count = 0;
                         kickOffEnterprise();
                     }
                 }
                 break;
             case terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STOPPED:
-                log.info('Received child stopped event.');
+                log.trace(`Got child stopped event`);
                 if(started_forks[msg.pid] === false) {
                     log.warn(`Got a duplicate child started event for pid ${msg.pid}`);
                 } else {
+                    child_event_count++;
+                    log.info(`Received ${child_event_count} child stopped event(s).`);
                     started_forks[msg.pid] = false;
                     for(let i=0; i<started_forks.length; i++) {
                         if(started_forks[i] === true) {
@@ -490,6 +495,7 @@ function clusterMessageHandler(msg) {
                     }
                     //All children are stopped, emit event
                     log.debug(`All children stopped, restarting.`);
+                    child_event_count = 0;
                     children_stopped_event.allChildrenStoppedEmitter.emit(children_stopped_event.EVENT_NAME, new children_stopped_event.AllChildrenStoppedMessage());
                 }
                 break;
@@ -504,7 +510,6 @@ function clusterMessageHandler(msg) {
                     if(global.forks[i]) {
                         try {
                             log.debug(`Sending ${terms.RESTART_CODE} signal to process with pid:${global.forks[i].process.pid}`);
-                            //global.forks[i].process.signalCode = terms.RESTART_CODE;
                             global.forks[i].send({type: "restart1"});
                         } catch(err) {
                             log.error(`Got an error trying to send ${terms.RESTART_CODE} to process ${global.forks[i].process.pid}.`);
@@ -515,7 +520,6 @@ function clusterMessageHandler(msg) {
                 if(global.cluster_server) {
                     // Close server will emit an event once it is done
                     global.cluster_server.closeServer();
-                        //TODO: Do we need to worry about socket clients??
                 }
                 break;
             default:
