@@ -14,8 +14,6 @@ const ClusterStatusObject = require('../../server/clustering/ClusterStatusObject
 const signalling = require('../../utility/signalling');
 const cluster_status_event = require('../../events/ClusterStatusEmitter');
 const children_stopped_event = require('../../events/AllChildrenStoppedEvent');
-const stop = require('../../bin/stop');
-const run = require('../../bin/run');
 const common = require('../../utility/common_utils');
 
 //Promisified functions
@@ -59,6 +57,10 @@ function setEnterprise(enterprise) {
     is_enterprise = enterprise;
 }
 
+/**
+ * Kicks off the clustering server and processes.  Only called with a valid license installed.
+ * @returns {Promise<void>}
+ */
 async function kickOffEnterprise() {
     const enterprise_util = require('../../utility/enterpriseInitialization');
     const p_kick_off_enterprise = promisify(enterprise_util.kickOffEnterprise);
@@ -487,7 +489,7 @@ function clusterMessageHandler(msg) {
                         }
                     }
                     //All children are stopped, emit event
-                    log.debug(`All children stopped, emitting event`);
+                    log.debug(`All children stopped, restarting.`);
                     children_stopped_event.allChildrenStoppedEmitter.emit(children_stopped_event.EVENT_NAME, new children_stopped_event.AllChildrenStoppedMessage());
                 }
                 break;

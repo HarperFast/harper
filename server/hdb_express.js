@@ -29,8 +29,8 @@ const signalling = require('../utility/signalling');
 const moment = require('moment');
 const terms = require('../utility/hdbTerms');
 const RestartEventObject = require('./RestartEventObject');
-const { spawn } = require('child_process');
-const { exec } = require('child_process');
+//const { spawn } = require('child_process');
+const child_process = require('child_process');
 const {inspect} = require('util');
 const path = require('path');
 
@@ -62,7 +62,7 @@ if (node_env_value === undefined || node_env_value === null || node_env_value ==
 
 // decide if we are running from inside a repo (and executing server/hdb_express) rather than on an installed version.
 process.argv.forEach((arg) => {
-    if(arg.endsWith('server/hdb_express.js')) {
+    if(arg.endsWith(REPO_RUNNING_PROCESS_NAME)) {
         running_from_repo = true;
         global.running_from_repo = true;
     }
@@ -100,22 +100,32 @@ if(DEBUG){
 global.isMaster = cluster.isMaster;
 global.clustering_on = false;
 
+/**
+ * Kicks off the clustering server and processes.  Only called with a valid license installed.
+ * @returns {Promise<void>}
+ */
+// This was put in hdb_expres rather than clusterUtils as we don't want restart to be called by any other module.
 function restartHDB() {
-    harper_logger.war
     try {
         // try to change to 'bin' dir
         let command = (global.running_from_repo ? 'node' : 'harperdb');
         let args = (global.running_from_repo ? ['harperdb', 'restart'] : ['restart']);
         let base = env.get(terms.HDB_SETTINGS_NAMES.PROJECT_DIR_KEY);
         process.chdir(path.join(base, 'bin'));
-        console.log(`Current directory: ${process.cwd()}`);
-        let child = spawn(command, args);
+        let child = child_process.spawn(command, args);
         child.on('error', (err) => {
-            console.log('restart error' + err);
+            harper_logger.error('restart error, please manually restart.' + err);
+            console.log('restart error, please manually restart.' + err);
+            throw new Error('Got an error restarting HarperDB.  Please manually restart.');
+        });
+        child.on('data', () => {
+            harper_logger.error('Restart successful');
         });
     } catch(err) {
-        harper_logger.error(err);
-        console.error(err);
+        let msg = `There was an error restarting HarperDB.  Please restart manually. ${err}`;
+        console.log(msg);
+        harper_logger.error(msg);
+        throw err;
     }
 }
 
@@ -145,14 +155,12 @@ cluster.on('exit', (dead_worker, code, signal) => {
 if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     global.isMaster = cluster.isMaster;
     const search = require('../data_layer/search');
-    const enterprise_util = require('../utility/enterpriseInitialization');
 
     process.on('uncaughtException', function (err) {
         let os = require('os');
         let message = `Found an uncaught exception with message: os.EOL ${err.message}.  Stack: ${err.stack} ${os.EOL} Terminating HDB.`;
         console.error(message);
         harper_logger.fatal(message);
-
         process.exit(1);
     });
 
