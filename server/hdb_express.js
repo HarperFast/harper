@@ -48,6 +48,7 @@ const PROPS_ENV_KEY = 'NODE_ENV';
 const ENV_PROD_VAL = 'production';
 const ENV_DEV_VAL = 'development';
 const TRUE_COMPARE_VAL = 'TRUE';
+const REPO_RUNNING_PROCESS_NAME = 'server/hdb_express.js';
 
 let node_env_value = env.get(PROPS_ENV_KEY);
 let running_from_repo = false;
@@ -59,6 +60,7 @@ if (node_env_value === undefined || node_env_value === null || node_env_value ==
     node_env_value = ENV_PROD_VAL;
 }
 
+// decide if we are running from inside a repo (and executing server/hdb_express) rather than on an installed version.
 process.argv.forEach((arg) => {
     if(arg.endsWith('server/hdb_express.js')) {
         running_from_repo = true;
@@ -126,7 +128,6 @@ cluster.on('exit', (dead_worker, code, signal) => {
     let new_worker = undefined;
     try {
         new_worker = cluster.fork();
-        new_worker.running_from_repo = global.running_from_repo;
         new_worker.on('message', cluster_utilities.clusterMessageHandler);
         harper_logger.info(`kicked off replacement worker with new pid=${new_worker.process.pid}`);
     } catch (e) {
@@ -234,7 +235,6 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                 for (let i = 0; i < numCPUs; i++) {
                     try {
                         let forked = cluster.fork();
-                        forked.running_from_repo = global.running_from_repo;
                         // assign handler for messages expected from child processes.
                         forked.on('message', cluster_utilities.clusterMessageHandler);
                         forks.push(forked);
