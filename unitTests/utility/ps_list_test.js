@@ -2,7 +2,7 @@
 const chai = require('chai');
 const rewire = require('rewire');
 
-let findPs = rewire('../../utility/ps_list');
+let find_ps = rewire('../../utility/ps_list');
 const { expect } = chai;
 
 describe('Test ps_list', () => {
@@ -11,11 +11,11 @@ describe('Test ps_list', () => {
     };
 
     afterEach(() => {
-        findPs = rewire('../../utility/ps_list');
+        find_ps = rewire('../../utility/ps_list');
     });
 
     it('should return an array of objects', async () => {
-        let result = await findPs('');
+        let result = await find_ps.findPs('');
         expect(result).to.be.a('array');
         expect(result[0]).to.be.a('object');
         expect(result[0]).to.have.property('pid');
@@ -28,8 +28,8 @@ describe('Test ps_list', () => {
     });
 
     it('should return hdb_express process', async () => {
-        findPs.__set__('exec_file', execFunc);
-        let result = await findPs('');
+        find_ps.__set__('exec_file', execFunc);
+        let result = await find_ps.findPs('');
         expect(result).to.be.a('array');
         expect(result[0]).to.be.a('object');
         expect(result[0]).to.have.property('pid');

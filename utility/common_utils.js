@@ -6,7 +6,7 @@ const truncate = require('truncate-utf8-bytes');
 const os = require('os');
 const terms = require('./hdbTerms');
 const { promisify } = require('util');
-const psList = require('./ps_list');
+const ps_list = require('./ps_list');
 
 const EMPTY_STRING = '';
 const FILE_EXTENSION_LEGNTH = 4;
@@ -389,7 +389,7 @@ function callProcessSend(process_msg) {
 async function isHarperRunning(){
     try {
         let hdb_running = false;
-        const list = await psList(HDB_PROC_NAME);
+        const list = await ps_list.findPs(HDB_PROC_NAME);
 
         if(!isEmptyOrZeroLength(list)) {
             hdb_running = true;

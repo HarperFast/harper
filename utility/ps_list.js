@@ -6,7 +6,9 @@ const exec_file = util.promisify(childProcess.execFile);
 
 const TEN_MEGABYTES = 1000 * 1000 * 10;
 
-module.exports = findPs;
+module.exports = {
+    findPs:findPs
+};
 
 /**
  * Module spawns child process to search for all running processes.
@@ -38,10 +40,10 @@ async function findPs(name) {
         throw err;
     }
 
-    // Filter out inconsistencies as there might be race
+    // Filter out inconsistencies as there might be raceS
     // issues due to differences in `ps` between the spawns
     let result = Object.entries(ps_list)
-        .filter(([, value]) => value.comm && value.args && value.ppid && value.uid && value['%cpu'] && value['%mem'])
+        .filter(([, value]) => value.comm && value.args && value.ppid && value.uid && value['%cpu'] && value['%mem'] && value.args.includes(name))
         .map(([key, value]) => ({
             pid: Number.parseInt(key, 10),
             name: path.basename(value.comm),
@@ -52,11 +54,5 @@ async function findPs(name) {
             memory: Number.parseFloat(value['%mem'])
         }));
 
-    let filtered_list = filterList(name, result);
-    return filtered_list;
-}
-
-function filterList(name, ps_list) {
-    let result = ps_list.filter(list => list.cmd.includes(name));
     return result;
 }
