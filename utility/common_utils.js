@@ -391,7 +391,7 @@ async function isHarperRunning(){
         let hdb_running = false;
         const list = await psList(HDB_PROC_NAME);
 
-        if(Array.isArray(list) && list.length > 0) {
+        if(!isEmptyOrZeroLength(list)) {
             hdb_running = true;
         }
 
