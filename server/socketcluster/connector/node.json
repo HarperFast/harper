@@ -1,0 +1,19 @@
+[
+  {
+    "name": "apple",
+    "hostname":"172.16.20.74",
+    "port": 1111,
+    "subscriptions": [
+      {
+        "channel":"dev:dog",
+        "publish": true,
+        "subscribe": false
+      },
+      {
+        "channel":"dev:breed",
+        "publish": false,
+        "subscribe": true
+      }
+    ]
+  }
+]

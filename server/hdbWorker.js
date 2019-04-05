@@ -54,7 +54,7 @@ function init() {
 
     //initialize the internal socket client
     //TODO only create this if clustering is active &  licensed
-    require('./socketcluster/internalClient').init();
+    global.hdb_socket_client = require('./socketcluster/connector/socketConnector').init();
 
     log.info(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
     if (props_cors && (props_cors === true || props_cors.toUpperCase() === TRUE_COMPARE_VAL)) {
