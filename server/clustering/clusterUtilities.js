@@ -476,7 +476,7 @@ function clusterMessageHandler(msg) {
                 break;
             case terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STOPPED:
                 log.info('Received child stopped event.');
-                if(started_forks[msg.pid]) {
+                if(started_forks[msg.pid] === false) {
                     log.warn(`Got a duplicate child started event for pid ${msg.pid}`);
                 } else {
                     started_forks[msg.pid] = false;
@@ -487,6 +487,7 @@ function clusterMessageHandler(msg) {
                         }
                     }
                     //All children are stopped, emit event
+                    log.debug(`All children stopped, emitting event`);
                     children_stopped_event.allChildrenStoppedEmitter.emit(children_stopped_event.EVENT_NAME, new children_stopped_event.AllChildrenStoppedMessage());
                 }
                 break;

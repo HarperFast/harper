@@ -1,5 +1,5 @@
 const cluster = require('cluster');
-const DEBUG = false;
+const DEBUG = true;
 const harper_logger = require('../utility/logging/harper_logger');
 // We want to kick off the mgr initSync as soon as possible.
 const env = require('../utility/environment/environmentManager');
@@ -30,7 +30,9 @@ const moment = require('moment');
 const terms = require('../utility/hdbTerms');
 const RestartEventObject = require('./RestartEventObject');
 const { spawn } = require('child_process');
+const { exec } = require('child_process');
 const {inspect} = require('util');
+const path = require('path');
 
 const DEFAULT_SERVER_TIMEOUT = 120000;
 const PROPS_SERVER_TIMEOUT_KEY = 'SERVER_TIMEOUT_MS';
@@ -48,6 +50,7 @@ const ENV_DEV_VAL = 'development';
 const TRUE_COMPARE_VAL = 'TRUE';
 
 let node_env_value = env.get(PROPS_ENV_KEY);
+let running_from_repo = false;
 
 // If NODE_ENV is empty, it will show up here as '0' rather than '' or length of 0.
 if (node_env_value === undefined || node_env_value === null || node_env_value === 0) {
@@ -55,6 +58,13 @@ if (node_env_value === undefined || node_env_value === null || node_env_value ==
 } else if (node_env_value !== ENV_PROD_VAL || node_env_value !== ENV_DEV_VAL) {
     node_env_value = ENV_PROD_VAL;
 }
+
+process.argv.forEach((arg) => {
+    if(arg.endsWith('server/hdb_express.js')) {
+        running_from_repo = true;
+        global.running_from_repo = true;
+    }
+});
 
 process.env['NODE_ENV'] = node_env_value;
 
@@ -88,6 +98,25 @@ if(DEBUG){
 global.isMaster = cluster.isMaster;
 global.clustering_on = false;
 
+function restartHDB() {
+    harper_logger.war
+    try {
+        // try to change to 'bin' dir
+        let command = (global.running_from_repo ? 'node' : 'harperdb');
+        let args = (global.running_from_repo ? ['harperdb', 'restart'] : ['restart']);
+        let base = env.get(terms.HDB_SETTINGS_NAMES.PROJECT_DIR_KEY);
+        process.chdir(path.join(base, 'bin'));
+        console.log(`Current directory: ${process.cwd()}`);
+        let child = spawn(command, args);
+        child.on('error', (err) => {
+            console.log('restart error' + err);
+        });
+    } catch(err) {
+        harper_logger.error(err);
+        console.error(err);
+    }
+}
+
 cluster.on('exit', (dead_worker, code, signal) => {
     if(code === terms.RESTART_CODE_NUM) {
         harper_logger.info(`Received restart code, disabling process auto restart.`);
@@ -97,6 +126,7 @@ cluster.on('exit', (dead_worker, code, signal) => {
     let new_worker = undefined;
     try {
         new_worker = cluster.fork();
+        new_worker.running_from_repo = global.running_from_repo;
         new_worker.on('message', cluster_utilities.clusterMessageHandler);
         harper_logger.info(`kicked off replacement worker with new pid=${new_worker.process.pid}`);
     } catch (e) {
@@ -148,9 +178,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
             if(restart_event_tracker.isReadyForRestart()) {
                 // TODO: Call restart function
                 harper_logger.warn(`************ RESTARTING HDB ************`);
-                let command = (DEBUG? 'node harperdb' : 'harperdb');
-                harper_logger.warn(`EXECUTING ${inspect(command)}`);
-                const child = spawn(command, ['restart']);
+                restartHDB();
             }
         } catch(err) {
             harper_logger.error(`Error tracking allchildrenstopped event.`);
@@ -163,10 +191,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
             restart_event_tracker.sio_connections_stopped = true;
             if(restart_event_tracker.isReadyForRestart()) {
                 harper_logger.info("*********** READY FOR RESTART ***********");
-                // TODO: Call restart function
-                let command = (DEBUG? 'node harperdb' : 'harperdb');
-                harper_logger.warn(`EXECUTING ${inspect(command)}`);
-                const child = spawn(command, ['restart']);
+                restartHDB();
             }
         } catch(err) {
             harper_logger.error(`Error tracking sio server stopped event.`);
@@ -209,6 +234,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                 for (let i = 0; i < numCPUs; i++) {
                     try {
                         let forked = cluster.fork();
+                        forked.running_from_repo = global.running_from_repo;
                         // assign handler for messages expected from child processes.
                         forked.on('message', cluster_utilities.clusterMessageHandler);
                         forks.push(forked);
