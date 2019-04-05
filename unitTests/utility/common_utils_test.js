@@ -510,14 +510,16 @@ describe('Test isHarperRunning', () => {
     });
 
     it('Should return false - HDB is not running', (done)=>{
-        child.on('close', () => {
-            let result = cu.isHarperRunning();
-            result.then((running)=>{
-                expect(running).to.be.false;
-                done();
-            });
+        child.on('exit', () => {
+            //this timeout is needed as the hdb processes haven't been fully terminated at the close of the harperdb stop command.
+            //right now we just signal for them to die, but don't verify they have. HDB-816 will address this
+            setTimeout(()=> {
+                let result = cu.isHarperRunning();
+                result.then((running) => {
+                    expect(running).to.be.false;
+                    done();
+                });
+            }, 1000);
         });
     });
-
-
 });
