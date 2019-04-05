@@ -6,7 +6,7 @@ const truncate = require('truncate-utf8-bytes');
 const os = require('os');
 const terms = require('./hdbTerms');
 const { promisify } = require('util');
-const ps_list = require('./ps_list');
+const ps_list = require('./psList');
 
 const EMPTY_STRING = '';
 const FILE_EXTENSION_LEGNTH = 4;

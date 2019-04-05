@@ -2,7 +2,7 @@
 const chai = require('chai');
 const rewire = require('rewire');
 
-let find_ps = rewire('../../utility/ps_list');
+let find_ps = rewire('../../utility/psList');
 const { expect } = chai;
 
 describe('Test ps_list', () => {
@@ -11,7 +11,7 @@ describe('Test ps_list', () => {
     };
 
     afterEach(() => {
-        find_ps = rewire('../../utility/ps_list');
+        find_ps = rewire('../../utility/psList');
     });
 
     it('should return an array of objects', async () => {

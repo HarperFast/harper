@@ -13,7 +13,7 @@ test_utils.changeProcessToBinDir();
 
 const upgrade_directive = require('../../upgrade/UpgradeDirective');
 const env_variable = require('../../upgrade/EnvironmentVariable');
-const ps_list = require('../../utility/ps_list');
+const ps_list = require('../../utility/psList');
 const { expect } = chai
 const ALL_SPACES = '     ';
 
