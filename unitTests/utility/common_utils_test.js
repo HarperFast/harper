@@ -468,12 +468,13 @@ describe('Test isClusterOperation', function() {
 
 
 describe('Test isHarperRunning', () => {
-    let child = spawn('node', ['harperdb']);
+    let child;
 
     // on run of harperdb, if hdb is not running it will output 2 data events. First for the dog, second for the successfully started
     // we test to handle where it is already running to force a failure
     // we test the 2nd event to make sure we get the success started message.
     it('Should start HDB and return starting message', (done)=>{
+        child = spawn('node', ['harperdb']);
         let x = 0;
 
         child.stdout.on('data', (data) => {
