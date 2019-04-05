@@ -14,7 +14,6 @@ module.exports = findPs;
  * @param name
  * @returns {Promise<Array>}
  */
-
 async function findPs(name) {
     let ps_list = {};
 

@@ -6,6 +6,7 @@ const truncate = require('truncate-utf8-bytes');
 const os = require('os');
 const terms = require('./hdbTerms');
 const { promisify } = require('util');
+const psList = require('./ps_list');
 
 const EMPTY_STRING = '';
 const FILE_EXTENSION_LEGNTH = 4;
@@ -383,19 +384,15 @@ function callProcessSend(process_msg) {
 /**
  * Uses npm module ps-list to check if hdb process is running
  * @param none
- * @returns {boolean}
+ * @returns {process}
  */
 async function isHarperRunning(){
     try {
-        const list = await ps_list();
-
         let hdb_running = false;
+        const list = await psList(HDB_PROC_NAME);
 
-        for (let i = 0; i < list.length; i++) {
-            if (list[i].cmd.includes(HDB_PROC_NAME)) {
-                hdb_running = true;
-                break;
-            }
+        if(list.length) {
+            return hdb_running = true;
         }
 
         return hdb_running;
@@ -403,7 +400,6 @@ async function isHarperRunning(){
         throw err;
     }
 }
-
 
 /**
  * Returns true if a given operation name is a cluster operation.  Should always return a boolean.

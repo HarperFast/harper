@@ -4,13 +4,17 @@
  */
 
 const assert = require('assert');
-const cu = require('../../utility/common_utils');
+const chai = require('chai');
+const { spawn } = require('child_process');
+const {cu, isHarperRunning} = require('../../utility/common_utils');
 const test_utils = require('../test_utils');
 // try to move to /bin directory so our properties reader doesn't explode.
 test_utils.changeProcessToBinDir();
 
 const upgrade_directive = require('../../upgrade/UpgradeDirective');
 const env_variable = require('../../upgrade/EnvironmentVariable');
+const ps_list = require('../../utility/ps_list');
+const { expect } = chai
 const ALL_SPACES = '     ';
 
 describe(`Test errorizeMessage`, function () {
@@ -459,5 +463,58 @@ describe('Test isClusterOperation', function() {
     });
     it('Test numeric operation, expect false', function() {
         assert.equal(cu.isClusterOperation(42), false, 'Expected false result');
+    });
+});
+
+
+describe('Test isHarperRunning', () => {
+    let child = spawn('node', ['harperdb']);
+
+    // on run of harperdb, if hdb is not running it will output 2 data events. First for the dog, second for the successfully started
+    // we test to handle where it is already running to force a failure
+    // we test the 2nd event to make sure we get the success started message.
+    it('Should start HDB and return starting message', (done)=>{
+        let x = 0;
+
+        child.stdout.on('data', (data) => {
+            let data_string = data.toString();
+
+            if(data_string === 'HarperDB is already running.\n'){
+                expect(data_string).to.not.equal('HarperDB is already running.\n');
+                done();
+            } else if(x === 1) {
+                expect(data_string).to.include('successfully started');
+                done();
+            }
+            x++;
+        });
+    });
+
+    it('Should return true - HDB is running', (done)=>{
+        child.on('close', () => {
+            let result = isHarperRunning();
+            result.then((running)=>{
+                assert.equal(running, true);
+                done();
+            });
+        });
+    });
+
+    it('Should stop HDB and return stopping message', (done)=>{
+        child = spawn('node', ['harperdb', 'stop']);
+        child.stdout.on('data', (data) => {
+            expect(data.toString()).to.include('Stopping HarperDB.');
+            done();
+        });
+    });
+
+    it('Should return false - HDB is not unning', (done)=>{
+        child.on('close', () => {
+            let result = isHarperRunning();
+            result.then((running)=>{
+                assert.equal(running, false);
+                done();
+            });
+        });
     });
 });
