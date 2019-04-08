@@ -8,7 +8,7 @@ const log = require('../utility/logging/harper_logger');
  * back into stop.js.
  */
 
-function restartProcesses(json_message, callback) {
+/*function restartProcesses(json_message, callback) {
     try {
         signal.signalRestart(json_message.force_restart, () => {
             return callback(null, 'Sent restart signal.');
@@ -21,4 +21,4 @@ function restartProcesses(json_message, callback) {
 
 module.exports = {
     restartProcesses: restartProcesses
-};
+};*/

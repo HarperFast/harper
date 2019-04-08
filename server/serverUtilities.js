@@ -20,7 +20,8 @@ const signal = require('../utility/signalling');
 const job_runner = require('./jobRunner');
 const terms = require('../utility/hdbTerms');
 const reg = require('../utility/registration/registrationHandler');
-const restart = require('../data_layer/restart');
+const stop = require('../bin/stop');
+const {callbackify} = require('util');
 
 const UNAUTH_RESPONSE = 403;
 const UNAUTHORIZED_TEXT = 'You are not authorized to perform the operation specified';
@@ -302,7 +303,9 @@ function chooseOperation(json, callback) {
             operation_function = reg.setLicense;
             break;
         case terms.OPERATIONS_ENUM.RESTART:
-            operation_function = restart.restartProcesses;
+            // TODO: Does callbackify work?
+            let restart_cb = callbackify(stop.restartProcesses);
+            operation_function = restart_cb;
             break;
         default:
             break;
