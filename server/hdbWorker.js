@@ -25,6 +25,8 @@ const http = require('http');
 const httpsecure = require('https');
 const {promisify} = require('util');
 const common = require('../utility/common_utils');
+const socketclient =  require('socketcluster-client');
+const SocketConnector = require('./socketcluster/connector/SocketConnector');
 
 const DEFAULT_SERVER_TIMEOUT = 120000;
 const PROPS_SERVER_TIMEOUT_KEY = 'SERVER_TIMEOUT_MS';
@@ -54,7 +56,8 @@ function init() {
 
     //initialize the internal socket client
     //TODO only create this if clustering is active &  licensed
-    global.hdb_socket_client = require('./socketcluster/connector/socketConnector').init();
+
+    global.hdb_socket_client = new SocketConnector(socketclient, 'local', null, env.get('CLUSTERING_PORT'), {username: 'kyle', password: 'test'});
 
     log.info(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
     if (props_cors && (props_cors === true || props_cors.toUpperCase() === TRUE_COMPARE_VAL)) {

@@ -1,9 +1,9 @@
-const socketConnector = require('./socketConnector');
 
 class SocketConnector{
     constructor(socket_client, name, hostname, port, credentials){
         this.name = name;
         this.socket = this.init(socket_client, hostname, port, credentials);
+        this.disconnect_timestamp = null;
     }
 
     init(socket_client, hostname, port, credentials) {
@@ -31,6 +31,12 @@ class SocketConnector{
         });
 
         this.socket.on('connect', status =>{
+            this.disconnect_timestamp = null;
+            console.log(status);
+        });
+
+        this.socket.on('disconnect', status =>{
+            this.disconnect_timestamp = Date.now();
             console.log(status);
         });
 

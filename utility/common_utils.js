@@ -388,6 +388,6 @@ function callProcessSend(process_msg) {
 function sendTransactionToSocketCluster(transaction){
     //we do not want to send system level transactions over the wire
     if(global.hdb_socket_client !== undefined && transaction.schema !== 'system'){
-        global.hdb_socket_client.publish(`${transaction.schema}.${transaction.table}`, transaction);
+        global.hdb_socket_client.publish(`${transaction.schema}:${transaction.table}`, transaction);
     }
 }
