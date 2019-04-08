@@ -347,14 +347,14 @@ describe('Upgrade Test - Test getLatestVersion', function() {
     });
 });
 
-describe('Upgrade Test - Test findOs', function() {
-    let findOs = upgrade_rw.__get__('findOs');
-    // We don't want to use real directives for testing as they could change over time and invalidate tests, so we use
-    // the directive manager stub.  In order to assign it to the process_directive instance we need to bring in a rewired
-    // version.
-    process_directives_rw.__set__('directive_manager', directive_manager_stub.directive_manager_rw);
-    upgrade_rw.__set__('process_directives', process_directives_rw);
-    it('test startUpgradeDirectives', function() {
-        findOs('1.1.0', '2.1.0');
-    });
-});
+// describe('Upgrade Test - Test findOs', function() {
+//     let findOs = upgrade_rw.__get__('findOs');
+//     // We don't want to use real directives for testing as they could change over time and invalidate tests, so we use
+//     // the directive manager stub.  In order to assign it to the process_directive instance we need to bring in a rewired
+//     // version.
+//     process_directives_rw.__set__('directive_manager', directive_manager_stub.directive_manager_rw);
+//     upgrade_rw.__set__('process_directives', process_directives_rw);
+//     it('test startUpgradeDirectives', function() {
+//         findOs('1.1.0', '2.1.0');
+//     });
+// });

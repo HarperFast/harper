@@ -1,27 +1,77 @@
-<!doctype html>
-<html lang="">
-<head>
-    <meta charset="utf-8">
-    <meta http-equiv="X-UA-Compatible" content="IE=edge">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
-    <!-- Edit your site info here -->
-    <meta name="description" content="HarperDB user guide">
-    <title>HarperDB User Guide</title>
-
-    <script src="https://cdn.rawgit.com/webcomponents/webcomponentsjs/v0.7.15/webcomponents-lite.min.js"></script>
-    <link rel="import" href="https://cdn.rawgit.com/zerodevx/zero-md/v0.2.0/build/zero-md.html">
-    <link rel="stylesheet" href="https://cdn.rawgit.com/zerodevx/zero-md/v0.2.0/markdown-themes/default.css">
-    <link rel="stylesheet" href="https://cdn.rawgit.com/zerodevx/zero-md/v0.2.0/highlight-themes/default.css">
-</head>
-<body unresolved>
-<style>
-    /* Edit your header styles here */
-    .header { font-family: sans-serif; font-size: 20px; text-align: center; position: fixed; width: 100%; line-height: 42px; top: 0; left: 0; }
-    .md-html { min-width: 200px; max-width: 790px; margin: 56px auto 0 auto; padding: 20px; }
-</style>
-
-<zero-md file="http://harperdb.github.io/harperdb/README.md">
-    <div class="md-html"></div>
-</zero-md>
-</body>
+<p><img src="https://s3.amazonaws.com/hdb-marketing/purple_logo_transparent_662x400.png" alt="alt text" /></p>
+<h2 id="contents">Contents</h2>
+<ol>
+<li><a href="#getting-started">Getting Started</a></li>
+<li><a href="#running-harperdb">Running HarperDB</a></li>
+<li><a href="#stopping-harperdb">Stopping HarperDB</a></li>
+<li><a href="#restarting-harperdb">Restarting HarperDB</a></li>
+<li><a href="#check-harperdb-version">Check HarperDB Version</a></li>
+<li><a href="#crud-samples">CRUD Samples</a></li>
+<li><a href="#harperdb-studio">HarperDB Studio</a></li>
+<li><a href="#need-help">Need Help?</a></li>
+</ol>
+<h2 id="gettingstarted">Getting Started</h2>
+<p>After downloading the compressed file, unpack to your desired location.
+This location is referred to as HDB_HOME further in the documentation.</p>
+<p><strong>All HarperDB commands must be run in the bin directory from within HDB_HOME.</strong></p>
+<p><strong>The operating system user who installed HarperDB is the only user that can start and run the HarperDB service.</strong></p>
+<p>HarperDB can be installed in one of two ways</p>
+<ul>
+<li>./harperdb install</li>
+<li>./harperdb run</li>
+</ul>
+<p>The process is the same; however, ./harperdb run will also start HarperDB.</p>
+<p>From the HarperDB root directory execute the following:</p>
+<pre><code>cd HDB_HOME/bin
+./harperdb install
+</code></pre>
+<p>or run</p>
+<pre><code>cd HDB_HOME/bin
+./harperdb run
+</code></pre>
+<ul>
+<li><p>You will need read and write access to the HDB_ROOT (location of the root directory of the database) directory, default path is your current working directory.</p></li>
+<li><p>You will be prompted for a database username and password during the install.</p></li>
+<li><p>If HarperDB is already installed, the command './harperdb' run will <strong>NOT</strong> run the installer.  Instead it will run 
+ HarperDB.</p></li>
+<li><p>Logs for installation are found in the HarperDB home directory (HDB<em>HOME). Other logs are located at HDB</em>ROOT/log/.</p></li>
+</ul>
+<h2 id="runningharperdb">Running HarperDB</h2>
+<p>To run HarperDB after it is installed from the HarperDB home (HDB_HOME) directory; run the following commands:</p>
+<pre><code>cd HDB_HOME/bin
+./harperdb run
+</code></pre>
+<ul>
+<li>You may need to update your firewall if you are not running locally, by default HarperDB runs on port 9925.  If you are unsure see your properties file at HDB_ROOT/config/settings.js.</li>
+</ul>
+<h2 id="stoppingharperdb">Stopping HarperDB</h2>
+<p>To stop HarperDB once it is running from the HarperDB home (HDB_HOME) directory run the following commands:</p>
+<pre><code>cd HDB_HOME/bin
+./harperdb stop
+</code></pre>
+<h2 id="restartingharperdb">Restarting HarperDB</h2>
+<p>To restart HarperDB once it is running from the HarperDB home (HDB_HOME) directory run the following commands:</p>
+<pre><code>cd HDB_HOME/bin
+./harperdb restart
+</code></pre>
+<h2 id="checkharperdbversion">Check HarperDB version</h2>
+<p>To check the version you are running of HarperDB from the HarperDB home (HDB_HOME) directory run the following commands:</p>
+<pre><code>cd HDB_HOME/bin
+./harperdb version
+</code></pre>
+<h2 id="crudsamples">CRUD samples</h2>
+<p>We really like postman.  We like it so much, we have created a series of examples that can be run to create 
+and access sample data in HarperDB.  </p>
+<p>Get Postman here! https://www.getpostman.com/
+Our Postman 'Getting Started' samples can be found on our examples page: http://examples.harperdb.io/.  Click the "Run in Postman" button then run the samples 
+from top to bottom to learn how to create, populate, and query our sample 'dog' database.  Woof.</p>
+<p>Sample code is also available in many common languages in the sample code pane.  Select the language you want from the drop down and 
+paste the code. See the Postman documentation on supported languages here: https://www.getpostman.com/docs/postman/sending<em>api</em>requests/generate<em>code</em>snippets</p>
+<h2 id="harperdbstudio">HarperDB Studio</h2>
+<p>Need a UI? HarperDB Studio is a web based UI for managing users, roles, and schemas. The HarperDB Studio also enables you to run NoSQL &amp; SQL queries, create charts, save your favorite queries &amp; charts and share them via live links to your organization.</p>
+<p>http://harperdb.io/studio</p>
+<h2 id="needhelp">Need Help</h2>
+<p>-contact us via email: support@harperdb.io</p>
+<p>-<a href="https://harperdbhelp.zendesk.com">Support Portal</a>
+-<a href="https://docs.harperdb.io/">Documentation</a>
+-<a href="http://examples.harperdb.io/">Getting Started Examples</a></p><p>Build Rev: a39b561dbfccabf2aa0a4f6e42e15b996d13c808 </p>
