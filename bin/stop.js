@@ -17,6 +17,7 @@ function stop(callback) {
     console.log("Stopping HarperDB.");
 
     ps_list.findPs(hdb_terms.HDB_PROC_NAME).then(harperdb_instances => {
+
         if(harperdb_instances.length === 0) {
             console.log("No instances of HarperDB are running.");
             return callback(null);
@@ -28,13 +29,15 @@ function stop(callback) {
                 if (curr_user.uid == 0 || proc.uid == curr_user.uid) {
                     try {
                         process.kill(proc.pid);
-                    } catch (e) {
-                        console.error(e);
+                    } catch (err) {
+                        console.error(err);
                     }
                 }
             });
         }
+
         return callback(null);
+
     }).catch( function stopErr(err) {
         if(err) {
             console.error(err);

@@ -15,16 +15,21 @@ describe('Test stop.js' , () => {
    let process_kill_stub;
    let os_user_stub;
    let console_log_spy;
-   let console_err_spy;
    let instances;
 
    beforeEach(() => {
-       console_log_spy = sinon.spy(console, 'log');
-   })
+       console_log_spy = sandbox.spy(console, 'log');
+   });
 
    afterEach(() => {
        sandbox.restore();
-       console_log_spy.restore();
+   });
+
+   after(() => {
+       sandbox.restore();
+       sandbox.resetBehavior();
+       sandbox.resetHistory();
+
    })
 
     context('stop', () => {
@@ -32,13 +37,13 @@ describe('Test stop.js' , () => {
             instances = [];
             find_ps_stub = sandbox.stub(ps_list, 'findPs').resolves(instances);
 
-            stop.stop((res) => {
-                expect(res).to.equal(null);
+            stop.stop((err) => {
+                expect(err).to.be.null;
                 expect(find_ps_stub).to.have.been.calledOnce;
-                expect(console_log_spy).to.have.been.calledTwice;
                 expect(console_log_spy).to.have.been.calledWith("Stopping HarperDB.");
                 expect(console_log_spy).to.have.been.calledWith("No instances of HarperDB are running.");
             });
+
             done();
         });
 
@@ -65,28 +70,28 @@ describe('Test stop.js' , () => {
             process_kill_stub = sandbox.stub(process, 'kill');
             os_user_stub = sandbox.stub(os, 'userInfo').returns(curr_user);
 
-            stop.stop((res) => {
+            stop.stop((err) => {
                 expect(find_ps_stub).to.have.been.calledOnce;
                 expect(process_kill_stub).to.have.been.calledTwice;
                 expect(os_user_stub).to.have.been.calledOnce;
                 expect(console_log_spy).to.have.been.calledWith("Stopping HarperDB.");
-                expect(res).to.equal(null);
+                expect(err).to.be.null;
             });
+
             done();
-        })
+        });
 
         it('should catch error thrown from ps_list', (done) => {
-            find_ps_stub = sandbox.stub(ps_list, 'findPs').throws('Catch me');
-            console_err_spy = sinon.spy(console, 'err');
-            stop.stop((res) => {
-                expect(find_ps_stub).to.have.been.calledOnce;
-                expect(console_err_spy).to.have.been.calledOnce;
-                expect(err).to.equal()
+            find_ps_stub = sandbox.stub(ps_list, 'findPs').throws('catch me');
 
-                // expect(res).to.equal(null);
-            });
+            try {
+                stop.stop();
+                expect(find_ps_stub).to.have.been.calledOnce;
+            } catch(err) {
+                expect(err.name).to.equal('catch me');
+            }
 
             done();
-        })
-    })
+        });
+    });
 });
