@@ -1,6 +1,6 @@
 #!/bin/bash
 EXCLUDE="docs,json,integrationTests,node_modules,unitTests,test,utility/devops"
-ADD="node_modules/ integrationTests/ json/"
+ADD="node_modules/ integrationTests/ json/ package.json utility/install/ascii_logo.txt utility/install/harperdb.conf utility/install/harperdb.service"
 MIRRORED_DIR="/tmp/harperdb_dev"
 
 #REMOVE FOR PRODUCTION
