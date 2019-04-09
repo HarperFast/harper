@@ -3,7 +3,7 @@
 const ps_list = require('../utility/psList');
 const hdb_terms = require('../utility/hdbTerms');
 const os = require('os');
-
+const async_settimeout = require('util').promisify(setTimeout);
 module.exports = {
     stop: stop
 };
@@ -34,9 +34,12 @@ function stop(callback) {
                     }
                 }
             });
+
         }
 
-        return callback(null);
+        checkHdbProcsEnd().then(()=>{
+            return callback(null);
+        });
 
     }).catch( function stopErr(err) {
         if(err) {
@@ -44,4 +47,21 @@ function stop(callback) {
             return callback(err);
         }
     });
+}
+
+/**
+ * Verifies all processes have stopped before fulfilling promise.
+ * @returns {Promise<void>}
+ */
+async function  checkHdbProcsEnd(){
+    let go_on = true;
+
+    do{
+        await async_settimeout(100);
+
+        let instances =  await ps_list.findPs(hdb_terms.HDB_PROC_NAME);
+        if(instances.length === 0) {
+            go_on = false
+        }
+    } while(go_on);
 }
