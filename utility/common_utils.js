@@ -6,10 +6,13 @@ const truncate = require('truncate-utf8-bytes');
 const os = require('os');
 const terms = require('./hdbTerms');
 const { promisify } = require('util');
+const ps_list = require('./psList');
 
 const EMPTY_STRING = '';
 const FILE_EXTENSION_LEGNTH = 4;
 const CHARACTER_LIMIT = 255;
+
+const HDB_PROC_NAME = 'hdb_express.js';
 
 const AUTOCAST_COMMON_STRINGS = {
     'true': true,
@@ -38,6 +41,7 @@ module.exports = {
     valueConverter: valueConverter,
     timeoutPromise: timeoutPromise,
     callProcessSend: callProcessSend,
+    isHarperRunning: isHarperRunning,
     isClusterOperation: isClusterOperation
 };
 
@@ -375,6 +379,26 @@ function callProcessSend(process_msg) {
         return;
     }
     process.send(process_msg);
+}
+
+/**
+ * Uses module ps_list to check if hdb process is running
+ * @param none
+ * @returns {process}
+ */
+async function isHarperRunning(){
+    try {
+        let hdb_running = false;
+        const list = await ps_list.findPs(HDB_PROC_NAME);
+
+        if(!isEmptyOrZeroLength(list)) {
+            hdb_running = true;
+        }
+
+        return hdb_running;
+    } catch(err) {
+        throw err;
+    }
 }
 
 /**

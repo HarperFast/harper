@@ -27,9 +27,12 @@ cd $target_dir/node_$node_count/harperdb/bin
 node harperdb install --TC_AGREEMENT yes --HDB_ROOT $target_dir/node_$node_count/data/hdb --HTTP_PORT $http_port  --HTTPS_PORT 31283 --HDB_ADMIN_USERNAME admin --HDB_ADMIN_PASSWORD Abc1234! --HDB_REGISTER false
 
 #Update hdb/config/settings.js
-printf  "\nCLUSTERING = TRUE\nCLUSTERING_PORT = %s\nNODE_NAME = node_%s" "$cluster_port" "$node_count" >> $target_dir/node_$node_count/data/hdb/config/settings.js
+#printf  "\nCLUSTERING = TRUE\nCLUSTERING_PORT = %s\nNODE_NAME = node_%s" "$cluster_port" "$node_count" >> $target_dir/node_$node_count/data/hdb/config/settings.js
+sed -i "s/CLUSTERING = .*/CLUSTERING = TRUE/" $target_dir/node_$node_count/data/hdb/config/settings.js
+sed -i "s/CLUSTERING_PORT.*/CLUSTERING_PORT = $cluster_port/" $target_dir/node_$node_count/data/hdb/config/settings.js
+sed -i "s/NODE_NAME.*/NODE_NAME = node_$node_count/" $target_dir/node_$node_count/data/hdb/config/settings.js
 
-sed -i 's/LOG_LEVEL = error/LOG_LEVEL = info/' $target_dir/node_$node_count/data/hdb/config/settings.js
+sed -i 's/LOG_LEVEL.*/LOG_LEVEL = debug/' $target_dir/node_$node_count/data/hdb/config/settings.js
 
 sed -i 's/ALLOW_SELF_SIGNED_SSL_CERTS = false/ALLOW_SELF_SIGNED_SSL_CERTS=TRUE/' $target_dir/node_$node_count/data/hdb/config/settings.js
 

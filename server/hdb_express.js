@@ -1,5 +1,5 @@
 const cluster = require('cluster');
-const DEBUG = true;
+const DEBUG = false;
 const harper_logger = require('../utility/logging/harper_logger');
 // We want to kick off the mgr initSync as soon as possible.
 const env = require('../utility/environment/environmentManager');
@@ -153,6 +153,7 @@ cluster.on('exit', (dead_worker, code, signal) => {
 if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     global.isMaster = cluster.isMaster;
     const search = require('../data_layer/search');
+    const enterprise_util = require('../utility/enterpriseInitialization');
 
     process.on('uncaughtException', function (err) {
         let os = require('os');
