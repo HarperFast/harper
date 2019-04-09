@@ -46,7 +46,7 @@ class Broker extends SCBroker {
      * @param data
      */
     publishHandler(channel, data){
-        console.log(`received data on channel '${channel}': `, data);
+        console.log(`broker received data on channel '${channel}': `, data);
     }
 
     masterMessageHandler(data, callback){

@@ -23,7 +23,7 @@ class Worker extends SCWorker{
             this.publishInValidation(req);
         } catch(e){
             console.error(e);
-            next(e);
+            return next(e);
         }
 
         next();

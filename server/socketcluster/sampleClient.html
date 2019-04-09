@@ -92,7 +92,7 @@
 
     function subscribe(channel){
         socket.subscribe(channel).watch(data => {
-            console.log(data);
+            console.log(channel + ' ' + data);
         });
     }
 </script>
