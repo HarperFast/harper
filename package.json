@@ -50,7 +50,6 @@
     "recursive-iterator": "^3.3.0",
     "request": "^2.88.0",
     "request-promise-native": "^1.0.5",
-    "sc-broker": "^8.0.0",
     "socket.io": "^2.2.0",
     "socket.io-client": "^2.2.0",
     "socketcluster": "^14.3.3",

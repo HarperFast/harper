@@ -57,7 +57,7 @@ function init() {
     //initialize the internal socket client
     //TODO only create this if clustering is active &  licensed
 
-    global.hdb_socket_client = new SocketConnector(socketclient, 'local', null, env.get('CLUSTERING_PORT'), {username: 'kyle', password: 'test'});
+    global.hdb_socket_client = new SocketConnector(socketclient, 'local', 'localhost', env.get('CLUSTERING_PORT'), {username: 'kyle', password: 'test'});
 
     log.info(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
     if (props_cors && (props_cors === true || props_cors.toUpperCase() === TRUE_COMPARE_VAL)) {

@@ -4,6 +4,7 @@ const SCWorker = require('socketcluster/scworker');
 const SCServer = require('./handlers/SCServer');
 const log = require('../../utility/logging/harper_logger');
 
+
 class Worker extends SCWorker{
     run(){
         this.registerWorkerHandlers();
@@ -11,6 +12,14 @@ class Worker extends SCWorker{
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_HANDSHAKE_SC, this.handshakeSCMiddleware.bind(this));
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_OUT, this.publishOutMiddleware.bind(this));
         let sc_server = new SCServer(this);
+
+
+        if(this.isLeader){
+            //get nodes & spwan them, watch for node changes
+            this.exchange.subscribe('hdb_nodes').watch(data=>{
+                //create / destroy node here
+            });
+        }
     }
 
     /**

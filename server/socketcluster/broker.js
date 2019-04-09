@@ -4,7 +4,7 @@ const SCBroker = require('socketcluster/scbroker');
 
 class Broker extends SCBroker {
     run() {
-        this.on('subscribe', this.subscribeHandler);
+        this.on('subscribe', this.subscribeHandler.bind(this));
         this.on('unsubscribe', this.unsubscribeHandler);
         this.on('publish', this.publishHandler);
         this.on('masterMessage', this.masterMessageHandler);
@@ -23,6 +23,7 @@ class Broker extends SCBroker {
      */
     subscribeHandler(channel){
         console.log('broker channel subscribed ' + channel);
+        this.subscriptions;
     }
 
     /**
