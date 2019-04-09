@@ -1,11 +1,10 @@
 #!/bin/bash
-#hdb_data="/root/hdb"
-EXCLUDE="docs,json,integrationTest,node_modules,unitTests,test,utility/devops"
-ADD="node_modules/ integrationTest/ json/"
+EXCLUDE="docs,json,integrationTests,node_modules,unitTests,test,utility/devops"
+ADD="node_modules/ integrationTests/ json/"
 MIRRORED_DIR="/tmp/harperdb_dev"
 
 #REMOVE FOR PRODUCTION
-sed -i "/HDB_PROC_NAME/ s/ =.*/ = 'no_oneis_here';/" /opt/harperdb/bin/run.js
+sed -i "/HDB_PROC_NAME/ s/ =.*/ = 'no_oneis_here';/" ./bin/run.js
 #NOTE: CREATE JIRA FOR DEV team to remove #!
 sed -i "s/#.*//" ./bin/stop.js
 
