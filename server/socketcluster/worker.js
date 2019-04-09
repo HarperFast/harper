@@ -71,6 +71,7 @@ class Worker extends SCWorker{
 
         //if the data has not been transacted and if the data did not originate from the socket we do not publish out
         if(req.data.__transacted === true && req.data.__originator !== req.socket.id){
+
             next();
         } else {
             //this silently swallows stopping the message from being sent
