@@ -382,7 +382,7 @@ function callProcessSend(process_msg) {
 }
 
 /**
- * Uses npm module ps-list to check if hdb process is running
+ * Uses module ps_list to check if hdb process is running
  * @param none
  * @returns {process}
  */
