@@ -85,7 +85,8 @@
 									"",
 									"pm.test(\"schema northnwd exists\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(Object.keys(jsonData)[0]).to.eql(\"northnwd\");",
+									"    var arrayData = Object.keys(jsonData)",
+									"    pm.expect(arrayData.includes(\"northnwd\")).to.be.true;",
 									"});",
 									""
 								],
