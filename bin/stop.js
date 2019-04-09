@@ -6,8 +6,7 @@ const log = require('../utility/logging/harper_logger');
 const signal = require('../utility/signalling');
 const {promisify} = require('util');
 
-// promisified functions
-const RESTART_RESPONSE = 'Restarting HarperDB.';
+const RESTART_RESPONSE = `Restarting HarperDB. This may take up to ${hdb_terms.RESTART_TIMEOUT_MS/1000} seconds.`;
 
 module.exports = {
     stop: stop,

@@ -258,7 +258,6 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         });
     });
 } else {
-    console.log('Setting up child.');
     harper_logger.info('In express' + process.cwd());
     harper_logger.info(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
     const express = require('express');
@@ -561,7 +560,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                 harper_logger.info('Got cluster status message via IPC');
                 cluster_event.clusterEmitter.emit(cluster_event.EVENT_NAME, msg.status);
                 break;
-            case 'restart1':
+            case terms.CLUSTER_MESSAGE_TYPE_ENUM.RESTART:
                 harper_logger.info(`Server close event received for process ${process.pid}`);
                 harper_logger.debug(`calling shutdown`);
                 shutDown(false).then(() => {
@@ -591,34 +590,24 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
        harper_logger.info(`Server close event received for process ${process.pid}`);
     });
 
-    process.on('restart1', () => {
-        harper_logger.warn(`Process pid:${process.pid} - !!!!!!!!!!!!!!!RESTART received, closing connections and finishing existing work.`);
-    });
-
-    process.on( terms.RESTART_CODE, function() {
-
-    });
-
     async function shutDown(force_bool) {
         harper_logger.debug(`calling shutdown`);
-        if(httpServer) {
+        let target_server = (httpServer ? httpServer : secureServer);
+        if(target_server) {
             harper_logger.warn(`Process pid:${process.pid} - SIGINT received, closing connections and finishing existing work.`);
             harper_logger.info(`There are ${Object.keys(server_connections).length} connections.`);
-            for(let conn of Object.keys(server_connections)) {
+            for (let conn of Object.keys(server_connections)) {
                 harper_logger.info(`Closing connection ${inspect(server_connections[conn])}`);
                 server_connections[conn].destroy();
             }
-            httpServer.close(function () {
+            setTimeout(() => {
+                harper_logger.info(`Timeout occurred during client disconnect.  Took longer than ${terms.RESTART_TIMEOUT_MS}ms.`);
+                hdb_util.callProcessSend({type: terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STOPPED, pid: process.pid});
+            }, terms.RESTART_TIMEOUT_MS);
+            target_server.close(function () {
                 harper_logger.warn(`Process pid:${process.pid} - Work completed, shutting down`);
                 //process.exit(terms.RESTART_CODE_NUM);
-                hdb_util.callProcessSend({type:terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STOPPED, pid: process.pid});
-            });
-        }
-        if(secureServer) {
-            harper_logger.warn(`Process pid:${process.pid} - SIGINT received, closing connections and finishing existing work.`);
-            secureServer.close(function () {
-                harper_logger.warn(`Process pid:${process.pid} - Work completed, shutting down`);
-                process.exit(terms.RESTART_CODE_NUM);
+                hdb_util.callProcessSend({type: terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STOPPED, pid: process.pid});
             });
         }
     }

@@ -184,8 +184,10 @@ class SocketServer {
                 log.info('Socket server closed, emitting server stopped event');
                 sio_server_stopped.sioServerStoppedEmitter.emit(sio_server_stopped.EVENT_NAME, new sio_server_stopped.SioServerStoppedMessage());
             });
-
-
+            setTimeout(() => {
+                log.info(`Timeout occurred during server disconnect.  Took longer than ${terms.RESTART_TIMEOUT_MS}ms.`);
+                sio_server_stopped.sioServerStoppedEmitter.emit(sio_server_stopped.EVENT_NAME, new sio_server_stopped.SioServerStoppedMessage());
+            }, terms.RESTART_TIMEOUT_MS);
         } catch(err) {
             log.error(`Error disconnecting the sio server. ${err}`);
         }

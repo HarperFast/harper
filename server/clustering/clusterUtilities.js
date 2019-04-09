@@ -486,10 +486,11 @@ function clusterMessageHandler(msg) {
                 } else {
                     child_event_count++;
                     log.info(`Received ${child_event_count} child stopped event(s).`);
+                    log.info(`started forks: ${inspect(started_forks)}`);
                     started_forks[msg.pid] = false;
-                    for(let i=0; i<started_forks.length; i++) {
-                        if(started_forks[i] === true) {
-                            // We still have children running, break;
+                    for(let fork of Object.keys(started_forks)) {
+                        // We still have children running, break;
+                        if(started_forks[fork] === true) {
                             return;
                         }
                     }
@@ -510,7 +511,7 @@ function clusterMessageHandler(msg) {
                     if(global.forks[i]) {
                         try {
                             log.debug(`Sending ${terms.RESTART_CODE} signal to process with pid:${global.forks[i].process.pid}`);
-                            global.forks[i].send({type: "restart1"});
+                            global.forks[i].send({type: terms.CLUSTER_MESSAGE_TYPE_ENUM.RESTART});
                         } catch(err) {
                             log.error(`Got an error trying to send ${terms.RESTART_CODE} to process ${global.forks[i].process.pid}.`);
                         }
