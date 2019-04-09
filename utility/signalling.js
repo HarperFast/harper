@@ -100,6 +100,7 @@ function signalClusterStatus(){
 }
 
 function signalChildStarted() {
+    harper_logger.debug(`Sending child started signal from process ${process.pid}`);
     try {
         // if process.send is undefined we are running a single instance of the process.
         if (process.send !== undefined && !global.isMaster) {
@@ -115,10 +116,8 @@ function signalChildStarted() {
 function signalRestart(force) {
     let err = null;
     try {
-
         // if process.send is undefined we are running a single instance of the process.
         if (process.send !== undefined && !global.isMaster) {
-            //process.send(new RestartSignalObject(force));
             common.callProcessSend(new RestartSignalObject(force));
         } else {
             err = 'Only 1 process is running, but a signal has been invoked.  Signals will be ignored when only 1 process is running.';

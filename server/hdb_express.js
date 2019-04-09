@@ -101,7 +101,6 @@ global.clustering_on = false;
 
 /**
  * Kicks off the clustering server and processes.  Only called with a valid license installed.
- * @returns {Promise<void>}
  */
 // This was put in hdb_expres rather than clusterUtils as we don't want restart to be called by any other module.
 function restartHDB() {
@@ -176,43 +175,44 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     };
 
     let restart_event_tracker = new RestartEventObject();
-
-    //TODO: These onMessage events should be moved into clusterUtiities to keep stuff out of this module.
+    let restart_in_progress = false;
     // Consume AllChildrenStopped Event.
     all_children_stopped_event.allChildrenStoppedEmitter.on(all_children_stopped_event.EVENT_NAME, (msg) => {
         harper_logger.info(`Got all children stopped event.`);
         try {
             restart_event_tracker.express_connections_stopped = true;
             if(restart_event_tracker.isReadyForRestart()) {
-                // TODO: Call restart function
-                harper_logger.warn(`************ RESTARTING HDB ************`);
-                restartHDB();
+                if(!restart_in_progress) {
+                    restart_in_progress = true;
+                    restartHDB();
+                }
             }
         } catch(err) {
             harper_logger.error(`Error tracking allchildrenstopped event.`);
         }
     });
 
+    // Consume SocketIOServerStopped event.
     sio_server_stopped_event.sioServerStoppedEmitter.on(sio_server_stopped_event.EVENT_NAME, (msg) => {
         harper_logger.info(`Got sio server stopped event.`);
         try {
             restart_event_tracker.sio_connections_stopped = true;
             if(restart_event_tracker.isReadyForRestart()) {
-                harper_logger.info("*********** READY FOR RESTART ***********");
-                restartHDB();
+                if(!restart_in_progress) {
+                    restart_in_progress = true;
+                    restartHDB();
+                }
             }
         } catch(err) {
             harper_logger.error(`Error tracking sio server stopped event.`);
         }
     });
-
     global_schema.setSchemaDataToGlobal((err, data)=> {
         search.searchByValue(licenseKeySearch, function (err, licenses) {
             const hdb_license = require('../utility/registration/hdb_license');
             if (err) {
                 return harper_logger.error(err);
             }
-
             Promise.all(licenses.map(async (license) => {
                 try {
                     let license_validation = await hdb_license.validateLicense(license.license_key, license.company);
@@ -244,6 +244,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                         let forked = cluster.fork();
                         // assign handler for messages expected from child processes.
                         forked.on('message', cluster_utilities.clusterMessageHandler);
+                        harper_logger.debug(`kicked off fork.`);
                         forks.push(forked);
                     } catch (e) {
                         harper_logger.fatal(`Had trouble kicking off new HDB processes.  ${e}`);
@@ -256,6 +257,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         });
     });
 } else {
+    console.log('Setting up child.');
     harper_logger.info('In express' + process.cwd());
     harper_logger.info(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
     const express = require('express');
@@ -603,7 +605,6 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
             harper_logger.info(`There are ${Object.keys(server_connections).length} connections.`);
             for(let conn of Object.keys(server_connections)) {
                 harper_logger.info(`Closing connection ${inspect(server_connections[conn])}`);
-                let temp = server_connections[conn];
                 server_connections[conn].destroy();
             }
             httpServer.close(function () {
@@ -633,7 +634,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         const props_http_on = env.get(PROPS_HTTP_ON_KEY);
 
         global.isMaster = cluster.isMaster;
-
+        harper_logger.debug(`child process ${process.pid} starting up.`);
         if (props_http_secure_on &&
             (props_http_secure_on === true || props_http_secure_on.toUpperCase() === TRUE_COMPARE_VAL)) {
             secureServer = httpsecure.createServer(credentials, app);
@@ -655,6 +656,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
 
         if (props_http_on &&
             (props_http_on === true || props_http_on.toUpperCase() === TRUE_COMPARE_VAL)) {
+            harper_logger.debug(`child process starting up http server.`);
             httpServer = http.createServer(app);
             httpServer.on('connection', function(conn) {
                 let key = conn.remoteAddress + ':' + conn.remotePort;
@@ -669,6 +671,9 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                 harper_logger.info(`HarperDB ${pjson.version} HTTP Server running on ${env.get(PROPS_HTTP_PORT_KEY)}`);
                 async.parallel(
                     [
+                        () => {
+                            harper_logger.debug('Configuring child process.');
+                        },
                         global_schema.setSchemaDataToGlobal,
                         user_schema.setUsersToGlobal,
                         signalling.signalChildStarted

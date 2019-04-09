@@ -29,7 +29,6 @@ const p_schema_describe_all = promisify(schema.describeAll);
 const p_schema_create_schema = promisify(schema.createSchema);
 const p_schema_create_table = promisify(schema.createTable);
 const p_schema_create_attribute = promisify(schema.createAttribute);
-const p_insert = insert.insert;
 
 const WHITELISTED_ERRORS = 'already exists';
 const ERROR_NO_HDB_USER = 'there is no hdb_user';
@@ -67,15 +66,19 @@ class SocketClient {
      * Disconnect the connection in this.other_node.  This is typically needed when a node has been removed from hdb_nodes.
      */
     disconnectNode() {
-        if(!this.other_node || this.other_node.disconnected) {
-            harper_logger.info('There is no connected client to disconnect');
-            return;
+        try {
+            if (!this.other_node || this.other_node.disconnected) {
+                harper_logger.info('There is no connected client to disconnect');
+                return;
+            }
+            harper_logger.info(`disconnecting node ${this.other_node.name}`);
+            this.stop_reconnect = true;
+            if(this.client) {
+                this.client.disconnect();
+            }
+        } catch(err) {
+            harper_logger.error(err);
         }
-        harper_logger.info(`disconnecting node ${this.other_node.name}`);
-        this.stop_reconnect = true;
-        this.client.disconnect();
-        //TODO: listen for close event, then destroy.
-        this.client.destroy();
     }
 
     onConnectHandler() {
