@@ -125,7 +125,7 @@ describe('Test stop.js' , () => {
             } catch(err) {
                 error = err;
             }
-            assert.equal(result, 'Restarting HarperDB.', 'expected restart message');
+            assert.equal(result, 'Restarting HarperDB. This may take up to 60 seconds.', 'expected restart message');
             assert.equal(error, undefined, 'expected no errors back');
             assert.equal(signal_stub.called, true, 'expected signalRestart to be called.');
         });
