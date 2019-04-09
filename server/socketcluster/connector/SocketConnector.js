@@ -2,7 +2,7 @@
 class SocketConnector{
     constructor(socket_client, name, hostname, port, credentials){
         this.name = name;
-        this.socket = this.init(socket_client, hostname, port, credentials);
+        this.init(socket_client, hostname, port, credentials);
         this.disconnect_timestamp = null;
     }
 
@@ -21,6 +21,8 @@ class SocketConnector{
                 maxDelay: 30000 //milliseconds
             }
         });
+
+        this.socket.name = this.name;
 
         this.socket.on('incoming_data', (data, res)=>{
             console.log(data);
@@ -54,7 +56,7 @@ class SocketConnector{
     }
 
     subscribe(channel, watcher){
-        this.socket.subscribe(channel, {waitForAuth: true}).watch(watcher);
+        this.socket.subscribe(channel).watch(watcher);
     }
 
     publish(channel, data, handler){

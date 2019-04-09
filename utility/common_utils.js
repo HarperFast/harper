@@ -42,7 +42,8 @@ module.exports = {
     timeoutPromise: timeoutPromise,
     callProcessSend: callProcessSend,
     isHarperRunning: isHarperRunning,
-    isClusterOperation: isClusterOperation
+    isClusterOperation: isClusterOperation,
+    sendTransactionToSocketCluster: sendTransactionToSocketCluster
 };
 
 /**
@@ -413,4 +414,16 @@ function isClusterOperation(operation_name) {
         log.error(`Error checking operation against cluster ops ${err}`);
     }
     return false;
+}
+
+/**
+ * sends a processed transaction from HarperDB to socketcluster
+ * @param transaction
+ */
+function sendTransactionToSocketCluster(transaction){
+    transaction.__transacted = true;
+
+    if(global.hdb_socket_client !== undefined){
+        global.hdb_socket_client.publish(transaction.schema + ':' + transaction.table, transaction);
+    }
 }

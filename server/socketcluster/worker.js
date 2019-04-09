@@ -3,7 +3,7 @@
 const SCWorker = require('socketcluster/scworker');
 const SCServer = require('./handlers/SCServer');
 const log = require('../../utility/logging/harper_logger');
-
+const NodeConnector = require('./connector/NodeConnector');
 
 class Worker extends SCWorker{
     run(){
@@ -15,10 +15,7 @@ class Worker extends SCWorker{
 
 
         if(this.isLeader){
-            //get nodes & spwan them, watch for node changes
-            this.exchange.subscribe('hdb_nodes').watch(data=>{
-                //create / destroy node here
-            });
+            new NodeConnector(require('./connector/node'), this);
         }
     }
 
@@ -30,6 +27,10 @@ class Worker extends SCWorker{
     publishInMiddleware(req, next){
         try{
             this.publishInValidation(req);
+
+            if(req.data.__transacted === undefined){
+                //here we send the transaction to HDB
+            }
         } catch(e){
             console.error(e);
             return next(e);
@@ -54,10 +55,9 @@ class Worker extends SCWorker{
              throw new Error('not authorized');
         }
 
-        //add a
-        if(!req.data.timestamp){
-            req.data.timestamp = Date.now();
-        }
+        //add / change tghe timestamp
+        req.data.timestamp = Date.now();
+
 
         //the __originator attribute is added so we can filter out sending back the same object to the sender
         req.data.__originator = req.socket.id;
@@ -65,13 +65,17 @@ class Worker extends SCWorker{
 
 
     publishOutMiddleware(req, next){
-
         if(req.socket.authState === req.socket.UNAUTHENTICATED){
             return next(new Error('not authorized'));
         }
-        console.log('publish out');
 
-        next();
+        //if the data has not been transacted and if the data did not originate from the socket we do not publish out
+        if(req.data.__transacted === true && req.data.__originator !== req.socket.id){
+            next();
+        } else {
+            //this silently swallows stopping the message from being sent
+            next(true);
+        }
     }
 
     /**
