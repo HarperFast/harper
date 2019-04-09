@@ -1,4 +1,5 @@
 'use strict';
+
 const chai = require('chai');
 const sinon = require('sinon');
 const sinon_chai = require('sinon-chai');
