@@ -7,7 +7,7 @@ MIRRORED_DIR="/tmp/harperdb_dev"
 #REMOVE FOR PRODUCTION
 sed -i "/HDB_PROC_NAME/ s/ =.*/ = 'no_oneis_here';/" /opt/harperdb/bin/run.js
 #NOTE: CREATE JIRA FOR DEV team to remove #!
-sed -i "s/#.*//" /bin/stop.js
+sed -i "s/#.*//" ./bin/stop.js
 
 #Copy some required files to the mirrored dir.
 cp -R $ADD $MIRRORED_DIR
