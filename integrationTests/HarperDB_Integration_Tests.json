@@ -11264,7 +11264,7 @@
 					"response": []
 				},
 				{
-					"name": "SQL drop_role Copy",
+					"name": "SQL drop_role",
 					"event": [
 						{
 							"listen": "test",
@@ -11330,7 +11330,490 @@
 			]
 		},
 		{
-			"name": "10. Configuration",
+			"name": "10. Alter User Tests",
+			"item": [
+				{
+					"name": "SQL Add non SU role",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "6d42cf23-2901-455c-9d6a-a3742af81cd4",
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"responseData = JSON.parse(responseBody);",
+									"postman.setEnvironmentVariable(\"role_id\", responseData.id)"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"add_role\",\n\"role\":\"developer_test_5\",\n\"permission\":{\n  \"super_user\": false,\n  \"northnwd\":{\n\n   \"tables\": {\n     \"customers\": {\n         \"read\":true,\n         \"insert\":true,\n         \"update\":true,\n         \"delete\":true,\n         \"attribute_restrictions\":[]\n      },\n      \"suppliers\": {\n         \"read\":false,\n         \"insert\":false,\n         \"update\":false,\n         \"delete\":false,\n         \"attribute_restrictions\":[]\n      },\n      \"region\": {\n         \"read\":true,\n         \"insert\":false,\n         \"update\":false,\n         \"delete\":false,\n         \"attribute_restrictions\":[{\n               \"attribute_name\": \"regiondescription\",\n               \"read\":true,\n               \"insert\":false,\n               \"update\":false,\n               \"delete\":false\n            }]\n      },\n      \"territories\": {\n         \"read\":true,\n         \"insert\":true,\n         \"update\":false,\n         \"delete\":false,\n         \"attribute_restrictions\":[\n           {\n               \"attribute_name\": \"territorydescription\",\n               \"read\":true,\n               \"insert\":true,\n               \"update\":false,\n               \"delete\":false\n            }\n           ]\n      },\n      \"categories\": {\n         \"read\":true,\n         \"insert\":true,\n         \"update\":true,\n         \"delete\":false,\n         \"attribute_restrictions\":[\n           {\n               \"attribute_name\": \"description\",\n               \"read\":true,\n               \"insert\":true,\n               \"update\":true,\n               \"delete\":false\n            }\n           ]\n      },\n      \"shippers\": {\n         \"read\":true,\n         \"insert\":true,\n         \"update\":true,\n         \"delete\":true,\n         \"attribute_restrictions\":[\n           {\n               \"attribute_name\": \"companyname\",\n               \"read\":false,\n               \"insert\":false,\n               \"update\":false,\n               \"delete\":false\n            }\n           ]\n      }\n   }\n}\n  }\n\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL Add User with new Role",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "8bc25e1a-10dc-45a5-8491-d5560c59a2a7",
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"{{role_id}}\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":\"true\"\n\n}"
+						},
+						"url": {
+							"raw": "http://localhost:9925/",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "9925",
+							"path": [
+								""
+							]
+						},
+						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+					},
+					"response": []
+				},
+				{
+					"name": "Alter User with empty role",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "8bc25e1a-10dc-45a5-8491-d5560c59a2a7",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(500);",
+									"});",
+									"",
+									"pm.test(\"SQL insert successful reponse\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.eql(\"If role is specified, it cannot be empty.\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"alter_user\",\n\"role\":\"\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":true\n\n}"
+						},
+						"url": {
+							"raw": "http://localhost:9925/",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "9925",
+							"path": [
+								""
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Alter User set active to false.",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "8bc25e1a-10dc-45a5-8491-d5560c59a2a7",
+								"exec": [
+									"pm.test(\"Status code is 500\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"SQL insert successful reponse\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message).to.eql(\"updated 1 of 1 records\");",
+									"    pm.expect(jsonData.update_hashes[0]).to.eql(\"test_user\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"alter_user\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":false\n\n}"
+						},
+						"url": {
+							"raw": "http://localhost:9925/",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "9925",
+							"path": [
+								""
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Check for active=false",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "76aa9bd9-5983-451d-8fb6-e0f5c936bbee",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"for(let user of pm.response.json()) {",
+									"   if(user.username === \"test_user\") {",
+									"       pm.environment.set(\"found_user\", user);",
+									"   }",
+									"}",
+									"",
+									"pm.test(\"user active should be false.\", function () {",
+									"    let temp = pm.environment.get(\"found_user\");",
+									"   pm.expect(temp.active).to.eql(false);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"list_users\"\n\n}"
+						},
+						"url": {
+							"raw": "http://localhost:9925",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "9925"
+						},
+						"description": "Method for listing all users.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'list_users'</li>"
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL drop test user",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "43e34308-05a8-433b-be7d-964fccf09f03",
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46cGFzc3dvcmQ="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"drop_user\",\n  \"username\":\"test_user\"\n}"
+						},
+						"url": {
+							"raw": "http://localhost:9925",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "9925"
+						},
+						"description": "This method is used for dropping a role.  \n\n<i>You cannot drop a role with associated users.  </i>\n\n<ul>\n<li><b>operation </b><i>(required)</i> - this must always be drop_role </li>\n<li><b>id </b><i>(required) </i> - this is the id of the role you are dropping\n</ul>"
+					},
+					"response": []
+				},
+				{
+					"name": "SQL drop_role",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "43e34308-05a8-433b-be7d-964fccf09f03",
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46cGFzc3dvcmQ="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"drop_role\",\n\"id\":\"{{role_id}}\"\n\n}"
+						},
+						"url": {
+							"raw": "http://localhost:9925",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "9925"
+						},
+						"description": "This method is used for dropping a role.  \n\n<i>You cannot drop a role with associated users.  </i>\n\n<ul>\n<li><b>operation </b><i>(required)</i> - this must always be drop_role </li>\n<li><b>id </b><i>(required) </i> - this is the id of the role you are dropping\n</ul>"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "11. Configuration",
 			"item": [
 				{
 					"name": "Describe table DropAttributeTest",
@@ -12568,10 +13051,32 @@
 						}
 					]
 				}
+			],
+			"event": [
+				{
+					"listen": "prerequest",
+					"script": {
+						"id": "5ea4f68b-709f-40b3-8628-1b895be66ec3",
+						"type": "text/javascript",
+						"exec": [
+							""
+						]
+					}
+				},
+				{
+					"listen": "test",
+					"script": {
+						"id": "eb1055bb-d692-4b37-aebb-5ee2fd84aa22",
+						"type": "text/javascript",
+						"exec": [
+							""
+						]
+					}
+				}
 			]
 		},
 		{
-			"name": "11. Environment Clean Up",
+			"name": "12. Environment Clean Up",
 			"item": [
 				{
 					"name": "sql delete schema",

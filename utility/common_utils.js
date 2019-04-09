@@ -4,19 +4,15 @@ const log = require('./logging/harper_logger');
 const fs_extra = require('fs-extra');
 const truncate = require('truncate-utf8-bytes');
 const os = require('os');
+const terms = require('./hdbTerms');
 const { promisify } = require('util');
-const {PERIOD_REGEX,
-    DOUBLE_PERIOD_REGEX,
-    UNICODE_PERIOD,
-    FORWARD_SLASH_REGEX,
-    UNICODE_FORWARD_SLASH,
-    ESCAPED_FORWARD_SLASH_REGEX,
-    ESCAPED_PERIOD_REGEX,
-    ESCAPED_DOUBLE_PERIOD_REGEX} = require('./hdbTerms');
+const ps_list = require('./psList');
 
 const EMPTY_STRING = '';
-
+const FILE_EXTENSION_LEGNTH = 4;
 const CHARACTER_LIMIT = 255;
+
+const HDB_PROC_NAME = 'hdb_express.js';
 
 const AUTOCAST_COMMON_STRINGS = {
     'true': true,
@@ -45,7 +41,8 @@ module.exports = {
     valueConverter: valueConverter,
     timeoutPromise: timeoutPromise,
     callProcessSend: callProcessSend,
-    sendTransactionToSocketCluster: sendTransactionToSocketCluster
+    isHarperRunning: isHarperRunning,
+    isClusterOperation: isClusterOperation
 };
 
 /**
@@ -138,7 +135,6 @@ function isBoolean(value){
     if(value === true || value === false){
         return true;
     }
-
     return false;
 }
 
@@ -152,7 +148,7 @@ function stripFileExtension(file_name) {
     if(isEmptyOrZeroLength(file_name)) {
         return EMPTY_STRING;
     }
-    return file_name.substr(0, file_name.length-4);
+    return file_name.substr(0, file_name.length-FILE_EXTENSION_LEGNTH);
 }
 
 /**
@@ -187,6 +183,7 @@ function autoCast(data){
         try{
             data = JSON.parse(data);
         } catch(e) {
+            //no-op
         }
     }
     return data;
@@ -257,14 +254,14 @@ function escapeRawValue(value){
     let the_value = String(value);
 
     if(the_value === '.') {
-        return UNICODE_PERIOD;
+        return terms.UNICODE_PERIOD;
     }
 
     if(the_value === '..') {
-        return UNICODE_PERIOD + UNICODE_PERIOD;
+        return terms.UNICODE_PERIOD + terms.UNICODE_PERIOD;
     }
 
-    return the_value.replace(FORWARD_SLASH_REGEX, UNICODE_FORWARD_SLASH);
+    return the_value.replace(terms.FORWARD_SLASH_REGEX, terms.UNICODE_FORWARD_SLASH);
 }
 
 /**
@@ -279,15 +276,15 @@ function unescapeValue(value){
 
     let the_value = String(value);
 
-    if(the_value === UNICODE_PERIOD) {
+    if(the_value === terms.UNICODE_PERIOD) {
         return '.';
     }
 
-    if(the_value === UNICODE_PERIOD + UNICODE_PERIOD) {
+    if(the_value === terms.UNICODE_PERIOD + terms.UNICODE_PERIOD) {
         return '..';
     }
 
-    return String(value).replace(ESCAPED_FORWARD_SLASH_REGEX, '/');
+    return String(value).replace(terms.ESCAPED_FORWARD_SLASH_REGEX, '/');
 }
 
 /**
@@ -303,7 +300,6 @@ function stringifyProps(prop_reader_object, comments) {
         return '';
     }
     let lines = '';
-    let section = null;
     prop_reader_object.each(function (key, value) {
         try {
             if (comments && comments[key]) {
@@ -373,6 +369,10 @@ function timeoutPromise(ms, msg, action_function) {
     };
 }
 
+/**
+ * Wrapper function for process.send, will catch cases where master tries to send an IPC message.
+ * @param process_msg - The message to send.
+ */
 function callProcessSend(process_msg) {
     if(process.send === undefined || global.isMaster) {
         log.error('Tried to call process.send() but process.send is undefined.');
@@ -382,12 +382,35 @@ function callProcessSend(process_msg) {
 }
 
 /**
- * sends a transaction to the local socketserver which needs to broadcast to the cluster
- * @param transaction
+ * Uses module ps_list to check if hdb process is running
+ * @param none
+ * @returns {process}
  */
-function sendTransactionToSocketCluster(transaction){
-    //we do not want to send system level transactions over the wire
-    if(global.hdb_socket_client !== undefined && transaction.schema !== 'system'){
-        global.hdb_socket_client.publish(`${transaction.schema}:${transaction.table}`, transaction);
+async function isHarperRunning(){
+    try {
+        let hdb_running = false;
+        const list = await ps_list.findPs(HDB_PROC_NAME);
+
+        if(!isEmptyOrZeroLength(list)) {
+            hdb_running = true;
+        }
+
+        return hdb_running;
+    } catch(err) {
+        throw err;
     }
+}
+
+/**
+ * Returns true if a given operation name is a cluster operation.  Should always return a boolean.
+ * @param operation_name - the operation name being called
+ * @returns {boolean|*}
+ */
+function isClusterOperation(operation_name) {
+    try {
+        return terms.CLUSTER_OPERATIONS[operation_name.toLowerCase()] !== undefined;
+    } catch(err) {
+        log.error(`Error checking operation against cluster ops ${err}`);
+    }
+    return false;
 }

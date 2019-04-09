@@ -58,27 +58,43 @@ function processLocalTransaction(req, res, operation_function, callback) {
     } catch (e) {
         harper_logger.error(e);
         callback(e);
-        return res.status(500).json(e);
+        setResponseStatus(res, terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, e);
     }
 
     operation_function(req.body, (error, data) => {
         if (error) {
             harper_logger.info(error);
             if(error === UNAUTH_RESPONSE) {
-                res.status(403).json({error: UNAUTHORIZED_TEXT});
+                setResponseStatus(res, terms.HTTP_STATUS_CODES.FORBIDDEN, {error: UNAUTHORIZED_TEXT});
                 return callback(error);
             }
             if(typeof error !== 'object') {
                 error = {"error": error};
             }
-            res.status(500).json({error: (error.message ? error.message : error.error)});
+            setResponseStatus(res, terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, {error: (error.message ? error.message : error.error)});
             return callback(error);
         }
         if (typeof data !== 'object')
             data = {"message": data};
-        res.status(200).json(data);
+        setResponseStatus(res, terms.HTTP_STATUS_CODES.OK, data);
         return callback(null, data);
     });
+}
+
+/**
+ * Wrapper for writing status, checks to see if the header is sent already.
+ * @param res - the response object
+ * @param status - the status object
+ * @param msg - the response message.
+ */
+function setResponseStatus(res, status, msg) {
+    try {
+        if(!res._headerSent) {
+            res.status(status).json(msg);
+        }
+    } catch(err) {
+        harper_logger.info('Tried to set response status, but it has already been set.');
+    }
 }
 
 function processInThread(operation, operation_function, callback) {
