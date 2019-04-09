@@ -12,13 +12,11 @@ const ioc = require('socket.io-client');
 const schema = require('../../data_layer/schema');
 const _ = require('lodash');
 const moment = require('moment');
-const {inspect} = require('util');
 const common_utils = require('../../utility/common_utils');
 const terms = require('../../utility/hdbTerms');
 const version = require('../../bin/version');
 const env = require('../../utility/environment/environmentManager');
 const ALLOW_SELF_SIGNED_CERTS = env.get(terms.HDB_SETTINGS_NAMES.ALLOW_SELF_SIGNED_SSL_CERTS);
-const insert = require('../../data_layer/insert');
 const uuidv4 = require('uuid/v1');
 const {promisify} = require('util');
 const cluster_handlers = require('./clusterHandlers');
@@ -126,10 +124,8 @@ class SocketClient {
     }
 
     async onCatchupHandler(queue) {
-        harper_logger.info('catchup' + inspect(queue));
-
+        harper_logger.info('catchup called');
         await this.onSchemaUpdateResponseHandler(queue.schema);
-
         if(!queue.queue) {
             harper_logger.debug(`Nothing in the queue, all done here`);
             return;
@@ -316,28 +312,17 @@ class SocketClient {
         this.client = ioc.connect(`https://${this.other_node.host}:${this.other_node.port}`, CLIENT_CONNECTION_OPTIONS);
     }
 
-
     createClientMessageHandlers() {
         this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.CONNECT, this.onConnectHandler.bind(this));
-
         this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.RECONNECT_ATTEMPT, this.onReconnectHandler.bind(this));
-
         this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.CONNECT_ERROR, this.onConnectErrorHandler.bind(this));
-
         this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.CATCHUP_RESPONSE, this.onCatchupHandler.bind(this));
-
         this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.CATCHUP_REQUEST, this.onCatchupRequestHandler.bind(this));
-
         this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.CONFIRM_MSG, this.onConfirmMessageHandler.bind(this));
-
         this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.SCHEMA_UPDATE_RES, this.onSchemaUpdateResponseHandler.bind(this));
-
         this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.MESSAGE, this.onMsgHandler.bind(this));
-
         this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.DISCONNECT, this.onDisconnectHandler.bind(this));
-
         this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.VERSION_MISMATCH, this.onVersionMismatch.bind(this));
-
         this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.DIRECTION_CHANGE, this.onDirectionChange.bind(this));
     }
 
