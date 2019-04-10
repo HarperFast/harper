@@ -421,9 +421,11 @@ function isClusterOperation(operation_name) {
  * @param transaction
  */
 function sendTransactionToSocketCluster(transaction){
-    transaction.__transacted = true;
 
-    if(global.hdb_socket_client !== undefined){
-        global.hdb_socket_client.publish(transaction.schema + ':' + transaction.table, transaction);
+
+    if(global.hdb_socket_client !== undefined && transaction.schema !== 'system'){
+        transaction.__transacted = true;
+        let {hdb_user, hdb_auth_header, ...data} = transaction;
+        global.hdb_socket_client.publish(transaction.schema + ':' + transaction.table, data);
     }
 }

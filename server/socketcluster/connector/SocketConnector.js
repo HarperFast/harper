@@ -1,5 +1,13 @@
 
 class SocketConnector{
+    /**
+     *
+     * @param socket_client
+     * @param name
+     * @param hostname
+     * @param port
+     * @param credentials
+     */
     constructor(socket_client, name, hostname, port, credentials){
         this.name = name;
         this.init(socket_client, hostname, port, credentials);

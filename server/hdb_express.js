@@ -172,6 +172,8 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         });
     });
 } else {
+
+
     harper_logger.info('In express' + process.cwd());
     harper_logger.info(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
     const express = require('express');
@@ -188,6 +190,12 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     global.clustering_on = false;
     let props_cors = env.get(PROPS_CORS_KEY);
     let props_cors_whitelist = env.get(PROPS_CORS_WHITELIST_KEY);
+
+    //if(global.clustering_on === true){
+        const socketclient = require('socketcluster-client');
+        const SocketConnector = require('./socketcluster/connector/SocketConnector');
+        global.hdb_socket_client = new SocketConnector(socketclient, 'local', 'localhost', env.get('CLUSTERING_PORT'), {username: 'kyle', password: 'test'})
+    //}
 
     if (props_cors && (props_cors === true || props_cors.toUpperCase() === TRUE_COMPARE_VAL)) {
         let cors_options = {

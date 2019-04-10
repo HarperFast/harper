@@ -15,7 +15,7 @@ class Worker extends SCWorker{
 
 
         if(this.isLeader){
-            new NodeConnector(require('./connector/node'), this);
+            //new NodeConnector(require('./connector/node'), this);
         }
     }
 
@@ -58,7 +58,6 @@ class Worker extends SCWorker{
         //add / change tghe timestamp
         req.data.timestamp = Date.now();
 
-
         //the __originator attribute is added so we can filter out sending back the same object to the sender
         req.data.__originator = req.socket.id;
     }
@@ -69,9 +68,8 @@ class Worker extends SCWorker{
             return next(new Error('not authorized'));
         }
 
-        //if the data has not been transacted and if the data did not originate from the socket we do not publish out
+        //if the data has not been transacted and if the data did not originated from the socket we do not publish out
         if(req.data.__transacted === true && req.data.__originator !== req.socket.id){
-
             next();
         } else {
             //this silently swallows stopping the message from being sent
