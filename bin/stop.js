@@ -4,6 +4,9 @@ const ps_list = require('../utility/psList');
 const hdb_terms = require('../utility/hdbTerms');
 const os = require('os');
 const async_settimeout = require('util').promisify(setTimeout);
+
+const HDB_PROC_END_TIMEOUT = 100;
+
 module.exports = {
     stop: stop
 };
@@ -57,7 +60,7 @@ async function  checkHdbProcsEnd(){
     let go_on = true;
 
     do{
-        await async_settimeout(100);
+        await async_settimeout(HDB_PROC_END_TIMEOUT);
 
         let instances =  await ps_list.findPs(hdb_terms.HDB_PROC_NAME);
         if(instances.length === 0) {
