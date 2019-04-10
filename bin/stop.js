@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 "use strict";
 const ps_list = require('../utility/psList');
 const hdb_terms = require('../utility/hdbTerms');
