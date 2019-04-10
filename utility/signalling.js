@@ -1,6 +1,7 @@
 const harper_logger = require('../utility/logging/harper_logger');
 const global_schema = require('../utility/globalSchema');
 const terms = require('./hdbTerms');
+const common = require('./common_utils');
 
 class JobAddedSignalObject {
     constructor(job_id, runner_message) {
@@ -9,6 +10,13 @@ class JobAddedSignalObject {
         // For now we want to target the creating process to handle this job.  At some point this can
         // be made smarter to delegate to a different process.
         this.target_process_id = process.pid;
+    }
+}
+
+class RestartSignalObject {
+    constructor(force) {
+        this.force_shutdown = force;
+        this.type = terms.CLUSTER_MESSAGE_TYPE_ENUM.RESTART;
     }
 }
 
@@ -92,6 +100,7 @@ function signalClusterStatus(){
 }
 
 function signalChildStarted() {
+    harper_logger.debug(`Sending child started signal from process ${process.pid}`);
     try {
         // if process.send is undefined we are running a single instance of the process.
         if (process.send !== undefined && !global.isMaster) {
@@ -104,11 +113,28 @@ function signalChildStarted() {
     }
 }
 
+function signalRestart(force) {
+    let err = null;
+    try {
+        // if process.send is undefined we are running a single instance of the process.
+        if (process.send !== undefined && !global.isMaster) {
+            common.callProcessSend(new RestartSignalObject(force));
+        } else {
+            err = 'Only 1 process is running, but a signal has been invoked.  Signals will be ignored when only 1 process is running.';
+            harper_logger.warn(err);
+        }
+    } catch(e){
+        err = 'Got an error restarting HarperDB.  Please check the logs and try again.';
+        harper_logger.error(e);
+    }
+}
+
 module.exports = {
     signalSchemaChange,
     signalUserChange,
     signalJobAdded: signalJobAdded,
     signalClusterStatus: signalClusterStatus,
     JobAddedSignalObject: JobAddedSignalObject,
-    signalChildStarted: signalChildStarted
+    signalChildStarted: signalChildStarted,
+    signalRestart: signalRestart
 };
