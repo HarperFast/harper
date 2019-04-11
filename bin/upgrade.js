@@ -20,7 +20,6 @@ const tar = require('tar-fs');
 const CLI = require('clui');
 const request = require("request");
 const request_promise = require("request-promise-native");
-//const PropertiesReader = require('properties-reader');
 const env = require('../utility/environment/environmentManager');
 const log = require('../utility/logging/harper_logger');
 const hdb_util = require('../utility/common_utils');
