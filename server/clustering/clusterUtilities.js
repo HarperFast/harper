@@ -13,6 +13,7 @@ const auth = require('../../security/auth');
 const ClusterStatusObject = require('../../server/clustering/ClusterStatusObject');
 const signalling = require('../../utility/signalling');
 const cluster_status_event = require('../../events/ClusterStatusEmitter');
+const children_stopped_event = require('../../events/AllChildrenStoppedEvent');
 const common = require('../../utility/common_utils');
 
 //Promisified functions
@@ -23,6 +24,7 @@ const iface = os.networkInterfaces();
 const addresses = [];
 const started_forks = {};
 let is_enterprise = false;
+let child_event_count = 0;
 
 const STATUS_TIMEOUT_MS = 4000;
 const DUPLICATE_ERR_MSG = 'Cannot add a node that matches the hosts clustering config.';
@@ -56,6 +58,10 @@ function setEnterprise(enterprise) {
     is_enterprise = enterprise;
 }
 
+/**
+ * Kicks off the clustering server and processes.  Only called with a valid license installed.
+ * @returns {Promise<void>}
+ */
 async function kickOffEnterprise() {
     const enterprise_util = require('../../utility/enterpriseInitialization');
     const p_kick_off_enterprise = promisify(enterprise_util.kickOffEnterprise);
@@ -323,7 +329,6 @@ function selectProcess(target_process_id) {
         }
         if (global.forks[i].process.pid === target_process_id) {
             specified_process = global.forks[i];
-            //specified_process.send(msg);
             log.info(`Processing job on process: ${target_process_id}`);
             return specified_process;
         }
@@ -460,15 +465,62 @@ function clusterMessageHandler(msg) {
                 }
                 break;
             case terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STARTED:
-                log.info('Received child started event.');
+                log.trace(`Got child started event`);
                 if(started_forks[msg.pid]) {
                     log.warn(`Got a duplicate child started event for pid ${msg.pid}`);
                 } else {
+                    child_event_count++;
+                    log.info(`Received ${child_event_count} child started event(s).`);
                     started_forks[msg.pid] = true;
                     if(Object.keys(started_forks).length === global.forks.length) {
                         //all children are started, kick off enterprise.
+                        child_event_count = 0;
                         kickOffEnterprise();
                     }
+                }
+                break;
+            case terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STOPPED:
+                log.trace(`Got child stopped event`);
+                if(started_forks[msg.pid] === false) {
+                    log.warn(`Got a duplicate child started event for pid ${msg.pid}`);
+                } else {
+                    child_event_count++;
+                    log.info(`Received ${child_event_count} child stopped event(s).`);
+                    log.info(`started forks: ${inspect(started_forks)}`);
+                    started_forks[msg.pid] = false;
+                    for(let fork of Object.keys(started_forks)) {
+                        // We still have children running, break;
+                        if(started_forks[fork] === true) {
+                            return;
+                        }
+                    }
+                    //All children are stopped, emit event
+                    log.debug(`All children stopped, restarting.`);
+                    child_event_count = 0;
+                    children_stopped_event.allChildrenStoppedEmitter.emit(children_stopped_event.EVENT_NAME, new children_stopped_event.AllChildrenStoppedMessage());
+                }
+                break;
+            case terms.CLUSTER_MESSAGE_TYPE_ENUM.RESTART:
+                log.info('Received restart event.');
+                if(!global.forks || global.forks.length === 0) {
+                    log.info('No processes found');
+                } else {
+                    log.info(`Shutting down ${global.forks.length} process.`);
+                }
+                for(let i=0; i<global.forks.length; i++) {
+                    if(global.forks[i]) {
+                        try {
+                            log.debug(`Sending ${terms.RESTART_CODE} signal to process with pid:${global.forks[i].process.pid}`);
+                            global.forks[i].send({type: terms.CLUSTER_MESSAGE_TYPE_ENUM.RESTART});
+                        } catch(err) {
+                            log.error(`Got an error trying to send ${terms.RESTART_CODE} to process ${global.forks[i].process.pid}.`);
+                        }
+                    }
+                }
+                // Try to shutdown all SocketServer and SocketClient connections.
+                if(global.cluster_server) {
+                    // Close server will emit an event once it is done
+                    global.cluster_server.closeServer();
                 }
                 break;
             default:

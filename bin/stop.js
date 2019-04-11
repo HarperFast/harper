@@ -1,12 +1,36 @@
-#!/usr/bin/env node
 "use strict";
 const ps_list = require('../utility/psList');
 const hdb_terms = require('../utility/hdbTerms');
 const os = require('os');
+const log = require('../utility/logging/harper_logger');
+const signal = require('../utility/signalling');
+const {promisify} = require('util');
+
+const RESTART_RESPONSE = `Restarting HarperDB. This may take up to ${hdb_terms.RESTART_TIMEOUT_MS/1000} seconds.`;
 
 module.exports = {
-    stop: stop
+    stop: stop,
+    restartProcesses: restartProcesses
 };
+
+/**
+ * Send a signal to the master process that HDB needs to be restarted.
+ * @param json_message
+ * @returns {Promise}
+ */
+async function restartProcesses(json_message) {
+    if(!json_message.force) {
+        json_message.force = false;
+    }
+    try {
+        signal.signalRestart(json_message.force);
+        return RESTART_RESPONSE;
+    } catch(err) {
+        let msg = `There was an error restarting HarperDB. ${err}`;
+        log.error(msg);
+        return msg;
+    }
+}
 
 /**
  * Stop all instances of harperDB running on the system.  If the current logged in user is not root or the installed user

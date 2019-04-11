@@ -79,7 +79,7 @@ async function onConfirmMessageHandler(msg){
         // delete from memory, this is OK if this fails.
         delete global.cluster_queue[msg.node.name][msg.id];
         delete global.forkClusterMsgQueue[msg.id];
-    } catch(e){
+    } catch(e) {
         // No-op, This failure is OK
     }
 
