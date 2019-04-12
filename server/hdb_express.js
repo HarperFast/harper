@@ -20,7 +20,6 @@ const guidePath = require('path');
 // Leaving global_schema and search here so we can load them early.  They are used in other modules and should be loaded before.
 const global_schema = require('../utility/globalSchema');
 const fs = require('fs');
-const search = require('../data_layer/search');
 const cluster_utilities = require('./clustering/clusterUtilities');
 const cluster_event = require('../events/ClusterStatusEmitter');
 const all_children_stopped_event = require('../events/AllChildrenStoppedEvent');
@@ -29,9 +28,7 @@ const signalling = require('../utility/signalling');
 const moment = require('moment');
 const terms = require('../utility/hdbTerms');
 const RestartEventObject = require('./RestartEventObject');
-const child_process = require('child_process');
 const {inspect} = require('util');
-const path = require('path');
 
 const DEFAULT_SERVER_TIMEOUT = 120000;
 const PROPS_SERVER_TIMEOUT_KEY = 'SERVER_TIMEOUT_MS';
@@ -99,34 +96,6 @@ if(DEBUG){
 global.isMaster = cluster.isMaster;
 global.clustering_on = false;
 
-/**
- * Kicks off the clustering server and processes.  Only called with a valid license installed.
- */
-// This was put in hdb_expres rather than clusterUtils as we don't want restart to be called by any other module.
-function restartHDB() {
-    try {
-        // try to change to 'bin' dir
-        let command = (global.running_from_repo ? 'node' : 'harperdb');
-        let args = (global.running_from_repo ? ['harperdb', 'restart'] : ['restart']);
-        let base = env.get(terms.HDB_SETTINGS_NAMES.PROJECT_DIR_KEY);
-        process.chdir(path.join(base, 'bin'));
-        let child = child_process.spawn(command, args);
-        child.on('error', (err) => {
-            harper_logger.error('restart error, please manually restart.' + err);
-            console.log('restart error, please manually restart.' + err);
-            throw new Error('Got an error restarting HarperDB.  Please manually restart.');
-        });
-        child.on('data', () => {
-            harper_logger.error('Restart successful');
-        });
-    } catch(err) {
-        let msg = `There was an error restarting HarperDB.  Please restart manually. ${err}`;
-        console.log(msg);
-        harper_logger.error(msg);
-        throw err;
-    }
-}
-
 cluster.on('exit', (dead_worker, code, signal) => {
     if(code === terms.RESTART_CODE_NUM) {
         harper_logger.info(`Received restart code, disabling process auto restart.`);
@@ -185,7 +154,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
             if(restart_event_tracker.isReadyForRestart()) {
                 if(!restart_in_progress) {
                     restart_in_progress = true;
-                    restartHDB();
+                    cluster_utilities.restartHDB();
                 }
             }
         } catch(err) {
@@ -201,7 +170,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
             if(restart_event_tracker.isReadyForRestart()) {
                 if(!restart_in_progress) {
                     restart_in_progress = true;
-                    restartHDB();
+                    cluster_utilities.restartHDB();
                 }
             }
         } catch(err) {

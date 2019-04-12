@@ -15,6 +15,8 @@ const signalling = require('../../utility/signalling');
 const cluster_status_event = require('../../events/ClusterStatusEmitter');
 const children_stopped_event = require('../../events/AllChildrenStoppedEvent');
 const common = require('../../utility/common_utils');
+const child_process = require('child_process');
+const path = require('path');
 
 //Promisified functions
 const p_delete_delete = promisify(del.delete);
@@ -507,6 +509,13 @@ function clusterMessageHandler(msg) {
                 } else {
                     log.info(`Shutting down ${global.forks.length} process.`);
                 }
+
+                if(msg.force_shutdown) {
+                    restartHDB();
+                    log.info('Force shutting down processes.');
+                    break;
+                }
+
                 for(let i=0; i<global.forks.length; i++) {
                     if(global.forks[i]) {
                         try {
@@ -545,6 +554,34 @@ async function authHeaderToUser(json_body){
     return json_body;
 }
 
+/**
+ * Kicks off the clustering server and processes.  Only called with a valid license installed.
+ */
+// This was put in here rather than clusterUtils as we don't want restart to be called by any other module except hdb_express.
+function restartHDB() {
+    try {
+        // try to change to 'bin' dir
+        let command = (global.running_from_repo ? 'node' : 'harperdb');
+        let args = (global.running_from_repo ? ['harperdb', 'restart'] : ['restart']);
+        let base = env_mgr.get(terms.HDB_SETTINGS_NAMES.PROJECT_DIR_KEY);
+        process.chdir(path.join(base, 'bin'));
+        let child = child_process.spawn(command, args);
+        child.on('error', (err) => {
+            log.error('restart error, please manually restart.' + err);
+            console.log('restart error, please manually restart.' + err);
+            throw new Error('Got an error restarting HarperDB.  Please manually restart.');
+        });
+        child.on('data', () => {
+            log.error('Restart successful');
+        });
+    } catch(err) {
+        let msg = `There was an error restarting HarperDB.  Please restart manually. ${err}`;
+        console.log(msg);
+        log.error(msg);
+        throw err;
+    }
+}
+
 module.exports = {
     addNode: addNode,
     // The reference to the callback functions can be removed once processLocalTransaction has been refactored
@@ -554,5 +591,6 @@ module.exports = {
     payloadHandler: payloadHandler,
     clusterMessageHandler: clusterMessageHandler,
     authHeaderToUser: authHeaderToUser,
-    setEnterprise: setEnterprise
+    setEnterprise: setEnterprise,
+    restartHDB: restartHDB
 };
