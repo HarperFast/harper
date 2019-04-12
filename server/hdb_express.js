@@ -194,7 +194,11 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     //if(global.clustering_on === true){
         const socketclient = require('socketcluster-client');
         const SocketConnector = require('./socketcluster/connector/SocketConnector');
-        global.hdb_socket_client = new SocketConnector(socketclient, 'local', 'localhost', env.get('CLUSTERING_PORT'), {username: 'kyle', password: 'test'})
+        let connector_options = require('./socketcluster/connector/connectorOptions');
+        connector_options.hostname = 'localhost';
+        connector_options.port = env.get('CLUSTERING_PORT');
+        connector_options.query = {hdb_worker:true};
+        global.hdb_socket_client = new SocketConnector(socketclient, 'worker_' + process.pid, connector_options, {username: 'kyle', password: 'test'});
     //}
 
     if (props_cors && (props_cors === true || props_cors.toUpperCase() === TRUE_COMPARE_VAL)) {

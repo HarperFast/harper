@@ -1,0 +1,12 @@
+{
+  "rejectUnauthorized": false,
+  "autoConnect":true,
+  "connectTimeout": 10000,
+  "ackTimeout": 10000,
+  "autoReconnectOptions": {
+    "initialDelay": 1000,
+    "randomness": 5000,
+    "multiplier": 1.5,
+    "maxDelay": 30000
+  }
+}

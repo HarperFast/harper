@@ -111,6 +111,7 @@ class Worker extends SCWorker{
         this.on('notice', this.noticeHandler);
         this.on('exit', this.exitHandler);
         this.on('ready', this.readyHandler);
+        this.on('register_worker', )
     }
 
     /**

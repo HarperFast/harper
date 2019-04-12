@@ -8,33 +8,16 @@ class SocketConnector{
      * @param port
      * @param credentials
      */
-    constructor(socket_client, name, hostname, port, credentials){
+    constructor(socket_client, name, options, credentials){
         this.name = name;
-        this.init(socket_client, hostname, port, credentials);
+        this.init(socket_client, options, credentials);
         this.disconnect_timestamp = null;
     }
 
-    init(socket_client, hostname, port, credentials) {
-        this.socket = socket_client.create({
-            hostname: hostname,
-            port: port,
-            rejectUnauthorized: false, // Only necessary during debug if using a self-signed certificate
-            autoConnect:true,
-            connectTimeout: 10000, //milliseconds
-            ackTimeout: 10000, //milliseconds
-            autoReconnectOptions: {
-                initialDelay: 1000, //milliseconds
-                randomness: 5000, //milliseconds
-                multiplier: 1.5, //decimal
-                maxDelay: 30000 //milliseconds
-            }
-        });
+    init(socket_client, options, credentials) {
+        this.socket = socket_client.create(options);
 
         this.socket.name = this.name;
-
-        this.socket.on('incoming_data', (data, res)=>{
-            console.log(data);
-        });
 
         this.socket.on('error', err =>{
             console.error(err);
@@ -69,6 +52,10 @@ class SocketConnector{
 
     publish(channel, data, handler){
         this.socket.publish(channel, data, handler);
+    }
+
+    emit(event, data){
+        this.socket.emit(event, data);
     }
 
     status(){
