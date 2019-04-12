@@ -25,9 +25,20 @@ class ServerSocket{
         this.socket.on('deauthenticate', this.deauthenticateHandler);
         this.socket.on('authStateChange', this.authStateChangeHandler);
         this.socket.on('message', this.messageHandler);
+        this.socket.on('register_worker', this.registerWorkerHandler);
 
         this.socket.on('node', (data)=>{
             this.worker.node = data;
+        });
+    }
+
+    registerWorkerHandler(data){
+        let register_object = {};
+        register_object[this.socket.id] = true;
+        this.exchange.set('hdb_workers', register_object, (err)=>{
+            if(err){
+                console.error(err);
+            }
         });
     }
 
