@@ -555,9 +555,8 @@ async function authHeaderToUser(json_body){
 }
 
 /**
- * Kicks off the clustering server and processes.  Only called with a valid license installed.
+ * Function spawns child process and calls restart.
  */
-// This was put in here rather than clusterUtils as we don't want restart to be called by any other module except hdb_express.
 function restartHDB() {
     try {
         // try to change to 'bin' dir

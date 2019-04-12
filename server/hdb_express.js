@@ -20,6 +20,7 @@ const guidePath = require('path');
 // Leaving global_schema and search here so we can load them early.  They are used in other modules and should be loaded before.
 const global_schema = require('../utility/globalSchema');
 const fs = require('fs');
+const search = require('../data_layer/search');
 const cluster_utilities = require('./clustering/clusterUtilities');
 const cluster_event = require('../events/ClusterStatusEmitter');
 const all_children_stopped_event = require('../events/AllChildrenStoppedEvent');
@@ -95,6 +96,10 @@ if(DEBUG){
 
 global.isMaster = cluster.isMaster;
 global.clustering_on = false;
+
+/**
+ * Kicks off the clustering server and processes.  Only called with a valid license installed.
+ */
 
 cluster.on('exit', (dead_worker, code, signal) => {
     if(code === terms.RESTART_CODE_NUM) {
