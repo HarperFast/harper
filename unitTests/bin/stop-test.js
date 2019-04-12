@@ -33,6 +33,8 @@ describe('Test stop.js' , () => {
 
    afterEach(() => {
        sandbox.restore();
+       sandbox.resetBehavior();
+       sandbox.resetHistory();
    });
 
    after(() => {
@@ -84,7 +86,6 @@ describe('Test stop.js' , () => {
                 expect(find_ps_stub).to.have.been.calledOnce;
                 expect(process_kill_stub).to.have.been.calledTwice;
                 expect(os_user_stub).to.have.been.calledOnce;
-                expect(console_log_spy).to.have.been.calledWith("Stopping HarperDB.");
                 expect(err).to.be.null;
             });
 
