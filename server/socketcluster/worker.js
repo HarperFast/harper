@@ -29,14 +29,16 @@ class Worker extends SCWorker{
             this.publishInValidation(req);
 
             if(req.data.__transacted === undefined){
-                //here we send the transaction to HDB
+                //TODO add logic to send to worker
+
+                //squash the message from continuing to publish in
+                return next(true);
             }
+            next();
         } catch(e){
             console.error(e);
             return next(e);
         }
-
-        next();
     }
 
     /**
