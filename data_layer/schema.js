@@ -263,7 +263,7 @@ function moveSchemaStructureToTrash(drop_schema_object, callback) {
             ],
             function(err, data) {
                 if( err) {
-                    console.error(`There was a problem deleting ${schema}.  Please check the logs for more info`);
+                    logger.error(`There was a problem deleting ${schema}.  Please check the logs for more info`);
                     logger.error(err);
                     return callback(err);
                 } else {
@@ -305,7 +305,7 @@ function moveTableStructureToTrash(drop_table_object, callback) {
             deleteTableAttributes.bind(null, drop_table_object)
         ], function(err, result) {
             if( err) {
-                console.error(`There was a problem deleting ${schema}.  Please check the logs for more info`);
+                logger.error(`There was a problem deleting ${schema}.  Please check the logs for more info`);
                 logger.error(err);
                 return callback(err);
             } else {

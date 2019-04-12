@@ -85,7 +85,8 @@
 									"",
 									"pm.test(\"schema northnwd exists\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(Object.keys(jsonData)[0]).to.eql(\"northnwd\");",
+									"    var arrayData = Object.keys(jsonData)",
+									"    pm.expect(arrayData.includes(\"northnwd\")).to.be.true;",
 									"});",
 									""
 								],
@@ -2949,15 +2950,15 @@
 							"script": {
 								"id": "83493efa-2538-4d2d-85dd-765f55db06fe",
 								"exec": [
-									"pm.test(\"Status code is 400\", function () {",
-									"    pm.response.to.have.status(400);",
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
 									"});",
 									"",
 									"pm.test(\"insert object into table\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(Object.keys(jsonData)[0]).to.eql(\"error\");",
+									"    pm.expect(jsonData.message).to.eql(\"inserted 1 of 1 records\");",
+									"    pm.expect(jsonData.inserted_hashes[0]).to.eql(\"TEST1\");",
 									"});",
-									"",
 									""
 								],
 								"type": "text/javascript"
@@ -2994,7 +2995,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"insert\",\n\t\"schema\":\"northnwd\",\n\t\"table\":\"customers\",\n\t\"records\": [\n\t\t{\n\t\t\t\"postalcode\": { house: \"30\", street: \"South St\"},\n\t\t\t\"customerid\": \"TEST1\"\n\t\t}\n\t]\n}"
+							"raw": "{\n\t\"operation\":\"insert\",\n\t\"schema\":\"{{schema}}\",\n\t\"table\":\"{{cust_tb}}\",\n\t\"records\": [\n\t\t{\n\t\t\t\"postalcode\": { \"house\": 30, \"street\": \"South St\"},\n\t\t\t\"customerid\": \"TEST1\"\n\t\t}\n\t]\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -3008,22 +3009,22 @@
 					"response": []
 				},
 				{
-					"name": "Insert array into table",
+					"name": "Insert object confirm ",
 					"event": [
 						{
 							"listen": "test",
 							"script": {
 								"id": "83493efa-2538-4d2d-85dd-765f55db06fe",
 								"exec": [
-									"pm.test(\"Status code is 400\", function () {",
-									"    pm.response.to.have.status(400);",
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test(\"insert array into table\", function () {",
+									"pm.test(\"insert object into table confirm\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(Object.keys(jsonData)[0]).to.eql(\"error\");",
+									"    pm.expect(jsonData[0].postalcode).to.eql({ \"house\": 30, \"street\": \"South St\"});",
+									"    pm.expect(jsonData[0].customerid).to.eql(\"TEST1\");",
 									"});",
-									"",
 									""
 								],
 								"type": "text/javascript"
@@ -3060,7 +3061,73 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"insert\",\n\t\"schema\":\"northnwd\",\n\t\"table\":\"customers\",\n\t\"records\": [\n\t\t{\n\t\t\t\"postalcode\": [1, 2, 3],\n\t\t\t\"customerid\": \"TEST2\"\n\t\t}\n\t]\n}"
+							"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{cust_tb}}\",\n  \"hash_attribute\": \"{{supp_id}}\",\n  \"hash_values\":[\"TEST1\"],\n  \"get_attributes\": [\"postalcode\", \"customerid\"]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Confirm that the array from previous test was inserted into table as expected."
+					},
+					"response": []
+				},
+				{
+					"name": "Insert array into table",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "83493efa-2538-4d2d-85dd-765f55db06fe",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"insert array into table\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message).to.eql(\"inserted 1 of 1 records\");",
+									"    pm.expect(jsonData.inserted_hashes[0]).to.eql(\"TEST2\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"insert\",\n\t\"schema\":\"{{schema}}\",\n\t\"table\":\"{{cust_tb}}\",\n\t\"records\": [\n\t\t{\n\t\t\t\"postalcode\": [1, 2, 3],\n\t\t\t\"customerid\": \"TEST2\"\n\t\t}\n\t]\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -3070,6 +3137,209 @@
 							"port": "{{port}}"
 						},
 						"description": "Insert an array into northnwd.customers table and confirm error"
+					},
+					"response": []
+				},
+				{
+					"name": "Insert array confirm ",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "83493efa-2538-4d2d-85dd-765f55db06fe",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"insert array into table confirm\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[0].postalcode).to.eql([1, 2, 3]);",
+									"    pm.expect(jsonData[0].customerid).to.eql(\"TEST2\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{cust_tb}}\",\n  \"hash_attribute\": \"{{supp_id}}\",\n  \"hash_values\":[\"TEST2\"],\n  \"get_attributes\": [\"postalcode\", \"customerid\"]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Confirm that the array from previous test was inserted into table as expected."
+					},
+					"response": []
+				},
+				{
+					"name": "Set attribute to number",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "83493efa-2538-4d2d-85dd-765f55db06fe",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"insert array into table\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message).to.eql(\"inserted 1 of 1 records\");",
+									"    pm.expect(jsonData.inserted_hashes[0]).to.eql(25);",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"insert\",\n\"schema\": \"{{schema}}\",\n\"table\":\"{{emps_tb}}\",\n\"records\": [\n  {\n    \"firstname\":\"Test for number attribute\",\n    \"4289\" :\"Mutt\",\n    \"employeeid\":25\n  }\n]\n}\n"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Set an attribute to a number."
+					},
+					"response": []
+				},
+				{
+					"name": "Set attribute to number confirm",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "d3875485-8e35-4256-973e-d28fdfbe5b2c",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"set attribute to number confirm\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    var found = false",
+									"    jsonData.attributes.forEach((obj) => {",
+									"        if( Object.values(obj)[0] === 4289 ) {",
+									"            found = true;",
+									"        }",
+									"    });",
+									"    pm.expect(found).to.be.true;",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"describe_table\",\n\t\"table\":\"{{emps_tb}}\",\n\t\"schema\":\"{{schema}}\"\n}\n"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Confirm number from previous test was successfully set as an attribute in table as expected."
 					},
 					"response": []
 				}

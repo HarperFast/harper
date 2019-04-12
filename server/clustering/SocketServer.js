@@ -10,6 +10,7 @@ const fs = require('fs');
 const terms = require('../../utility/hdbTerms');
 const SocketClient = require('./SocketClient');
 const cluster_handlers = require('./clusterHandlers');
+const sio_server_stopped = require('../../events/SioServerStoppedEvent');
 const version = require('../../bin/version');
 
 const p_schema_describe_all = promisify(schema.describeAll);
@@ -36,6 +37,7 @@ class SocketServer {
         global.msg_queue = [];
         global.o_nodes = [];
         global.cluster_queue = {};
+        this.server = undefined;
     }
 
     init(next) {
@@ -50,6 +52,7 @@ class SocketServer {
 
                 }).listen(this.port);
             }
+            this.server = server;
             let node = this.node;
             this.io = sio.listen(server);
             this.io.sockets.on(terms.CLUSTER_EVENTS_DEFS_ENUM.CONNECTION, function (socket) {
@@ -94,7 +97,7 @@ class SocketServer {
                         }
 
                         if(catchup_request) {
-                            log.debug('emitting catchup request event.');
+                            log.trace(`emitting ${terms.CLUSTER_EVENTS_DEFS_ENUM.CATCHUP_REQUEST}`);
                             socket.emit(terms.CLUSTER_EVENTS_DEFS_ENUM.CATCHUP_REQUEST, {name: node.name});
                         }
 
@@ -117,9 +120,7 @@ class SocketServer {
                     } catch(err) {
                         log.error(err);
                     }
-
                     log.debug('Attemping to join room.');
-
                     socket.join(msg.name, async () => {
                         log.info(node.name + ' joined room ' + msg.name);
                         // retrieve the queue and send to this node.
@@ -171,6 +172,27 @@ class SocketServer {
             log.error(e);
             next(e);
         }
+    }
+    disconnect() {
+        try {
+            log.warn('Stopping the SocketServer.');
+
+            // Promisifying server.close() caused an exception about a missing _handle, so instead of using async/await
+            // We are relying on the event to notify when the stop is done.
+            this.server.close( () => {
+                log.info("Done shutting down");
+                log.info('Socket server closed, emitting server stopped event');
+                sio_server_stopped.sioServerStoppedEmitter.emit(sio_server_stopped.EVENT_NAME, new sio_server_stopped.SioServerStoppedMessage());
+            });
+            // after timeout, server restart will be forced.
+            setTimeout(() => {
+                log.info(`Timeout occurred during server disconnect.  Took longer than ${terms.RESTART_TIMEOUT_MS}ms.`);
+                sio_server_stopped.sioServerStoppedEmitter.emit(sio_server_stopped.EVENT_NAME, new sio_server_stopped.SioServerStoppedMessage());
+            }, terms.RESTART_TIMEOUT_MS);
+        } catch(err) {
+            log.error(`Error disconnecting the sio server. ${err}`);
+        }
+
     }
 }
 

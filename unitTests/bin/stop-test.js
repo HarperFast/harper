@@ -1,4 +1,6 @@
 'use strict';
+const test_util = require('../test_utils');
+test_util.preTestPrep();
 
 const chai = require('chai');
 const sinon = require('sinon');
@@ -6,10 +8,17 @@ const sinon_chai = require('sinon-chai');
 const expect = chai.expect;
 const ps_list = require('../../utility/psList');
 const os = require('os');
-chai.use(sinon_chai);
+const assert = require('assert');
+const signal = require('../../utility/signalling');
+const stop = require('../../bin/stop');
 
-let stop = require('../../bin/stop');
+chai.use(sinon_chai);
 let sandbox = sinon.createSandbox();
+
+const TEST_MESSAGE = {
+    operation: 'restart',
+    force: false
+};
 
 describe('Test stop.js' , () => {
    let find_ps_stub;
@@ -24,6 +33,8 @@ describe('Test stop.js' , () => {
 
    afterEach(() => {
        sandbox.restore();
+       sandbox.resetBehavior();
+       sandbox.resetHistory();
    });
 
    after(() => {
@@ -75,7 +86,6 @@ describe('Test stop.js' , () => {
                 expect(find_ps_stub).to.have.been.calledOnce;
                 expect(process_kill_stub).to.have.been.calledTwice;
                 expect(os_user_stub).to.have.been.calledOnce;
-                expect(console_log_spy).to.have.been.calledWith("Stopping HarperDB.");
                 expect(err).to.be.null;
             });
 
@@ -93,6 +103,45 @@ describe('Test stop.js' , () => {
             }
 
             done();
+        });
+    });
+    context('restart', () => {
+        let signal_stub = undefined;
+        beforeEach(() => {
+        });
+
+        afterEach(() => {
+            sandbox.restore();
+        });
+
+        after(() => {
+        });
+
+        it('Nominal test', async () => {
+            signal_stub = sandbox.stub(signal, signal.signalRestart.name).resolves('done');
+            let error = undefined;
+            let result = null;
+            try {
+                result = await stop.restartProcesses(TEST_MESSAGE);
+            } catch(err) {
+                error = err;
+            }
+            assert.equal(result, 'Restarting HarperDB. This may take up to 60 seconds.', 'expected restart message');
+            assert.equal(error, undefined, 'expected no errors back');
+            assert.equal(signal_stub.called, true, 'expected signalRestart to be called.');
+        });
+        it('Signal throws exception', async () => {
+            signal_stub = sandbox.stub(signal, signal.signalRestart.name).throws('this is bad');
+            let error = undefined;
+            let result = null;
+            try {
+                result = await stop.restartProcesses(TEST_MESSAGE);
+            } catch(err) {
+                error = err;
+            }
+            assert.equal(result.indexOf('There was an error restarting HarperDB.') > -1, true, 'expected exception');
+            assert.equal(error, undefined, 'expected no errors back');
+            assert.equal(signal_stub.called, true, 'expected signalRestart to be called.');
         });
     });
 });

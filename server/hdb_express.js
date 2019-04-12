@@ -17,13 +17,21 @@ const os = require('os');
 const job_runner = require('./jobRunner');
 const hdb_util = require('../utility/common_utils');
 const guidePath = require('path');
-const hdb_terms = require('../utility/hdbTerms');
+// Leaving global_schema and search here so we can load them early.  They are used in other modules and should be loaded before.
 const global_schema = require('../utility/globalSchema');
 const fs = require('fs');
+const search = require('../data_layer/search');
 const cluster_utilities = require('./clustering/clusterUtilities');
 const cluster_event = require('../events/ClusterStatusEmitter');
+const all_children_stopped_event = require('../events/AllChildrenStoppedEvent');
+const sio_server_stopped_event = require('../events/SioServerStoppedEvent');
 const signalling = require('../utility/signalling');
 const moment = require('moment');
+const terms = require('../utility/hdbTerms');
+const RestartEventObject = require('./RestartEventObject');
+const child_process = require('child_process');
+const {inspect} = require('util');
+const path = require('path');
 
 const DEFAULT_SERVER_TIMEOUT = 120000;
 const PROPS_SERVER_TIMEOUT_KEY = 'SERVER_TIMEOUT_MS';
@@ -39,8 +47,10 @@ const PROPS_ENV_KEY = 'NODE_ENV';
 const ENV_PROD_VAL = 'production';
 const ENV_DEV_VAL = 'development';
 const TRUE_COMPARE_VAL = 'TRUE';
+const REPO_RUNNING_PROCESS_NAME = 'server/hdb_express.js';
 
 let node_env_value = env.get(PROPS_ENV_KEY);
+let running_from_repo = false;
 
 // If NODE_ENV is empty, it will show up here as '0' rather than '' or length of 0.
 if (node_env_value === undefined || node_env_value === null || node_env_value === 0) {
@@ -48,6 +58,14 @@ if (node_env_value === undefined || node_env_value === null || node_env_value ==
 } else if (node_env_value !== ENV_PROD_VAL || node_env_value !== ENV_DEV_VAL) {
     node_env_value = ENV_PROD_VAL;
 }
+
+// decide if we are running from inside a repo (and executing server/hdb_express) rather than on an installed version.
+process.argv.forEach((arg) => {
+    if(arg.endsWith(REPO_RUNNING_PROCESS_NAME)) {
+        running_from_repo = true;
+        global.running_from_repo = true;
+    }
+});
 
 process.env['NODE_ENV'] = node_env_value;
 
@@ -58,16 +76,16 @@ let os_cpus = undefined;
 
 //in an instance of having HDB installed on an android devices we don't have access to the cpu info so we need to handle the error and move on
 try {
-    num_hdb_processes = env.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES);
+    num_hdb_processes = env.get(terms.HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES);
     os_cpus = os.cpus().length;
     num_workers = ((num_hdb_processes && num_hdb_processes > 0) ? num_hdb_processes: os_cpus);
     // don't allow more processes than the machine has cores.
     if(num_workers > os_cpus) {
         num_workers = os_cpus;
-        harper_logger.info(`${hdb_terms.HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES} setting is higher than the number of cores on this machine (${os_cpus}).  Settings number of processes to ${os_cpus}`);
+        harper_logger.info(`${terms.HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES} setting is higher than the number of cores on this machine (${os_cpus}).  Settings number of processes to ${os_cpus}`);
     }
 } catch(e){
-    num_workers = hdb_terms.HDB_SETTINGS_DEFAULT_VALUES.MAX_HDB_PROCESSES;
+    num_workers = terms.HDB_SETTINGS_DEFAULT_VALUES.MAX_HDB_PROCESSES;
     if(num_hdb_processes) {
         num_workers = num_hdb_processes;
     }
@@ -78,7 +96,42 @@ if(DEBUG){
     numCPUs = 1;
 }
 
+global.isMaster = cluster.isMaster;
+global.clustering_on = false;
+
+/**
+ * Kicks off the clustering server and processes.  Only called with a valid license installed.
+ */
+// This was put in hdb_expres rather than clusterUtils as we don't want restart to be called by any other module.
+function restartHDB() {
+    try {
+        // try to change to 'bin' dir
+        let command = (global.running_from_repo ? 'node' : 'harperdb');
+        let args = (global.running_from_repo ? ['harperdb', 'restart'] : ['restart']);
+        let base = env.get(terms.HDB_SETTINGS_NAMES.PROJECT_DIR_KEY);
+        process.chdir(path.join(base, 'bin'));
+        let child = child_process.spawn(command, args);
+        child.on('error', (err) => {
+            harper_logger.error('restart error, please manually restart.' + err);
+            console.log('restart error, please manually restart.' + err);
+            throw new Error('Got an error restarting HarperDB.  Please manually restart.');
+        });
+        child.on('data', () => {
+            harper_logger.error('Restart successful');
+        });
+    } catch(err) {
+        let msg = `There was an error restarting HarperDB.  Please restart manually. ${err}`;
+        console.log(msg);
+        harper_logger.error(msg);
+        throw err;
+    }
+}
+
 cluster.on('exit', (dead_worker, code, signal) => {
+    if(code === terms.RESTART_CODE_NUM) {
+        harper_logger.info(`Received restart code, disabling process auto restart.`);
+        return;
+    }
     harper_logger.info(`worker ${dead_worker.process.pid} died with signal ${signal} and code ${code}`);
     let new_worker = undefined;
     try {
@@ -107,7 +160,6 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         let message = `Found an uncaught exception with message: os.EOL ${err.message}.  Stack: ${err.stack} ${os.EOL} Terminating HDB.`;
         console.error(message);
         harper_logger.fatal(message);
-
         process.exit(1);
     });
 
@@ -122,13 +174,46 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         search_value: "*",
         get_attributes: ["*"]
     };
+
+    let restart_event_tracker = new RestartEventObject();
+    let restart_in_progress = false;
+    // Consume AllChildrenStopped Event.
+    all_children_stopped_event.allChildrenStoppedEmitter.on(all_children_stopped_event.EVENT_NAME, (msg) => {
+        harper_logger.info(`Got all children stopped event.`);
+        try {
+            restart_event_tracker.express_connections_stopped = true;
+            if(restart_event_tracker.isReadyForRestart()) {
+                if(!restart_in_progress) {
+                    restart_in_progress = true;
+                    restartHDB();
+                }
+            }
+        } catch(err) {
+            harper_logger.error(`Error tracking allchildrenstopped event.`);
+        }
+    });
+
+    // Consume SocketIOServerStopped event.
+    sio_server_stopped_event.sioServerStoppedEmitter.on(sio_server_stopped_event.EVENT_NAME, (msg) => {
+        harper_logger.info(`Got sio server stopped event.`);
+        try {
+            restart_event_tracker.sio_connections_stopped = true;
+            if(restart_event_tracker.isReadyForRestart()) {
+                if(!restart_in_progress) {
+                    restart_in_progress = true;
+                    restartHDB();
+                }
+            }
+        } catch(err) {
+            harper_logger.error(`Error tracking sio server stopped event.`);
+        }
+    });
     global_schema.setSchemaDataToGlobal((err, data)=> {
         search.searchByValue(licenseKeySearch, function (err, licenses) {
             const hdb_license = require('../utility/registration/hdb_license');
             if (err) {
                 return harper_logger.error(err);
             }
-
             Promise.all(licenses.map(async (license) => {
                 try {
                     let license_validation = await hdb_license.validateLicense(license.license_key, license.company);
@@ -160,6 +245,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                         let forked = cluster.fork();
                         // assign handler for messages expected from child processes.
                         forked.on('message', cluster_utilities.clusterMessageHandler);
+                        harper_logger.debug(`kicked off fork.`);
                         forks.push(forked);
                     } catch (e) {
                         harper_logger.fatal(`Had trouble kicking off new HDB processes.  ${e}`);
@@ -223,9 +309,9 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     app.use(bodyParser.urlencoded({extended: true}));
     app.use(function (error, req, res, next) {
         if (error instanceof SyntaxError) {
-            res.status(hdb_terms.HTTP_STATUS_CODES.BAD_REQUEST).send({error: 'invalid JSON: ' + error.message.replace('\n', '')});
+            res.status(terms.HTTP_STATUS_CODES.BAD_REQUEST).send({error: 'invalid JSON: ' + error.message.replace('\n', '')});
         } else if (error) {
-            res.status(hdb_terms.HTTP_STATUS_CODES.BAD_REQUEST).send({error: error.message});
+            res.status(terms.HTTP_STATUS_CODES.BAD_REQUEST).send({error: error.message});
         } else {
             next();
         }
@@ -244,19 +330,19 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         // Per the body-parser docs, any request which does not match the bodyParser.json middleware will be returned with
         // an empty body object.
         if(!req.body || Object.keys(req.body).length === 0) {
-            return res.status(hdb_terms.HTTP_STATUS_CODES.BAD_REQUEST).send({error: "Invalid JSON."});
+            return res.status(terms.HTTP_STATUS_CODES.BAD_REQUEST).send({error: "Invalid JSON."});
         }
         let enterprise_operations = ['add_node'];
         if ((req.headers.harperdb_connection || enterprise_operations.indexOf(req.body.operation) > -1) && !enterprise) {
-            return res.status(hdb_terms.HTTP_STATUS_CODES.UNAUTHORIZED).json({"error": "This feature requires an enterprise license.  Please register or contact us at hello@harperdb.io for more info."});
+            return res.status(terms.HTTP_STATUS_CODES.UNAUTHORIZED).json({"error": "This feature requires an enterprise license.  Please register or contact us at hello@harperdb.io for more info."});
         }
         auth.authorize(req, res, function (err, user) {
             if (err) {
                 harper_logger.warn(`{"ip":"${req.connection.remoteAddress}", "error":"${err.stack}"`);
                 if (typeof err === 'string') {
-                    return res.status(hdb_terms.HTTP_STATUS_CODES.UNAUTHORIZED).send({error: err});
+                    return res.status(terms.HTTP_STATUS_CODES.UNAUTHORIZED).send({error: err});
                 }
-                return res.status(hdb_terms.HTTP_STATUS_CODES.UNAUTHORIZED).send(err);
+                return res.status(terms.HTTP_STATUS_CODES.UNAUTHORIZED).send(err);
             }
             req.body.hdb_user = user;
             req.body.hdb_auth_header = req.headers.authorization;
@@ -265,12 +351,12 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                 if (err) {
                     harper_logger.error(err);
                     if(err === server_utilities.UNAUTH_RESPONSE) {
-                        return res.status(hdb_terms.HTTP_STATUS_CODES.FORBIDDEN).send({error: server_utilities.UNAUTHORIZED_TEXT});
+                        return res.status(terms.HTTP_STATUS_CODES.FORBIDDEN).send({error: server_utilities.UNAUTHORIZED_TEXT});
                     }
                     if (typeof err === 'string') {
-                        return res.status(hdb_terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send({error: err});
+                        return res.status(terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send({error: err});
                     }
-                    return res.status(hdb_terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send(err);
+                    return res.status(terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send(err);
                 }
                 let localOnlyOperations = ['describe_all', 'describe_table', 'describe_schema', 'read_log', 'add_node'];
 
@@ -281,7 +367,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                         || req.body.operation === 'drop_table'
                         || req.body.operation === 'delete_files_before'
                     ) {
-                        if (hdb_terms.LOCAL_HARPERDB_OPERATIONS.includes(req.body.operation)) {
+                        if (terms.LOCAL_HARPERDB_OPERATIONS.includes(req.body.operation)) {
                             harper_logger.info('local only operation: ' + req.body.operation);
                             server_utilities.processLocalTransaction(req, res, operation_function, function (err) {
                                 if(err){
@@ -309,7 +395,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                         global_schema.getTableSchema(req.body.schema, req.body.table, function (err, table) {
                             if (err) {
                                 harper_logger.error(err);
-                                return res.status(hdb_terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send(err);
+                                return res.status(terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send(err);
                             }
                             if (table.residence) {
                                 let residence = table.residence;
@@ -364,15 +450,14 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                                                         "body": req.body,
                                                         "node": {"name": residence[node]}
                                                     });
-
+                                                    // We need to manually set and send the status here, as processLocal isn't called.
+                                                    return res.status(terms.HTTP_STATUS_CODES.OK).send({message: `Specified table has residence on node: ${residence[node]}, broadcasting message to cluster.`});
                                                 } catch(err) {
                                                     harper_logger.error(err);
-                                                    return res.status(hdb_terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send({error: err.message});
+                                                    return res.status(terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send({error: err.message});
                                                 }
                                             }
                                         }
-                                        // We need to manually set and send the status here, as processLocal isn't called.
-                                        return res.status(hdb_terms.HTTP_STATUS_CODES.OK).send({message: `Specified table has residence on node(s): ${residence.join()}; broadcasting message to cluster.`});
                                     }
                                 }
                             } else {
@@ -383,7 +468,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                         });
                     }
                 } else if(req.body.schema && req.body.table
-                    && req.body.operation !== 'create_table' && req.body.operation !=='drop_table' && !hdb_terms.LOCAL_HARPERDB_OPERATIONS.includes(req.body.operation) ) {
+                    && req.body.operation !== 'create_table' && req.body.operation !=='drop_table' && !terms.LOCAL_HARPERDB_OPERATIONS.includes(req.body.operation) ) {
 
                     global_schema.getTableSchema(req.body.schema, req.body.table, function (err, table) {
 
@@ -418,9 +503,9 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                                     });
                                 }, function(err){
                                     if(err){
-                                        return res.status(hdb_terms.HTTP_STATUS_CODES.NOT_IMPLEMENTED).send(err);
+                                        return res.status(terms.HTTP_STATUS_CODES.NOT_IMPLEMENTED).send(err);
                                     }
-                                    return res.status(hdb_terms.HTTP_STATUS_CODES.CREATED).send('{"message":"clustering is down. request has been queued and will be processed when clustering reestablishes.  "}');
+                                    return res.status(terms.HTTP_STATUS_CODES.CREATED).send('{"message":"clustering is down. request has been queued and will be processed when clustering reestablishes.  "}');
                                 });
                             } catch (e) {
                                 harper_logger.error(e);
@@ -465,20 +550,15 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                 global.clustering_on = true;
                 break;
             case 'cluster_response':
-                try {
-                    if (global.clusterMsgQueue[msg.id]) {
-                        if (msg.err) {
-                            global.clusterMsgQueue[msg.id].status(hdb_terms.HTTP_STATUS_CODES.UNAUTHORIZED).json({"error": msg.err});
-                            delete global.clusterMsgQueue[msg.id];
-                            break;
-                        }
-
-
-                        global.clusterMsgQueue[msg.id].status(hdb_terms.HTTP_STATUS_CODES.OK).json(msg.data);
+                if (global.clusterMsgQueue[msg.id]) {
+                    if (msg.err) {
+                        global.clusterMsgQueue[msg.id].status(terms.HTTP_STATUS_CODES.UNAUTHORIZED).json({"error": msg.err});
                         delete global.clusterMsgQueue[msg.id];
+                        break;
                     }
-                } catch(err) {
-                    harper_logger.error(err);
+
+                    global.clusterMsgQueue[msg.id].status(terms.HTTP_STATUS_CODES.OK).json(msg.data);
+                    delete global.clusterMsgQueue[msg.id];
                 }
                 break;
             case 'delegate_transaction':
@@ -488,9 +568,17 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                     });
                 });
                 break;
-            case hdb_terms.CLUSTER_MESSAGE_TYPE_ENUM.CLUSTER_STATUS:
+            case terms.CLUSTER_MESSAGE_TYPE_ENUM.CLUSTER_STATUS:
                 harper_logger.info('Got cluster status message via IPC');
                 cluster_event.clusterEmitter.emit(cluster_event.EVENT_NAME, msg.status);
+                break;
+            case terms.CLUSTER_MESSAGE_TYPE_ENUM.RESTART:
+                harper_logger.info(`Server close event received for process ${process.pid}`);
+                harper_logger.debug(`calling shutdown`);
+                shutDown(false).then(() => {
+                    harper_logger.info(`Completed shut down`);
+                    process.exit(terms.RESTART_CODE_NUM);
+                });
                 break;
             default:
                 harper_logger.error(`Received unknown signaling message ${msg.type}, ignoring message`);
@@ -506,6 +594,36 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         process.exit(1);
     });
 
+    let httpServer = undefined;
+    let secureServer = undefined;
+    let server_connections = {};
+
+    process.on('close', () => {
+       harper_logger.info(`Server close event received for process ${process.pid}`);
+    });
+
+    async function shutDown(force_bool) {
+        harper_logger.debug(`calling shutdown`);
+        let target_server = (httpServer ? httpServer : secureServer);
+        if(target_server) {
+            harper_logger.warn(`Process pid:${process.pid} - SIGINT received, closing connections and finishing existing work.`);
+            harper_logger.info(`There are ${Object.keys(server_connections).length} connections.`);
+            for (let conn of Object.keys(server_connections)) {
+                harper_logger.info(`Closing connection ${inspect(server_connections[conn])}`);
+                server_connections[conn].destroy();
+            }
+            setTimeout(() => {
+                harper_logger.info(`Timeout occurred during client disconnect.  Took longer than ${terms.RESTART_TIMEOUT_MS}ms.`);
+                hdb_util.callProcessSend({type: terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STOPPED, pid: process.pid});
+            }, terms.RESTART_TIMEOUT_MS);
+            target_server.close(function () {
+                harper_logger.warn(`Process pid:${process.pid} - Work completed, shutting down`);
+                //process.exit(terms.RESTART_CODE_NUM);
+                hdb_util.callProcessSend({type: terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STOPPED, pid: process.pid});
+            });
+        }
+    }
+
     try {
         const http = require('http');
         const httpsecure = require('https');
@@ -518,10 +636,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         const props_http_on = env.get(PROPS_HTTP_ON_KEY);
 
         global.isMaster = cluster.isMaster;
-
-        let httpServer = undefined;
-        let secureServer = undefined;
-
+        harper_logger.debug(`child process ${process.pid} starting up.`);
         if (props_http_secure_on &&
             (props_http_secure_on === true || props_http_secure_on.toUpperCase() === TRUE_COMPARE_VAL)) {
             secureServer = httpsecure.createServer(credentials, app);
@@ -543,12 +658,24 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
 
         if (props_http_on &&
             (props_http_on === true || props_http_on.toUpperCase() === TRUE_COMPARE_VAL)) {
+            harper_logger.debug(`child process starting up http server.`);
             httpServer = http.createServer(app);
+            httpServer.on('connection', function(conn) {
+                let key = conn.remoteAddress + ':' + conn.remotePort;
+                server_connections[key] = conn;
+                conn.on('close', function() {
+                    harper_logger.debug(`removing connection for ${key}`);
+                    delete server_connections[key];
+                });
+            });
             httpServer.setTimeout(server_timeout ? server_timeout : DEFAULT_SERVER_TIMEOUT);
             httpServer.listen(env.get(PROPS_HTTP_PORT_KEY), function () {
                 harper_logger.info(`HarperDB ${pjson.version} HTTP Server running on ${env.get(PROPS_HTTP_PORT_KEY)}`);
                 async.parallel(
                     [
+                        () => {
+                            harper_logger.debug('Configuring child process.');
+                        },
                         global_schema.setSchemaDataToGlobal,
                         user_schema.setUsersToGlobal,
                         signalling.signalChildStarted

@@ -24,6 +24,7 @@ const bucket = require('../sqlTranslator/sql_statement_bucket');
 const cluster_utilities = require('../server/clustering/clusterUtilities');
 const data_export = require('../data_layer/export');
 const reg = require('./registration/registrationHandler');
+const stop = require('../bin/stop');
 
 const required_permissions = new Map();
 const DELETE_PERM = 'delete';
@@ -88,6 +89,7 @@ required_permissions.set(reg.setLicense.name, new permission(true, []));
 required_permissions.set(data_export.export_to_s3.name, new permission(false, [READ_PERM]));
 required_permissions.set(data_export.export_local.name, new permission(false, [READ_PERM]));
 required_permissions.set(delete_.deleteFilesBefore.name, new permission(true, []));
+required_permissions.set(stop.restartProcesses.name, new permission(true, []));
 
 // SQL operations are distinct from operations above, so we need to store required perms for both.
 required_permissions.set(SQL_CREATE, new permission(false, [INSERT_PERM]));
