@@ -1,4 +1,4 @@
-"use strict"
+"use strict";
 const path = require('path');
 const log = require('./logging/harper_logger');
 const fs_extra = require('fs-extra');
@@ -9,7 +9,7 @@ const { promisify } = require('util');
 const ps_list = require('./psList');
 
 const EMPTY_STRING = '';
-const FILE_EXTENSION_LEGNTH = 4;
+const FILE_EXTENSION_LENGTH = 4;
 const CHARACTER_LIMIT = 255;
 
 const HDB_PROC_NAME = 'hdb_express.js';
@@ -149,7 +149,7 @@ function stripFileExtension(file_name) {
     if(isEmptyOrZeroLength(file_name)) {
         return EMPTY_STRING;
     }
-    return file_name.substr(0, file_name.length-FILE_EXTENSION_LEGNTH);
+    return file_name.substr(0, file_name.length-FILE_EXTENSION_LENGTH);
 }
 
 /**

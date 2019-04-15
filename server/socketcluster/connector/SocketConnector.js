@@ -34,11 +34,8 @@ class SocketConnector{
         });
 
         this.socket.on('login', (data, res)=>{
+            console.log('logging in');
             res(null, credentials);
-        });
-
-        this.socket.on('authStateChange', state_change_data =>{
-            console.log(state_change_data);
         });
     }
 
