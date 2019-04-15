@@ -4,8 +4,7 @@ class SocketConnector{
      *
      * @param socket_client
      * @param name
-     * @param hostname
-     * @param port
+     * @param options
      * @param credentials
      */
     constructor(socket_client, name, options, credentials){
@@ -60,7 +59,7 @@ class SocketConnector{
             active: this.socket.active,
             state: this.socket.state,
             auth_state: this.socket.authState
-        }
+        };
     }
 
     subscriptions(){

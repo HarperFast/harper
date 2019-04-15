@@ -16,13 +16,13 @@ class ServerSocket{
     registerHandlers(){
         this.socket.on('error', this.errorHandler);
         this.socket.on('raw', this.rawHandler);
-        this.socket.on('disconnect', this.disconnectHandler);
+        this.socket.on('disconnect', this.disconnectHandler.bind(this));
         this.socket.on('connectAbort', this.connectAbortHandler);
         this.socket.on('close', this.closeHandler);
         this.socket.on('subscribe', this.subscribeHandler);
         this.socket.on('unsubscribe', this.unsubscribeHandler);
         this.socket.on('authenticate', this.authenticateHandler);
-        this.socket.on('deauthenticate', this.deauthenticateHandler);
+        this.socket.on('deauthenticate', this.deauthenticateHandler.bind(this));
         this.socket.on('authStateChange', this.authStateChangeHandler);
         this.socket.on('message', this.messageHandler);
         this.socket.on('register_worker', this.registerWorkerHandler.bind(this));
@@ -35,6 +35,7 @@ class ServerSocket{
     registerWorkerHandler(data){
         let register_object = {};
         register_object[this.socket.id] = true;
+        this.socket.is_hdb_worker = true;
         this.worker.exchange.add('hdb_workers', register_object, (err)=>{
             if(err){
                 console.error(err);
@@ -42,7 +43,7 @@ class ServerSocket{
 
             this.worker.exchange.get('hdb_workers', (err, data)=>{
                 console.log(data);
-            })
+            });
         });
     }
 
@@ -68,7 +69,15 @@ class ServerSocket{
      * @param data
      */
     disconnectHandler(code, data){
-        console.log('socket disconnected ', code, data);
+        this.worker.exchange.get(['hdb_workers', this.socket.id], (err, data)=>{
+            if(err){
+                console.error(err);
+            }
+
+            if(data === true){
+
+            }
+        });
     }
 
     /**
@@ -95,6 +104,10 @@ class ServerSocket{
      * @param channel
      */
     subscribeHandler(channel){
+        //add logic for subscribe to hdb_worker channel
+        if(channel === 'hdb_worker'){
+            this.worker.exchange.add(['hdb_workers', this.socket.id], (err)=>{
+        }
         console.log('subscribed to channel ' + channel);
     }
 
@@ -103,6 +116,7 @@ class ServerSocket{
      * @param channel
      */
     unsubscribeHandler(channel){
+        //add logic for unsubscribe to hdb_worker channel
         console.log('unsubscribed from channel ' + channel);
     }
 

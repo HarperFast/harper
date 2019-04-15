@@ -1,6 +1,7 @@
 "use strict";
 
 const SocketConnector = require('./SocketConnector');
+const connector_options = require('./connectorOptions');
 const socket_client = require('socketcluster-client');
 const sc_objects = require('../socketClusterObjects');
 const SubscriptionObject = sc_objects.SubscriptionObject;
@@ -26,7 +27,7 @@ class NodeConnector {
      */
     spawnRemoteConnections(nodes){
         nodes.forEach(node =>{
-            let connection = new SocketConnector(socket_client, node.name,node.host, node.port);
+            let connection = new SocketConnector(socket_client, node.name,connector_options);
             if(node.subscriptions){
                 node.subscriptions.forEach(this.subscriptionManager.bind(this, connection));
             }

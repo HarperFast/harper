@@ -14,6 +14,10 @@ class Worker extends SCWorker{
         let sc_server = new SCServer(this);
 
 
+        this.exchange.channel('test').on('subscribe', (...data)=>{
+            console.log(data);
+        });
+
         if(this.isLeader){
             //new NodeConnector(require('./connector/node'), this);
         }
