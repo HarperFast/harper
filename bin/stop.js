@@ -7,9 +7,9 @@ const async_settimeout = require('util').promisify(setTimeout);
 const HDB_PROC_END_TIMEOUT = 100;
 const log = require('../utility/logging/harper_logger');
 const signal = require('../utility/signalling');
-const {promisify} = require('util');
 
-const RESTART_RESPONSE = `Restarting HarperDB. This may take up to ${hdb_terms.RESTART_TIMEOUT_MS/1000} seconds.`;
+const RESTART_RESPONSE_SOFT = `Restarting HarperDB. This may take up to ${hdb_terms.RESTART_TIMEOUT_MS/1000} seconds.`;
+const RESTART_RESPONSE_HARD = `Force restarting HarperDB`;
 
 module.exports = {
     stop: stop,
@@ -26,8 +26,12 @@ async function restartProcesses(json_message) {
         json_message.force = false;
     }
     try {
+        if (json_message.force === 'true') {
+            signal.signalRestart(json_message.force);
+            return RESTART_RESPONSE_HARD;
+        }
         signal.signalRestart(json_message.force);
-        return RESTART_RESPONSE;
+        return RESTART_RESPONSE_SOFT;
     } catch(err) {
         let msg = `There was an error restarting HarperDB. ${err}`;
         log.error(msg);
