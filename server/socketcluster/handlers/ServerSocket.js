@@ -2,6 +2,7 @@
 
 const log = require('../../../utility/logging/harper_logger');
 
+const promisify = require('util').promisify;
 
 /**
  * This class establishes the handlers for the socket on the server, handling all messaging & state changes related to a connected client
@@ -11,39 +12,27 @@ class ServerSocket{
         this.worker = worker;
         this.socket = socket;
         this.registerHandlers();
-    }
 
+        this.exchange_set = promisify(this.worker.exchange.set).bind(this.worker.exchange);
+        this.exchange_get = promisify(this.worker.exchange.get).bind(this.worker.exchange);
+        this.exchange_remove = promisify(this.worker.exchange.remove).bind(this.worker.exchange);
+    }
+//TODO probably better to detetct the connect/disconnect events and check for a header saying its a worker
     registerHandlers(){
         this.socket.on('error', this.errorHandler);
         this.socket.on('raw', this.rawHandler);
         this.socket.on('disconnect', this.disconnectHandler.bind(this));
         this.socket.on('connectAbort', this.connectAbortHandler);
         this.socket.on('close', this.closeHandler);
-        this.socket.on('subscribe', this.subscribeHandler);
-        this.socket.on('unsubscribe', this.unsubscribeHandler);
+        this.socket.on('subscribe', this.subscribeHandler.bind(this));
+        this.socket.on('unsubscribe', this.unsubscribeHandler.bind(this));
         this.socket.on('authenticate', this.authenticateHandler);
         this.socket.on('deauthenticate', this.deauthenticateHandler.bind(this));
         this.socket.on('authStateChange', this.authStateChangeHandler);
         this.socket.on('message', this.messageHandler);
-        this.socket.on('register_worker', this.registerWorkerHandler.bind(this));
 
         this.socket.on('node', (data)=>{
             this.worker.node = data;
-        });
-    }
-
-    registerWorkerHandler(data){
-        let register_object = {};
-        register_object[this.socket.id] = true;
-        this.socket.is_hdb_worker = true;
-        this.worker.exchange.add('hdb_workers', register_object, (err)=>{
-            if(err){
-                console.error(err);
-            }
-
-            this.worker.exchange.get('hdb_workers', (err, data)=>{
-                console.log(data);
-            });
         });
     }
 
@@ -69,16 +58,9 @@ class ServerSocket{
      * @param data
      */
     disconnectHandler(code, data){
-        this.worker.exchange.get(['hdb_workers', this.socket.id], (err, data)=>{
-            if(err){
-                console.error(err);
-            }
-
-            if(data === true){
-
-            }
-        });
     }
+
+
 
     /**
      * Happens when the client disconnects from the server before the SocketCluster handshake has completed (I.e. while socket.state was 'connecting').
@@ -106,7 +88,15 @@ class ServerSocket{
     subscribeHandler(channel){
         //add logic for subscribe to hdb_worker channel
         if(channel === 'hdb_worker'){
-            this.worker.exchange.add(['hdb_workers', this.socket.id], (err)=>{
+            try {
+                this.exchange_set(['hdb_worker', this.socket.id], 1).then(data => {
+                    this.exchange_get('hdb_worker').then(data => {
+                        console.log(data);
+                    });
+                });
+            } catch(e){
+                console.error(e);
+            }
         }
         console.log('subscribed to channel ' + channel);
     }
@@ -117,6 +107,13 @@ class ServerSocket{
      */
     unsubscribeHandler(channel){
         //add logic for unsubscribe to hdb_worker channel
+        if(channel === 'hdb_worker'){
+            this.exchange_remove(['hdb_worker', this.socket.id]).then(data => {
+                this.exchange_get('hdb_worker').then(data=>{
+                    console.log(data);
+                });
+            });
+        }
         console.log('unsubscribed from channel ' + channel);
     }
 

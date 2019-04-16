@@ -4,6 +4,7 @@ const SCWorker = require('socketcluster/scworker');
 const SCServer = require('./handlers/SCServer');
 const log = require('../../utility/logging/harper_logger');
 const NodeConnector = require('./connector/NodeConnector');
+const promisify = require('util').promisify;
 
 class Worker extends SCWorker{
     run(){
@@ -13,10 +14,7 @@ class Worker extends SCWorker{
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_OUT, this.publishOutMiddleware.bind(this));
         let sc_server = new SCServer(this);
 
-
-        this.exchange.channel('test').on('subscribe', (...data)=>{
-            console.log(data);
-        });
+        this.exchange_get = promisify(this.exchange.get).bind(this.exchange);
 
         if(this.isLeader){
             //new NodeConnector(require('./connector/node'), this);
@@ -34,7 +32,7 @@ class Worker extends SCWorker{
 
             if(req.data.__transacted === undefined){
                 //TODO add logic to send to worker
-
+                this.exchange_get
                 //squash the message from continuing to publish in
                 return next(true);
             }

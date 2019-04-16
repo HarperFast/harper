@@ -3,13 +3,16 @@ const SocketConnector = require('./SocketConnector');
 class HDBSocketConnector extends SocketConnector{
     constructor(socket_client, name, options, credentials){
         super(socket_client, name, options, credentials);
-        this.addEventListener('authStateChange', this.registerWorker);
+        this.addEventListener('connect', this.connectHandler.bind(this));
     }
 
-    registerWorker(authStateChange){
-        console.log(authStateChange);
-        if(authStateChange.newState === 'authenticated'){
-            this.emit('register_worker', {hdb_worker: process.pid});
+    connectHandler(status){
+        this.subscribe('hdb_worker').watch(this.hdbWorkerWatcher.bind(this));
+    }
+
+    hdbWorkerWatcher(data){
+        if(data.worker_id === this.socket.id){
+            //send on
         }
     }
 }
