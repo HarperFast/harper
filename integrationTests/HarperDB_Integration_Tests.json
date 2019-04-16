@@ -1438,6 +1438,63 @@
 						}
 					},
 					"response": []
+				},
+				{
+					"name": "create_table_dev_invalid_attribute",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "b038bb2d-cde7-4c43-9be5-5dd1f859317d",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "admin",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "admin",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"create_table\",\n\t\"schema\":\"dev\",\n\t\"table\":\"invalid_attribute\",\n\t\"hash_attribute\": \"id\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
 				}
 			]
 		},
@@ -3348,6 +3405,232 @@
 		{
 			"name": "3. SQLTests",
 			"item": [
+				{
+					"name": "Invalid Attribute Check",
+					"item": [
+						{
+							"name": "insert invalid attribute name - single row",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "4e59598e-b8da-49ca-851d-fd43f7c619b5",
+										"exec": [
+											"pm.test(\"Status code is 500\", function () {",
+											"    pm.response.to.have.status(500);",
+											"});",
+											"",
+											"pm.test(\"Receives invalid SQL error msg\", function () {",
+											"    const errorMsg = pm.response.json().error;",
+											"    pm.expect(errorMsg).to.equal(",
+											"        \"Error: Attribute name can only contain alpha numeric characters or underscores\"",
+											"    );",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "admin",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "admin",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"type": "text",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"INSERT INTO dev.invalid_attribute (id, `some-attribute`) VALUES ('1', 'some_attribute')\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "insert all invalid attribute names - multiple rows",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "4e59598e-b8da-49ca-851d-fd43f7c619b5",
+										"exec": [
+											"pm.test(\"Status code is 500\", function () {",
+											"    pm.response.to.have.status(500);",
+											"});",
+											"",
+											"pm.test(\"Receives invalid SQL error msg\", function () {",
+											"    const errorMsg = pm.response.json().error;",
+											"    pm.expect(errorMsg).to.equal(",
+											"        \"Error: Attribute name can only contain alpha numeric characters or underscores\"",
+											"    );",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "admin",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "admin",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"type": "text",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"INSERT INTO dev.invalid_attribute (id, `some+attribute1`, `$ome_attribute2`, `some=attribute3`) VALUES ('1', 'some_attribute', 'another_attribute', 'some_other_attribute'), ('2', 'some_attribute', 'another_attribute', 'some_other_attribute'), ('3', 'some_attribute', 'another_attribute', 'some_other_attribute'), ('4', 'some_attribute', 'another_attribute', 'some_other_attribute'), ('5', 'some_attribute', 'another_attribute', 'some_other_attribute'), ('6', 'some_attribute', 'another_attribute', 'some_other_attribute')\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "insert some invalid attribute names - multiple rows",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "4e59598e-b8da-49ca-851d-fd43f7c619b5",
+										"exec": [
+											"pm.test(\"Status code is 500\", function () {",
+											"    pm.response.to.have.status(500);",
+											"});",
+											"",
+											"pm.test(\"Receives invalid SQL error msg\", function () {",
+											"    const errorMsg = pm.response.json().error;",
+											"    pm.expect(errorMsg).to.equal(",
+											"        \"Error: Attribute name can only contain alpha numeric characters or underscores\"",
+											"    )",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "admin",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "admin",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"type": "text",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"INSERT INTO dev.invalid_attribute (id, some_attribute, another_attribute, `some=other_attribute`) VALUES ('1', 'some_attribute', 'another_attribute', 'some_other_attribute'), ('2', 'some_attribute', 'another_attribute', 'some_other_attribute'), ('3', 'some_attribute', 'another_attribute', 'some_other_attribute'), ('4', 'some_attribute', 'another_attribute', 'some_other_attribute'), ('5', 'some_attribute', 'another_attribute', 'some_other_attribute'), ('6', 'some_attribute', 'another_attribute', 'some_other_attribute')\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						}
+					],
+					"auth": {
+						"type": "basic",
+						"basic": [
+							{
+								"key": "password",
+								"value": "admin",
+								"type": "string"
+							},
+							{
+								"key": "username",
+								"value": "admin",
+								"type": "string"
+							}
+						]
+					},
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"id": "fb40ed61-2b6c-4133-9070-85669b8bff67",
+								"type": "text/javascript",
+								"exec": [
+									""
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"id": "ee4922d8-f043-4bb5-90c4-e5d5ca8d4fd1",
+								"type": "text/javascript",
+								"exec": [
+									""
+								]
+							}
+						}
+					],
+					"_postman_isSubFolder": true
+				},
 				{
 					"name": "insert value into table",
 					"event": [
@@ -5521,6 +5804,210 @@
 		{
 			"name": "4. NoSQL Tests",
 			"item": [
+				{
+					"name": "Invalid Attribute Check",
+					"item": [
+						{
+							"name": "insert invalid attribute name - single row",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "4e59598e-b8da-49ca-851d-fd43f7c619b5",
+										"exec": [
+											"pm.test(\"Status code is 500\", function () {",
+											"    pm.response.to.have.status(500);",
+											"});",
+											"",
+											"pm.test(\"Receives invalid attribute name error msg\", function () {",
+											"    const errorMsg = pm.response.json().error;",
+											"    pm.expect(errorMsg).to.equal(",
+											"        \"Error: Attribute name can only contain alpha numeric characters or underscores\"",
+											"    )",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "admin",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "admin",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"type": "text",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\":\"insert\",\n    \"schema\" :  \"dev\",\n    \"table\":\"invalid_attribute\",\n    \"records\": [\n    \t{\n        \"id\" : 1,\n        \"$ome_attribute\" : \"some_attribute\"\n      }\n    ]\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "insert all invalid attribute names - multiple rows",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "4e59598e-b8da-49ca-851d-fd43f7c619b5",
+										"exec": [
+											"pm.test(\"Status code is 500\", function () {",
+											"    pm.response.to.have.status(500);",
+											"});",
+											"",
+											"pm.test(\"Receives invalid attribute name error msg\", function () {",
+											"    const errorMsg = pm.response.json().error;",
+											"    pm.expect(errorMsg).to.equal(",
+											"        \"Error: Attribute name can only contain alpha numeric characters or underscores\"",
+											"    )",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "admin",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "admin",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json",
+										"type": "text"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\":\"insert\",\n    \"schema\" :  \"dev\",\n    \"table\":\"invalid_attribute\",\n    \"records\": [\n    \t{\n        \t\"id\" : 1,\n        \t\"$ome_attribute1\" : \"some_attribute1\",\n        \t\"some-attribute2\" : \"some_attribute2\",\n        \t\"$ome-attribute3\" : \"some_attribute3\",\n        \t\"some_attribute4+\" : \"some_attribute4\"\n    \t},    \t\n    \t{\n        \t\"id\" : 2,\n        \t\"$ome_attribute1\" : \"some_attribute1\",\n        \t\"some-attribute2\" : \"some_attribute2\",\n        \t\"$ome-attribute3\" : \"some_attribute3\",\n        \t\"some_attribute4+\" : \"some_attribute4\"\n    \t},    \t\n    \t{\n        \t\"id\" : 3,\n        \t\"$ome_attribute1\" : \"some_attribute1\",\n        \t\"some-attribute2\" : \"some_attribute2\",\n        \t\"$ome-attribute3\" : \"some_attribute3\",\n        \t\"some_attribute4+\" : \"some_attribute4\"\n    \t},    \t\n    \t{\n        \t\"id\" : 4,\n        \t\"$ome_attribute1\" : \"some_attribute1\",\n        \t\"some-attribute2\" : \"some_attribute2\",\n        \t\"$ome-attribute3\" : \"some_attribute3\",\n        \t\"some_attribute4+\" : \"some_attribute4\"\n    \t},    \t\n    \t{\n        \t\"id\" : 5,\n        \t\"$ome_attribute1\" : \"some_attribute1\",\n        \t\"some-attribute2\" : \"some_attribute2\",\n        \t\"$ome-attribute3\" : \"some_attribute3\",\n        \t\"some_attribute4+\" : \"some_attribute4\"\n    \t},    \t\n    \t{\n        \t\"id\" : 6,\n        \t\"$ome_attribute1\" : \"some_attribute1\",\n        \t\"some-attribute2\" : \"some_attribute2\",\n        \t\"$ome-attribute3\" : \"some_attribute3\",\n        \t\"some_attribute4+\" : \"some_attribute4\"\n    \t}\n    ]\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "insert some invalid attribute names - multiple rows",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "4e59598e-b8da-49ca-851d-fd43f7c619b5",
+										"exec": [
+											"pm.test(\"Status code is 500\", function () {",
+											"    pm.response.to.have.status(500);",
+											"});",
+											"",
+											"pm.test(\"Receives invalid attribute name error msg\", function () {",
+											"    const errorMsg = pm.response.json().error;",
+											"    pm.expect(errorMsg).to.equal(",
+											"        \"Error: Attribute name can only contain alpha numeric characters or underscores\"",
+											"    )",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "admin",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "admin",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"type": "text",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\":\"insert\",\n    \"schema\" :  \"dev\",\n    \"table\":\"invalid_attribute\",\n    \"records\": [\n    \t{\n        \t\"id\" : 1,\n        \t\"some_attribute1\" : \"some_attribute1\",\n        \t\"some_attribute2\" : \"some_attribute2\",\n        \t\"some-attribute3\" : \"some_attribute3\",\n        \t\"some_attribute4+\" : \"some_attribute4\"\n    \t},    \t\n    \t{\n        \t\"id\" : 2,\n        \t\"some_attribute1\" : \"some_attribute1\",\n        \t\"some_attribute2\" : \"some_attribute2\",\n        \t\"some-attribute3\" : \"some_attribute3\",\n        \t\"some_attribute4+\" : \"some_attribute4\"\n    \t},    \t\n    \t{\n        \t\"id\" : 3,\n        \t\"some_attribute1\" : \"some_attribute1\",\n        \t\"some_attribute2\" : \"some_attribute2\",\n        \t\"some-attribute3\" : \"some_attribute3\",\n        \t\"some_attribute4+\" : \"some_attribute4\"\n    \t},    \t\n    \t{\n        \t\"id\" : 4,\n        \t\"some_attribute1\" : \"some_attribute1\",\n        \t\"some_attribute2\" : \"some_attribute2\",\n        \t\"some-attribute3\" : \"some_attribute3\",\n        \t\"some_attribute4+\" : \"some_attribute4\"\n    \t},    \t\n    \t{\n        \t\"id\" : 5,\n        \t\"some_attribute1\" : \"some_attribute1\",\n        \t\"some_attribute2\" : \"some_attribute2\",\n        \t\"some-attribute3\" : \"some_attribute3\",\n        \t\"some_attribute4+\" : \"some_attribute4\"\n    \t},    \t\n    \t{\n        \t\"id\" : 6,\n        \t\"some_attribute1\" : \"some_attribute1\",\n        \t\"some_attribute2\" : \"some_attribute2\",\n        \t\"some-attribute3\" : \"some_attribute3\",\n        \t\"some_attribute4+\" : \"some_attribute4\"\n    \t}\n    ]\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						}
+					],
+					"auth": {
+						"type": "basic",
+						"basic": [
+							{
+								"key": "password",
+								"value": "admin",
+								"type": "string"
+							},
+							{
+								"key": "username",
+								"value": "admin",
+								"type": "string"
+							}
+						]
+					},
+					"_postman_isSubFolder": true
+				},
 				{
 					"name": "update NoSQL employee",
 					"event": [
