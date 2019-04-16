@@ -1,10 +1,9 @@
 const insert = require('../../data_layer/insert');
-const cb_insert_insert = require('util').callbackify(insert.insertCB);
 const node_Validator = require('../../validation/nodeValidator');
 const hdb_utils = require('../../utility/common_utils');
 const log = require('../../utility/logging/harper_logger');
-const {promisify} = require('util');
-const {inspect} = require('util');
+const util = require('util');
+const cb_insert_insert = util.callbackify(insert.insertCB);
 const del = require('../../data_layer/delete');
 const terms = require('../../utility/hdbTerms');
 const env_mgr = require('../../utility/environment/environmentManager');
@@ -20,8 +19,8 @@ const child_process = require('child_process');
 const path = require('path');
 
 //Promisified functions
-const p_delete_delete = promisify(del.delete);
-const p_auth_authorize = promisify(auth.authorize);
+const p_delete_delete = util.promisify(del.delete);
+const p_auth_authorize = util.promisify(auth.authorize);
 
 const iface = os.networkInterfaces();
 const addresses = [];
@@ -38,7 +37,7 @@ const DUPLICATE_ERR_MSG = 'Cannot add a node that matches the hosts clustering c
 const timeout_promise = hdb_utils.timeoutPromise(STATUS_TIMEOUT_MS, 'Timeout trying to get cluster status.');
 const event_promise = new Promise((resolve) => {
     cluster_status_event.clusterEmitter.on(cluster_status_event.EVENT_NAME, (msg) => {
-        log.info(`Got cluster status event response: ${inspect(msg)}`);
+        log.info(`Got cluster status event response: ${util.inspect(msg)}`);
         try {
             timeout_promise.cancel();
         } catch(err) {
@@ -67,7 +66,7 @@ function setEnterprise(enterprise) {
  */
 async function kickOffEnterprise() {
     const enterprise_util = require('../../utility/enterpriseInitialization');
-    const p_kick_off_enterprise = promisify(enterprise_util.kickOffEnterprise);
+    const p_kick_off_enterprise = util.promisify(enterprise_util.kickOffEnterprise);
 
     global.forks.forEach((fork) => {
         fork.send({"type": "enterprise", "enterprise": is_enterprise});
@@ -186,7 +185,7 @@ async function removeNode(remove_json_message) {
     try {
         results = await p_delete_delete(delete_obj);
     } catch(err) {
-        log.error(`Error removing cluster node ${inspect(delete_obj)}.  ${err}`);
+        log.error(`Error removing cluster node ${util.inspect(delete_obj)}.  ${err}`);
         throw err;
     }
     if(!hdb_utils.isEmptyOrZeroLength(results.skipped_hashes)) {
@@ -490,7 +489,7 @@ function clusterMessageHandler(msg) {
                 } else {
                     child_event_count++;
                     log.info(`Received ${child_event_count} child stopped event(s).`);
-                    log.info(`started forks: ${inspect(started_forks)}`);
+                    log.info(`started forks: ${util.inspect(started_forks)}`);
                     started_forks[msg.pid] = false;
                     for(let fork of Object.keys(started_forks)) {
                         // We still have children running, break;
