@@ -19,6 +19,7 @@ let file_change_results = false;
 
 const LOG_DELIMITER = '______________';
 
+const NOTIFY_LOG_MESSAGE = 'NOTIFY_MSG';
 const FATAL_LOG_MESSAGE = 'FATAL_MSG';
 const ERROR_LOG_MESSAGE = 'ERROR_MSG';
 const WARN_LOG_MESSAGE = 'WARN_MSG';
@@ -26,6 +27,7 @@ const INFO_LOG_MESSAGE = 'INFO_MSG';
 const DEBUG_LOG_MESSAGE = 'DEBUG_MSG';
 const TRACE_LOG_MESSAGE = 'TRACE_MSG';
 
+let harper_notify_spy = undefined;
 let harper_debug_spy = undefined;
 let harper_trace_spy = undefined;
 let harper_error_spy = undefined;
@@ -47,6 +49,7 @@ function printLogs() {
     harper_log.error(ERROR_LOG_MESSAGE);
     harper_log.warn(WARN_LOG_MESSAGE);
     harper_log.trace(TRACE_LOG_MESSAGE);
+    harper_log.notify(NOTIFY_LOG_MESSAGE);
 }
 
 function zeroizeOutputFile() {
@@ -57,9 +60,9 @@ function zeroizeOutputFile() {
 
 function log_something(level, done) {
     harper_log.setLogLevel(level);
-    harper_log.fatal(LOG_DELIMITER+level);
+    harper_log.notify(LOG_DELIMITER+level);
     printLogs();
-    harper_log.fatal(LOG_DELIMITER+level);
+    harper_log.notify(LOG_DELIMITER+level);
     setTimeout( function () {
         fs.readFile(output_file_name, function read(err, data) {
             if(err) {
@@ -75,6 +78,7 @@ function log_something(level, done) {
             assert.ok(end_index > start_index);
             switch(level) {
                 case 'trace':
+                    assert.notEqual(-1, logged_message.indexOf(NOTIFY_LOG_MESSAGE), 'Did not find notify message');
                     assert.notEqual(-1, logged_message.indexOf(FATAL_LOG_MESSAGE), 'Did not find fatal message');
                     assert.notEqual(-1, logged_message.indexOf(TRACE_LOG_MESSAGE), 'Did not find trace message');
                     assert.notEqual(-1, logged_message.indexOf(INFO_LOG_MESSAGE), 'Did not find info message');
@@ -83,6 +87,7 @@ function log_something(level, done) {
                     assert.notEqual(-1, logged_message.indexOf(ERROR_LOG_MESSAGE),'Did not find error message');
                     break;
                 case 'debug':
+                    assert.notEqual(-1, logged_message.indexOf(NOTIFY_LOG_MESSAGE), 'Did not find notify message');
                     assert.notEqual(-1, logged_message.indexOf(FATAL_LOG_MESSAGE), 'Did not find fatal message');
                     assert.equal(-1, logged_message.indexOf(TRACE_LOG_MESSAGE));
                     assert.notEqual(-1, logged_message.indexOf(INFO_LOG_MESSAGE), 'Did not find info message');
@@ -91,6 +96,7 @@ function log_something(level, done) {
                     assert.notEqual(-1, logged_message.indexOf(ERROR_LOG_MESSAGE),'Did not find error message');
                     break;
                 case 'info':
+                    assert.notEqual(-1, logged_message.indexOf(NOTIFY_LOG_MESSAGE), 'Did not find notify message');
                     assert.notEqual(-1, logged_message.indexOf(FATAL_LOG_MESSAGE), 'Did not find fatal message');
                     assert.equal(-1, logged_message.indexOf(TRACE_LOG_MESSAGE));
                     assert.notEqual(-1, logged_message.indexOf(INFO_LOG_MESSAGE), 'Did not find info message');
@@ -99,6 +105,7 @@ function log_something(level, done) {
                     assert.notEqual(-1, logged_message.indexOf(ERROR_LOG_MESSAGE),'Did not find error message');
                     break;
                 case 'warn':
+                    assert.notEqual(-1, logged_message.indexOf(NOTIFY_LOG_MESSAGE), 'Did not find notify message');
                     assert.notEqual(-1, logged_message.indexOf(FATAL_LOG_MESSAGE), 'Did not find fatal message');
                     assert.equal(-1, logged_message.indexOf(TRACE_LOG_MESSAGE));
                     assert.equal(-1, logged_message.indexOf(INFO_LOG_MESSAGE));
@@ -107,6 +114,7 @@ function log_something(level, done) {
                     assert.notEqual(-1, logged_message.indexOf(ERROR_LOG_MESSAGE),'Did not find error message');
                     break;
                 case 'error':
+                    assert.notEqual(-1, logged_message.indexOf(NOTIFY_LOG_MESSAGE), 'Did not find notify message');
                     assert.notEqual(-1, logged_message.indexOf(FATAL_LOG_MESSAGE), 'Did not find fatal message');
                     assert.equal(-1, logged_message.indexOf(TRACE_LOG_MESSAGE));
                     assert.equal(-1, logged_message.indexOf(INFO_LOG_MESSAGE));
@@ -115,7 +123,17 @@ function log_something(level, done) {
                     assert.notEqual(-1, logged_message.indexOf(ERROR_LOG_MESSAGE),'Did not find error message');
                     break;
                 case 'fatal':
+                    assert.notEqual(-1, logged_message.indexOf(NOTIFY_LOG_MESSAGE), 'Did not find notify message');
                     assert.notEqual(-1, logged_message.indexOf(FATAL_LOG_MESSAGE), 'Did not find fatal message');
+                    assert.equal(-1, logged_message.indexOf(TRACE_LOG_MESSAGE));
+                    assert.equal(-1, logged_message.indexOf(INFO_LOG_MESSAGE));
+                    assert.equal(-1, logged_message.indexOf(DEBUG_LOG_MESSAGE));
+                    assert.equal(-1, logged_message.indexOf(WARN_LOG_MESSAGE));
+                    assert.equal(-1, logged_message.indexOf(ERROR_LOG_MESSAGE));
+                    break;
+                case 'notify':
+                    assert.notEqual(-1, logged_message.indexOf(NOTIFY_LOG_MESSAGE), 'Did not find notify message');
+                    assert.equal(-1, logged_message.indexOf(FATAL_LOG_MESSAGE));
                     assert.equal(-1, logged_message.indexOf(TRACE_LOG_MESSAGE));
                     assert.equal(-1, logged_message.indexOf(INFO_LOG_MESSAGE));
                     assert.equal(-1, logged_message.indexOf(DEBUG_LOG_MESSAGE));
@@ -126,7 +144,7 @@ function log_something(level, done) {
             done();
         });
     }, 100);
-};
+}
 
 // NOTES
 /*
@@ -258,6 +276,21 @@ describe(`Test log writing - Winston`, function() {
             done();
         }, 100);
     });
+
+    it('Test Notify Level', function(done) {
+        file_change_results = false;
+        if( harper_notify_spy === undefined) {
+            harper_notify_spy = sinon.spy(harper_log, 'notify');
+        }
+        harper_log.setLogLevel(harper_log.NOTIFY);
+        harper_log.notify(NOTIFY_LOG_MESSAGE);
+        assert.equal(harper_notify_spy.called,true, "logger 'notify' function was not called.");
+
+        setTimeout( function () {
+            assert.equal(file_change_results, true, "Did not detect a file change after calling fatal.");
+            done();
+        }, 100);
+    });
 });
 
 describe(`Test log writing - PINO`, function() {
@@ -366,6 +399,21 @@ describe(`Test log writing - PINO`, function() {
             done();
         }, 100);
     });
+
+    it('Test Notify Level', function(done) {
+        file_change_results = false;
+        if( harper_notify_spy === undefined) {
+            harper_notify_spy = sinon.spy(harper_log, 'notify');
+        }
+        harper_log.setLogLevel(harper_log.NOTIFY);
+        harper_log.notify(NOTIFY_LOG_MESSAGE);
+        assert.equal(harper_notify_spy.called,true, "logger 'notify' function was not called.");
+
+        setTimeout( function () {
+            assert.equal(file_change_results, true, "Did not detect a file change after calling fatal.");
+            done();
+        }, 100);
+    });
 });
 
 describe(`Test log level writing - WINSTON`, function(done) {
@@ -374,6 +422,9 @@ describe(`Test log level writing - WINSTON`, function(done) {
     });
     after(function () {
         zeroizeOutputFile();
+    });
+    it('Set log level to notify, should only see notify messages', function (done) {
+        log_something(harper_log.NOTIFY, done);
     });
     it('Set log level to fatal, should only see fatal message', function (done) {
         log_something(harper_log.FATAL, done);
@@ -394,12 +445,16 @@ describe(`Test log level writing - WINSTON`, function(done) {
         log_something(harper_log.TRACE, done);
     });
 });
+
 describe(`Test log level writing - PINO`, function (done) {
     before(function () {
         harper_log.setLogType(PINO);
     });
     after(function () {
         zeroizeOutputFile();
+    });
+    it('Set log level to notify, should only see notify messages', function (done) {
+        log_something(harper_log.NOTIFY, done);
     });
     it('Set log level to fatal, should only see fatal message', function (done) {
         log_something(harper_log.FATAL, done);
@@ -494,7 +549,7 @@ describe(`Test setLogLocation`, function (done) {
                 // event loop and specs of any given system the test is run on.  Not the best way to test, but works for now.
                 assert.equal(file_change_results, true, "Did not detect a file change to new log file. This might be a timing issue with the test, not the functionality.");
                 done();
-            }, 1200);
+            }, 1300);
         }, 500);
     });
     it('set log location with bad path, expect log written to default path', function (done) {
