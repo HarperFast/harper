@@ -3,7 +3,7 @@ const node_Validator = require('../../validation/nodeValidator');
 const hdb_utils = require('../../utility/common_utils');
 const log = require('../../utility/logging/harper_logger');
 const util = require('util');
-const cb_insert_insert = util.callbackify(insert.insertCB);
+const cb_insert_insert = util.callbackify(insert.insert);
 const del = require('../../data_layer/delete');
 const terms = require('../../utility/hdbTerms');
 const env_mgr = require('../../utility/environment/environmentManager');
@@ -119,7 +119,7 @@ function addNode(new_node, callback) {
         "records": [new_node]
     };
 
-    cb_insert_insert((err, results) => {
+    cb_insert_insert(new_node_insert, (err, results) => {
         if (err) {
             log.error(`Error adding new cluster node ${new_node_insert}.  ${err}`);
             return callback(err);
