@@ -22,6 +22,7 @@ class ServerSocket{
         this.socket.on('error', this.errorHandler);
         this.socket.on('raw', this.rawHandler);
         this.socket.on('disconnect', this.disconnectHandler.bind(this));
+        this.socket.on('connect', this.connectHandler.bind(this));
         this.socket.on('connectAbort', this.connectAbortHandler);
         this.socket.on('close', this.closeHandler);
         this.socket.on('subscribe', this.subscribeHandler.bind(this));
@@ -60,6 +61,14 @@ class ServerSocket{
     disconnectHandler(code, data){
     }
 
+    /**
+     * Happens when the client becomes disconnected from the server. Note that if the socket becomes disconnected during the SC handshake stage, then the 'connectAbort' event will be triggered instead.
+     * @param code
+     * @param data
+     */
+    connectHandler(code, data){
+
+    }
 
 
     /**
@@ -86,18 +95,6 @@ class ServerSocket{
      * @param channel
      */
     subscribeHandler(channel){
-        //add logic for subscribe to hdb_worker channel
-        if(channel === 'hdb_worker'){
-            try {
-                this.exchange_set(['hdb_worker', this.socket.id], 1).then(data => {
-                    this.exchange_get('hdb_worker').then(data => {
-                        console.log(data);
-                    });
-                });
-            } catch(e){
-                console.error(e);
-            }
-        }
         console.log('subscribed to channel ' + channel);
     }
 
@@ -106,14 +103,6 @@ class ServerSocket{
      * @param channel
      */
     unsubscribeHandler(channel){
-        //add logic for unsubscribe to hdb_worker channel
-        if(channel === 'hdb_worker'){
-            this.exchange_remove(['hdb_worker', this.socket.id]).then(data => {
-                this.exchange_get('hdb_worker').then(data=>{
-                    console.log(data);
-                });
-            });
-        }
         console.log('unsubscribed from channel ' + channel);
     }
 

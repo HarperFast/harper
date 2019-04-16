@@ -14,6 +14,12 @@ class Worker extends SCWorker{
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_OUT, this.publishOutMiddleware.bind(this));
         let sc_server = new SCServer(this);
 
+        this.hdb_workers = [];
+
+        this.exchange.subscribe('hdb_worker').watch(workers =>{
+            this.hdb_workers = Object.keys(workers);
+        });
+
         this.exchange_get = promisify(this.exchange.get).bind(this.exchange);
 
         if(this.isLeader){
@@ -32,7 +38,7 @@ class Worker extends SCWorker{
 
             if(req.data.__transacted === undefined){
                 //TODO add logic to send to worker
-                this.exchange_get
+                this.sendToWorker(req.data);
                 //squash the message from continuing to publish in
                 return next(true);
             }
@@ -41,6 +47,13 @@ class Worker extends SCWorker{
             console.error(e);
             return next(e);
         }
+    }
+
+    sendToWorker(data){
+        let rand = Math.floor(Math.random() * this.workers.length);
+        let random_worker = this.workers[rand];
+
+        this.exchange.publish(random_worker, data);
     }
 
     /**

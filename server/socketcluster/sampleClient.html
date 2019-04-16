@@ -65,7 +65,10 @@
 <script type="text/javascript">
     // Initiate the connection to the server
     let socket = socketCluster.connect({
-        port:1111
+        port:1111,
+        query:{
+            hdb_worker:1
+        }
     });
 
     socket.name = 'test';
@@ -78,6 +81,10 @@
 
     socket.on('login', (data, res)=>{
         res(null, {username: 'kyle', password: 'test'});
+    });
+
+    socket.on('connect', (data, res)=>{
+        subscribe(socket.id);
     });
 
     function publish(channel, data){

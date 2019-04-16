@@ -2,18 +2,13 @@ const SocketConnector = require('./SocketConnector');
 
 class HDBSocketConnector extends SocketConnector{
     constructor(socket_client, name, options, credentials){
+        options.query = {hdb_worker:true};
         super(socket_client, name, options, credentials);
-        this.addEventListener('connect', this.connectHandler.bind(this));
-    }
-
-    connectHandler(status){
-        this.subscribe('hdb_worker').watch(this.hdbWorkerWatcher.bind(this));
+        this.subscribe(this.socket.id, this.hdbWorkerWatcher.bind(this));
     }
 
     hdbWorkerWatcher(data){
-        if(data.worker_id === this.socket.id){
-            //send on
-        }
+        console.log(data);
     }
 }
 
