@@ -1,4 +1,5 @@
 const insert = require('../../data_layer/insert');
+const cb_insert_insert = require('util').callbackify(insert.insertCB);
 const node_Validator = require('../../validation/nodeValidator');
 const hdb_utils = require('../../utility/common_utils');
 const log = require('../../utility/logging/harper_logger');
@@ -119,13 +120,13 @@ function addNode(new_node, callback) {
         "records": [new_node]
     };
 
-    insert.insertCB(new_node_insert, function(err, results) {
-        if(err) {
+    cb_insert_insert((err, results) => {
+        if (err) {
             log.error(`Error adding new cluster node ${new_node_insert}.  ${err}`);
             return callback(err);
         }
 
-        if(!hdb_utils.isEmptyOrZeroLength(results.skipped_hashes)){
+        if (!hdb_utils.isEmptyOrZeroLength(results.skipped_hashes)) {
             log.info(`Node '${new_node.name}' has already been already added. Operation aborted.`);
             return callback(null, `Node '${new_node.name}' has already been already added. Operation aborted.`);
         }
@@ -135,6 +136,7 @@ function addNode(new_node, callback) {
             "type": terms.CLUSTER_MESSAGE_TYPE_ENUM.NODE_ADDED,
             "node_name": new_node.name
         });
+
         return callback(null, `successfully added ${new_node.name} to manifest`);
     });
 }
