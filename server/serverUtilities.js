@@ -29,6 +29,7 @@ let OPERATION_PARAM_ERROR_MSG = `operation parameter is undefined`;
 
 module.exports = {
     chooseOperation: chooseOperation,
+    getOperationFunction: getOperationFunction,
     processLocalTransaction: processLocalTransaction,
     proccessDelegatedTransaction: proccessDelegatedTransaction,
     processInThread: processInThread,
@@ -166,6 +167,39 @@ function chooseOperation(json, callback) {
         harper_logger.error(`invalid message body parameters found`);
         return nullOperation(json, callback);
     }
+
+    let {operation_function, job_operation_function} = getOperationFunction(json);
+    // Here there is a SQL statement in either the operation or the search_operation (from jobs like export_local).  Need to check the perms
+    // on all affected tables/attributes.
+    try {
+        if (json.operation === 'sql' || (json.search_operation && json.search_operation.operation === 'sql')) {
+            let sql_statement = (json.operation === 'sql' ? json.sql : json.search_operation.sql);
+            let parsed_sql_object = sql.convertSQLToAST(sql_statement);
+            json.parsed_sql_object = parsed_sql_object;
+            if (!sql.checkASTPermissions(json, parsed_sql_object)) {
+                harper_logger.error(`${UNAUTH_RESPONSE} from operation ${json.search_operation}`);
+                return callback(UNAUTH_RESPONSE, `${UNAUTH_RESPONSE} from operation ${json.search_operation}`);
+            }
+        } else {
+            let function_to_check = (job_operation_function === undefined ? operation_function : job_operation_function);
+            let operation_json = ((json.search_operation) ? json.search_operation : json);
+            if (!operation_json.hdb_user) {
+                operation_json.hdb_user = json.hdb_user;
+            }
+            if (!op_auth.verifyPerms(operation_json, function_to_check)) {
+                harper_logger.error(`${UNAUTH_RESPONSE} from operation ${json.search_operation}`);
+                return callback(UNAUTH_RESPONSE, null);
+            }
+        }
+    } catch (e) {
+        // This should catch all non auth related processing errors and return the message
+        return callback(e.message, null);
+    }
+    return callback(null, operation_function);
+}
+
+function getOperationFunction(json){
+
     let operation_function = nullOperation;
     let job_operation_function = undefined;
 
@@ -283,7 +317,7 @@ function chooseOperation(json, callback) {
         case terms.OPERATIONS_ENUM.EXPORT_LOCAL:
             operation_function = signalJob;
             job_operation_function = export_.export_local;
-			break;
+            break;
         case terms.OPERATIONS_ENUM.SEARCH_JOBS_BY_START_DATE:
             operation_function = jobs.jobHandler;
             break;
@@ -310,33 +344,11 @@ function chooseOperation(json, callback) {
         default:
             break;
     }
-    // Here there is a SQL statement in either the operation or the search_operation (from jobs like export_local).  Need to check the perms
-    // on all affected tables/attributes.
-    try {
-        if (json.operation === 'sql' || (json.search_operation && json.search_operation.operation === 'sql')) {
-            let sql_statement = (json.operation === 'sql' ? json.sql : json.search_operation.sql);
-            let parsed_sql_object = sql.convertSQLToAST(sql_statement);
-            json.parsed_sql_object = parsed_sql_object;
-            if (!sql.checkASTPermissions(json, parsed_sql_object)) {
-                harper_logger.error(`${UNAUTH_RESPONSE} from operation ${json.search_operation}`);
-                return callback(UNAUTH_RESPONSE, `${UNAUTH_RESPONSE} from operation ${json.search_operation}`);
-            }
-        } else {
-            let function_to_check = (job_operation_function === undefined ? operation_function : job_operation_function);
-            let operation_json = ((json.search_operation) ? json.search_operation : json);
-            if (!operation_json.hdb_user) {
-                operation_json.hdb_user = json.hdb_user;
-            }
-            if (!op_auth.verifyPerms(operation_json, function_to_check)) {
-                harper_logger.error(`${UNAUTH_RESPONSE} from operation ${json.search_operation}`);
-                return callback(UNAUTH_RESPONSE, null);
-            }
-        }
-    } catch (e) {
-        // This should catch all non auth related processing errors and return the message
-        return callback(e.message, null);
-    }
-    return callback(null, operation_function);
+
+    return {
+        operation_function: operation_function,
+        job_operation_function: job_operation_function
+    };
 }
 
 function nullOperation(json, callback) {

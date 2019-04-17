@@ -39,7 +39,7 @@ class Worker extends SCWorker{
 
             if(req.data.__transacted === undefined){
                 //send to worker
-                this.sendToWorker(req.data);
+                this.sendToWorker(req);
                 //squash the message from continuing to publish in
                 return next(true);
             }
@@ -50,11 +50,14 @@ class Worker extends SCWorker{
         }
     }
 
-    sendToWorker(data){
+    sendToWorker(req){
+        let channel = req.channel.split(':');
+        req.data.schema = channel[0];
+        req.data.table = channel[1];
         let rand = Math.floor(Math.random() * this.workers.length);
         let random_worker = this.workers[rand];
 
-        this.exchange.publish(random_worker, data);
+        this.exchange.publish(random_worker, req.data);
     }
 
     /**
@@ -87,7 +90,6 @@ class Worker extends SCWorker{
         }
 
         if(this.workers.indexOf(req.channel) >= 0){
-            req.data.hello = 'sup';
             return next();
         }
 
