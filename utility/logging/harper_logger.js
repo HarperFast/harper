@@ -44,14 +44,16 @@ try {
 
 //  RFC5424: severity of all levels is assumed to be numerically ascending from most important to least important
 const winston_log_levels = {
-    fatal: 0,
-    error: 1,
-    warn: 2,
-    info: 3,
-    debug: 4,
-    trace: 5
+    notify: 0,
+    fatal: 1,
+    error: 2,
+    warn: 3,
+    info: 4,
+    debug: 5,
+    trace: 6
 };
 
+const NOTIFY = 'notify';
 const FATAL = 'fatal';
 const ERR = 'error';
 const WARN = 'warn';
@@ -87,11 +89,13 @@ module.exports = {
     warn:warn,
     error:error,
     fatal:fatal,
+    notify: notify,
     setLogLevel:setLogLevel,
     setLogType:setLogType,
     write_log:write_log,
     setLogLocation:setLogLocation,
     log_level,
+    NOTIFY,
     FATAL,
     ERR,
     WARN,
@@ -130,12 +134,22 @@ function initWinstonLogger() {
 }
 
 /**
- * Initialize the Pino logger
+ * Initialize the Pino logger with custom levels
  */
 function initPinoLogger() {
     pin_logger = pino({
-        name: 'harperDB',
+        customLevels: {
+            notify: 70,
+            fatal: 60,
+            error: 50,
+            warn: 40,
+            info: 30,
+            debug: 20,
+            trace: 10
+        },
+        useOnlyCustomLevels:true,
         level: log_level,
+        name: 'harperDB'
     },pino_write_stream);
 }
 
@@ -153,6 +167,7 @@ function write_log(level, message) {
     if(level === undefined || level === 0 || level === null) {
         level = ERR;
     }
+
     switch(log_type) {
         case WIN:
             //WINSTON
@@ -166,7 +181,7 @@ function write_log(level, message) {
             //PINO
             if(!pin_logger) {
                 initPinoLogger();
-                trace(`initialized winston logger writing to ${log_location}`);
+                trace(`initialized pino logger writing to ${log_location}`);
             }
             pin_logger[level](message);
             break;
@@ -227,6 +242,14 @@ function debug(message) {
  */
 function warn(message) {
     write_log(WARN, message);
+}
+
+/**
+ * Writes a notify message to the log.
+ * @param {string} message - The string message to write to the log
+ */
+function notify(message) {
+    write_log(NOTIFY, message);
 }
 
 /**
@@ -316,7 +339,7 @@ function setLogLocation(path) {
             //PINO
             if(!pin_logger) {
                 initPinoLogger();
-                trace(`initialized winston logger writing to ${log_location}`);
+                trace(`initialized pino logger writing to ${log_location}`);
             }
             break;
         default:
@@ -327,5 +350,4 @@ function setLogLocation(path) {
             }
             break;
     }
-
 }
