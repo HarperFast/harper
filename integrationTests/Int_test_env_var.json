@@ -29,7 +29,7 @@
     },
     {
       "key": "files_location",
-      "value": "/home/harperdb/mycos_csv/",
+      "value": "/home/harperdb/test/data/integrationTestsCsvs/",
       "enabled": true
     },
     {
