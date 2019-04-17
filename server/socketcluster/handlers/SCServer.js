@@ -86,6 +86,7 @@ class SCServer{
                 this.exchange_set(['hdb_worker', socket.id], 1).then(data => {
                     this.exchange_get('hdb_worker').then(data => {
                         console.log(data);
+                        this.worker.workers = Object.keys(data);
                     });
                 });
             } catch(e){
@@ -104,6 +105,7 @@ class SCServer{
         if(socket.request.url === '/socketcluster/?hdb_worker=1'){
             this.exchange_remove(['hdb_worker', socket.id]).then(data => {
                 this.exchange_get('hdb_worker').then(data=>{
+                    this.worker.workers = Object.keys(data);
                     console.log(data);
                 });
             });

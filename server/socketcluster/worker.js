@@ -16,9 +16,6 @@ class Worker extends SCWorker{
 
         this.hdb_workers = [];
 
-        this.exchange.subscribe('hdb_worker').watch(workers =>{
-            this.hdb_workers = Object.keys(workers);
-        });
 
         this.exchange_get = promisify(this.exchange.get).bind(this.exchange);
 
@@ -36,13 +33,17 @@ class Worker extends SCWorker{
         try{
             this.publishInValidation(req);
 
+            if(this.workers.indexOf(req.channel) >= 0){
+                return next();
+            }
+
             if(req.data.__transacted === undefined){
-                //TODO add logic to send to worker
+                //send to worker
                 this.sendToWorker(req.data);
                 //squash the message from continuing to publish in
                 return next(true);
             }
-            next();
+            return next();
         } catch(e){
             console.error(e);
             return next(e);
@@ -85,13 +86,19 @@ class Worker extends SCWorker{
             return next(new Error('not authorized'));
         }
 
+        if(this.workers.indexOf(req.channel) >= 0){
+            req.data.hello = 'sup';
+            return next();
+        }
+
         //if the data has not been transacted and if the data did not originated from the socket we do not publish out
         if(req.data.__transacted === true && req.data.__originator !== req.socket.id){
-            next();
-        } else {
-            //this silently swallows stopping the message from being sent
-            next(true);
+            return next();
         }
+
+        //this silently swallows stopping the message from being sent
+        return next(true);
+
     }
 
     /**
