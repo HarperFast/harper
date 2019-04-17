@@ -17,15 +17,15 @@ const mkdirp = require('mkdirp');
 const _ = require('underscore');
 const signalling = require('../utility/signalling');
 const log = require('../utility/logging/harper_logger');
-const {promisify} = require('util');
-const {inspect} = require('util');
+const util = require('util');
+const cb_insert_insert = util.callbackify(insert.insert);
 const hdb_util = require('../utility/common_utils');
 const terms = require('../utility/hdbTerms');
 const common = require('../utility/common_utils');
 
 // Promisified functions
-let p_search_search_by_value = promisify(search.searchByValue);
-let p_delete_delete = promisify(delete_.delete);
+let p_search_search_by_value = util.promisify(search.searchByValue);
+let p_delete_delete = util.promisify(delete_.delete);
 
 // This is used by moveFileToTrash to decide where to put the removed file(s) in the trash directory.
 const ENTITY_TYPE_ENUM = {
@@ -97,12 +97,14 @@ function createSchemaStructure(schema_create_object, callback) {
                 ]
             };
 
-            insert.insertCB(insertObject, function (err, result) {
+            cb_insert_insert(insertObject, (err) => {
+                let schema = schema_create_object.schema;
+
                 if (err) {
                     callback(err);
                     return;
                 }
-                let schema = schema_create_object.schema;
+
                 fs.mkdir(env.get('HDB_ROOT') + '/schema/' + schema, function (err, data) {
                     if (err) {
                         if (err.errno === -17) {
@@ -117,6 +119,7 @@ function createSchemaStructure(schema_create_object, callback) {
                     callback(err, `schema ${schema_create_object.schema} successfully created`);
                 });
             });
+
         });
     } catch (e) {
         callback(e);
@@ -203,7 +206,7 @@ function createTableStructure(create_table_object, callback) {
                 records: [table]
             };
 
-            insert.insertCB(insertObject, function (err, result) {
+            cb_insert_insert(insertObject, (err) => {
                 if (err) {
                     callback(err);
                     return;
@@ -222,7 +225,7 @@ function createTableStructure(create_table_object, callback) {
 
                         } else {
                             callback('createTableStructure:' + err.message);
-                            return
+                            return;
                         }
                     }
 
@@ -385,7 +388,7 @@ async function dropAttribute(drop_attribute_object) {
         throw new Error('You cannot drop a hash attribute');
     }
     let success = await moveAttributeToTrash(drop_attribute_object).catch((err) => {
-        log.error(`Got an error deleting attribute ${inspect(drop_attribute_object)}.`);
+        log.error(`Got an error deleting attribute ${util.inspect(drop_attribute_object)}.`);
         throw err;
     });
     return success;
@@ -726,10 +729,12 @@ function createAttributeStructure(create_attribute_object, callback) {
                 records: [record]
             };
             logger.info("insert object:" + JSON.stringify(insertObject));
-            insert.insertCB(insertObject, function (err, result) {
+
+            cb_insert_insert(insertObject, (err, res) => {
                 logger.info('attribute:' + record.attribute);
-                logger.info(result);
-                callback(err, result);
+                logger.info(res);
+                callback(err, res);
+
             });
         });
     } catch (e) {
