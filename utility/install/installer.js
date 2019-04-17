@@ -333,6 +333,8 @@ function createAdminUser(callback) {
     // in the installer.
     const user_ops = require('../../security/user');
     const role_ops = require('../../security/role');
+    const util = require('util');
+    const cb_role_ops_addRole = util.callbackify(role_ops.addRole);
     let role = {};
     role.role = 'super_user';
     role.permission = {};
@@ -400,8 +402,7 @@ function createAdminUser(callback) {
             }
         });
     } else {
-
-        role_ops.addRole(role, function (err, result) {
+        cb_role_ops_addRole(role, (err, res) => {
             if (err) {
                 winston.error('role failed to create ' + err);
                 console.log('There was a problem creating the default role.  Please check the install log for details.');
@@ -411,7 +412,7 @@ function createAdminUser(callback) {
             let admin_user = {};
             admin_user.username = wizard_result.HDB_ADMIN_USERNAME;
             admin_user.password = wizard_result.HDB_ADMIN_PASSWORD;
-            admin_user.role = result.id;
+            admin_user.role = res.id;
             admin_user.active = true;
 
             user_ops.addUser(admin_user, function (err) {
