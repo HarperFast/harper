@@ -12,6 +12,7 @@ class Worker extends SCWorker{
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_IN, this.publishInMiddleware.bind(this));
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_HANDSHAKE_SC, this.handshakeSCMiddleware.bind(this));
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_OUT, this.publishOutMiddleware.bind(this));
+        this.scServer.addMiddleware(this.scServer.MIDDLEWARE_SUBSCRIBE, this.subscribeMiddleware.bind(this));
         let sc_server = new SCServer(this);
 
         this.hdb_workers = [];
@@ -22,6 +23,14 @@ class Worker extends SCWorker{
         if(this.isLeader){
             new NodeConnector(require('./connector/node'), this);
         }
+    }
+
+    subscribeMiddleware(req, next){
+        if(this.hdb_workers.indexOf(req.channel) && req.channel !== req.socket.id){
+            return next('cannot connect to another socket\'s channel');
+        }
+
+        return next();
     }
 
     /**
