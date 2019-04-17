@@ -27,7 +27,10 @@ class NodeConnector {
      */
     spawnRemoteConnections(nodes){
         nodes.forEach(node =>{
-            let connection = new SocketConnector(socket_client, node.name,connector_options);
+            let options = require('./connectorOptions');
+            options.hostname = node.host;
+            options.port = node.port;
+            let connection = new SocketConnector(socket_client, node.name,options, {username: 'kyle', password:'test'});
             if(node.subscriptions){
                 node.subscriptions.forEach(this.subscriptionManager.bind(this, connection));
             }
@@ -43,6 +46,7 @@ class NodeConnector {
             //we need to observe the channel locally and push the data remotely.
             let sub_channel = this.worker.exchange.subscribe(subscription.channel);
             sub_channel.watch(data=>{
+                console.log('sending out');
                 connection.publish(subscription.channel, data);
             });
         }

@@ -1,8 +1,8 @@
 [
   {
-    "name": "other",
-    "host":"localhost",
-    "port": 8000,
+    "name": "apple",
+    "host":"172.16.20.108",
+    "port": 1111,
     "subscriptions": [
       {
         "channel":"dev:dog",

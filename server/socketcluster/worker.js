@@ -20,7 +20,7 @@ class Worker extends SCWorker{
         this.exchange_get = promisify(this.exchange.get).bind(this.exchange);
 
         if(this.isLeader){
-            //new NodeConnector(require('./connector/node'), this);
+            new NodeConnector(require('./connector/node'), this);
         }
     }
 
@@ -43,6 +43,8 @@ class Worker extends SCWorker{
                 //squash the message from continuing to publish in
                 return next(true);
             }
+
+            delete req.data.__transacted;
             return next();
         } catch(e){
             console.error(e);
@@ -95,6 +97,7 @@ class Worker extends SCWorker{
 
         //if the data has not been transacted and if the data did not originated from the socket we do not publish out
         if(req.data.__transacted === true && req.data.__originator !== req.socket.id){
+
             return next();
         }
 
