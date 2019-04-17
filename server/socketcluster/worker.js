@@ -39,7 +39,7 @@ class Worker extends SCWorker{
 
             if(req.data.__transacted === undefined){
                 //send to worker
-                this.sendToWorker(req);
+                this.sendTransactionToWorker(req.channel, req.data);
                 //squash the message from continuing to publish in
                 return next(true);
             }
@@ -52,14 +52,14 @@ class Worker extends SCWorker{
         }
     }
 
-    sendToWorker(req){
-        let channel = req.channel.split(':');
-        req.data.schema = channel[0];
-        req.data.table = channel[1];
+    sendTransactionToWorker(channel, data){
+        channel = channel.split(':');
+        data.schema = channel[0];
+        data.table = channel[1];
         let rand = Math.floor(Math.random() * this.workers.length);
         let random_worker = this.workers[rand];
 
-        this.exchange.publish(random_worker, req.data);
+        this.exchange.publish(random_worker, data);
     }
 
     /**
@@ -177,7 +177,7 @@ class Worker extends SCWorker{
      * Emitted when the master process sends a message to this worker. The handler function accepts two arguments;
      * the first is the data which was sent by the master process, the second is a respond callback function which you can call to respond to the event using IPC.
      * The respond function should be invoked as respond(error, data); it is recommended that you pass an instance of the Error object as the first argument; if you don't want to send back an error,
-     * then the first argument should be null: respond(null, data). See sendToWorker(...) method in SocketCluster (master) API for details on how to send a message to a worker
+     * then the first argument should be null: respond(null, data). See sendTransactionToWorker(...) method in SocketCluster (master) API for details on how to send a message to a worker
      * from the master process (and how to handle the response from the worker).
      * @param data
      * @param callback

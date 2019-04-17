@@ -53,14 +53,13 @@ class NodeConnector {
 
         if(subscription.subscribe === true){
             //we need to observe the channel remotely and send the data locally
-            connection.subscribe(subscription.channel, this.channelWatcher);
+            connection.subscribe(subscription.channel, this.worker.sendTransactionToWorker.bind(this.worker, subscription.channel));
 
         }
     }
 
-    channelWatcher(data){
-        //figure out a worker or do we create a local_op end point and pass the payload?
-        console.log(data);
+    channelWatcher(channel, data){
+        this.worker.sendTransactionToWorker(channel, data);
     }
 
 }
