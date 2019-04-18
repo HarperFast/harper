@@ -19,9 +19,14 @@ class Worker extends SCWorker{
 
 
         this.exchange_get = promisify(this.exchange.get).bind(this.exchange);
+        this.exchange_get('hdb_worker').then(data => {
+            console.log(data);
+            this.hdb_workers = Object.keys(data);
+        });
+
 
         if(this.isLeader){
-            new NodeConnector(require('./connector/node'), this);
+            //new NodeConnector(require('./connector/node'), this);
         }
     }
 
@@ -42,7 +47,7 @@ class Worker extends SCWorker{
         try{
             this.publishInValidation(req);
 
-            if(this.workers.indexOf(req.channel) >= 0){
+            if(this.hdb_workers.indexOf(req.channel) >= 0){
                 return next();
             }
 
@@ -65,8 +70,8 @@ class Worker extends SCWorker{
         channel = channel.split(':');
         data.schema = channel[0];
         data.table = channel[1];
-        let rand = Math.floor(Math.random() * this.workers.length);
-        let random_worker = this.workers[rand];
+        let rand = Math.floor(Math.random() * this.hdb_workers.length);
+        let random_worker = this.hdb_workers[rand];
 
         this.exchange.publish(random_worker, data);
     }
@@ -100,7 +105,7 @@ class Worker extends SCWorker{
             return next(new Error('not authorized'));
         }
 
-        if(this.workers.indexOf(req.channel) >= 0){
+        if(this.hdb_workers.indexOf(req.channel) >= 0){
             return next();
         }
 

@@ -177,7 +177,7 @@ async function insertData(insert_object){
             pool.killAll();
         }
 
-        h_utils.sendTransactionToSocketCluster(insert_object);
+        convertOperationToTransaction(insert_object, skipped);
 
         return return_object;
     } catch(e){
@@ -185,6 +185,26 @@ async function insertData(insert_object){
             pool.killAll();
         }
         throw (e);
+    }
+}
+
+function convertOperationToTransaction(operation, skipped){
+    if(global.hdb_socket_client !== undefined && operation.schema !== 'system'){
+        let transaction = {
+            operation: "insert",
+            records:[]
+        };
+
+        if(Array.isArray(skipped) && skipped.length > 0){
+            insert_object.records.forEach(record =>{
+                if(skipped.indexOf(record[hash_attribute] < 0)){
+                    transaction.records.push(record);
+                }
+            });
+        } else {
+            transaction.records = insert_object.records;
+        }
+        h_utils.sendTransactionToSocketCluster(`${insert_object.schema}:${insert_object.tabIndex}`, transaction);
     }
 }
 
@@ -233,7 +253,7 @@ async function updateData(update_object){
             pool.killAll();
         }
 
-        h_utils.sendTransactionToSocketCluster(update_object);
+        convertOperationToTransaction(update_object, skipped);
 
         return return_object;
     } catch(e){

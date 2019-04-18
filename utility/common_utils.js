@@ -22,6 +22,12 @@ const AUTOCAST_COMMON_STRINGS = {
     'NaN': NaN
 };
 
+const SCHEMA_TRANSACTIONS = [
+    'create_schema',
+    'create_table',
+    'create_attribute'
+];
+
 
 module.exports = {
     isEmpty:isEmpty,
@@ -418,14 +424,13 @@ function isClusterOperation(operation_name) {
 
 /**
  * sends a processed transaction from HarperDB to socketcluster
+ * @param channel
  * @param transaction
  */
-function sendTransactionToSocketCluster(transaction){
-
-
-    if(global.hdb_socket_client !== undefined && transaction.schema !== 'system'){
+function sendTransactionToSocketCluster(channel, transaction){
+    if(global.hdb_socket_client !== undefined){
         transaction.__transacted = true;
         let {hdb_user, hdb_auth_header, ...data} = transaction;
-        global.hdb_socket_client.publish(transaction.schema + ':' + transaction.table, data);
+        global.hdb_socket_client.publish(channel, data);
     }
 }

@@ -1,7 +1,6 @@
 "use strict";
 
 const SocketConnector = require('./SocketConnector');
-const connector_options = require('./connectorOptions');
 const socket_client = require('socketcluster-client');
 const sc_objects = require('../socketClusterObjects');
 const SubscriptionObject = sc_objects.SubscriptionObject;
@@ -11,13 +10,15 @@ class NodeConnector {
     constructor(nodes, worker){
         //spawn local connection
         this.worker = worker;
-        this.channel_map = {};
         this.spawnRemoteConnections(nodes);
-
+        this.connections = socket_client;
+        //used to auto pub/sub the hdb_schema channel across the cluster
+        this.HDB_Schema_Subscription = new SubscriptionObject('internal:create_schema', true, true);
+        this.HDB_Table_Subscription = new SubscriptionObject('internal:create_table', true, true);
+        this.HDB_Attribute_Subscription = new SubscriptionObject('internal:create_attribute', true, true);
         //get nodes & spwan them, watch for node changes
-
         this.worker.exchange.subscribe('hdb_nodes').watch(data=>{
-            //create / destroy node here
+            //TODO create / destroy node here
         });
     }
 
@@ -31,7 +32,11 @@ class NodeConnector {
             options.hostname = node.host;
             options.port = node.port;
             let connection = new SocketConnector(socket_client, node.name,options, {username: 'kyle', password:'test'});
+
             if(node.subscriptions){
+                node.subscriptions.push(this.HDB_Schema_Subscription);
+                node.subscriptions.push(this.HDB_Table_Subscription);
+                node.subscriptions.push(this.HDB_Attribute_Subscription);
                 node.subscriptions.forEach(this.subscriptionManager.bind(this, connection));
             }
         });
@@ -39,6 +44,7 @@ class NodeConnector {
 
     /**
      *
+     * @param connection
      * @param {SubscriptionObject} subscription
      */
     subscriptionManager(connection, subscription){
@@ -56,10 +62,6 @@ class NodeConnector {
             connection.subscribe(subscription.channel, this.worker.sendTransactionToWorker.bind(this.worker, subscription.channel));
 
         }
-    }
-
-    channelWatcher(channel, data){
-        this.worker.sendTransactionToWorker(channel, data);
     }
 
 }

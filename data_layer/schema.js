@@ -64,6 +64,7 @@ function createSchema(schema_create_object, callback) {
                 return;
             }
 
+            hdb_util.sendTransactionToSocketCluster('internal:create_schema', schema_create_object);
             signalling.signalSchemaChange({type: 'schema'});
             return callback(null, success);
         });
@@ -131,7 +132,9 @@ function createTable(create_table_object, callback) {
                 return;
             }
 
+            hdb_util.sendTransactionToSocketCluster('internal:create_table', create_table_object);
             signalling.signalSchemaChange({type: 'schema'});
+
             return callback(null, success);
         });
     } catch (e) {
@@ -813,6 +816,7 @@ function createAttribute(create_attribute_object, callback) {
                     logger.error(e);
                 }
 
+                hdb_util.sendTransactionToSocketCluster('internal:create_attribute', create_attribute_object);
                 signalling.signalSchemaChange({type: 'schema'});
                 return callback(null, success);
 
