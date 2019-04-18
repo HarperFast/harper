@@ -22,3 +22,5 @@ cp -R $ADD $MIRRORED_DIR
 cp $ADD2 $MIRRORED_DIR/$ADD2_DIR
 mkdir $MIRRORED_DIR/utility/devops
 cp utility/devops/* $MIRRORED_DIR/utility/devops/
+#create file for registration process
+mkdir $MIRRORED_DIR/utility/keys
