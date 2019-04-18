@@ -17,7 +17,7 @@ do
 
 mkdir -p $target_dir/node_$node_count/harperdb
 mkdir -p $target_dir/node_$node_count/data
-rsync -av $working_dir/* $target_dir/node_$node_count/harperdb --exclude $target_dir
+rsync -avq $working_dir/* $target_dir/node_$node_count/harperdb --exclude $target_dir
 #p -R $working_dir/* $target_dir/node_$node_count/harperdb/
 
 sed -i "s/HDB_PROC_NAME =.*/HDB_PROC_NAME='NoOne';/1" $target_dir/node_$node_count/harperdb/utility/common_utils.js

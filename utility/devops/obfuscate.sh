@@ -11,9 +11,9 @@ ADD2="$ADD2_DIR/ascii_logo.txt $ADD2_DIR/harperdb.conf $ADD2_DIR/harperdb.servic
 MIRRORED_DIR="/tmp/harperdb_dev"
 
 #REMOVE FOR PRODUCTION
-sed -i "/HDB_PROC_NAME/ s/ =.*/ = 'no_oneis_here';/" ./bin/run.js
+sed -i "s/HDB_PROC_NAME =.*/HDB_PROC_NAME='NoOne';/1" $target_dir/node_$node_count/harperdb/utility/common_utils.js
 #NOTE: CREATE JIRA FOR DEV team to remove #!
-sed -i "s/#.*//" ./bin/stop.js
+#sed -i "s/#.*//" ./bin/stop.js
 
 javascript-obfuscator ./ --exclude "$EXCLUDE" -c ./utility/devops/obfuscate_config.json -o $MIRRORED_DIR
 
