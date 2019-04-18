@@ -12,7 +12,6 @@ try {
 const uuidv1 = require('uuid/v1');
 const user_schema = require('../utility/user_schema');
 const async = require('async');
-const insert = require('../data_layer/insert');
 const os = require('os');
 const job_runner = require('./jobRunner');
 const hdb_util = require('../utility/common_utils');
@@ -29,7 +28,9 @@ const signalling = require('../utility/signalling');
 const moment = require('moment');
 const terms = require('../utility/hdbTerms');
 const RestartEventObject = require('./RestartEventObject');
-const {inspect} = require('util');
+const util = require('util');
+const insert = require('../data_layer/insert');
+const cb_insert_insert = util.callbackify(insert.insert);
 
 const DEFAULT_SERVER_TIMEOUT = 120000;
 const PROPS_SERVER_TIMEOUT_KEY = 'SERVER_TIMEOUT_MS';
@@ -456,13 +457,14 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                                         records: [item]
                                     };
 
-                                    insert.insertCB(insert_object, function (err) {
+                                    cb_insert_insert( insert_object, (err) => {
                                         if (err) {
                                             harper_logger.error(err);
                                             return callback_(err);
                                         }
                                         return callback_();
                                     });
+
                                 }, function(err){
                                     if(err){
                                         return res.status(terms.HTTP_STATUS_CODES.NOT_IMPLEMENTED).send(err);
@@ -571,7 +573,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
             harper_logger.warn(`Process pid:${process.pid} - SIGINT received, closing connections and finishing existing work.`);
             harper_logger.info(`There are ${Object.keys(server_connections).length} connections.`);
             for (let conn of Object.keys(server_connections)) {
-                harper_logger.info(`Closing connection ${inspect(server_connections[conn])}`);
+                harper_logger.info(`Closing connection ${util.inspect(server_connections[conn])}`);
                 server_connections[conn].destroy();
             }
             setTimeout(() => {
