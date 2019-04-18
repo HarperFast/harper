@@ -51,7 +51,7 @@ module.exports = {
     describeAll: schema_describe.describeAll,
     dropSchema: dropSchema,
     dropTable: dropTable,
-    dropAttribute: dropAttributeCB // This can be changed to just dropAttribute when processLocal has been updated to async/await
+    dropAttribute: dropAttribute
 };
 
 /** EXPORTED FUNCTIONS **/
@@ -98,12 +98,12 @@ function createSchemaStructure(schema_create_object, callback) {
             };
 
             cb_insert_insert(insertObject, (err) => {
-                let schema = schema_create_object.schema;
-
                 if (err) {
                     callback(err);
                     return;
                 }
+
+                let schema = schema_create_object.schema;
 
                 fs.mkdir(env.get('HDB_ROOT') + '/schema/' + schema, function (err, data) {
                     if (err) {
@@ -352,26 +352,6 @@ function dropTable(drop_table_object, callback) {
     } catch (e) {
         callback(e);
     }
-}
-
-// For now, the function that is called via chooseOperation needs to be in the callback style.  Once we move away from
-// callbacks, we can change the exports above from the cb function to the async function.
-/**
- * Calls the dropAttributeCB async function to match the callback style of processLocalTransaction.  This will be
- * removed once those are migrated.
- * @param drop_attribute_object - The JSON formatted inbound message.
- * @param callback
- * @returns {*}
- */
-function dropAttributeCB(drop_attribute_object, callback) {
-    let response = {};
-    dropAttribute(drop_attribute_object).then((result) => {
-        response['message'] = result;
-        return callback(null, response);
-    }).catch((err) => {
-        log.error(err);
-        return callback(`There was a problem dropping attribute: ${drop_attribute_object.attribute}.  ${err.message}`, null);
-    });
 }
 
 /**
