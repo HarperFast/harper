@@ -8,6 +8,8 @@ module.exports = {
 };
 
 const insert = require('../data_layer/insert');
+const util = require('util');
+const cb_insert_insert = util.callbackify(insert.insert);
 const search = require('../data_layer/search').search;
 const update = require('../data_layer/update').update;
 const delete_translator = require('./deleteTranslator').convertDelete;
@@ -161,12 +163,12 @@ function convertInsert(statement, callback) {
         return callback(e);
     }
 
-    insert.insertCB(insert_object, (err, data) => {
+    cb_insert_insert(insert_object, (err, res) => {
         if (err) {
             return callback(err);
         }
 
-        callback(null, data);
+        callback(null, res);
     });
 }
 
