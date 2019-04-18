@@ -51,7 +51,7 @@ module.exports = {
     describeAll: schema_describe.describeAll,
     dropSchema: dropSchema,
     dropTable: dropTable,
-    dropAttribute: dropAttribute // This can be changed to just dropAttribute when processLocal has been updated to async/await
+    dropAttribute: dropAttribute
 };
 
 /** EXPORTED FUNCTIONS **/
@@ -98,12 +98,12 @@ function createSchemaStructure(schema_create_object, callback) {
             };
 
             cb_insert_insert(insertObject, (err) => {
-                let schema = schema_create_object.schema;
-
                 if (err) {
                     callback(err);
                     return;
                 }
+
+                let schema = schema_create_object.schema;
 
                 fs.mkdir(env.get('HDB_ROOT') + '/schema/' + schema, function (err, data) {
                     if (err) {
