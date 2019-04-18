@@ -26,9 +26,6 @@ const data_export = require('../data_layer/export');
 const reg = require('./registration/registrationHandler');
 const stop = require('../bin/stop');
 
-const util = ('util');
-const cb_role_ops_addRole = util.callbackify(role.addRole);
-
 const required_permissions = new Map();
 const DELETE_PERM = 'delete';
 const INSERT_PERM = 'insert';
@@ -78,7 +75,7 @@ required_permissions.set(user.alterUser.name, new permission(true, []));
 required_permissions.set(user.dropUser.name, new permission(true, []));
 required_permissions.set(user.listUsersExternal.name, new permission(true, []));
 required_permissions.set(role.listRoles.name, new permission(true, []));
-required_permissions.set(cb_role_ops_addRole.name, new permission(true, []));
+required_permissions.set(role.addRole.name, new permission(true, []));
 required_permissions.set(role.alterRole.name, new permission(true, []));
 required_permissions.set(role.dropRole.name, new permission(true, []));
 required_permissions.set(user.userInfo.name, new permission(false, []));
