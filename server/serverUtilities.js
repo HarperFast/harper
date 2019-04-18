@@ -1,6 +1,5 @@
 "use strict";
 
-const write = require('../data_layer/insert');
 const uuidv1 = require('uuid/v1');
 const search = require('../data_layer/search');
 const sql = require('../sqlTranslator/index');
@@ -22,6 +21,9 @@ const terms = require('../utility/hdbTerms');
 const reg = require('../utility/registration/registrationHandler');
 const stop = require('../bin/stop');
 const util = require('util');
+const insert = require('../data_layer/insert');
+const cb_insert_insert = util.callbackify(insert.insert);
+const cb_insert_update = util.callbackify(insert.update);
 
 const UNAUTH_RESPONSE = 403;
 const UNAUTHORIZED_TEXT = 'You are not authorized to perform the operation specified';
@@ -171,10 +173,10 @@ function chooseOperation(json, callback) {
 
     switch (json.operation) {
         case terms.OPERATIONS_ENUM.INSERT:
-            operation_function = write.insertCB;
+            operation_function = cb_insert_insert;
             break;
         case terms.OPERATIONS_ENUM.UPDATE:
-            operation_function = write.updateCB;
+            operation_function = cb_insert_update;
             break;
         case terms.OPERATIONS_ENUM.SEARCH_BY_HASH:
             operation_function = search.searchByHash;
