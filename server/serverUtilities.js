@@ -24,6 +24,7 @@ const util = require('util');
 const insert = require('../data_layer/insert');
 const cb_insert_insert = util.callbackify(insert.insert);
 const cb_insert_update = util.callbackify(insert.update);
+const cb_schema_drop_attribute = util.callbackify(schema.dropAttribute);
 
 const UNAUTH_RESPONSE = 403;
 const UNAUTHORIZED_TEXT = 'You are not authorized to perform the operation specified';
@@ -218,7 +219,7 @@ function chooseOperation(json, callback) {
             operation_function = schema.dropTable;
             break;
         case terms.OPERATIONS_ENUM.DROP_ATTRIBUTE:
-            operation_function = schema.dropAttribute;
+            operation_function = cb_schema_drop_attribute;
             break;
         case terms.OPERATIONS_ENUM.DESCRIBE_SCHEMA:
             operation_function = schema.describeSchema;
