@@ -1464,12 +1464,12 @@
 							"basic": [
 								{
 									"key": "password",
-									"value": "admin",
+									"value": "{{password}}",
 									"type": "string"
 								},
 								{
 									"key": "username",
-									"value": "admin",
+									"value": "{{username}}",
 									"type": "string"
 								}
 							]
@@ -2853,6 +2853,270 @@
 					"name": "CSV Bulk Load Tests",
 					"item": [
 						{
+							"name": "Invalid Attribute Check",
+							"item": [
+								{
+									"name": "csv_data_load with invalid attribute",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"id": "9cce8511-6fc6-411d-8b07-f56d08987431",
+												"exec": [
+													"pm.test(\"Check for job message\", function () {",
+													"    const jsonData = pm.response.json();",
+													"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
+													"    ",
+													"    eval(pm.globals.get(\"function:getJobId\"))(jsonData, \"csv_file_load with invalid attributes\");",
+													"});",
+													"",
+													"pm.test(\"Status code is 200\", function () {",
+													"    pm.response.to.have.status(200);",
+													"});"
+												],
+												"type": "text/javascript"
+											}
+										}
+									],
+									"request": {
+										"auth": {
+											"type": "basic",
+											"basic": [
+												{
+													"key": "password",
+													"value": "{{password}}",
+													"type": "string"
+												},
+												{
+													"key": "username",
+													"value": "{{username}}",
+													"type": "string"
+												}
+											]
+										},
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json",
+												"type": "text"
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n\t\"operation\": \"csv_data_load\",\n\t\"schema\": \"dev\",\n\t\"action\": \"insert\",\n\t\"table\": \"invalid_attribute\",\n\t\"data\": \"id,$ome=attribute\\n1,cheeseburger\\n2,hamburger with cheese\\n3,veggie burger\\n\"\n}"
+										},
+										"url": {
+											"raw": "{{host}}:{{port}}",
+											"host": [
+												"{{host}}"
+											],
+											"port": "{{port}}"
+										},
+										"description": "Checks to confirm that a 500 status and error msg are returned when an invalid attribute name is used"
+									},
+									"response": []
+								},
+								{
+									"name": "csv_file_load with invalid attributes",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"id": "9cce8511-6fc6-411d-8b07-f56d08987431",
+												"exec": [
+													"pm.test(\"Check for job message\", function () {",
+													"    const jsonData = pm.response.json();",
+													"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
+													"    ",
+													"    eval(pm.globals.get(\"function:getJobId\"))(jsonData, null);",
+													"});",
+													"",
+													"pm.test(\"Status code is 200\", function () {",
+													"    pm.response.to.have.status(200);",
+													"});"
+												],
+												"type": "text/javascript"
+											}
+										}
+									],
+									"request": {
+										"auth": {
+											"type": "basic",
+											"basic": [
+												{
+													"key": "password",
+													"value": "{{password}}",
+													"type": "string"
+												},
+												{
+													"key": "username",
+													"value": "{{username}}",
+													"type": "string"
+												}
+											]
+										},
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"type": "text",
+												"value": "application/json"
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n\t\"operation\": \"csv_file_load\",\n\t\"action\": \"insert\",\n\t\"schema\": \"dev\",\n\t\"table\": \"invalid_attribute\",\n\t\"file_path\": \"{{files_location}}InvalidAttributes.csv\"\n}"
+										},
+										"url": {
+											"raw": "{{host}}:{{port}}",
+											"host": [
+												"{{host}}"
+											],
+											"port": "{{port}}"
+										},
+										"description": "Checks to confirm that a 500 status and error msg are returned when invalid attribute names are used"
+									},
+									"response": []
+								},
+								{
+									"name": "Check Job Failed",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"id": "34b3186b-c5e9-45da-8bca-92ea79825179",
+												"exec": [
+													"pm.test(\"Status code is 200\", function () {",
+													"    pm.response.to.have.status(200);",
+													"});",
+													"",
+													"pm.test(\"test Job Found\", function () {",
+													"    var jsonData = pm.response.json();",
+													"    pm.expect(jsonData.length).to.eql(1);",
+													"    ",
+													"    pm.expect(jsonData[0]).to.have.property('status');",
+													"    ",
+													"    const status = jsonData[0].status;",
+													"    ",
+													"    //",
+													"    ",
+													"    switch(status){",
+													"        case 'ERROR':",
+													"            console.log(jsonData[0]);",
+													"            pm.expect(jsonData[0].message).to.contain('Invalid column name');",
+													"            if(pm.environment.get(\"next_request\")){",
+													"                postman.setNextRequest(pm.environment.get(\"next_request\"));",
+													"            }",
+													"            break;",
+													"        case 'COMPLETE':",
+													"        case 'IN_PROGRESS':",
+													"            console.log('in progress, checking again');",
+													"            postman.setNextRequest('Check Job Failed');",
+													"            break;",
+													"        default:",
+													"            postman.setNextRequest('Check Job Failed');",
+													"            break;",
+													"    }",
+													"    ",
+													"    //THIS MUST BE AT THE END!",
+													"    pm.expect(status).to.be.oneOf(['ERROR', 'IN_PROGRESS']);",
+													"});"
+												],
+												"type": "text/javascript"
+											}
+										},
+										{
+											"listen": "prerequest",
+											"script": {
+												"id": "c350ea7e-d128-486d-9aa2-24abaa82d300",
+												"exec": [
+													"setTimeout(()=>{}, 200);",
+													"console.log(\"Checking Job \" + pm.environment.get(\"job_id\"));"
+												],
+												"type": "text/javascript"
+											}
+										}
+									],
+									"request": {
+										"auth": {
+											"type": "basic",
+											"basic": [
+												{
+													"key": "password",
+													"value": "{{password}}",
+													"type": "string"
+												},
+												{
+													"key": "username",
+													"value": "{{username}}",
+													"type": "string"
+												},
+												{
+													"key": "saveHelperData",
+													"type": "any"
+												},
+												{
+													"key": "showPassword",
+													"value": false,
+													"type": "boolean"
+												}
+											]
+										},
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
+										},
+										"url": {
+											"raw": "http://localhost:9925",
+											"protocol": "http",
+											"host": [
+												"localhost"
+											],
+											"port": "9925"
+										}
+									},
+									"response": []
+								}
+							],
+							"event": [
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "f0e28c38-1570-4e92-ac5f-b5ebb3b8ae04",
+										"type": "text/javascript",
+										"exec": [
+											""
+										]
+									}
+								},
+								{
+									"listen": "test",
+									"script": {
+										"id": "13387355-58b8-4be8-80cf-508314551ea8",
+										"type": "text/javascript",
+										"exec": [
+											"postman.setGlobalVariable(\"function:getJobId\", (jsonData, next_req)=>{",
+											"    let id_index = jsonData.message.indexOf('id ');",
+											"    let parsedId = jsonData.message.substr(id_index + 3, jsonData.message.length);",
+											"    pm.environment.set(\"job_id\", parsedId);",
+											"    pm.environment.set(\"next_request\", next_req);",
+											"    postman.setNextRequest(\"Check Job Failed\");",
+											"});"
+										]
+									}
+								}
+							],
+							"_postman_isSubFolder": true
+						},
+						{
 							"name": "search for specific value from CSV load",
 							"event": [
 								{
@@ -3427,12 +3691,12 @@
 							"basic": [
 								{
 									"key": "password",
-									"value": "admin",
+									"value": "{{password}}",
 									"type": "string"
 								},
 								{
 									"key": "username",
-									"value": "admin",
+									"value": "{{username}}",
 									"type": "string"
 								}
 							]
@@ -3497,12 +3761,12 @@
 									"basic": [
 										{
 											"key": "password",
-											"value": "admin",
+											"value": "{{password}}",
 											"type": "string"
 										},
 										{
 											"key": "username",
-											"value": "admin",
+											"value": "{{username}}",
 											"type": "string"
 										}
 									]
@@ -3558,12 +3822,12 @@
 									"basic": [
 										{
 											"key": "password",
-											"value": "admin",
+											"value": "{{password}}",
 											"type": "string"
 										},
 										{
 											"key": "username",
-											"value": "admin",
+											"value": "{{username}}",
 											"type": "string"
 										}
 									]
@@ -3619,12 +3883,12 @@
 									"basic": [
 										{
 											"key": "password",
-											"value": "admin",
+											"value": "{{password}}",
 											"type": "string"
 										},
 										{
 											"key": "username",
-											"value": "admin",
+											"value": "{{username}}",
 											"type": "string"
 										}
 									]
@@ -3680,12 +3944,12 @@
 									"basic": [
 										{
 											"key": "password",
-											"value": "admin",
+											"value": "{{password}}",
 											"type": "string"
 										},
 										{
 											"key": "username",
-											"value": "admin",
+											"value": "{{username}}",
 											"type": "string"
 										}
 									]
@@ -3741,12 +4005,12 @@
 									"basic": [
 										{
 											"key": "password",
-											"value": "admin",
+											"value": "{{password}}",
 											"type": "string"
 										},
 										{
 											"key": "username",
-											"value": "admin",
+											"value": "{{username}}",
 											"type": "string"
 										}
 									]
@@ -6018,12 +6282,12 @@
 									"basic": [
 										{
 											"key": "password",
-											"value": "admin",
+											"value": "{{password}}",
 											"type": "string"
 										},
 										{
 											"key": "username",
-											"value": "admin",
+											"value": "{{username}}",
 											"type": "string"
 										}
 									]
@@ -6079,12 +6343,12 @@
 									"basic": [
 										{
 											"key": "password",
-											"value": "admin",
+											"value": "{{password}}",
 											"type": "string"
 										},
 										{
 											"key": "username",
-											"value": "admin",
+											"value": "{{username}}",
 											"type": "string"
 										}
 									]
@@ -6140,12 +6404,12 @@
 									"basic": [
 										{
 											"key": "password",
-											"value": "admin",
+											"value": "{{password}}",
 											"type": "string"
 										},
 										{
 											"key": "username",
-											"value": "admin",
+											"value": "{{username}}",
 											"type": "string"
 										}
 									]
@@ -6201,12 +6465,12 @@
 									"basic": [
 										{
 											"key": "password",
-											"value": "admin",
+											"value": "{{password}}",
 											"type": "string"
 										},
 										{
 											"key": "username",
-											"value": "admin",
+											"value": "{{username}}",
 											"type": "string"
 										}
 									]
@@ -6262,12 +6526,12 @@
 									"basic": [
 										{
 											"key": "password",
-											"value": "admin",
+											"value": "{{password}}",
 											"type": "string"
 										},
 										{
 											"key": "username",
-											"value": "admin",
+											"value": "{{username}}",
 											"type": "string"
 										}
 									]
@@ -6300,12 +6564,12 @@
 						"basic": [
 							{
 								"key": "password",
-								"value": "admin",
+								"value": "{{password}}",
 								"type": "string"
 							},
 							{
 								"key": "username",
-								"value": "admin",
+								"value": "{{username}}",
 								"type": "string"
 							}
 						]
