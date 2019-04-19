@@ -50,7 +50,7 @@ class NodeConnector {
      * @param {SubscriptionObject} subscription
      */
     subscriptionManager(connection, subscription){
-        if(subscription.publish){
+        if(subscription.publish === true){
             //we need to observe the channel locally and push the data remotely.
             let sub_channel = this.worker.exchange.subscribe(subscription.channel);
             sub_channel.watch(data=>{
