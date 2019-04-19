@@ -35,6 +35,8 @@ const cb_role_add_role = util.callbackify(role.addRole);
 const cb_role_alter_role = util.callbackify(role.alterRole);
 const cb_role_drop_role = util.callbackify(role.dropRole);
 const cb_role_list_role = util.callbackify(role.listRoles);
+const cb_reg_hand_get_finger = util.callbackify(reg.getFingerprint);
+const cb_reg_hand_set_licence = util.callbackify(reg.setLicense);
 
 const UNAUTH_RESPONSE = 403;
 const UNAUTHORIZED_TEXT = 'You are not authorized to perform the operation specified';
@@ -310,10 +312,10 @@ function chooseOperation(json, callback) {
             operation_function = jobs.updateJob;
             break;
         case terms.OPERATIONS_ENUM.GET_FINGERPRINT:
-            operation_function = reg.getFingerprint;
+            operation_function = cb_reg_hand_get_finger;
             break;
         case terms.OPERATIONS_ENUM.SET_LICENSE:
-            operation_function = reg.setLicense;
+            operation_function = cb_reg_hand_set_licence;
             break;
         case terms.OPERATIONS_ENUM.RESTART:
             // TODO: Does callbackify work?
