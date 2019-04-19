@@ -22,9 +22,15 @@ const reg = require('../utility/registration/registrationHandler');
 const stop = require('../bin/stop');
 const util = require('util');
 const insert = require('../data_layer/insert');
+
 const cb_insert_insert = util.callbackify(insert.insert);
 const cb_insert_update = util.callbackify(insert.update);
 const cb_schema_drop_attribute = util.callbackify(schema.dropAttribute);
+const cb_user_add_user = util.callbackify(user.addUser);
+const cb_user_alter_user = util.callbackify(user.alterUser);
+const cb_user_drop_user = util.callbackify(user.dropUser);
+const cb_user_user_info = util.callbackify(user.userInfo);
+const cb_user_list_user_external = util.callbackify(user.listUsersExternal);
 
 const UNAUTH_RESPONSE = 403;
 const UNAUTHORIZED_TEXT = 'You are not authorized to perform the operation specified';
@@ -234,16 +240,16 @@ function chooseOperation(json, callback) {
             operation_function = delete_.delete;
             break;
         case terms.OPERATIONS_ENUM.ADD_USER:
-            operation_function = user.addUser;
+            operation_function = cb_user_add_user;
             break;
         case terms.OPERATIONS_ENUM.ALTER_USER:
-            operation_function = user.alterUser;
+            operation_function = cb_user_alter_user;
             break;
         case terms.OPERATIONS_ENUM.DROP_USER:
-            operation_function = user.dropUser;
+            operation_function = cb_user_drop_user;
             break;
         case terms.OPERATIONS_ENUM.LIST_USERS:
-            operation_function = user.listUsersExternal;
+            operation_function = cb_user_list_user_external;
             break;
         case terms.OPERATIONS_ENUM.LIST_ROLES:
             operation_function = role.listRoles;
@@ -258,7 +264,7 @@ function chooseOperation(json, callback) {
             operation_function = role.dropRole;
             break;
         case terms.OPERATIONS_ENUM.USER_INFO:
-            operation_function = user.userInfo;
+            operation_function = cb_user_user_info;
             break;
         case terms.OPERATIONS_ENUM.READ_LOG:
             operation_function = read_log.read_log;
