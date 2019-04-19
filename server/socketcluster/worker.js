@@ -69,9 +69,11 @@ class Worker extends SCWorker{
     }
 
     sendTransactionToWorker(channel, data){
-        channel = channel.split(':');
-        data.schema = channel[0];
-        data.table = channel[1];
+        if(channel.indexOf('internal:') < 0) {
+            channel = channel.split(':');
+            data.schema = channel[0];
+            data.table = channel[1];
+        }
         let rand = Math.floor(Math.random() * this.hdb_workers.length);
         let random_worker = this.hdb_workers[rand];
 
