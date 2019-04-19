@@ -4,28 +4,18 @@ const delete_ = require('../data_layer/delete');
 const validation = require('../validation/role_validation');
 const signalling = require('../utility/signalling');
 const uuidV4 = require('uuid/v4');
-const {promisify} = require('util');
+const util = require('util');
 
-const p_search_search_by_value = promisify(search.searchByValue);
-const p_search_search_by_conditions = promisify(search.searchByConditions);
-const p_delete_delete = promisify(delete_.delete);
+const p_search_search_by_value = util.promisify(search.searchByValue);
+const p_search_search_by_conditions = util.promisify(search.searchByConditions);
+const p_delete_delete = util.promisify(delete_.delete);
 
 module.exports = {
-    addRole: addRoleCB,
-    alterRole:alterRoleCB,
-    dropRole: dropRoleCB,
-    listRoles: listRolesCB
+    addRole: addRole,
+    alterRole:alterRole,
+    dropRole: dropRole,
+    listRoles: listRoles
 };
-
-function addRoleCB(role, callback){
-    let added_role = {};
-    addRole(role).then((result) => {
-        added_role = result;
-        return callback(null, added_role);
-    }).catch((err) => {
-        return callback(err, null);
-    });
-}
 
 function scrubRoleDetails(role) {
     try {
@@ -93,16 +83,6 @@ async function addRole(role){
     return role;
 }
 
-function alterRoleCB(role, callback){
-    let updated_role = {};
-    alterRole(role).then((result) => {
-        updated_role = result;
-        return callback(null, updated_role);
-    }).catch((err) => {
-        return callback(err, null);
-    });
-}
-
 async function alterRole(role){
     let validation_resp = validation.alterRoleValidation(role);
     if(validation_resp){
@@ -124,16 +104,6 @@ async function alterRole(role){
     });
     signalling.signalUserChange({type: 'user'});
     return success;
-}
-
-function dropRoleCB(role, callback){
-    let dropped_role = {};
-    dropRole(role).then((result) => {
-        dropped_role = result;
-        return callback(null, dropped_role);
-    }).catch((err) => {
-        return callback(err, null);
-    });
 }
 
 async function dropRole(role){
@@ -191,16 +161,6 @@ async function dropRole(role){
 
     signalling.signalUserChange({type: 'user'});
     return `${role_name[0].role} successfully deleted`;
-}
-
-function listRolesCB(req_body, callback){
-    let role_list = {};
-    listRoles().then((result) => {
-        role_list = result;
-        return callback(null, role_list);
-    }).catch((err) => {
-        return callback(err, null);
-    });
 }
 
 async function listRoles(){

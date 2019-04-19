@@ -22,9 +22,19 @@ const reg = require('../utility/registration/registrationHandler');
 const stop = require('../bin/stop');
 const util = require('util');
 const insert = require('../data_layer/insert');
+
+/**
+ * Callback functions are still heavily relied on.
+ * Callbackify takes an async function and converts to an error-first callback style.
+* */
+
 const cb_insert_insert = util.callbackify(insert.insert);
 const cb_insert_update = util.callbackify(insert.update);
 const cb_schema_drop_attribute = util.callbackify(schema.dropAttribute);
+const cb_role_add_role = util.callbackify(role.addRole);
+const cb_role_alter_role = util.callbackify(role.alterRole);
+const cb_role_drop_role = util.callbackify(role.dropRole);
+const cb_role_list_role = util.callbackify(role.listRoles);
 
 const UNAUTH_RESPONSE = 403;
 const UNAUTHORIZED_TEXT = 'You are not authorized to perform the operation specified';
@@ -246,16 +256,16 @@ function chooseOperation(json, callback) {
             operation_function = user.listUsersExternal;
             break;
         case terms.OPERATIONS_ENUM.LIST_ROLES:
-            operation_function = role.listRoles;
+            operation_function = cb_role_list_role;
             break;
         case terms.OPERATIONS_ENUM.ADD_ROLE:
-            operation_function = role.addRole;
+            operation_function = cb_role_add_role;
             break;
         case terms.OPERATIONS_ENUM.ALTER_ROLE:
-            operation_function = role.alterRole;
+            operation_function = cb_role_alter_role;
             break;
         case terms.OPERATIONS_ENUM.DROP_ROLE:
-            operation_function = role.dropRole;
+            operation_function = cb_role_drop_role;
             break;
         case terms.OPERATIONS_ENUM.USER_INFO:
             operation_function = user.userInfo;
