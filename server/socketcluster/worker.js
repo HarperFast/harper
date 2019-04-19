@@ -28,12 +28,12 @@ class Worker extends SCWorker{
 
 
         if(this.isLeader){
-            new NodeConnector(require('./connector/node'), this);
+            //new NodeConnector(require('./connector/node'), this);
         }
     }
 
     subscribeMiddleware(req, next){
-        if(this.hdb_workers.indexOf(req.channel) && req.channel !== req.socket.id){
+        if(this.hdb_workers.indexOf(req.channel) >= 0 && req.channel !== req.socket.id){
             return next('cannot connect to another socket\'s channel');
         }
 
