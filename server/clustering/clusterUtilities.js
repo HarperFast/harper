@@ -585,7 +585,7 @@ function restartHDB() {
 module.exports = {
     addNode: addNode,
     // The reference to the callback functions can be removed once processLocalTransaction has been refactored
-    configureCluster: configureClusterCB,
+    configureCluster: configureCluster,
     clusterStatus: clusterStatusCB,
     removeNode: removeNodeCB,
     payloadHandler: payloadHandler,

@@ -27,7 +27,6 @@ const insert = require('../data_layer/insert');
  * Callback functions are still heavily relied on.
  * Callbackify takes an async function and converts to an error-first callback style.
 * */
-
 const cb_insert_insert = util.callbackify(insert.insert);
 const cb_insert_update = util.callbackify(insert.update);
 const cb_schema_drop_attribute = util.callbackify(schema.dropAttribute);
@@ -35,6 +34,8 @@ const cb_role_add_role = util.callbackify(role.addRole);
 const cb_role_alter_role = util.callbackify(role.alterRole);
 const cb_role_drop_role = util.callbackify(role.dropRole);
 const cb_role_list_role = util.callbackify(role.listRoles);
+const cb_clust_util_config = util.callbackify(cluster_utilities.configureCluster);
+const cb_clust_util_status = util.callbackify(cluster_utilities.clusterStatus);
 
 const UNAUTH_RESPONSE = 403;
 const UNAUTHORIZED_TEXT = 'You are not authorized to perform the operation specified';
@@ -280,10 +281,10 @@ function chooseOperation(json, callback) {
             operation_function = cluster_utilities.removeNode;
             break;
         case terms.OPERATIONS_ENUM.CONFIGURE_CLUSTER:
-            operation_function = cluster_utilities.configureCluster;
+            operation_function = cb_clust_util_config;
             break;
         case terms.OPERATIONS_ENUM.CLUSTER_STATUS:
-            operation_function = cluster_utilities.clusterStatus;
+            operation_function = cb_clust_util_status;
             break;
         case terms.OPERATIONS_ENUM.EXPORT_TO_S3:
             operation_function = signalJob;
