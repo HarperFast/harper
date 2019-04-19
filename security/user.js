@@ -7,10 +7,10 @@ const EMPTY_ROLE = 'If role is specified, it cannot be empty.';
 const ACTIVE_BOOLEAN = 'active must be true or false';
 
 module.exports = {
-    addUser: addUserCB,
-    alterUser:alterUserCB,
-    dropUser: dropUserCB,
-    userInfo: userinfoCB,
+    addUser: addUser,
+    alterUser:alterUser,
+    dropUser: dropUser,
+    userInfo: userInfo,
     listUsers: listUsersCB,
     listUsersExternal : listUsersExternalCB,
     setUsersToGlobal: setUsersToGlobalCB,
