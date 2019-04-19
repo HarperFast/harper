@@ -1464,12 +1464,12 @@
 							"basic": [
 								{
 									"key": "password",
-									"value": "admin",
+									"value": "{{password}}",
 									"type": "string"
 								},
 								{
 									"key": "username",
-									"value": "admin",
+									"value": "{{username}}",
 									"type": "string"
 								}
 							]
@@ -2884,12 +2884,12 @@
 											"basic": [
 												{
 													"key": "password",
-													"value": "admin",
+													"value": "{{password}}",
 													"type": "string"
 												},
 												{
 													"key": "username",
-													"value": "admin",
+													"value": "{{username}}",
 													"type": "string"
 												}
 											]
@@ -2946,12 +2946,12 @@
 											"basic": [
 												{
 													"key": "password",
-													"value": "admin",
+													"value": "{{password}}",
 													"type": "string"
 												},
 												{
 													"key": "username",
-													"value": "admin",
+													"value": "{{username}}",
 													"type": "string"
 												}
 											]
@@ -3691,12 +3691,12 @@
 							"basic": [
 								{
 									"key": "password",
-									"value": "admin",
+									"value": "{{password}}",
 									"type": "string"
 								},
 								{
 									"key": "username",
-									"value": "admin",
+									"value": "{{username}}",
 									"type": "string"
 								}
 							]
@@ -3761,12 +3761,12 @@
 									"basic": [
 										{
 											"key": "password",
-											"value": "admin",
+											"value": "{{password}}",
 											"type": "string"
 										},
 										{
 											"key": "username",
-											"value": "admin",
+											"value": "{{username}}",
 											"type": "string"
 										}
 									]
@@ -3822,12 +3822,12 @@
 									"basic": [
 										{
 											"key": "password",
-											"value": "admin",
+											"value": "{{password}}",
 											"type": "string"
 										},
 										{
 											"key": "username",
-											"value": "admin",
+											"value": "{{username}}",
 											"type": "string"
 										}
 									]
@@ -3883,12 +3883,12 @@
 									"basic": [
 										{
 											"key": "password",
-											"value": "admin",
+											"value": "{{password}}",
 											"type": "string"
 										},
 										{
 											"key": "username",
-											"value": "admin",
+											"value": "{{username}}",
 											"type": "string"
 										}
 									]
@@ -3944,12 +3944,12 @@
 									"basic": [
 										{
 											"key": "password",
-											"value": "admin",
+											"value": "{{password}}",
 											"type": "string"
 										},
 										{
 											"key": "username",
-											"value": "admin",
+											"value": "{{username}}",
 											"type": "string"
 										}
 									]
@@ -4005,12 +4005,12 @@
 									"basic": [
 										{
 											"key": "password",
-											"value": "admin",
+											"value": "{{password}}",
 											"type": "string"
 										},
 										{
 											"key": "username",
-											"value": "admin",
+											"value": "{{username}}",
 											"type": "string"
 										}
 									]
@@ -6282,12 +6282,12 @@
 									"basic": [
 										{
 											"key": "password",
-											"value": "admin",
+											"value": "{{password}}",
 											"type": "string"
 										},
 										{
 											"key": "username",
-											"value": "admin",
+											"value": "{{username}}",
 											"type": "string"
 										}
 									]
@@ -6343,12 +6343,12 @@
 									"basic": [
 										{
 											"key": "password",
-											"value": "admin",
+											"value": "{{password}}",
 											"type": "string"
 										},
 										{
 											"key": "username",
-											"value": "admin",
+											"value": "{{username}}",
 											"type": "string"
 										}
 									]
@@ -6404,12 +6404,12 @@
 									"basic": [
 										{
 											"key": "password",
-											"value": "admin",
+											"value": "{{password}}",
 											"type": "string"
 										},
 										{
 											"key": "username",
-											"value": "admin",
+											"value": "{{username}}",
 											"type": "string"
 										}
 									]
@@ -6465,12 +6465,12 @@
 									"basic": [
 										{
 											"key": "password",
-											"value": "admin",
+											"value": "{{password}}",
 											"type": "string"
 										},
 										{
 											"key": "username",
-											"value": "admin",
+											"value": "{{username}}",
 											"type": "string"
 										}
 									]
@@ -6526,12 +6526,12 @@
 									"basic": [
 										{
 											"key": "password",
-											"value": "admin",
+											"value": "{{password}}",
 											"type": "string"
 										},
 										{
 											"key": "username",
-											"value": "admin",
+											"value": "{{username}}",
 											"type": "string"
 										}
 									]
@@ -6564,12 +6564,12 @@
 						"basic": [
 							{
 								"key": "password",
-								"value": "admin",
+								"value": "{{password}}",
 								"type": "string"
 							},
 							{
 								"key": "username",
-								"value": "admin",
+								"value": "{{username}}",
 								"type": "string"
 							}
 						]
