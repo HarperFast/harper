@@ -21,7 +21,7 @@ class Worker extends SCWorker{
         this.exchange_get = promisify(this.exchange.get).bind(this.exchange);
         this.exchange_get('hdb_worker').then(data => {
             console.log(data);
-            if(typeof data === 'Object') {
+            if(typeof data === 'object') {
                 this.hdb_workers = Object.keys(data);
             }
         });

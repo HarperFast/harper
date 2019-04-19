@@ -95,7 +95,7 @@ class ServerSocket{
      * @param channel
      */
     subscribeHandler(channel){
-        console.log('subscribed to channel ' + channel);
+        console.log(this.socket.id + ' subscribed to channel ' + channel);
     }
 
     /**
