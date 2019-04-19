@@ -27,7 +27,6 @@ const insert = require('../data_layer/insert');
  * Callback functions are still heavily relied on.
  * Callbackify takes an async function and converts to an error-first callback style.
 * */
-
 const cb_insert_insert = util.callbackify(insert.insert);
 const cb_insert_update = util.callbackify(insert.update);
 const cb_schema_drop_attribute = util.callbackify(schema.dropAttribute);
