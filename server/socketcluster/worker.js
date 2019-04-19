@@ -21,12 +21,14 @@ class Worker extends SCWorker{
         this.exchange_get = promisify(this.exchange.get).bind(this.exchange);
         this.exchange_get('hdb_worker').then(data => {
             console.log(data);
-            this.hdb_workers = Object.keys(data);
+            if(typeof data === 'Object') {
+                this.hdb_workers = Object.keys(data);
+            }
         });
 
 
         if(this.isLeader){
-            //new NodeConnector(require('./connector/node'), this);
+            new NodeConnector(require('./connector/node'), this);
         }
     }
 

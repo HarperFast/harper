@@ -1,9 +1,5 @@
 "use strict";
 
-module.exports = {
-    NodeObject: this.NodeObject,
-    SubscriptionObject: this.SubscriptionObject
-};
 
 class NodeObject{
     /**
@@ -36,3 +32,7 @@ class SubscriptionObject{
     }
 }
 
+module.exports = {
+    NodeObject,
+    SubscriptionObject
+};

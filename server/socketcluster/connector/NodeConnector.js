@@ -10,12 +10,14 @@ class NodeConnector {
     constructor(nodes, worker){
         //spawn local connection
         this.worker = worker;
-        this.spawnRemoteConnections(nodes);
-        this.connections = socket_client;
         //used to auto pub/sub the hdb_schema channel across the cluster
         this.HDB_Schema_Subscription = new SubscriptionObject('internal:create_schema', true, true);
         this.HDB_Table_Subscription = new SubscriptionObject('internal:create_table', true, true);
         this.HDB_Attribute_Subscription = new SubscriptionObject('internal:create_attribute', true, true);
+
+        this.spawnRemoteConnections(nodes);
+        this.connections = socket_client;
+
         //get nodes & spwan them, watch for node changes
         this.worker.exchange.subscribe('hdb_nodes').watch(data=>{
             //TODO create / destroy node here
