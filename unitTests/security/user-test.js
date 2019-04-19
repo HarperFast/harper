@@ -13,6 +13,8 @@ const cb_user_add_user = util.callbackify(user.addUser);
 const cb_user_alter_user = util.callbackify(user.alterUser);
 const cb_user_drop_user = util.callbackify(user.dropUser);
 const cb_user_user_info = util.callbackify(user.userInfo);
+const cb_user_list_users = util.callbackify(user.listUsers);
+const cb_user_list_user_external = util.callbackify(user.listUsersExternal);
 
 const TEST_ADD_USER_JSON = {
     "operation": "add_user",
@@ -424,6 +426,7 @@ describe('Test user_info', function () {
 describe('Test list_users', function () {
     let search_stub = undefined;
     let search_orig = user.__get__('p_search_search_by_value');
+
     beforeEach( function() {
         // reset search_stub just in case.
         search_stub = undefined;
@@ -436,29 +439,35 @@ describe('Test list_users', function () {
         search_stub.onSecondCall().resolves([user_search_response_clone]);
         user.__set__('p_search_search_by_value', search_stub);
     });
+
     afterEach( function() {
         user.__set__('p_search_search_by_value', search_orig);
     });
+
     it('Nominal path, list users', function (done) {
-        user.listUsers(TEST_LIST_USER_JSON, function(err, results) {
-            assert.ok(results[0].role !== undefined);
-            assert.equal(results[0].role.role, TEST_LIST_USER_ROLE_SEARCH_RESPONSE.role);
-            assert.equal(results[0].username, TEST_LIST_USER_SEARCH_RESPONSE.username);
+        cb_user_list_users(TEST_LIST_USER_JSON, (err, res) => {
+            assert.ok(res[0].role !== undefined);
+            assert.equal(res[0].role.role, TEST_LIST_USER_ROLE_SEARCH_RESPONSE.role);
+            assert.equal(res[0].username, TEST_LIST_USER_SEARCH_RESPONSE.username);
             done();
         });
     });
+
     it('bad role search result', function (done) {
         search_stub = sinon.stub();
         search_stub.throws(new Error(BAD_ROLE_SEARCH_RESULT));
         user.__set__('p_search_search_by_value', search_stub);
-        user.listUsers(TEST_LIST_USER_JSON, function(err, results) {
+
+        cb_user_list_users(TEST_LIST_USER_JSON, (err, res) => {
             assert.equal(err.message, BAD_ROLE_SEARCH_RESULT);
             done();
         });
     });
+
     it('bad user search result', function (done) {
         search_stub.onSecondCall().throws(new Error(USER_SEARCH_FAILED_RESULT));
-        user.listUsers(TEST_LIST_USER_JSON, function(err, results) {
+
+        cb_user_list_users(TEST_LIST_USER_JSON, (err, res) => {
             assert.equal(err.message, USER_SEARCH_FAILED_RESULT);
             done();
         });
@@ -468,6 +477,7 @@ describe('Test list_users', function () {
 describe('Test listUsersExternal', function () {
     let search_stub = undefined;
     let search_orig = user.__get__('p_search_search_by_value');
+
     beforeEach( function() {
         // reset search_stub just in case.
         search_stub = undefined;
@@ -479,31 +489,37 @@ describe('Test listUsersExternal', function () {
         search_stub.onSecondCall().resolves([user_search_response_clone]);
         user.__set__('p_search_search_by_value', search_stub);
     });
+
     afterEach( function() {
         user.__set__('p_search_search_by_value', search_orig);
     });
+
     it('Nominal path, listUsersExternal', function (done) {
-        user.listUsersExternal(null, function(err, results) {
-            assert.ok(results[0].role !== undefined);
-            assert.equal(results[0].role.role, TEST_LIST_USER_ROLE_SEARCH_RESPONSE.role);
-            assert.equal(results[0].username, TEST_LIST_USER_SEARCH_RESPONSE.username);
-            assert.equal(results[0].password, undefined);
+        cb_user_list_user_external(null, (err, res) => {
+            assert.ok(res[0].role !== undefined);
+            assert.equal(res[0].role.role, TEST_LIST_USER_ROLE_SEARCH_RESPONSE.role);
+            assert.equal(res[0].username, TEST_LIST_USER_SEARCH_RESPONSE.username);
+            assert.equal(res[0].password, undefined);
             done();
         });
     });
+
     it('bad role search result', function (done) {
         search_stub = sinon.stub();
         search_stub.onFirstCall().throws(new Error(BAD_ROLE_SEARCH_RESULT));
         user.__set__('p_search_search_by_value', search_stub);
-        user.listUsersExternal(TEST_LIST_USER_JSON, function(err, results) {
+
+        cb_user_list_user_external(TEST_LIST_USER_JSON, (err, res) => {
             assert.equal(err.message, BAD_ROLE_SEARCH_RESULT);
             done();
         });
     });
+
     it('bad user search result', function (done) {
         search_stub.onSecondCall().throws(new Error(USER_SEARCH_FAILED_RESULT));
         user.__set__('p_search_search_by_value', search_stub);
-        user.listUsersExternal(TEST_LIST_USER_JSON, function(err, results) {
+
+        cb_user_list_user_external(TEST_LIST_USER_JSON, (err, res) => {
             assert.equal(err.message, USER_SEARCH_FAILED_RESULT);
             done();
         });
