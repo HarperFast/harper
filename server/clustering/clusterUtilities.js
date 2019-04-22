@@ -141,29 +141,6 @@ function addNode(new_node, callback) {
 }
 
 /**
- * A callback wrapper for removeNode.  This is needed to match the processLocalTransaction style currently used until we fully
- * migrate to async/await.  Once that migration is complete, this function can be removed and have it replaced in module.exports
- * with the async function.
- *
- * @param remove_node
- * @param callback
- * @returns {*}
- */
-function removeNodeCB(remove_node, callback) {
-    if(!remove_node) {
-        return callback('Invalid JSON message for remove_node', null);
-    }
-    let response = {};
-    removeNode(remove_node).then((result) => {
-        response['message'] = result;
-        return callback(null, response);
-    }).catch((err) => {
-        log.error(`There was an error removing node ${err}`);
-        return callback(err, null);
-    });
-}
-
-/**
  * Remove a node from hdb_nodes.
  * @param remove_json_message - The remove_node json message.
  * @returns {Promise<string>}
@@ -219,29 +196,6 @@ function payloadHandler(msg) {
 }
 
 /**
- * A callback wrapper for configureCluster.  This is needed to match the processLocalTransaction style currently used until we fully
- * migrate to async/await.  Once that migration is complete, this function can be removed and have it replaced in module.exports
- * with the async function.
- *
- * @param enable_cluster_json - The json message containing the port, node name, enabled to use to enable clustering
- * @param callback
- * @returns {*}
- */
-function configureClusterCB(enable_cluster_json, callback) {
-    if(!enable_cluster_json) {
-        return callback('Invalid JSON message for remove_node', null);
-    }
-    let response = {};
-    configureCluster(enable_cluster_json).then(() => {
-        response['message'] = 'Successfully wrote clustering config settings.  A backup file was created.';
-        return callback(null, response);
-    }).catch((err) => {
-        log.error(`There was an error removing node ${err}`);
-        return callback(err, null);
-    });
-}
-
-/**
  * Configure clustering by updating the config settings file with the specified paramters in the message, and then
  * start or stop clustering depending on the enabled value.
  * @param enable_cluster_json
@@ -262,29 +216,6 @@ async function configureCluster(enable_cluster_json) {
         log.error(err);
         throw err;
     }
-}
-
-/**
- * A callback wrapper for clusterStatusCB.  This is needed to match the processLocalTransaction style currently used until we fully
- * migrate to async/await.  Once that migration is complete, this function can be removed and have it replaced in module.exports
- * with the async function.
- *
- * @param cluster_status_json - The json message containing the port, node name, enabled to use to enable clustering
- * @param callback
- * @returns {*}
- */
-function clusterStatusCB(cluster_status_json, callback) {
-    if(!cluster_status_json) {
-        return callback('Invalid JSON message for remove_node', null);
-    }
-    let response = {};
-    clusterStatus(cluster_status_json).then((result) => {
-        response = result;
-        return callback(null, response);
-    }).catch((err) => {
-        log.error(`There was an error getting cluster status ${err}`);
-        return callback(err, null);
-    });
 }
 
 /**
@@ -585,9 +516,9 @@ function restartHDB() {
 module.exports = {
     addNode: addNode,
     // The reference to the callback functions can be removed once processLocalTransaction has been refactored
-    configureCluster: configureClusterCB,
-    clusterStatus: clusterStatusCB,
-    removeNode: removeNodeCB,
+    configureCluster: configureCluster,
+    clusterStatus: clusterStatus,
+    removeNode: removeNode,
     payloadHandler: payloadHandler,
     clusterMessageHandler: clusterMessageHandler,
     authHeaderToUser: authHeaderToUser,
