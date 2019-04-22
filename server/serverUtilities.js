@@ -39,6 +39,8 @@ const cb_role_add_role = util.callbackify(role.addRole);
 const cb_role_alter_role = util.callbackify(role.alterRole);
 const cb_role_drop_role = util.callbackify(role.dropRole);
 const cb_role_list_role = util.callbackify(role.listRoles);
+const cb_reg_hand_get_finger = util.callbackify(reg.getFingerprint);
+const cb_reg_hand_set_licence = util.callbackify(reg.setLicense);
 const cb_clust_util_config = util.callbackify(cluster_utilities.configureCluster);
 const cb_clust_util_status = util.callbackify(cluster_utilities.clusterStatus);
 const cb_clust_util_remove_node = util.callbackify(cluster_utilities.removeNode);
@@ -317,10 +319,10 @@ function chooseOperation(json, callback) {
             operation_function = jobs.updateJob;
             break;
         case terms.OPERATIONS_ENUM.GET_FINGERPRINT:
-            operation_function = reg.getFingerprint;
+            operation_function = cb_reg_hand_get_finger;
             break;
         case terms.OPERATIONS_ENUM.SET_LICENSE:
-            operation_function = reg.setLicense;
+            operation_function = cb_reg_hand_set_licence;
             break;
         case terms.OPERATIONS_ENUM.RESTART:
             // TODO: Does callbackify work?
