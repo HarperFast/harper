@@ -196,15 +196,15 @@ function convertOperationToTransaction(operation, skipped){
         };
 
         if(Array.isArray(skipped) && skipped.length > 0){
-            insert_object.records.forEach(record =>{
+            operation.records.forEach(record =>{
                 if(skipped.indexOf(record[hash_attribute] < 0)){
                     transaction.records.push(record);
                 }
             });
         } else {
-            transaction.records = insert_object.records;
+            transaction.records = operation.records;
         }
-        h_utils.sendTransactionToSocketCluster(`${insert_object.schema}:${insert_object.tabIndex}`, transaction);
+        h_utils.sendTransactionToSocketCluster(`${operation.schema}:${operation.table}`, transaction);
     }
 }
 

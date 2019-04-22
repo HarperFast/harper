@@ -28,7 +28,7 @@ class Worker extends SCWorker{
 
 
         if(this.isLeader){
-            //new NodeConnector(require('./connector/node'), this);
+            new NodeConnector(require('./connector/node'), this);
         }
     }
 
