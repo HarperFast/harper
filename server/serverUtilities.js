@@ -25,18 +25,25 @@ const insert = require('../data_layer/insert');
 
 /**
  * Callback functions are still heavily relied on.
- * Callbackify takes an async function and converts to an error-first callback style.
+ * Callbackify takes an async function and converts to an error-first callback style function.
 * */
-
 const cb_insert_insert = util.callbackify(insert.insert);
 const cb_insert_update = util.callbackify(insert.update);
 const cb_schema_drop_attribute = util.callbackify(schema.dropAttribute);
+const cb_user_add_user = util.callbackify(user.addUser);
+const cb_user_alter_user = util.callbackify(user.alterUser);
+const cb_user_drop_user = util.callbackify(user.dropUser);
+const cb_user_user_info = util.callbackify(user.userInfo);
+const cb_user_list_user_external = util.callbackify(user.listUsersExternal);
 const cb_role_add_role = util.callbackify(role.addRole);
 const cb_role_alter_role = util.callbackify(role.alterRole);
 const cb_role_drop_role = util.callbackify(role.dropRole);
 const cb_role_list_role = util.callbackify(role.listRoles);
 const cb_reg_hand_get_finger = util.callbackify(reg.getFingerprint);
 const cb_reg_hand_set_licence = util.callbackify(reg.setLicense);
+const cb_clust_util_config = util.callbackify(cluster_utilities.configureCluster);
+const cb_clust_util_status = util.callbackify(cluster_utilities.clusterStatus);
+const cb_clust_util_remove_node = util.callbackify(cluster_utilities.removeNode);
 
 const UNAUTH_RESPONSE = 403;
 const UNAUTHORIZED_TEXT = 'You are not authorized to perform the operation specified';
@@ -246,16 +253,16 @@ function chooseOperation(json, callback) {
             operation_function = delete_.delete;
             break;
         case terms.OPERATIONS_ENUM.ADD_USER:
-            operation_function = user.addUser;
+            operation_function = cb_user_add_user;
             break;
         case terms.OPERATIONS_ENUM.ALTER_USER:
-            operation_function = user.alterUser;
+            operation_function = cb_user_alter_user;
             break;
         case terms.OPERATIONS_ENUM.DROP_USER:
-            operation_function = user.dropUser;
+            operation_function = cb_user_drop_user;
             break;
         case terms.OPERATIONS_ENUM.LIST_USERS:
-            operation_function = user.listUsersExternal;
+            operation_function = cb_user_list_user_external;
             break;
         case terms.OPERATIONS_ENUM.LIST_ROLES:
             operation_function = cb_role_list_role;
@@ -270,7 +277,7 @@ function chooseOperation(json, callback) {
             operation_function = cb_role_drop_role;
             break;
         case terms.OPERATIONS_ENUM.USER_INFO:
-            operation_function = user.userInfo;
+            operation_function = cb_user_user_info;
             break;
         case terms.OPERATIONS_ENUM.READ_LOG:
             operation_function = read_log.read_log;
@@ -279,13 +286,13 @@ function chooseOperation(json, callback) {
             operation_function = cluster_utilities.addNode;
             break;
         case terms.OPERATIONS_ENUM.REMOVE_NODE:
-            operation_function = cluster_utilities.removeNode;
+            operation_function = cb_clust_util_remove_node;
             break;
         case terms.OPERATIONS_ENUM.CONFIGURE_CLUSTER:
-            operation_function = cluster_utilities.configureCluster;
+            operation_function = cb_clust_util_config;
             break;
         case terms.OPERATIONS_ENUM.CLUSTER_STATUS:
-            operation_function = cluster_utilities.clusterStatus;
+            operation_function = cb_clust_util_status;
             break;
         case terms.OPERATIONS_ENUM.EXPORT_TO_S3:
             operation_function = signalJob;

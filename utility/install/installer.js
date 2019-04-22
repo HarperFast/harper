@@ -336,6 +336,7 @@ function createAdminUser(callback) {
     const util = require('util');
     const cb_role_add_role = util.callbackify(role_ops.addRole);
     const cb_role_list_role = util.callbackify(role_ops.listRoles);
+    const cb_user_add_user = util.callbackify(user_ops.addUser);
     let role = {};
     role.role = 'super_user';
     role.permission = {};
@@ -377,7 +378,7 @@ function createAdminUser(callback) {
                     admin_user.role = res[selected_role.ROLE - 1].id;
                     admin_user.active = true;
 
-                    user_ops.addUser(admin_user, function (err) {
+                    cb_user_add_user(admin_user, (err) => {
                         if (err) {
                             winston.error('user creation error' + err);
                             console.error('There was a problem creating the admin user.  Please check the install log for details.');
@@ -394,7 +395,7 @@ function createAdminUser(callback) {
                 admin_user.role = res[0].id;
                 admin_user.active = true;
 
-                user_ops.addUser(admin_user, function (err) {
+                cb_user_add_user(admin_user, (err) => {
                     if (err) {
                         winston.error('user creation error' + err);
                         console.error('There was a problem creating the admin user.  Please check the install log for details.');
@@ -419,7 +420,7 @@ function createAdminUser(callback) {
             admin_user.role = res.id;
             admin_user.active = true;
 
-            user_ops.addUser(admin_user, function (err) {
+            cb_user_add_user(admin_user, (err) => {
                 if (err) {
                     winston.error('user creation error' + err);
                     console.error('There was a problem creating the admin user.  Please check the install log for details.');
