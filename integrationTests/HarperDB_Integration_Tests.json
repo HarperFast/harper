@@ -7298,7 +7298,6 @@
 									"    var jsonData = pm.response.json();",
 									"    pm.expect(jsonData.message).to.eql(\"updated 0 of 1 records\");",
 									"    pm.expect(jsonData.skipped_hashes[0]).to.eql(\"There is no way this exists\");",
-									"    pm.expect(jsonData.update_hashes).to.eql(0);",
 									"});",
 									""
 								],

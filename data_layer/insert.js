@@ -159,8 +159,9 @@ async function updateData(update_object){
 
         let existing_rows = await getExistingRows(table_schema, hashes, attributes);
 
+        // If no hashes are existing skip update attempts
         if(h_utils.isEmptyOrZeroLength(existing_rows)){
-            return returnObject("updated", 0, update_object, hashes);
+            return returnObject("updated", [], update_object, hashes);
         }
 
         let existing_map =  _.keyBy(existing_rows, function(record) {
@@ -198,11 +199,8 @@ async function updateData(update_object){
  * @returns {{skipped_hashes: *, update_hashes: *, message: string}}
  */
 function returnObject(action, written_hashes, object, skipped) {
-    let written_hash_length;
-    (written_hashes === 0 ? written_hash_length = 0 : written_hash_length = written_hashes.length);
-
     let return_object = {
-        message: `${action} ${written_hash_length} of ${object.records.length} records`,
+        message: `${action} ${written_hashes.length} of ${object.records.length} records`,
         skipped_hashes: skipped
     };
 
