@@ -32,8 +32,10 @@ class ServerSocket{
         this.socket.on('authStateChange', this.authStateChangeHandler);
         this.socket.on('message', this.messageHandler);
 
-        this.socket.on('node', (data)=>{
-            this.worker.node = data;
+        this.socket.on('query', (data)=>{
+            this.exchange_get([data]).then(result=>{
+                console.log(result);
+            });
         });
     }
 

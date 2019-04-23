@@ -19,6 +19,7 @@ class Worker extends SCWorker{
 
 
         this.exchange_get = promisify(this.exchange.get).bind(this.exchange);
+        this.exchange_set = promisify(this.exchange.set).bind(this.exchange);
         this.exchange_get('hdb_worker').then(data => {
             console.log(data);
             if(typeof data === 'object') {
@@ -28,7 +29,7 @@ class Worker extends SCWorker{
 
 
         if(this.isLeader){
-            new NodeConnector(require('./connector/node'), this);
+            //new NodeConnector(require('./connector/node'), this);
         }
     }
 
@@ -60,8 +61,10 @@ class Worker extends SCWorker{
                 return next(true);
             }
 
-            delete req.data.__transacted;
-            return next();
+            this.exchange_set([req.channel, req.data.timestamp], req.data).then(data => {
+                delete req.data.__transacted;
+                return next();
+            });
         } catch(e){
             console.error(e);
             return next(e);
