@@ -23,7 +23,6 @@ class Broker extends SCBroker {
      */
     subscribeHandler(channel){
         console.log('broker channel subscribed ' + channel);
-        this.subscriptions;
     }
 
     /**

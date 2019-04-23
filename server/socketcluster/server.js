@@ -67,6 +67,9 @@ let socketCluster = new SocketCluster({
     // Whether or not to reboot the worker in case it crashes (defaults to true)
     rebootWorkerOnCrash: true,
 
+
+    middlewareEmitWarnings: false,
+
     // This can be the name of an npm module or a path to a Node.js module
     // to use as the WebSocket server engine.
     // You can now set this to 'sc-uws' for a speedup.

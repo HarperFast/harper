@@ -5,6 +5,10 @@ const SCServer = require('./handlers/SCServer');
 const log = require('../../utility/logging/harper_logger');
 const NodeConnector = require('./connector/NodeConnector');
 const promisify = require('util').promisify;
+const fs = require('fs-extra');
+const env = require('../../utility/environment/environmentManager');
+env.initSync();
+const HDB_QUEUE_PATH = env.getHdbBasePath() + '/schema/system/hdb_queue/';
 
 class Worker extends SCWorker{
     run(){
@@ -16,6 +20,8 @@ class Worker extends SCWorker{
         let sc_server = new SCServer(this);
 
         this.hdb_workers = [];
+
+        this.transaction_map = {};
 
 
         this.exchange_get = promisify(this.exchange.get).bind(this.exchange);
@@ -61,15 +67,33 @@ class Worker extends SCWorker{
                 return next(true);
             }
 
-            this.exchange_set([req.channel, req.data.timestamp], req.data).then(data => {
-                delete req.data.__transacted;
-                return next();
+            this.storeTransaction(req).then(()=>{
+                next();
             });
         } catch(e){
             console.error(e);
             return next(e);
         }
     }
+
+    async storeTransaction(req){
+        delete req.data.__transacted;
+
+        //store the record to the exchange
+        await this.exchange_set([req.channel, req.data.timestamp], req.data);
+
+        //store the record to the channel file.
+        if(this.transaction_map[req.channel] === undefined){
+            this.transaction_map[req.channel] = fs.createWriteStream(HDB_QUEUE_PATH+req.channel, {flags:'a'});
+        }
+
+        this.transaction_map[req.channel].write(JSON.stringify(req.data) + ',', (err)=>{
+            if(err){
+                console.error(err);
+            }
+        });
+    }
+
 
     sendTransactionToWorker(channel, data){
         if(channel.indexOf('internal:') < 0) {
