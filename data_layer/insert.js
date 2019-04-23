@@ -129,16 +129,11 @@ async function insertData(insert_object){
 
         pool = await processData(data_wrapper, pool);
 
-        let return_object = {
-            message: `inserted ${written_hashes.length} of ${insert_object.records.length} records`,
-            inserted_hashes: written_hashes,
-            skipped_hashes: skipped
-        };
-
         if(pool instanceof HDB_Pool){
             pool.killAll();
         }
-        return return_object;
+
+        return returnObject('inserted', written_hashes, insert_object, skipped);
     } catch(e){
         if(pool instanceof HDB_Pool){
             pool.killAll();
@@ -165,8 +160,7 @@ async function updateData(update_object){
         let existing_rows = await getExistingRows(table_schema, hashes, attributes);
 
         if(h_utils.isEmptyOrZeroLength(existing_rows)){
-            //TODO finish this return
-            return;
+            return returnObject("updated", 0, update_object, hashes);
         }
 
         let existing_map =  _.keyBy(existing_rows, function(record) {
@@ -182,23 +176,43 @@ async function updateData(update_object){
 
         pool = await processData(data_wrapper, pool);
 
-        let return_object = {
-            message: `updated ${written_hashes.length} of ${update_object.records.length} records`,
-            update_hashes: written_hashes,
-            skipped_hashes: skipped
-        };
-
         if(pool instanceof HDB_Pool){
             pool.killAll();
         }
 
-        return return_object;
+        return returnObject('updated', written_hashes, update_object, skipped);
     } catch(e){
         if(pool instanceof HDB_Pool){
             pool.killAll();
         }
         throw (e);
     }
+}
+
+/**
+ * constructs return object for insert and update.
+ * @param action
+ * @param written_hashes
+ * @param object
+ * @param skipped
+ * @returns {{skipped_hashes: *, update_hashes: *, message: string}}
+ */
+function returnObject(action, written_hashes, object, skipped) {
+    let written_hash_length;
+    (written_hashes === 0 ? written_hash_length = 0 : written_hash_length = written_hashes.length);
+
+    let return_object = {
+        message: `${action} ${written_hash_length} of ${object.records.length} records`,
+        skipped_hashes: skipped
+    };
+
+    if (action === 'inserted') {
+        return_object.inserted_hashes = written_hashes;
+        return return_object;
+    }
+
+    return_object.update_hashes = written_hashes;
+    return return_object;
 }
 
 /**
