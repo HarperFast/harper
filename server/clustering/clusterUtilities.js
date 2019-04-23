@@ -2,8 +2,8 @@ const insert = require('../../data_layer/insert');
 const node_Validator = require('../../validation/nodeValidator');
 const hdb_utils = require('../../utility/common_utils');
 const log = require('../../utility/logging/harper_logger');
-const {promisify} = require('util');
-const {inspect} = require('util');
+const util = require('util');
+const cb_insert_insert = util.callbackify(insert.insert);
 const del = require('../../data_layer/delete');
 const terms = require('../../utility/hdbTerms');
 const env_mgr = require('../../utility/environment/environmentManager');
@@ -19,8 +19,8 @@ const child_process = require('child_process');
 const path = require('path');
 
 //Promisified functions
-const p_delete_delete = promisify(del.delete);
-const p_auth_authorize = promisify(auth.authorize);
+const p_delete_delete = util.promisify(del.delete);
+const p_auth_authorize = util.promisify(auth.authorize);
 
 const iface = os.networkInterfaces();
 const addresses = [];
@@ -37,7 +37,7 @@ const DUPLICATE_ERR_MSG = 'Cannot add a node that matches the hosts clustering c
 const timeout_promise = hdb_utils.timeoutPromise(STATUS_TIMEOUT_MS, 'Timeout trying to get cluster status.');
 const event_promise = new Promise((resolve) => {
     cluster_status_event.clusterEmitter.on(cluster_status_event.EVENT_NAME, (msg) => {
-        log.info(`Got cluster status event response: ${inspect(msg)}`);
+        log.info(`Got cluster status event response: ${util.inspect(msg)}`);
         try {
             timeout_promise.cancel();
         } catch(err) {
@@ -66,7 +66,7 @@ function setEnterprise(enterprise) {
  */
 async function kickOffEnterprise() {
     const enterprise_util = require('../../utility/enterpriseInitialization');
-    const p_kick_off_enterprise = promisify(enterprise_util.kickOffEnterprise);
+    const p_kick_off_enterprise = util.promisify(enterprise_util.kickOffEnterprise);
 
     global.forks.forEach((fork) => {
         fork.send({"type": "enterprise", "enterprise": is_enterprise});
@@ -119,13 +119,13 @@ function addNode(new_node, callback) {
         "records": [new_node]
     };
 
-    insert.insertCB(new_node_insert, function(err, results) {
-        if(err) {
+    cb_insert_insert(new_node_insert, (err, results) => {
+        if (err) {
             log.error(`Error adding new cluster node ${new_node_insert}.  ${err}`);
             return callback(err);
         }
 
-        if(!hdb_utils.isEmptyOrZeroLength(results.skipped_hashes)){
+        if (!hdb_utils.isEmptyOrZeroLength(results.skipped_hashes)) {
             log.info(`Node '${new_node.name}' has already been already added. Operation aborted.`);
             return callback(null, `Node '${new_node.name}' has already been already added. Operation aborted.`);
         }
@@ -135,30 +135,8 @@ function addNode(new_node, callback) {
             "type": terms.CLUSTER_MESSAGE_TYPE_ENUM.NODE_ADDED,
             "node_name": new_node.name
         });
-        return callback(null, `successfully added ${new_node.name} to manifest`);
-    });
-}
 
-/**
- * A callback wrapper for removeNode.  This is needed to match the processLocalTransaction style currently used until we fully
- * migrate to async/await.  Once that migration is complete, this function can be removed and have it replaced in module.exports
- * with the async function.
- *
- * @param remove_node
- * @param callback
- * @returns {*}
- */
-function removeNodeCB(remove_node, callback) {
-    if(!remove_node) {
-        return callback('Invalid JSON message for remove_node', null);
-    }
-    let response = {};
-    removeNode(remove_node).then((result) => {
-        response['message'] = result;
-        return callback(null, response);
-    }).catch((err) => {
-        log.error(`There was an error removing node ${err}`);
-        return callback(err, null);
+        return callback(null, `successfully added ${new_node.name} to manifest`);
     });
 }
 
@@ -184,7 +162,7 @@ async function removeNode(remove_json_message) {
     try {
         results = await p_delete_delete(delete_obj);
     } catch(err) {
-        log.error(`Error removing cluster node ${inspect(delete_obj)}.  ${err}`);
+        log.error(`Error removing cluster node ${util.inspect(delete_obj)}.  ${err}`);
         throw err;
     }
     if(!hdb_utils.isEmptyOrZeroLength(results.skipped_hashes)) {
@@ -218,29 +196,6 @@ function payloadHandler(msg) {
 }
 
 /**
- * A callback wrapper for configureCluster.  This is needed to match the processLocalTransaction style currently used until we fully
- * migrate to async/await.  Once that migration is complete, this function can be removed and have it replaced in module.exports
- * with the async function.
- *
- * @param enable_cluster_json - The json message containing the port, node name, enabled to use to enable clustering
- * @param callback
- * @returns {*}
- */
-function configureClusterCB(enable_cluster_json, callback) {
-    if(!enable_cluster_json) {
-        return callback('Invalid JSON message for remove_node', null);
-    }
-    let response = {};
-    configureCluster(enable_cluster_json).then(() => {
-        response['message'] = 'Successfully wrote clustering config settings.  A backup file was created.';
-        return callback(null, response);
-    }).catch((err) => {
-        log.error(`There was an error removing node ${err}`);
-        return callback(err, null);
-    });
-}
-
-/**
  * Configure clustering by updating the config settings file with the specified paramters in the message, and then
  * start or stop clustering depending on the enabled value.
  * @param enable_cluster_json
@@ -261,29 +216,6 @@ async function configureCluster(enable_cluster_json) {
         log.error(err);
         throw err;
     }
-}
-
-/**
- * A callback wrapper for clusterStatusCB.  This is needed to match the processLocalTransaction style currently used until we fully
- * migrate to async/await.  Once that migration is complete, this function can be removed and have it replaced in module.exports
- * with the async function.
- *
- * @param cluster_status_json - The json message containing the port, node name, enabled to use to enable clustering
- * @param callback
- * @returns {*}
- */
-function clusterStatusCB(cluster_status_json, callback) {
-    if(!cluster_status_json) {
-        return callback('Invalid JSON message for remove_node', null);
-    }
-    let response = {};
-    clusterStatus(cluster_status_json).then((result) => {
-        response = result;
-        return callback(null, response);
-    }).catch((err) => {
-        log.error(`There was an error getting cluster status ${err}`);
-        return callback(err, null);
-    });
 }
 
 /**
@@ -488,7 +420,7 @@ function clusterMessageHandler(msg) {
                 } else {
                     child_event_count++;
                     log.info(`Received ${child_event_count} child stopped event(s).`);
-                    log.info(`started forks: ${inspect(started_forks)}`);
+                    log.info(`started forks: ${util.inspect(started_forks)}`);
                     started_forks[msg.pid] = false;
                     for(let fork of Object.keys(started_forks)) {
                         // We still have children running, break;
@@ -584,9 +516,9 @@ function restartHDB() {
 module.exports = {
     addNode: addNode,
     // The reference to the callback functions can be removed once processLocalTransaction has been refactored
-    configureCluster: configureClusterCB,
-    clusterStatus: clusterStatusCB,
-    removeNode: removeNodeCB,
+    configureCluster: configureCluster,
+    clusterStatus: clusterStatus,
+    removeNode: removeNode,
     payloadHandler: payloadHandler,
     clusterMessageHandler: clusterMessageHandler,
     authHeaderToUser: authHeaderToUser,

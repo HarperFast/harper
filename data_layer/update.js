@@ -7,6 +7,8 @@ const logger = require('../utility/logging/harper_logger');
 const write = require('./insert');
 const clone = require('clone');
 const alasql = require('alasql');
+const util = require('util');
+const cb_insert_insert = util.callbackify(write.update);
 
 module.exports = {
     update: update
@@ -106,12 +108,12 @@ function updateRecords(table, records, callback){
         records:records
     };
 
-    write.updateCB(update_object, (err, results)=>{
+    cb_insert_insert(update_object, (err, res) => {
         if(err){
             callback(err);
             return;
         }
 
-        callback(null, results);
+        callback(null, res);
     });
 }

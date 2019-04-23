@@ -20,7 +20,7 @@ const write_file = require('../utility/fs/writeFile');
 const unlink = require('../utility/fs/unlink');
 const pool_handler = require('../utility/threads/poolHandler');
 const exploder = require('./dataWriteProcessor');
-const {promisify} = require('util');
+const util = require('util');
 const ExplodedObject = require('./ExplodedObject');
 const WriteProcessorObject = require('./WriteProcessorObject');
 const HDB_Pool = require('threads').Pool;
@@ -43,16 +43,14 @@ const INTERNAL_ERROR_MESSAGE = 'An internal error occurred, please check the log
 const ATTRIBUTE_ALREADY_EXISTS = 'attribute already exists';
 
 module.exports = {
-    insertCB: insertDataCB,
-    updateCB: updateDataCB,
     insert: insertData,
     update: updateData
 };
 //this must stay after the export to correct a circular dependency issue
 const global_schema = require('../utility/globalSchema');
 
-const p_global_schema = promisify(global_schema.getTableSchema);
-const p_search_by_hash = promisify(search.searchByHash);
+const p_global_schema = util.promisify(global_schema.getTableSchema);
+const p_search_by_hash = util.promisify(search.searchByHash);
 
 /**
  *  Takes an insert/update object and validates attributes, also looks for dups and get a list of all attributes from the record set
@@ -107,42 +105,6 @@ async function validation(write_object){
         hashes: Array.from(dups),
         attributes: Object.keys(attributes)
     };
-}
-
-/**
- * Callback function for inserting data, remove when we are fully promised
- * @param insert_object
- * @param callback
- */
-function insertDataCB(insert_object, callback){
-    try{
-        insertData(insert_object).then((results)=>{
-            callback(null, results);
-        }).catch(err=>{
-            callback(err);
-        });
-
-    } catch(e){
-        callback(e);
-    }
-}
-
-/**
- * Callback function for updating data, remove when we are fully promised
- * @param update_object
- * @param callback
- */
-function updateDataCB(update_object, callback){
-    try{
-        updateData(update_object).then((results)=>{
-            callback(null, results);
-        }).catch(err=>{
-            callback(err);
-        });
-
-    } catch(e){
-        callback(e);
-    }
 }
 
 /**
@@ -504,4 +466,4 @@ async function createNewAttribute(hdb_auth_header,schema, table, attribute) {
 }
 
 const schema = require('../data_layer/schema');
-const p_create_attribute = promisify(schema.createAttribute);
+const p_create_attribute = util.promisify(schema.createAttribute);
