@@ -56,19 +56,16 @@ module.exports = {
 
 /** EXPORTED FUNCTIONS **/
 
-function createSchema(schema_create_object, callback) {
-    try {
-        createSchemaStructure(schema_create_object, function (err, success) {
-            if (err) {
-                callback(err);
-                return;
-            }
+// TODO - temp promisified functions that help with async module refactor
+const p_createSchemaStructure = util.promisify(createSchemaStructure);
 
-            signalling.signalSchemaChange({type: 'schema'});
-            return callback(null, success);
-        });
-    } catch (e) {
-        callback(e);
+async function createSchema(schema_create_object) {
+    try {
+        let schema_structure = await p_createSchemaStructure(schema_create_object);
+        signalling.signalSchemaChange({type: 'schema'});
+        return schema_structure;
+    } catch(err) {
+        throw err;
     }
 }
 

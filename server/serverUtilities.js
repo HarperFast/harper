@@ -44,6 +44,7 @@ const cb_reg_hand_set_licence = util.callbackify(reg.setLicense);
 const cb_clust_util_config = util.callbackify(cluster_utilities.configureCluster);
 const cb_clust_util_status = util.callbackify(cluster_utilities.clusterStatus);
 const cb_clust_util_remove_node = util.callbackify(cluster_utilities.removeNode);
+const cb_schema_create_schema = util.callbackify(schema.createSchema);
 
 const UNAUTH_RESPONSE = 403;
 const UNAUTHORIZED_TEXT = 'You are not authorized to perform the operation specified';
@@ -223,7 +224,7 @@ function chooseOperation(json, callback) {
             job_operation_function = csv.csvURLLoad;
             break;
         case terms.OPERATIONS_ENUM.CREATE_SCHEMA:
-            operation_function = schema.createSchema;
+            operation_function = cb_schema_create_schema;
             break;
         case terms.OPERATIONS_ENUM.CREATE_TABLE:
             operation_function = schema.createTable;

@@ -24,7 +24,6 @@ const cluster_handlers = require('./clusterHandlers');
 const p_server_utilities_choose_operation = promisify(server_utilities.chooseOperation);
 const p_server_utilities_proccess_delegated_transaction = promisify(server_utilities.proccessDelegatedTransaction);
 const p_schema_describe_all = promisify(schema.describeAll);
-const p_schema_create_schema = promisify(schema.createSchema);
 const p_schema_create_table = promisify(schema.createTable);
 const p_schema_create_attribute = promisify(schema.createAttribute);
 
@@ -358,7 +357,7 @@ class SocketClient {
 
 async function createMissingSchemas(missing_schemas){
     await Promise.all(missing_schemas.map(async (this_schema) => {
-        await p_schema_create_schema({"schema": this_schema})
+        await schema.createSchema({"schema": this_schema})
             .catch(err=>{
                 if(err !== 'schema already exists') {
                     throw err;
