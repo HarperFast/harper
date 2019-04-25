@@ -80,7 +80,8 @@ class Worker extends SCWorker{
         delete req.data.__transacted;
 
         //store the record to the exchange
-        await this.exchange_set([req.channel, req.data.timestamp], req.data);
+        //await this.exchange_set([req.channel, req.data.timestamp], req.data);
+        await this.exchange_set([req.channel], req.data);
 
         //store the record to the channel file.
         if(this.transaction_map[req.channel] === undefined){
