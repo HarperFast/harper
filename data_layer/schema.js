@@ -1,3 +1,5 @@
+'use strict';
+
 const fs = require('fs-extra');
 const insert = require('./insert.js');
 const async = require('async');
@@ -18,7 +20,8 @@ const _ = require('underscore');
 const signalling = require('../utility/signalling');
 const log = require('../utility/logging/harper_logger');
 const util = require('util');
-const cb_insert_insert = util.callbackify(insert.insert);
+const foobar = insert.insert; //TODO fix this
+const cb_insert_insert = util.callbackify(foobar);
 const hdb_util = require('../utility/common_utils');
 const terms = require('../utility/hdbTerms');
 const common = require('../utility/common_utils');
@@ -26,6 +29,7 @@ const common = require('../utility/common_utils');
 // Promisified functions
 let p_search_search_by_value = util.promisify(search.searchByValue);
 let p_delete_delete = util.promisify(delete_.delete);
+let p_search_by_conditions = util.promisify(search.searchByConditions);
 
 // This is used by moveFileToTrash to decide where to put the removed file(s) in the trash directory.
 const ENTITY_TYPE_ENUM = {
@@ -57,11 +61,11 @@ module.exports = {
 /** EXPORTED FUNCTIONS **/
 
 // TODO - temp promisified functions that help with async module refactor
-const p_createSchemaStructure = util.promisify(createSchemaStructure);
+const p_createAttributeStructure = util.promisify(createAttributeStructure);
 
 async function createSchema(schema_create_object) {
     try {
-        let schema_structure = await p_createSchemaStructure(schema_create_object);
+        let schema_structure = await createSchemaStructure(schema_create_object);
         signalling.signalSchemaChange({type: 'schema'});
         return schema_structure;
     } catch(err) {
@@ -69,59 +73,102 @@ async function createSchema(schema_create_object) {
     }
 }
 
-function createSchemaStructure(schema_create_object, callback) {
+async function createSchemaStructure(schema_create_object) {
     try {
         let validation_error = validation.schema_object(schema_create_object);
         if (validation_error) {
-            callback(validation_error, null);
-            return;
+            throw validation_error;
         }
 
-        searchForSchema(schema_create_object.schema, (err, schema) => {
-            if (schema && schema.length > 0) {
-                return callback(`Schema ${schema_create_object.schema} already exists`);
-            }
+        let schema_search = await searchForSchema(schema_create_object.schema);
 
-            let insertObject = {
-                operation: 'insert',
-                schema: 'system',
-                table: 'hdb_schema',
-                records: [
-                    {
-                        name: schema_create_object.schema,
-                        createddate: '' + Date.now()
-                    }
-                ]
-            };
+        if (schema_search && schema_search.length > 0) {
+            throw `Schema ${schema_create_object.schema} already exists`;
+        }
 
-            cb_insert_insert(insertObject, (err) => {
-                if (err) {
-                    callback(err);
-                    return;
+        let insert_object = {
+            operation: 'insert',
+            schema: 'system',
+            table: 'hdb_schema',
+            records: [
+                {
+                    name: schema_create_object.schema,
+                    createddate: '' + Date.now()
                 }
+            ]
+        };
 
-                let schema = schema_create_object.schema;
+        await insert.insert(insert_object);
+        let schema_object = schema_create_object.schema;
+        await fs.mkdirp(env.get('HDB_ROOT') + '/schema/' + schema_object);
 
-                fs.mkdir(env.get('HDB_ROOT') + '/schema/' + schema, function (err, data) {
-                    if (err) {
-                        if (err.errno === -17) {
-                            callback("schema already exists", null);
-                            return;
+        return `schema ${schema_create_object.schema} successfully created`;
 
-                        } else {
-                            callback(err.message, null);
-                            return;
-                        }
-                    }
-                    callback(err, `schema ${schema_create_object.schema} successfully created`);
-                });
-            });
-
-        });
-    } catch (e) {
-        callback(e);
+    } catch(err) {
+        if (err) {
+            if (err.errno === -17) {
+                throw 'schema already exists';
+            } else {
+                throw err.message;
+            }
+        }
+        throw err;
     }
 }
+
+// function createSchemaStructure(schema_create_object, callback) {
+//     try {
+//         let validation_error = validation.schema_object(schema_create_object);
+//         if (validation_error) {
+//             callback(validation_error, null);
+//             return;
+//         }
+//
+//         searchForSchema(schema_create_object.schema, (err, schema) => {
+//             if (schema && schema.length > 0) {
+//                 return callback(`Schema ${schema_create_object.schema} already exists`);
+//             }
+//
+//             let insertObject = {
+//                 operation: 'insert',
+//                 schema: 'system',
+//                 table: 'hdb_schema',
+//                 records: [
+//                     {
+//                         name: schema_create_object.schema,
+//                         createddate: '' + Date.now()
+//                     }
+//                 ]
+//             };
+//
+//             cb_insert_insert(insertObject, (err) => {
+//                 if (err) {
+//                     callback(err);
+//                     return;
+//                 }
+//
+//                 let schema = schema_create_object.schema;
+//
+//                 fs.mkdir(env.get('HDB_ROOT') + '/schema/' + schema, function (err, data) {
+//                     if (err) {
+//                         if (err.errno === -17) {
+//                             callback("schema already exists", null);
+//                             return;
+//
+//                         } else {
+//                             callback(err.message, null);
+//                             return;
+//                         }
+//                     }
+//                     callback(err, `schema ${schema_create_object.schema} successfully created`);
+//                 });
+//             });
+//
+//         });
+//     } catch (e) {
+//         callback(e);
+//     }
+// }
 
 function createTable(create_table_object, callback) {
     try {
@@ -621,7 +668,7 @@ function deleteTableAttributes(err, drop_table_object, callback) {
     });
 }
 
-function searchForSchema(schema_name, callback) {
+async function searchForSchema(schema_name) {
     let search_obj = {
         schema: 'system',
         table: 'hdb_schema',
@@ -631,12 +678,12 @@ function searchForSchema(schema_name, callback) {
         }]
     };
 
-    search.searchByConditions(search_obj, (err, data) => {
-        if (err) {
-            return callback(err);
-        }
-        callback(null, data);
-    });
+    try {
+        let search_result = await p_search_by_conditions(search_obj);
+        return search_result;
+    } catch(err) {
+        throw err;
+    }
 }
 
 function searchForTable(schema_name, table_name, callback) {
@@ -767,51 +814,38 @@ function deleteAttributeStructure(attribute_drop_object, callback) {
     });
 }
 
-function createAttribute(create_attribute_object, callback) {
+async function createAttribute(create_attribute_object) {
+    let attribute_structure;
     try {
         if(global.clustering_on
             && !create_attribute_object.delegated && create_attribute_object.schema != 'system') {
 
-            createAttributeStructure(create_attribute_object, function (err, success) {
-                if (err) {
-                    callback(err);
-                    return;
-                }
+            attribute_structure = await p_createAttributeStructure(create_attribute_object);
+            create_attribute_object.delegated = true;
+            create_attribute_object.operation = 'create_attribute';
+            create_attribute_object.id = attribute_structure.id;
 
-                create_attribute_object.delegated = true;
-                create_attribute_object.operation = 'create_attribute';
-                create_attribute_object.id = success.id;
+            let payload = {
+                "type": "clustering_payload", "pid": process.pid,
+                "clustering_type": "broadcast",
+                "id": attribute_structure.id,
+                "body": create_attribute_object
+            };
 
-                let payload = {
-                    "type": "clustering_payload", "pid": process.pid,
-                    "clustering_type": "broadcast",
-                    "id": success.id,
-                    "body": create_attribute_object
-                };
+            try {
+                common.callProcessSend(payload);
+            } catch(err) {
+                logger.error(err);
+            }
 
-                try {
-                    common.callProcessSend(payload);
-                } catch(e) {
-                    logger.error(e);
-                }
-
-                signalling.signalSchemaChange({type: 'schema'});
-                return callback(null, success);
-
-            });
-
-        }else{
-            createAttributeStructure(create_attribute_object, function (err, success) {
-                if (err) {
-                    callback(err);
-                    return;
-                }
-
-                signalling.signalSchemaChange({type: 'schema'});
-                return callback(null, success);
-            });
+            signalling.signalSchemaChange({type: 'schema'});
+            return attribute_structure;
+        } else {
+            attribute_structure = await p_createAttributeStructure(create_attribute_object);
+            signalling.signalSchemaChange({type: 'schema'});
+            return attribute_structure;
         }
-    } catch (e) {
-        callback(e);
+    } catch(err) {
+        throw err;
     }
 }

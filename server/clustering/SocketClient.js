@@ -25,7 +25,6 @@ const p_server_utilities_choose_operation = promisify(server_utilities.chooseOpe
 const p_server_utilities_proccess_delegated_transaction = promisify(server_utilities.proccessDelegatedTransaction);
 const p_schema_describe_all = promisify(schema.describeAll);
 const p_schema_create_table = promisify(schema.createTable);
-const p_schema_create_attribute = promisify(schema.createAttribute);
 
 const WHITELISTED_ERRORS = 'already exists';
 const ERROR_NO_HDB_USER = 'there is no hdb_user';
@@ -397,7 +396,7 @@ async function createMissingAttributes(missing_attributes) {
                 "attribute": tokens[ATTRIBUTE_INDEX]
             };
 
-            await p_schema_create_attribute(attr_create_object)
+            await schema.createAttribute(attr_create_object)
                 .catch(err =>{
                     if(WHITELISTED_ERRORS.indexOf(err) < 0) {
                         throw err;

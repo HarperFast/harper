@@ -435,6 +435,7 @@ function checkForExistingAttributes(table_schema, data_attributes){
     return existing_attributes;
 }
 
+
 /**
  * check the existing schema and creates new attributes based on what the incoming records have
  * @param hdb_auth_header
@@ -443,6 +444,9 @@ function checkForExistingAttributes(table_schema, data_attributes){
  * @param attribute
  */
 async function createNewAttribute(hdb_auth_header,schema, table, attribute) {
+    // TODO CORE-113 - remove circular dependency.
+    const schema_mod = require('./schema');
+
     let attribute_object = {
         schema:schema,
         table:table,
@@ -454,7 +458,7 @@ async function createNewAttribute(hdb_auth_header,schema, table, attribute) {
     }
 
     try {
-        await p_create_attribute(attribute_object);
+        await schema_mod.createAttribute(attribute_object);
     } catch(e){
         //if the attribute already exists we do not want to stop the insert
         if(typeof e === 'string' && e.indexOf(ATTRIBUTE_ALREADY_EXISTS) > -1){
@@ -464,6 +468,3 @@ async function createNewAttribute(hdb_auth_header,schema, table, attribute) {
         }
     }
 }
-
-const schema = require('../data_layer/schema');
-const p_create_attribute = util.promisify(schema.createAttribute);
