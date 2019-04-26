@@ -13,6 +13,8 @@
 const winston = require('winston');
 const pino = require('pino');
 const fs = require('fs');
+const moment = require('moment');
+const validator = require('../../validation/readLogValidator');
 
 //Using numbers rather than strings for faster comparison
 const WIN = 1;
@@ -35,7 +37,7 @@ try {
     log_location = hdb_properties.get('LOG_PATH');
 
     //if log location isn't defined, assume HDB_ROOT/log/hdb_log.log
-    if(log_location === undefined || log_location === 0 || log_location === null) {
+    if (log_location === undefined || log_location === 0 || log_location === null) {
         log_location = (hdb_properties.get('HDB_ROOT') + '/log/hdb_log.log');
     }
 } catch (e) {
@@ -61,18 +63,24 @@ const INFO = 'info';
 const DEBUG = 'debug';
 const TRACE = 'trace';
 
+const LOGGER_LOCATION = {
+    RUN_LOG: "run_log",
+    INSTALL_LOG: "install_log",
+    HDB_LOG: "hdb_log"
+}
+
 //TODO: All of this should be happening in an env variable module (yet to be written).
-if(log_level === undefined || log_level === 0 || log_level === null) {
+if (log_level === undefined || log_level === 0 || log_level === null) {
     log_level = ERR;
 }
 
 //TODO: All of this should be happening in an env variable module (yet to be written).
-if(log_type === undefined || log_type === 0 || log_type === null) {
+if (log_type === undefined || log_type === 0 || log_type === null) {
     log_type = WIN;
 }
 
 //TODO: All of this should be happening in an env variable module (yet to be written).
-if(log_location === undefined || log_location === null) {
+if (log_location === undefined || log_location === null) {
     log_location = '../run_log.log';
 }
 
@@ -89,11 +97,12 @@ module.exports = {
     warn:warn,
     error:error,
     fatal:fatal,
-    notify: notify,
+    notify:notify,
     setLogLevel:setLogLevel,
     setLogType:setLogType,
     write_log:write_log,
     setLogLocation:setLogLocation,
+    read_log:read_log,
     log_level,
     NOTIFY,
     FATAL,
@@ -125,7 +134,7 @@ function initWinstonLogger() {
             level: log_level,
             exitOnError: false
         });
-    } catch(err) {
+    } catch (err) {
         // if this fails we have no logger, so just write to the console and rethrow so everything fails.
         console.error('There was an error initializing the logger.');
         console.error(err);
@@ -137,20 +146,23 @@ function initWinstonLogger() {
  * Initialize the Pino logger with custom levels
  */
 function initPinoLogger() {
-    pin_logger = pino({
-        customLevels: {
-            notify: 70,
-            fatal: 60,
-            error: 50,
-            warn: 40,
-            info: 30,
-            debug: 20,
-            trace: 10
+    pin_logger = pino(
+        {
+            customLevels: {
+                notify: 70,
+                fatal: 60,
+                error: 50,
+                warn: 40,
+                info: 30,
+                debug: 20,
+                trace: 10
+            },
+            useOnlyCustomLevels:true,
+            level: log_level,
+            name: 'harperDB'
         },
-        useOnlyCustomLevels:true,
-        level: log_level,
-        name: 'harperDB'
-    },pino_write_stream);
+        pino_write_stream
+    );
 }
 
 /**
@@ -161,33 +173,35 @@ function initPinoLogger() {
  */
 function write_log(level, message) {
     // The properties reader returns an object with a length of 0 if a value isn't found.
-    if(log_type === undefined || log_type === 0 || log_type === null) {
+    if (log_type === undefined || log_type === 0 || log_type === null) {
         log_type = 1;
     }
-    if(level === undefined || level === 0 || level === null) {
+    if (level === undefined || level === 0 || level === null) {
         level = ERR;
     }
 
-    switch(log_type) {
+    switch (log_type) {
         case WIN:
             //WINSTON
-            if(!win_logger) {
+            if (!win_logger) {
                 initWinstonLogger();
                 trace(`initialized winston logger writing to ${log_location}`);
             }
             win_logger.log(level, message);
             break;
+
         case PIN:
             //PINO
-            if(!pin_logger) {
+            if (!pin_logger) {
                 initPinoLogger();
                 trace(`initialized pino logger writing to ${log_location}`);
             }
             pin_logger[level](message);
             break;
+
         default:
             //WINSTON is default
-            if(!win_logger) {
+            if (!win_logger) {
                 initWinstonLogger();
                 trace(`initialized winston logger writing to ${log_location}`);
             }
@@ -259,20 +273,22 @@ function notify(message) {
 function setLogLevel(level) {
     let log_index = Object.keys(winston_log_levels).indexOf(level);
 
-    if(log_index !== -1) {
-        switch(log_type) {
+    if (log_index !== -1) {
+        switch (log_type) {
             case WIN:
                 //WINSTON
-                if(win_logger === undefined) {
+                if (win_logger === undefined) {
                     log_level = level;
                     global.log_level = level;
                     return;
                 }
+
                 //Winston is strange, it has a log level at the logger level, the transport level, and each individual transport.
                 win_logger.level = level;
                 win_logger.transports.level = level;
                 win_logger.transports.file.level = level;
                 break;
+
             case PIN:
                 //PINO
                 if(pin_logger === undefined) {
@@ -282,9 +298,10 @@ function setLogLevel(level) {
                 }
                 pin_logger.level = level;
                 break;
+
             default:
                 //WINSTON is default
-                if(win_logger === undefined) {
+                if (win_logger === undefined) {
                     log_level = level;
                     global.log_level = level;
                     return;
@@ -295,6 +312,7 @@ function setLogLevel(level) {
                 win_logger.transports.file.level = level;
                 break;
         }
+
         log_level = level;
         global.log_level = level;
     } else {
@@ -308,7 +326,7 @@ function setLogLevel(level) {
  * will be ignored with an error logged.
  */
 function setLogType(type) {
-    if( type > PIN || type < WIN) {
+    if (type > PIN || type < WIN) {
         write_log(ERR, `logger type ${type} is invalid`);
         return;
     }
@@ -320,34 +338,165 @@ function setLogType(type) {
  * @param path
  */
 function setLogLocation(path) {
-    if(!path || path.length === 0) {
+    if (!path || path.length === 0) {
         error(`An invalid log path was sent to the logger.`);
         return;
     }
     win_logger = undefined;
     log_location = path;
     global.log_location = path;
-    switch(log_type) {
+
+    switch (log_type) {
         case WIN:
             //WINSTON
-            if(!win_logger) {
+            if (!win_logger) {
                 initWinstonLogger();
                 trace(`initialized winston logger writing to ${log_location}`);
             }
             break;
+
         case PIN:
             //PINO
-            if(!pin_logger) {
+            if (!pin_logger) {
                 initPinoLogger();
                 trace(`initialized pino logger writing to ${log_location}`);
             }
             break;
+
         default:
             //WINSTON is default
-            if(!win_logger) {
+            if (!win_logger) {
                 initWinstonLogger();
                 trace(`initialized winston logger writing to ${log_location}`);
             }
             break;
     }
+}
+
+async function read_log(read_log_object, callback){
+    let validation = validator(read_log_object);
+
+    if (validation) {
+        return callback(validation);
+    }
+
+    const options = {
+        limit: 100
+    };
+
+    switch (log_type) {
+        case WIN:
+            options.fields = ['level','message','timestamp'];
+            break;
+
+        case PIN:
+            if (read_log_object.log === "install_log") {
+                options.fields = ['level','message','timestamp'];
+            } else {
+                options.fields = ['level','msg','time'];
+            }
+            break;
+
+        default:
+            options.fields = ['level','message','timestamp'];
+            break;
+    }
+
+    let bones = null;
+    // This name variable is being used to remove the Winston transport after each read op if Pino is enabled.
+    let tempTransportName = null;
+
+    switch (read_log_object.log) {
+        case LOGGER_LOCATION.INSTALL_LOG:
+            tempTransportName = LOGGER_LOCATION.INSTALL_LOG;
+            bones = winston;
+            winston.configure({
+                transports: [
+                    new (winston.transports.File)({
+                        name: tempTransportName,
+                        filename: '../install_log.log',
+                        handleExceptions: true,
+                        prettyPrint:true
+                    })
+                ],
+                exitOnError: false
+            });
+            break;
+
+        case LOGGER_LOCATION.RUN_LOG:
+            tempTransportName = LOGGER_LOCATION.RUN_LOG;
+            bones = winston;
+            winston.configure({
+                transports: [
+                    new (winston.transports.File)({
+                        name: LOGGER_LOCATION.RUN_LOG,
+                        filename: '../run_log.log',
+                        handleExceptions: true,
+                        prettyPrint: true
+                    })
+                ],
+                exitOnError: false
+            });
+            break;
+
+        default:
+            if (!win_logger) {
+                tempTransportName = LOGGER_LOCATION.HDB_LOG;
+                bones  = winston;
+                winston.configure({
+                    transports: [
+                        new (winston.transports.File)({
+                            name: tempTransportName,
+                            filename: log_location,
+                            handleExceptions: true,
+                            prettyPrint: true
+                        })
+                    ],
+                    exitOnError: false
+                });
+            } else {
+                bones = win_logger;
+            }
+            break;
+    }
+
+    if (read_log_object.from){
+        options.from = moment(read_log_object.from);
+    }
+
+    if (read_log_object.until && moment(read_log_object.until).isValid()){
+        options.until = moment(read_log_object.until);
+    }
+
+    if (read_log_object.level){
+        options.level = read_log_object.level;
+    }
+
+    if (read_log_object.limit){
+        options.limit = read_log_object.limit;
+    }
+
+    if (read_log_object.order){
+        options.order = read_log_object.order;
+    }
+
+    if (read_log_object.start){
+        options.start = read_log_object.start;
+    }
+
+    bones.query(options, (err, results) => queryCallback(err, results, callback));
+
+    if (tempTransportName) {
+        winston.remove(tempTransportName);
+        tempTransportName = null;
+    }
+}
+
+function queryCallback(err, results, callback) {
+    if (err) {
+        callback(err);
+        return;
+    }
+
+    callback(null, results);
 }

@@ -1,8 +1,8 @@
 "use strict";
 
-const validate = require('validate.js'),
-    validator = require('./validationWrapper.js'),
-    moment = require('moment');
+const validate = require('validate.js');
+const validator = require('./validationWrapper.js');
+const moment = require('moment');
 
 validate.extend(validate.validators.datetime, {
     // The value is guaranteed not to be null or undefined but otherwise it

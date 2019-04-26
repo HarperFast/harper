@@ -8,7 +8,6 @@ const schema = require('../data_layer/schema');
 const delete_ = require('../data_layer/delete');
 const user = require('../security/user');
 const role = require('../security/role');
-const read_log = require('../utility/logging/read_logs');
 const cluster_utilities = require('./clustering/clusterUtilities');
 const auth = require('../security/auth');
 const harper_logger = require('../utility/logging/harper_logger');
@@ -280,7 +279,7 @@ function chooseOperation(json, callback) {
             operation_function = cb_user_user_info;
             break;
         case terms.OPERATIONS_ENUM.READ_LOG:
-            operation_function = read_log.read_log;
+            operation_function = harper_logger.read_log;
             break;
         case terms.OPERATIONS_ENUM.ADD_NODE:
             operation_function = cluster_utilities.addNode;
