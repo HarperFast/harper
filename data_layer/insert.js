@@ -42,6 +42,9 @@ const INTERNAL_ERROR_MESSAGE = 'An internal error occurred, please check the log
 
 const ATTRIBUTE_ALREADY_EXISTS = 'attribute already exists';
 
+const UPDATE_ACTION = 'updated';
+const INSERT_ACTION = 'inserted';
+
 module.exports = {
     insert: insertData,
     update: updateData
@@ -144,7 +147,7 @@ async function insertData(insert_object){
             pool.killAll();
         }
 
-        return returnObject('inserted', written_hashes, insert_object, skipped);
+        return returnObject(INSERT_ACTION, written_hashes, insert_object, skipped);
     } catch(e){
         if(pool instanceof HDB_Pool){
             pool.killAll();
@@ -192,7 +195,7 @@ async function updateData(update_object){
             pool.killAll();
         }
 
-        return returnObject('updated', written_hashes, update_object, skipped);
+        return returnObject(UPDATE_ACTION, written_hashes, update_object, skipped);
     } catch(e){
         if(pool instanceof HDB_Pool){
             pool.killAll();
