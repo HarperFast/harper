@@ -34,7 +34,7 @@ class ServerSocket{
 
         this.socket.on('query', (data)=>{
             this.exchange_get([data]).then(result=>{
-                console.log(result);
+                console.log(result.length);
             });
         });
     }

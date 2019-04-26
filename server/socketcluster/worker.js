@@ -9,6 +9,7 @@ const fs = require('fs-extra');
 const env = require('../../utility/environment/environmentManager');
 env.initSync();
 const HDB_QUEUE_PATH = env.getHdbBasePath() + '/schema/system/hdb_queue/';
+const uuid = require('uuid/v4');
 
 class Worker extends SCWorker{
     run(){
@@ -26,6 +27,7 @@ class Worker extends SCWorker{
 
         this.exchange_get = promisify(this.exchange.get).bind(this.exchange);
         this.exchange_set = promisify(this.exchange.set).bind(this.exchange);
+        this.exchange_add = promisify(this.exchange.add).bind(this.exchange);
         this.exchange_get('hdb_worker').then(data => {
             console.log(data);
             if(typeof data === 'object') {
@@ -38,6 +40,7 @@ class Worker extends SCWorker{
             //new NodeConnector(require('./connector/node'), this);
         }
     }
+
 
     subscribeMiddleware(req, next){
         if(this.hdb_workers.indexOf(req.channel) >= 0 && req.channel !== req.socket.id){
@@ -56,6 +59,7 @@ class Worker extends SCWorker{
         try{
             this.publishInValidation(req);
 
+            //if the channel is harperdb child connection we immediatley send it on
             if(this.hdb_workers.indexOf(req.channel) >= 0){
                 return next();
             }
@@ -67,32 +71,33 @@ class Worker extends SCWorker{
                 return next(true);
             }
 
-            this.storeTransaction(req).then(()=>{
-                next();
-            });
+            delete req.data.__transacted;
+            this.logTransaction(req);
+            next();
         } catch(e){
             console.error(e);
             return next(e);
         }
     }
 
-    async storeTransaction(req){
-        delete req.data.__transacted;
+    logTransaction(req){
+
 
         //store the record to the exchange
         //await this.exchange_set([req.channel, req.data.timestamp], req.data);
-        await this.exchange_set([req.channel], req.data);
+        //await this.exchange_set([req.channel], req.data);
 
         //store the record to the channel file.
         if(this.transaction_map[req.channel] === undefined){
+            console.log('make stream');
             this.transaction_map[req.channel] = fs.createWriteStream(HDB_QUEUE_PATH+req.channel, {flags:'a'});
         }
 
-        this.transaction_map[req.channel].write(JSON.stringify(req.data) + ',', (err)=>{
-            if(err){
-                console.error(err);
-            }
-        });
+        let ok = this.transaction_map[req.channel].write(JSON.stringify(req.data) + '\n');
+
+        if(!ok){
+            console.log('ouch!');
+        }
     }
 
 
@@ -124,11 +129,19 @@ class Worker extends SCWorker{
              throw new Error('not authorized');
         }
 
-        //add / change tghe timestamp
-        req.data.timestamp = Date.now();
+        if(!req.data.timestamp) {
+            //add / change tghe timestamp
+            req.data.timestamp = Date.now();
+        }
 
-        //the __originator attribute is added so we can filter out sending back the same object to the sender
-        req.data.__originator = req.socket.id;
+        if(!req.data.__id) {
+            req.data.__id = uuid();
+        }
+
+        if(!req.data.__originator) {
+            //the __originator attribute is added so we can filter out sending back the same object to the sender
+            req.data.__originator = req.socket.id;
+        }
     }
 
 
@@ -143,13 +156,8 @@ class Worker extends SCWorker{
 
         //if the data has not been transacted and if the data did not originated from the socket we do not publish out
         if(req.data.__originator !== req.socket.id){
-
             return next();
         }
-
-        //this silently swallows stopping the message from being sent
-        return next(true);
-
     }
 
     /**
