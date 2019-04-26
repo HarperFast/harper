@@ -85,8 +85,19 @@ async function validation(write_object){
     let hash_attribute = table_schema.hash_attribute;
     let dups = new Set();
     let attributes = {};
+
+    let is_update = false;
+    if (write_object.operation === 'update') {
+        is_update = true;
+    }
+
     write_object.records.forEach((record)=>{
-        if(!h_utils.isEmpty(record[hash_attribute]) && record[hash_attribute] !== '' && dups.has(h_utils.autoCast(record[hash_attribute]))){
+
+        if (is_update && h_utils.isEmptyOrZeroLength(record[hash_attribute])) {
+            throw new Error('a valid hash attribute must be provided with update record')
+        }
+
+        if (!h_utils.isEmpty(record[hash_attribute]) && record[hash_attribute] !== '' && dups.has(h_utils.autoCast(record[hash_attribute]))){
             record.skip = true;
         }
 
