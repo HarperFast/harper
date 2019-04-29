@@ -116,60 +116,6 @@ async function createSchemaStructure(schema_create_object) {
     }
 }
 
-// function createSchemaStructure(schema_create_object, callback) {
-//     try {
-//         let validation_error = validation.schema_object(schema_create_object);
-//         if (validation_error) {
-//             callback(validation_error, null);
-//             return;
-//         }
-//
-//         searchForSchema(schema_create_object.schema, (err, schema) => {
-//             if (schema && schema.length > 0) {
-//                 return callback(`Schema ${schema_create_object.schema} already exists`);
-//             }
-//
-//             let insertObject = {
-//                 operation: 'insert',
-//                 schema: 'system',
-//                 table: 'hdb_schema',
-//                 records: [
-//                     {
-//                         name: schema_create_object.schema,
-//                         createddate: '' + Date.now()
-//                     }
-//                 ]
-//             };
-//
-//             cb_insert_insert(insertObject, (err) => {
-//                 if (err) {
-//                     callback(err);
-//                     return;
-//                 }
-//
-//                 let schema = schema_create_object.schema;
-//
-//                 fs.mkdir(env.get('HDB_ROOT') + '/schema/' + schema, function (err, data) {
-//                     if (err) {
-//                         if (err.errno === -17) {
-//                             callback("schema already exists", null);
-//                             return;
-//
-//                         } else {
-//                             callback(err.message, null);
-//                             return;
-//                         }
-//                     }
-//                     callback(err, `schema ${schema_create_object.schema} successfully created`);
-//                 });
-//             });
-//
-//         });
-//     } catch (e) {
-//         callback(e);
-//     }
-// }
-
 function createTable(create_table_object, callback) {
     try {
         createTableStructure(create_table_object, function (err, success) {
