@@ -175,7 +175,7 @@ async function updateData(update_object){
 
         // If no hashes are existing skip update attempts
         if(h_utils.isEmptyOrZeroLength(existing_rows)){
-            return returnObject("updated", [], update_object, hashes);
+            return returnObject(UPDATE_ACTION, [], update_object, hashes);
         }
 
         let existing_map =  _.keyBy(existing_rows, function(record) {
@@ -218,7 +218,7 @@ function returnObject(action, written_hashes, object, skipped) {
         skipped_hashes: skipped
     };
 
-    if (action === 'inserted') {
+    if (action === INSERT_ACTION) {
         return_object.inserted_hashes = written_hashes;
         return return_object;
     }
