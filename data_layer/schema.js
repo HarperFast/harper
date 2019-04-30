@@ -112,6 +112,17 @@ async function createSchemaStructure(schema_create_object) {
     }
 }
 
+// // TODO - search for occurrences
+// async function createTable(create_table_object) {
+//     try {
+//         let create_table_structure = await createTableStructure(create_table_object);
+//         signalling.signalSchemaChange({type: 'schema'});
+//         return create_table_structure;
+//     } catch(err) {
+//         throw err;
+//     }
+// }
+
 function createTable(create_table_object, callback) {
     try {
         createTableStructure(create_table_object, function (err, success) {
@@ -127,6 +138,23 @@ function createTable(create_table_object, callback) {
         callback(e);
     }
 }
+
+// // TODO - search for occurrences
+// async function createTableStructure(create_table_object) {
+//     try {
+//         let validation_obj = clone(create_table_object);
+//         let validation_error = validation.create_table_object(validation_obj);
+//         if (validation_error) {
+//             throw validation_error;
+//         }
+//
+//         validation.validateTableResidence(create_table_object.residence);
+//
+//     } catch(err) {
+//         throw err;
+//
+//     }
+// }
 
 function createTableStructure(create_table_object, callback) {
     let validation_obj = clone(create_table_object);
@@ -626,6 +654,12 @@ async function searchForSchema(schema_name) {
     } catch(err) {
         throw err;
     }
+    // p_search_by_conditions(search_obj)
+    //     .then((res) => {
+    //         return res
+    //     }).catch((err) => {
+    //         throw err
+    // })
 }
 
 function searchForTable(schema_name, table_name, callback) {
