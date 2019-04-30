@@ -42,6 +42,9 @@ const INTERNAL_ERROR_MESSAGE = 'An internal error occurred, please check the log
 
 const ATTRIBUTE_ALREADY_EXISTS = 'attribute already exists';
 
+const UPDATE_ACTION = 'updated';
+const INSERT_ACTION = 'inserted';
+
 module.exports = {
     insert: insertData,
     update: updateData
@@ -85,8 +88,19 @@ async function validation(write_object){
     let hash_attribute = table_schema.hash_attribute;
     let dups = new Set();
     let attributes = {};
+
+    let is_update = false;
+    if (write_object.operation === 'update') {
+        is_update = true;
+    }
+
     write_object.records.forEach((record)=>{
-        if(!h_utils.isEmpty(record[hash_attribute]) && record[hash_attribute] !== '' && dups.has(h_utils.autoCast(record[hash_attribute]))){
+
+        if (is_update && h_utils.isEmptyOrZeroLength(record[hash_attribute])) {
+            throw new Error('a valid hash attribute must be provided with update record')
+        }
+
+        if (!h_utils.isEmpty(record[hash_attribute]) && record[hash_attribute] !== '' && dups.has(h_utils.autoCast(record[hash_attribute]))){
             record.skip = true;
         }
 
@@ -129,16 +143,11 @@ async function insertData(insert_object){
 
         pool = await processData(data_wrapper, pool);
 
-        let return_object = {
-            message: `inserted ${written_hashes.length} of ${insert_object.records.length} records`,
-            inserted_hashes: written_hashes,
-            skipped_hashes: skipped
-        };
-
         if(pool instanceof HDB_Pool){
             pool.killAll();
         }
-        return return_object;
+
+        return returnObject(INSERT_ACTION, written_hashes, insert_object, skipped);
     } catch(e){
         if(pool instanceof HDB_Pool){
             pool.killAll();
@@ -164,9 +173,9 @@ async function updateData(update_object){
 
         let existing_rows = await getExistingRows(table_schema, hashes, attributes);
 
+        // If no hashes are existing skip update attempts
         if(h_utils.isEmptyOrZeroLength(existing_rows)){
-            //TODO finish this return
-            return;
+            return returnObject(UPDATE_ACTION, [], update_object, hashes);
         }
 
         let existing_map =  _.keyBy(existing_rows, function(record) {
@@ -182,23 +191,40 @@ async function updateData(update_object){
 
         pool = await processData(data_wrapper, pool);
 
-        let return_object = {
-            message: `updated ${written_hashes.length} of ${update_object.records.length} records`,
-            update_hashes: written_hashes,
-            skipped_hashes: skipped
-        };
-
         if(pool instanceof HDB_Pool){
             pool.killAll();
         }
 
-        return return_object;
+        return returnObject(UPDATE_ACTION, written_hashes, update_object, skipped);
     } catch(e){
         if(pool instanceof HDB_Pool){
             pool.killAll();
         }
         throw (e);
     }
+}
+
+/**
+ * constructs return object for insert and update.
+ * @param action
+ * @param written_hashes
+ * @param object
+ * @param skipped
+ * @returns {{skipped_hashes: *, update_hashes: *, message: string}}
+ */
+function returnObject(action, written_hashes, object, skipped) {
+    let return_object = {
+        message: `${action} ${written_hashes.length} of ${object.records.length} records`,
+        skipped_hashes: skipped
+    };
+
+    if (action === INSERT_ACTION) {
+        return_object.inserted_hashes = written_hashes;
+        return return_object;
+    }
+
+    return_object.update_hashes = written_hashes;
+    return return_object;
 }
 
 /**
