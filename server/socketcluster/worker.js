@@ -10,10 +10,12 @@ const env = require('../../utility/environment/environmentManager');
 env.initSync();
 const HDB_QUEUE_PATH = env.getHdbBasePath() + '/schema/system/hdb_queue/';
 const uuid = require('uuid/v4');
+const json_2_csv = require('json-2-csv');
 
 class Worker extends SCWorker{
     run(){
         this.registerWorkerHandlers();
+        this.HDB_QUEUE_PATH = env.getHdbBasePath() + '/schema/system/hdb_queue/';
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_IN, this.publishInMiddleware.bind(this));
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_HANDSHAKE_SC, this.handshakeSCMiddleware.bind(this));
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_OUT, this.publishOutMiddleware.bind(this));
@@ -22,7 +24,7 @@ class Worker extends SCWorker{
 
         this.hdb_workers = [];
 
-        this.transaction_map = {};
+        this.fs_channel_map = {};
 
 
         this.exchange_get = promisify(this.exchange.get).bind(this.exchange);
@@ -66,38 +68,43 @@ class Worker extends SCWorker{
 
             if(req.data.__transacted === undefined){
                 //send to worker
-                this.sendTransactionToWorker(req.channel, req.data);
-                //squash the message from continuing to publish in
-                return next(true);
+                this.logPendingTransaction(req.channel, req.data).then(()=>{
+                    this.sendTransactionToWorker(req.channel, req.data);
+                    //squash the message from continuing to publish in
+                    return next(true);
+                });
             }
 
             delete req.data.__transacted;
-            this.logTransaction(req);
-            next();
+            delete req.data.__id;
+            this.logTransaction(req.channel, req.data).then(()=>{
+                next();
+            });
         } catch(e){
             console.error(e);
             return next(e);
         }
     }
 
-    logTransaction(req){
-
-
-        //store the record to the exchange
-        //await this.exchange_set([req.channel, req.data.timestamp], req.data);
-        //await this.exchange_set([req.channel], req.data);
-
-        //store the record to the channel file.
-        if(this.transaction_map[req.channel] === undefined){
-            console.log('make stream');
-            this.transaction_map[req.channel] = fs.createWriteStream(HDB_QUEUE_PATH+req.channel, {flags:'a'});
+    async checkFSChannelMap(channel){
+        if(this.fs_channel_map[channel] === undefined){
+            await fs.mkdirp(HDB_QUEUE_PATH + channel + '/' + channel);
+            this.fs_channel_map[channel] = fs.createWriteStream(HDB_QUEUE_PATH + channel, {flags:'a'});
         }
+    }
 
-        let ok = this.transaction_map[req.channel].write(JSON.stringify(req.data) + '\n');
+    async logPendingTransaction(channel, transaction){
+        await this.checkFSChannelMap(channel);
 
-        if(!ok){
-            console.log('ouch!');
-        }
+        let transaction_csv = await json_2_csv.json2csvAsync(transaction, {prependHeader: false, keys: ['__id', 'timestamp', 'operation', 'records']}) + '\r\n';
+        this.fs_channel_map[channel].write(transaction_csv);
+    }
+
+    async logTransaction(channel, transaction){
+        await this.checkFSChannelMap(channel);
+
+        let transaction_csv = await json_2_csv.json2csvAsync(transaction, {prependHeader: false, keys: ['timestamp', '__id', 'operation', 'records']}) + '\r\n';
+        this.fs_channel_map[channel].write(transaction_csv);
     }
 
 

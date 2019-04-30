@@ -3,6 +3,7 @@
 const log = require('../../../utility/logging/harper_logger');
 
 const promisify = require('util').promisify;
+const FSReadStream = require('../../../utility/fs/FSReadStream');
 
 /**
  * This class establishes the handlers for the socket on the server, handling all messaging & state changes related to a connected client
@@ -17,6 +18,7 @@ class ServerSocket{
         this.exchange_get = promisify(this.worker.exchange.get).bind(this.worker.exchange);
         this.exchange_remove = promisify(this.worker.exchange.remove).bind(this.worker.exchange);
     }
+
 //TODO probably better to detetct the connect/disconnect events and check for a header saying its a worker
     registerHandlers(){
         this.socket.on('error', this.errorHandler);
@@ -32,10 +34,8 @@ class ServerSocket{
         this.socket.on('authStateChange', this.authStateChangeHandler);
         this.socket.on('message', this.messageHandler);
 
-        this.socket.on('query', (data)=>{
-            this.exchange_get([data]).then(result=>{
-                console.log(result.length);
-            });
+        this.socket.on('catchup', (channel, range)=>{
+
         });
     }
 
