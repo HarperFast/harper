@@ -613,10 +613,10 @@ function getMomentDate(date) {
 
 describe("Test read_log ", function() {
     let sandbox;
-    let winstonConfigSpy;
-    let callbackSpy;
-    let winstonQuerySpy;
-    let testReadLogObj;
+    let winston_config_spy;
+    let callback_spy;
+    let winston_query_spy;
+    let test_read_log_obj;
 
     before(function() {
         harper_log.__set__('win_logger', undefined);
@@ -629,9 +629,9 @@ describe("Test read_log ", function() {
     })
 
     beforeEach(function() {
-        callbackSpy = sandbox.spy();
-        winstonQuerySpy = sandbox.spy(winston, "query");
-        testReadLogObj = test_utils.deepClone(TEST_READ_LOG_OBJECT);
+        callback_spy = sandbox.spy();
+        winston_query_spy = sandbox.spy(winston, "query");
+        test_read_log_obj = test_utils.deepClone(TEST_READ_LOG_OBJECT);
     });
 
     afterEach(function() {
@@ -643,192 +643,192 @@ describe("Test read_log ", function() {
 
     it("Should call the query method if the validator does NOT return anything", function() {
         sandbox.stub(validator, "validateObject").returns(null);
-        harper_log.read_log(testReadLogObj, callbackSpy);
+        harper_log.read_log(test_read_log_obj, callback_spy);
 
-        assert.strictEqual(winstonQuerySpy.calledOnce, true);
+        assert.strictEqual(winston_query_spy.calledOnce, true);
     });
 
     it("Should call the callback method with the data returned from the validator if returned", function() {
         const TEST_VALIDATOR_DATA = "Validator return data"
         sandbox.stub(validator, "validateObject").returns(TEST_VALIDATOR_DATA);
-        harper_log.read_log(testReadLogObj, callbackSpy);
+        harper_log.read_log(test_read_log_obj, callback_spy);
 
-        assert.strictEqual(callbackSpy.args[0][0], TEST_VALIDATOR_DATA);
+        assert.strictEqual(callback_spy.args[0][0], TEST_VALIDATOR_DATA);
     });
 
     describe("setting Winston configuration", function() {
         beforeEach(function() {
-            winstonConfigSpy = sandbox.spy(winston, "configure");
+            winston_config_spy = sandbox.spy(winston, "configure");
         })
 
         it("Should configure a winston with the file name `install_log.log` when log equals install_log ", function() {
-            testReadLogObj.log = "install_log";
-            harper_log.read_log(testReadLogObj, callbackSpy);
+            test_read_log_obj.log = "install_log";
+            harper_log.read_log(test_read_log_obj, callback_spy);
 
-            assert.strictEqual(winstonConfigSpy.args[0][0].transports[0].filename, 'install_log.log')
-            assert.strictEqual(winstonConfigSpy.calledOnce, true);
+            assert.strictEqual(winston_config_spy.args[0][0].transports[0].filename, 'install_log.log')
+            assert.strictEqual(winston_config_spy.calledOnce, true);
         });
 
         it("Should configure a winston with the file name `run_log.log` when log equals run_log ", function() {
-            testReadLogObj.log = "run_log";
-            harper_log.read_log(testReadLogObj, callbackSpy);
+            test_read_log_obj.log = "run_log";
+            harper_log.read_log(test_read_log_obj, callback_spy);
 
-            assert.strictEqual(winstonConfigSpy.args[0][0].transports[0].filename, 'run_log.log')
-            assert.strictEqual(winstonConfigSpy.calledOnce, true);
+            assert.strictEqual(winston_config_spy.args[0][0].transports[0].filename, 'run_log.log')
+            assert.strictEqual(winston_config_spy.calledOnce, true);
         });
 
         it("Should configure winston when there is no log set in the read_log_object ", function() {
-            harper_log.read_log(testReadLogObj, callbackSpy);
+            harper_log.read_log(test_read_log_obj, callback_spy);
 
-            assert.strictEqual(winstonQuerySpy.calledOnce, true);
+            assert.strictEqual(winston_query_spy.calledOnce, true);
         });
 
         it("Should configure winston to query for logs when Pino is set as the logger ", function() {
             harper_log.setLogType(PINO);
-            harper_log.read_log(testReadLogObj, callbackSpy);
+            harper_log.read_log(test_read_log_obj, callback_spy);
 
-            assert.strictEqual(winstonConfigSpy.args[0][0].transports[0].filename, 'hdb_log.log')
-            assert.strictEqual(winstonConfigSpy.calledOnce, true);
+            assert.strictEqual(winston_config_spy.args[0][0].transports[0].filename, 'hdb_log.log')
+            assert.strictEqual(winston_config_spy.calledOnce, true);
         })
     });
 
     describe("bones.query() 'options' parameter ", function() {
 
         it("Should include 'limit' and 'fields' properties by default ", function() {
-            testReadLogObj.limit = null;
-            harper_log.read_log(testReadLogObj, callbackSpy);
-            const winstonOptions = winstonQuerySpy.args[0][0];
+            test_read_log_obj.limit = null;
+            harper_log.read_log(test_read_log_obj, callback_spy);
+            const winston_options = winston_query_spy.args[0][0];
 
-            assert.deepStrictEqual(winstonOptions.fields, DEFAULT_OPTIONS.win_fields);
-            assert.strictEqual(winstonOptions.limit, DEFAULT_OPTIONS.limit);
+            assert.deepStrictEqual(winston_options.fields, DEFAULT_OPTIONS.win_fields);
+            assert.strictEqual(winston_options.limit, DEFAULT_OPTIONS.limit);
         });
 
         it("Should include 'fields' properties for Pino if Pino logging is turned on ", function() {
             harper_log.setLogType(PINO);
-            harper_log.read_log(testReadLogObj, callbackSpy);
-            const winstonOptions = winstonQuerySpy.args[0][0];
+            harper_log.read_log(test_read_log_obj, callback_spy);
+            const winston_options = winston_query_spy.args[0][0];
 
-            assert.deepStrictEqual(winstonOptions.fields, DEFAULT_OPTIONS.pin_fields);
+            assert.deepStrictEqual(winston_options.fields, DEFAULT_OPTIONS.pin_fields);
         });
 
         it("Should include a 'from' property with formatted date value ", function() {
-            harper_log.read_log(testReadLogObj, callbackSpy);
-            const winstonOptions = winstonQuerySpy.args[0][0];
+            harper_log.read_log(test_read_log_obj, callback_spy);
+            const winston_options = winston_query_spy.args[0][0];
 
-            assert.strictEqual(winstonOptions.from.isValid(), true);
-            assert.deepStrictEqual(winstonOptions.from, moment(testReadLogObj.from));
+            assert.strictEqual(winston_options.from.isValid(), true);
+            assert.deepStrictEqual(winston_options.from, moment(test_read_log_obj.from));
         });
 
         it("Should include a 'until' property with formatted date value ", function() {
-            harper_log.read_log(testReadLogObj, callbackSpy);
-            const winstonOptions = winstonQuerySpy.args[0][0];
+            harper_log.read_log(test_read_log_obj, callback_spy);
+            const winston_options = winston_query_spy.args[0][0];
 
-            assert.strictEqual(winstonOptions.until.isValid(), true);
-            assert.deepStrictEqual(winstonOptions.until, moment(testReadLogObj.until));
+            assert.strictEqual(winston_options.until.isValid(), true);
+            assert.deepStrictEqual(winston_options.until, moment(test_read_log_obj.until));
         });
 
         it("Should default the 'from' and 'until' properties to represent the previous 24 hours if not included in request ", function() {
-            delete testReadLogObj['from'];
-            delete testReadLogObj['until'];
+            delete test_read_log_obj['from'];
+            delete test_read_log_obj['until'];
             const current_date = getMomentDate();
 
-            harper_log.read_log(testReadLogObj, callbackSpy);
-            const winstonOptions = winstonQuerySpy.args[0][0];
+            harper_log.read_log(test_read_log_obj, callback_spy);
+            const winston_options = winston_query_spy.args[0][0];
 
-            assert.strictEqual(getMomentDate(winstonOptions.from).date(), current_date.date()-1);
-            assert.strictEqual(moment(winstonOptions.until).isSame(current_date, 'day'), true);
+            assert.strictEqual(getMomentDate(winston_options.from).date(), current_date.date()-1);
+            assert.strictEqual(moment(winston_options.until).isSame(current_date, 'day'), true);
         });
 
         it("Should default the 'until' property to current day if not included in request ", function() {
-            delete testReadLogObj['until'];
+            delete test_read_log_obj['until'];
 
-            harper_log.read_log(testReadLogObj, callbackSpy);
-            const winstonOptions = winstonQuerySpy.args[0][0];
+            harper_log.read_log(test_read_log_obj, callback_spy);
+            const winston_options = winston_query_spy.args[0][0];
 
-            assert.strictEqual(moment(winstonOptions.until).isSame(getMomentDate(), 'day'), true);
-            assert.strictEqual(moment(winstonOptions.from).isSame(testReadLogObj.from, 'day'), true);
+            assert.strictEqual(moment(winston_options.until).isSame(getMomentDate(), 'day'), true);
+            assert.strictEqual(moment(winston_options.from).isSame(test_read_log_obj.from, 'day'), true);
         });
 
         it("Should include a 'level' property ", function() {
-            harper_log.read_log(testReadLogObj, callbackSpy);
-            const winstonOptions = winstonQuerySpy.args[0][0];
+            harper_log.read_log(test_read_log_obj, callback_spy);
+            const winston_options = winston_query_spy.args[0][0];
 
-            assert.strictEqual(winstonOptions.level, testReadLogObj.level);
+            assert.strictEqual(winston_options.level, test_read_log_obj.level);
         });
 
         it("Should NOT include a 'level' property if not included in request", function() {
-            delete testReadLogObj['level'];
+            delete test_read_log_obj['level'];
 
-            harper_log.read_log(testReadLogObj, callbackSpy);
-            const winstonOptions = winstonQuerySpy.args[0][0];
+            harper_log.read_log(test_read_log_obj, callback_spy);
+            const winston_options = winston_query_spy.args[0][0];
 
-            assert.strictEqual(winstonOptions.level, undefined);
+            assert.strictEqual(winston_options.level, undefined);
         });
 
         it("Should include a 'limit' property ", function() {
-            harper_log.read_log(testReadLogObj, callbackSpy);
-            const winstonOptions = winstonQuerySpy.args[0][0];
+            harper_log.read_log(test_read_log_obj, callback_spy);
+            const winston_options = winston_query_spy.args[0][0];
 
-            assert.strictEqual(winstonOptions.limit, testReadLogObj.limit);
+            assert.strictEqual(winston_options.limit, test_read_log_obj.limit);
         });
 
         it("Should default 'limit' property to 100 if not included in request ", function() {
-            delete testReadLogObj['limit'];
+            delete test_read_log_obj['limit'];
 
-            harper_log.read_log(testReadLogObj, callbackSpy);
-            const winstonOptions = winstonQuerySpy.args[0][0];
+            harper_log.read_log(test_read_log_obj, callback_spy);
+            const winston_options = winston_query_spy.args[0][0];
 
-            assert.strictEqual(winstonOptions.limit, 100);
+            assert.strictEqual(winston_options.limit, 100);
         });
 
         it("Should include a 'order' property ", function() {
-            harper_log.read_log(testReadLogObj, callbackSpy);
-            const winstonOptions = winstonQuerySpy.args[0][0];
+            harper_log.read_log(test_read_log_obj, callback_spy);
+            const winston_options = winston_query_spy.args[0][0];
 
-            assert.strictEqual(winstonOptions.order, testReadLogObj.order);
+            assert.strictEqual(winston_options.order, test_read_log_obj.order);
         });
 
         it("Should default 'order' property to 'desc' if not included in request", function() {
-            delete testReadLogObj['order'];
+            delete test_read_log_obj['order'];
 
-            harper_log.read_log(testReadLogObj, callbackSpy);
-            const winstonOptions = winstonQuerySpy.args[0][0];
+            harper_log.read_log(test_read_log_obj, callback_spy);
+            const winston_options = winston_query_spy.args[0][0];
 
-            assert.strictEqual(winstonOptions.order, 'desc');
+            assert.strictEqual(winston_options.order, 'desc');
         });
 
         it("Should include a 'start' property ", function() {
-            harper_log.read_log(testReadLogObj, callbackSpy);
-            const winstonOptions = winstonQuerySpy.args[0][0];
+            harper_log.read_log(test_read_log_obj, callback_spy);
+            const winston_options = winston_query_spy.args[0][0];
 
-            assert.strictEqual(winstonOptions.start, testReadLogObj.start);
+            assert.strictEqual(winston_options.start, test_read_log_obj.start);
         });
 
         it("Should default 'start' property to 0 if not included in request ", function() {
-            harper_log.read_log(testReadLogObj, callbackSpy);
-            const winstonOptions = winstonQuerySpy.args[0][0];
+            harper_log.read_log(test_read_log_obj, callback_spy);
+            const winston_options = winston_query_spy.args[0][0];
 
-            assert.strictEqual(winstonOptions.start, testReadLogObj.start);
+            assert.strictEqual(winston_options.start, test_read_log_obj.start);
         });
     });
 
     describe("queryCallback() for bones.query", function() {
         const queryCallback = harper_log.__get__('queryCallback');
-        const queryResults = { results: [1, 2, 3] };
-        const queryError = { error: "There was an error" };
+        const query_results = { results: [1, 2, 3] };
+        const query_error = { error: "There was an error" };
 
         it("Should call the callback with the results if an error value is not passed in ", function() {
-            queryCallback(null, queryResults, callbackSpy);
+            queryCallback(null, query_results, callback_spy);
 
-            assert.strictEqual(callbackSpy.calledOnce, true);
-            assert.strictEqual(callbackSpy.calledWith(null, queryResults), true);
+            assert.strictEqual(callback_spy.calledOnce, true);
+            assert.strictEqual(callback_spy.calledWith(null, query_results), true);
         });
 
         it("Should call the callback with the error if an error value is passed in ", function() {
-            queryCallback(queryError, queryResults, callbackSpy);
+            queryCallback(query_error, query_results, callback_spy);
 
-            assert.strictEqual(callbackSpy.calledOnce, true);
-            assert.strictEqual(callbackSpy.calledWith(queryError), true);
+            assert.strictEqual(callback_spy.calledOnce, true);
+            assert.strictEqual(callback_spy.calledWith(query_error), true);
         });
     });
 });
