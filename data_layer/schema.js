@@ -100,17 +100,13 @@ async function createSchemaStructure(schema_create_object) {
 
         await insert.insert(insert_object);
         let schema_object = schema_create_object.schema;
-        await fs.mkdirp(env.get('HDB_ROOT') + '/schema/' + schema_object);
+        await fs.mkdir(env.get('HDB_ROOT') + '/schema/' + schema_object);
 
         return `schema ${schema_create_object.schema} successfully created`;
 
     } catch(err) {
-        if (err) {
-            if (err.errno === -17) {
-                throw 'schema already exists';
-            } else {
-                throw err.message;
-            }
+        if (err.errno === -17) {
+            throw 'schema already exists';
         }
         throw err;
     }
