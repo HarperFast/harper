@@ -20,11 +20,10 @@ const _ = require('underscore');
 const signalling = require('../utility/signalling');
 const log = require('../utility/logging/harper_logger');
 const util = require('util');
-const foobar = insert.insert; //TODO fix this
-const cb_insert_insert = util.callbackify(foobar);
 const hdb_util = require('../utility/common_utils');
 const terms = require('../utility/hdbTerms');
 const common = require('../utility/common_utils');
+let cb_insert_insert = util.callbackify(insert.insert);
 
 // Promisified functions
 let p_search_search_by_value = util.promisify(search.searchByValue);
@@ -43,7 +42,7 @@ const TRASH_BASE_PATH = `${env.get('HDB_ROOT')}/trash/`;
 
 module.exports = {
     createSchema: createSchema,
-    createSchemaStructure: createSchemaStructure,
+    createSchemaStructure,
     createTable: createTable,
     createTableStructure: createTableStructure,
     createAttribute: createAttribute,
