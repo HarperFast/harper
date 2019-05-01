@@ -23,7 +23,7 @@ chai.use(sinon_chai);
 
 const HDB_ROOT_ORIGINAL = env.get('HDB_ROOT');
 const HDB_ROOT_TEST = '../unitTests/data_layer';
-// I temporarily change HDB_ROOT to unit test folder for createSchemaStructure fs.mkdir test.
+// I temporarily change HDB_ROOT to the unit test folder for createSchemaStructure fs.mkdir test.
 // Afterwards root is set back to original value and temp test folder is deleted.
 env.setProperty('HDB_ROOT', HDB_ROOT_TEST);
 const SCHEMA_NAME_TEST = 'dogsrule';
@@ -41,7 +41,7 @@ describe('Test schema module', function() {
         schema = rewire('../../data_layer/schema');
         sinon.restore();
         if (env.get('HDB_ROOT') === HDB_ROOT_TEST)
-            test_util.cleanUpDirectories('../unitTests/data_layer/schema');
+            test_util.cleanUpDirectories(`${HDB_ROOT_TEST}/schema`);
         env.setProperty('HDB_ROOT', HDB_ROOT_ORIGINAL);
     });
 
@@ -122,7 +122,7 @@ describe('Test schema module', function() {
             try {
                 // createSchemaStructure insert.insert expects schema dir to already exist
                 // so I am creating a temporary one. All test dirs are removed after test completion.
-                fs.mkdir('../unitTests/data_layer/schema');
+                fs.mkdir(`${HDB_ROOT_TEST}/schema`);
                 let result = await schema.createSchemaStructure(SCHEMA_CREATE_OBJECT_TEST);
                 let exists = await fs.pathExists(FULL_SCHEMA_PATH_TEST);
 
@@ -132,13 +132,13 @@ describe('Test schema module', function() {
                 console.error(err);
             }
         });
-        //
-        // it('Should catch errno directory exists error from fs', async function() {
-        //     try {
-        //         let result = await schema.createSchemaStructure(SCHEMA_CREATE_OBJECT_TEST);
-        //     } catch(err) {
-        //         expect(err).to.equal('schema already exists')
-        //     }
-        // });
+
+        it('Should catch errno directory exists error from fs.mkdir', async function() {
+            try {
+                let result = await schema.createSchemaStructure(SCHEMA_CREATE_OBJECT_TEST);
+            } catch(error) {
+                expect(error).to.equal('schema already exists')
+            }
+        });
     });
 });
