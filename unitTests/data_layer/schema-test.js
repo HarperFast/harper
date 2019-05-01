@@ -27,11 +27,15 @@ const HDB_ROOT_TEST = '../unitTests/data_layer';
 // Afterwards root is set back to original value and temp test folder is deleted.
 env.setProperty('HDB_ROOT', HDB_ROOT_TEST);
 const SCHEMA_NAME_TEST = 'dogsrule';
+const TABLE_NAME_TEST = 'catsdrool' ;
+const HASH_ATT_TEST = 'id';
 const FULL_SCHEMA_PATH_TEST = env.get('HDB_ROOT') + '/schema/' + SCHEMA_NAME_TEST;
 const SCHEMA_CREATE_OBJECT_TEST = {operation: 'create_schema', schema: SCHEMA_NAME_TEST};
+const CREATE_TABLE_OBJECT_TEST = {operation: 'create_table', schema: SCHEMA_NAME_TEST, table: TABLE_NAME_TEST, hash_attribute: HASH_ATT_TEST};
 
 
 describe('Test schema module', function() {
+    let signal_schema_change_stub = sinon.stub(signalling, 'signalSchemaChange');
 
     afterEach(function() {
 
@@ -40,14 +44,12 @@ describe('Test schema module', function() {
     after(function() {
         schema = rewire('../../data_layer/schema');
         sinon.restore();
-        if (env.get('HDB_ROOT') === HDB_ROOT_TEST)
-            test_util.cleanUpDirectories(`${HDB_ROOT_TEST}/schema`);
+        test_util.cleanUpDirectories(`${HDB_ROOT_TEST}/schema`);
         env.setProperty('HDB_ROOT', HDB_ROOT_ORIGINAL);
     });
 
     describe('Create schema', function() {
         let create_schema_structure_stub = sinon.stub();
-        let signal_schema_change_stub = sinon.stub(signalling, 'signalSchemaChange');
         schema.__set__('createSchemaStructure', create_schema_structure_stub);
 
         it('Should return valid stub from createSchemaStructure', async () => {
@@ -60,19 +62,20 @@ describe('Test schema module', function() {
             expect(signal_schema_change_stub).to.have.been.calledOnce;
         });
 
-        it('Should catch thrown an error from createSchemaStructure', async function() {
-            create_schema_structure_stub.throws(new Error(`schema ${SCHEMA_NAME_TEST} successfully created`));
+        it('Should catch thrown error from createSchemaStructure', async function() {
+            let create_schema_structure_err = `schema ${SCHEMA_NAME_TEST} already exists`;
+            create_schema_structure_stub.throws(new Error(create_schema_structure_err));
 
             try {
                 let result = await schema.createSchema(SCHEMA_CREATE_OBJECT_TEST);
             } catch(error) {
                 expect(error).to.be.instanceOf(Error);
-                expect(error.message).to.equal(`schema ${SCHEMA_NAME_TEST} successfully created`);
+                expect(error.message).to.equal(create_schema_structure_err);
             }
         });
     });
 
-    describe('Create schema structure', async function() {
+    describe('Create schema structure',  function() {
         let validation_stub = sinon.stub(schema_validator, 'schema_object');
         let search_for_schema_stub = sinon.stub();
         let insert_stub = sinon.stub(insert, 'insert');
@@ -85,13 +88,14 @@ describe('Test schema module', function() {
         })
 
         it('Should throw a validation error', async function() {
-            validation_stub.throws(new Error('Schema is required'));
+            let validation_err = 'Schema is required'
+            validation_stub.throws(new Error(validation_err));
 
             try {
                 let result = await schema.createSchemaStructure(SCHEMA_CREATE_OBJECT_TEST);
             } catch(error) {
                 expect(error).to.be.instanceOf(Error);
-                expect(error.message).to.equal('Schema is required');
+                expect(error.message).to.equal(validation_err);
             }
         });
 
@@ -107,15 +111,16 @@ describe('Test schema module', function() {
             }
         });
 
-        it('Should catch error from insert insert', async function() {
-            insert_stub.throws(new Error('invalid operation, must be insert'));
+        it('Should catch thrown error from insert insert', async function() {
+            let insert_err = 'invalid operation, must be insert';
+            insert_stub.throws(new Error(insert_err));
 
             try {
                 let result = await schema.createSchemaStructure(SCHEMA_CREATE_OBJECT_TEST);
             } catch(error) {
                 expect(error).to.be.instanceOf(Error);
-                expect(error.message).to.equal('invalid operation, must be insert');
-            }
+                expect(error.message).to.equal(insert_err);
+            }``
         });
 
         it('Should create directory with test schema name', async function() {
@@ -140,5 +145,33 @@ describe('Test schema module', function() {
                 expect(error).to.equal('schema already exists')
             }
         });
+    });
+
+    describe('Create table',  function() {
+        let create_table_struc_stub = sinon.stub(schema, 'createTable');
+
+        it('Should return valid stub from createTableStructure', async function () {
+            let create_table_struc_fake = `table ${CREATE_TABLE_OBJECT_TEST.schema}.${CREATE_TABLE_OBJECT_TEST.table} successfully created.`;
+            create_table_struc_stub.resolves(create_table_struc_fake);
+            let result = await schema.createTable(CREATE_TABLE_OBJECT_TEST);
+
+            expect(result).to.equal(create_table_struc_fake);
+            expect(create_table_struc_stub).to.have.been.calledOnce;
+            expect(signal_schema_change_stub).to.have.been.calledOnce;
+        });
+
+        it('Should catch thrown error from createTableStructure', async function () {
+            let create_table_struc_err = 'schema does not exist';
+            create_table_struc_stub.throws(new Error(create_table_struc_err));
+
+            try {
+                let result = await schema.createTable(CREATE_TABLE_OBJECT_TEST);
+            } catch(error) {
+                expect(error).to.be.instanceOf(Error);
+                expect(error.message).to.equal(create_table_struc_err);
+            }
+        });
+
+
     });
 });

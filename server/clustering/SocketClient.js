@@ -24,7 +24,6 @@ const cluster_handlers = require('./clusterHandlers');
 const p_server_utilities_choose_operation = promisify(server_utilities.chooseOperation);
 const p_server_utilities_proccess_delegated_transaction = promisify(server_utilities.proccessDelegatedTransaction);
 const p_schema_describe_all = promisify(schema.describeAll);
-const p_schema_create_table = promisify(schema.createTable);
 
 const WHITELISTED_ERRORS = 'already exists';
 const ERROR_NO_HDB_USER = 'there is no hdb_user';
@@ -377,7 +376,7 @@ async function createMissingTables(missing_tables, residence_table_map){
             table_create_object.residence = residence_table_map[tokens[0] + "." + tokens[1]];
         }
 
-        await p_schema_create_table(table_create_object)
+        await schema.createTable(table_create_object)
             .catch(err=>{
                 if(err !== `table ${table_create_object.table} already exists in schema ${table_create_object.schema}`){
                     throw err;

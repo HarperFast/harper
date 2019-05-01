@@ -46,6 +46,7 @@ const cb_clust_util_status = util.callbackify(cluster_utilities.clusterStatus);
 const cb_clust_util_remove_node = util.callbackify(cluster_utilities.removeNode);
 const cb_schema_create_schema = util.callbackify(schema.createSchema);
 const cb_schema_create_attribute = util.callbackify(schema.createAttribute);
+const cb_schema_create_table = util.callbackify(schema.createTable);
 
 const UNAUTH_RESPONSE = 403;
 const UNAUTHORIZED_TEXT = 'You are not authorized to perform the operation specified';
@@ -228,7 +229,7 @@ function chooseOperation(json, callback) {
             operation_function = cb_schema_create_schema;
             break;
         case terms.OPERATIONS_ENUM.CREATE_TABLE:
-            operation_function = schema.createTable;
+            operation_function = cb_schema_create_table;
             break;
         case terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE:
             operation_function = cb_schema_create_attribute;

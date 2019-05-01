@@ -61,6 +61,7 @@ module.exports = {
 
 // TODO - temp promisified functions that help with async module refactor
 const p_createAttributeStructure = util.promisify(createAttributeStructure);
+const p_createTableStructure = util.promisify(createTableStructure);
 
 async function createSchema(schema_create_object) {
     try {
@@ -111,85 +112,35 @@ async function createSchemaStructure(schema_create_object) {
     }
 }
 
-// // TODO - search for occurrences
-// async function createTable(create_table_object) {
-//     try {
-//         let create_table_structure = await createTableStructure(create_table_object);
-//         signalling.signalSchemaChange({type: 'schema'});
-//         return create_table_structure;
-//     } catch(err) {
-//         throw err;
-//     }
-// }
-
-function createTable(create_table_object, callback) {
+async function createTable(create_table_object) {
     try {
-        createTableStructure(create_table_object, function (err, success) {
-            if (err) {
-                callback(err);
-                return;
-            }
-
-            signalling.signalSchemaChange({type: 'schema'});
-            return callback(null, success);
-        });
-    } catch (e) {
-        callback(e);
+        let create_table_structure = await p_createTableStructure(create_table_object);
+        signalling.signalSchemaChange({type: 'schema'});
+        return create_table_structure;
+    } catch(err) {
+        throw err;
     }
 }
 
-// // TODO - search for occurrences
-// async function createTableStructure(create_table_object) {
-//     try {
-//         let validation_obj = clone(create_table_object);
-//         let validation_error = validation.create_table_object(validation_obj);
-//         if (validation_error) {
-//             throw validation_error;
-//         }
-//
-//         validation.validateTableResidence(create_table_object.residence);
-//
-//     } catch(err) {
-//         throw err;
-//
-//     }
-// }
-
-function createTableStructure(create_table_object, callback) {
-    let validation_obj = clone(create_table_object);
-
-    let validator = validation.create_table_object(validation_obj);
-    if (validator) {
-        callback(validator);
-        return;
-    }
-
-    try{
-        validation.validateTableResidence(create_table_object.residence);
-    } catch(e){
-        return callback(e);
-    }
-
-    async.waterfall([
-        searchForSchema.bind(null, create_table_object.schema),
-        (schema, caller) => {
-            if (!schema || schema.length === 0) {
-                return caller(`schema ${create_table_object.schema} does not exist`);
-            }
-
-            caller();
-        },
-        searchForTable.bind(null, create_table_object.schema, create_table_object.table),
-        (table, caller) => {
-            if (table && table.length > 0) {
-                return caller(`table ${create_table_object.table} already exists in schema ${create_table_object.schema}`);
-            }
-
-            caller();
+// TODO - search for occurrences
+async function createTableStructure(create_table_object) {
+    try {
+        let validation_obj = clone(create_table_object);
+        let validation_error = validation.create_table_object(validation_obj);
+        if (validation_error) {
+            throw validation_error;
         }
-    ], (err) => {
-        if (err) {
-            return callback(err);
+
+        validation.validateTableResidence(create_table_object.residence);
+
+        let schema_search = await searchForSchema(create_table_object.schema);
+        if (!schema_search || schema_search.length === 0) {
+            throw `schema ${create_table_object.schema} does not exist`;
+        }
+
+        let table_search = await searchForTable(create_table_object.schema, create_table_object.table);
+        if (table_search && table_search.length > 0) {
+            throw `table ${create_table_object.table} already exists in schema ${create_table_object.schema}`;
         }
 
         let table = {
@@ -202,52 +153,70 @@ function createTableStructure(create_table_object, callback) {
         if(create_table_object.residence) {
             if(global.clustering_on) {
                 table.residence = create_table_object.residence;
-                insertTable();
+                await insertTable(table, create_table_object);
             } else {
-                return callback(`Clustering does not appear to be enabled.  Cannot insert table with property 'residence'.`);
+                throw `Clustering does not appear to be enabled. Cannot insert table with property 'residence'.`;
             }
         } else {
-            insertTable();
+            await insertTable(table, create_table_object);
         }
 
-        function insertTable(){
-            let insertObject = {
-                operation: 'insert',
-                schema: 'system',
-                table: 'hdb_table',
-                hash_attribute: 'id',
-                records: [table]
-            };
+        return `table ${create_table_object.schema}.${create_table_object.table} successfully created.`
 
-            cb_insert_insert(insertObject, (err) => {
-                if (err) {
-                    callback(err);
-                    return;
-                }
-
-                fs.mkdir(env.get('HDB_ROOT') + '/schema/' + create_table_object.schema + '/' + create_table_object.table, function (err, data) {
-                    if (err) {
-                        if (err.errno === -2) {
-                            callback("schema does not exist", null);
-                            return;
-                        }
-
-                        if (err.errno === -17) {
-                            callback("table already exists", null);
-                            return;
-
-                        } else {
-                            callback('createTableStructure:' + err.message);
-                            return;
-                        }
-                    }
-
-                    callback(null, `table ${create_table_object.schema}.${create_table_object.table} successfully created.`);
-                });
-            });
-        }
-    });
+    } catch(err) {
+        throw err;
+    }
 }
+
+async function insertTable(table, create_table_object) {
+    let insertObject = {
+        operation: 'insert',
+        schema: 'system',
+        table: 'hdb_table',
+        hash_attribute: 'id',
+        records: [table]
+    };
+
+    try {
+        await insert.insert(insertObject);
+        await fs.mkdir(env.get('HDB_ROOT') + '/schema/' + create_table_object.schema + '/' + create_table_object.table);
+    } catch(err) {
+        if (err.errno === -2) {
+            throw 'schema does not exist';
+        }
+
+        if (err.errno === -17) {
+            throw 'table already exists';
+        }
+
+        // Dont think I need this
+        // if (err.syscall === 'mkdir') {
+        //     throw `insertTable: ${err.message}`;
+        // }
+        throw err;
+    }
+}
+
+// async function moveSchemaStructureToTrash(drop_schema_object) {
+//     try {
+//         let validation_error = validation.schema_object(drop_schema_object);
+//         if (validation_error) {
+//             throw validation_error;
+//         }
+//     } catch(err) {
+//         throw err;
+//     }
+//
+//     let schema = drop_schema_object.schema;
+//     let delete_schema_object = {
+//         table: "hdb_schema",
+//         schema: "system",
+//         hash_values: [schema]
+//     };
+//
+//     await delete_.delete
+//
+// }
 
 /**
  * Moves a schema and it's contained tables/attributes to the trash directory.
@@ -653,12 +622,6 @@ async function searchForSchema(schema_name) {
     } catch(err) {
         throw err;
     }
-    // p_search_by_conditions(search_obj)
-    //     .then((res) => {
-    //         return res
-    //     }).catch((err) => {
-    //         throw err
-    // })
 }
 
 function searchForTable(schema_name, table_name, callback) {
