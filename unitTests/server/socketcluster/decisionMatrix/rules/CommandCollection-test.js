@@ -1,14 +1,14 @@
 'use strict';
 
-const test_util = require('../../test_utils');
+const test_util = require('../../../../test_utils');
 test_util.preTestPrep();
 
 const assert = require('assert');
 const rewire = require('rewire');
 const sinon = require('sinon');
-const RulesCollection = require('../../../server/socketcluster/decisionMatrix/rules/CommandCollection');
-const TestRule = require('../../../server/socketcluster/decisionMatrix/rules/TestRule');
-const types = require('../../../server/socketcluster/types');
+const RulesCollection = require('../../../../../server/socketcluster/decisionMatrix/rules/CommandCollection');
+const TestRule = require('../../../../../server/socketcluster/decisionMatrix/rules/TestRule');
+const types = require('../../../../../server/socketcluster/types');
 
 let VERY_FIRST_RULE = new TestRule();
 VERY_FIRST_RULE.setRuleOrder(types.COMMAND_EVAL_ORDER_ENUM.VERY_FIRST);

@@ -13,11 +13,20 @@ class AssignToHdbChildWorkerRule extends RuleIF {
     }
     evaluateRule(req, args, worker) {
         log.trace('Evaluating Assign to Hdb Child worker rule');
+        if(!worker) {
+            log.error('invalid worker sent to AssignToHdbChildWorkerRule.');
+            return false;
+        }
+        let internal_index = req.channel.indexOf('internal:');
         try {
-            if (req.channel.indexOf('internal:') < 0) {
+            if (req.channel.indexOf('internal:') >= 0) {
                 let target = req.channel.split(':');
                 req.data.schema = target[0];
                 req.data.table = target[1];
+            }
+            if(!worker.hdb_workers || worker.hdb_workers.length === 0) {
+                log.error('No hdbChild workers are stored. Cant send this off');
+                return false;
             }
             let rand = Math.floor(Math.random() * worker.hdb_workers.length);
             let random_worker = worker.hdb_workers[rand];

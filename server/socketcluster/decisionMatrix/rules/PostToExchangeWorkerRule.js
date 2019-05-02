@@ -13,18 +13,23 @@ class PostToExchangeWorkerRule extends RuleIF {
         this.setRuleOrder(types.COMMAND_EVAL_ORDER_ENUM.LOW);
     }
     evaluateRule(req, args, worker) {
-        log.trace('Evaluating post to exchange worker rule');
-        if(!req || !req.channel || !req.data) {
-            log.error('Invalid request data, not posting to exchange.');
-            return false;
-        }
         try {
-            worker.exchange.publish(req.channel, req.data);
+            log.trace('Evaluating post to exchange worker rule');
+            if (!req || !req.channel || !req.data) {
+                log.error('Invalid request data, not posting to exchange.');
+                return false;
+            }
+            try {
+                worker.exchange.publish(req.channel, req.data);
+            } catch (err) {
+                log.error(err);
+                return false;
+            }
+            return true;
         } catch(err) {
-            log.error(err);
+            log.error('Got an exception evaluating PostToExchangeWorkerRule');
             return false;
         }
-        return true;
     }
 }
 module.exports = PostToExchangeWorkerRule;
