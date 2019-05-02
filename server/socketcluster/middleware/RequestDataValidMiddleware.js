@@ -10,10 +10,16 @@ const types = require('../types');
 class RequestDataValidMiddleware extends MiddlewareIF {
     constructor(middleware_type_enum, eval_function) {
         eval_function = (req, next) => {
-            log.trace('Evaluating request data validation middleware');
-            if(typeof req.data !== 'object' || Array.isArray(req.data)){
-                log.error('Request Data Valid Middleware failure: data must be an object');
-                return types.ERROR_CODES.MIDDLEWARE_SWALLOW;
+            try {
+                log.trace('Evaluating request data validation middleware');
+                if (typeof req.data !== 'object' || Array.isArray(req.data)) {
+                    log.error('Request Data Valid Middleware failure: data must be an object');
+                    return types.ERROR_CODES.MIDDLEWARE_SWALLOW;
+                }
+            } catch(err) {
+                log.error('Error in RequestDataValid Middleware');
+                log.error(err);
+                return types.ERROR_CODES.MIDDLEWARE_ERROR;
             }
             log.debug('Passed request data valid middleware');
         };
