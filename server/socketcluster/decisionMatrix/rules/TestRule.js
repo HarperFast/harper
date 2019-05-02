@@ -8,7 +8,7 @@ class TestRule extends RuleIF {
     constructor() {
         super();
     }
-    evaluateRule() {
+    evaluateRule(req, args, worker) {
         console.log("Test rule");
         return true;
     }
