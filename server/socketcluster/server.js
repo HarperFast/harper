@@ -4,7 +4,7 @@ const env = require('../../utility/environment/environmentManager');
 const log = require('../../utility/logging/harper_logger');
 
 const PORT = env.get('CLUSTERING_PORT');
-const DEFAULT_PORT = 1111;
+const DEFAULT_PORT = 12345;
 
 //initializes a new socket cluster all options can be seen here: https://socketcluster.io/#!/docs/api-socketcluster
 let socketCluster = new SocketCluster({
@@ -57,7 +57,7 @@ let socketCluster = new SocketCluster({
     /* A JS file which you can use to configure each of your
      * workers/servers - This is where most of your backend code should go
      */
-    workerController: __dirname + '/worker.js',
+    workerController: __dirname + '/worker/ClusterWorker.js',
 
     /* JS file which you can use to configure each of your
      * brokers - Useful for scaling horizontally across multiple machines (optional)

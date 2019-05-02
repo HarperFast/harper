@@ -1,0 +1,24 @@
+"use strict";
+
+const MiddlewareIF = require('./MiddlewareIF');
+const log = require('../../../utility/logging/harper_logger');
+const types = require('../types');
+
+/**
+ * This middleware is used to ensure valid data is inside the request.
+ */
+class RequestDataValidMiddleware extends MiddlewareIF {
+    constructor(middleware_type_enum, eval_function) {
+        eval_function = (req, next) => {
+            log.trace('Evaluating request data validation middleware');
+            if(typeof req.data !== 'object' || Array.isArray(req.data)){
+                log.error('Request Data Valid Middleware failure: data must be an object');
+                return types.ERROR_CODES.MIDDLEWARE_SWALLOW;
+            }
+            log.debug('Passed request data valid middleware');
+        };
+        super(middleware_type_enum, eval_function);
+    }
+}
+
+module.exports = RequestDataValidMiddleware;
