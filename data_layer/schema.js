@@ -65,8 +65,12 @@ const p_createTableStructure = util.promisify(createTableStructure);
 
 async function createSchema(schema_create_object) {
     try {
+        const HDB_ROOT_ORIGINAL = env.get('HDB_ROOT');
+        let table_schema = global.hdb_schema;
+
         let schema_structure = await createSchemaStructure(schema_create_object);
         signalling.signalSchemaChange({type: 'schema'});
+
         return schema_structure;
     } catch(err) {
         throw err;
@@ -114,7 +118,7 @@ async function createSchemaStructure(schema_create_object) {
 
 async function createTable(create_table_object) {
     try {
-        let create_table_structure = await p_createTableStructure(create_table_object);
+        let create_table_structure = await createTableStructure(create_table_object);
         signalling.signalSchemaChange({type: 'schema'});
         return create_table_structure;
     } catch(err) {
@@ -189,34 +193,30 @@ async function insertTable(table, create_table_object) {
             throw 'table already exists';
         }
 
-        // Dont think I need this
-        // if (err.syscall === 'mkdir') {
-        //     throw `insertTable: ${err.message}`;
-        // }
         throw err;
     }
 }
 
-// async function moveSchemaStructureToTrash(drop_schema_object) {
-//     try {
-//         let validation_error = validation.schema_object(drop_schema_object);
-//         if (validation_error) {
-//             throw validation_error;
-//         }
-//     } catch(err) {
-//         throw err;
-//     }
-//
-//     let schema = drop_schema_object.schema;
-//     let delete_schema_object = {
-//         table: "hdb_schema",
-//         schema: "system",
-//         hash_values: [schema]
-//     };
-//
-//     await delete_.delete
-//
-// }
+async function moveSchemaStructureToTrash(drop_schema_object) {
+    try {
+        let validation_error = validation.schema_object(drop_schema_object);
+        if (validation_error) {
+            throw validation_error;
+        }
+    } catch(err) {
+        throw err;
+    }
+
+    let schema = drop_schema_object.schema;
+    let delete_schema_object = {
+        table: "hdb_schema",
+        schema: "system",
+        hash_values: [schema]
+    };
+
+    await delete_.delete
+
+}
 
 /**
  * Moves a schema and it's contained tables/attributes to the trash directory.
@@ -624,7 +624,7 @@ async function searchForSchema(schema_name) {
     }
 }
 
-function searchForTable(schema_name, table_name, callback) {
+async function searchForTable(schema_name, table_name) {
     let search_obj = {
         schema: 'system',
         table: 'hdb_table',
@@ -637,12 +637,13 @@ function searchForTable(schema_name, table_name, callback) {
             }]
     };
 
-    search.searchByConditions(search_obj, (err, data) => {
-        if (err) {
-            return callback(err);
-        }
-        callback(null, data);
-    });
+    try {
+        let search_result = await p_search_by_conditions(search_obj);
+        return search_result;
+    } catch(err) {
+        throw err;
+    }
+
 }
 
 function createAttributeStructure(create_attribute_object, callback) {
