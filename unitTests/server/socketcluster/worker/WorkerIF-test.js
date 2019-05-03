@@ -109,12 +109,6 @@ describe('Test workerIF', function() {
 
     });
 
-    after(() => {
-       setTimeout(() => {
-           process.exit();
-       }, 2000);
-    });
-
     it('Test WorkerIF addRoom', () => {
         let result = null;
         try {
@@ -174,12 +168,6 @@ describe('Test workerIF', function() {
         sandbox.restore();
     });
 
-    after(() => {
-        setTimeout(() => {
-            process.exit();
-        }, 2000);
-    });
-
     it('Test WorkerIF getRoom', () => {
         let result = null;
         test_instance.addRoom(room_stub);
@@ -211,11 +199,6 @@ describe('Test workerIF evalRoomMiddleware', function() {
         sandbox.restore();
     });
 
-    after(() => {
-        setTimeout(() => {
-            process.exit();
-        }, 2000);
-    });
     it('nominal evalMiddleware', async () => {
         get_room_stub = sandbox.stub(test_instance, 'getRoom').returns(room_stub);
         room_stub.evalMiddleware = () => {};
@@ -259,11 +242,6 @@ describe('Test workerIF evalRoomPublishInMiddleware', function() {
         sandbox.restore();
     });
 
-    after(() => {
-        setTimeout(() => {
-            process.exit();
-        }, 2000);
-    });
     it('nominal evalRoomPublishInMiddleware', async () => {
         eval_stub = sandbox.stub(test_instance, 'evalRoomMiddleware').returns();
         next_stub = sandbox.stub().returns();
@@ -300,11 +278,6 @@ describe('Test workerIF evalRoomPublishOutMiddleware', function() {
         sandbox.restore();
     });
 
-    after(() => {
-        setTimeout(() => {
-            process.exit();
-        }, 2000);
-    });
     it('nominal evalRoomPublishOutMiddleware', async () => {
         eval_stub = sandbox.stub(test_instance, 'evalRoomMiddleware').returns();
         next_stub = sandbox.stub().returns();
@@ -341,11 +314,6 @@ describe('Test workerIF evalRoomSubscribeMiddleware', function() {
         sandbox.restore();
     });
 
-    after(() => {
-        setTimeout(() => {
-            process.exit();
-        }, 2000);
-    });
     it('nominal evalRoomSubscribeMiddleware', async () => {
         eval_stub = sandbox.stub(test_instance, 'evalRoomMiddleware').returns();
         next_stub = sandbox.stub().returns();
@@ -382,11 +350,6 @@ describe('Test workerIF evalRoomAuthenticateMiddleware', function() {
         sandbox.restore();
     });
 
-    after(() => {
-        setTimeout(() => {
-            process.exit();
-        }, 2000);
-    });
     it('nominal evalRoomAuthenticateMiddleware', async () => {
         eval_stub = sandbox.stub(test_instance, 'evalRoomMiddleware').returns();
         next_stub = sandbox.stub().returns();

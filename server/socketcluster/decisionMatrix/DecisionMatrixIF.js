@@ -97,13 +97,8 @@ class DecisionMatrixIF {
      * @param rule_if_object_id
      */
     searchAndRemoveRule(rule_collection, rule_if_object_id) {
-        for(let i=0; i<rule_collection.length; i++) {
-            if(rule_collection[i].id === rule_if_object_id) {
-                rule_collection.splice(i,1);
-                return true;
-            }
-        }
-        return false;
+        let result = rule_collection.removeCommand(rule_if_object_id);
+        return result;
     }
 }
 module.exports = DecisionMatrixIF;

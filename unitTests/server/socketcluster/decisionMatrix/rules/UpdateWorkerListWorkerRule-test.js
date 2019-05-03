@@ -51,7 +51,7 @@ describe('Test RuleIF', function() {
     });
     it('nominal, test construction', () => {
         assert.notEqual(test_instance.id, undefined, 'Expected id to not be null');
-        assert.equal(test_instance.command_order, types.COMMAND_EVAL_ORDER_ENUM.LOW, 'Expected default command order');
+        assert.equal(test_instance.command_order, types.COMMAND_EVAL_ORDER_ENUM.HIGH, 'Expected default command order');
     });
 
     it('nominal, test eval', async () => {
