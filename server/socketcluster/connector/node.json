@@ -7,7 +7,7 @@
       {
         "channel":"dev:dog",
         "publish": true,
-        "subscribe": false
+        "subscribe": true
       },
       {
         "channel":"dev:breed",

@@ -6,11 +6,18 @@ const sc_objects = require('../socketClusterObjects');
 const AssignToHdbChildWorkerRule = require('../decisionMatrix/rules/AssignToHdbChildWorkerRule');
 const SubscriptionObject = sc_objects.SubscriptionObject;
 const NodeObject = sc_objects.NodeObject;
+const promisify = require('util').promisify;
 
 class NodeConnector {
     constructor(nodes, worker){
         //spawn local connection
         this.worker = worker;
+        this.publishin_promises = [];
+
+        this.worker.scServer._middleware.publishIn.forEach(middleware_function=>{
+            this.publishin_promises.push(promisify(middleware_function).bind(this.worker.scServer));
+        });
+
         //used to auto pub/sub the hdb_schema channel across the cluster
         this.HDB_Schema_Subscription = new SubscriptionObject('internal:create_schema', true, true);
         this.HDB_Table_Subscription = new SubscriptionObject('internal:create_table', true, true);
@@ -67,13 +74,25 @@ class NodeConnector {
         }
     }
 
-    assignTransactionToChild(channel, data){
+    async assignTransactionToChild(channel, data){
         let req = {
             channel: channel,
             data: data
         };
 
-        this.AssignToHdbChildWorkerRule.evaluateRule(req, null, this.worker);
+        this.runMiddleware(req).then(()=>{
+
+        });
+    }
+
+    async runMiddleware(request){
+        for (let x = 0; x < this.publishin_promises.length; x++) {
+            try {
+                await this.publishin_promises[x](request);
+            } catch(e){
+                console.error(e);
+            }
+        }
     }
 
 }
