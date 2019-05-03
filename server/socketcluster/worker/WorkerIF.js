@@ -1,6 +1,6 @@
 "use strict";
-const RoomIF = require('../room/RoomIF');
-const SCWorker = require('socketcluster/scworker');
+
+let SCWorker = require('socketcluster/scworker');
 const types = require('../types');
 const log = require('../../../utility/logging/harper_logger');
 

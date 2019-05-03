@@ -5,6 +5,7 @@ const CoreRoom = require('./CoreRoom');
 const types = require('../types');
 const middleware_factory = require('../middleware/MiddlewareFactory');
 const CoreDecisionMatrix = require('../decisionMatrix/CoreDecisionMatrix');
+const log = require('../../../utility/logging/harper_logger');
 
 //Rules
 const AssignToHdbChildWorkerRule = require('../decisionMatrix/rules/AssignToHdbChildWorkerRule');
@@ -83,6 +84,10 @@ function createRoom(topicName, room_type_enum) {
             created_room.setDecisionMatrix(new_decision_matrix);
             break;
         }
+        default:
+            // Don't default to anything.  A incorrectly created room is severe enough to warrant an exception
+            log.error('Got an invalid room type in roomFactory.  No Room created.');
+            throw new Error('Invalid Room type.');
     }
     return created_room;
 }
