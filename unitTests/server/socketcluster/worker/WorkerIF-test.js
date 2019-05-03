@@ -20,9 +20,6 @@ const RUN_OPTIONS = {
         "blahblahthisisfake/b0"
     ],
     "appName": "socket_server",
-    /*"instanceId": "59e8135d-2dc6-457d-b9b7-7ff205fb3c7b",
-    "secretKey": "4d578a5a3ec5c9b00ac3a2501bf479a5f3c2c9ca28849c2b8dd93dbcdcbea128",
-    "authKey": "8dc64aa89b5930e3af69aac8084ed593bf904f6b34ca31c8324fb7129e0b856c",*/
     "authPrivateKey": null,
     "authPublicKey": null,
     "authDefaultExpiry": 604800,
@@ -75,77 +72,10 @@ const RUN_OPTIONS = {
     "workerCount": 0,
     "brokerCount": 0,
     "id": 0
-}
-
-const SC_INIT_OPTIONS = {
-    /*workers: 0,
-    brokers: 0,
-    port: 12345,
-    wsEngine: process.env.SOCKETCLUSTER_WS_ENGINE || 'ws',
-
-    killMasterOnSignal: true*/
-    port: 8000,
-    workers: null,
-    brokers: 2,
-    appName: null,
-    instanceId: null,
-    secretKey: null,
-    authKey: null,
-    authPrivateKey: null,
-    authPublicKey: null,
-    authDefaultExpiry: 86400,
-    authAlgorithm: null,
-    authVerifyAlgorithms: null,
-    authSignAsync: false,
-    authVerifyAsync: true,
-    crashWorkerOnError: true,
-    rebootWorkerOnCrash: true,
-    killWorkerMemoryThreshold: null,
-    protocol: 'http',
-    protocolOptions: null,
-    logLevel: 2,
-    handshakeTimeout: 10000,
-    ackTimeout: 10000,
-    ipcAckTimeout: 10000,
-    pingInterval: 8000,
-    pingTimeout: 20000,
-    pingTimeoutDisabled: false,
-    origins: '*:*',
-    socketChannelLimit: 1000,
-    workerStatusInterval: 10000,
-    processTermTimeout: 10000,
-    forceKillTimeout: 15000,
-    forceKillSignal: 'SIGHUP',
-    propagateErrors: true,
-    propagateWarnings: true,
-    middlewareEmitWarnings: true,
-    host: null,
-    tcpSynBacklog: null,
-    workerController: null,
-    brokerController: __dirname + '/BrokerEngineStub.js',
-    brokerConnectRetryErrorThreshold: null,
-    workerClusterController: null,
-    rebootOnSignal: true,
-    downgradeToUser: false,
-    path: '/socketcluster/',
-    socketRoot: null,
-    schedulingPolicy: null,
-    allowClientPublish: true,
-    defaultWorkerDebugPort: 5858,
-    defaultBrokerDebugPort: 6858,
-    pubSubBatchDuration: null,
-    environment: 'dev',
-    killMasterOnSignal: false,
-    wsEngine: 'ws',
-    brokerEngine: 'sc-broker-cluster'
 };
-process.env.workerInitOptions = JSON.stringify(RUN_OPTIONS);
 
-try {
-    let temp = JSON.parse(process.env.workerInitOptions);
-} catch(err) {
-    console.error(err);
-}
+// Need to set these env variables for SCWorker.
+process.env.workerInitOptions = JSON.stringify(RUN_OPTIONS);
 
 const WorkerIF = require('../../../../server/socketcluster/worker/WorkerIF');
 const CoreRoom = require('../../../../server/socketcluster/room/CoreRoom');
