@@ -3,6 +3,7 @@
 const SocketConnector = require('./SocketConnector');
 const socket_client = require('socketcluster-client');
 const sc_objects = require('../socketClusterObjects');
+const AssignToHdbChildWorkerRule = require('../decisionMatrix/rules/AssignToHdbChildWorkerRule');
 const SubscriptionObject = sc_objects.SubscriptionObject;
 const NodeObject = sc_objects.NodeObject;
 
@@ -15,6 +16,7 @@ class NodeConnector {
         this.HDB_Table_Subscription = new SubscriptionObject('internal:create_table', true, true);
         this.HDB_Attribute_Subscription = new SubscriptionObject('internal:create_attribute', true, true);
 
+        this.AssignToHdbChildWorkerRule = new AssignToHdbChildWorkerRule();
         this.spawnRemoteConnections(nodes);
         this.connections = socket_client;
 
@@ -61,9 +63,17 @@ class NodeConnector {
 
         if(subscription.subscribe === true){
             //we need to observe the channel remotely and send the data locally
-            connection.subscribe(subscription.channel, this.worker.sendTransactionToWorker.bind(this.worker, subscription.channel));
-
+            connection.subscribe(subscription.channel, this.assignTransactionToChild.bind(this, subscription.channel));
         }
+    }
+
+    assignTransactionToChild(channel, data){
+        let req = {
+            channel: channel,
+            data: data
+        };
+
+        this.AssignToHdbChildWorkerRule.evaluateRule(req, null, this.worker);
     }
 
 }

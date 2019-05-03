@@ -8,6 +8,7 @@ const types = require('../types');
 const {inspect} = require('util');
 const {promisify} = require('util');
 const log = require('../../../utility/logging/harper_logger');
+const NodeConnector = require('../connector/NodeConnector');
 
 /**
  * Represents a WorkerIF implementation for socketcluster.
@@ -68,6 +69,10 @@ class ClusterWorker extends WorkerIF {
 
         this.exchange_get = promisify(this.exchange.get).bind(this.exchange);
         this.exchange_set = promisify(this.exchange.set).bind(this.exchange);
+
+        if(this.isLeader){
+            new NodeConnector(require('../connector/node'), this);
+        }
     }
 
 
