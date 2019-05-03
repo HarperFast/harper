@@ -177,7 +177,7 @@ async function insertData(insert_object){
             pool.killAll();
         }
 
-        convertOperationToTransaction(insert_object, skipped);
+        convertOperationToTransaction(insert_object, skipped, table_schema.hash_attribute);
 
         return return_object;
     } catch(e){
@@ -188,7 +188,7 @@ async function insertData(insert_object){
     }
 }
 
-function convertOperationToTransaction(operation, skipped){
+function convertOperationToTransaction(operation, skipped, hash_attribute){
     if(global.hdb_socket_client !== undefined && operation.schema !== 'system'){
         let transaction = {
             operation: "insert",
@@ -253,7 +253,7 @@ async function updateData(update_object){
             pool.killAll();
         }
 
-        convertOperationToTransaction(update_object, skipped);
+        convertOperationToTransaction(update_object, skipped, table_schema.hash_attribute);
 
         return return_object;
     } catch(e){

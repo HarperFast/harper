@@ -2,7 +2,7 @@
 const SocketCluster = require('socketcluster');
 const env = require('../../utility/environment/environmentManager');
 const log = require('../../utility/logging/harper_logger');
-
+env.initSync();
 const PORT = env.get('CLUSTERING_PORT');
 const DEFAULT_PORT = 12345;
 

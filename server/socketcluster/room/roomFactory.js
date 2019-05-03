@@ -9,7 +9,7 @@ const CoreDecisionMatrix = require('../decisionMatrix/CoreDecisionMatrix');
 //Rules
 const AssignToHdbChildWorkerRule = require('../decisionMatrix/rules/AssignToHdbChildWorkerRule');
 const UpdateWorkerListWorkerRule = require('../decisionMatrix/rules/UpdateWorkerListWorkerRule');
-const PostToExchangeWorkerRule = require('../decisionMatrix/rules/PostToExchangeWorkerRule');
+const WriteToTransactionLogRule = require('../decisionMatrix/rules/WriteToTransactionLogRule');
 
 /**
  *  The room factory abstracts everything needed to create a room behind the createRoom function. A room constructor
@@ -75,10 +75,14 @@ function createRoom(topicName, room_type_enum) {
 
             // create room decision matrix
             let new_decision_matrix = new CoreDecisionMatrix();
+            
             new_decision_matrix.addRule(new AssignToHdbChildWorkerRule(), types.CONNECTOR_TYPE_ENUM.CLUSTER);
             new_decision_matrix.addRule(new UpdateWorkerListWorkerRule(), types.CONNECTOR_TYPE_ENUM.CLUSTER);
             new_decision_matrix.addRule(new UpdateWorkerListWorkerRule(), types.CONNECTOR_TYPE_ENUM.CORE);
-            new_decision_matrix.addRule(new PostToExchangeWorkerRule(), types.CONNECTOR_TYPE_ENUM.CORE);
+
+            let write_transaction_rule = new WriteToTransactionLogRule();
+            new_decision_matrix.addRule(write_transaction_rule, types.CONNECTOR_TYPE_ENUM.CLUSTER);
+            new_decision_matrix.addRule(write_transaction_rule, types.CONNECTOR_TYPE_ENUM.CORE);
 
             created_room.setDecisionMatrix(new_decision_matrix);
             break;

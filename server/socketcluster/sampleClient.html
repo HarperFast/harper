@@ -82,9 +82,7 @@
 
     socket.on('connect', (data, res)=>{
         //subscribe(socket.id);
-        setInterval(()=>{
-            publish('dev:dog', {id:1, test:'stuff', __transacted:true});
-        }, 1);
+
     });
 
     function publish(channel, data){

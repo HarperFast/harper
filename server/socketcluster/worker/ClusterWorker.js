@@ -80,7 +80,7 @@ class ClusterWorker extends WorkerIF {
      * @param next - The next function that should be called if this is successful.
      */
     // TODO: Can middleware be async?
-    async evalRoomRules(req, next) {
+    evalRoomRules(req, next) {
         if(!req.hdb_header) {
             return next(types.ERROR_CODES.MIDDLEWARE_SWALLOW);
         }
@@ -91,21 +91,23 @@ class ClusterWorker extends WorkerIF {
             return next(types.ERROR_CODES.MIDDLEWARE_ERROR);
         }
         // eval rules
-        let rules_result = undefined;
+
         try {
             let connector_type = types.CONNECTOR_TYPE_ENUM.CORE;
             if(req.hdb_header[types.REQUEST_HEADER_ATTRIBUTE_NAMES.DATA_SOURCE]) {
                 connector_type = req.hdb_header[types.REQUEST_HEADER_ATTRIBUTE_NAMES.DATA_SOURCE];
             }
-            rules_result = await room.evalRules(req, this, connector_type);
+            room.evalRules(req, this, connector_type).then(rules_result=>{
+                if(!rules_result) {
+                    return next(types.ERROR_CODES.WORKER_RULE_FAILURE);
+                }
+                next();
+            });
         } catch(err) {
             log.error(err);
             return next(types.ERROR_CODES.WORKER_RULE_ERROR);
         }
-        if(!rules_result) {
-            return next(types.ERROR_CODES.WORKER_RULE_FAILURE);
-        }
-        next();
+
     }
 
     /**
