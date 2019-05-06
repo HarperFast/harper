@@ -108,8 +108,8 @@ function createDirectories(directive_paths) {
     }
     for(let dir_path of directive_paths) {
         // This is synchronous
-        let new_dir_path = path.join(hdb_base, dir_path)
-        log.info(`Creating directory ${new_dir_path}`)
+        let new_dir_path = path.join(hdb_base, dir_path);
+        log.info(`Creating directory ${new_dir_path}`);
         makeDirectory(new_dir_path);
     }
 }
