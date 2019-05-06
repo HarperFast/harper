@@ -40,6 +40,7 @@
     "no-unused-vars": "off",
     "no-case-declarations": "off",
     "no-useless-escape": "off",
-    "no-inner-declarations": "off"
+    "no-inner-declarations": "off",
+    "no-control-regex": "off"
   }
 }

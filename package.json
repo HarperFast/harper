@@ -5,7 +5,7 @@
   "main": "run.js",
   "bin": "./bin/run.js",
   "scripts": {
-    "build": "babel bin/ data_layer/ events/ json/ lib/ security/ server/ sqlTranslator/ upgrade/ utility/ validation/ -d compiled/",
+    "build": "eslint -c ./.eslintbuild bin/ data_layer/ events/ lib/ security/ server/ sqlTranslator/ upgrade/ utility/ validation/",
     "test": "cd bin/ && mocha ../node_modules/mocha/bin/_mocha --timeout 0 --ui bdd --recursive  ../unitTests --watch",
     "hdb-check": "./utility/devops/hdb-check.sh",
     "prepublish": "npm run build",
@@ -94,6 +94,7 @@
     "babel-preset-es2017": "^6.24.1",
     "babel-preset-flow": "^6.23.0",
     "chai": "^4.2.0",
+    "eslint": "^5.16.0",
     "flow-bin": "^0.96.0",
     "mocha": "^5.2.0",
     "newman": "^4.4.1",
