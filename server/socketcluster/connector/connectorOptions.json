@@ -4,7 +4,7 @@
   "connectTimeout": 10000,
   "ackTimeout": 10000,
   "autoReconnectOptions": {
-    "initialDelay": 1000,
-    "maxDelay": 2000
+    "initialDelay": 10000,
+    "maxDelay": 20000
   }
 }

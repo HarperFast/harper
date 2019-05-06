@@ -54,6 +54,9 @@ class ClusterWorker extends WorkerIF {
         console.log('Running ClusterWorker');
         log.debug('Cluster Worker starting up.');
         let app = express();
+
+        this.on('masterMessage', this.masterMessageHandler.bind(this));
+
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_IN, this.checkNewRoom.bind(this));
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_IN, this.messagePrepMiddleware.bind(this));
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_IN, this.evalRoomPublishInMiddleware.bind(this));
@@ -72,6 +75,33 @@ class ClusterWorker extends WorkerIF {
 
         if(this.isLeader){
             new NodeConnector(require('../connector/node'), this);
+        }
+    }
+
+    masterMessageHandler(data, respond){
+        try {
+            if (data.hdb_data !== undefined) {
+                this.setHDBDatatoExchange(data.hdb_data).then(() => {
+                    log.info('hdb_data successfully set to exchange');
+                });
+            }
+            respond();
+        }catch(e){
+            respond(e);
+        }
+    }
+
+    async setHDBDatatoExchange(hdb_data){
+        if(hdb_data.schema !== undefined){
+            await this.exchange_set('hdb_schema', hdb_data.schema);
+        }
+
+        if(hdb_data.users !== undefined){
+            await this.exchange_set('hdb_users', hdb_data.users);
+        }
+
+        if(hdb_data.nodes !== undefined){
+            await this.exchange_set('hdb_nodes', hdb_data.nodes);
         }
     }
 

@@ -272,31 +272,6 @@ function kickOffExpress(err, callback) {
     return callback();
 }
 
-function increaseMemory(callback){
-    try {
-        if (hdb_properties && hdb_properties.get('MAX_MEMORY')) {
-            const {spawn} = require('child_process');
-            const node = spawn('node', [`--max-old-space-size=${hdb_properties.get('MAX_MEMORY')}`, `${hdb_properties.get('PROJECT_DIR')}/server/hdb_express.js`]);
-
-            node.stdout.on('data', (data) => {
-                logger.info(`stdout: ${data}`);
-            });
-
-            node.stderr.on('data', (data) => {
-                logger.error(`stderr: ${data}`);
-            });
-
-            node.on('close', (code) => {
-                logger.log(`child process exited with code ${code}`);
-            });
-        } else {
-            callback();
-        }
-    }catch(e){
-        logger.error(e);
-    }
-}
-
 function exitInstall(){
     process.exit(0);
 }
