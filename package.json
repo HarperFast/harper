@@ -9,7 +9,6 @@
     "test": "cd bin/ && mocha ../node_modules/mocha/bin/_mocha --timeout 0 --ui bdd --recursive  ../unitTests --watch",
     "hdb-check": "./utility/devops/hdb-check.sh",
     "prepublish": "npm run build",
-    "flow": "flow",
     "coverage": "nyc report --reporter=html npm test"
   },
   "author": "HarperDB, Inc.",
@@ -92,9 +91,7 @@
     "babel-plugin-transform-es2015-destructuring": "^6.23.0",
     "babel-plugin-transform-object-rest-spread": "^6.26.0",
     "babel-preset-es2017": "^6.24.1",
-    "babel-preset-flow": "^6.23.0",
     "chai": "^4.2.0",
-    "flow-bin": "^0.96.0",
     "mocha": "^5.2.0",
     "newman": "^4.4.1",
     "newman-reporter-html": "^1.0.2",
