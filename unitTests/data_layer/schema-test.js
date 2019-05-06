@@ -10,6 +10,8 @@ const signalling = require('../../utility/signalling');
 let insert = require('../../data_layer/insert');
 const env = require('../../utility/environment/environmentManager');
 const uuidV4 = require('uuid/v4');
+const logger = require('../../utility/logging/harper_logger');
+
 const clone = require('clone');
 const global_schema = require('../../utility/globalSchema');
 const util = require('util');
@@ -38,7 +40,8 @@ const SCHEMA_CREATE_OBJECT_TEST = {operation: 'create_schema', schema: SCHEMA_NA
 const CREATE_TABLE_OBJECT_TEST = {operation: 'create_table', schema: SCHEMA_NAME_TEST, table: TABLE_NAME_TEST, hash_attribute: HASH_ATT_TEST, residence: ''};
 const TABLE_TEST = {name: CREATE_TABLE_OBJECT_TEST.table, schema: CREATE_TABLE_OBJECT_TEST.schema, id: uuidV4(), hash_attribute: CREATE_TABLE_OBJECT_TEST.hash_attribute};
 const INSERT_OBJECT_TEST = {operation: 'insert', schema: 'system', table: 'hdb_table', hash_attribute: 'id', records: [TABLE_TEST]};
-
+const DROP_SCHEMA_OBJECT_TEST = {operation: 'drop_schema', schema: SCHEMA_NAME_TEST};
+const DROP_TABLE_OBJECT_TEST = {operation: 'drop_table', schema: SCHEMA_NAME_TEST, table: TABLE_NAME_TEST};
 
 
 describe('Test schema module', function() {
@@ -52,10 +55,14 @@ describe('Test schema module', function() {
     let search_for_table_rewire = schema.__set__('searchForTable', search_for_table_stub);
     let insert_table_stub = sinon.stub();
     let insert_table_rewire = schema.__set__('insertTable', insert_table_stub);
+    let logger_error_stub = sinon.stub(logger, 'error');
+    let schema_validator_stub = sinon.stub(schema_validator, 'schema_object');
+
 
     afterEach(function() {
         sinon.resetHistory();
         insert_stub.resolves();
+        schema_validator_stub.returns();
     });
 
     after(function() {
@@ -94,13 +101,6 @@ describe('Test schema module', function() {
     });
 
     describe('Create schema structure',  function() {
-        let schema_validator_stub = sinon.stub(schema_validator, 'schema_object');
-
-
-        afterEach(function() {
-            // Reset stubs normal behavior 
-            schema_validator_stub.returns();
-        });
 
         it('should throw a validation error', async function() {
             let validation_err = 'Schema is required';
@@ -355,6 +355,152 @@ describe('Test schema module', function() {
             }
         });
     });
+
+    describe('Drop Schema', function() {
+        let move_schema_trash_stub = sinon.stub();
+        let move_schema_trash_rewire = schema.__set__('moveSchemaStructureToTrash', move_schema_trash_stub);
+        let global_hdb_schema_stub = sinon.stub();
+        let global_hdb_schema_rewire = schema.__set__('global.hdb_schema', global_hdb_schema_stub);
+
+        after(function() {
+            global_hdb_schema_rewire();
+            move_schema_trash_rewire();
+        });
+
+        it('should return successful stub from moveSchemaStructureToTrash', async function() {
+            let move_schema_trash_fake = `successfully deleted schema ${SCHEMA_NAME_TEST}`;
+            move_schema_trash_stub.resolves(move_schema_trash_fake);
+            let result = await schema.dropSchema(DROP_SCHEMA_OBJECT_TEST);
+
+            expect(result).to.equal(move_schema_trash_fake);
+            expect(move_schema_trash_stub).to.have.calledWith(DROP_SCHEMA_OBJECT_TEST);
+            expect(move_schema_trash_stub).to.have.been.calledOnce;
+            expect(signal_schema_change_stub).to.have.been.calledOnce;
+        });
+
+        it('should catch thrown errors and send to log', async function() {
+            let move_schema_trash_err = `There was a problem deleting ${SCHEMA_NAME_TEST}`;
+            move_schema_trash_stub.throws(new Error(move_schema_trash_err));
+
+            try {
+                let result = await schema.dropSchema(DROP_SCHEMA_OBJECT_TEST);
+            } catch(error) {
+                expect(error).to.be.instanceOf(Error);
+                expect(error.message).to.equal(move_schema_trash_err);
+                expect(move_schema_trash_stub).to.have.been.calledOnce;
+                expect(logger_error_stub).to.have.been.calledOnce;
+                expect(logger_error_stub).to.have.been.calledWith(error);
+            }
+        });
+    });
+
+    describe('Move Schema Structure to trash', function() {
+        let delete_delete_stub = sinon.stub();
+        let delete_delete_rewire = schema.__set__('p_delete_delete', delete_delete_stub);
+        let build_drop_schema_obj_stub = sinon.stub();
+        let build_drop_schema_obj_rewire = schema.__set__('p_buildDropSchemaSearchObject', build_drop_schema_obj_stub);
+        let search_by_value_stub = sinon.stub();
+        let search_by_value_rewire = schema.__set__('p_search_search_by_value', search_by_value_stub);
+        // TODO: these will need to be updated once i async the functions in schema.js
+        let move_schema_to_trash_stub = sinon.stub();
+        let move_schema_to_trash_rewire = schema.__set__('p_moveSchemaToTrash', move_schema_to_trash_stub);
+        let delete_schema_att_stub = sinon.stub();
+        let delete_schema_att_rewire = schema.__set__('p_deleteSchemaAttributes', delete_schema_att_stub);
+
+        after(function() {
+            delete_delete_rewire();
+            build_drop_schema_obj_rewire();
+            search_by_value_rewire();
+            move_schema_to_trash_rewire();
+            delete_schema_att_rewire();
+        });
+
+        it('should throw a validation error', async function() {
+            let validation_err = 'Schema is required';
+            schema_validator_stub.returns(new Error(validation_err));
+
+            try {
+                let result = await schema.deleteSchemaStructure(DROP_SCHEMA_OBJECT_TEST);
+            } catch(error) {
+                expect(error).to.be.instanceOf(Error);
+                expect(error.message).to.equal(validation_err);
+                expect(schema_validator_stub).to.have.been.calledOnce;
+            }
+        });
+
+        it('should call all async functions as expected and return success message', async function () {
+            let success_msg = 'records successfully deleted';
+            let delete_schema_object = {
+                table: "hdb_schema",
+                schema: "system",
+                hash_values: [DROP_SCHEMA_OBJECT_TEST.schema]
+            };
+            let search_object = {
+                schema: 'system',
+                table: 'hdb_table',
+                hash_attribute: 'id',
+                search_attribute: 'schema',
+                search_value: DROP_SCHEMA_OBJECT_TEST.schema,
+                get_attributes: ['id']
+            };
+            let search_value = [{id: '123456'}];
+            delete_delete_stub.resolves(success_msg);
+            build_drop_schema_obj_stub.resolves(search_object);
+            search_by_value_stub.resolves(search_value);
+            let result = await schema.deleteSchemaStructure(DROP_SCHEMA_OBJECT_TEST);
+
+            expect(schema_validator_stub).to.have.been.calledOnce;
+            expect(delete_delete_stub).to.have.been.calledOnce;
+            expect(delete_delete_stub).to.have.been.calledWith(delete_schema_object);
+            expect(build_drop_schema_obj_stub).to.have.been.calledOnce;
+            expect(build_drop_schema_obj_stub).to.have.been.calledWith(DROP_SCHEMA_OBJECT_TEST.schema, success_msg);
+            expect(search_by_value_stub).to.have.been.calledOnce;
+            expect(search_by_value_stub).to.have.been.calledWith(search_object);
+            expect(move_schema_to_trash_stub).to.have.been.calledOnce;
+            expect(move_schema_to_trash_stub).to.have.been.calledWith(DROP_SCHEMA_OBJECT_TEST, search_value);
+            expect(delete_schema_att_stub).to.have.been.calledOnce;
+            expect(delete_schema_att_stub).to.have.been.calledWith(DROP_SCHEMA_OBJECT_TEST);
+            expect(result).to.equal(`successfully deleted schema ${DROP_SCHEMA_OBJECT_TEST.schema}`)
+
+        });
+    });
+
+    describe('Drop table', function() {
+        let move_table_trash_stub = sinon.stub();
+        let move_table_trash_rewire = schema.__set__('p_moveTableStructureToTrash', move_table_trash_stub);
+
+        after(function() {
+            move_table_trash_rewire();
+        });
+
+        it('should return successful stub from moveTableStructureToTrash', async function() {
+            let move_table_trash_fake = `successfully deleted table ${TABLE_NAME_TEST}`;
+            move_table_trash_stub.resolves(move_table_trash_fake);
+            let result = await schema.dropTable(DROP_TABLE_OBJECT_TEST);
+
+            expect(result).to.equal(move_table_trash_fake);
+            expect(move_table_trash_stub).to.have.calledWith(DROP_TABLE_OBJECT_TEST);
+            expect(move_table_trash_stub).to.have.been.calledOnce;
+            expect(signal_schema_change_stub).to.have.been.calledOnce;
+        });
+
+        it('should catch thrown errors and send to log', async function() {
+            let move_table_trash_err = `There was a problem deleting ${TABLE_NAME_TEST}`;
+            move_table_trash_stub.throws(new Error(move_table_trash_err));
+
+            try {
+                let result = await schema.dropTable(DROP_TABLE_OBJECT_TEST);
+            } catch(error) {
+                expect(error).to.be.instanceOf(Error);
+                expect(error.message).to.equal(move_table_trash_err);
+                expect(move_table_trash_stub).to.have.been.calledOnce;
+                expect(logger_error_stub).to.have.been.calledOnce;
+                expect(logger_error_stub).to.have.been.calledWith(error);
+            }
+        });
+
+    });
+
 
 
 

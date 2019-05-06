@@ -62,12 +62,15 @@ module.exports = {
 // TODO - temp promisified functions that help with async module refactor
 const p_createAttributeStructure = util.promisify(createAttributeStructure);
 const p_createTableStructure = util.promisify(createTableStructure);
+const p_buildDropSchemaSearchObject = util.promisify(buildDropSchemaSearchObject);
+const p_moveSchemaToTrash = util.promisify(moveSchemaToTrash);
+const p_deleteSchemaAttributes = util.promisify(deleteSchemaAttributes);
+const p_buildDropTableObject = util.promisify(buildDropTableObject);
+const p_moveTableToTrash = util.promisify(moveTableToTrash);
+const p_deleteAttributeStructure = util.promisify(deleteAttributeStructure);
 
 async function createSchema(schema_create_object) {
     try {
-        const HDB_ROOT_ORIGINAL = env.get('HDB_ROOT');
-        let table_schema = global.hdb_schema;
-
         let schema_structure = await createSchemaStructure(schema_create_object);
         signalling.signalSchemaChange({type: 'schema'});
 
@@ -107,7 +110,6 @@ async function createSchemaStructure(schema_create_object) {
         await fs.mkdir(env.get('HDB_ROOT') + '/schema/' + schema_object);
 
         return `schema ${schema_create_object.schema} successfully created`;
-
     } catch(err) {
         if (err.errno === -17) {
             throw 'schema already exists';
@@ -166,7 +168,6 @@ async function createTableStructure(create_table_object) {
         }
 
         return `table ${create_table_object.schema}.${create_table_object.table} successfully created.`
-
     } catch(err) {
         throw err;
     }
@@ -188,48 +189,37 @@ async function insertTable(table, create_table_object) {
         if (err.errno === -2) {
             throw 'schema does not exist';
         }
-
         if (err.errno === -17) {
             throw 'table already exists';
         }
-
         throw err;
     }
 }
+
+async function dropSchema(drop_schema_object) {
+    try {
+        let move_schema_struc_trash = await moveSchemaStructureToTrash(drop_schema_object);
+        signalling.signalSchemaChange({type: 'schema'});
+        delete global.hdb_schema[drop_schema_object.schema];
+
+        return move_schema_struc_trash;
+    } catch(err) {
+        logger.error(err);
+        throw err;
+    }
+}
+
+/**
+ * Moves a schema and it's contained tables/attributes to the trash directory.
+ * @param drop_schema_object
+ * @returns {Promise<string>}
+ */
 
 async function moveSchemaStructureToTrash(drop_schema_object) {
     try {
         let validation_error = validation.schema_object(drop_schema_object);
         if (validation_error) {
             throw validation_error;
-        }
-    } catch(err) {
-        throw err;
-    }
-
-    let schema = drop_schema_object.schema;
-    let delete_schema_object = {
-        table: "hdb_schema",
-        schema: "system",
-        hash_values: [schema]
-    };
-
-    await delete_.delete
-
-}
-
-/**
- * Moves a schema and it's contained tables/attributes to the trash directory.
- * @param drop_schema_object - Object describing the schema targeted for 'deletion'.
- * @param callback - callback object
- * @returns {*}
- */
-function moveSchemaStructureToTrash(drop_schema_object, callback) {
-    try {
-        let validation_error = validation.schema_object(drop_schema_object);
-        if (validation_error) {
-            callback(validation_error, null);
-            return;
         }
 
         let schema = drop_schema_object.schema;
@@ -239,101 +229,66 @@ function moveSchemaStructureToTrash(drop_schema_object, callback) {
             hash_values: [schema]
         };
 
-        async.waterfall([
-                delete_.delete.bind(null, delete_schema_object),    // returns text 'records successfully deleted'
-                buildDropSchemaSearchObject.bind(null, schema),     // returns search_obj
-                search.searchByValue,                               // returns 'data'
-                moveSchemaToTrash.bind(null, drop_schema_object),   // takes 'data' as tables, returns 'delete_table_object'
-                deleteSchemaAttributes.bind(null, drop_schema_object) // takes 'drop_schema_object, returns text successfully deleted ${schema}`
-            ],
-            function(err, data) {
-                if( err) {
-                    logger.error(`There was a problem deleting ${schema}.  Please check the logs for more info`);
-                    logger.error(err);
-                    return callback(err);
-                } else {
-                    callback(null, `successfully deleted schema ${schema}`);
-                }
-            });
-    } catch (e) {
-        logger.error(e);
-        return callback(e);
+        // TODO: tidy up the unused passed messages
+        let success_msg = await p_delete_delete(delete_schema_object);
+        let search_object = await p_buildDropSchemaSearchObject(schema, success_msg);
+        let search_value = await p_search_search_by_value(search_object);
+        await p_moveSchemaToTrash(drop_schema_object, search_value);
+        await p_deleteSchemaAttributes(drop_schema_object);
+
+        return `successfully deleted schema ${schema}`;
+    } catch(err) {
+        throw err;
+    }
+}
+
+
+async function dropTable(drop_table_object) {
+    try {
+        let move_table_struc_trash = await moveTableStructureToTrash(drop_table_object);
+        signalling.signalSchemaChange({type: 'schema'});
+
+        return move_table_struc_trash;
+    } catch(err) {
+        logger.error(err);
+        throw err;
     }
 }
 
 /**
  * Moves a target table and it's attributes to the trash directory.
  * @param drop_table_object - Descriptor for the table being targeted for move.
- * @param callback - callback function.
+ * @returns {Promise<string>}
  */
-function moveTableStructureToTrash(drop_table_object, callback) {
-    let validation_error = validation.table_object(drop_table_object);
-    if (validation_error) {
-        callback(validation_error, null);
-        return;
-    }
+async function moveTableStructureToTrash(drop_table_object) {
     try {
+        let validation_error = validation.table_object(drop_table_object);
+        if (validation_error) {
+            throw validation_error;
+        }
         let schema = drop_table_object.schema;
         let table = drop_table_object.table;
-        let search_obj = {};
-        search_obj.schema = 'system';
-        search_obj.table = 'hdb_table';
-        search_obj.hash_attribute = 'id';
-        search_obj.search_attribute = 'name';
-        search_obj.search_value = drop_table_object.table;
-        search_obj.get_attributes = ['name', 'schema', 'id'];
-        async.waterfall([
-            search.searchByValue.bind(null, search_obj),
-            buildDropTableObject.bind(null, drop_table_object),
-            delete_.delete,
-            moveTableToTrash.bind(null, drop_table_object),
-            deleteTableAttributes.bind(null, drop_table_object)
-        ], function(err, result) {
-            if( err) {
-                logger.error(`There was a problem deleting ${schema}.  Please check the logs for more info`);
-                logger.error(err);
-                return callback(err);
-            } else {
-                callback(null, result);
-            }
-        });
-    } catch (e) {
-        callback(e);
+
+        let search_object = {
+            schema: 'system',
+            table: 'hdb_table',
+            hash_attribute: 'id',
+            search_attribute: 'name',
+            search_value: table,
+            get_attributes: ['name', 'schema', 'id']
+        };
+
+        let search_value = await p_search_search_by_value(search_object);
+        let delete_table_object = await p_buildDropTableObject(drop_table_object, search_value);
+        await p_delete_delete(delete_table_object);
+        await p_moveTableToTrash(drop_table_object);
+        await p_deleteAttributeStructure(drop_table_object);
+
+        return `successfully deleted table ${schema}.${table}`
+    } catch(err) {
+        throw err;
     }
-}
 
-function dropSchema(drop_schema_object, callback) {
-    try {
-        moveSchemaStructureToTrash(drop_schema_object, function (err, success) {
-            if (err) {
-                callback(err);
-                return;
-            }
-            signalling.signalSchemaChange({type: 'schema'});
-
-            delete global.hdb_schema[drop_schema_object.schema];
-            return callback(null, success);
-        });
-    } catch (e) {
-        logger.error(e);
-        return callback(e);
-    }
-}
-
-function dropTable(drop_table_object, callback) {
-    try {
-        moveTableStructureToTrash(drop_table_object, function (err, success) {
-            if (err) {
-                callback(err);
-                return;
-            }
-
-            signalling.signalSchemaChange({type: 'schema'});
-            return callback(null, success);
-        });
-    } catch (e) {
-        callback(e);
-    }
 }
 
 /**
@@ -434,6 +389,8 @@ function moveSchemaToTrash(drop_schema_object, tables, callback) {
  * @param drop_schema_object - The object used to described the schema being deleted.
  * @param callback - callback function.
  */
+
+// TODO: should we remove this?
 function deleteSchemaAttributes(drop_schema_object, callback) {
     deleteAttributeStructure(drop_schema_object, function deleteSuccess(err, data) {
         if (err) { return callback(err); }
@@ -475,7 +432,7 @@ function buildDropTableObject (drop_table_object, data, callback) {
  * @param msg - Message returned from the delete.delete function.
  * @param callback - Callback function.
  */
-function moveTableToTrash (drop_table_object, msg, callback) {
+function moveTableToTrash (drop_table_object, callback) {
     let currDate = new Date().toISOString().substr(0, DATE_SUBSTR_LENGTH);
     let destination_name = `${drop_table_object.table}-${currDate}`;
     let trash_path = `${env.get('HDB_ROOT')}/trash`;
@@ -597,14 +554,14 @@ async function moveFolderToTrash(path, trash_path) {
  * @param drop_table_object - Descriptor of the table being moved.
  * @param callback - Callback function.
  */
-function deleteTableAttributes(err, drop_table_object, callback) {
-    deleteAttributeStructure(drop_table_object, function completedDrop(err, success) {
-        if (err) {
-            return callback(err);
-        }
-        callback(null, `successfully deleted table ${drop_table_object.schema}.${drop_table_object.table}`);
-    });
-}
+// function deleteTableAttributes(err, drop_table_object, callback) {
+//     deleteAttributeStructure(drop_table_object, function completedDrop(err, success) {
+//         if (err) {
+//             return callback(err);
+//         }
+//         callback(null, `successfully deleted table ${drop_table_object.schema}.${drop_table_object.table}`);
+//     });
+// }
 
 async function searchForSchema(schema_name) {
     let search_obj = {

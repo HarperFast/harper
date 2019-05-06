@@ -142,6 +142,7 @@ function searchByConditions(search_object, callback){
             return;
         }
 
+
         let table_schema = global.hdb_schema[search_object.schema][search_object.table];
 
         //let patterns = condition_patterns.createPatterns(search_object.condition, table_schema, base_path);
