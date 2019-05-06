@@ -2,7 +2,7 @@ const validator = require('./validationWrapper.js');
 const INVALID_ATTRIBUTE_NAMES = {
     "undefined":"undefined",
     "null":"null"
-}
+};
 const constraints = {
     schema: {
         presence: true,
