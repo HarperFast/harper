@@ -1,13 +1,13 @@
 [
   {
     "name": "apple",
-    "host":"172.16.20.145",
+    "host":"172.16.20.29",
     "port": 1111,
     "subscriptions": [
       {
         "channel":"dev:dog",
         "publish": true,
-        "subscribe": false
+        "subscribe": true
       },
       {
         "channel":"dev:breed",

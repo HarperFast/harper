@@ -89,7 +89,7 @@ async function processData(process_wrapper) {
             continue;
         }
 
-        hashes.push(hash_value);
+        hashes.push(autoCast(hash_value));
         for (let k = 0; k < record_keys.length; k++) {
             let property = record_keys[k];
             //don't allow empty attribute names

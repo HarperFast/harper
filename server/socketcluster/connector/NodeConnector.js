@@ -3,18 +3,27 @@
 const SocketConnector = require('./SocketConnector');
 const socket_client = require('socketcluster-client');
 const sc_objects = require('../socketClusterObjects');
+const AssignToHdbChildWorkerRule = require('../decisionMatrix/rules/AssignToHdbChildWorkerRule');
 const SubscriptionObject = sc_objects.SubscriptionObject;
 const NodeObject = sc_objects.NodeObject;
+const promisify = require('util').promisify;
 
 class NodeConnector {
     constructor(nodes, worker){
         //spawn local connection
         this.worker = worker;
+        this.publishin_promises = [];
+
+        this.worker.scServer._middleware.publishIn.forEach(middleware_function=>{
+            this.publishin_promises.push(promisify(middleware_function).bind(this.worker.scServer));
+        });
+
         //used to auto pub/sub the hdb_schema channel across the cluster
         this.HDB_Schema_Subscription = new SubscriptionObject('internal:create_schema', true, true);
         this.HDB_Table_Subscription = new SubscriptionObject('internal:create_table', true, true);
         this.HDB_Attribute_Subscription = new SubscriptionObject('internal:create_attribute', true, true);
 
+        this.AssignToHdbChildWorkerRule = new AssignToHdbChildWorkerRule();
         this.spawnRemoteConnections(nodes);
         this.connections = socket_client;
 
@@ -61,8 +70,28 @@ class NodeConnector {
 
         if(subscription.subscribe === true){
             //we need to observe the channel remotely and send the data locally
-            connection.subscribe(subscription.channel, this.worker.sendTransactionToWorker.bind(this.worker, subscription.channel));
+            connection.subscribe(subscription.channel, this.assignTransactionToChild.bind(this, subscription.channel));
+        }
+    }
 
+    async assignTransactionToChild(channel, data){
+        let req = {
+            channel: channel,
+            data: data
+        };
+
+        this.runMiddleware(req).then(()=>{
+
+        });
+    }
+
+    async runMiddleware(request){
+        for (let x = 0; x < this.publishin_promises.length; x++) {
+            try {
+                await this.publishin_promises[x](request);
+            } catch(e){
+                console.error(e);
+            }
         }
     }
 
