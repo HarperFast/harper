@@ -39,6 +39,7 @@
     "no-mixed-spaces-and-tabs": "off",
     "no-unused-vars": "off",
     "no-case-declarations": "off",
-    "no-useless-escape": "off"
+    "no-useless-escape": "off",
+    "no-inner-declarations": "off"
   }
 }
