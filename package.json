@@ -9,6 +9,7 @@
     "test": "cd bin/ && mocha ../node_modules/mocha/bin/_mocha --timeout 0 --ui bdd --recursive  ../unitTests --watch",
     "hdb-check": "./utility/devops/hdb-check.sh",
     "prepublish": "npm run build",
+    "prebuild":"date",
     "flow": "flow",
     "coverage": "nyc report --reporter=html npm test"
   },
