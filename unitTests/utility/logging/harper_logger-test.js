@@ -9,6 +9,10 @@
 const test_utils = require('../../test_utils');
 test_utils.preTestPrep();
 const assert = require('assert');
+const chai = require('chai');
+const sinon_chai = require('sinon-chai');
+const expect = chai.expect;
+chai.use(sinon_chai)
 const sinon = require('sinon');
 const fs = require('fs');
 const moment = require('moment');
@@ -16,7 +20,6 @@ const winston = require('winston');
 
 const rewire = require('rewire');
 const harper_log = rewire('../../../utility/logging/harper_logger');
-const validator = require('../../../validation/validationWrapper');
 
 
 let output_file_name = global.log_location;
@@ -32,6 +35,7 @@ const INFO_LOG_MESSAGE = 'INFO_MSG';
 const DEBUG_LOG_MESSAGE = 'DEBUG_MSG';
 const TRACE_LOG_MESSAGE = 'TRACE_MSG';
 
+// TODO: Move these spies into a describe block to avoid global scope
 let harper_notify_spy = undefined;
 let harper_debug_spy = undefined;
 let harper_trace_spy = undefined;
@@ -78,6 +82,7 @@ function log_something(level, done) {
             let end_index = data.lastIndexOf(LOG_DELIMITER+level);
             let logged_message = data.slice(start_index, end_index);
 
+            // TODO: Update tests below to use Chai assertions AND ensure that expected and actual values are entered in the correct place of the Chai.expect
             assert.notEqual(-1, end_index, 'last message delimiter not found');
             assert.notEqual(-1, start_index, 'first message delimiter not found');
             assert.ok(end_index > start_index);
@@ -170,7 +175,10 @@ function log_something(level, done) {
  */
 
 describe(`Test log writing - Winston`, function() {
+    let sandbox;
+
     before( function() {
+        sandbox = sinon.createSandbox();
         file_change_results = false;
         harper_log.setLogType(WINSTON);
         if(!fs.existsSync(output_file_name)) {
@@ -195,15 +203,16 @@ describe(`Test log writing - Winston`, function() {
     after(function() {
         zeroizeOutputFile();
         watcher.close();
+        sandbox.resetHistory();
     });
     it('Test Trace Level', function(done) {
         if(harper_trace_spy === undefined) {
-            harper_trace_spy = sinon.spy(harper_log, 'trace');
+            harper_trace_spy = sandbox.spy(harper_log, 'trace');
         }
         harper_log.setLogLevel(harper_log.TRACE);
         harper_log.trace(TRACE_LOG_MESSAGE);
 
-        assert.equal(harper_trace_spy.called,true, "logger 'trace' function was not called.");
+        assert.equal(harper_trace_spy.calledOnce,true, "logger 'trace' function was not called.");
         setTimeout( function () {
             assert.equal(file_change_results, true, "Did not detect a file change after calling trace.");
             done();
@@ -212,12 +221,12 @@ describe(`Test log writing - Winston`, function() {
     it('Test Debug Level', function(done) {
         file_change_results = false;
         if( harper_debug_spy === undefined) {
-            harper_debug_spy = sinon.spy(harper_log, 'debug');
+            harper_debug_spy = sandbox.spy(harper_log, 'debug');
         }
         harper_log.setLogLevel(harper_log.DEBUG);
         harper_log.debug(DEBUG_LOG_MESSAGE);
 
-        assert.equal(harper_debug_spy.called,true, "logger 'debug' function was not called.");
+        assert.equal(harper_debug_spy.calledOnce,true, "logger 'debug' function was not called.");
         setTimeout( function () {
             assert.equal(file_change_results, true, "Did not detect a file change after calling debug.");
             done();
@@ -226,12 +235,12 @@ describe(`Test log writing - Winston`, function() {
     it('Test Info Level', function(done) {
         file_change_results = false;
         if( harper_info_spy === undefined) {
-            harper_info_spy = sinon.spy(harper_log, 'info');
+            harper_info_spy = sandbox.spy(harper_log, 'info');
         }
         harper_log.setLogLevel(harper_log.INFO);
         harper_log.info(INFO_LOG_MESSAGE);
 
-        assert.equal(harper_info_spy.called,true, "logger 'info' function was not called.");
+        assert.equal(harper_info_spy.calledOnce,true, "logger 'info' function was not called.");
         setTimeout( function () {
             assert.equal(file_change_results, true, "Did not detect a file change after calling info.");
             done();
@@ -240,12 +249,12 @@ describe(`Test log writing - Winston`, function() {
     it('Test Warn Level', function(done) {
         file_change_results = false;
         if( harper_warn_spy === undefined) {
-            harper_warn_spy = sinon.spy(harper_log, 'warn');
+            harper_warn_spy = sandbox.spy(harper_log, 'warn');
         }
         harper_log.setLogLevel(harper_log.WARN);
         harper_log.warn(WARN_LOG_MESSAGE);
 
-        assert.equal(harper_warn_spy.called,true, "logger 'warn' function was not called.");
+        assert.equal(harper_warn_spy.calledOnce,true, "logger 'warn' function was not called.");
         setTimeout( function () {
             assert.equal(file_change_results, true, "Did not detect a file change after calling warn.");
             done();
@@ -254,12 +263,12 @@ describe(`Test log writing - Winston`, function() {
     it('Test Error Level', function(done) {
         file_change_results = false;
         if( harper_error_spy === undefined) {
-            harper_error_spy = sinon.spy(harper_log, 'error');
+            harper_error_spy = sandbox.spy(harper_log, 'error');
         }
         harper_log.setLogLevel(harper_log.ERR);
         harper_log.error(ERROR_LOG_MESSAGE);
 
-        assert.equal(harper_error_spy.called,true, "logger 'error' function was not called.");
+        assert.equal(harper_error_spy.calledOnce,true, "logger 'error' function was not called.");
 
         setTimeout( function () {
             assert.equal(file_change_results, true, "Did not detect a file change after calling error.");
@@ -269,12 +278,12 @@ describe(`Test log writing - Winston`, function() {
     it('Test Fatal Level', function(done) {
         file_change_results = false;
         if( harper_fatal_spy === undefined) {
-            harper_fatal_spy = sinon.spy(harper_log, 'fatal');
+            harper_fatal_spy = sandbox.spy(harper_log, 'fatal');
         }
         harper_log.setLogLevel(harper_log.FATAL);
         harper_log.fatal(FATAL_LOG_MESSAGE);
 
-        assert.equal(harper_fatal_spy.called,true, "logger 'fatal' function was not called.");
+        assert.equal(harper_fatal_spy.calledOnce,true, "logger 'fatal' function was not called.");
 
         setTimeout( function () {
             assert.equal(file_change_results, true, "Did not detect a file change after calling fatal.");
@@ -285,11 +294,11 @@ describe(`Test log writing - Winston`, function() {
     it('Test Notify Level', function(done) {
         file_change_results = false;
         if( harper_notify_spy === undefined) {
-            harper_notify_spy = sinon.spy(harper_log, 'notify');
+            harper_notify_spy = sandbox.spy(harper_log, 'notify');
         }
         harper_log.setLogLevel(harper_log.NOTIFY);
         harper_log.notify(NOTIFY_LOG_MESSAGE);
-        assert.equal(harper_notify_spy.called,true, "logger 'notify' function was not called.");
+        assert.equal(harper_notify_spy.calledOnce,true, "logger 'notify' function was not called.");
 
         setTimeout( function () {
             assert.equal(file_change_results, true, "Did not detect a file change after calling fatal.");
@@ -299,7 +308,9 @@ describe(`Test log writing - Winston`, function() {
 });
 
 describe(`Test log writing - PINO`, function() {
+    let sandbox;
     before( function() {
+        sandbox = sinon.createSandbox();
         file_change_results = false;
         harper_log.setLogType(PINO);
         if(!fs.existsSync(output_file_name)) {
@@ -324,14 +335,15 @@ describe(`Test log writing - PINO`, function() {
     after(function() {
         zeroizeOutputFile();
         watcher.close();
+        sandbox.restore();
     });
     it('Test Trace Level', function(done) {
         if(harper_trace_spy === undefined) {
-            harper_trace_spy = sinon.spy(harper_log, 'trace');
+            harper_trace_spy = sandbox.spy(harper_log, 'trace');
         }
         harper_log.setLogLevel(harper_log.TRACE);
         harper_log.trace(TRACE_LOG_MESSAGE);
-        assert.equal(harper_trace_spy.called,true, "logger 'trace' function was not called.");
+        assert.equal(harper_trace_spy.calledOnce,true, "logger 'trace' function was not called.");
         setTimeout( function () {
             assert.equal(file_change_results, true, "Did not detect a file change after calling trace.");
             done();
@@ -340,11 +352,11 @@ describe(`Test log writing - PINO`, function() {
     it('Test Debug Level', function(done) {
         file_change_results = false;
         if( harper_debug_spy === undefined) {
-            harper_debug_spy = sinon.spy(harper_log, 'debug');
+            harper_debug_spy = sandbox.spy(harper_log, 'debug');
         }
         harper_log.setLogLevel(harper_log.DEBUG);
         harper_log.debug(DEBUG_LOG_MESSAGE);
-        assert.equal(harper_debug_spy.called,true, "logger 'debug' function was not called.");
+        assert.equal(harper_debug_spy.calledOnce,true, "logger 'debug' function was not called.");
         setTimeout( function () {
             assert.equal(file_change_results, true, "Did not detect a file change after calling debug.");
             done();
@@ -353,11 +365,11 @@ describe(`Test log writing - PINO`, function() {
     it('Test Info Level', function(done) {
         file_change_results = false;
         if( harper_info_spy === undefined) {
-            harper_info_spy = sinon.spy(harper_log, 'info');
+            harper_info_spy = sandbox.spy(harper_log, 'info');
         }
         harper_log.setLogLevel(harper_log.INFO);
         harper_log.info(INFO_LOG_MESSAGE);
-        assert.equal(harper_info_spy.called,true, "logger 'info' function was not called.");
+        assert.equal(harper_info_spy.calledOnce,true, "logger 'info' function was not called.");
         setTimeout( function () {
             assert.equal(file_change_results, true, "Did not detect a file change after calling info.");
             done();
@@ -366,11 +378,11 @@ describe(`Test log writing - PINO`, function() {
     it('Test Warn Level', function(done) {
         file_change_results = false;
         if( harper_warn_spy === undefined) {
-            harper_warn_spy = sinon.spy(harper_log, 'warn');
+            harper_warn_spy = sandbox.spy(harper_log, 'warn');
         }
         harper_log.setLogLevel(harper_log.WARN);
         harper_log.warn(WARN_LOG_MESSAGE);
-        assert.equal(harper_warn_spy.called,true, "logger 'warn' function was not called.");
+        assert.equal(harper_warn_spy.calledOnce,true, "logger 'warn' function was not called.");
         setTimeout( function () {
             assert.equal(file_change_results, true, "Did not detect a file change after calling warn.");
             done();
@@ -379,11 +391,11 @@ describe(`Test log writing - PINO`, function() {
     it('Test Error Level', function(done) {
         file_change_results = false;
         if( harper_error_spy === undefined) {
-            harper_error_spy = sinon.spy(harper_log, 'error');
+            harper_error_spy = sandbox.spy(harper_log, 'error');
         }
         harper_log.setLogLevel(harper_log.ERR);
         harper_log.error(ERROR_LOG_MESSAGE);
-        assert.equal(harper_error_spy.called,true, "logger 'error' function was not called.");
+        assert.equal(harper_error_spy.calledOnce,true, "logger 'error' function was not called.");
 
         setTimeout( function () {
             assert.equal(file_change_results, true, "Did not detect a file change after calling error.");
@@ -393,11 +405,11 @@ describe(`Test log writing - PINO`, function() {
     it('Test Fatal Level', function(done) {
         file_change_results = false;
         if( harper_fatal_spy === undefined) {
-            harper_fatal_spy = sinon.spy(harper_log, 'fatal');
+            harper_fatal_spy = sandbox.spy(harper_log, 'fatal');
         }
         harper_log.setLogLevel(harper_log.FATAL);
         harper_log.fatal(FATAL_LOG_MESSAGE);
-        assert.equal(harper_fatal_spy.called,true, "logger 'fatal' function was not called.");
+        assert.equal(harper_fatal_spy.calledOnce,true, "logger 'fatal' function was not called.");
 
         setTimeout( function () {
             assert.equal(file_change_results, true, "Did not detect a file change after calling fatal.");
@@ -408,11 +420,11 @@ describe(`Test log writing - PINO`, function() {
     it('Test Notify Level', function(done) {
         file_change_results = false;
         if( harper_notify_spy === undefined) {
-            harper_notify_spy = sinon.spy(harper_log, 'notify');
+            harper_notify_spy = sandbox.spy(harper_log, 'notify');
         }
         harper_log.setLogLevel(harper_log.NOTIFY);
         harper_log.notify(NOTIFY_LOG_MESSAGE);
-        assert.equal(harper_notify_spy.called,true, "logger 'notify' function was not called.");
+        assert.equal(harper_notify_spy.calledOnce,true, "logger 'notify' function was not called.");
 
         setTimeout( function () {
             assert.equal(file_change_results, true, "Did not detect a file change after calling fatal.");
@@ -517,7 +529,6 @@ describe(`Test setLogLocation`, function (done) {
     before(function () {
         harper_log.setLogType(WINSTON);
         file_change_results = false;
-
     });
 
     afterEach(function () {
@@ -566,37 +577,33 @@ describe(`Test setLogLocation`, function (done) {
         harper_log.error('bad log path was set');
         // need to wait for the logger to create and write to the file.
         try {
-                watcher = fs.watch(default_path, {persistent: false}, (eventType, filename) => {
-                    if (filename) {
-                        file_change_results = true;
-                    } else {
-                        console.log(`filename not found`);
-                    }
-                });
-            } catch(err) {
-                console.error(err);
-            }
-            harper_log.error('test in new path');
-            setTimeout( function () {
-                // Had to play with the timing on this to make it constantly pass.  Might need to be slower depending on the
-                // event loop and specs of any given system the test is run on.  Not the best way to test, but works for now.
-                assert.equal(file_change_results, true, 'Expected log written to default path.');
-                done();
-            }, 1200);
+            watcher = fs.watch(default_path, {persistent: false}, (eventType, filename) => {
+                if (filename) {
+                    file_change_results = true;
+                } else {
+                    console.log(`filename not found`);
+                }
+            });
+        } catch(err) {
+            console.error(err);
+        }
+        harper_log.error('test in new path');
+        setTimeout( function () {
+            // Had to play with the timing on this to make it constantly pass.  Might need to be slower depending on the
+            // event loop and specs of any given system the test is run on.  Not the best way to test, but works for now.
+            assert.equal(file_change_results, true, 'Expected log written to default path.');
+            done();
+        }, 1200);
     });
 });
 
-
-const DEFAULT_OPTIONS = {
-    limit: 100,
-    win_fields: ['level','message','timestamp'],
-    pin_fields: ['level','msg','time']
-}
+const DEFAULT_OPTIONS_LIMIT = 100;
 
 const TEST_READ_LOG_OBJECT = {
     "operation": "read_log",
     "from": "2017-07-10",
-    "until": "2019-07-11",
+    // Used to ensure the errors being added are always included in default query tests
+    "until": moment(new Date()).add(1,'days'),
     "limit": "1000",
     "start": "0",
     "order": "desc",
@@ -613,222 +620,239 @@ function getMomentDate(date) {
 
 describe("Test read_log ", function() {
     let sandbox;
-    let winston_config_spy;
-    let callback_spy;
+    let winston_configure_spy;
     let winston_query_spy;
     let test_read_log_obj;
 
     before(function() {
-        harper_log.__set__('win_logger', undefined);
-        harper_log.__set__('pin_logger', undefined);
-        harper_log.__set__('log_location', 'hdb_log.log')
-        harper_log.setLogType(WINSTON)
-        harper_log.setLogLevel(harper_log.WARN)
-
+        harper_log.__set__('win_logger', null);
+        harper_log.setLogType(WINSTON);
+        harper_log.setLogLocation(output_file_name);
+        harper_log.setLogLevel(harper_log.ERR);
+        if(fs.existsSync(output_file_name)) {
+            try {
+                zeroizeOutputFile()
+            } catch (e) {
+                console.log("Cannot write file ", e);
+            }
+        }
+        harper_log.error(ERROR_LOG_MESSAGE);
+        harper_log.error(ERROR_LOG_MESSAGE);
         sandbox = sinon.createSandbox();
     })
 
     beforeEach(function() {
-        callback_spy = sandbox.spy();
+        harper_log.setLogType(WINSTON);
         winston_query_spy = sandbox.spy(winston, "query");
         test_read_log_obj = test_utils.deepClone(TEST_READ_LOG_OBJECT);
     });
 
     afterEach(function() {
-        harper_log.setLogType(WINSTON);
         sandbox.resetHistory();
         sandbox.resetBehavior();
         sandbox.restore();
     })
 
-    it("Should call the query method if the validator does NOT return anything", function() {
-        sandbox.stub(validator, "validateObject").returns(null);
-        harper_log.read_log(test_read_log_obj, callback_spy);
+    it("Should call the query method if the validator does NOT return anything", test_utils.mochaAsyncWrapper(async function() {
+        let queryResults;
+        try {
+            queryResults = await harper_log.readLog(test_read_log_obj);
+        } catch(e) {
+            expect(e).to.be.null;
+        }
 
-        assert.strictEqual(winston_query_spy.calledOnce, true);
-    });
+        expect(winston_query_spy.calledOnce).to.equal(true);
+        expect(queryResults.file.length).to.equal(2);
+    }));
 
-    it("Should call the callback method with the data returned from the validator if returned", function() {
-        const TEST_VALIDATOR_DATA = "Validator return data"
-        sandbox.stub(validator, "validateObject").returns(TEST_VALIDATOR_DATA);
-        harper_log.read_log(test_read_log_obj, callback_spy);
+    it("Should throw an error if the validator returns an error value", test_utils.mochaAsyncWrapper( async function() {
+        test_read_log_obj.until="BOGO Jamba Juice!"
+        try {
+            const queryResults = await harper_log.readLog(test_read_log_obj);
+            expect(queryResults).to.equal(null);
+        } catch(e) {
+            expect(e).to.include.property('message');
+        }
+    }));
 
-        assert.strictEqual(callback_spy.args[0][0], TEST_VALIDATOR_DATA);
-    });
-
-    describe("setting Winston configuration", function() {
+    describe("setting Winston configuration for query", function() {
         beforeEach(function() {
-            winston_config_spy = sandbox.spy(winston, "configure");
+            winston_configure_spy = sandbox.spy(winston, "configure");
         })
 
         it("Should configure a winston with the file name `install_log.log` when log equals install_log ", function() {
             test_read_log_obj.log = "install_log";
-            harper_log.read_log(test_read_log_obj, callback_spy);
+            harper_log.readLog(test_read_log_obj);
 
-            assert.strictEqual(winston_config_spy.args[0][0].transports[0].filename, 'install_log.log')
-            assert.strictEqual(winston_config_spy.calledOnce, true);
+            expect(winston_configure_spy.args[0][0].transports[0].filename).to.equal('install_log.log');
+            expect(winston_configure_spy.calledOnce).to.equal(true);
         });
 
         it("Should configure a winston with the file name `run_log.log` when log equals run_log ", function() {
             test_read_log_obj.log = "run_log";
-            harper_log.read_log(test_read_log_obj, callback_spy);
+            harper_log.readLog(test_read_log_obj);
 
-            assert.strictEqual(winston_config_spy.args[0][0].transports[0].filename, 'run_log.log')
-            assert.strictEqual(winston_config_spy.calledOnce, true);
+            expect(winston_configure_spy.args[0][0].transports[0].filename).to.equal('run_log.log')
+            expect(winston_configure_spy.calledOnce).to.equal(true);
         });
 
         it("Should configure winston when there is no log set in the read_log_object ", function() {
-            harper_log.read_log(test_read_log_obj, callback_spy);
+            harper_log.readLog(test_read_log_obj);
 
-            assert.strictEqual(winston_query_spy.calledOnce, true);
+            expect(global.log_location).to.include(winston_configure_spy.args[0][0].transports[0].filename);
+            expect(winston_query_spy.calledOnce).to.equal(true);
         });
 
         it("Should configure winston to query for logs when Pino is set as the logger ", function() {
             harper_log.setLogType(PINO);
-            harper_log.read_log(test_read_log_obj, callback_spy);
+            harper_log.readLog(test_read_log_obj);
 
-            assert.strictEqual(winston_config_spy.args[0][0].transports[0].filename, 'hdb_log.log')
-            assert.strictEqual(winston_config_spy.calledOnce, true);
+            expect(global.log_location).to.include(winston_configure_spy.args[0][0].transports[0].filename);
+            expect(winston_configure_spy.calledOnce).to.equal(true);
         })
     });
 
     describe("bones.query() 'options' parameter ", function() {
+        const default_options_fields = harper_log.__get__('DEFAULT_LOGGER_FIELDS')
+        let queryResults;
 
-        it("Should include 'limit' and 'fields' properties by default ", function() {
+        afterEach(function() {
+            queryResults = undefined;
+        })
+
+        it("Should include 'limit' and 'fields' properties by default ", test_utils.mochaAsyncWrapper( async function() {
+            delete test_read_log_obj['limit'];
+            try {
+                queryResults = await harper_log.readLog(test_read_log_obj);
+            } catch(e) {
+                expect(e).to.be.null('readLog() should not have thrown an error');
+            }
+
+            expect(queryResults.file.length).to.equal(2);
+
+            const winston_options = winston_query_spy.args[0][0];
+            expect(winston_options.limit).to.equal(DEFAULT_OPTIONS_LIMIT);
+            expect(winston_options.fields).to.equal(default_options_fields.WIN);
+        }));
+
+        it("Should include default 'limit' and 'fields' properties for Pino ", test_utils.mochaAsyncWrapper( async function() {
             test_read_log_obj.limit = null;
-            harper_log.read_log(test_read_log_obj, callback_spy);
-            const winston_options = winston_query_spy.args[0][0];
-
-            assert.deepStrictEqual(winston_options.fields, DEFAULT_OPTIONS.win_fields);
-            assert.strictEqual(winston_options.limit, DEFAULT_OPTIONS.limit);
-        });
-
-        it("Should include 'fields' properties for Pino if Pino logging is turned on ", function() {
             harper_log.setLogType(PINO);
-            harper_log.read_log(test_read_log_obj, callback_spy);
+            try {
+                queryResults = await harper_log.readLog(test_read_log_obj);
+            } catch(e) {
+                expect(e).to.equal(null, 'readLog() should not have thrown an error');
+            }
+            expect(queryResults.file.length).to.equal(2);
+
+            const winston_options = winston_query_spy.args[0][0];
+            expect(winston_options.limit).to.equal(DEFAULT_OPTIONS_LIMIT);
+            expect(winston_options.fields).to.equal(default_options_fields.PIN);
+        }));
+
+        it("Should include all values from the read_log_object that is passed in ", test_utils.mochaAsyncWrapper( async function() {
+            try {
+                queryResults = await harper_log.readLog(test_read_log_obj);
+            } catch(e) {
+                expect(e).to.equal(null, 'readLog() should not have thrown an error');
+            }
             const winston_options = winston_query_spy.args[0][0];
 
-            assert.deepStrictEqual(winston_options.fields, DEFAULT_OPTIONS.pin_fields);
-        });
+            // Removing operation from the object for assertions b/c it is not used for the query
+            delete test_read_log_obj['operation'];
 
-        it("Should include a 'from' property with formatted date value ", function() {
-            harper_log.read_log(test_read_log_obj, callback_spy);
-            const winston_options = winston_query_spy.args[0][0];
+            Object.keys(test_read_log_obj).forEach(option => {
+                if (['from', 'until'].includes(option)) {
+                    expect(winston_options[option]).to.deep.equal(moment(test_read_log_obj[option]));
+                } else {
+                    expect(winston_options.option).to.equal(test_read_log_obj.option);
+                }
+            })
+            expect(queryResults.file.length).to.equal(2);
+        }));
 
-            assert.strictEqual(winston_options.from.isValid(), true);
-            assert.deepStrictEqual(winston_options.from, moment(test_read_log_obj.from));
-        });
-
-        it("Should include a 'until' property with formatted date value ", function() {
-            harper_log.read_log(test_read_log_obj, callback_spy);
-            const winston_options = winston_query_spy.args[0][0];
-
-            assert.strictEqual(winston_options.until.isValid(), true);
-            assert.deepStrictEqual(winston_options.until, moment(test_read_log_obj.until));
-        });
-
-        it("Should default the 'from' and 'until' properties to represent the previous 24 hours if not included in request ", function() {
+        it("Should default the 'from' and 'until' properties to represent the previous 24 hours if not included in request ", test_utils.mochaAsyncWrapper( async function() {
             delete test_read_log_obj['from'];
             delete test_read_log_obj['until'];
             const current_date = getMomentDate();
 
-            harper_log.read_log(test_read_log_obj, callback_spy);
+            try {
+                queryResults = await harper_log.readLog(test_read_log_obj);
+            } catch(e) {
+                expect(e).to.equal(null, 'readLog() should not have thrown an error');
+            }
+            expect(queryResults.file.length).to.equal(2);
+
             const winston_options = winston_query_spy.args[0][0];
+            expect(getMomentDate(winston_options.from).date()).to.equal(current_date.date()-1);
+            expect(moment(winston_options.until).isSame(current_date, 'day')).to.equal(true);
+        }));
 
-            assert.strictEqual(getMomentDate(winston_options.from).date(), current_date.date()-1);
-            assert.strictEqual(moment(winston_options.until).isSame(current_date, 'day'), true);
-        });
-
-        it("Should default the 'until' property to current day if not included in request ", function() {
+        it("Should default the 'until' property to current day if not included in request ", test_utils.mochaAsyncWrapper( async function() {
             delete test_read_log_obj['until'];
 
-            harper_log.read_log(test_read_log_obj, callback_spy);
+            try {
+                queryResults = await harper_log.readLog(test_read_log_obj);
+            } catch(e) {
+                expect(e).to.equal(null, 'readLog() should not have thrown an error');
+            }
+            expect(queryResults.file.length).to.equal(2);
+
             const winston_options = winston_query_spy.args[0][0];
+            expect(moment(winston_options.until).isSame(getMomentDate(), 'day')).to.equal(true);
+            expect(moment(winston_options.from).isSame(test_read_log_obj.from, 'day')).to.equal(true);
+        }));
 
-            assert.strictEqual(moment(winston_options.until).isSame(getMomentDate(), 'day'), true);
-            assert.strictEqual(moment(winston_options.from).isSame(test_read_log_obj.from, 'day'), true);
-        });
-
-        it("Should include a 'level' property ", function() {
-            harper_log.read_log(test_read_log_obj, callback_spy);
-            const winston_options = winston_query_spy.args[0][0];
-
-            assert.strictEqual(winston_options.level, test_read_log_obj.level);
-        });
-
-        it("Should NOT include a 'level' property if not included in request", function() {
+        it("Should NOT include a 'level' property if not included in request", test_utils.mochaAsyncWrapper( async function() {
             delete test_read_log_obj['level'];
+            try {
+                queryResults = await harper_log.readLog(test_read_log_obj);
+            } catch(e) {
+                expect(e).to.equal(null, 'readLog() should not have thrown an error');
+            }
+            // There will be three log objects sent back for this query because of the trace log set when Winston is instantiated
+            expect(queryResults.file.length).to.equal(3);
 
-            harper_log.read_log(test_read_log_obj, callback_spy);
             const winston_options = winston_query_spy.args[0][0];
+            expect(winston_options.level).to.equal(undefined);
+        }));
 
-            assert.strictEqual(winston_options.level, undefined);
-        });
-
-        it("Should include a 'limit' property ", function() {
-            harper_log.read_log(test_read_log_obj, callback_spy);
-            const winston_options = winston_query_spy.args[0][0];
-
-            assert.strictEqual(winston_options.limit, test_read_log_obj.limit);
-        });
-
-        it("Should default 'limit' property to 100 if not included in request ", function() {
+        it("Should default 'limit' property to 100 if not included in request ", test_utils.mochaAsyncWrapper( async function() {
             delete test_read_log_obj['limit'];
+            try {
+                queryResults = await harper_log.readLog(test_read_log_obj);
+            } catch(e) {
+                expect(e).to.equal(null, 'readLog() should not have thrown an error');
+            }
+            expect(queryResults.file.length).to.equal(2);
 
-            harper_log.read_log(test_read_log_obj, callback_spy);
             const winston_options = winston_query_spy.args[0][0];
+            expect(winston_options.limit).to.equal(100);
+        }));
 
-            assert.strictEqual(winston_options.limit, 100);
-        });
-
-        it("Should include a 'order' property ", function() {
-            harper_log.read_log(test_read_log_obj, callback_spy);
-            const winston_options = winston_query_spy.args[0][0];
-
-            assert.strictEqual(winston_options.order, test_read_log_obj.order);
-        });
-
-        it("Should default 'order' property to 'desc' if not included in request", function() {
+        it("Should default 'order' property to 'desc' if not included in request", test_utils.mochaAsyncWrapper( async function() {
             delete test_read_log_obj['order'];
+            try {
+                queryResults = await harper_log.readLog(test_read_log_obj);
+            } catch(e) {
+                expect(e).to.equal(null, 'readLog() should not have thrown an error');
+            }
+            expect(queryResults.file.length).to.equal(2);
 
-            harper_log.read_log(test_read_log_obj, callback_spy);
             const winston_options = winston_query_spy.args[0][0];
+            expect(winston_options.order).to.equal('desc');
+        }));
 
-            assert.strictEqual(winston_options.order, 'desc');
-        });
+        it("Should default 'start' property to 0 if not included in request ", test_utils.mochaAsyncWrapper( async function() {
+            try {
+                queryResults = await harper_log.readLog(test_read_log_obj);
+            } catch(e) {
+                expect(e).to.equal(null, 'readLog() should not have thrown an error');
+            }
+            expect(queryResults.file.length).to.equal(2);
 
-        it("Should include a 'start' property ", function() {
-            harper_log.read_log(test_read_log_obj, callback_spy);
             const winston_options = winston_query_spy.args[0][0];
-
-            assert.strictEqual(winston_options.start, test_read_log_obj.start);
-        });
-
-        it("Should default 'start' property to 0 if not included in request ", function() {
-            harper_log.read_log(test_read_log_obj, callback_spy);
-            const winston_options = winston_query_spy.args[0][0];
-
-            assert.strictEqual(winston_options.start, test_read_log_obj.start);
-        });
-    });
-
-    describe("queryCallback() for bones.query", function() {
-        const queryCallback = harper_log.__get__('queryCallback');
-        const query_results = { results: [1, 2, 3] };
-        const query_error = { error: "There was an error" };
-
-        it("Should call the callback with the results if an error value is not passed in ", function() {
-            queryCallback(null, query_results, callback_spy);
-
-            assert.strictEqual(callback_spy.calledOnce, true);
-            assert.strictEqual(callback_spy.calledWith(null, query_results), true);
-        });
-
-        it("Should call the callback with the error if an error value is passed in ", function() {
-            queryCallback(query_error, query_results, callback_spy);
-
-            assert.strictEqual(callback_spy.calledOnce, true);
-            assert.strictEqual(callback_spy.calledWith(query_error), true);
-        });
+            expect(winston_options.start).to.equal(test_read_log_obj.start);
+        }));
     });
 });

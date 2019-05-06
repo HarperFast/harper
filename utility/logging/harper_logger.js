@@ -14,6 +14,7 @@ const winston = require('winston');
 const pino = require('pino');
 const fs = require('fs');
 const moment = require('moment');
+const util = require('util');
 const validator = require('../../validation/readLogValidator');
 
 //Using numbers rather than strings for faster comparison
@@ -63,10 +64,20 @@ const INFO = 'info';
 const DEBUG = 'debug';
 const TRACE = 'trace';
 
-const LOGGER_LOCATION = {
+const DEFAULT_LOGGER_FIELDS = {
+    WIN: ['level','message','timestamp'],
+    PIN: ['level','msg','time']
+}
+
+const LOGGER_TYPE = {
     RUN_LOG: "run_log",
     INSTALL_LOG: "install_log",
     HDB_LOG: "hdb_log"
+}
+
+const LOGGER_PATH = {
+    INSTALL_LOG: "../install_log.log",
+    RUN_LOG: "../run_log.log"
 }
 
 //TODO: All of this should be happening in an env variable module (yet to be written).
@@ -102,7 +113,7 @@ module.exports = {
     setLogType:setLogType,
     write_log:write_log,
     setLogLocation:setLogLocation,
-    read_log:read_log,
+    readLog:readLog,
     log_level,
     NOTIFY,
     FATAL,
@@ -373,11 +384,13 @@ function setLogLocation(path) {
     }
 }
 
-async function read_log(read_log_object, callback){
+let bones = winston;
+
+async function readLog(read_log_object) {
     let validation = validator(read_log_object);
 
     if (validation) {
-        return callback(validation);
+        throw new Error(validation);
     }
 
     const options = {
@@ -386,117 +399,77 @@ async function read_log(read_log_object, callback){
 
     switch (log_type) {
         case WIN:
-            options.fields = ['level','message','timestamp'];
+            options.fields = DEFAULT_LOGGER_FIELDS.WIN;
             break;
 
         case PIN:
             if (read_log_object.log === "install_log") {
-                options.fields = ['level','message','timestamp'];
+                options.fields = DEFAULT_LOGGER_FIELDS.WIN;
             } else {
-                options.fields = ['level','msg','time'];
+                options.fields = DEFAULT_LOGGER_FIELDS.PIN;
             }
             break;
 
         default:
-            options.fields = ['level','message','timestamp'];
+            options.fields = DEFAULT_LOGGER_FIELDS.WIN;
             break;
     }
-
-    let bones = null;
-    // This name variable is being used to remove the Winston transport after each read op if Pino is enabled.
-    let tempTransportName = null;
 
     switch (read_log_object.log) {
-        case LOGGER_LOCATION.INSTALL_LOG:
-            tempTransportName = LOGGER_LOCATION.INSTALL_LOG;
-            bones = winston;
-            winston.configure({
-                transports: [
-                    new (winston.transports.File)({
-                        name: tempTransportName,
-                        filename: '../install_log.log',
-                        handleExceptions: true,
-                        prettyPrint:true
-                    })
-                ],
-                exitOnError: false
-            });
+        case LOGGER_TYPE.INSTALL_LOG:
+            configureWinstonForQuery(LOGGER_PATH.INSTALL_LOG);
             break;
 
-        case LOGGER_LOCATION.RUN_LOG:
-            tempTransportName = LOGGER_LOCATION.RUN_LOG;
-            bones = winston;
-            winston.configure({
-                transports: [
-                    new (winston.transports.File)({
-                        name: LOGGER_LOCATION.RUN_LOG,
-                        filename: '../run_log.log',
-                        handleExceptions: true,
-                        prettyPrint: true
-                    })
-                ],
-                exitOnError: false
-            });
+        case LOGGER_TYPE.RUN_LOG:
+            configureWinstonForQuery(LOGGER_PATH.RUN_LOG);
             break;
 
         default:
-            if (!win_logger) {
-                tempTransportName = LOGGER_LOCATION.HDB_LOG;
-                bones  = winston;
-                winston.configure({
-                    transports: [
-                        new (winston.transports.File)({
-                            name: tempTransportName,
-                            filename: log_location,
-                            handleExceptions: true,
-                            prettyPrint: true
-                        })
-                    ],
-                    exitOnError: false
-                });
-            } else {
-                bones = win_logger;
-            }
+            configureWinstonForQuery(log_location);
             break;
     }
 
-    if (read_log_object.from){
+    if (read_log_object.from) {
         options.from = moment(read_log_object.from);
     }
 
-    if (read_log_object.until && moment(read_log_object.until).isValid()){
+    if (read_log_object.until ) {
         options.until = moment(read_log_object.until);
     }
 
-    if (read_log_object.level){
+    if (read_log_object.level) {
         options.level = read_log_object.level;
     }
 
-    if (read_log_object.limit){
+    if (read_log_object.limit) {
         options.limit = read_log_object.limit;
     }
 
-    if (read_log_object.order){
+    if (read_log_object.order) {
         options.order = read_log_object.order;
     }
 
-    if (read_log_object.start){
+    if (read_log_object.start) {
         options.start = read_log_object.start;
     }
 
-    bones.query(options, (err, results) => queryCallback(err, results, callback));
+    const p_query = util.promisify(bones.query);
 
-    if (tempTransportName) {
-        winston.remove(tempTransportName);
-        tempTransportName = null;
+    try {
+        return await p_query(options);
+    } catch(e) {
+        error(e);
+        throw e;
     }
 }
 
-function queryCallback(err, results, callback) {
-    if (err) {
-        callback(err);
-        return;
-    }
-
-    callback(null, results);
+function configureWinstonForQuery(log_path) {
+    bones.configure({
+        transports: [
+            new (winston.transports.File)({
+                filename: log_path
+            })
+        ],
+        exitOnError: false
+    });
 }

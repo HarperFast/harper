@@ -43,6 +43,7 @@ const cb_reg_hand_set_licence = util.callbackify(reg.setLicense);
 const cb_clust_util_config = util.callbackify(cluster_utilities.configureCluster);
 const cb_clust_util_status = util.callbackify(cluster_utilities.clusterStatus);
 const cb_clust_util_remove_node = util.callbackify(cluster_utilities.removeNode);
+const cb_read_log = util.callbackify(harper_logger.readLog);
 
 const UNAUTH_RESPONSE = 403;
 const UNAUTHORIZED_TEXT = 'You are not authorized to perform the operation specified';
@@ -279,7 +280,7 @@ function chooseOperation(json, callback) {
             operation_function = cb_user_user_info;
             break;
         case terms.OPERATIONS_ENUM.READ_LOG:
-            operation_function = harper_logger.read_log;
+            operation_function = cb_read_log;
             break;
         case terms.OPERATIONS_ENUM.ADD_NODE:
             operation_function = cluster_utilities.addNode;
