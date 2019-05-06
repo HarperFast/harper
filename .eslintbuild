@@ -6,14 +6,14 @@
   "extends": "eslint:recommended",
   "parserOptions": {
     "sourceType": "module",
-    "ecmaVersion": 2017
+    "ecmaVersion": 2018
   },
   "rules": {
     "linebreak-style": ["error", "unix"],
     "quotes": ["off"],
     "semi": ["error", "always"],
     "no-undef": ["error"],
-    "no-use-before-define": ["error", { "functions": false, "classes": true, "variables":true }],
+    "no-use-before-define": ["error", { "functions": false, "classes": true, "variables":false }],
     "consistent-return": ["off"],
     "default-case": ["off"],
     "block-scoped-var": ["error"],
@@ -39,5 +39,6 @@
     "no-mixed-spaces-and-tabs": "off",
     "no-unused-vars": "off",
     "no-case-declarations": "off",
+    "no-useless-escape": "off"
   }
 }
