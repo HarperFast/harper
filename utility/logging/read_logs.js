@@ -5,7 +5,7 @@ const validator = require('../../validation/readLogValidator');
 
 module.exports = {
     read_log:read_log
-}
+};
 
 function read_log(read_log_object, callback){
     let validation = validator(read_log_object);

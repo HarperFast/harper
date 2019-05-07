@@ -1,4 +1,4 @@
-"use strict"
+"use strict";
 const path = require('path');
 const log = require('./logging/harper_logger');
 const fs_extra = require('fs-extra');
