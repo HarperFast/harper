@@ -1,19 +1,19 @@
 "use strict";
 
-const validate = require('validate.js'),
-    validator = require('./validationWrapper.js'),
-    moment = require('moment');
+const validate = require('validate.js');
+const validator = require('./validationWrapper.js');
+const moment = require('moment');
 
 validate.extend(validate.validators.datetime, {
     // The value is guaranteed not to be null or undefined but otherwise it
     // could be anything.
-    parse: function (value, options) {
-        return +moment.utc(value);
+    parse: function (value) {
+        return Date.parse(value);
     },
     // Input is a unix timestamp
-    format: function (value, options) {
-        let format = options.dateOnly ? "YYYY-MM-DD" : "YYYY-MM-DD hh:mm:ss";
-        return moment.utc(value).format(format);
+    format: function (value) {
+        const format = "YYYY-MM-DD hh:mm:ss";
+        return moment(value).format(format);
     }
 });
 
