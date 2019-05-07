@@ -603,7 +603,7 @@ const TEST_READ_LOG_OBJECT = {
     "operation": "read_log",
     "from": "2017-07-10",
     // Used to ensure the errors being added are always included in default query tests
-    "until": moment(new Date()).add(1,'days'),
+    "until": moment().add(1,'d').format("YYYY-MM-DD"),
     "limit": "1000",
     "start": "0",
     "order": "desc",
@@ -631,7 +631,7 @@ describe("Test read_log ", function() {
         harper_log.setLogLevel(harper_log.ERR);
         if(fs.existsSync(output_file_name)) {
             try {
-                zeroizeOutputFile()
+                zeroizeOutputFile();
             } catch (e) {
                 console.log("Cannot write file ", e);
             }
@@ -655,24 +655,29 @@ describe("Test read_log ", function() {
 
     it("Should call the query method if the validator does NOT return anything", test_utils.mochaAsyncWrapper(async function() {
         let queryResults;
+        let errorResponse;
         try {
             queryResults = await harper_log.readLog(test_read_log_obj);
         } catch(e) {
-            expect(e).to.be.null;
+            errorResponse = e;
         }
 
         expect(winston_query_spy.calledOnce).to.equal(true);
         expect(queryResults.file.length).to.equal(2);
+        expect(errorResponse).to.equal(undefined);
     }));
 
     it("Should throw an error if the validator returns an error value", test_utils.mochaAsyncWrapper( async function() {
+        let queryResults;
+        let errorResponse;
         test_read_log_obj.until="BOGO Jamba Juice!"
         try {
-            const queryResults = await harper_log.readLog(test_read_log_obj);
-            expect(queryResults).to.equal(null);
+            queryResults = await harper_log.readLog(test_read_log_obj);
         } catch(e) {
-            expect(e).to.include.property('message');
+            errorResponse = e;
         }
+        expect(errorResponse).to.include.property('message');
+        expect(queryResults).to.equal(undefined);
     }));
 
     describe("setting Winston configuration for query", function() {

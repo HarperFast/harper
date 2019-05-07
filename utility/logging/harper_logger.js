@@ -433,7 +433,7 @@ async function readLog(read_log_object) {
         options.from = moment(read_log_object.from);
     }
 
-    if (read_log_object.until ) {
+    if (read_log_object.until) {
         options.until = moment(read_log_object.until);
     }
 
