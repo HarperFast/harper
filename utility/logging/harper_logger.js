@@ -67,18 +67,18 @@ const TRACE = 'trace';
 const DEFAULT_LOGGER_FIELDS = {
     WIN: ['level','message','timestamp'],
     PIN: ['level','msg','time']
-}
+};
 
 const LOGGER_TYPE = {
     RUN_LOG: "run_log",
     INSTALL_LOG: "install_log",
     HDB_LOG: "hdb_log"
-}
+};
 
 const LOGGER_PATH = {
     INSTALL_LOG: "../install_log.log",
     RUN_LOG: "../run_log.log"
-}
+};
 
 //TODO: All of this should be happening in an env variable module (yet to be written).
 if (log_level === undefined || log_level === 0 || log_level === null) {
@@ -403,7 +403,7 @@ async function readLog(read_log_object) {
             break;
 
         case PIN:
-            if (read_log_object.log === "install_log") {
+            if (read_log_object.log === LOGGER_TYPE.INSTALL_LOG) {
                 options.fields = DEFAULT_LOGGER_FIELDS.WIN;
             } else {
                 options.fields = DEFAULT_LOGGER_FIELDS.PIN;
