@@ -405,7 +405,7 @@ function buildDropSchemaSearchObject(schema, msg, callback) {
  */
 function moveSchemaToTrash(drop_schema_object, tables, callback) {
     if(!drop_schema_object) { return callback("drop_table_object was not found.");}
-    if(!tables) { return callback("tables parameter was null.")}
+    if(!tables) { return callback("tables parameter was null.");}
     let root_path = env.get('HDB_ROOT');
     let path = `${root_path}/schema/${drop_schema_object.schema}`;
     let currDate = new Date().toISOString().substr(0, DATE_SUBSTR_LENGTH);

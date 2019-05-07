@@ -171,7 +171,7 @@ function proccessDelegatedTransaction(operation, operation_function, callback) {
         }
 
         operation.hdb_user = user;
-        let f = Math.floor(Math.random() * Math.floor(global.forks.length))
+        let f = Math.floor(Math.random() * Math.floor(global.forks.length));
         let payload = {
             "id": uuidv1(),
             "body": operation,
