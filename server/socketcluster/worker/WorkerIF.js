@@ -3,6 +3,7 @@ const RoomIF = require('../room/RoomIF');
 const SCWorker = require('socketcluster/scworker');
 const types = require('../types');
 const log = require('../../../utility/logging/harper_logger');
+const password_utility = require('../../../utility/password');
 
 /**
  * This is a super class that is used to represent some kind of worker clustering will use for message passing.  Since Javascript doesn't have enforceable interfaces,
@@ -151,13 +152,28 @@ class WorkerIF extends SCWorker{
             if(error){
                 return console.error(error);
             }
-            console.log(credentials);
+
             if(!credentials || !credentials.username || !credentials.password){
                 return console.error('Invalid credentials');
             }
 
-            //right now setting a dummy token, we do need to handle this scenario: https://github.com/SocketCluster/socketcluster/issues/343
-            req.socket.setAuthToken({username: 'hdb'}, {expiresIn: 2000});
+            this.exchange.get('hdb_users', (err, users)=>{
+                let found_user = undefined;
+                users.forEach(user=>{
+                    if(user.username === credentials.username && user.role.role === 'super_user' && password_utility.validate(user.password, credentials.password)){
+                        found_user = user;
+                    }
+                });
+
+                if(found_user === undefined) {
+                    req.socket.destroy();
+                    return log.error('invalid credentials, access denied');
+                }
+
+                //we may need to handle this scenario: https://github.com/SocketCluster/socketcluster/issues/343
+                req.socket.setAuthToken({username: credentials.username}, {expiresIn: '1d'});
+
+            });
         });
 
         next();

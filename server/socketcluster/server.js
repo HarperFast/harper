@@ -94,6 +94,7 @@ function registerHandlers(){
     socketCluster.on('brokerMessage', brokerMessageHandler);
 }
 
+//handle inbound messages from thje parent process, this will only occur when HDB spawns SC Server
 process.on('message', data=>{
     hdb_data = {hdb_data: data};
     sendDataToFirstWorker();

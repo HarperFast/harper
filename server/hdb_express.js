@@ -248,7 +248,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         let forks = [];
         for (let i = 0; i < numCPUs; i++) {
             try {
-                let forked = cluster.fork();
+                let forked = cluster.fork({});
                 // assign handler for messages expected from child processes.
                 forked.on('message', cluster_utilities.clusterMessageHandler);
                 harper_logger.debug(`kicked off fork.`);
@@ -274,7 +274,6 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     const cors = require('cors');
 
     const app = express();
-    global.clusterMsgQueue = [];
     let enterprise = false;
     global.clustering_on = false;
     let props_cors = env.get(PROPS_CORS_KEY);
@@ -284,11 +283,12 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     //if(global.clustering_on === true){
         const socketclient = require('socketcluster-client');
         const HDBSocketConnector = require('./socketcluster/connector/HDBSocketConnector');
-        let connector_options = require('./socketcluster/connector/connectorOptions');
+        //TODO replace creds with actual credentials
+        const creds = require('../json/sc_credentials');
+        let connector_options = require('../json/hdbConnectorOptions');
         connector_options.hostname = 'localhost';
         connector_options.port = env.get('CLUSTERING_PORT');
-        connector_options.query = {hdb_worker:true};
-        global.hdb_socket_client = new HDBSocketConnector(socketclient, 'worker_' + process.pid, connector_options, {username: 'kyle', password: 'test'});
+        global.hdb_socket_client = new HDBSocketConnector(socketclient, 'worker_' + process.pid, connector_options, creds);
     //}
 
     if (props_cors && (props_cors === true || props_cors.toUpperCase() === TRUE_COMPARE_VAL)) {
@@ -396,18 +396,6 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                 break;
             case 'clustering':
                 global.clustering_on = true;
-                break;
-            case 'cluster_response':
-                if (global.clusterMsgQueue[msg.id]) {
-                    if (msg.err) {
-                        global.clusterMsgQueue[msg.id].status(terms.HTTP_STATUS_CODES.UNAUTHORIZED).json({"error": msg.err});
-                        delete global.clusterMsgQueue[msg.id];
-                        break;
-                    }
-
-                    global.clusterMsgQueue[msg.id].status(terms.HTTP_STATUS_CODES.OK).json(msg.data);
-                    delete global.clusterMsgQueue[msg.id];
-                }
                 break;
             case terms.CLUSTER_MESSAGE_TYPE_ENUM.CLUSTER_STATUS:
                 harper_logger.info('Got cluster status message via IPC');

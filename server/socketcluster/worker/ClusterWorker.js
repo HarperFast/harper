@@ -74,7 +74,7 @@ class ClusterWorker extends WorkerIF {
         this.exchange_set = promisify(this.exchange.set).bind(this.exchange);
 
         if(this.isLeader){
-            new NodeConnector(require('../connector/node'), this);
+            new NodeConnector(require('../../../json/node'), this);
         }
     }
 
