@@ -25,9 +25,16 @@ class RulesIF {
 
     setRuleOrder(rule_eval_order_enum) {
         log.trace(`setting rule order to: ${rule_eval_order_enum}`);
+
+        if(!rule_eval_order_enum) {
+            return;
+        }
         if(rule_eval_order_enum >= 0) {
             this.command_order = rule_eval_order_enum;
         }
+    }
+    evaluateRule(req, args, worker) {
+        throw new Error('Not Implemented');
     }
 }
 

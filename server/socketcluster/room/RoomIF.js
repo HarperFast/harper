@@ -35,9 +35,9 @@ class RoomIF {
 
     /**
      * Evaluate the rules for this channel.  Will return true if all rules pass, false when a rule fails.
-     * @param request - The request to run rules against.
-     * @param worker - The worker instance that needs to act on these rules.
-     * @param connector_type_enum - Denotes the source of this request, currently either from HDBCore or a Clustering connector.
+     * @param req - The request to run rules against.
+     * @param next -
+     * @param middleware_type_enum - Denotes the source of this request, currently either from HDBCore or a Clustering connector.
      * @returns {boolean}
      */
     evalMiddleware(req, next, middleware_type_enum) {

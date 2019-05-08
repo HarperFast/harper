@@ -24,7 +24,16 @@ class CoreRoom extends RoomIF {
     async evalRules(request, worker, connector_type_enum) {
         let result = false;
         let cluster_rules_args = {};
-        result = await this.decision_matrix.evalRules(request, cluster_rules_args, worker, connector_type_enum);
+        if(!this.decision_matrix) {
+            return true;
+        }
+        try {
+            result = await this.decision_matrix.evalRules(request, cluster_rules_args, worker, connector_type_enum);
+        } catch(err) {
+            log.error('There was an error evaluating rules');
+            log.error(err);
+            return false;
+        }
         return result;
     }
 }

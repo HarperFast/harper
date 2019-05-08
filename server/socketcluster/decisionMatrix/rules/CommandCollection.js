@@ -52,7 +52,7 @@ class CommandCollection {
         if(ruleIF_object.command_order === types.COMMAND_EVAL_ORDER_ENUM.VERY_LAST && target_node.data.command_order === types.COMMAND_EVAL_ORDER_ENUM.VERY_LAST) {
             throw new Error('There is already a command with the VERY_LAST order, pick a different order');
         }
-        this.insertCommand(ruleIF_object, target_node);
+        this.insertCommandDontCallMeExternallyUseAddCommand(ruleIF_object, target_node);
     }
 
     /**
@@ -77,40 +77,78 @@ class CommandCollection {
     }
 
     /**
-     * Insert the command after the specified curr_node.
-     * @param ruleIf_object
-     * @param curr_node
+     * Insert the command after the specified curr_linked_list_node.  THIS SHOULD NEVER BE CALLED, but since Javascript is silly
+     * and doesn't offer hiding, do so at your own risk.
+     * @param ruleIf_object - a command object
+     * @param curr_linked_list_node - The linked list node which will serve as the 'parent' to the new node.  curr_linked_list_node.next will point to this
+     *
      */
-    insertCommand(ruleIf_object, curr_node) {
+    insertCommandDontCallMeExternallyUseAddCommand(ruleIf_object, curr_linked_list_node) {
         if(!ruleIf_object) {
-            log.error('Passed an invlid command to insertCommand');
+            log.error('Passed an invalid command to insertCommandDontCallMeExternallyUseAddCommand');
             return false;
         }
-        if(!curr_node) {
+        if(!curr_linked_list_node || !(curr_linked_list_node instanceof LinkedListNode)) {
             log.error('The data passed as the current data in the linked list is invalid');
             return false;
         }
         let new_node = new LinkedListNode(ruleIf_object);
-        new_node.next = curr_node.next;
-        curr_node.next = new_node;
+        new_node.next = curr_linked_list_node.next;
+        curr_linked_list_node.next = new_node;
         return true;
+    }
+
+    /**
+     * Remove a command from this collection that matches the id parameter.
+     * @param command_id
+     * @returns {boolean}
+     */
+    removeCommand(command_id) {
+        if(!command_id) {
+            log.error('invalid id passed to removeCommand');
+            return false;
+        }
+        if(command_id === this.base.id) {
+            log.error('cannot remove the linked list base');
+            return false;
+        }
+        let curr = this.base;
+        let prev = null;
+        while(curr != null) {
+            if(curr && curr.data && curr.data.id === command_id) {
+                prev.next = curr.next;
+                return true;
+            }
+            if(curr) {
+                prev = curr;
+            }
+            curr = curr.next;
+        }
+        // never returned so we didnt find the command.
+        return false;
     }
 
     /**
      * Prints the command linked list for debugging.
      */
-    printCommands() {
+    printCommands(print_to_console_bool) {
         let curr = this.base;
         do {
-            log.debug(`[commandid: ${curr.id} - evalOrder: ${curr.command_order}]`);
+            if(curr !== this.base) {
+                let msg = `[type: ${curr.data.constructor.name} - command_id: ${curr.data.id} - eval_order: ${curr.data.command_order}]`;
+                log.debug(msg);
+                if (print_to_console_bool) {
+                    console.log(msg);
+                }
+            }
             curr = curr.next;
-        } while (curr.next !== null);
+        } while (curr !== null);
     }
 
     /**
      * No matter what data structure we use to store commands, this function should always return the commands
      * in the order specified by each commands eval_order.  VERY_FIRST should always be the 0th element, HIGH
-     * commands should be next in no guaranteed order, MID commands next in no guaranteed order, LOW commands next in
+     * commands should be next in the order they were added, MID commands next in no guaranteed order, LOW commands next in
      * no guaranteed order, VERY_LAST should always be the (n-1)th element in the array.
      */
     getCommands() {
