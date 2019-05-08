@@ -18,6 +18,7 @@ const clone = require('clone');
 const mkdirp = require('mkdirp');
 const _ = require('underscore');
 const signalling = require('../utility/signalling');
+// TODO: This is in here twice
 const log = require('../utility/logging/harper_logger');
 const util = require('util');
 const hdb_util = require('../utility/common_utils');
@@ -61,8 +62,7 @@ module.exports = {
 
 // TODO - temp promisified functions that help with async module refactor
 const p_createAttributeStructure = util.promisify(createAttributeStructure);
-const p_createTableStructure = util.promisify(createTableStructure);
-const p_buildDropSchemaSearchObject = util.promisify(buildDropSchemaSearchObject);
+// const p_buildDropSchemaSearchObject = util.promisify(buildDropSchemaSearchObject);
 const p_moveSchemaToTrash = util.promisify(moveSchemaToTrash);
 const p_deleteSchemaAttributes = util.promisify(deleteSchemaAttributes);
 const p_buildDropTableObject = util.promisify(buildDropTableObject);
@@ -81,12 +81,12 @@ async function createSchema(schema_create_object) {
 }
 
 async function createSchemaStructure(schema_create_object) {
-    try {
-        let validation_error = validation.schema_object(schema_create_object);
-        if (validation_error) {
-            throw validation_error;
-        }
+    let validation_error = validation.schema_object(schema_create_object);
+    if (validation_error) {
+        throw validation_error;
+    }
 
+    try {
         let schema_search = await searchForSchema(schema_create_object.schema);
 
         if (schema_search && schema_search.length > 0) {
@@ -130,15 +130,15 @@ async function createTable(create_table_object) {
 
 // TODO - search for occurrences
 async function createTableStructure(create_table_object) {
+    let validation_obj = clone(create_table_object);
+    let validation_error = validation.create_table_object(validation_obj);
+    if (validation_error) {
+        throw validation_error;
+    }
+
+    validation.validateTableResidence(create_table_object.residence);
+
     try {
-        let validation_obj = clone(create_table_object);
-        let validation_error = validation.create_table_object(validation_obj);
-        if (validation_error) {
-            throw validation_error;
-        }
-
-        validation.validateTableResidence(create_table_object.residence);
-
         let schema_search = await searchForSchema(create_table_object.schema);
         if (!schema_search || schema_search.length === 0) {
             throw `schema ${create_table_object.schema} does not exist`;
@@ -214,25 +214,32 @@ async function dropSchema(drop_schema_object) {
  * @param drop_schema_object
  * @returns {Promise<string>}
  */
-
 async function moveSchemaStructureToTrash(drop_schema_object) {
+    let validation_error = validation.schema_object(drop_schema_object);
+    if (validation_error) {
+        throw validation_error;
+    }
+
+    let schema = drop_schema_object.schema;
+    let delete_schema_object = {
+        table: "hdb_schema",
+        schema: "system",
+        hash_values: [schema]
+    };
+
+    let search_obj = {
+        schema: 'system',
+        table: 'hdb_table',
+        hash_attribute: 'id',
+        search_attribute: 'schema',
+        search_value: schema,
+        get_attributes: ['id']
+    };
+
     try {
-        let validation_error = validation.schema_object(drop_schema_object);
-        if (validation_error) {
-            throw validation_error;
-        }
-
-        let schema = drop_schema_object.schema;
-        let delete_schema_object = {
-            table: "hdb_schema",
-            schema: "system",
-            hash_values: [schema]
-        };
-
-        // TODO: tidy up the unused passed messages
-        let success_msg = await p_delete_delete(delete_schema_object);
-        let search_object = await p_buildDropSchemaSearchObject(schema, success_msg);
-        let search_value = await p_search_search_by_value(search_object);
+        await p_delete_delete(delete_schema_object);
+        // let search_object = await p_buildDropSchemaSearchObject(schema);
+        let search_value = await p_search_search_by_value(search_obj);
         await p_moveSchemaToTrash(drop_schema_object, search_value);
         await p_deleteSchemaAttributes(drop_schema_object);
 
@@ -261,23 +268,24 @@ async function dropTable(drop_table_object) {
  * @returns {Promise<string>}
  */
 async function moveTableStructureToTrash(drop_table_object) {
+    let validation_error = validation.table_object(drop_table_object);
+    if (validation_error) {
+        throw validation_error;
+    }
+
+    let schema = drop_table_object.schema;
+    let table = drop_table_object.table;
+
+    let search_object = {
+        schema: 'system',
+        table: 'hdb_table',
+        hash_attribute: 'id',
+        search_attribute: 'name',
+        search_value: table,
+        get_attributes: ['name', 'schema', 'id']
+    };
+
     try {
-        let validation_error = validation.table_object(drop_table_object);
-        if (validation_error) {
-            throw validation_error;
-        }
-        let schema = drop_table_object.schema;
-        let table = drop_table_object.table;
-
-        let search_object = {
-            schema: 'system',
-            table: 'hdb_table',
-            hash_attribute: 'id',
-            search_attribute: 'name',
-            search_value: table,
-            get_attributes: ['name', 'schema', 'id']
-        };
-
         let search_value = await p_search_search_by_value(search_object);
         let delete_table_object = await p_buildDropTableObject(drop_table_object, search_value);
         await p_delete_delete(delete_table_object);
@@ -288,7 +296,6 @@ async function moveTableStructureToTrash(drop_table_object) {
     } catch(err) {
         throw err;
     }
-
 }
 
 /**
@@ -298,17 +305,22 @@ async function moveTableStructureToTrash(drop_table_object) {
  */
 async function dropAttribute(drop_attribute_object) {
     let validation_error = validation.attribute_object(drop_attribute_object);
+
     if (validation_error) {
         throw new Error(validation_error);
     }
+
     if(drop_attribute_object.attribute === global.hdb_schema[drop_attribute_object.schema][drop_attribute_object.table].hash_attribute) {
         throw new Error('You cannot drop a hash attribute');
     }
-    let success = await moveAttributeToTrash(drop_attribute_object).catch((err) => {
+
+    try {
+        let success = await moveAttributeToTrash(drop_attribute_object);
+        return success;
+    } catch(err) {
         log.error(`Got an error deleting attribute ${util.inspect(drop_attribute_object)}.`);
         throw err;
-    });
-    return success;
+   }
 }
 
 /** HELPER FUNCTIONS **/
@@ -319,17 +331,17 @@ async function dropAttribute(drop_attribute_object) {
  * @param msg - The return message from delete.delete
  * @param callback - callback function
  */
-function buildDropSchemaSearchObject(schema, msg, callback) {
-    let search_obj = {
-        schema: 'system',
-        table: 'hdb_table',
-        hash_attribute: 'id',
-        search_attribute: 'schema',
-        search_value: schema,
-        get_attributes: ['id']
-    };
-    callback(null, search_obj);
-}
+// function buildDropSchemaSearchObject(schema) {
+//     let search_obj = {
+//         schema: 'system',
+//         table: 'hdb_table',
+//         hash_attribute: 'id',
+//         search_attribute: 'schema',
+//         search_value: schema,
+//         get_attributes: ['id']
+//     };
+//     return search_obj;
+// }
 
 /**
  * Moves the schema and it's contained tables to the trash folder.  Note the trash folder is not
