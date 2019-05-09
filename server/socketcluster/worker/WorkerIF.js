@@ -3,7 +3,6 @@ const RoomIF = require('../room/RoomIF');
 const SCWorker = require('socketcluster/scworker');
 const types = require('../types');
 const log = require('../../../utility/logging/harper_logger');
-const password_utility = require('../../../utility/password');
 
 /**
  * This is a super class that is used to represent some kind of worker clustering will use for message passing.  Since Javascript doesn't have enforceable interfaces,
@@ -137,47 +136,7 @@ class WorkerIF extends SCWorker{
         return next(`There was a middleware failure. ${result}`);
     }
 
-    /**
-     * Get and evaluate the middleware for authenticate.  Will call next middleware if all middleware passes, and swallow
-     * the message if it fails.
-     * @param req - the request
-     * @param next - the next middleware function to call.
-     * @returns {*}
-     */
-    evalRoomHandshakeSCMiddleware(req, next) {
-        // TODO: We should be able to make this a premade middleware.
-        console.log('sc shaking hands');
 
-        req.socket.emit('login', 'send login credentials', (error, credentials)=>{
-            if(error){
-                return console.error(error);
-            }
-
-            if(!credentials || !credentials.username || !credentials.password){
-                return console.error('Invalid credentials');
-            }
-
-            this.exchange.get('hdb_users', (err, users)=>{
-                let found_user = undefined;
-                users.forEach(user=>{
-                    if(user.username === credentials.username && user.role.role === 'super_user' && password_utility.validate(user.password, credentials.password)){
-                        found_user = user;
-                    }
-                });
-
-                if(found_user === undefined) {
-                    req.socket.destroy();
-                    return log.error('invalid credentials, access denied');
-                }
-
-                //we may need to handle this scenario: https://github.com/SocketCluster/socketcluster/issues/343
-                req.socket.setAuthToken({username: credentials.username}, {expiresIn: '1d'});
-
-            });
-        });
-
-        next();
-    }
 
     run() {
         throw new Error('Not Implemented.');
