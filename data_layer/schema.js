@@ -18,7 +18,7 @@ const clone = require('clone');
 const mkdirp = require('mkdirp');
 const _ = require('underscore');
 const signalling = require('../utility/signalling');
-// TODO: This is in here twice
+// TODO: log is in here twice
 const log = require('../utility/logging/harper_logger');
 const util = require('util');
 const hdb_util = require('../utility/common_utils');
@@ -62,11 +62,7 @@ module.exports = {
 
 // TODO - temp promisified functions that help with async module refactor
 const p_createAttributeStructure = util.promisify(createAttributeStructure);
-// const p_buildDropSchemaSearchObject = util.promisify(buildDropSchemaSearchObject);
-const p_moveSchemaToTrash = util.promisify(moveSchemaToTrash);
-const p_deleteSchemaAttributes = util.promisify(deleteSchemaAttributes);
-const p_buildDropTableObject = util.promisify(buildDropTableObject);
-const p_moveTableToTrash = util.promisify(moveTableToTrash);
+// const p_moveTableToTrash = util.promisify(moveTableToTrash);
 const p_deleteAttributeStructure = util.promisify(deleteAttributeStructure);
 
 async function createSchema(schema_create_object) {
@@ -128,7 +124,6 @@ async function createTable(create_table_object) {
     }
 }
 
-// TODO - search for occurrences
 async function createTableStructure(create_table_object) {
     let validation_obj = clone(create_table_object);
     let validation_error = validation.create_table_object(validation_obj);
@@ -214,6 +209,7 @@ async function dropSchema(drop_schema_object) {
  * @param drop_schema_object
  * @returns {Promise<string>}
  */
+//TODO - this should have log calls on error
 async function moveSchemaStructureToTrash(drop_schema_object) {
     let validation_error = validation.schema_object(drop_schema_object);
     if (validation_error) {
@@ -227,7 +223,7 @@ async function moveSchemaStructureToTrash(drop_schema_object) {
         hash_values: [schema]
     };
 
-    let search_obj = {
+    let search_object = {
         schema: 'system',
         table: 'hdb_table',
         hash_attribute: 'id',
@@ -238,10 +234,9 @@ async function moveSchemaStructureToTrash(drop_schema_object) {
 
     try {
         await p_delete_delete(delete_schema_object);
-        // let search_object = await p_buildDropSchemaSearchObject(schema);
-        let search_value = await p_search_search_by_value(search_obj);
-        await p_moveSchemaToTrash(drop_schema_object, search_value);
-        await p_deleteSchemaAttributes(drop_schema_object);
+        let search_value = await p_search_search_by_value(search_object);
+        await moveSchemaToTrash(drop_schema_object, search_value);
+        await p_deleteAttributeStructure(drop_schema_object);
 
         return `successfully deleted schema ${schema}`;
     } catch(err) {
@@ -267,6 +262,8 @@ async function dropTable(drop_table_object) {
  * @param drop_table_object - Descriptor for the table being targeted for move.
  * @returns {Promise<string>}
  */
+
+//TODO - this should have log calls on error
 async function moveTableStructureToTrash(drop_table_object) {
     let validation_error = validation.table_object(drop_table_object);
     if (validation_error) {
@@ -287,9 +284,9 @@ async function moveTableStructureToTrash(drop_table_object) {
 
     try {
         let search_value = await p_search_search_by_value(search_object);
-        let delete_table_object = await p_buildDropTableObject(drop_table_object, search_value);
+        let delete_table_object = await buildDropTableObject(drop_table_object, search_value);
         await p_delete_delete(delete_table_object);
-        await p_moveTableToTrash(drop_table_object);
+        await moveTableToTrash(drop_table_object);
         await p_deleteAttributeStructure(drop_table_object);
 
         return `successfully deleted table ${schema}.${table}`
@@ -326,141 +323,103 @@ async function dropAttribute(drop_attribute_object) {
 /** HELPER FUNCTIONS **/
 
 /**
- * Builds the object used by search to find records for deletion.
- * @param schema - The schema targeted for deletion
- * @param msg - The return message from delete.delete
- * @param callback - callback function
- */
-// function buildDropSchemaSearchObject(schema) {
-//     let search_obj = {
-//         schema: 'system',
-//         table: 'hdb_table',
-//         hash_attribute: 'id',
-//         search_attribute: 'schema',
-//         search_value: schema,
-//         get_attributes: ['id']
-//     };
-//     return search_obj;
-// }
-
-/**
  * Moves the schema and it's contained tables to the trash folder.  Note the trash folder is not
  * automatically emptied.
  *
  * @param drop_schema_object - Object describing the table being dropped
  * @param tables - the tables contained by the schema that will also be deleted
- * @param callback - callback function
- * @returns {*}
+ * @returns {Promise<void>}
  */
-function moveSchemaToTrash(drop_schema_object, tables, callback) {
-    if(!drop_schema_object) { return callback("drop_table_object was not found.");}
-    if(!tables) { return callback("tables parameter was null.")}
+async function moveSchemaToTrash(drop_schema_object, tables) {
+    //TODO: do we really need these validations? if yes do we add them to table trash below?
+    if (!drop_schema_object) {
+        throw 'drop_schema_object was not found.';
+    }
+
+    if (!tables) {
+        throw 'tables parameter was null.';
+    }
+
     let root_path = env.get('HDB_ROOT');
-    let path = `${root_path}/schema/${drop_schema_object.schema}`;
-    let currDate = new Date().toISOString().substr(0, DATE_SUBSTR_LENGTH);
-    let destination_name = `${drop_schema_object.schema}-${currDate}`;
+    let origin_path = `${root_path}/schema/${drop_schema_object.schema}`;
+    let current_date = new Date().toISOString().substr(0, DATE_SUBSTR_LENGTH);
+    let destination_name = `${drop_schema_object.schema}-${current_date}`;
     let trash_path = `${root_path}/trash`;
 
-    //mkdirp will no-op if the 'trash' dir already exists.
-    mkdirp(trash_path, function checkTrashDir(err) {
-        if (err) {
-            return callback(err);
+    try {
+        await fs.mkdirp(trash_path);
+        await fs.move(`${origin_path}`,`${root_path}/trash/${destination_name}`);
+
+        let delete_table_object = {
+            table: "hdb_table",
+            schema: "system",
+            hash_values: []
+        };
+
+        if (tables && tables.length > 0) {
+            for (let t in tables) {
+                delete_table_object.hash_values.push(tables[t].id);
+            }
         }
-        fs.move(`${path}`,
-            `${root_path}/trash/${destination_name}`, function buildDeleteObject(err) {
-                if (err) {
-                    return callback(err);
-                }
-                let delete_table_object = {
-                    table: "hdb_table",
-                    schema: "system",
-                    hash_values: []
-                };
-                if (tables && tables.length > 0) {
-                    for (let t in tables) {
-                        delete_table_object.hash_values.push(tables[t].id);
-                    }
-                }
-                if( delete_table_object.hash_values && delete_table_object.hash_values.length > 0 ) {
-                    delete_.delete(delete_table_object, function (err) {
-                        if (err) {
-                            return callback(err);
-                        } else {
-                            callback();
-                        }
-                    });
-                } else {
-                    callback();
-                }
-            });
-    });
-}
 
-/**
- * Deletes the attributes contained by the schema.
- * @param drop_schema_object - The object used to described the schema being deleted.
- * @param callback - callback function.
- */
-
-// TODO: should we remove this?
-function deleteSchemaAttributes(drop_schema_object, callback) {
-    deleteAttributeStructure(drop_schema_object, function deleteSuccess(err, data) {
-        if (err) { return callback(err); }
-        return callback(null, `successfully deleted schema attributes ${data}`);
-    });
+        if( delete_table_object.hash_values && delete_table_object.hash_values.length > 0 ) {
+            await p_delete_delete(delete_table_object);
+        }
+    } catch(err) {
+        throw err;
+    }
 }
 
 /**
  * Builds a descriptor object that describes the table targeted for the trash.
  * @param drop_table_object - Top level descriptor of the table being moved.
  * @param data - The data found by the search function.
- * @param callback - Callback function.
- * @returns {*}
+ * @returns {Promise<{schema: string, hash_attribute: string, hash_values: *[], table: string}>}
  */
-function buildDropTableObject (drop_table_object, data, callback) {
-    let delete_tb = null;
+async function buildDropTableObject(drop_table_object, data) {
+    let delete_table;
+
     // Data found by the search function should match the drop_table_object
     for (let item in data) {
         if (data[item].name === drop_table_object.table && data[item].schema === drop_table_object.schema) {
-            delete_tb = data[item];
+            delete_table = data[item];
         }
     }
 
-    if(!delete_tb) {
-        return callback(`${drop_table_object.schema}.${drop_table_object.table} was not found`);
+    if (!delete_table) {
+        throw `${drop_table_object.schema}.${drop_table_object.table} was not found`
     }
+
     let delete_table_object = {
         table: "hdb_table",
         schema: "system",
         hash_attribute: "id",
-        hash_values: [delete_tb.id]
+        hash_values: [delete_table.id]
     };
-    callback(null, delete_table_object);
+
+    return delete_table_object;
 }
 
+
+//TODO: ask is it expected that table gets trashed in same dir as schema
 /**
  * Performs the move of the target table to the trash directory.
  * @param drop_table_object - Descriptor of the table being moved to trash.
- * @param msg - Message returned from the delete.delete function.
- * @param callback - Callback function.
+ * @returns {Promise<void>}
  */
-function moveTableToTrash (drop_table_object, callback) {
-    let currDate = new Date().toISOString().substr(0, DATE_SUBSTR_LENGTH);
-    let destination_name = `${drop_table_object.table}-${currDate}`;
-    let trash_path = `${env.get('HDB_ROOT')}/trash`;
-    mkdirp(trash_path, function checkTrashDir(err) {
-        if (err) {
-            return callback(err);
-        }
-        fs.move(`${env.get('HDB_ROOT')}/schema/${drop_table_object.schema}/${drop_table_object.table}`,
-            `${env.get('HDB_ROOT')}/trash/${destination_name}`, function moveToTrash(err) {
-                if (err) {
-                    return callback(err);
-                } else {
-                    return callback(null, drop_table_object);
-                }
-            });
-    });
+async function moveTableToTrash(drop_table_object) {
+    let root_path = env.get('HDB_ROOT');
+    let origin_path = `${root_path}/schema/${drop_table_object.schema}/${drop_table_object.table}`;
+    let current_date = new Date().toISOString().substr(0, DATE_SUBSTR_LENGTH);
+    let destination_name = `${drop_table_object.table}-${current_date}`;
+    let trash_path = `${root_path}/trash`;
+
+    try {
+        await fs.mkdirp(trash_path);
+        await fs.move(`${origin_path}`,`${root_path}/trash/${destination_name}`);
+    } catch(err) {
+        throw err;
+    }
 }
 
 /**
