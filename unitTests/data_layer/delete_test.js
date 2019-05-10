@@ -27,7 +27,7 @@ const TEST_ATTRIBUTE_NAME = 'Name';
 const HASH_ATTRIBUTE_NAME = 'id';
 const TEST_ATTRIBUTE_AGE = 'Age';
 
-const TEST_DATA = [
+const TEST_DATA_DOG = [
     {
         "name":"Frank",
         "id":"1",
@@ -43,7 +43,10 @@ const TEST_DATA = [
         "table":"dog",
         "file_paths":[],
         "journal_paths":[]
-    },
+    }
+];
+
+const TEST_DATA_CAT = [
     {
         "name":"Eddie",
         "id":"2",
@@ -53,6 +56,30 @@ const TEST_DATA = [
         "journal_paths":[]
     }
 ];
+
+// const test_data_new = [
+//     {
+//         "name":"Frank",
+//         "id":"1",
+//         "age":5,
+//         "file_paths":[],
+//         "journal_paths":[]
+//     },
+//     {
+//         "name":"Bill",
+//         "id":"3",
+//         "age":4,
+//         "file_paths":[],
+//         "journal_paths":[]
+//     },
+//     {
+//         "name":"Eddie",
+//         "id":"2",
+//         "age":4,
+//         "file_paths":[],
+//         "journal_paths":[]
+//     }
+// ];
 
 const BASE = process.cwd();
 const BAD_DIR_PATH = '/tmp/zaphodbeeblebrox';
@@ -92,143 +119,146 @@ const TEST_DELETE_BEFORE_REQUEST = {
     "hdb_auth_header": "Basic abcdefg"
 };
 
-global.hdb_schema = {
-    "test": {
-        "dog": {
-            "hash_attribute": `${HASH_ATTRIBUTE_NAME}`,
-            "id": "8650f230-be55-4455-8843-55bcfe7f61c4",
-            "name": "dog",
-            "schema": "test",
-            "attributes": [
-                {
-                    "attribute": `${TEST_ATTRIBUTE_NAME}`
-                },
-                {
-                    "attribute": `${TEST_ATTRIBUTE_AGE}`
-                }
-            ]
-        },
-        "cat": {
-            "hash_attribute": `${HASH_ATTRIBUTE_NAME}`,
-            "id": "8650f230-be55-4455-8843-55bcfe7f61c4",
-            "name": "cat",
-            "schema": "test",
-            "attributes": [
-                {
-                    "attribute": `${TEST_ATTRIBUTE_NAME}`
-                },
-                {
-                    "attribute": `${TEST_ATTRIBUTE_AGE}`
-                }
-            ]
-        },
-        "bird": {
-            "hash_attribute": `${HASH_ATTRIBUTE_NAME}`,
-            "id": "8650f230-be55-4455-8843-55bcfe7f61c4",
-            "name": "bird",
-            "schema": "test",
-            "attributes": [
-                {
-                    "attribute": `${TEST_ATTRIBUTE_NAME}`
-                },
-                {
-                    "attribute": `${TEST_ATTRIBUTE_AGE}`
-                }
-            ]
-        }
-    },
-    "system": {
-        "hdb_table": {
-            "hash_attribute": "id",
-            "name": "hdb_table",
-            "schema": "system",
-            "residence": [
-                "*"
-            ],
-            "attributes": [
-                {
-                    "attribute": "id"
-                },
-                {
-                    "attribute": "name"
-                },
-                {
-                    "attribute": "hash_attribute"
-                },
-                {
-                    "attribute": "schema"
-                }
-            ]
-        },
-        "hdb_drop_schema": {
-            "hash_attribute": "id",
-            "name": "hdb_drop_schema",
-            "schema": "system",
-            "residence": [
-                "*"
-            ]
-        },
-        "hdb_attribute": {
-            "hash_attribute": "id",
-            "name": "hdb_attribute",
-            "schema": "system",
-            "residence": [
-                "*"
-            ]
-        },
-        "hdb_schema": {
-            "hash_attribute": "name",
-            "name": "hdb_schema",
-            "schema": "system",
-            "residence": [
-                "*"
-            ],
-            "attributes": [
-                {
-                    "attribute": "name"
-                },
-                {
-                    "attribute": "createddate"
-                }
-            ]
-        },
-        "hdb_user": {
-            "hash_attribute": "username",
-            "name": "hdb_user",
-            "schema": "system",
-            "residence": [
-                "*"
-            ]
-        },
-        "hdb_role": {
-            "hash_attribute": "id",
-            "name": "hdb_user",
-            "schema": "system",
-            "residence": [
-                "*"
-            ]
-        },
-        "hdb_license": {
-            "hash_attribute": "license_key",
-            "name": "hdb_license",
-            "schema": "system"
-        },
-        "hdb_nodes": {
-            "hash_attribute": "name",
-            "residence": [
-                "*"
-            ]
-        },
-        "hdb_queue": {
-            "hash_attribute": "id",
-            "name": "hdb_queue",
-            "schema": "system",
-            "residence": [
-                "*"
-            ]
-        }
-    }
-}
+// const test_table1 = test_utils.createMockSchemaTableFileStructure(BASE,'test', 'mog', test_data_new)
+// const test_table2 = test_utils.createMockSchemaTableFileStructure(BASE,'test', 'vlog', test_data_new)
+//
+// global.hdb_schema = {
+//     "test": {
+//         "dog": {
+//             "hash_attribute": `${HASH_ATTRIBUTE_NAME}`,
+//             "id": "8650f230-be55-4455-8843-55bcfe7f61c4",
+//             "name": "dog",
+//             "schema": "test",
+//             "attributes": [
+//                 {
+//                     "attribute": `${TEST_ATTRIBUTE_NAME}`
+//                 },
+//                 {
+//                     "attribute": `${TEST_ATTRIBUTE_AGE}`
+//                 }
+//             ]
+//         },
+//         "cat": {
+//             "hash_attribute": `${HASH_ATTRIBUTE_NAME}`,
+//             "id": "8650f230-be55-4455-8843-55bcfe7f61c4",
+//             "name": "cat",
+//             "schema": "test",
+//             "attributes": [
+//                 {
+//                     "attribute": `${TEST_ATTRIBUTE_NAME}`
+//                 },
+//                 {
+//                     "attribute": `${TEST_ATTRIBUTE_AGE}`
+//                 }
+//             ]
+//         },
+//         "bird": {
+//             "hash_attribute": `${HASH_ATTRIBUTE_NAME}`,
+//             "id": "8650f230-be55-4455-8843-55bcfe7f61c4",
+//             "name": "bird",
+//             "schema": "test",
+//             "attributes": [
+//                 {
+//                     "attribute": `${TEST_ATTRIBUTE_NAME}`
+//                 },
+//                 {
+//                     "attribute": `${TEST_ATTRIBUTE_AGE}`
+//                 }
+//             ]
+//         }
+//     },
+//     "system": {
+//         "hdb_table": {
+//             "hash_attribute": "id",
+//             "name": "hdb_table",
+//             "schema": "system",
+//             "residence": [
+//                 "*"
+//             ],
+//             "attributes": [
+//                 {
+//                     "attribute": "id"
+//                 },
+//                 {
+//                     "attribute": "name"
+//                 },
+//                 {
+//                     "attribute": "hash_attribute"
+//                 },
+//                 {
+//                     "attribute": "schema"
+//                 }
+//             ]
+//         },
+//         "hdb_drop_schema": {
+//             "hash_attribute": "id",
+//             "name": "hdb_drop_schema",
+//             "schema": "system",
+//             "residence": [
+//                 "*"
+//             ]
+//         },
+//         "hdb_attribute": {
+//             "hash_attribute": "id",
+//             "name": "hdb_attribute",
+//             "schema": "system",
+//             "residence": [
+//                 "*"
+//             ]
+//         },
+//         "hdb_schema": {
+//             "hash_attribute": "name",
+//             "name": "hdb_schema",
+//             "schema": "system",
+//             "residence": [
+//                 "*"
+//             ],
+//             "attributes": [
+//                 {
+//                     "attribute": "name"
+//                 },
+//                 {
+//                     "attribute": "createddate"
+//                 }
+//             ]
+//         },
+//         "hdb_user": {
+//             "hash_attribute": "username",
+//             "name": "hdb_user",
+//             "schema": "system",
+//             "residence": [
+//                 "*"
+//             ]
+//         },
+//         "hdb_role": {
+//             "hash_attribute": "id",
+//             "name": "hdb_user",
+//             "schema": "system",
+//             "residence": [
+//                 "*"
+//             ]
+//         },
+//         "hdb_license": {
+//             "hash_attribute": "license_key",
+//             "name": "hdb_license",
+//             "schema": "system"
+//         },
+//         "hdb_nodes": {
+//             "hash_attribute": "name",
+//             "residence": [
+//                 "*"
+//             ]
+//         },
+//         "hdb_queue": {
+//             "hash_attribute": "id",
+//             "name": "hdb_queue",
+//             "schema": "system",
+//             "residence": [
+//                 "*"
+//             ]
+//         }
+//     }
+// }
 
 const DELETE_OBJECT = {
     "operation": "delete",
@@ -260,68 +290,67 @@ const p_set_timeout = util.promisify(setTimeout);
  * from.  The schema is always assumed to be 'test'.
  * @param data
  */
-function fakeInsert(data) {
-    try {
-        let table = data.table;
-        let table_path = path.join(TEST_SCHEMA_PATH, table);
-        makeTheDir(table_path);
-        let table_hash_dir_path = path.join(table_path, HDB_HASH_FOLDER_NAME);
-        makeTheDir(table_hash_dir_path);
-        let hash_att = global.hdb_schema[TEST_SCHEMA][table].hash_attribute;
-        let keys = Object.keys(data).filter(word => (word !== 'table' && word !== 'file_paths' && word !== 'journal_paths'));
-
-        for(let i = 0; i<keys.length; i++) {
-            let curr_attribute = keys[i];
-            let is_hash = curr_attribute === hash_att;
-            let hash_dir_path = path.join(table_path, HDB_HASH_FOLDER_NAME, curr_attribute);
-            makeTheDir(hash_dir_path);
-            let attribute_dir_path = path.join(table_path, curr_attribute);
-            makeTheDir(attribute_dir_path);
-            let attribute_instance_dir_path = path.join(attribute_dir_path, `${data[curr_attribute]}`);
-            makeTheDir(attribute_instance_dir_path);
-            if(is_hash) {
-                data.journal_paths.push(attribute_instance_dir_path);
-            }
-            // make the hash file
-            let hash_file_path = path.join(hash_dir_path, data[hash_att] + '.hdb');
-            fs.writeFileSync(hash_file_path, data[curr_attribute]);
-            data.file_paths.push(hash_file_path);
-            if(!is_hash) {
-                let link_path = path.join(attribute_instance_dir_path, data[hash_att] + '.hdb');
-                fs.linkSync(hash_file_path, link_path);
-                data.file_paths.push(link_path);
-            } else {
-                // for hash attributes, we need to write a file with the current time stamp and the delta of the data
-                let time_file_name = path.join(attribute_instance_dir_path, `${moment().valueOf()}.hdb`);
-                fs.writeFileSync(time_file_name, util.inspect(data), 'utf-8');
-                data.journal_paths.push(time_file_name);
-                data.file_paths.push(time_file_name);
-            }
-        }
-    } catch(e) {
-        console.error(e);
-    }
-}
-
-function makeTheDir(path) {
-    if(!fs.existsSync(path)) {
-        fs.mkdirSync(path);
-    }
-};
+// function fakeInsert(data) {
+//     try {
+//         let table = data.table;
+//         let table_path = path.join(TEST_SCHEMA_PATH, table);
+//         makeTheDir(table_path);
+//         let table_hash_dir_path = path.join(table_path, HDB_HASH_FOLDER_NAME);
+//         makeTheDir(table_hash_dir_path);
+//         let hash_att = global.hdb_schema[TEST_SCHEMA][table].hash_attribute;
+//         let keys = Object.keys(data).filter(word => (word !== 'table' && word !== 'file_paths' && word !== 'journal_paths'));
+//
+//         for(let i = 0; i<keys.length; i++) {
+//             let curr_attribute = keys[i];
+//             let is_hash = curr_attribute === hash_att;
+//             let hash_dir_path = path.join(table_path, HDB_HASH_FOLDER_NAME, curr_attribute);
+//             makeTheDir(hash_dir_path);
+//             let attribute_dir_path = path.join(table_path, curr_attribute);
+//             makeTheDir(attribute_dir_path);
+//             let attribute_instance_dir_path = path.join(attribute_dir_path, `${data[curr_attribute]}`);
+//             makeTheDir(attribute_instance_dir_path);
+//             if(is_hash) {
+//                 data.journal_paths.push(attribute_instance_dir_path);
+//             }
+//             // make the hash file
+//             let hash_file_path = path.join(hash_dir_path, data[hash_att] + '.hdb');
+//             fs.writeFileSync(hash_file_path, data[curr_attribute]);
+//             data.file_paths.push(hash_file_path);
+//             if(!is_hash) {
+//                 let link_path = path.join(attribute_instance_dir_path, data[hash_att] + '.hdb');
+//                 fs.linkSync(hash_file_path, link_path);
+//                 data.file_paths.push(link_path);
+//             } else {
+//                 // for hash attributes, we need to write a file with the current time stamp and the delta of the data
+//                 let time_file_name = path.join(attribute_instance_dir_path, `${moment().valueOf()}.hdb`);
+//                 fs.writeFileSync(time_file_name, util.inspect(data), 'utf-8');
+//                 data.journal_paths.push(time_file_name);
+//                 data.file_paths.push(time_file_name);
+//             }
+//         }
+//     } catch(e) {
+//         console.error(e);
+//     }
+// }
 
 function setup() {
-    makeTheDir(TEST_SCHEMA_PATH);
-    let test_data_clone = test_utils.deepClone(TEST_DATA);
-    for(let i =0; i<test_data_clone.length; i++) {
-        fakeInsert(test_data_clone[i]);
-    }
+    // makeTheDir(TEST_SCHEMA_PATH);
+    const test_data_clone_dog = test_utils.deepClone(TEST_DATA_DOG);
+    const test_data_clone_cat = test_utils.deepClone(TEST_DATA_CAT);
+
+    const dog_instance = test_utils.createMockSchemaTableFileStructure(TEST_SCHEMA_PATH, TEST_SCHEMA, TEST_TABLE_DOG, test_data_clone_dog);
+    const cat_instance = test_utils.createMockSchemaTableFileStructure(TEST_SCHEMA_PATH, TEST_SCHEMA, TEST_TABLE_CAT, test_data_clone_cat);
     //Setup empty table 3
-    makeTheDir(TEST_TABLE_BIRD_PATH);
-    makeTheDir(path.join(TEST_TABLE_BIRD_PATH, TABLE_HASH_ATTRIBUTE));
+    test_utils.makeTheDir(TEST_TABLE_BIRD_PATH);
+    test_utils.makeTheDir(path.join(TEST_TABLE_BIRD_PATH, TABLE_HASH_ATTRIBUTE));
 
     // Writes a text file to ensure listDirectories only shows directories
+    // TODO: Ask ELi what this means.
     fs.writeFileSync(path.join(TEST_SCHEMA_PATH, TEST_FILE_NAME_2), FILE_CONTENTS);
-    return test_data_clone;
+    return {
+        [TEST_TABLE_DOG]: dog_instance,
+        [TEST_TABLE_CAT]: cat_instance
+    };
 }
 
 function tearDown(target_path) {
@@ -351,7 +380,8 @@ function tearDown(target_path) {
 describe('Test deleteFilesBefore', function () {
     let delete_search_result = [];
     let test_data_instance = undefined;
-        beforeEach(function () {
+
+    beforeEach(function () {
         try {
             delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
             test_data_instance = undefined;
@@ -374,12 +404,12 @@ describe('Test deleteFilesBefore', function () {
         let request = test_utils.deepClone(TEST_DELETE_BEFORE_REQUEST);
         request.date = YESTERDAY_TIME.format(ISO_8601_FORMAT);
         delete_search_result = [];
-        delete_search_result.push(TEST_DATA[0]);
+        delete_search_result.push(TEST_DATA_DOG[0]);
         search_stub.restore();
         search_stub = sinon.stub(search, "searchByHash").yields(null, delete_search_result);
         try {
             await delete_rewire.deleteFilesBefore(request);
-            let files_to_check = [...test_data_instance[0].file_paths];
+            let files_to_check = [...test_data_instance[TEST_TABLE_DOG][0].file_paths];
             for(let i = 0; i < files_to_check.length; i++) {
                 assert.equal(fs.existsSync(files_to_check[i]), true, `FAILURE: file ${files_to_check[i]} does not exist.`);
             }
@@ -393,12 +423,12 @@ describe('Test deleteFilesBefore', function () {
         request.table = TEST_TABLE_CAT;
         request.date = TOMORROW_TIME.format(ISO_8601_FORMAT);
         delete_search_result = [];
-        delete_search_result.push(TEST_DATA[2]);
+        delete_search_result.push(TEST_DATA_CAT[0]);
         search_stub.restore();
         search_stub = sinon.stub(search, "searchByHash").yields(null, delete_search_result);
         try {
             await delete_rewire.deleteFilesBefore(request);
-            let files_to_check =[...test_data_instance[2].file_paths];
+            let files_to_check =[...test_data_instance[TEST_TABLE_CAT][0].file_paths];
             for(let i = 0; i < files_to_check.length; i++) {
                 assert.equal(fs.existsSync(files_to_check[i]), false, `FAILURE: file ${files_to_check[i]} exists but shouldnt.`);
             }
@@ -411,14 +441,14 @@ describe('Test deleteFilesBefore', function () {
         let request = test_utils.deepClone(TEST_DELETE_BEFORE_REQUEST);
         request.date = TOMORROW_TIME.format(ISO_8601_FORMAT);
         delete_search_result = [];
-        delete_search_result.push(TEST_DATA[0]);
-        delete_search_result.push(TEST_DATA[1]);
+        delete_search_result.push(TEST_DATA_DOG[0]);
+        delete_search_result.push(TEST_DATA_DOG[1]);
         search_stub.restore();
         search_stub = sinon.stub(search, "searchByHash").yields(null, delete_search_result);
 
         try {
             await delete_rewire.deleteFilesBefore(request);
-            let files_to_check = [...test_data_instance[0].file_paths, ...test_data_instance[1].file_paths];
+            let files_to_check = [...test_data_instance[TEST_TABLE_DOG][0].file_paths, ...test_data_instance[TEST_TABLE_DOG][1].file_paths];
             for(let i = 0; i < files_to_check.length; i++) {
                 assert.equal(fs.existsSync(files_to_check[i]), false, `FAILURE: file ${files_to_check[i]} exists but shouldnt.`);
             }
@@ -468,14 +498,14 @@ describe('Test deleteFilesBefore', function () {
         let request = test_utils.deepClone(TEST_DELETE_BEFORE_REQUEST);
         request.date = '2011-01-11';
         delete_search_result = [];
-        delete_search_result.push(TEST_DATA[0]);
-        delete_search_result.push(TEST_DATA[1]);
+        delete_search_result.push(TEST_DATA_DOG[0]);
+        delete_search_result.push(TEST_DATA_DOG[1]);
         search_stub.restore();
         search_stub = sinon.stub(search, "searchByHash").yields(null, delete_search_result);
 
         try {
             await delete_rewire.deleteFilesBefore(request);
-            let files_to_check = [...test_data_instance[0].file_paths, ...test_data_instance[1].file_paths];
+            let files_to_check = [...test_data_instance[TEST_TABLE_DOG][0].file_paths, ...test_data_instance[TEST_TABLE_DOG][1].file_paths];
             for(let i = 0; i < files_to_check.length; i++) {
                 assert.equal(fs.existsSync(files_to_check[i]), true, `FAILURE: file ${files_to_check[i]} was deleted.`);
             }
@@ -489,14 +519,14 @@ describe('Test deleteFilesBefore', function () {
         let request = test_utils.deepClone(TEST_DELETE_BEFORE_REQUEST);
         request.date = '2011-01-11T17:45:55+00:00';
         delete_search_result = [];
-        delete_search_result.push(TEST_DATA[0]);
-        delete_search_result.push(TEST_DATA[1]);
+        delete_search_result.push(TEST_DATA_DOG[0]);
+        delete_search_result.push(TEST_DATA_DOG[1]);
         search_stub.restore();
         search_stub = sinon.stub(search, "searchByHash").yields(null, delete_search_result);
 
         try {
             await delete_rewire.deleteFilesBefore(request);
-            let files_to_check = [...test_data_instance[0].file_paths, ...test_data_instance[1].file_paths];
+            let files_to_check = [...test_data_instance[TEST_TABLE_DOG][0].file_paths, ...test_data_instance[TEST_TABLE_DOG][1].file_paths];
             for(let i = 0; i < files_to_check.length; i++) {
                 assert.equal(fs.existsSync(files_to_check[i]), true, `FAILURE: file ${files_to_check[i]} was deleted.`);
             }
@@ -523,14 +553,14 @@ describe('Test deleteFilesBefore', function () {
         let request = test_utils.deepClone(TEST_DELETE_BEFORE_REQUEST);
         request.date = '1969-01-01';
         delete_search_result = [];
-        delete_search_result.push(TEST_DATA[0]);
-        delete_search_result.push(TEST_DATA[1]);
+        delete_search_result.push(TEST_DATA_DOG[0]);
+        delete_search_result.push(TEST_DATA_DOG[1]);
         search_stub.restore();
         search_stub = sinon.stub(search, "searchByHash").yields(null, delete_search_result);
 
         try {
             await delete_rewire.deleteFilesBefore(request);
-            let files_to_check = [...test_data_instance[0].file_paths, ...test_data_instance[1].file_paths];
+            let files_to_check = [...test_data_instance[TEST_TABLE_DOG][0].file_paths, ...test_data_instance[TEST_TABLE_DOG][1].file_paths];
             for(let i = 0; i < files_to_check.length; i++) {
                 assert.equal(fs.existsSync(files_to_check[i]), true, `FAILURE: file ${files_to_check[i]} exists but shouldnt.`);
             }
@@ -563,9 +593,9 @@ describe('Test deleteFilesInPath', function () {
     });
     it('Nominal path of deleteFilesInPath, test against DOG table', test_utils.mochaAsyncWrapper(async () => {
         let delete_search_result = [];
-        delete_search_result.push(TEST_DATA[0]);
-        delete_search_result.push(TEST_DATA[1]);
-        let files_to_check = [...test_data_instance[0].file_paths, ...test_data_instance[1].file_paths];
+        delete_search_result.push(TEST_DATA_DOG[0]);
+        delete_search_result.push(TEST_DATA_DOG[1]);
+        let files_to_check = [...test_data_instance[TEST_TABLE_DOG][0].file_paths, ...test_data_instance[TEST_TABLE_DOG][1].file_paths];
         search_stub.restore();
         search_stub = sinon.stub(search, "searchByHash").yields(null, delete_search_result);
         await deleteFilesInPath(TEST_SCHEMA, TEST_TABLE_DOG, TEST_TABLE_DOG_PATH, TOMORROW_TIME)
@@ -584,9 +614,9 @@ describe('Test deleteFilesInPath', function () {
     }));
     it('Test invalid directory parameter.  Expect no files to be deleted.', test_utils.mochaAsyncWrapper(async () => {
         let delete_search_result = [];
-        delete_search_result.push(TEST_DATA[0]);
-        delete_search_result.push(TEST_DATA[1]);
-        let files_to_check = [...test_data_instance[0].file_paths, ...test_data_instance[1].file_paths];
+        delete_search_result.push(TEST_DATA_DOG[0]);
+        delete_search_result.push(TEST_DATA_DOG[1]);
+        let files_to_check = [...test_data_instance[TEST_TABLE_DOG][0].file_paths, ...test_data_instance[TEST_TABLE_DOG][1].file_paths];
         search_stub.restore();
         search_stub = sinon.stub(search, "searchByHash").yields(null, delete_search_result);
         await deleteFilesInPath(TEST_SCHEMA, TEST_TABLE_DOG, null, TOMORROW_TIME)
@@ -605,9 +635,9 @@ describe('Test deleteFilesInPath', function () {
     }));
     it('Test invalid date parameter.  Expect no files to be deleted.', test_utils.mochaAsyncWrapper(async () => {
         let delete_search_result = [];
-        delete_search_result.push(TEST_DATA[0]);
-        delete_search_result.push(TEST_DATA[1]);
-        let files_to_check = [...test_data_instance[0].file_paths, ...test_data_instance[1].file_paths];
+        delete_search_result.push(TEST_DATA_DOG[0]);
+        delete_search_result.push(TEST_DATA_DOG[1]);
+        let files_to_check = [...test_data_instance[TEST_TABLE_DOG][0].file_paths, ...test_data_instance[TEST_TABLE_DOG][1].file_paths];
         search_stub.restore();
         search_stub = sinon.stub(search, "searchByHash").yields(null, delete_search_result);
         await deleteFilesInPath(TEST_SCHEMA, TEST_TABLE_DOG, TEST_TABLE_DOG_PATH, "2011-01-01")
@@ -626,9 +656,9 @@ describe('Test deleteFilesInPath', function () {
     }));
     it('Test invalid schema parameter.  Expect no files to be deleted.', test_utils.mochaAsyncWrapper(async () => {
         let delete_search_result = [];
-        delete_search_result.push(TEST_DATA[0]);
-        delete_search_result.push(TEST_DATA[1]);
-        let files_to_check = [...test_data_instance[0].file_paths, ...test_data_instance[1].file_paths];
+        delete_search_result.push(TEST_DATA_DOG[0]);
+        delete_search_result.push(TEST_DATA_DOG[1]);
+        let files_to_check = [...test_data_instance[TEST_TABLE_DOG][0].file_paths, ...test_data_instance[TEST_TABLE_DOG][1].file_paths];
         search_stub.restore();
         search_stub = sinon.stub(search, "searchByHash").yields(null, delete_search_result);
         await deleteFilesInPath(null, TEST_TABLE_DOG, TEST_TABLE_DOG_PATH, TOMORROW_TIME)
@@ -647,9 +677,9 @@ describe('Test deleteFilesInPath', function () {
     }));
     it('Test invalid table parameter.  Expect no files to be deleted.', test_utils.mochaAsyncWrapper(async () => {
         let delete_search_result = [];
-        delete_search_result.push(TEST_DATA[0]);
-        delete_search_result.push(TEST_DATA[1]);
-        let files_to_check = [...test_data_instance[0].file_paths, ...test_data_instance[1].file_paths];
+        delete_search_result.push(TEST_DATA_DOG[0]);
+        delete_search_result.push(TEST_DATA_DOG[1]);
+        let files_to_check = [...test_data_instance[TEST_TABLE_DOG][0].file_paths, ...test_data_instance[TEST_TABLE_DOG][1].file_paths];
         search_stub.restore();
         search_stub = sinon.stub(search, "searchByHash").yields(null, delete_search_result);
         await deleteFilesInPath(TEST_SCHEMA, null, TEST_TABLE_DOG_PATH, TOMORROW_TIME)
@@ -668,9 +698,9 @@ describe('Test deleteFilesInPath', function () {
     }));
     it('Test with table not found in the schema.  Expect no files to be deleted.', test_utils.mochaAsyncWrapper(async () => {
         let delete_search_result = [];
-        delete_search_result.push(TEST_DATA[0]);
-        delete_search_result.push(TEST_DATA[1]);
-        let files_to_check = [...test_data_instance[0].file_paths, ...test_data_instance[1].file_paths];
+        delete_search_result.push(TEST_DATA_DOG[0]);
+        delete_search_result.push(TEST_DATA_DOG[1]);
+        let files_to_check = [...test_data_instance[TEST_TABLE_DOG][0].file_paths, ...test_data_instance[TEST_TABLE_DOG][1].file_paths];
         search_stub.restore();
         search_stub = sinon.stub(search, "searchByHash").yields(null, delete_search_result);
         await deleteFilesInPath(TEST_SCHEMA, "Fish", TEST_TABLE_DOG_PATH, TOMORROW_TIME)
@@ -768,7 +798,7 @@ describe('Test inspectHashAttributeDir', function() {
         let found_hashes_to_remove = [];
         let hash_attribute_dir_path = path.join(BASE, TEST_SCHEMA, TEST_TABLE_CAT, TABLE_HASH_ATTRIBUTE);
         try {
-            let new_file_path = path.join(hash_attribute_dir_path, TEST_DATA[2].id, TOMORROW_TIME.valueOf().toString() + '.hdb');
+            let new_file_path = path.join(hash_attribute_dir_path, TEST_DATA_CAT[0].id, TOMORROW_TIME.valueOf().toString() + '.hdb');
             fs.writeFileSync(new_file_path, "blah blah");
         } catch(e) {
             console.error(e);
@@ -860,24 +890,24 @@ describe('Test removeFiles', function() {
     });
     it('Nominal path of removeFiles on dog table', test_utils.mochaAsyncWrapper(async () => {
         let delete_search_result = [];
-        delete_search_result.push(TEST_DATA[0], TEST_DATA[1]);
+        delete_search_result.push(TEST_DATA_DOG[0], TEST_DATA_DOG[1]);
         search_stub.restore();
         search_stub = sinon.stub(search, "searchByHash").yields(null, delete_search_result);
-        let entry_1_id_path = test_data_instance[0].id;
-        let entry_2_id_path = test_data_instance[1].id;
+        let entry_1_id_path = test_data_instance[TEST_TABLE_DOG][0].id;
+        let entry_2_id_path = test_data_instance[TEST_TABLE_DOG][1].id;
         let id_files_to_remove = [];
         id_files_to_remove.push(entry_1_id_path);
         id_files_to_remove.push(entry_2_id_path);
-        files_to_remove = [...test_data_instance[0].file_paths, ...test_data_instance[1].file_paths];
+        files_to_remove = [...test_data_instance[TEST_TABLE_DOG][0].file_paths, ...test_data_instance[TEST_TABLE_DOG][1].file_paths];
         await removeFiles(TEST_SCHEMA, TEST_TABLE_DOG, HASH_ATTRIBUTE_NAME, id_files_to_remove);
         for( let file of files_to_remove) {
             assert.equal(fs.existsSync(file), false, `File ${file} still exists.`);
         }
     }));
     it('removeFiles with empty files parameter', test_utils.mochaAsyncWrapper(async () => {
-        let files_to_remove = [...test_data_instance[0].file_paths, ...test_data_instance[1].file_paths];
+        let files_to_remove = [...test_data_instance[TEST_TABLE_DOG][0].file_paths, ...test_data_instance[TEST_TABLE_DOG][1].file_paths];
         let delete_search_result = [];
-        delete_search_result.push(TEST_DATA[0], TEST_DATA[1]);
+        delete_search_result.push(TEST_DATA_DOG[0], TEST_DATA_DOG[1]);
         search_stub.restore();
         search_stub = sinon.stub(search, "searchByHash").yields(null, delete_search_result);
         await removeFiles(TEST_SCHEMA, TEST_TABLE_DOG, HASH_ATTRIBUTE_NAME, []);
@@ -886,9 +916,9 @@ describe('Test removeFiles', function() {
         }
     }));
     it('removeFiles with all invalid files parameter', test_utils.mochaAsyncWrapper(async () => {
-        let files_to_remove = [...test_data_instance[0].file_paths, ...test_data_instance[1].file_paths];
+        let files_to_remove = [...test_data_instance[TEST_TABLE_DOG][0].file_paths, ...test_data_instance[TEST_TABLE_DOG][1].file_paths];
         let delete_search_result = [];
-        delete_search_result.push(TEST_DATA[0], TEST_DATA[1]);
+        delete_search_result.push(TEST_DATA_DOG[0], TEST_DATA_DOG[1]);
         search_stub.restore();
         search_stub = sinon.stub(search, "searchByHash").yields(null, []);
         let bad_files = [BAD_DIR_PATH]
@@ -898,9 +928,9 @@ describe('Test removeFiles', function() {
         }
     }));
     it('removeFiles with null files parameter', test_utils.mochaAsyncWrapper(async () => {
-        let files_to_remove = [...test_data_instance[0].file_paths, ...test_data_instance[1].file_paths];
+        let files_to_remove = [...test_data_instance[TEST_TABLE_DOG][0].file_paths, ...test_data_instance[TEST_TABLE_DOG][1].file_paths];
         let delete_search_result = [];
-        delete_search_result.push(TEST_DATA[0], TEST_DATA[1]);
+        delete_search_result.push(TEST_DATA_DOG[0], TEST_DATA_DOG[1]);
         search_stub.restore();
         search_stub = sinon.stub(search, "searchByHash").yields(null, []);
         let bad_files = [BAD_DIR_PATH]
@@ -930,8 +960,8 @@ describe('Test removeIDFiles', function() {
         }
     });
     it('Nominal path of removeIDFiles against dog table.', test_utils.mochaAsyncWrapper(async () => {
-        let journal_files = [...test_values[0].journal_paths, ...test_values[1].journal_paths];
-        let ids = test_values.map(a => a.id);
+        let journal_files = [...test_values[TEST_TABLE_DOG][0].journal_paths, ...test_values[TEST_TABLE_DOG][1].journal_paths];
+        let ids = test_values[TEST_TABLE_DOG].map(a => a.id);
         await removeIDFiles(TEST_SCHEMA, TEST_TABLE_DOG, HASH_ATTRIBUTE_NAME, ids);
         await p_set_timeout(TIMEOUT_VALUE_MS)
             .catch(e => {
@@ -944,7 +974,7 @@ describe('Test removeIDFiles', function() {
 
     }));
     it('Try to pass system schema.', test_utils.mochaAsyncWrapper(async () => {
-        let journal_files = [...test_values[0].journal_paths, ...test_values[1].journal_paths];
+        let journal_files = [...test_values[TEST_TABLE_DOG][0].journal_paths, ...test_values[TEST_TABLE_DOG][1].journal_paths];
         await removeIDFiles('system', TEST_TABLE_DOG, journal_files);
         await p_set_timeout(TIMEOUT_VALUE_MS)
             .catch(e => {
@@ -1080,7 +1110,7 @@ describe('Test conditionalDelete', function () {
 });
 
 describe('Test deleteRecords', function () {
-    beforeEach( function(done) {
+    beforeEach(function(done) {
         try {
             setup();
             done();
