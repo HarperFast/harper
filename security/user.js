@@ -32,6 +32,7 @@ const hdb_utility = require('../utility/common_utils');
 const validate = require('validate.js');
 const logger = require('../utility/logging/harper_logger');
 const {promisify} = require('util');
+const crypto_hash = require('./cryptoHash');
 
 const USER_ATTRIBUTE_WHITELIST = {
     username: true,
@@ -78,6 +79,10 @@ async function addUser(user){
     });
     if(!search_role || search_role.length < 1){
         throw new Error("Role not found.");
+    }
+
+    if(search_role.permission.cluster_user === true){
+        clean_user.hash = crypto_hash.encrypt(clean_user.password);
     }
 
     clean_user.password = password.hash(clean_user.password);
