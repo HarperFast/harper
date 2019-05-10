@@ -48,6 +48,8 @@ const INSERT_OBJECT_TEST = {operation: 'insert', schema: 'system', table: 'hdb_t
 const DROP_SCHEMA_OBJECT_TEST = {operation: 'drop_schema', schema: SCHEMA_NAME_TEST};
 const DROP_TABLE_OBJECT_TEST = {operation: 'drop_table', schema: SCHEMA_NAME_TEST, table: TABLE_NAME_TEST};
 const DROP_ATTR_OBJECT_TEST = {operation: 'drop_attribute', schema: SCHEMA_NAME_TEST, table: TABLE_NAME_TEST, attribute: 'id'};
+const CREATE_ATTR_OBJECT_TEST = {schema: SCHEMA_NAME_TEST, table: TABLE_NAME_TEST, attribute: 'name'};
+
 const DATE_SUBSTR_LENGTH = 19;
 let current_date = new Date().toISOString().substr(0, DATE_SUBSTR_LENGTH);
 
@@ -79,13 +81,14 @@ describe('Test schema module', function() {
     let insert_table_stub = sinon.stub();
     let insert_table_rewire = schema.__set__('insertTable', insert_table_stub);
     let logger_error_stub = sinon.stub(logger, 'error');
+    let logger_info_stub = sinon.stub(logger, 'info');
     let schema_validator_stub = sinon.stub(schema_validator, 'schema_object');
     let search_by_value_stub = sinon.stub();
     let search_by_value_rewire = schema.__set__('p_search_search_by_value', search_by_value_stub);
     let delete_delete_stub = sinon.stub().resolves();
     let delete_delete_rewire = schema.__set__('p_delete_delete', delete_delete_stub);
     let delete_attr_struct_stub = sinon.stub();
-    let delete_attr_struct_rewire = schema.__set__('p_deleteAttributeStructure', delete_attr_struct_stub);
+    let delete_attr_struct_rewire = schema.__set__('deleteAttributeStructure', delete_attr_struct_stub);
     let attr_validator_stub = sinon.stub(schema_validator, 'attribute_object');
     let move_schema_to_trash_stub = sinon.stub();
     let move_schema_to_trash_rewire = schema.__set__('moveSchemaToTrash', move_schema_to_trash_stub);
@@ -1035,6 +1038,105 @@ describe('Test schema module', function() {
                 expect(search_by_conditions_stub).to.have.been.calledOnce;
             }
         });
+    });
+
+    describe('Create attribute structure', function() {
+
+        it('should throw a validation error', async function() {
+            let validation_err = 'Attribute is required';
+            attr_validator_stub.returns(validation_err);
+
+            try {
+                await schema.createAttributeStructure(CREATE_ATTR_OBJECT_TEST);
+            } catch(error) {
+                expect(error).to.equal(validation_err);
+                expect(attr_validator_stub).to.have.been.calledOnce;
+            }
+        });
+
+        it('should throw attribute already exists error', async function() {
+            attr_validator_stub.returns();
+            search_by_value_stub.resolves([CREATE_ATTR_OBJECT_TEST]);
+
+            try {
+                await schema.createAttributeStructure(CREATE_ATTR_OBJECT_TEST);
+            } catch(error) {
+                expect(error).to.equal(`attribute already exists with id ${JSON.stringify(CREATE_ATTR_OBJECT_TEST)}`);
+                expect(search_by_value_stub).to.have.been.calledOnce;
+                expect(attr_validator_stub).to.have.been.calledOnce;
+            }
+        });
+
+        it('should log all necessary info and return insert response', async function() {
+            search_by_value_stub.resolves();
+            let insert_response_fake = {message: 'inserted 1 of 1 records - fake'};
+            insert_stub.resolves(insert_response_fake);
+            let result = await schema.createAttributeStructure(CREATE_ATTR_OBJECT_TEST);
+
+            expect(attr_validator_stub).to.have.been.calledOnce;
+            expect(search_by_value_stub).to.have.been.calledOnce;
+            expect(insert_stub).to.have.been.calledOnce;
+            expect(logger_info_stub).to.have.been.calledThrice;
+            expect(result).to.equal(insert_response_fake);
+        });
+
+        it('should catch error from insert', async function () {
+            let insert_err = 'Error inserting value';
+            insert_stub.throws(new Error(insert_err));
+
+            try {
+                await schema.createAttributeStructure(CREATE_ATTR_OBJECT_TEST);
+            } catch(error) {
+                expect(error).to.be.instanceOf(Error);
+                expect(error.message).to.equal(insert_err);
+                expect(insert_stub).to.have.been.calledOnce;
+            }
+        });
+    });
+
+    /**
+     * Tests for deleteAttributeStructure function.
+     */
+    describe('Delete attribute structure', function() {
+        let delete_attribute_structure;
+
+        before(function() {
+            search_by_value_stub.resolves([DROP_ATTR_OBJECT_TEST]);
+            delete_attr_struct_rewire();
+            delete_attribute_structure = schema.__get__('deleteAttributeStructure');
+        });
+
+        it('should throw attribute drop requires table and or schema', async function() {
+            try {
+                await delete_attribute_structure({});
+            } catch(error) {
+                expect(error).to.equal('attribute drop requires table and or schema.');
+            }
+        });
+
+        it('should return successfully deleted message', async function() {
+            delete_delete_stub.resolves();
+            let result = await delete_attribute_structure(DROP_ATTR_OBJECT_TEST);
+
+            expect(result).to.equal('successfully deleted 1 attributes');
+            expect(search_by_value_stub).to.have.been.calledOnce;
+            expect(delete_delete_stub).to.have.been.calledOnce;
+        });
+
+        it('should catch thrown error from delete', async function() {
+            let delete_err = 'Error delete value';
+            delete_delete_stub.throws(new Error(delete_err));
+
+            try {
+                await delete_attribute_structure(DROP_ATTR_OBJECT_TEST);
+            } catch(error) {
+                expect(error).to.be.instanceOf(Error);
+                expect(error.message).to.equal(delete_err);
+                expect(delete_delete_stub).to.have.been.calledOnce;
+            }
+        });
+
+
     });
 
 });

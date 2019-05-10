@@ -65,7 +65,7 @@ module.exports = {
 // TODO - temp promisified functions that help with async module refactor
 const p_createAttributeStructure = util.promisify(createAttributeStructure);
 // const p_moveTableToTrash = util.promisify(moveTableToTrash);
-const p_deleteAttributeStructure = util.promisify(deleteAttributeStructure);
+// const p_deleteAttributeStructure = util.promisify(deleteAttributeStructure);
 
 async function createSchema(schema_create_object) {
     try {
@@ -238,7 +238,7 @@ async function moveSchemaStructureToTrash(drop_schema_object) {
         await p_delete_delete(delete_schema_object);
         let search_value = await p_search_search_by_value(search_object);
         await moveSchemaToTrash(drop_schema_object, search_value);
-        await p_deleteAttributeStructure(drop_schema_object);
+        await deleteAttributeStructure(drop_schema_object);
 
         return `successfully deleted schema ${schema}`;
     } catch(err) {
@@ -289,7 +289,7 @@ async function moveTableStructureToTrash(drop_table_object) {
         let delete_table_object = await buildDropTableObject(drop_table_object, search_value);
         await p_delete_delete(delete_table_object);
         await moveTableToTrash(drop_table_object);
-        await p_deleteAttributeStructure(drop_table_object);
+        await deleteAttributeStructure(drop_table_object);
 
         return `successfully deleted table ${schema}.${table}`
     } catch(err) {
@@ -304,7 +304,6 @@ async function moveTableStructureToTrash(drop_table_object) {
  */
 async function dropAttribute(drop_attribute_object) {
     let validation_error = validation.attribute_object(drop_attribute_object);
-
     if (validation_error) {
         throw new Error(validation_error);
     }
@@ -558,120 +557,117 @@ async function searchForTable(schema_name, table_name) {
 
 }
 
-function createAttributeStructure(create_attribute_object, callback) {
+async function createAttributeStructure(create_attribute_object) {
+    let validation_error = validation.attribute_object(create_attribute_object);
+    if (validation_error) {
+        throw validation_error;
+    }
+
+    let search_object = {
+        schema: 'system',
+        table: 'hdb_attribute',
+        hash_attribute: 'id',
+        get_attributes: ['*'],
+        search_attribute: 'attribute',
+        search_value: create_attribute_object.attribute
+    };
+
     try {
-        let validation_error = validation.attribute_object(create_attribute_object);
-        if (validation_error) {
-            callback(validation_error, null);
-            return;
-        }
+        let attributes = await p_search_search_by_value(search_object);
 
-        let search_obj = {};
-        search_obj.schema = 'system';
-        search_obj.table = 'hdb_attribute';
-        search_obj.hash_attribute = 'id';
-        search_obj.get_attributes = ['*'];
-        search_obj.search_attribute = 'attribute';
-        search_obj.search_value = create_attribute_object.attribute;
-
-        search.searchByValue(search_obj, function(err, attributes){
-            if(attributes && attributes.length > 0){
-                for(let att in attributes){
-                    if(attributes[att].schema === create_attribute_object.schema
-                        && attributes[att].table === create_attribute_object.table){
-                        return callback(`attribute already exists with id ${ JSON.stringify(attributes[att])}`);
-                    }
+        if(attributes && attributes.length > 0) {
+            for (let att in attributes) {
+                if (attributes[att].schema === create_attribute_object.schema
+                    && attributes[att].table === create_attribute_object.table) {
+                    throw `attribute already exists with id ${JSON.stringify(attributes[att])}`;
                 }
             }
+        }
 
-            let record = {
-                schema: create_attribute_object.schema,
-                table: create_attribute_object.table,
-                attribute: create_attribute_object.attribute,
-                id: uuidV4(),
-                schema_table: create_attribute_object.schema + '.' + create_attribute_object.table
-            };
+        let record = {
+            schema: create_attribute_object.schema,
+            table: create_attribute_object.table,
+            attribute: create_attribute_object.attribute,
+            id: uuidV4(),
+            schema_table: create_attribute_object.schema + '.' + create_attribute_object.table
+        };
 
-            if(create_attribute_object.id){
-                record.id = create_attribute_object.id;
-            }
+        if(create_attribute_object.id){
+            record.id = create_attribute_object.id;
+        }
 
-            let insertObject = {
-                operation: 'insert',
-                schema: 'system',
-                table: 'hdb_attribute',
-                hash_attribute: 'id',
-                records: [record]
-            };
-            logger.info("insert object:" + JSON.stringify(insertObject));
+        let insert_object = {
+            operation: 'insert',
+            schema: 'system',
+            table: 'hdb_attribute',
+            hash_attribute: 'id',
+            records: [record]
+        };
 
-            cb_insert_insert(insertObject, (err, res) => {
-                logger.info('attribute:' + record.attribute);
-                logger.info(res);
-                callback(err, res);
+        logger.info("insert object:" + JSON.stringify(insert_object));
+        let insert_response = await insert.insert(insert_object);
+        logger.info('attribute:' + record.attribute);
+        logger.info(insert_response);
 
-            });
-        });
-    } catch (e) {
-        callback(e);
+        return insert_response
+    } catch(err) {
+        throw err;
     }
 }
 
-function deleteAttributeStructure(attribute_drop_object, callback) {
-    let search_obj = {};
-    search_obj.schema = 'system';
-    search_obj.table = 'hdb_attribute';
-    search_obj.hash_attribute = 'id';
-    search_obj.get_attributes = ['id', 'attribute'];
+// TODO: which functions need validation?
+async function deleteAttributeStructure(attribute_drop_object) {
+    let search_object = {
+        schema:'system',
+        table: 'hdb_attribute',
+        hash_attribute: 'id',
+        get_attributes: ['id', 'attribute']
+    };
 
     if (attribute_drop_object.table && attribute_drop_object.schema) {
-        search_obj.search_attribute = 'schema_table';
-        search_obj.search_value = `${attribute_drop_object.schema}.${attribute_drop_object.table}`;
+        search_object.search_attribute = 'schema_table';
+        search_object.search_value = `${attribute_drop_object.schema}.${attribute_drop_object.table}`;
     } else if (attribute_drop_object.schema) {
-        search_obj.search_attribute = 'schema';
-        search_obj.search_value = `${attribute_drop_object.schema}`;
+        search_object.search_attribute = 'schema';
+        search_object.search_value = `${attribute_drop_object.schema}`;
     } else {
-        callback('attribute drop requires table and or schema.');
-        return;
+        throw 'attribute drop requires table and or schema.';
     }
 
-    search.searchByValue(search_obj, function (err, attributes) {
-        if (err) {
-            callback(err);
-            return;
-        }
+    try {
+        let attributes = await p_search_search_by_value(search_object);
 
         if (attributes && attributes.length > 0) {
-            let delete_table_object = {"table": "hdb_attribute", "schema": "system", "hash_values": []};
+            let delete_table_object = {
+                table: 'hdb_attribute',
+                schema: 'system',
+                hash_values: []
+            };
+
             for (let att in attributes) {
                 if ((attribute_drop_object.attribute && attribute_drop_object.attribute === attributes[att].attribute)
                     || !attribute_drop_object.attribute) {
-
                     delete_table_object.hash_values.push(attributes[att].id);
                 }
             }
 
-            delete_.delete(delete_table_object, function (err, success) {
-                if (err) {
-                    callback(err);
-                    return;
-                }
-
-                callback(null, `successfully deleted ${delete_table_object.hash_values.length} attributes`);
-            });
-        } else {
-            callback(null, null);
+            await p_delete_delete(delete_table_object);
+            return `successfully deleted ${delete_table_object.hash_values.length} attributes`;
         }
-    });
+    } catch(err) {
+        throw err;
+    }
 }
 
+
+// TODO: add error logging??
 async function createAttribute(create_attribute_object) {
     let attribute_structure;
     try {
         if(global.clustering_on
             && !create_attribute_object.delegated && create_attribute_object.schema != 'system') {
 
-            attribute_structure = await p_createAttributeStructure(create_attribute_object);
+            attribute_structure = await createAttributeStructure(create_attribute_object);
             create_attribute_object.delegated = true;
             create_attribute_object.operation = 'create_attribute';
             create_attribute_object.id = attribute_structure.id;
@@ -692,7 +688,7 @@ async function createAttribute(create_attribute_object) {
             signalling.signalSchemaChange({type: 'schema'});
             return attribute_structure;
         } else {
-            attribute_structure = await p_createAttributeStructure(create_attribute_object);
+            attribute_structure = await createAttributeStructure(create_attribute_object);
             signalling.signalSchemaChange({type: 'schema'});
             return attribute_structure;
         }
