@@ -41,6 +41,8 @@ const ENTITY_TYPE_ENUM = {
 const DATE_SUBSTR_LENGTH = 19;
 const TRASH_BASE_PATH = `${env.get('HDB_ROOT')}/trash/`;
 
+let current_date = new Date().toISOString().substr(0, DATE_SUBSTR_LENGTH);
+
 module.exports = {
     createSchema: createSchema,
     createSchemaStructure,
@@ -331,24 +333,17 @@ async function dropAttribute(drop_attribute_object) {
  * @returns {Promise<void>}
  */
 async function moveSchemaToTrash(drop_schema_object, tables) {
-    //TODO: do we really need these validations? if yes do we add them to table trash below?
-    if (!drop_schema_object) {
-        throw 'drop_schema_object was not found.';
-    }
-
     if (!tables) {
         throw 'tables parameter was null.';
     }
 
     let root_path = env.get('HDB_ROOT');
     let origin_path = `${root_path}/schema/${drop_schema_object.schema}`;
-    let current_date = new Date().toISOString().substr(0, DATE_SUBSTR_LENGTH);
     let destination_name = `${drop_schema_object.schema}-${current_date}`;
-    let trash_path = `${root_path}/trash`;
+    let trash_path = `${TRASH_BASE_PATH}${destination_name}`;
 
     try {
-        await fs.mkdirp(trash_path);
-        await fs.move(`${origin_path}`,`${root_path}/trash/${destination_name}`);
+        await moveFolderToTrash(origin_path, trash_path);
 
         let delete_table_object = {
             table: "hdb_table",
@@ -400,8 +395,6 @@ async function buildDropTableObject(drop_table_object, data) {
     return delete_table_object;
 }
 
-
-//TODO: ask is it expected that table gets trashed in same dir as schema
 /**
  * Performs the move of the target table to the trash directory.
  * @param drop_table_object - Descriptor of the table being moved to trash.
@@ -410,13 +403,11 @@ async function buildDropTableObject(drop_table_object, data) {
 async function moveTableToTrash(drop_table_object) {
     let root_path = env.get('HDB_ROOT');
     let origin_path = `${root_path}/schema/${drop_table_object.schema}/${drop_table_object.table}`;
-    let current_date = new Date().toISOString().substr(0, DATE_SUBSTR_LENGTH);
-    let destination_name = `${drop_table_object.table}-${current_date}`;
-    let trash_path = `${root_path}/trash`;
+    let destination_name = `${drop_table_object.schema}-${drop_table_object.table}-${current_date}`;
+    let trash_path = `${TRASH_BASE_PATH}${destination_name}`;
 
     try {
-        await fs.mkdirp(trash_path);
-        await fs.move(`${origin_path}`,`${root_path}/trash/${destination_name}`);
+        await moveFolderToTrash(origin_path, trash_path);
     } catch(err) {
         throw err;
     }
@@ -424,76 +415,79 @@ async function moveTableToTrash(drop_table_object) {
 
 /**
  * Remove an attribute from __hdb_attribute.
- * @param drop_attribute_object - the drop attribute json recieved in drop_attribute inbound message.
+ * @param drop_attribute_object - the drop attribute json received in drop_attribute inbound message.
  * @returns {Promise<string>}
  */
 async function dropAttributeFromSystem(drop_attribute_object) {
-    // Remove the attribute from hdb_attribute
-    let search_obj = {};
-    search_obj.schema = 'system';
-    search_obj.table = 'hdb_attribute';
-    search_obj.hash_attribute = 'id';
-    search_obj.search_attribute = 'attribute';
-    search_obj.search_value = drop_attribute_object.attribute;
-    search_obj.get_attributes = ['id'];
-
-    let attributes = await p_search_search_by_value(search_obj).catch((err) => {
-        log.error(err);
-    });
-
-    if (!attributes || attributes.length < 1) {
-        return `Attribute ${drop_attribute_object.attribute} was not found.`;
-    }
-
-    let delete_table_object = {
-        table: "hdb_attribute",
-        schema: "system",
-        hash_attribute: "id",
-        hash_values: [attributes[0].id]
+    let search_object = {
+        schema: 'system',
+        table: 'hdb_attribute',
+        hash_attribute: 'id',
+        search_attribute: 'attribute',
+        search_value: drop_attribute_object.attribute,
+        get_attributes: ['id']
     };
-    // Remove the specified attribute from hdb_attribute
-    let result = await p_delete_delete(delete_table_object).catch((err) => {
-        log.error(`Got an error removing attribute ${drop_attribute_object.attribute} from hdb_attribute.`);
-        throw err;
-    });
 
-    return result;
+    try {
+        let attributes = await p_search_search_by_value(search_object);
+        if (!attributes || attributes.length < 1) {
+            throw `Attribute ${drop_attribute_object.attribute} was not found.`;
+        }
+
+        let delete_table_object = {
+            table: "hdb_attribute",
+            schema: "system",
+            hash_attribute: "id",
+            hash_values: [attributes[0].id]
+        };
+        let success_message = await p_delete_delete(delete_table_object);
+
+        return success_message;
+    } catch(err) {
+        throw err;
+    }
 }
 
 /**
  * Performs the move of the target attribute and it's __hdb_hash entry to the trash directory.
  * @param drop_attribute_object - Descriptor of the table being moved to trash.
  */
-async function moveAttributeToTrash (drop_attribute_object) {
+async function moveAttributeToTrash(drop_attribute_object) {
     // TODO: Need to do specific rollback actions if any of the actions below fails.  https://harperdb.atlassian.net/browse/HDB-312
-    let path = `${env.get('HDB_ROOT')}/schema/${drop_attribute_object.schema}/${drop_attribute_object.table}/${drop_attribute_object.attribute}`;
+    let origin_path = `${env.get('HDB_ROOT')}/schema/${drop_attribute_object.schema}/${drop_attribute_object.table}/${drop_attribute_object.attribute}`;
     let hash_path = `${env.get('HDB_ROOT')}/schema/${drop_attribute_object.schema}/${drop_attribute_object.table}/${terms.HASH_FOLDER_NAME}/${drop_attribute_object.attribute}`;
-    let currDate = new Date().toISOString().substr(0, DATE_SUBSTR_LENGTH);
-    let attribute_trash_path = `${env.get('HDB_ROOT')}/trash/${ENTITY_TYPE_ENUM.ATTRIBUTE}/${drop_attribute_object.attribute}-${currDate}`;
+    let attribute_trash_path = `${env.get('HDB_ROOT')}/trash/${ENTITY_TYPE_ENUM.ATTRIBUTE}/${drop_attribute_object.attribute}-${current_date}`;
     let attribute_hash_trash_path = `${attribute_trash_path}/${terms.HASH_FOLDER_NAME}/${drop_attribute_object.attribute}`;
 
-    let att_result = await moveFolderToTrash(path, attribute_trash_path).catch((err) => {
-       log.error(`There was a problem moving the attribute at path ${path} to the trash at path: ${attribute_trash_path}`);
-       // Not good, rollback attribute folder
-       throw err;
-    });
-    if(!att_result) {
-        return false;
-    }
-    let hash_result = await moveFolderToTrash(hash_path, attribute_hash_trash_path).catch((err) => {
-       log.error(`There was a problem moving the hash attribute at path ${path} to the trash at path: ${attribute_trash_path}`);
-        // Not good, rollback attribute __hdb_hash folder and attribute folder
+    try {
+        let att_result = await moveFolderToTrash(origin_path, attribute_trash_path);
+        if(!att_result) {
+            return false;
+        }
+    } catch(err) {
+        // Not good, rollback attribute folder
+        log.error(`There was a problem moving the attribute at path ${origin_path} to the trash at path: ${attribute_trash_path}`);
         throw err;
-    });
+    }
 
-    let drop_result = await dropAttributeFromSystem(drop_attribute_object).catch((err) => {
-       log.error(`There was a problem dropping attribute: ${drop_attribute_object.attribute} from hdb_attribute.`);
+    try {
+       await moveFolderToTrash(hash_path, attribute_hash_trash_path);
+    } catch(err) {
+        // Not good, rollback attribute __hdb_hash folder and attribute folder
+        log.error(`There was a problem moving the hash attribute at path ${origin_path} to the trash at path: ${attribute_trash_path}`);
+        throw err;
+    }
+
+    try {
+        let drop_result = await dropAttributeFromSystem(drop_attribute_object);
+        return drop_result;
+    } catch(err) {
         // Not good, rollback attribute folder, __hdb_hash folder, and attribute removal from hdb_attribute if it happened.
-       throw err;
-    });
-
-    return drop_result;
+        log.error(`There was a problem dropping attribute: ${drop_attribute_object.attribute} from hdb_attribute.`);
+        throw err;
+    }
 }
+
 
 /**
  * Move the specified folder from path to the trash path folder.  If the trash folder does not exist, it will be created.
@@ -502,37 +496,27 @@ async function moveAttributeToTrash (drop_attribute_object) {
  * @param trash_path
  * @returns {Promise<boolean>}
  */
-async function moveFolderToTrash(path, trash_path) {
-    if(hdb_util.isEmptyOrZeroLength(path) || hdb_util.isEmptyOrZeroLength(trash_path)) {
+async function moveFolderToTrash(origin_path, trash_path) {
+    if(hdb_util.isEmptyOrZeroLength(origin_path) || hdb_util.isEmptyOrZeroLength(trash_path)) {
         return false;
     }
 
-    // if mk_result is returned as null, the folder already exists.
-    let mk_result = await fs.mkdirp(TRASH_BASE_PATH).catch((err) => {
-        log.info(`Failed to create the trash directory.`);
+    try {
+        await fs.mkdirp(trash_path);
+    } catch(err) {
+        log.error(`Failed to create the trash directory.`);
         throw err;
-    });
-    let move_result = await fs.move(path, trash_path, {overwrite: true}).catch((err) => {
-       log.error(`Got an error moving path ${path} to trash path: ${trash_path}`);
-       throw err;
-    });
+    }
+
+    try {
+        await fs.move(origin_path,trash_path, {overwrite: true});
+    } catch(err) {
+        log.error(`Got an error moving path ${origin_path} to trash path: ${trash_path}`);
+        throw err;
+    }
+
     return true;
 }
-
-/**
- * Delete the attributes of the table described in the drop_table_object parameter.
- * @param err - Error returned from the moveTableToTrash function.
- * @param drop_table_object - Descriptor of the table being moved.
- * @param callback - Callback function.
- */
-// function deleteTableAttributes(err, drop_table_object, callback) {
-//     deleteAttributeStructure(drop_table_object, function completedDrop(err, success) {
-//         if (err) {
-//             return callback(err);
-//         }
-//         callback(null, `successfully deleted table ${drop_table_object.schema}.${drop_table_object.table}`);
-//     });
-// }
 
 async function searchForSchema(schema_name) {
     let search_obj = {
