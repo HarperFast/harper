@@ -945,21 +945,21 @@ describe('Test removeIDFiles', function() {
     let removeIDFiles = delete_rewire.__get__('removeIDFiles');
     delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
     let test_values = undefined;
-    beforeEach( function() {
+    beforeEach(() => {
         try {
             test_values = setup();
         } catch(e) {
             console.error(e);
         }
     });
-    afterEach( function() {
+    afterEach(() => {
         try {
             tearDown(TEST_SCHEMA_PATH);
         } catch(e) {
             console.error(e);
         }
     });
-    it('Nominal path of removeIDFiles against dog table.', test_utils.mochaAsyncWrapper(async () => {
+    it('Nominal path of removeIDFiles against dog table.', test_utils.mochaAsyncWrapper(async (done) => {
         let journal_files = [...test_values[TEST_TABLE_DOG][0].journal_paths, ...test_values[TEST_TABLE_DOG][1].journal_paths];
         let ids = test_values[TEST_TABLE_DOG].map(a => a.id);
         await removeIDFiles(TEST_SCHEMA, TEST_TABLE_DOG, HASH_ATTRIBUTE_NAME, ids);
@@ -973,7 +973,7 @@ describe('Test removeIDFiles', function() {
         }
 
     }));
-    it('Try to pass system schema.', test_utils.mochaAsyncWrapper(async () => {
+    it('Try to pass system schema.', test_utils.mochaAsyncWrapper(async (done) => {
         let journal_files = [...test_values[TEST_TABLE_DOG][0].journal_paths, ...test_values[TEST_TABLE_DOG][1].journal_paths];
         await removeIDFiles('system', TEST_TABLE_DOG, journal_files);
         await p_set_timeout(TIMEOUT_VALUE_MS)
@@ -987,17 +987,17 @@ describe('Test removeIDFiles', function() {
     }));
 });
 
-describe('Test getDirectoriesInPath', function () {
+describe('Test getDirectoriesInPath', () => {
     let getDirectoriesInPath = delete_rewire.__get__('getDirectoriesInPath');
     delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
-    before( function() {
+    before(() => {
         try {
             setup();
         } catch(e) {
             console.error(e);
         }
     });
-    after( function() {
+    after(() => {
         try {
             tearDown(TEST_SCHEMA_PATH);
         } catch(e) {
@@ -1036,10 +1036,10 @@ describe('Test getDirectoriesInPath', function () {
     }));
 });
 
-describe('Test deleteRecord', function () {
+describe('Test deleteRecord', () => {
     let global_schema_stub = sinon.stub(global_schema, "getTableSchema").yields("", null);
 
-    beforeEach( function(done) {
+    beforeEach((done) => {
         try {
             search_stub.restore();
             search_stub = sinon.stub(search, "searchByHash").yields("", [SEARCH_RESULT_OBJECT]);
@@ -1049,7 +1049,7 @@ describe('Test deleteRecord', function () {
             console.log(e);
         }
     });
-    afterEach( function(done) {
+    afterEach((done) => {
         try {
             tearDown(TEST_SCHEMA_PATH);
             search_stub.restore();
@@ -1058,44 +1058,44 @@ describe('Test deleteRecord', function () {
             console.log(e);
         }
     });
-    it('Nominal path for delete Record', function (done) {
+    it('Nominal path for delete Record', (done) => {
         delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
-        delete_rewire.delete(DELETE_OBJECT, function(err, results) {
+        delete_rewire.delete(DELETE_OBJECT, (err, results) => {
             assert.equal(fs.existsSync(TABLE_DOG_ATTRIBUTE_HASH_FILE_PATH), false);
             assert.equal(fs.existsSync(TABLE_DOG_ATTRIBUTE_INSTANCE_FILE_PATH), false);
             done();
         });
     });
-    it('test deleteRecord with bad deleteObject parameter', function (done) {
+    it('test deleteRecord with bad deleteObject parameter', (done) => {
         delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
-        delete_rewire.delete(null, function(err, results) {
+        delete_rewire.delete(null, (err, results) => {
             assert.ok(err.message.length > 0);
             done();
         });
     });
-    it('test deleteRecord with bad schema in deleteObject parameter', function (done) {
+    it('test deleteRecord with bad schema in deleteObject parameter', (done) => {
         delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
         let del_obj = test_utils.deepClone(DELETE_OBJECT);
         del_obj.schema = 'hootiehoo';
-        delete_rewire.delete(del_obj, function(err, results) {
+        delete_rewire.delete(del_obj, (err, results) => {
             assert.ok(err.message.length > 0);
             done();
         });
     });
-    it('test deleteRecord with bad table in deleteObject parameter', function (done) {
+    it('test deleteRecord with bad table in deleteObject parameter', (done) => {
         delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
         let del_obj = test_utils.deepClone(DELETE_OBJECT);
         del_obj.table = 'hootiehoo';
-        delete_rewire.delete(del_obj, function(err, results) {
+        delete_rewire.delete(del_obj, (err, results) => {
             assert.ok(err.message.length > 0);
             done();
         });
     });
-    it('test deleteRecord with search returning no results', function (done) {
+    it('test deleteRecord with search returning no results', (done) => {
         delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
         search_stub.restore();
         search_stub = sinon.stub(search, "searchByHash").yields("", []);
-        delete_rewire.delete(DELETE_OBJECT, function(err, results) {
+        delete_rewire.delete(DELETE_OBJECT, (err, results) => {
             assert.ok(err.message.length > 0);
             search_stub.restore();
             search_stub = sinon.stub(search, "searchByHash").yields("", [SEARCH_RESULT_OBJECT]);
@@ -1104,13 +1104,13 @@ describe('Test deleteRecord', function () {
     });
 });
 
-describe('Test conditionalDelete', function () {
+describe('Test conditionalDelete', () => {
     //TODO: We dont currently use conditionalDelete so I'm not writing unit tests for it.  If we start using it, we need
 //to add tests.
 });
 
-describe('Test deleteRecords', function () {
-    beforeEach(function(done) {
+describe('Test deleteRecords', () => {
+    beforeEach((done) => {
         try {
             setup();
             done();
@@ -1118,7 +1118,7 @@ describe('Test deleteRecords', function () {
             console.log(e);
         }
     });
-    afterEach( function(done) {
+    afterEach((done) => {
         try {
             tearDown(TEST_SCHEMA_PATH);
             done();
@@ -1126,29 +1126,29 @@ describe('Test deleteRecords', function () {
             console.log(e);
         }
     });
-    it('Nominal path for delete Record', function (done) {
+    it('Nominal path for delete Record', (done) => {
         delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
-        delete_rewire.deleteRecords(TEST_SCHEMA, TEST_TABLE_DOG, [SEARCH_RESULT_OBJECT], function(err) {
+        delete_rewire.deleteRecords(TEST_SCHEMA, TEST_TABLE_DOG, [SEARCH_RESULT_OBJECT], (err) => {
             assert.equal(fs.existsSync(TABLE_DOG_ATTRIBUTE_HASH_FILE_PATH), false);
             assert.equal(fs.existsSync(TABLE_DOG_ATTRIBUTE_INSTANCE_FILE_PATH), false);
             done();
         });
     });
-    it('deleteRecords with invalid schema', function (done) {
+    it('deleteRecords with invalid schema', (done) => {
         delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
         delete_rewire.deleteRecords(null, TEST_TABLE_DOG, [SEARCH_RESULT_OBJECT], function(err) {
             assert.ok(err.message.length > 0);
             done();
         });
     });
-    it('deleteRecords with invalid table', function (done) {
+    it('deleteRecords with invalid table', (done) => {
         delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
         delete_rewire.deleteRecords(TEST_SCHEMA, null, [SEARCH_RESULT_OBJECT], function(err) {
             assert.ok(err.message.length > 0);
             done();
         });
     });
-    it('deleteRecords with empty records', function (done) {
+    it('deleteRecords with empty records', (done) => {
         delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, BASE);
         delete_rewire.deleteRecords(TEST_SCHEMA, TEST_TABLE_DOG, [], function(err) {
             assert.ok(err.message.length > 0);
