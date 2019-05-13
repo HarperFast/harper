@@ -25,12 +25,10 @@ const util = require('util');
 const clonedeep = require('lodash.clonedeep');
 
 // Rewire is used at times as stubbing alone doesn't work when stubbing a function
-// being called inside another function in same file.
+// being called inside another function declared within the same file.
 const rewire = require('rewire');
 let schema = rewire('../../data_layer/schema');
 let schema_validator = require('../../validation/schema_validator');
-
-const global_schema_original = clonedeep(global.hdb_schema);
 
 const SCHEMA_NAME_TEST = 'dogsrule';
 const TABLE_NAME_TEST = 'catsdrool' ;
@@ -49,10 +47,10 @@ const CREATE_ATTR_OBJECT_TEST = {schema: SCHEMA_NAME_TEST, table: TABLE_NAME_TES
 const DATE_SUBSTR_LENGTH = 19;
 
 let current_date = new Date().toISOString().substr(0, DATE_SUBSTR_LENGTH);
+let global_schema_original = clonedeep(global.hdb_schema);
 
 /**
- * Builds a schema and table structure that can be used for testing delete functions.
- * @returns {Promise<void>}
+ * Builds a schema and table directory structure that can be used for testing delete functions.
  */
 async function buildSchemaTableStruc(){
     let insert_table = schema.__get__('insertTable');
@@ -78,36 +76,59 @@ function deleteSchemaTableStruc() {
  * Unit tests for all functions in schema.js
  */
 describe('Test schema module', function() {
-    let signal_schema_change_stub = sinon.stub(signalling, 'signalSchemaChange');
-    let insert_stub = sinon.stub(insert, 'insert');
+    let signal_schema_change_stub;
+    let insert_stub;
     let search_by_conditions_stub = sinon.stub();
-    schema.__set__('p_search_by_conditions', search_by_conditions_stub);
     let search_for_schema_stub = sinon.stub();
-    let search_for_schema_rewire = schema.__set__('searchForSchema', search_for_schema_stub);
+    let search_for_schema_rewire;
     let search_for_table_stub = sinon.stub();
-    let search_for_table_rewire = schema.__set__('searchForTable', search_for_table_stub);
+    let search_for_table_rewire;
     let insert_table_stub = sinon.stub();
-    let insert_table_rewire = schema.__set__('insertTable', insert_table_stub);
-    let logger_error_stub = sinon.stub(logger, 'error');
-    let logger_info_stub = sinon.stub(logger, 'info');
-    let schema_validator_stub = sinon.stub(schema_validator, 'schema_object');
+    let insert_table_rewire;
+    let logger_error_stub;
+    let logger_info_stub;
+    let schema_validator_stub;
     let search_by_value_stub = sinon.stub();
-    let search_by_value_rewire = schema.__set__('p_search_search_by_value', search_by_value_stub);
+    let search_by_value_rewire;
     let delete_delete_stub = sinon.stub().resolves();
-    let delete_delete_rewire = schema.__set__('p_delete_delete', delete_delete_stub);
+    let delete_delete_rewire;
     let delete_attr_struct_stub = sinon.stub();
-    let delete_attr_struct_rewire = schema.__set__('deleteAttributeStructure', delete_attr_struct_stub);
-    let attr_validator_stub = sinon.stub(schema_validator, 'attribute_object');
+    let delete_attr_struct_rewire;
+    let attr_validator_stub;
     let move_schema_to_trash_stub = sinon.stub();
-    let move_schema_to_trash_rewire = schema.__set__('moveSchemaToTrash', move_schema_to_trash_stub);
+    let move_schema_to_trash_rewire;
     let build_drop_table_obj_stub = sinon.stub();
-    let build_drop_table_obj_rewire = schema.__set__('buildDropTableObject', build_drop_table_obj_stub);
+    let build_drop_table_obj_rewire;
     let move_table_to_trash_stub = sinon.stub();
-    let move_table_to_trash_rewire = schema.__set__('moveTableToTrash', move_table_to_trash_stub);
+    let move_table_to_trash_rewire;
     let move_attr_to_trash_stub = sinon.stub();
-    let move_attr_to_trash_rewire = schema.__set__('moveAttributeToTrash', move_attr_to_trash_stub);
+    let move_attr_to_trash_rewire;
     let move_folder_to_trash_stub = sinon.stub();
-    let move_folder_to_trash_rewire = schema.__set__('moveFolderToTrash', move_folder_to_trash_stub);
+    let move_folder_to_trash_rewire;
+    let global_hdb_schema_stub = sinon.stub();
+    let global_hdb_schema_rewire;
+
+    before(function() {
+        global_hdb_schema_rewire = schema.__set__('global.hdb_schema', global_hdb_schema_stub);
+        insert_stub = sinon.stub(insert, 'insert');
+        signal_schema_change_stub = sinon.stub(signalling, 'signalSchemaChange');
+        schema.__set__('p_search_by_conditions', search_by_conditions_stub);
+        search_for_schema_rewire = schema.__set__('searchForSchema', search_for_schema_stub);
+        search_for_table_rewire = schema.__set__('searchForTable', search_for_table_stub);
+        insert_table_rewire = schema.__set__('insertTable', insert_table_stub);
+        logger_error_stub = sinon.stub(logger, 'error');
+        logger_info_stub = sinon.stub(logger, 'info');
+        schema_validator_stub = sinon.stub(schema_validator, 'schema_object');
+        search_by_value_rewire = schema.__set__('p_search_search_by_value', search_by_value_stub);
+        delete_delete_rewire = schema.__set__('p_delete_delete', delete_delete_stub);
+        delete_attr_struct_rewire = schema.__set__('deleteAttributeStructure', delete_attr_struct_stub);
+        attr_validator_stub = sinon.stub(schema_validator, 'attribute_object');
+        move_schema_to_trash_rewire = schema.__set__('moveSchemaToTrash', move_schema_to_trash_stub);
+        build_drop_table_obj_rewire = schema.__set__('buildDropTableObject', build_drop_table_obj_stub);
+        move_table_to_trash_rewire = schema.__set__('moveTableToTrash', move_table_to_trash_stub);
+        move_attr_to_trash_rewire = schema.__set__('moveAttributeToTrash', move_attr_to_trash_stub);
+        move_folder_to_trash_rewire = schema.__set__('moveFolderToTrash', move_folder_to_trash_stub)
+    });
 
     afterEach(function() {
         sinon.resetHistory();
@@ -123,6 +144,7 @@ describe('Test schema module', function() {
         deleteSchemaTableStruc();
         env.setProperty('HDB_ROOT', HDB_ROOT_ORIGINAL);
         global.schema = global_schema_original;
+        global_hdb_schema_rewire();
         search_by_value_rewire();
         delete_delete_rewire();
         delete_attr_struct_rewire();
@@ -157,6 +179,8 @@ describe('Test schema module', function() {
                 expect(error).to.be.instanceOf(Error);
                 expect(error.message).to.equal(create_schema_structure_err);
                 expect(create_schema_structure_stub).to.have.been.calledOnce;
+                expect(logger_error_stub).to.have.been.calledOnce;
+                expect(logger_error_stub).to.have.been.calledWith(error);
             }
         });
     });
@@ -257,6 +281,8 @@ describe('Test schema module', function() {
                 expect(error).to.be.instanceOf(Error);
                 expect(error.message).to.equal(create_table_struc_err);
                 expect(create_table_struc_stub).to.have.been.calledOnce;
+                expect(logger_error_stub).to.have.been.calledOnce;
+                expect(logger_error_stub).to.have.been.calledWith(error);
             }
         });
     });
@@ -270,8 +296,7 @@ describe('Test schema module', function() {
 
         after(function() {
             CREATE_TABLE_OBJECT_TEST.residence = '';
-
-        })
+        });
 
         afterEach(function () {
             global.clustering_on = true;
@@ -368,7 +393,7 @@ describe('Test schema module', function() {
     /**
      * Tests for insertTable function.
      */
-    describe('Insert table', async function() {
+    describe('Insert table', function() {
         let insert_table;
         let fs_mkdir_stub;
 
@@ -440,8 +465,6 @@ describe('Test schema module', function() {
     describe('Drop Schema', function() {
         let move_schema_trash_stub = sinon.stub();
         let move_schema_trash_rewire = schema.__set__('moveSchemaStructureToTrash', move_schema_trash_stub);
-        let global_hdb_schema_stub = sinon.stub();
-        let global_hdb_schema_rewire = schema.__set__('global.hdb_schema', global_hdb_schema_stub);
 
         after(function() {
             global_hdb_schema_rewire();
@@ -502,9 +525,7 @@ describe('Test schema module', function() {
             } catch(error) {
                 expect(error).to.be.instanceOf(Error);
                 expect(error.message).to.equal(search_by_value_err);
-                expect(logger_error_stub).to.have.been.calledOnce;
                 expect(search_by_value_stub).to.have.been.calledOnce;
-                expect(logger_error_stub).to.have.been.calledWith(error);
             }
         });
 
@@ -612,9 +633,7 @@ describe('Test schema module', function() {
             } catch(error) {
                 expect(error).to.be.instanceOf(Error);
                 expect(error.message).to.equal(search_by_value_err);
-                expect(logger_error_stub).to.have.been.calledOnce;
                 expect(search_by_value_stub).to.have.been.calledOnce;
-                expect(logger_error_stub).to.have.been.calledWith(error);
             }
         });
 

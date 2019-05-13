@@ -62,6 +62,7 @@ async function createSchema(schema_create_object) {
 
         return schema_structure;
     } catch(err) {
+        logger.error(err);
         throw err;
     }
 }
@@ -108,8 +109,10 @@ async function createTable(create_table_object) {
     try {
         let create_table_structure = await createTableStructure(create_table_object);
         signalling.signalSchemaChange({type: 'schema'});
+
         return create_table_structure;
     } catch(err) {
+        logger.error(err);
         throw err;
     }
 }
@@ -229,7 +232,6 @@ async function moveSchemaStructureToTrash(drop_schema_object) {
 
         return `successfully deleted schema ${schema}`;
     } catch(err) {
-        logger.error(err);
         throw err;
     }
 }
@@ -278,7 +280,6 @@ async function moveTableStructureToTrash(drop_table_object) {
 
         return `successfully deleted table ${schema}.${table}`
     } catch(err) {
-        logger.error(err);
         throw err;
     }
 }
@@ -300,6 +301,7 @@ async function dropAttribute(drop_attribute_object) {
 
     try {
         let success = await moveAttributeToTrash(drop_attribute_object);
+
         return success;
     } catch(err) {
         logger.error(`Got an error deleting attribute ${util.inspect(drop_attribute_object)}.`);
@@ -448,6 +450,7 @@ async function moveAttributeToTrash(drop_attribute_object) {
     try {
         let att_result = await moveFolderToTrash(origin_path, attribute_trash_path);
         if(!att_result) {
+
             return false;
         }
     } catch(err) {
@@ -466,6 +469,7 @@ async function moveAttributeToTrash(drop_attribute_object) {
 
     try {
         let drop_result = await dropAttributeFromSystem(drop_attribute_object);
+
         return drop_result;
     } catch(err) {
         // Not good, rollback attribute folder, __hdb_hash folder, and attribute removal from hdb_attribute if it happened.
@@ -499,7 +503,6 @@ async function moveFolderToTrash(origin_path, trash_path) {
         logger.error(`Got an error moving path ${origin_path} to trash path: ${trash_path}`);
         throw err;
     }
-
     return true;
 }
 
@@ -515,6 +518,7 @@ async function searchForSchema(schema_name) {
 
     try {
         let search_result = await p_search_by_conditions(search_obj);
+
         return search_result;
     } catch(err) {
         throw err;
@@ -536,11 +540,11 @@ async function searchForTable(schema_name, table_name) {
 
     try {
         let search_result = await p_search_by_conditions(search_obj);
+
         return search_result;
     } catch(err) {
         throw err;
     }
-
 }
 
 async function createAttributeStructure(create_attribute_object) {
@@ -635,8 +639,8 @@ async function deleteAttributeStructure(attribute_drop_object) {
                     delete_table_object.hash_values.push(attributes[att].id);
                 }
             }
-
             await p_delete_delete(delete_table_object);
+
             return `successfully deleted ${delete_table_object.hash_values.length} attributes`;
         }
     } catch(err) {
@@ -670,6 +674,7 @@ async function createAttribute(create_attribute_object) {
         } else {
             attribute_structure = await createAttributeStructure(create_attribute_object);
             signalling.signalSchemaChange({type: 'schema'});
+
             return attribute_structure;
         }
     } catch(err) {
