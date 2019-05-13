@@ -22,12 +22,15 @@ const uuidV4 = require('uuid/v4');
 const logger = require('../../utility/logging/harper_logger');
 const common = require('../../utility/common_utils');
 const util = require('util');
+const clonedeep = require('lodash.clonedeep');
 
 // Rewire is used at times as stubbing alone doesn't work when stubbing a function
 // being called inside another function in same file.
 const rewire = require('rewire');
 let schema = rewire('../../data_layer/schema');
 let schema_validator = require('../../validation/schema_validator');
+
+const global_schema_original = clonedeep(global.hdb_schema);
 
 const SCHEMA_NAME_TEST = 'dogsrule';
 const TABLE_NAME_TEST = 'catsdrool' ;
@@ -119,6 +122,7 @@ describe('Test schema module', function() {
         test_util.cleanUpDirectories(TRASH_PATH_TEST);
         deleteSchemaTableStruc();
         env.setProperty('HDB_ROOT', HDB_ROOT_ORIGINAL);
+        global.schema = global_schema_original;
         search_by_value_rewire();
         delete_delete_rewire();
         delete_attr_struct_rewire();
