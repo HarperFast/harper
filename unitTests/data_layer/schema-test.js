@@ -257,7 +257,7 @@ describe('Test schema module', function() {
     /**
      * Tests for createTable function.
      */
-    describe('Create table',  function() {
+    describe('Create table',function() {
         let create_table_struc_stub = sinon.stub();
         schema.__set__('createTableStructure', create_table_struc_stub);
 
@@ -653,7 +653,7 @@ describe('Test schema module', function() {
             };
             let search_value = [{name: TABLE_NAME_TEST, schema: SCHEMA_NAME_TEST, id: '123456'}];
             search_by_value_stub.resolves(search_value);
-            build_drop_table_obj_stub.resolves(delete_table_object);
+            build_drop_table_obj_stub.returns(delete_table_object);
             let result = await schema.deleteTableStructure(DROP_TABLE_OBJECT_TEST);
 
             expect(table_validator_stub).to.have.been.calledOnce;
@@ -831,16 +831,16 @@ describe('Test schema module', function() {
             build_drop_table_obj = schema.__get__('buildDropTableObject');
         });
 
-        it('should throw schema.table was not found error', async function() {
+        it('should throw schema.table was not found error', function() {
             try {
-                await build_drop_table_obj(DROP_TABLE_OBJECT_TEST, [{}]);
+                build_drop_table_obj(DROP_TABLE_OBJECT_TEST, [{}]);
             } catch(error) {
                 expect(error).to.equal(`${DROP_TABLE_OBJECT_TEST.schema}.${DROP_TABLE_OBJECT_TEST.table} was not found`);
             }
         });
 
-        it('should return valid delete table object', async function() {
-            let result = await build_drop_table_obj(DROP_TABLE_OBJECT_TEST, data_fake);
+        it('should return valid delete table object', function() {
+            let result = build_drop_table_obj(DROP_TABLE_OBJECT_TEST, data_fake);
 
             expect(result).to.deep.equal(delete_table_object_fake);
         });
@@ -994,7 +994,7 @@ describe('Test schema module', function() {
 
         it('should return result from dropAttributeFromSystem', async function() {
             move_folder_to_trash_stub.onSecondCall().resolves(true);
-            let  drop_attr_from_sys_fake = 'Successfully dropped';
+            let drop_attr_from_sys_fake = 'Successfully dropped';
             drop_attr_from_sys_stub.resolves(drop_attr_from_sys_fake);
             let result = await move_attr_to_trash(DROP_ATTR_OBJECT_TEST);
 

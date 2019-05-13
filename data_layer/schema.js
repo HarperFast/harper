@@ -155,7 +155,7 @@ async function createTableStructure(create_table_object) {
             await insertTable(table, create_table_object);
         }
 
-        return `table ${create_table_object.schema}.${create_table_object.table} successfully created.`
+        return `table ${create_table_object.schema}.${create_table_object.table} successfully created.`;
     } catch(err) {
         throw err;
     }
@@ -278,7 +278,7 @@ async function moveTableStructureToTrash(drop_table_object) {
         await moveTableToTrash(drop_table_object);
         await deleteAttributeStructure(drop_table_object);
 
-        return `successfully deleted table ${schema}.${table}`
+        return `successfully deleted table ${schema}.${table}`;
     } catch(err) {
         throw err;
     }
@@ -358,7 +358,7 @@ async function moveSchemaToTrash(drop_schema_object, tables) {
  * @param data - The data found by the search function.
  * @returns {Promise<{schema: string, hash_attribute: string, hash_values: *[], table: string}>}
  */
-async function buildDropTableObject(drop_table_object, data) {
+function buildDropTableObject(drop_table_object, data) {
     let delete_table;
 
     // Data found by the search function should match the drop_table_object
@@ -369,7 +369,7 @@ async function buildDropTableObject(drop_table_object, data) {
     }
 
     if (!delete_table) {
-        throw `${drop_table_object.schema}.${drop_table_object.table} was not found`
+        throw `${drop_table_object.schema}.${drop_table_object.table} was not found`;
     }
 
     let delete_table_object = {
@@ -599,7 +599,7 @@ async function createAttributeStructure(create_attribute_object) {
         logger.info('attribute:' + record.attribute);
         logger.info(insert_response);
 
-        return insert_response
+        return insert_response;
     } catch(err) {
         throw err;
     }
