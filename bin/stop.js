@@ -92,7 +92,7 @@ async function  checkHdbProcsEnd(){
 
         let instances =  await ps_list.findPs(hdb_terms.HDB_PROC_NAME);
         if(instances.length === 0) {
-            go_on = false
+            go_on = false;
         }
     } while(go_on);
 }

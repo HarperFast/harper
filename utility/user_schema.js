@@ -1,4 +1,4 @@
-"use strict"
+"use strict";
 const logger = require('../utility/logging/harper_logger');
 const user = require('../security/user');
 const util = require('util');

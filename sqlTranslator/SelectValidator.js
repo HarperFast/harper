@@ -39,7 +39,7 @@ class SelectValidator{
      */
     validate(){
         if(!this.statement){
-            return callback('invalid sql statement');
+            throw new Error('invalid sql statement');
         }
 
         this[validateTables]();
@@ -132,7 +132,7 @@ class SelectValidator{
      * detects * in the select, if found adds all columns to the select
      */
     [checkColumnsForAsterisk](){
-        var iterator = new RecursiveIterator(this.statement.columns);
+        let iterator = new RecursiveIterator(this.statement.columns);
 
         for(let {node, path} of iterator) {
             //we check the path to make sure the '*' is not wrapped in some form of expression like count(*)

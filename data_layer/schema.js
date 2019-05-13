@@ -38,7 +38,7 @@ let current_date = new Date().toISOString().substr(0, DATE_SUBSTR_LENGTH);
 
 module.exports = {
     createSchema: createSchema,
-    createSchemaStructure,
+    createSchemaStructure: createSchemaStructure,
     createTable: createTable,
     createTableStructure: createTableStructure,
     createAttribute: createAttribute,

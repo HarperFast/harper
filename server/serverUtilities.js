@@ -8,7 +8,6 @@ const schema = require('../data_layer/schema');
 const delete_ = require('../data_layer/delete');
 const user = require('../security/user');
 const role = require('../security/role');
-const read_log = require('../utility/logging/read_logs');
 const cluster_utilities = require('./clustering/clusterUtilities');
 const auth = require('../security/auth');
 const harper_logger = require('../utility/logging/harper_logger');
@@ -49,6 +48,7 @@ const cb_schema_create_attribute = util.callbackify(schema.createAttribute);
 const cb_schema_create_table = util.callbackify(schema.createTable);
 const cb_schema_drop_schema = util.callbackify(schema.dropSchema);
 const cb_schema_drop_table = util.callbackify(schema.dropTable);
+const cb_read_log = util.callbackify(harper_logger.readLog);
 
 const UNAUTH_RESPONSE = 403;
 const UNAUTHORIZED_TEXT = 'You are not authorized to perform the operation specified';
@@ -176,7 +176,7 @@ function proccessDelegatedTransaction(operation, operation_function, callback) {
         }
 
         operation.hdb_user = user;
-        let f = Math.floor(Math.random() * Math.floor(global.forks.length))
+        let f = Math.floor(Math.random() * Math.floor(global.forks.length));
         let payload = {
             "id": uuidv1(),
             "body": operation,
@@ -285,7 +285,7 @@ function chooseOperation(json, callback) {
             operation_function = cb_user_user_info;
             break;
         case terms.OPERATIONS_ENUM.READ_LOG:
-            operation_function = read_log.read_log;
+            operation_function = cb_read_log;
             break;
         case terms.OPERATIONS_ENUM.ADD_NODE:
             operation_function = cluster_utilities.addNode;

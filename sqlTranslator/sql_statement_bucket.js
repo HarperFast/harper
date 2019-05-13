@@ -1,4 +1,4 @@
-"use strict"
+"use strict";
 /**
  * This class is meant as a getter object that sits between the alasql (or other module) AST and any module requiring interpreted
  * AST SQL values such as attributes, tables, etc.
@@ -106,7 +106,7 @@ function addSchemaTableToMap(record, affected_attributes, table_lookup) {
     }
     if(record.as) {
         if(!table_lookup.has(record.as)) {
-            table_lookup.set(record.as, record.tableid)
+            table_lookup.set(record.as, record.tableid);
         }
     }
 }
@@ -167,7 +167,7 @@ function getSelectAttributes(ast, affected_attributes, table_lookup) {
             if(join.as) {
                 join.table.as = join.as;
             }
-            addSchemaTableToMap(join.table, affected_attributes, table_lookup)
+            addSchemaTableToMap(join.table, affected_attributes, table_lookup);
         });
     }
     ast.columns.forEach((col)=>{
