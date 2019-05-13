@@ -2,39 +2,33 @@
 const test_util = require('../test_utils');
 test_util.preTestPrep();
 
-// This need to be imported and updated before schema.js is.
+// I temporarily change HDB_ROOT to the unit test folder for testing schema and table create/delete functions.
+// Afterwards root is set back to original value and temp test folder is deleted.
+// This needs to be done before schema.js is called by rewire.
 const HDB_ROOT_TEST = '../unitTests/data_layer';
 const env = require('../../utility/environment/environmentManager');
+const HDB_ROOT_ORIGINAL = env.get('HDB_ROOT');
 env.setProperty('HDB_ROOT', HDB_ROOT_TEST);
 
 const chai = require('chai');
 const sinon = require('sinon');
 const sinon_chai = require('sinon-chai');
+const { expect } = chai;
+chai.use(sinon_chai);
 const fs = require('fs-extra');
 const signalling = require('../../utility/signalling');
 let insert = require('../../data_layer/insert');
 const uuidV4 = require('uuid/v4');
 const logger = require('../../utility/logging/harper_logger');
-
-const clone = require('clone');
-const global_schema = require('../../utility/globalSchema');
+const common = require('../../utility/common_utils');
 const util = require('util');
-const validationWrapper = require('../../validation/validationWrapper');
+
 // Rewire is used at times as stubbing alone doesn't work when stubbing a function
 // being called inside another function in same file.
 const rewire = require('rewire');
 let schema = rewire('../../data_layer/schema');
 let schema_validator = require('../../validation/schema_validator');
-let search = require('../../data_layer/search');
 
-const { expect } = chai;
-chai.use(sinon_chai);
-
-const HDB_ROOT_ORIGINAL = env.get('HDB_ROOT');
-// const HDB_ROOT_TEST = '../unitTests/data_layer';
-// I temporarily change HDB_ROOT to the unit test folder for testing create/delete functions.
-// Afterwards root is set back to original value and temp test folder is deleted.
-env.setProperty('HDB_ROOT', HDB_ROOT_TEST);
 const SCHEMA_NAME_TEST = 'dogsrule';
 const TABLE_NAME_TEST = 'catsdrool' ;
 const HASH_ATT_TEST = 'id';
@@ -48,15 +42,19 @@ const INSERT_OBJECT_TEST = {operation: 'insert', schema: 'system', table: 'hdb_t
 const DROP_SCHEMA_OBJECT_TEST = {operation: 'drop_schema', schema: SCHEMA_NAME_TEST};
 const DROP_TABLE_OBJECT_TEST = {operation: 'drop_table', schema: SCHEMA_NAME_TEST, table: TABLE_NAME_TEST};
 const DROP_ATTR_OBJECT_TEST = {operation: 'drop_attribute', schema: SCHEMA_NAME_TEST, table: TABLE_NAME_TEST, attribute: 'id'};
-const CREATE_ATTR_OBJECT_TEST = {schema: SCHEMA_NAME_TEST, table: TABLE_NAME_TEST, attribute: 'name'};
-
+const CREATE_ATTR_OBJECT_TEST = {schema: SCHEMA_NAME_TEST, table: TABLE_NAME_TEST, attribute: 'name', delegated: false};
 const DATE_SUBSTR_LENGTH = 19;
+
 let current_date = new Date().toISOString().substr(0, DATE_SUBSTR_LENGTH);
 
+/**
+ * Builds a schema and table structure that can be used for testing delete functions.
+ * @returns {Promise<void>}
+ */
 async function buildSchemaTableStruc(){
     let insert_table = schema.__get__('insertTable');
     try {
-        fs.mkdir(`${HDB_ROOT_TEST}/schema`);
+        await fs.mkdirp(`${HDB_ROOT_TEST}/schema`);
         await schema.createSchemaStructure(SCHEMA_CREATE_OBJECT_TEST);
         await insert_table(TABLE_TEST, CREATE_TABLE_OBJECT_TEST);
     } catch(err) {
@@ -64,11 +62,18 @@ async function buildSchemaTableStruc(){
     }
 }
 
+/**
+ * Cleans up any leftover structure built by buildSchemaTableStruc.
+ */
 function deleteSchemaTableStruc() {
     test_util.cleanUpDirectories(`${HDB_ROOT_TEST}/schema`);
     test_util.cleanUpDirectories(TRASH_PATH_TEST);
 }
 
+
+/**
+ * Unit tests for all functions in schema.js
+ */
 describe('Test schema module', function() {
     let signal_schema_change_stub = sinon.stub(signalling, 'signalSchemaChange');
     let insert_stub = sinon.stub(insert, 'insert');
@@ -110,9 +115,9 @@ describe('Test schema module', function() {
     after(function() {
         schema = rewire('../../data_layer/schema');
         sinon.restore();
-        // test_util.cleanUpDirectories(`${HDB_ROOT_TEST}/schema`);
-        // test_util.cleanUpDirectories(TRASH_PATH_TEST);
-        // deleteSchemaTableStruc();
+        test_util.cleanUpDirectories(`${HDB_ROOT_TEST}/schema`);
+        test_util.cleanUpDirectories(TRASH_PATH_TEST);
+        deleteSchemaTableStruc();
         env.setProperty('HDB_ROOT', HDB_ROOT_ORIGINAL);
         search_by_value_rewire();
         delete_delete_rewire();
@@ -121,6 +126,9 @@ describe('Test schema module', function() {
         build_drop_table_obj_rewire();
     });
 
+    /**
+     * Tests for createSchema function.
+     */
     describe('Create schema', function() {
         let create_schema_structure_stub = sinon.stub();
         schema.__set__('createSchemaStructure', create_schema_structure_stub);
@@ -149,6 +157,9 @@ describe('Test schema module', function() {
         });
     });
 
+    /**
+     * Tests for createSchemaStructure function.
+     */
     describe('Create schema structure',  function() {
 
         it('should throw a validation error', async function() {
@@ -195,7 +206,7 @@ describe('Test schema module', function() {
             try {
                 // createSchemaStructure insert.insert expects schema dir to already exist
                 // so I am creating a temporary one. All test dirs are removed after test completion.
-                fs.mkdir(`${HDB_ROOT_TEST}/schema`);
+                await fs.mkdirp(`${HDB_ROOT_TEST}/schema`);
                 let result = await schema.createSchemaStructure(SCHEMA_CREATE_OBJECT_TEST);
                 let exists = await fs.pathExists(FULL_SCHEMA_PATH_TEST);
 
@@ -215,6 +226,9 @@ describe('Test schema module', function() {
         });
     });
 
+    /**
+     * Tests for createTable function.
+     */
     describe('Create table',  function() {
         let create_table_struc_stub = sinon.stub();
         schema.__set__('createTableStructure', create_table_struc_stub);
@@ -243,6 +257,9 @@ describe('Test schema module', function() {
         });
     });
 
+    /**
+     * Tests for createTableStructure function.
+     */
     describe('Create table structure', function() {
         let create_table_validator_stub = sinon.stub(schema_validator, 'create_table_object');
         let residence_validator_stub = sinon.stub(schema_validator, 'validateTableResidence');
@@ -322,6 +339,19 @@ describe('Test schema module', function() {
 
         it('should call all stubs and return success message', async function() {
             let result = await schema.createTableStructure(CREATE_TABLE_OBJECT_TEST);
+
+            expect(result).to.equal(`table ${CREATE_TABLE_OBJECT_TEST.schema}.${CREATE_TABLE_OBJECT_TEST.table} successfully created.`);
+            expect(search_for_schema_stub).to.have.been.calledOnce;
+            expect(search_for_table_stub).to.have.been.calledOnce;
+            expect(create_table_validator_stub).to.have.been.calledOnce;
+            expect(residence_validator_stub).to.have.been.calledOnce;
+            expect(insert_table_stub).to.have.been.calledOnce;
+        });
+
+        it('should call insertTable without setting table.residence', async function () {
+            CREATE_TABLE_OBJECT_TEST.residence = null;
+            let result = await schema.createTableStructure(CREATE_TABLE_OBJECT_TEST);
+
             expect(result).to.equal(`table ${CREATE_TABLE_OBJECT_TEST.schema}.${CREATE_TABLE_OBJECT_TEST.table} successfully created.`);
             expect(search_for_schema_stub).to.have.been.calledOnce;
             expect(search_for_table_stub).to.have.been.calledOnce;
@@ -331,14 +361,12 @@ describe('Test schema module', function() {
         });
     });
 
+    /**
+     * Tests for insertTable function.
+     */
     describe('Insert table', async function() {
         let insert_table;
         let fs_mkdir_stub;
-
-        //TODO - move these
-        const HDB_ROOT_ORIGINAL = env.get('HDB_ROOT');
-        const HDB_ROOT_TEST = '../unitTests/data_layer';
-        env.setProperty('HDB_ROOT', HDB_ROOT_TEST);
 
         before(function() {
             insert_table_rewire();
@@ -358,9 +386,9 @@ describe('Test schema module', function() {
             fs_mkdir_stub.restore();
             try {
                 await insert_table(TABLE_TEST, CREATE_TABLE_OBJECT_TEST);
+                let exists = await fs.pathExists(FULL_TABLE_PATH_TEST);
 
                 expect(insert_stub).to.have.been.calledWith(INSERT_OBJECT_TEST);
-                let exists = await fs.pathExists(FULL_TABLE_PATH_TEST);
                 expect(exists).to.be.true;
             } catch(err) {
                 console.error(err);
@@ -402,6 +430,9 @@ describe('Test schema module', function() {
         });
     });
 
+    /**
+     * Tests for dropSchema function.
+     */
     describe('Drop Schema', function() {
         let move_schema_trash_stub = sinon.stub();
         let move_schema_trash_rewire = schema.__set__('moveSchemaStructureToTrash', move_schema_trash_stub);
@@ -440,8 +471,10 @@ describe('Test schema module', function() {
         });
     });
 
+    /**
+     * Tests for moveSchemaStructureToTrash function.
+     */
     describe('Move Schema Structure to trash', function() {
-
 
         it('should throw a validation error', async function() {
             let validation_err = 'Schema is required';
@@ -456,7 +489,22 @@ describe('Test schema module', function() {
             }
         });
 
-        it('should call all async functions as expected and return success message', async function () {
+        it('should catch thrown error from search_value and send to log', async function() {
+            let search_by_value_err = 'Error searching for value';
+            search_by_value_stub.throws(new Error(search_by_value_err));
+
+            try {
+                await schema.deleteSchemaStructure(DROP_SCHEMA_OBJECT_TEST);
+            } catch(error) {
+                expect(error).to.be.instanceOf(Error);
+                expect(error.message).to.equal(search_by_value_err);
+                expect(logger_error_stub).to.have.been.calledOnce;
+                expect(search_by_value_stub).to.have.been.calledOnce;
+                expect(logger_error_stub).to.have.been.calledWith(error);
+            }
+        });
+
+        it('should call all async functions as expected and return success message', async function() {
             let delete_schema_object = {
                 table: "hdb_schema",
                 schema: "system",
@@ -471,7 +519,6 @@ describe('Test schema module', function() {
                 get_attributes: ['id']
             };
             let search_value = [{id: '123456'}];
-            // build_drop_schema_obj_stub.resolves(search_object);
             search_by_value_stub.resolves(search_value);
             let result = await schema.deleteSchemaStructure(DROP_SCHEMA_OBJECT_TEST);
 
@@ -489,6 +536,9 @@ describe('Test schema module', function() {
         });
     });
 
+    /**
+     * Tests for dropTable function.
+     */
     describe('Drop table', function() {
         let move_table_trash_stub = sinon.stub();
         let move_table_trash_rewire = schema.__set__('moveTableStructureToTrash', move_table_trash_stub);
@@ -525,6 +575,9 @@ describe('Test schema module', function() {
 
     });
 
+    /**
+     * Tests for moveTableStructureToTrash function.
+     */
     describe('Move table structure to trash', function() {
         let table_validator_stub = sinon.stub(schema_validator, 'table_object');
 
@@ -545,6 +598,22 @@ describe('Test schema module', function() {
             }
         });
 
+        it('should catch thrown error from search_value and send to log', async function() {
+            let search_by_value_err = 'Error searching for value';
+            table_validator_stub.returns();
+            search_by_value_stub.throws(new Error(search_by_value_err));
+
+            try {
+                await schema.deleteTableStructure(DROP_TABLE_OBJECT_TEST);
+            } catch(error) {
+                expect(error).to.be.instanceOf(Error);
+                expect(error.message).to.equal(search_by_value_err);
+                expect(logger_error_stub).to.have.been.calledOnce;
+                expect(search_by_value_stub).to.have.been.calledOnce;
+                expect(logger_error_stub).to.have.been.calledWith(error);
+            }
+        });
+
         it('should call all async functions and return success message', async function() {
             let delete_table_object = {
                 operation: 'drop_table',
@@ -560,7 +629,6 @@ describe('Test schema module', function() {
                 get_attributes: ['name', 'schema', 'id']
             };
             let search_value = [{name: TABLE_NAME_TEST, schema: SCHEMA_NAME_TEST, id: '123456'}];
-            table_validator_stub.returns();
             search_by_value_stub.resolves(search_value);
             build_drop_table_obj_stub.resolves(delete_table_object);
             let result = await schema.deleteTableStructure(DROP_TABLE_OBJECT_TEST);
@@ -580,7 +648,10 @@ describe('Test schema module', function() {
         });
 
     });
-    
+
+    /**
+     * Tests for dropAttribute function.
+     */
     describe('Drop attribute', function() {
         const global_schema_fake = {
             'dogsrule': {
@@ -652,6 +723,9 @@ describe('Test schema module', function() {
         });
     });
 
+    /**
+     * Tests for moveSchemaToTrash function.
+     */
     describe('Move schema to trash', function() {
         let move_schema_to_trash;
         let insert_table;
@@ -685,8 +759,6 @@ describe('Test schema module', function() {
                 hash_values: ['123456']
             };
 
-
-
             try {
                 // Make a temporary schema and table setup in unit test dir then move it to trash.
                 await buildSchemaTableStruc();
@@ -714,6 +786,9 @@ describe('Test schema module', function() {
         })
     });
 
+    /**
+     * Tests for buildDropTableObject function.
+     */
     describe('Build drop table object', function() {
         let build_drop_table_obj;
         let data_fake = [{
@@ -748,6 +823,9 @@ describe('Test schema module', function() {
         });
     });
 
+    /**
+     * Tests for moveTableToTrash function.
+     */
     describe('Move table to trash', function() {
         let move_table_to_trash;
 
@@ -788,6 +866,9 @@ describe('Test schema module', function() {
         })
     });
 
+    /**
+     * Tests for dropAttributeFromSystem function.
+     */
     describe('Drop attribute from system', function() {
         let drop_attr_from_system = schema.__get__('dropAttributeFromSystem');
         let attributes_fake = [{id: '12345'}];
@@ -835,6 +916,9 @@ describe('Test schema module', function() {
 
     });
 
+    /**
+     * Tests for moveAttributeToTrash function.
+     */
     describe('Move attribute to trash', function() {
         let move_attr_to_trash;
         let drop_attr_from_sys_stub = sinon.stub();
@@ -911,6 +995,9 @@ describe('Test schema module', function() {
         });
     });
 
+    /**
+     * Tests for moveFolderToTrash function.
+     */
     describe('move folder to trash', function() {
         // this function is also tested through move table to trash plus move attribute to trash.
         let move_folder_to_trash;
@@ -976,6 +1063,9 @@ describe('Test schema module', function() {
         });
     });
 
+    /**
+     * Tests for searchForSchema function.
+     */
     describe('Search for schema', function() {
         let search_for_schema;
 
@@ -1007,6 +1097,9 @@ describe('Test schema module', function() {
         });
     });
 
+    /**
+     * Tests for searchForTable function.
+     */
     describe('Search for table', function() {
         let search_for_table;
 
@@ -1040,6 +1133,9 @@ describe('Test schema module', function() {
         });
     });
 
+    /**
+     * Tests for createAttributeStructure function.
+     */
     describe('Create attribute structure', function() {
 
         it('should throw a validation error', async function() {
@@ -1135,8 +1231,70 @@ describe('Test schema module', function() {
                 expect(delete_delete_stub).to.have.been.calledOnce;
             }
         });
-
-
     });
 
+    /**
+     * Tests for createAttribute function.
+     */
+    describe('Create attribute', function() {
+        let create_attr_struc_stub = sinon.stub();
+        let call_process_send_stub = sinon.stub(common, 'callProcessSend');
+        let create_attr_struc_rewire;
+        let attribute_structure_fake = {message:'inserted 1 of 1 records', skipped_hashes:'', inserted_hashes:''};
+        sinon.stub(process, 'pid').value('8877');
+        let payload_fake = {
+            "type": "clustering_payload",
+            "pid": process.pid,
+            "clustering_type": "broadcast",
+            "id": attribute_structure_fake.id,
+            "body": CREATE_ATTR_OBJECT_TEST
+        };
+
+        before(function() {
+            create_attr_struc_rewire = schema.__set__('createAttributeStructure', create_attr_struc_stub);
+            create_attr_struc_stub.resolves(attribute_structure_fake);
+        });
+
+        after(function() {
+            create_attr_struc_rewire();
+        });
+
+        it('should call process send and return attribute structure with clustering on', async function() {
+            global.clustering_on = true;
+
+            let result = await schema.createAttribute(CREATE_ATTR_OBJECT_TEST);
+
+            expect(create_attr_struc_stub).to.have.been.calledOnce;
+            expect(create_attr_struc_stub).to.have.been.calledWith(CREATE_ATTR_OBJECT_TEST);
+            expect(call_process_send_stub).to.have.been.calledOnce;
+            expect(call_process_send_stub).to.have.been.calledWith(payload_fake);
+            expect(signal_schema_change_stub).to.have.been.calledOnce;
+            expect(result).to.equal(attribute_structure_fake);
+        });
+
+        it('should catch thrown error from callProcessSend', async function() {
+            CREATE_ATTR_OBJECT_TEST.delegated = false;
+            global.clustering_on = true;
+            let call_process_send_err = 'Error with process send';
+            call_process_send_stub.throws(new Error(call_process_send_err));
+
+            try {
+                await schema.createAttribute(CREATE_ATTR_OBJECT_TEST);
+            } catch(error) {
+                expect(error).to.be.instanceOf(Error);
+                expect(error.message).to.equal(call_process_send_err);
+                expect(logger_error_stub).to.have.been.calledWith(error);
+            }
+        });
+
+        it('should return attribute structure with clustering off', async function() {
+            global.clustering_on = false;
+            let result = await schema.createAttribute(CREATE_ATTR_OBJECT_TEST);
+            expect(create_attr_struc_stub).to.have.been.calledOnce;
+            expect(create_attr_struc_stub).to.have.been.calledWith(CREATE_ATTR_OBJECT_TEST);
+            expect(call_process_send_stub).to.have.been.callCount(0);
+            expect(signal_schema_change_stub).to.have.been.calledOnce;
+            expect(result).to.equal(attribute_structure_fake);
+        });
+    });
 });

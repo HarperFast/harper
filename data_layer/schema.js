@@ -2,7 +2,6 @@
 
 const fs = require('fs-extra');
 const insert = require('./insert.js');
-const async = require('async');
 const validation = require('../validation/schema_validator.js');
 const search = require('./search.js');
 const logger = require('../utility/logging/harper_logger');
@@ -14,17 +13,12 @@ const delete_ = require('../data_layer/delete');
 const schema_describe = require('./schemaDescribe');
 const env = require('../utility/environment/environmentManager');
 const clone = require('clone');
-// TODO: Replace this with fs-extra mkdirp and remove module.
-const mkdirp = require('mkdirp');
 const _ = require('underscore');
 const signalling = require('../utility/signalling');
-// TODO: log is in here twice
-const log = require('../utility/logging/harper_logger');
 const util = require('util');
 const hdb_util = require('../utility/common_utils');
 const terms = require('../utility/hdbTerms');
 const common = require('../utility/common_utils');
-let cb_insert_insert = util.callbackify(insert.insert);
 
 // Promisified functions
 let p_search_search_by_value = util.promisify(search.searchByValue);
@@ -37,7 +31,6 @@ const ENTITY_TYPE_ENUM = {
     SCHEMA: 'schema',
     ATTRIBUTE: 'attribute'
 };
-
 const DATE_SUBSTR_LENGTH = 19;
 const TRASH_BASE_PATH = `${env.get('HDB_ROOT')}/trash/`;
 
@@ -61,11 +54,6 @@ module.exports = {
 };
 
 /** EXPORTED FUNCTIONS **/
-
-// TODO - temp promisified functions that help with async module refactor
-const p_createAttributeStructure = util.promisify(createAttributeStructure);
-// const p_moveTableToTrash = util.promisify(moveTableToTrash);
-// const p_deleteAttributeStructure = util.promisify(deleteAttributeStructure);
 
 async function createSchema(schema_create_object) {
     try {
@@ -211,7 +199,6 @@ async function dropSchema(drop_schema_object) {
  * @param drop_schema_object
  * @returns {Promise<string>}
  */
-//TODO - this should have log calls on error
 async function moveSchemaStructureToTrash(drop_schema_object) {
     let validation_error = validation.schema_object(drop_schema_object);
     if (validation_error) {
@@ -242,10 +229,10 @@ async function moveSchemaStructureToTrash(drop_schema_object) {
 
         return `successfully deleted schema ${schema}`;
     } catch(err) {
+        logger.error(err);
         throw err;
     }
 }
-
 
 async function dropTable(drop_table_object) {
     try {
@@ -264,8 +251,6 @@ async function dropTable(drop_table_object) {
  * @param drop_table_object - Descriptor for the table being targeted for move.
  * @returns {Promise<string>}
  */
-
-//TODO - this should have log calls on error
 async function moveTableStructureToTrash(drop_table_object) {
     let validation_error = validation.table_object(drop_table_object);
     if (validation_error) {
@@ -293,6 +278,7 @@ async function moveTableStructureToTrash(drop_table_object) {
 
         return `successfully deleted table ${schema}.${table}`
     } catch(err) {
+        logger.error(err);
         throw err;
     }
 }
@@ -316,7 +302,7 @@ async function dropAttribute(drop_attribute_object) {
         let success = await moveAttributeToTrash(drop_attribute_object);
         return success;
     } catch(err) {
-        log.error(`Got an error deleting attribute ${util.inspect(drop_attribute_object)}.`);
+        logger.error(`Got an error deleting attribute ${util.inspect(drop_attribute_object)}.`);
         throw err;
    }
 }
@@ -439,6 +425,7 @@ async function dropAttributeFromSystem(drop_attribute_object) {
             hash_attribute: "id",
             hash_values: [attributes[0].id]
         };
+
         let success_message = await p_delete_delete(delete_table_object);
 
         return success_message;
@@ -465,7 +452,7 @@ async function moveAttributeToTrash(drop_attribute_object) {
         }
     } catch(err) {
         // Not good, rollback attribute folder
-        log.error(`There was a problem moving the attribute at path ${origin_path} to the trash at path: ${attribute_trash_path}`);
+        logger.error(`There was a problem moving the attribute at path ${origin_path} to the trash at path: ${attribute_trash_path}`);
         throw err;
     }
 
@@ -473,7 +460,7 @@ async function moveAttributeToTrash(drop_attribute_object) {
        await moveFolderToTrash(hash_path, attribute_hash_trash_path);
     } catch(err) {
         // Not good, rollback attribute __hdb_hash folder and attribute folder
-        log.error(`There was a problem moving the hash attribute at path ${origin_path} to the trash at path: ${attribute_trash_path}`);
+        logger.error(`There was a problem moving the hash attribute at path ${origin_path} to the trash at path: ${attribute_trash_path}`);
         throw err;
     }
 
@@ -482,11 +469,10 @@ async function moveAttributeToTrash(drop_attribute_object) {
         return drop_result;
     } catch(err) {
         // Not good, rollback attribute folder, __hdb_hash folder, and attribute removal from hdb_attribute if it happened.
-        log.error(`There was a problem dropping attribute: ${drop_attribute_object.attribute} from hdb_attribute.`);
+        logger.error(`There was a problem dropping attribute: ${drop_attribute_object.attribute} from hdb_attribute.`);
         throw err;
     }
 }
-
 
 /**
  * Move the specified folder from path to the trash path folder.  If the trash folder does not exist, it will be created.
@@ -503,14 +489,14 @@ async function moveFolderToTrash(origin_path, trash_path) {
     try {
         await fs.mkdirp(trash_path);
     } catch(err) {
-        log.error(`Failed to create the trash directory.`);
+        logger.error(`Failed to create the trash directory.`);
         throw err;
     }
 
     try {
         await fs.move(origin_path,trash_path, {overwrite: true});
     } catch(err) {
-        log.error(`Got an error moving path ${origin_path} to trash path: ${trash_path}`);
+        logger.error(`Got an error moving path ${origin_path} to trash path: ${trash_path}`);
         throw err;
     }
 
@@ -615,7 +601,6 @@ async function createAttributeStructure(create_attribute_object) {
     }
 }
 
-// TODO: which functions need validation?
 async function deleteAttributeStructure(attribute_drop_object) {
     let search_object = {
         schema:'system',
@@ -659,8 +644,6 @@ async function deleteAttributeStructure(attribute_drop_object) {
     }
 }
 
-
-// TODO: add error logging??
 async function createAttribute(create_attribute_object) {
     let attribute_structure;
     try {
@@ -673,19 +656,16 @@ async function createAttribute(create_attribute_object) {
             create_attribute_object.id = attribute_structure.id;
 
             let payload = {
-                "type": "clustering_payload", "pid": process.pid,
+                "type": "clustering_payload",
+                "pid": process.pid,
                 "clustering_type": "broadcast",
                 "id": attribute_structure.id,
                 "body": create_attribute_object
             };
 
-            try {
-                common.callProcessSend(payload);
-            } catch(err) {
-                logger.error(err);
-            }
-
+            common.callProcessSend(payload);
             signalling.signalSchemaChange({type: 'schema'});
+
             return attribute_structure;
         } else {
             attribute_structure = await createAttributeStructure(create_attribute_object);
@@ -693,6 +673,7 @@ async function createAttribute(create_attribute_object) {
             return attribute_structure;
         }
     } catch(err) {
+        logger.error(err);
         throw err;
     }
 }
