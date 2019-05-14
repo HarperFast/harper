@@ -3207,7 +3207,7 @@
 											"",
 											"pm.test(\"Verify csv data load was successful\", function () {",
 											"    var jsonData = pm.response.json();",
-											"    var randomNumber = Math.floor(Math.random() * 29) + 1;",
+											"    var randomNumber = Math.floor(Math.random() * 29);",
 											"    pm.expect(jsonData[randomNumber]).to.not.eql(null)",
 											"    pm.expect(jsonData.length).to.eql(29);",
 											"    pm.expect(Object.keys(jsonData[randomNumber]).length).to.eql(12);",
