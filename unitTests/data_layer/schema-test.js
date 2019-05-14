@@ -21,6 +21,7 @@ let insert = require('../../data_layer/insert');
 const uuidV4 = require('uuid/v4');
 const logger = require('../../utility/logging/harper_logger');
 const common = require('../../utility/common_utils');
+const schema_validator = require('../../validation/schema_validator');
 const util = require('util');
 const clonedeep = require('lodash.clonedeep');
 
@@ -28,7 +29,6 @@ const clonedeep = require('lodash.clonedeep');
 // being called inside another function declared within the same file.
 const rewire = require('rewire');
 let schema = rewire('../../data_layer/schema');
-let schema_validator = require('../../validation/schema_validator');
 
 const SCHEMA_NAME_TEST = 'dogsrule';
 const TABLE_NAME_TEST = 'catsdrool' ;
@@ -50,7 +50,8 @@ let current_date = new Date().toISOString().substr(0, DATE_SUBSTR_LENGTH);
 let global_schema_original = clonedeep(global.hdb_schema);
 
 /**
- * Builds a schema and table directory structure that can be used for testing delete functions.
+ * Builds a schema and table directory structure that can be used for testing delete functions. This may become
+ * redundant once CRUD test harness is built.
  */
 async function buildSchemaTableStruc(){
     let insert_table = schema.__get__('insertTable');
@@ -109,6 +110,7 @@ describe('Test schema module', function() {
     let global_hdb_schema_rewire;
 
     before(function() {
+        env.setProperty('HDB_ROOT', HDB_ROOT_TEST);
         global_hdb_schema_rewire = schema.__set__('global.hdb_schema', global_hdb_schema_stub);
         insert_stub = sinon.stub(insert, 'insert');
         signal_schema_change_stub = sinon.stub(signalling, 'signalSchemaChange');
@@ -172,85 +174,102 @@ describe('Test schema module', function() {
         it('should catch thrown error from createSchemaStructure', async function() {
             let create_schema_structure_err = `schema ${SCHEMA_NAME_TEST} already exists`;
             create_schema_structure_stub.throws(new Error(create_schema_structure_err));
+            let error;
 
             try {
                 await schema.createSchema(SCHEMA_CREATE_OBJECT_TEST);
-            } catch(error) {
-                expect(error).to.be.instanceOf(Error);
-                expect(error.message).to.equal(create_schema_structure_err);
-                expect(create_schema_structure_stub).to.have.been.calledOnce;
-                expect(logger_error_stub).to.have.been.calledOnce;
-                expect(logger_error_stub).to.have.been.calledWith(error);
+            } catch(err) {
+                error = err;
             }
+
+            expect(error.message).to.equal(create_schema_structure_err);
+            expect(create_schema_structure_stub).to.have.been.calledOnce;
+            expect(logger_error_stub).to.have.been.calledOnce;
+            expect(logger_error_stub).to.have.been.calledWith(error);
         });
     });
 
     /**
      * Tests for createSchemaStructure function.
      */
-    describe('Create schema structure',  function() {
+    describe('Create schema structure',function() {
 
         it('should throw a validation error', async function() {
             let validation_err = 'Schema is required';
             schema_validator_stub.throws(new Error(validation_err));
+            let error;
 
             try {
                 await schema.createSchemaStructure(SCHEMA_CREATE_OBJECT_TEST);
-            } catch(error) {
-                expect(error).to.be.instanceOf(Error);
-                expect(error.message).to.equal(validation_err);
-                expect(schema_validator_stub).to.have.been.calledOnce;
+            } catch(err) {
+              error = err;
             }
+
+            expect(error).to.be.instanceOf(Error);
+            expect(error.message).to.equal(validation_err);
+            expect(schema_validator_stub).to.have.been.calledOnce;
         });
 
         it('should throw schema search error', async function() {
             let schema_search_fake = [{name: `${SCHEMA_NAME_TEST}`}];
             search_for_schema_stub.resolves(schema_search_fake);
+            let error;
 
             try {
                 await schema.createSchemaStructure(SCHEMA_CREATE_OBJECT_TEST);
-            } catch(error) {
-                expect(error).to.equal(`Schema ${SCHEMA_NAME_TEST} already exists`);
-                expect(search_for_schema_stub).to.have.been.calledOnce;
+            } catch(err) {
+                error = err;
             }
+
+            expect(error.message).to.equal(`Schema ${SCHEMA_NAME_TEST} already exists`);
+            expect(search_for_schema_stub).to.have.been.calledOnce;
         });
 
         it('should catch thrown error from insert insert', async function() {
             search_for_schema_stub.resolves([]);
-
             let insert_err = 'invalid operation, must be insert';
             insert_stub.throws(new Error(insert_err));
+            let error;
 
             try {
                 await schema.createSchemaStructure(SCHEMA_CREATE_OBJECT_TEST);
-            } catch(error) {
-                expect(error).to.be.instanceOf(Error);
-                expect(error.message).to.equal(insert_err);
-                expect(insert_stub).to.have.been.calledOnce;
+            } catch(err) {
+               error = err;
             }
+
+            expect(error).to.be.instanceOf(Error);
+            expect(error.message).to.equal(insert_err);
+            expect(insert_stub).to.have.been.calledOnce;
         });
 
         it('should create directory with test schema name', async function() {
+            let result;
+            let exists;
+
             try {
                 // createSchemaStructure insert.insert expects schema dir to already exist
                 // so I am creating a temporary one. All test dirs are removed after test completion.
                 await fs.mkdirp(`${HDB_ROOT_TEST}/schema`);
-                let result = await schema.createSchemaStructure(SCHEMA_CREATE_OBJECT_TEST);
-                let exists = await fs.pathExists(FULL_SCHEMA_PATH_TEST);
-
-                expect(result).to.equal(`schema ${SCHEMA_NAME_TEST} successfully created`);
-                expect(exists).to.be.true;
+                result = await schema.createSchemaStructure(SCHEMA_CREATE_OBJECT_TEST);
+                exists = await fs.pathExists(FULL_SCHEMA_PATH_TEST);
             } catch(err) {
                 console.error(err);
             }
+
+            expect(result).to.equal(`schema ${SCHEMA_NAME_TEST} successfully created`);
+            expect(exists).to.be.true;
         });
 
         it('should catch errno directory exists error from fs.mkdir', async function() {
+            let error;
+
             try {
                 await schema.createSchemaStructure(SCHEMA_CREATE_OBJECT_TEST);
-            } catch(error) {
-                expect(error).to.equal('schema already exists')
+            } catch(err) {
+                error = err;
             }
+
+            expect(error.message).to.equal('schema already exists');
         });
     });
 
@@ -274,16 +293,19 @@ describe('Test schema module', function() {
         it('should catch thrown error from createTableStructure', async function() {
             let create_table_struc_err = 'schema does not exist';
             create_table_struc_stub.throws(new Error(create_table_struc_err));
+            let error;
 
             try {
                 await schema.createTable(CREATE_TABLE_OBJECT_TEST);
-            } catch(error) {
-                expect(error).to.be.instanceOf(Error);
-                expect(error.message).to.equal(create_table_struc_err);
-                expect(create_table_struc_stub).to.have.been.calledOnce;
-                expect(logger_error_stub).to.have.been.calledOnce;
-                expect(logger_error_stub).to.have.been.calledWith(error);
+            } catch(err) {
+                error = err;
             }
+
+            expect(error).to.be.instanceOf(Error);
+            expect(error.message).to.equal(create_table_struc_err);
+            expect(create_table_struc_stub).to.have.been.calledOnce;
+            expect(logger_error_stub).to.have.been.calledOnce;
+            expect(logger_error_stub).to.have.been.calledWith(error);
         });
     });
 
@@ -307,40 +329,49 @@ describe('Test schema module', function() {
         it('should catch thrown error from validation.create_table_object', async function() {
             let create_table_validator_err = 'Table is required';
             create_table_validator_stub.throws(new Error(create_table_validator_err));
+            let error;
 
             try {
                 await schema.createTableStructure(CREATE_TABLE_OBJECT_TEST);
-            } catch(error) {
-                expect(error).to.be.instanceOf(Error);
-                expect(error.message).to.equal(create_table_validator_err);
-                expect(create_table_validator_stub).to.have.been.calledOnce;
+            } catch(err) {
+                error = err;
             }
+
+            expect(error).to.be.instanceOf(Error);
+            expect(error.message).to.equal(create_table_validator_err);
+            expect(create_table_validator_stub).to.have.been.calledOnce;
         });
 
         it('should throw schema does not exist error message', async function() {
             search_for_schema_stub.resolves([]);
+            let error;
 
             try {
                 await schema.createTableStructure(CREATE_TABLE_OBJECT_TEST);
-            } catch(error) {
-                expect(error).to.equal(`schema ${CREATE_TABLE_OBJECT_TEST.schema} does not exist`)
-                expect(create_table_validator_stub).to.have.been.calledOnce;
-                expect(residence_validator_stub).to.have.been.calledOnce;
+            } catch(err) {
+               error = err;
             }
+
+            expect(error.message).to.equal(`schema ${CREATE_TABLE_OBJECT_TEST.schema} does not exist`);
+            expect(create_table_validator_stub).to.have.been.calledOnce;
+            expect(residence_validator_stub).to.have.been.calledOnce;
         });
 
         it('should throw table does not exist error message', async function() {
             search_for_schema_stub.resolves([{SCHEMA_NAME_TEST}]);
             search_for_table_stub.resolves([{TABLE_NAME_TEST}]);
+            let error;
 
             try {
                 await schema.createTableStructure(CREATE_TABLE_OBJECT_TEST);
-            } catch(error) {
-                expect(error).to.equal(`table ${CREATE_TABLE_OBJECT_TEST.table} already exists in schema ${CREATE_TABLE_OBJECT_TEST.schema}`);
-                expect(search_for_schema_stub).to.have.been.calledOnce;
-                expect(create_table_validator_stub).to.have.been.calledOnce;
-                expect(residence_validator_stub).to.have.been.calledOnce;
+            } catch(err) {
+                error = err;
             }
+
+            expect(error.message).to.equal(`table ${CREATE_TABLE_OBJECT_TEST.table} already exists in schema ${CREATE_TABLE_OBJECT_TEST.schema}`);
+            expect(search_for_schema_stub).to.have.been.calledOnce;
+            expect(create_table_validator_stub).to.have.been.calledOnce;
+            expect(residence_validator_stub).to.have.been.calledOnce;
         });
 
         it('should check that table has been inserted with clustering on', async function () {
@@ -354,16 +385,19 @@ describe('Test schema module', function() {
 
         it('should throw clustering not enabled error', async function () {
             global.clustering_on = false;
+            let error;
 
             try {
                 await schema.createTableStructure(CREATE_TABLE_OBJECT_TEST);
-            } catch(error) {
-                expect(error).to.equal(`Clustering does not appear to be enabled. Cannot insert table with property 'residence'.`);
-                expect(search_for_schema_stub).to.have.been.calledOnce;
-                expect(search_for_table_stub).to.have.been.calledOnce;
-                expect(create_table_validator_stub).to.have.been.calledOnce;
-                expect(residence_validator_stub).to.have.been.calledOnce;
+            } catch(err) {
+                error = err;
             }
+
+            expect(error.message).to.equal(`Clustering does not appear to be enabled. Cannot insert table with property 'residence'.`);
+            expect(search_for_schema_stub).to.have.been.calledOnce;
+            expect(search_for_table_stub).to.have.been.calledOnce;
+            expect(create_table_validator_stub).to.have.been.calledOnce;
+            expect(residence_validator_stub).to.have.been.calledOnce;
         });
 
         it('should call all stubs and return success message', async function() {
@@ -413,49 +447,62 @@ describe('Test schema module', function() {
 
         it('should create directory with test table name', async function() {
             fs_mkdir_stub.restore();
+            let exists;
+
             try {
                 await insert_table(TABLE_TEST, CREATE_TABLE_OBJECT_TEST);
-                let exists = await fs.pathExists(FULL_TABLE_PATH_TEST);
-
-                expect(insert_stub).to.have.been.calledWith(INSERT_OBJECT_TEST);
-                expect(exists).to.be.true;
             } catch(err) {
                 console.error(err);
             }
+
+            exists = await fs.pathExists(FULL_TABLE_PATH_TEST);
+            expect(insert_stub).to.have.been.calledWith(INSERT_OBJECT_TEST);
+            expect(exists).to.be.true;
         });
 
         it('should catch errno table directory already exists error from fs.mkdir', async function() {
+            let error;
+
             try {
                 await insert_table(TABLE_TEST, CREATE_TABLE_OBJECT_TEST);
-            } catch(error) {
-                expect(error).to.equal('table already exists')
-                expect(insert_stub).to.have.been.calledWith(INSERT_OBJECT_TEST);
+            } catch(err) {
+               error = err;
             }
+
+            expect(error.message).to.equal('table already exists');
+            expect(insert_stub).to.have.been.calledWith(INSERT_OBJECT_TEST);
         });
 
         it('should catch errno schema does not exist error from fs.mkdir', async function() {
             // Putting this here as well as at start of file because when running npm test root was not being updated.
             const HDB_ROOT_TEST = '../unitTests/data_layer';
             env.setProperty('HDB_ROOT', HDB_ROOT_TEST);
+            let error;
 
             try {
                 test_util.cleanUpDirectories(`${HDB_ROOT_TEST}/schema`);
                 await insert_table(TABLE_TEST, CREATE_TABLE_OBJECT_TEST);
-            } catch(error) {
-                expect(error).to.equal('schema does not exist');
-                expect(insert_stub).to.have.been.calledWith(INSERT_OBJECT_TEST);
+            } catch(err) {
+               error = err;
             }
+
+            expect(error.message).to.equal('schema does not exist');
+            expect(insert_stub).to.have.been.calledWith(INSERT_OBJECT_TEST);
         });
 
         it('should catch thrown error from insert', async function() {
             let insert_err = 'invalid operation';
             insert_stub.throws(new Error(insert_err));
+            let error;
+
             try {
                 await insert_table(TABLE_TEST, CREATE_TABLE_OBJECT_TEST);
-            } catch(error) {
-                expect(error).to.be.instanceOf(Error);
-                expect(error.message).to.equal(insert_err);
+            } catch(err) {
+              error = err;
             }
+
+            expect(error).to.be.instanceOf(Error);
+            expect(error.message).to.equal(insert_err);
         });
     });
 
@@ -485,16 +532,19 @@ describe('Test schema module', function() {
         it('should catch thrown errors and send to log', async function() {
             let move_schema_trash_err = `There was a problem deleting ${SCHEMA_NAME_TEST}`;
             move_schema_trash_stub.throws(new Error(move_schema_trash_err));
+            let error;
 
             try {
                 await schema.dropSchema(DROP_SCHEMA_OBJECT_TEST);
-            } catch(error) {
-                expect(error).to.be.instanceOf(Error);
-                expect(error.message).to.equal(move_schema_trash_err);
-                expect(move_schema_trash_stub).to.have.been.calledOnce;
-                expect(logger_error_stub).to.have.been.calledOnce;
-                expect(logger_error_stub).to.have.been.calledWith(error);
+            } catch(err) {
+                error = err;
             }
+
+            expect(error).to.be.instanceOf(Error);
+            expect(error.message).to.equal(move_schema_trash_err);
+            expect(move_schema_trash_stub).to.have.been.calledOnce;
+            expect(logger_error_stub).to.have.been.calledOnce;
+            expect(logger_error_stub).to.have.been.calledWith(error);
         });
     });
 
@@ -506,30 +556,36 @@ describe('Test schema module', function() {
         it('should throw a validation error', async function() {
             let validation_err = 'Schema is required';
             schema_validator_stub.returns(new Error(validation_err));
+            let error;
 
             try {
                 await schema.deleteSchemaStructure(DROP_SCHEMA_OBJECT_TEST);
-            } catch(error) {
-                expect(error).to.be.instanceOf(Error);
-                expect(error.message).to.equal(validation_err);
-                expect(schema_validator_stub).to.have.been.calledOnce;
+            } catch(err) {
+                error = err;
             }
+
+            expect(error).to.be.instanceOf(Error);
+            expect(error.message).to.equal(validation_err);
+            expect(schema_validator_stub).to.have.been.calledOnce;
         });
 
         it('should catch thrown error from search_value and send to log', async function() {
             let search_by_value_err = 'Error searching for value';
             search_by_value_stub.throws(new Error(search_by_value_err));
+            let error;
 
             try {
                 await schema.deleteSchemaStructure(DROP_SCHEMA_OBJECT_TEST);
-            } catch(error) {
-                expect(error).to.be.instanceOf(Error);
-                expect(error.message).to.equal(search_by_value_err);
-                expect(search_by_value_stub).to.have.been.calledOnce;
+            } catch(err) {
+                error = err;
             }
+
+            expect(error).to.be.instanceOf(Error);
+            expect(error.message).to.equal(search_by_value_err);
+            expect(search_by_value_stub).to.have.been.calledOnce;
         });
 
-        it('should call all async functions as expected and return success message', async function() {
+        it('should call all functions as expected and return success message', async function() {
             let delete_schema_object = {
                 table: "hdb_schema",
                 schema: "system",
@@ -586,18 +642,20 @@ describe('Test schema module', function() {
         it('should catch thrown errors and send to log', async function() {
             let move_table_trash_err = `There was a problem deleting ${TABLE_NAME_TEST}`;
             move_table_trash_stub.throws(new Error(move_table_trash_err));
+            let error;
 
             try {
                 await schema.dropTable(DROP_TABLE_OBJECT_TEST);
-            } catch(error) {
-                expect(error).to.be.instanceOf(Error);
-                expect(error.message).to.equal(move_table_trash_err);
-                expect(move_table_trash_stub).to.have.been.calledOnce;
-                expect(logger_error_stub).to.have.been.calledOnce;
-                expect(logger_error_stub).to.have.been.calledWith(error);
+            } catch(err) {
+                error = err;
             }
-        });
 
+            expect(error).to.be.instanceOf(Error);
+            expect(error.message).to.equal(move_table_trash_err);
+            expect(move_table_trash_stub).to.have.been.calledOnce;
+            expect(logger_error_stub).to.have.been.calledOnce;
+            expect(logger_error_stub).to.have.been.calledWith(error);
+        });
     });
 
     /**
@@ -613,28 +671,34 @@ describe('Test schema module', function() {
         it('should throw a validation error', async function() {
             let validation_err = 'Table is required';
             table_validator_stub.returns(new Error(validation_err));
+            let error;
 
             try {
                 await schema.deleteTableStructure(DROP_TABLE_OBJECT_TEST);
-            } catch(error) {
-                expect(error).to.be.instanceOf(Error);
-                expect(error.message).to.equal(validation_err);
-                expect(table_validator_stub).to.have.been.calledOnce;
+            } catch(err) {
+               error = err;
             }
+
+            expect(error).to.be.instanceOf(Error);
+            expect(error.message).to.equal(validation_err);
+            expect(table_validator_stub).to.have.been.calledOnce;
         });
 
         it('should catch thrown error from search_value and send to log', async function() {
             let search_by_value_err = 'Error searching for value';
             table_validator_stub.returns();
             search_by_value_stub.throws(new Error(search_by_value_err));
+            let error;
 
             try {
                 await schema.deleteTableStructure(DROP_TABLE_OBJECT_TEST);
-            } catch(error) {
-                expect(error).to.be.instanceOf(Error);
-                expect(error.message).to.equal(search_by_value_err);
-                expect(search_by_value_stub).to.have.been.calledOnce;
+            } catch(err) {
+                error = err;
             }
+
+            expect(error).to.be.instanceOf(Error);
+            expect(error.message).to.equal(search_by_value_err);
+            expect(search_by_value_stub).to.have.been.calledOnce;
         });
 
         it('should call all async functions and return success message', async function() {
@@ -691,29 +755,34 @@ describe('Test schema module', function() {
 
         it('should throw a validation error', async function() {
             let validation_err = 'Attribute is required';
-            attr_validator_stub.returns(validation_err);
+            attr_validator_stub.returns(new Error(validation_err));
+            let error;
 
             try {
                 await schema.dropAttribute(DROP_ATTR_OBJECT_TEST);
-            } catch(error) {
-                expect(error).to.be.instanceOf(Error);
-                expect(error.message).to.equal(validation_err);
-                expect(attr_validator_stub).to.have.been.calledOnce;
+            } catch(err) {
+                error = err;
             }
+
+            expect(error).to.be.instanceOf(Error);
+            expect(error.message).to.equal(validation_err);
+            expect(attr_validator_stub).to.have.been.calledOnce;
         });
 
         it('should throw cannot drop a hash attribute error', async function() {
             attr_validator_stub.returns();
-
             global.hdb_schema = global_schema_fake;
+            let error;
 
             try {
                 await schema.dropAttribute(DROP_ATTR_OBJECT_TEST);
-            } catch(error) {
-                expect(attr_validator_stub).to.have.been.calledOnce;
-                expect(error).to.be.instanceOf(Error);
-                expect(error.message).to.equal('You cannot drop a hash attribute');
+            } catch(err) {
+                error = err;
             }
+
+            expect(attr_validator_stub).to.have.been.calledOnce;
+            expect(error).to.be.instanceOf(Error);
+            expect(error.message).to.equal('You cannot drop a hash attribute');
         });
 
         it('should throw and log error from moveAttributeToTrash', async function() {
@@ -721,17 +790,20 @@ describe('Test schema module', function() {
             global.hdb_schema.dogsrule.catsdrool.hash_attribute = 'notid';
             let move_attr_trash_err = 'There was problem moving attribute to trash';
             move_attr_to_trash_stub.throws(new Error(move_attr_trash_err));
+            let error;
 
             try {
                 await schema.dropAttribute(DROP_ATTR_OBJECT_TEST);
-            } catch(error) {
-                expect(error).to.be.instanceOf(Error);
-                expect(attr_validator_stub).to.have.been.calledOnce;
-                expect(move_attr_to_trash_stub).to.have.been.calledOnce;
-                expect(move_attr_to_trash_stub).to.have.been.calledWith(DROP_ATTR_OBJECT_TEST);
-                expect(logger_error_stub).to.have.been.calledWith(`Got an error deleting attribute ${util.inspect(DROP_ATTR_OBJECT_TEST)}.`);
-                expect(error.message).to.equal(move_attr_trash_err);
+            } catch(err) {
+              error = err;
             }
+
+            expect(error).to.be.instanceOf(Error);
+            expect(attr_validator_stub).to.have.been.calledOnce;
+            expect(move_attr_to_trash_stub).to.have.been.calledOnce;
+            expect(move_attr_to_trash_stub).to.have.been.calledWith(DROP_ATTR_OBJECT_TEST);
+            expect(logger_error_stub).to.have.been.calledWith(`Got an error deleting attribute ${util.inspect(DROP_ATTR_OBJECT_TEST)}.`);
+            expect(error.message).to.equal(move_attr_trash_err);
         });
 
         it('should call all functions and return a success message', async function() {
@@ -766,11 +838,15 @@ describe('Test schema module', function() {
         });
 
         it('should throw tables parameter was null error ', async function () {
+            let error;
+
             try {
                 await move_schema_to_trash(DROP_SCHEMA_OBJECT_TEST, '');
-            } catch(error) {
-                expect(error).to.equal('tables parameter was null.');
+            } catch(err) {
+                error = err;
             }
+
+            expect(error.message).to.equal('tables parameter was null.');
         });
 
         it('should make trash dir and move test schema to it', async function () {
@@ -781,32 +857,38 @@ describe('Test schema module', function() {
                 schema: "system",
                 hash_values: ['123456']
             };
+            let exists_in_trash;
+            let doesnt_exist_in_schema;
 
             try {
                 // Make a temporary schema and table setup in unit test dir then move it to trash.
                 await buildSchemaTableStruc();
                 await move_schema_to_trash(DROP_SCHEMA_OBJECT_TEST, tables);
                 // Test that temp setup has been moved to test trash dir and doesnt exist in test schema dir
-                let exists_in_trash = await fs.pathExists(`${TRASH_PATH_TEST}/${destination_name}`);
-                let doesnt_exist_in_schema = await fs.pathExists(FULL_SCHEMA_PATH_TEST);
-
-                expect(exists_in_trash).to.be.true;
-                expect(doesnt_exist_in_schema).to.be.false;
-                expect(delete_delete_stub).to.have.been.calledOnce;
-                expect(delete_delete_stub).to.have.been.calledWith(delete_table_object_fake);
+                exists_in_trash = await fs.pathExists(`${TRASH_PATH_TEST}/${destination_name}`);
+                doesnt_exist_in_schema = await fs.pathExists(FULL_SCHEMA_PATH_TEST);
             } catch(err) {
                 console.error(err);
             }
+
+            expect(exists_in_trash).to.be.true;
+            expect(doesnt_exist_in_schema).to.be.false;
+            expect(delete_delete_stub).to.have.been.calledOnce;
+            expect(delete_delete_stub).to.have.been.calledWith(delete_table_object_fake);
         });
 
         it('should catch thrown error', async function() {
+            let error;
+
             try {
                 await move_schema_to_trash(DROP_SCHEMA_OBJECT_TEST, tables);
-            } catch(error) {
-                expect(error).to.be.instanceOf(Error);
-                expect(error.message).to.include('no such file or directory');
+            } catch(err) {
+              error = err;
             }
-        })
+
+            expect(error).to.be.instanceOf(Error);
+            expect(error.message).to.include('no such file or directory');
+        });
     });
 
     /**
@@ -832,11 +914,15 @@ describe('Test schema module', function() {
         });
 
         it('should throw schema.table was not found error', function() {
+            let error;
+
             try {
                 build_drop_table_obj(DROP_TABLE_OBJECT_TEST, [{}]);
-            } catch(error) {
-                expect(error).to.equal(`${DROP_TABLE_OBJECT_TEST.schema}.${DROP_TABLE_OBJECT_TEST.table} was not found`);
+            } catch(err) {
+               error = err;
             }
+
+            expect(error.message).to.equal(`${DROP_TABLE_OBJECT_TEST.schema}.${DROP_TABLE_OBJECT_TEST.table} was not found`);
         });
 
         it('should return valid delete table object', function() {
@@ -865,28 +951,35 @@ describe('Test schema module', function() {
 
         it('should make trash dir and move test table to it', async function() {
             let destination_name = `${DROP_TABLE_OBJECT_TEST.schema}-${DROP_TABLE_OBJECT_TEST.table}-${current_date}`;
+            let exists_in_trash;
+            let doesnt_exist_in_schema;
+
             try {
                 insert_table_rewire();
                 await buildSchemaTableStruc();
                 await move_table_to_trash(DROP_TABLE_OBJECT_TEST);
-                let exists_in_trash = await fs.pathExists(`${TRASH_PATH_TEST}/${destination_name}`);
-                let doesnt_exist_in_schema = await fs.pathExists(FULL_TABLE_PATH_TEST);
-
-                expect(exists_in_trash).to.be.true;
-                expect(doesnt_exist_in_schema).to.be.false;
+                exists_in_trash = await fs.pathExists(`${TRASH_PATH_TEST}/${destination_name}`);
+                doesnt_exist_in_schema = await fs.pathExists(FULL_TABLE_PATH_TEST);
             } catch(err) {
                 console.error(err);
             }
+
+            expect(exists_in_trash).to.be.true;
+            expect(doesnt_exist_in_schema).to.be.false;
         });
 
         it('should catch thrown error', async function() {
+            let error;
+
             try {
                 await move_table_to_trash(DROP_TABLE_OBJECT_TEST);
-            } catch(error) {
-                expect(error).to.be.instanceOf(Error);
-                expect(error.message).to.include('no such file or directory');
+            } catch(err) {
+               error = err;
             }
-        })
+
+            expect(error).to.be.instanceOf(Error);
+            expect(error.message).to.include('no such file or directory');
+        });
     });
 
     /**
@@ -904,20 +997,23 @@ describe('Test schema module', function() {
 
         it('should throw attribute not found error', async function () {
             search_by_value_stub.resolves([]);
+            let error;
 
             try {
                 await drop_attr_from_system(DROP_ATTR_OBJECT_TEST);
-            } catch(error) {
-                expect(error).to.equal(`Attribute ${DROP_ATTR_OBJECT_TEST.attribute} was not found.`);
-                expect(search_by_value_stub).to.have.been.calledOnce;
+            } catch(err) {
+                error = err;
             }
+
+            expect(error.message).to.equal(`Attribute ${DROP_ATTR_OBJECT_TEST.attribute} was not found.`);
+            expect(search_by_value_stub).to.have.been.calledOnce;
         });
 
         it('should should return success message', async function() {
             let success_msg_fake = 'successfully deleted';
             search_by_value_stub.resolves([{id: '12345'}]);
             delete_delete_stub.resolves(success_msg_fake);
-            let result =  await drop_attr_from_system(DROP_ATTR_OBJECT_TEST);
+            let result = await drop_attr_from_system(DROP_ATTR_OBJECT_TEST);
 
             expect(result).to.equal(success_msg_fake);
             expect(search_by_value_stub).to.have.been.calledOnce;
@@ -928,15 +1024,17 @@ describe('Test schema module', function() {
         it('should catch thrown error from delete_delete', async function () {
             let delete_delete_err = 'could not retrieve hash attribute';
             delete_delete_stub.throws(new Error(delete_delete_err));
+            let error;
 
             try {
                 await drop_attr_from_system(DROP_ATTR_OBJECT_TEST);
-            } catch(error) {
-                expect(error).to.be.instanceOf(Error);
-                expect(error.message).to.include(delete_delete_err);
+            } catch(err) {
+                error = err;
             }
-        });
 
+            expect(error).to.be.instanceOf(Error);
+            expect(error.message).to.include(delete_delete_err);
+        });
     });
 
     /**
@@ -969,27 +1067,33 @@ describe('Test schema module', function() {
         it('should throw and log error on attribute to trash', async function () {
             let move_folder_to_trash_err = 'Error moving folder to trash';
             move_folder_to_trash_stub.onFirstCall().throws(new Error(move_folder_to_trash_err));
+            let error;
 
             try {
                 await move_attr_to_trash(DROP_ATTR_OBJECT_TEST);
-            } catch(error) {
-                expect(error.message).to.equal(move_folder_to_trash_err);
-                expect(move_folder_to_trash_stub).to.have.calledOnce;
-                expect(logger_error_stub).to.have.calledOnce;
+            } catch(err) {
+               error = err;
             }
+
+            expect(error.message).to.equal(move_folder_to_trash_err);
+            expect(move_folder_to_trash_stub).to.have.calledOnce;
+            expect(logger_error_stub).to.have.calledOnce;
         });
 
         it('should throw and log error on hash attribute to trash', async function () {
             let move_folder_to_trash_err = 'Error moving folder to trash';
             move_folder_to_trash_stub.onFirstCall().resolves(true);
             move_folder_to_trash_stub.onSecondCall().throws(new Error(move_folder_to_trash_err));
+            let error;
 
             try {
                 await move_attr_to_trash(DROP_ATTR_OBJECT_TEST);
-            } catch(error) {
-                expect(error.message).to.equal(move_folder_to_trash_err);
-                expect(move_folder_to_trash_stub).to.have.calledTwice;
+            } catch(err) {
+                error = err;
             }
+
+            expect(error.message).to.equal(move_folder_to_trash_err);
+            expect(move_folder_to_trash_stub).to.have.calledTwice;
         });
 
         it('should return result from dropAttributeFromSystem', async function() {
@@ -1006,15 +1110,18 @@ describe('Test schema module', function() {
         it('should throw and log error on from dropAttributeFromSystem', async function() {
             let drop_attr_from_sys_err = 'There was a problem dropping attribute';
             drop_attr_from_sys_stub.throws(new Error(drop_attr_from_sys_err));
+            let error;
 
             try {
                 await move_attr_to_trash(DROP_ATTR_OBJECT_TEST);
-            } catch(error) {
-                expect(error.message).to.equal(drop_attr_from_sys_err);
-                expect(move_folder_to_trash_stub).to.have.calledTwice;
-                expect(drop_attr_from_sys_stub).to.have.calledOnce;
-                expect(logger_error_stub).to.have.calledOnce;
+            } catch(err) {
+                error = err;
             }
+
+            expect(error.message).to.equal(drop_attr_from_sys_err);
+            expect(move_folder_to_trash_stub).to.have.calledTwice;
+            expect(drop_attr_from_sys_stub).to.have.calledOnce;
+            expect(logger_error_stub).to.have.calledOnce;
         });
     });
 
@@ -1049,31 +1156,37 @@ describe('Test schema module', function() {
         it('should catch and log error from fs.mkdirp', async function() {
             let fs_mkdirp_err = 'Unable to create directory';
             fs_mkdirp_stub.throws(new Error(fs_mkdirp_err));
+            let error;
 
             try {
                 await move_folder_to_trash(FULL_SCHEMA_PATH_TEST, TRASH_PATH_TEST);
-            } catch(error) {
-                expect(error.message).to.equal(fs_mkdirp_err);
-                expect(fs_mkdirp_stub).to.have.been.calledOnce;
-                expect(logger_error_stub).to.have.been.calledOnce;
-                expect(logger_error_stub).to.have.been.calledWith(`Failed to create the trash directory.`);
+            } catch(err) {
+                error = err;
             }
+
+            expect(error.message).to.equal(fs_mkdirp_err);
+            expect(fs_mkdirp_stub).to.have.been.calledOnce;
+            expect(logger_error_stub).to.have.been.calledOnce;
+            expect(logger_error_stub).to.have.been.calledWith(`Failed to create the trash directory.`);
         });
 
         it('should catch and log error from fs.mkdirp', async function() {
             let fs_move_err = 'Directorey does not exist';
             fs_mkdirp_stub.resolves();
             fs_move_stub.throws(new Error(fs_move_err));
+            let error;
 
             try {
                 await move_folder_to_trash(FULL_SCHEMA_PATH_TEST, TRASH_PATH_TEST);
-            } catch(error) {
-                expect(error.message).to.equal(fs_move_err);
-                expect(fs_mkdirp_stub).to.have.been.calledOnce;
-                expect(fs_move_stub).to.have.been.calledOnce;
-                expect(logger_error_stub).to.have.been.calledOnce;
-                expect(logger_error_stub).to.have.been.calledWith(`Got an error moving path ${FULL_SCHEMA_PATH_TEST} to trash path: ${TRASH_PATH_TEST}`);
+            } catch(err) {
+                error = err;
             }
+
+            expect(error.message).to.equal(fs_move_err);
+            expect(fs_mkdirp_stub).to.have.been.calledOnce;
+            expect(fs_move_stub).to.have.been.calledOnce;
+            expect(logger_error_stub).to.have.been.calledOnce;
+            expect(logger_error_stub).to.have.been.calledWith(`Got an error moving path ${FULL_SCHEMA_PATH_TEST} to trash path: ${TRASH_PATH_TEST}`);
         });
 
         it('should return true without any errors', async function() {
@@ -1109,14 +1222,17 @@ describe('Test schema module', function() {
         it('should catch thrown error from searchByConditions', async function() {
             let search_by_conditions_err = `${SCHEMA_NAME_TEST} does not exist`;
             search_by_conditions_stub.throws(new Error(search_by_conditions_err));
+            let error;
 
             try {
                 await search_for_schema(SCHEMA_NAME_TEST);
-            } catch(error) {
-                expect(error).to.be.instanceOf(Error);
-                expect(error.message).to.equal(search_by_conditions_err);
-                expect(search_by_conditions_stub).to.have.been.calledOnce;
+            } catch(err) {
+              error = err;
             }
+
+            expect(error).to.be.instanceOf(Error);
+            expect(error.message).to.equal(search_by_conditions_err);
+            expect(search_by_conditions_stub).to.have.been.calledOnce;
         });
     });
 
@@ -1126,9 +1242,7 @@ describe('Test schema module', function() {
     describe('Search for table', function() {
         let search_for_table;
 
-
         before(function() {
-            // This resets searchForTable as it was previously stubbed
             search_for_table_rewire();
             search_for_table = schema.__get__('searchForTable');
         });
@@ -1145,14 +1259,17 @@ describe('Test schema module', function() {
         it('should catch thrown error from searchByConditions', async function() {
             let search_by_conditions_err = `${TABLE_NAME_TEST} does not exist`;
             search_by_conditions_stub.throws(new Error(search_by_conditions_err));
+            let error;
 
             try {
                 await search_for_table(TABLE_NAME_TEST);
-            } catch(error) {
-                expect(error).to.be.instanceOf(Error);
-                expect(error.message).to.equal(search_by_conditions_err);
-                expect(search_by_conditions_stub).to.have.been.calledOnce;
+            } catch(err) {
+                error = err;
             }
+
+            expect(error).to.be.instanceOf(Error);
+            expect(error.message).to.equal(search_by_conditions_err);
+            expect(search_by_conditions_stub).to.have.been.calledOnce;
         });
     });
 
@@ -1164,26 +1281,32 @@ describe('Test schema module', function() {
         it('should throw a validation error', async function() {
             let validation_err = 'Attribute is required';
             attr_validator_stub.returns(validation_err);
+            let error;
 
             try {
                 await schema.createAttributeStructure(CREATE_ATTR_OBJECT_TEST);
-            } catch(error) {
-                expect(error).to.equal(validation_err);
-                expect(attr_validator_stub).to.have.been.calledOnce;
+            } catch(err) {
+                error = err;
             }
+
+            expect(error).to.equal(validation_err);
+            expect(attr_validator_stub).to.have.been.calledOnce;
         });
 
         it('should throw attribute already exists error', async function() {
             attr_validator_stub.returns();
             search_by_value_stub.resolves([CREATE_ATTR_OBJECT_TEST]);
+            let error;
 
             try {
                 await schema.createAttributeStructure(CREATE_ATTR_OBJECT_TEST);
-            } catch(error) {
-                expect(error).to.equal(`attribute already exists with id ${JSON.stringify(CREATE_ATTR_OBJECT_TEST)}`);
-                expect(search_by_value_stub).to.have.been.calledOnce;
-                expect(attr_validator_stub).to.have.been.calledOnce;
+            } catch(err) {
+                error = err;
             }
+
+            expect(error).to.equal(`attribute already exists with id ${JSON.stringify(CREATE_ATTR_OBJECT_TEST)}`);
+            expect(search_by_value_stub).to.have.been.calledOnce;
+            expect(attr_validator_stub).to.have.been.calledOnce;
         });
 
         it('should log all necessary info and return insert response', async function() {
@@ -1202,14 +1325,17 @@ describe('Test schema module', function() {
         it('should catch error from insert', async function () {
             let insert_err = 'Error inserting value';
             insert_stub.throws(new Error(insert_err));
+            let error;
 
             try {
                 await schema.createAttributeStructure(CREATE_ATTR_OBJECT_TEST);
-            } catch(error) {
-                expect(error).to.be.instanceOf(Error);
-                expect(error.message).to.equal(insert_err);
-                expect(insert_stub).to.have.been.calledOnce;
+            } catch(err) {
+                error = err;
             }
+
+            expect(error).to.be.instanceOf(Error);
+            expect(error.message).to.equal(insert_err);
+            expect(insert_stub).to.have.been.calledOnce;
         });
     });
 
@@ -1226,11 +1352,15 @@ describe('Test schema module', function() {
         });
 
         it('should throw attribute drop requires table and or schema', async function() {
+            let error;
+
             try {
                 await delete_attribute_structure({});
-            } catch(error) {
-                expect(error).to.equal('attribute drop requires table and or schema.');
+            } catch(err) {
+                error = err;
             }
+
+            expect(error.message).to.equal('attribute drop requires table and or schema.');
         });
 
         it('should return successfully deleted message', async function() {
@@ -1245,14 +1375,17 @@ describe('Test schema module', function() {
         it('should catch thrown error from delete', async function() {
             let delete_err = 'Error delete value';
             delete_delete_stub.throws(new Error(delete_err));
+            let error;
 
             try {
                 await delete_attribute_structure(DROP_ATTR_OBJECT_TEST);
-            } catch(error) {
-                expect(error).to.be.instanceOf(Error);
-                expect(error.message).to.equal(delete_err);
-                expect(delete_delete_stub).to.have.been.calledOnce;
+            } catch(err) {
+                error = err;
             }
+
+            expect(error).to.be.instanceOf(Error);
+            expect(error.message).to.equal(delete_err);
+            expect(delete_delete_stub).to.have.been.calledOnce;
         });
     });
 
@@ -1300,14 +1433,17 @@ describe('Test schema module', function() {
             global.clustering_on = true;
             let call_process_send_err = 'Error with process send';
             call_process_send_stub.throws(new Error(call_process_send_err));
+            let error;
 
             try {
                 await schema.createAttribute(CREATE_ATTR_OBJECT_TEST);
-            } catch(error) {
-                expect(error).to.be.instanceOf(Error);
-                expect(error.message).to.equal(call_process_send_err);
-                expect(logger_error_stub).to.have.been.calledWith(error);
+            } catch(err) {
+                error = err;
             }
+
+            expect(error).to.be.instanceOf(Error);
+            expect(error.message).to.equal(call_process_send_err);
+            expect(logger_error_stub).to.have.been.calledWith(error);
         });
 
         it('should return attribute structure with clustering off', async function() {

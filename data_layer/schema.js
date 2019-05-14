@@ -77,7 +77,7 @@ async function createSchemaStructure(schema_create_object) {
         let schema_search = await searchForSchema(schema_create_object.schema);
 
         if (schema_search && schema_search.length > 0) {
-            throw `Schema ${schema_create_object.schema} already exists`;
+            throw new Error(`Schema ${schema_create_object.schema} already exists`);
         }
 
         let insert_object = {
@@ -99,7 +99,7 @@ async function createSchemaStructure(schema_create_object) {
         return `schema ${schema_create_object.schema} successfully created`;
     } catch(err) {
         if (err.errno === -17) {
-            throw 'schema already exists';
+            throw new Error('schema already exists');
         }
         throw err;
     }
@@ -129,12 +129,12 @@ async function createTableStructure(create_table_object) {
     try {
         let schema_search = await searchForSchema(create_table_object.schema);
         if (!schema_search || schema_search.length === 0) {
-            throw `schema ${create_table_object.schema} does not exist`;
+            throw new Error(`schema ${create_table_object.schema} does not exist`);
         }
 
         let table_search = await searchForTable(create_table_object.schema, create_table_object.table);
         if (table_search && table_search.length > 0) {
-            throw `table ${create_table_object.table} already exists in schema ${create_table_object.schema}`;
+            throw new Error(`table ${create_table_object.table} already exists in schema ${create_table_object.schema}`);
         }
 
         let table = {
@@ -149,7 +149,7 @@ async function createTableStructure(create_table_object) {
                 table.residence = create_table_object.residence;
                 await insertTable(table, create_table_object);
             } else {
-                throw `Clustering does not appear to be enabled. Cannot insert table with property 'residence'.`;
+                throw new Error(`Clustering does not appear to be enabled. Cannot insert table with property 'residence'.`);
             }
         } else {
             await insertTable(table, create_table_object);
@@ -175,10 +175,10 @@ async function insertTable(table, create_table_object) {
         await fs.mkdir(env.get('HDB_ROOT') + '/schema/' + create_table_object.schema + '/' + create_table_object.table);
     } catch(err) {
         if (err.errno === -2) {
-            throw 'schema does not exist';
+            throw new Error('schema does not exist');
         }
         if (err.errno === -17) {
-            throw 'table already exists';
+            throw new Error('table already exists');
         }
         throw err;
     }
@@ -292,7 +292,7 @@ async function moveTableStructureToTrash(drop_table_object) {
 async function dropAttribute(drop_attribute_object) {
     let validation_error = validation.attribute_object(drop_attribute_object);
     if (validation_error) {
-        throw new Error(validation_error);
+        throw validation_error;
     }
 
     if(drop_attribute_object.attribute === global.hdb_schema[drop_attribute_object.schema][drop_attribute_object.table].hash_attribute) {
@@ -321,7 +321,7 @@ async function dropAttribute(drop_attribute_object) {
  */
 async function moveSchemaToTrash(drop_schema_object, tables) {
     if (!tables) {
-        throw 'tables parameter was null.';
+        throw new Error('tables parameter was null.');
     }
 
     let root_path = env.get('HDB_ROOT');
@@ -369,7 +369,7 @@ function buildDropTableObject(drop_table_object, data) {
     }
 
     if (!delete_table) {
-        throw `${drop_table_object.schema}.${drop_table_object.table} was not found`;
+        throw new Error(`${drop_table_object.schema}.${drop_table_object.table} was not found`);
     }
 
     let delete_table_object = {
@@ -418,7 +418,7 @@ async function dropAttributeFromSystem(drop_attribute_object) {
     try {
         let attributes = await p_search_search_by_value(search_object);
         if (!attributes || attributes.length < 1) {
-            throw `Attribute ${drop_attribute_object.attribute} was not found.`;
+            throw new Error(`Attribute ${drop_attribute_object.attribute} was not found.`);
         }
 
         let delete_table_object = {
@@ -594,9 +594,9 @@ async function createAttributeStructure(create_attribute_object) {
             records: [record]
         };
 
-        logger.info("insert object:" + JSON.stringify(insert_object));
+        logger.info('insert object: ' + JSON.stringify(insert_object));
         let insert_response = await insert.insert(insert_object);
-        logger.info('attribute:' + record.attribute);
+        logger.info('attribute: ' + record.attribute);
         logger.info(insert_response);
 
         return insert_response;
@@ -620,7 +620,7 @@ async function deleteAttributeStructure(attribute_drop_object) {
         search_object.search_attribute = 'schema';
         search_object.search_value = `${attribute_drop_object.schema}`;
     } else {
-        throw 'attribute drop requires table and or schema.';
+        throw new Error('attribute drop requires table and or schema.');
     }
 
     try {
@@ -652,7 +652,7 @@ async function createAttribute(create_attribute_object) {
     let attribute_structure;
     try {
         if(global.clustering_on
-            && !create_attribute_object.delegated && create_attribute_object.schema != 'system') {
+            && !create_attribute_object.delegated && create_attribute_object.schema !== 'system') {
 
             attribute_structure = await createAttributeStructure(create_attribute_object);
             create_attribute_object.delegated = true;
