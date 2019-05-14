@@ -34,10 +34,15 @@ class ClusterServer {
             });
 
             if(!found_client || found_client.length === 0) {
+                log.info('creating new socket client.');
                 let new_client = new SocketClient(this.node, o_node, terms.CLUSTER_CONNECTION_DIRECTION_ENUM.OUTBOUND);
                 this.socket_client.push(new_client);
                 new_client.connectToNode();
                 new_client.createClientMessageHandlers();
+            } else {
+                log.info(`Emitting direction change to direction: ${terms.CLUSTER_CONNECTION_DIRECTION_ENUM.BIDIRECTIONAL}`);
+                found_client[0].direction = terms.CLUSTER_CONNECTION_DIRECTION_ENUM.BIDIRECTIONAL;
+                found_client[0].client.emit(terms.CLUSTER_EVENTS_DEFS_ENUM.DIRECTION_CHANGE, {'direction': terms.CLUSTER_CONNECTION_DIRECTION_ENUM.BIDIRECTIONAL});
             }
         } catch(e) {
             log.error(`Error establishing connection with ${o_node.name} at address ${o_node.host}`);
@@ -45,22 +50,63 @@ class ClusterServer {
         }
     }
 
+    /**
+     * Remove a connection to a remote client.  Will return true if the socket was disconnected (if the client was
+     * inbound or outbound only), or false if the client was bi-directional.
+     * @param o_node
+     */
     removeConnection(o_node) {
+        log.debug(`Removing connection for host ${o_node.host}`);
+        let found_client = null;
         try {
-            let found_client = this.socket_client.filter((client)=>{
-                return client.other_node.host === o_node.host && client.other_node.port === o_node.port;
-            });
-
-            if(found_client && found_client[0]) {
-                found_client[0].disconnectNode();
+            // The input from scanNodes is different if the data is from other_nodes, or a socket client.
+            if(o_node.client) {
+                // Call made with a socket client input
+                //return this.removeConnectionHelper(o_node.client);
+                found_client = o_node;
+            } else {
+                // call made with an other_nodes input
+                found_client = this.socket_client.filter((client) => {
+                    return client.other_node.host === o_node.host && client.other_node.port === o_node.port;
+                })[0];
             }
-
+            if(found_client) {
+                if (found_client.direction === terms.CLUSTER_CONNECTION_DIRECTION_ENUM.BIDIRECTIONAL) {
+                    found_client.direction = terms.CLUSTER_CONNECTION_DIRECTION_ENUM.INBOUND;
+                    log.info(`Emitting direction change to direction: ${terms.CLUSTER_CONNECTION_DIRECTION_ENUM.OUTBOUND}`);
+                    found_client.client.emit(terms.CLUSTER_EVENTS_DEFS_ENUM.DIRECTION_CHANGE, {'direction': terms.CLUSTER_CONNECTION_DIRECTION_ENUM.OUTBOUND});
+                    return false;
+                } else {
+                    found_client.disconnectNode();
+                    return true;
+                }
+            }
+            return false;
         } catch(err) {
             log.error(`Error removing connection with ${o_node.name} at address ${o_node.host}`);
             log.error(err);
+            return false;
         }
     }
 
+    closeServer() {
+        let result = undefined;
+        try {
+            this.other_nodes.forEach((o_node)=>{
+                this.removeConnection(o_node);
+            });
+            //TODO: Need to listen for the close event for each socket client.  Once we have gotten all of them, call
+            // disconnect on the server.
+            global.cluster_server.socket_client.forEach((client) => {
+                this.removeConnection(client);
+                client.disconnectNode();
+            });
+            result = this.socket_server.disconnect();
+        } catch(err) {
+            log.error(`Error closing sio server ${err}`);
+            result = false;
+        }
+    }
 
     establishAllConnections(){
         this.other_nodes.forEach((o_node)=>{
@@ -69,8 +115,10 @@ class ClusterServer {
     }
 
     send(msg, res) {
+        let { hdb_user, hdb_auth_header, ...clean_body } = msg.body;
+
         try {
-            log.debug('node cluster msg out: ' + JSON.stringify(msg));
+            log.debug('node cluster msg out: ' + JSON.stringify(clean_body));
             let payload = {};
             payload.body = msg.body;
             payload.id = msg.id;
@@ -136,6 +184,25 @@ class ClusterServer {
         }
     }
 
+    async refreshNodes() {
+        log.debug(`Refreshing cache of hdb_nodes`);
+        let search_obj = {
+            "table": "hdb_nodes",
+            "schema": "system",
+            "search_attribute": "host",
+            "hash_attribute": "name",
+            "search_value": "*",
+            "get_attributes": ["*"]
+        };
+
+        let nodes = await p_search_searchbyvalue(search_obj).catch((e) => {
+            log.error(`Error searching for nodes.`);
+            throw e;
+        });
+
+        this.node.other_nodes = nodes;
+    }
+
     /**
      * Scan nodes does a comparison between a search against hdb_nodes and any existing connections that exist in
      * this.other_nodes.  If there are nodes found in one but not the other, we need to either connect or disconnect
@@ -175,6 +242,7 @@ class ClusterServer {
             log.info('Had a problem detecting node changes.');
         } finally {
             if(added_nodes) {
+                log.debug(`Found ${added_nodes.length} new nodes.`);
                 for (let curr_node of added_nodes) {
                     this.node.other_nodes.push(curr_node);
                     // establishConnection handles any exceptions thrown.
@@ -184,14 +252,33 @@ class ClusterServer {
             }
 
             if(removed_nodes) {
+                log.debug(`Found ${removed_nodes.length} new nodes.`);
                 for (let removed_node of removed_nodes) {
                     log.info(`Removing connection with cluster node ${removed_node.name}`);
-                    this.removeConnection(removed_node);
-                    for( let i = 0; i < this.node.other_nodes.length; i++){
-                        if ( this.node.other_nodes[i].name === removed_node.name) {
-                            this.node.other_nodes.splice(i, 1);
+                    // remove connection will return true if this was a 1 way connection, meaning the client was
+                    // disconnected and needs to be removed.
+                    if(this.removeConnection(removed_node)) {
+                        for (let i = 0; i < this.node.other_nodes.length; i++) {
+                            if (this.node.other_nodes[i].name === removed_node.name) {
+                                this.node.other_nodes.splice(i, 1);
+                                break;
+                            }
+                        }
+                        for (let i = 0; i < this.socket_client.length; i++) {
+                            if (this.socket_client[i].other_node.name === removed_node.name) {
+                                this.socket_client.splice(i, 1);
+                                break;
+                            }
                         }
                     }
+                }
+            }
+            if((added_nodes && added_nodes.length > 0) || (removed_nodes && removed_nodes.length > 0)) {
+                log.debug(`Found change in node cache, refreshing cache.`);
+                try {
+                    await this.refreshNodes();
+                } catch(err) {
+                    log.error('Got an error refreshing hdb_node cache.');
                 }
             }
         }

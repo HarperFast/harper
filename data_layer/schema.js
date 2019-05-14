@@ -17,14 +17,15 @@ const mkdirp = require('mkdirp');
 const _ = require('underscore');
 const signalling = require('../utility/signalling');
 const log = require('../utility/logging/harper_logger');
-const {promisify} = require('util');
-const {inspect} = require('util');
+const util = require('util');
+const cb_insert_insert = util.callbackify(insert.insert);
 const hdb_util = require('../utility/common_utils');
 const terms = require('../utility/hdbTerms');
+const common = require('../utility/common_utils');
 
 // Promisified functions
-let p_search_search_by_value = promisify(search.searchByValue);
-let p_delete_delete = promisify(delete_.delete);
+let p_search_search_by_value = util.promisify(search.searchByValue);
+let p_delete_delete = util.promisify(delete_.delete);
 
 // This is used by moveFileToTrash to decide where to put the removed file(s) in the trash directory.
 const ENTITY_TYPE_ENUM = {
@@ -50,7 +51,7 @@ module.exports = {
     describeAll: schema_describe.describeAll,
     dropSchema: dropSchema,
     dropTable: dropTable,
-    dropAttribute: dropAttributeCB // This can be changed to just dropAttribute when processLocal has been updated to async/await
+    dropAttribute: dropAttribute
 };
 
 /** EXPORTED FUNCTIONS **/
@@ -96,12 +97,14 @@ function createSchemaStructure(schema_create_object, callback) {
                 ]
             };
 
-            insert.insertCB(insertObject, function (err, result) {
+            cb_insert_insert(insertObject, (err) => {
                 if (err) {
                     callback(err);
                     return;
                 }
+
                 let schema = schema_create_object.schema;
+
                 fs.mkdir(env.get('HDB_ROOT') + '/schema/' + schema, function (err, data) {
                     if (err) {
                         if (err.errno === -17) {
@@ -116,6 +119,7 @@ function createSchemaStructure(schema_create_object, callback) {
                     callback(err, `schema ${schema_create_object.schema} successfully created`);
                 });
             });
+
         });
     } catch (e) {
         callback(e);
@@ -202,7 +206,7 @@ function createTableStructure(create_table_object, callback) {
                 records: [table]
             };
 
-            insert.insertCB(insertObject, function (err, result) {
+            cb_insert_insert(insertObject, (err) => {
                 if (err) {
                     callback(err);
                     return;
@@ -221,7 +225,7 @@ function createTableStructure(create_table_object, callback) {
 
                         } else {
                             callback('createTableStructure:' + err.message);
-                            return
+                            return;
                         }
                     }
 
@@ -262,7 +266,7 @@ function moveSchemaStructureToTrash(drop_schema_object, callback) {
             ],
             function(err, data) {
                 if( err) {
-                    console.error(`There was a problem deleting ${schema}.  Please check the logs for more info`);
+                    logger.error(`There was a problem deleting ${schema}.  Please check the logs for more info`);
                     logger.error(err);
                     return callback(err);
                 } else {
@@ -304,7 +308,7 @@ function moveTableStructureToTrash(drop_table_object, callback) {
             deleteTableAttributes.bind(null, drop_table_object)
         ], function(err, result) {
             if( err) {
-                console.error(`There was a problem deleting ${schema}.  Please check the logs for more info`);
+                logger.error(`There was a problem deleting ${schema}.  Please check the logs for more info`);
                 logger.error(err);
                 return callback(err);
             } else {
@@ -350,26 +354,6 @@ function dropTable(drop_table_object, callback) {
     }
 }
 
-// For now, the function that is called via chooseOperation needs to be in the callback style.  Once we move away from
-// callbacks, we can change the exports above from the cb function to the async function.
-/**
- * Calls the dropAttributeCB async function to match the callback style of processLocalTransaction.  This will be
- * removed once those are migrated.
- * @param drop_attribute_object - The JSON formatted inbound message.
- * @param callback
- * @returns {*}
- */
-function dropAttributeCB(drop_attribute_object, callback) {
-    let response = {};
-    dropAttribute(drop_attribute_object).then((result) => {
-        response['message'] = result;
-        return callback(null, response);
-    }).catch((err) => {
-        log.error(err);
-        return callback(`There was a problem dropping attribute: ${drop_attribute_object.attribute}.  ${err.message}`, null);
-    });
-}
-
 /**
  * Drops (moves to trash) all files for the specified attribute.
  * @param drop_attribute_object - The JSON formatted inbound message.
@@ -384,7 +368,7 @@ async function dropAttribute(drop_attribute_object) {
         throw new Error('You cannot drop a hash attribute');
     }
     let success = await moveAttributeToTrash(drop_attribute_object).catch((err) => {
-        log.error(`Got an error deleting attribute ${inspect(drop_attribute_object)}.`);
+        log.error(`Got an error deleting attribute ${util.inspect(drop_attribute_object)}.`);
         throw err;
     });
     return success;
@@ -421,7 +405,7 @@ function buildDropSchemaSearchObject(schema, msg, callback) {
  */
 function moveSchemaToTrash(drop_schema_object, tables, callback) {
     if(!drop_schema_object) { return callback("drop_table_object was not found.");}
-    if(!tables) { return callback("tables parameter was null.")}
+    if(!tables) { return callback("tables parameter was null.");}
     let root_path = env.get('HDB_ROOT');
     let path = `${root_path}/schema/${drop_schema_object.schema}`;
     let currDate = new Date().toISOString().substr(0, DATE_SUBSTR_LENGTH);
@@ -725,10 +709,12 @@ function createAttributeStructure(create_attribute_object, callback) {
                 records: [record]
             };
             logger.info("insert object:" + JSON.stringify(insertObject));
-            insert.insertCB(insertObject, function (err, result) {
+
+            cb_insert_insert(insertObject, (err, res) => {
                 logger.info('attribute:' + record.attribute);
-                logger.info(result);
-                callback(err, result);
+                logger.info(res);
+                callback(err, res);
+
             });
         });
     } catch (e) {
@@ -806,14 +792,10 @@ function createAttribute(create_attribute_object, callback) {
                     "body": create_attribute_object
                 };
 
-                if(process.send === undefined){
-                    logger.debug('trying to send payload: ' + JSON.stringify(payload) + ' but there is no process.send for pid ');
-                } else {
-                    try {
-                        process.send(payload);
-                    } catch(e){
-                        logger.error(e);
-                    }
+                try {
+                    common.callProcessSend(payload);
+                } catch(e) {
+                    logger.error(e);
                 }
 
                 signalling.signalSchemaChange({type: 'schema'});

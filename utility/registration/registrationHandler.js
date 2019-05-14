@@ -14,51 +14,11 @@ let p_insert_insert = insert.insert;
 let p_prompt_get = promisify(prompt.get);
 
 module.exports = {
-    getFingerprint: getFingerprintCB,
-    setLicense: setLicenseCB,
+    getFingerprint: getFingerprint,
+    setLicense: setLicense,
     parseLicense: parseLicense,
     register: register
 };
-
-// For now, the function that is called via chooseOperation needs to be in the callback style.  Once we move away from
-// callbacks, we can change the exports above from the cb function to the async function.
-/**
- * Calls the getFingerprint async function to match the callback style of processLocalTransaction.  This will be
- * removed once those are migrated.
- * @param json_message - The JSON formatted inbound message.
- * @param callback
- * @returns {*}
- */
-function getFingerprintCB(json_message, callback) {
-    let fingerprint = {};
-    getFingerprint().then((result) => {
-        fingerprint['fingerprint'] = result;
-        return callback(null, fingerprint);
-    }).catch((err) => {
-        log.error(`There was an error getting the fingerprint for this machine ${err}`);
-        return callback(err, null);
-    });
-}
-
-// For now, the function that is called via chooseOperation needs to be in the callback style.  Once we move away from
-// callbacks, we can change the exports above from the cb function to the async function.
-/**
- * Calls the setLicense async function to match the callback style of processLocalTransaction.  This will be removed
- * onces those are migrated to async/await.
- * @param json_message - The JSON formatted inbound message.
- * @param callback
- * @returns {*}
- */
-function setLicenseCB(json_message, callback) {
-    let call_result = undefined;
-    setLicense(json_message).then((result) => {
-        call_result = result;
-        return callback(null, call_result);
-    }).catch((err) => {
-        log.error(`There was an error getting the fingerprint for this machine ${err}`);
-        return callback(err, null);
-    });
-}
 
 /**
  * Set the license on this node to the key specified in the json_message parameter.

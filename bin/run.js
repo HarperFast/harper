@@ -3,19 +3,17 @@ const fs = require('fs');
 const util = require('util');
 const path = require('path');
 const net = require('net');
-const ps = require('find-process');
 const install = require('../utility/install/installer.js');
 const colors = require("colors/safe");
 const logger = require('../utility/logging/harper_logger');
 const PropertiesReader = require('properties-reader');
 const async = require('async');
 const pjson = require('../package.json');
+const { isHarperRunning } = require('../utility/common_utils');
 const HTTPSECURE_PORT_KEY = 'HTTPS_PORT';
 const HTTP_PORT_KEY = 'HTTP_PORT';
 const HTTPSECURE_ON_KEY = 'HTTPS_ON';
 const HTTP_ON_KEY = 'HTTP_ON';
-const HDB_PROC_NAME = 'hdb_express.js';
-
 const stop = require('./stop');
 
 const FOREGROUND_ARG = 'foreground';
@@ -31,29 +29,32 @@ let child = undefined;
  * start.  If the hdb_boot_props file is not found, it is assumed an install needs to be performed.
  */
 function run() {
-    try {
-        ps('name', HDB_PROC_NAME).then(function (list) {
-            if (list.length === 0) {
-                arePortsInUse((err) => {
-                    if (err) {
-                        console.log(err);
-                        logger.info(err);
-                        return;
-                    }
-                    startHarper();
-                });
-            } else {
-                let run_err = 'HarperDB is already running.';
-                console.log(run_err);
-                logger.info(run_err);
-            }
-        }, function (err) {
-            console.log(err.stack || err);
-            logger.error(err.stack || err);
-        });
-    } catch(e){
-        logger.error(e);
-    }
+  isHarperRunning().then(hdb_running => {
+      if(hdb_running) {
+          let run_err = 'HarperDB is already running.';
+          console.log(run_err);
+          logger.info(run_err);
+          return;
+      }
+
+      try {
+          arePortsInUse((err) => {
+              if (err) {
+                  console.log(err);
+                  logger.info(err);
+                  return;
+              }
+              startHarper();
+          });
+      } catch(err) {
+          console.log(err);
+          logger.info(err);
+      }
+
+  }).catch(err => {
+      console.log(err);
+      logger.error(err);
+  });
 }
 
 function arePortsInUse(callback) {
@@ -74,25 +75,27 @@ function arePortsInUse(callback) {
     } catch (e) {
         logger.info('hdb_boot_props file not found, starting install.');
         startHarper();
+        return;
     }
 
-    if(http_on === 'FALSE' && httpsecure_on === 'FALSE') {
+    if (http_on === 'FALSE' && httpsecure_on === 'FALSE') {
         let flag_err = 'http and https flags are both disabled.  Please check your settings file.';
         logger.error(flag_err);
-        return callback(flag_err)
+        return callback(flag_err);
     }
 
-    if(!http_port && !httpsecure_port) {
+    if (!http_port && !httpsecure_port) {
         let port_err = 'http and https ports are both undefined.  Please check your settings file.';
         logger.error(port_err);
         return callback(port_err);
     }
 
-    if( http_port && http_on === 'TRUE') {
-        tasks.push(function(cb) { return isPortTaken(http_port, cb);});
+    if (http_port && http_on === 'TRUE') {
+        tasks.push(function(cb) { return isPortTaken(http_port, cb); });
     }
-    if( httpsecure_port && httpsecure_on === 'TRUE') {
-        tasks.push(function(cb) { return isPortTaken(httpsecure_port, cb);});
+
+    if (httpsecure_port && httpsecure_on === 'TRUE') {
+        tasks.push(function(cb) { return isPortTaken(httpsecure_port, cb); });
     }
 
     async.parallel( tasks, function(err, results) {
@@ -110,7 +113,7 @@ function isPortTaken(port, callback) {
         return callback();
     }
 
-    var tester = net.createServer()
+    const tester = net.createServer()
         .once('error', function (err) {
             if (err.code != 'EADDRINUSE') {
                 return callback(err);
@@ -119,10 +122,10 @@ function isPortTaken(port, callback) {
         })
         .once('listening', function() {
             tester.once('close', function() {
-                callback(null)
-            }).close()
+                callback(null);
+            }).close();
         })
-        .listen(port)
+        .listen(port);
 }
 
 /**
@@ -182,7 +185,7 @@ function completeRun() {
         checkPermission,
         kickOffExpress,
     ], (error, data) => {
-        if(error)
+        if (error)
             console.error(error);
 
         foregroundHandler();
@@ -193,10 +196,10 @@ function completeRun() {
  * if foreground is passed on the command line we do not exit the process
  * also if foreground is passed we setup the processExitHandler to call the stop handler which kills the hdb processes
  */
-function foregroundHandler(){
+function foregroundHandler() {
     let is_foreground = isForegroundProcess();
 
-    if(!is_foreground){
+    if (!is_foreground) {
         child.unref();
         exitInstall();
     }
@@ -217,9 +220,9 @@ function foregroundHandler(){
  * @param options
  * @param err
  */
-function processExitHandler(options, err){
-    if(options.is_foreground){
-        stop.stop((err)=>{
+function processExitHandler(options, err) {
+    if (options.is_foreground) {
+        stop.stop((err) => {
             console.error(err);
         });
     }
@@ -231,8 +234,8 @@ function processExitHandler(options, err){
  */
 function isForegroundProcess(){
     let is_foreground = false;
-    for(let arg of process.argv){
-        if(arg === FOREGROUND_ARG){
+    for (let arg of process.argv) {
+        if (arg === FOREGROUND_ARG) {
             is_foreground = true;
             break;
         }
@@ -241,7 +244,7 @@ function isForegroundProcess(){
     return is_foreground;
 }
 
-function checkPermission(callback){
+function checkPermission(callback) {
     let checkPermissions = require('../utility/check_permissions');
     try {
         checkPermissions.checkPermission();
@@ -259,7 +262,7 @@ function kickOffExpress(err, callback) {
             detached: true,
             stdio: 'ignore'
         });
-    }else{
+    } else {
         child = fork(path.join(__dirname,'../server/hdb_express.js'),{
             detached: true,
             stdio: 'ignore'
@@ -271,7 +274,7 @@ function kickOffExpress(err, callback) {
     return callback();
 }
 
-function increaseMemory(callback){
+function increaseMemory(callback) {
     try {
         if (hdb_properties && hdb_properties.get('MAX_MEMORY')) {
             const {spawn} = require('child_process');
@@ -291,7 +294,7 @@ function increaseMemory(callback){
         } else {
             callback();
         }
-    }catch(e){
+    } catch(e){
         logger.error(e);
     }
 }
@@ -302,4 +305,4 @@ function exitInstall(){
 
 module.exports ={
     run:run
-}
+};

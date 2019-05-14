@@ -10,8 +10,6 @@ const CONNECTION_STATUS_ENUM = {
     DISCONNECTED: "DISCONNECTED"
 };
 
-
-
 /**
  * This class represents a Job as it resides in the jobs table.
  */

@@ -12,13 +12,11 @@ const ioc = require('socket.io-client');
 const schema = require('../../data_layer/schema');
 const _ = require('lodash');
 const moment = require('moment');
-
 const common_utils = require('../../utility/common_utils');
 const terms = require('../../utility/hdbTerms');
 const version = require('../../bin/version');
 const env = require('../../utility/environment/environmentManager');
 const ALLOW_SELF_SIGNED_CERTS = env.get(terms.HDB_SETTINGS_NAMES.ALLOW_SELF_SIGNED_SSL_CERTS);
-const insert = require('../../data_layer/insert');
 const uuidv4 = require('uuid/v1');
 const {promisify} = require('util');
 const cluster_handlers = require('./clusterHandlers');
@@ -29,7 +27,6 @@ const p_schema_describe_all = promisify(schema.describeAll);
 const p_schema_create_schema = promisify(schema.createSchema);
 const p_schema_create_table = promisify(schema.createTable);
 const p_schema_create_attribute = promisify(schema.createAttribute);
-const p_insert = insert.insert;
 
 const WHITELISTED_ERRORS = 'already exists';
 const ERROR_NO_HDB_USER = 'there is no hdb_user';
@@ -60,21 +57,30 @@ class SocketClient {
         this.client = null;
         // The direction data is flowing regarding this node.
         this.direction = direction_enum;
+        this.stop_reconnect = false;
     }
 
     /**
      * Disconnect the connection in this.other_node.  This is typically needed when a node has been removed from hdb_nodes.
      */
     disconnectNode() {
-        if(!this.other_node || this.other_node.disconnected) {
-            harper_logger.info('There is no connected client to disconnect');
-            return;
+        try {
+            if (!this.other_node || this.other_node.disconnected) {
+                harper_logger.info('There is no connected client to disconnect');
+                return;
+            }
+            harper_logger.info(`disconnecting node ${this.other_node.name}`);
+            this.stop_reconnect = true;
+            if(this.client) {
+                this.client.disconnect();
+            }
+        } catch(err) {
+            harper_logger.error(err);
         }
-        harper_logger.info(`disconnecting node ${this.other_node.name}`);
-        this.client.disconnect();
     }
 
-    onConnectHandler(){
+    onConnectHandler() {
+        harper_logger.trace(`Handling ${terms.CLUSTER_EVENTS_DEFS_ENUM.CONNECT}`);
         this.other_node.status = 'connected';
 
         harper_logger.info(`Client: Connected to port ${this.other_node.port} on host ${this.other_node.host}`);
@@ -84,31 +90,44 @@ class SocketClient {
             port: this.node.port
         };
         this.client.emit(terms.CLUSTER_EVENTS_DEFS_ENUM.IDENTIFY, node_info);
+        harper_logger.trace(`Done handling ${terms.CLUSTER_EVENTS_DEFS_ENUM.CONNECT}`);
     }
 
-    onConnectErrorHandler(error){
+    onConnectErrorHandler(error) {
+        harper_logger.trace(`Handling ${terms.CLUSTER_EVENTS_DEFS_ENUM.CONNECT_ERROR}`);
         harper_logger.debug('cannot connect to ' + this.other_node.name + ' due to ' + error);
+        harper_logger.trace(`Done handling ${terms.CLUSTER_EVENTS_DEFS_ENUM.CONNECT_ERROR}`);
     }
 
-    onReconnectHandler(attempt_number){
+    onReconnectHandler(attempt_number) {
+        harper_logger.trace(`Handling ${terms.CLUSTER_EVENTS_DEFS_ENUM.RECONNECT_ATTEMPT}`);
         harper_logger.debug(': attempting to connect to ' + JSON.stringify(this.other_node) + ' for the ' + attempt_number + ' time');
+        harper_logger.trace(`Done handling ${terms.CLUSTER_EVENTS_DEFS_ENUM.RECONNECT_ATTEMPT}`);
     }
 
     onVersionMismatch(msg) {
         harper_logger.warn(msg);
     }
 
+    onDirectionChange(msg) {
+        harper_logger.info(`Received direction change instruction from server to ${msg.direction}.`);
+        if(!msg.direction) {
+            return;
+        }
+        this.direction = msg.direction;
+    }
+
     async onCatchupRequestHandler(msg){
-        harper_logger.info('catchup_request from :' + msg.name);
+        harper_logger.trace(`Handling ${terms.CLUSTER_EVENTS_DEFS_ENUM.CATCHUP_REQUEST} from: ${msg.name}`);
         await cluster_handlers.fetchQueue(msg, this.client);
+        harper_logger.trace(`Done handling ${terms.CLUSTER_EVENTS_DEFS_ENUM.CATCHUP_REQUEST}`);
     }
 
     async onCatchupHandler(queue) {
-        harper_logger.info('catchup' + queue);
-
+        harper_logger.info('catchup called');
         await this.onSchemaUpdateResponseHandler(queue.schema);
-
-        if(!queue.queue){
+        if(!queue.queue) {
+            harper_logger.debug(`Nothing in the queue, all done here`);
             return;
         }
 
@@ -137,15 +156,16 @@ class SocketClient {
                     the_client.emit(terms.CLUSTER_EVENTS_DEFS_ENUM.CONFIRM_MSG, queue.queue[item]);
                 }
             } catch (e) {
+                harper_logger.error(e);
                 queue.queue[item].err = e;
                 the_client.emit(terms.CLUSTER_EVENTS_DEFS_ENUM.ERROR, queue.queue[item]);
-                harper_logger.error(e);
             }
         }
-
+        harper_logger.trace('finished catchup request');
     }
 
-    async onSchemaUpdateResponseHandler(cluster_schema){
+    async onSchemaUpdateResponseHandler(cluster_schema) {
+        harper_logger.trace(`Handling ${terms.CLUSTER_EVENTS_DEFS_ENUM.SCHEMA_UPDATE_RES}`);
         let my_schema;
         try {
             my_schema = await p_schema_describe_all({});
@@ -219,9 +239,11 @@ class SocketClient {
         } catch(e){
             return harper_logger.error(e);
         }
+        harper_logger.trace(`Done handling ${terms.CLUSTER_EVENTS_DEFS_ENUM.SCHEMA_UPDATE_RES}`);
     }
 
     async onMsgHandler(msg) {
+        harper_logger.trace(`Handling ${terms.CLUSTER_EVENTS_DEFS_ENUM.MESSAGE}`);
         try {
             harper_logger.info(`received by ${this.node.name} : msg = ${JSON.stringify(msg)}`);
             let the_client = this.client;
@@ -253,15 +275,32 @@ class SocketClient {
         } catch(e){
             harper_logger.error(e);
         }
+        harper_logger.trace(`Done handling ${terms.CLUSTER_EVENTS_DEFS_ENUM.MESSAGE}`);
     }
 
     onDisconnectHandler(reason) {
+        harper_logger.trace(`Handling ${terms.CLUSTER_EVENTS_DEFS_ENUM.DISCONNECT}`);
         this.other_node.status = 'disconnected';
-        harper_logger.info(`server ${this.other_node.name} down`);
+        harper_logger.info(`server ${this.other_node.name} down.`);
+        if(this.stop_reconnect) {
+            try {
+                if(this.direction === terms.CLUSTER_CONNECTION_DIRECTION_ENUM.BIDIRECTIONAL) {
+                    this.direction = terms.CLUSTER_CONNECTION_DIRECTION_ENUM.INBOUND;
+                    harper_logger.info(`Emitting direction change to direction: ${terms.CLUSTER_CONNECTION_DIRECTION_ENUM.OUTBOUND}`);
+                    this.client.emit(terms.CLUSTER_EVENTS_DEFS_ENUM.DIRECTION_CHANGE, {'direction': terms.CLUSTER_CONNECTION_DIRECTION_ENUM.OUTBOUND});
+                } else {
+                    this.disconnectNode();
+                }
+            } catch(err) {
+                harper_logger.error('Got an error disconnecting the client.');
+            }
+        }
     }
 
     async onConfirmMessageHandler(msg){
+        harper_logger.trace(`Handling ${terms.CLUSTER_EVENTS_DEFS_ENUM.CONFIRM_MSG}`);
         await cluster_handlers.onConfirmMessageHandler(msg);
+        harper_logger.trace(`Done handling ${terms.CLUSTER_EVENTS_DEFS_ENUM.CONFIRM_MSG}`);
     }
 
     connectToNode() {
@@ -273,27 +312,18 @@ class SocketClient {
         this.client = ioc.connect(`https://${this.other_node.host}:${this.other_node.port}`, CLIENT_CONNECTION_OPTIONS);
     }
 
-
     createClientMessageHandlers() {
         this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.CONNECT, this.onConnectHandler.bind(this));
-
         this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.RECONNECT_ATTEMPT, this.onReconnectHandler.bind(this));
-
         this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.CONNECT_ERROR, this.onConnectErrorHandler.bind(this));
-
         this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.CATCHUP_RESPONSE, this.onCatchupHandler.bind(this));
-
         this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.CATCHUP_REQUEST, this.onCatchupRequestHandler.bind(this));
-
         this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.CONFIRM_MSG, this.onConfirmMessageHandler.bind(this));
-
         this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.SCHEMA_UPDATE_RES, this.onSchemaUpdateResponseHandler.bind(this));
-
         this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.MESSAGE, this.onMsgHandler.bind(this));
-
         this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.DISCONNECT, this.onDisconnectHandler.bind(this));
-
         this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.VERSION_MISMATCH, this.onVersionMismatch.bind(this));
+        this.client.on(terms.CLUSTER_EVENTS_DEFS_ENUM.DIRECTION_CHANGE, this.onDirectionChange.bind(this));
     }
 
     async send(msg) {

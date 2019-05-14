@@ -1,7 +1,7 @@
-const schema = require('../data_layer/schemaDescribe'),
-    async = require('async'),
-    system_schema = require('../json/systemSchema.json');
-    logger = require('../utility/logging/harper_logger');
+const schema = require('../data_layer/schemaDescribe');
+const async = require('async');
+const system_schema = require('../json/systemSchema.json');
+const logger = require('../utility/logging/harper_logger');
 
 module.exports = {
     setSchemaDataToGlobal: setSchemaDataToGlobal,

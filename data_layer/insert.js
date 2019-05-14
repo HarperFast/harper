@@ -14,19 +14,22 @@ const search = require('./search');
 const logger = require('../utility/logging/harper_logger');
 const _ = require('lodash');
 const env = require('../utility/environment/environmentManager');
-const autocast = require('autocast');
 const hdb_terms = require('../utility/hdbTerms');
 const mkdirp = require('../utility/fs/mkdirp');
 const write_file = require('../utility/fs/writeFile');
 const unlink = require('../utility/fs/unlink');
 const pool_handler = require('../utility/threads/poolHandler');
 const exploder = require('./dataWriteProcessor');
-const {promisify} = require('util');
+const util = require('util');
 const ExplodedObject = require('./ExplodedObject');
 const WriteProcessorObject = require('./WriteProcessorObject');
 const HDB_Pool = require('threads').Pool;
 
-const hdb_path = path.join(env.get('HDB_ROOT'), '/schema');
+// Search is used in the installer, and the base path may be undefined when search is instantiated.  Dynamically
+// get the base path from the environment manager before using it.
+let hdb_path = function() {
+    return `${env.getHdbBasePath()}/schema/`;
+};
 
 //This is an internal value that should not be written to the DB.
 //const HDB_PATH_KEY = hdb_terms.INSERT_MODULE_ENUM.HDB_PATH_KEY;
@@ -37,17 +40,20 @@ const ENABLE_THREADING = false;
 
 const INTERNAL_ERROR_MESSAGE = 'An internal error occurred, please check the logs for more information.';
 
+const ATTRIBUTE_ALREADY_EXISTS = 'attribute already exists';
+
+const UPDATE_ACTION = 'updated';
+const INSERT_ACTION = 'inserted';
+
 module.exports = {
-    insertCB: insertDataCB,
-    updateCB: updateDataCB,
     insert: insertData,
     update: updateData
 };
 //this must stay after the export to correct a circular dependency issue
 const global_schema = require('../utility/globalSchema');
 
-const p_global_schema = promisify(global_schema.getTableSchema);
-const p_search_by_hash = promisify(search.searchByHash);
+const p_global_schema = util.promisify(global_schema.getTableSchema);
+const p_search_by_hash = util.promisify(search.searchByHash);
 
 /**
  *  Takes an insert/update object and validates attributes, also looks for dups and get a list of all attributes from the record set
@@ -72,7 +78,7 @@ async function validation(write_object){
     //validate insert_object for required attributes
     let validator = insert_validator(write_object);
     if (validator) {
-        throw new Error(validator);
+        throw validator;
     }
 
     if(!Array.isArray(write_object.records)) {
@@ -82,12 +88,23 @@ async function validation(write_object){
     let hash_attribute = table_schema.hash_attribute;
     let dups = new Set();
     let attributes = {};
+
+    let is_update = false;
+    if (write_object.operation === 'update') {
+        is_update = true;
+    }
+
     write_object.records.forEach((record)=>{
-        if(!h_utils.isEmpty(record[hash_attribute]) && record[hash_attribute] !== '' && dups.has(autocast(record[hash_attribute]))){
+
+        if (is_update && h_utils.isEmptyOrZeroLength(record[hash_attribute])) {
+            throw new Error('a valid hash attribute must be provided with update record');
+        }
+
+        if (!h_utils.isEmpty(record[hash_attribute]) && record[hash_attribute] !== '' && dups.has(h_utils.autoCast(record[hash_attribute]))){
             record.skip = true;
         }
 
-        dups.add(autocast(record[hash_attribute]));
+        dups.add(h_utils.autoCast(record[hash_attribute]));
 
         for (let attr in record) {
             attributes[attr] = 1;
@@ -102,42 +119,6 @@ async function validation(write_object){
         hashes: Array.from(dups),
         attributes: Object.keys(attributes)
     };
-}
-
-/**
- * Callback function for inserting data, remove when we are fully promised
- * @param insert_object
- * @param callback
- */
-function insertDataCB(insert_object, callback){
-    try{
-        insertData(insert_object).then((results)=>{
-            callback(null, results);
-        }).catch(err=>{
-            callback(err);
-        });
-
-    } catch(e){
-        callback(e);
-    }
-}
-
-/**
- * Callback function for updating data, remove when we are fully promised
- * @param update_object
- * @param callback
- */
-function updateDataCB(update_object, callback){
-    try{
-        updateData(update_object).then((results)=>{
-            callback(null, results);
-        }).catch(err=>{
-            callback(err);
-        });
-
-    } catch(e){
-        callback(e);
-    }
 }
 
 /**
@@ -162,16 +143,11 @@ async function insertData(insert_object){
 
         pool = await processData(data_wrapper, pool);
 
-        let return_object = {
-            message: `inserted ${written_hashes.length} of ${insert_object.records.length} records`,
-            inserted_hashes: written_hashes,
-            skipped_hashes: skipped
-        };
-
         if(pool instanceof HDB_Pool){
             pool.killAll();
         }
-        return return_object;
+
+        return returnObject(INSERT_ACTION, written_hashes, insert_object, skipped);
     } catch(e){
         if(pool instanceof HDB_Pool){
             pool.killAll();
@@ -197,9 +173,9 @@ async function updateData(update_object){
 
         let existing_rows = await getExistingRows(table_schema, hashes, attributes);
 
+        // If no hashes are existing skip update attempts
         if(h_utils.isEmptyOrZeroLength(existing_rows)){
-            //TODO finish this return
-            return;
+            return returnObject(UPDATE_ACTION, [], update_object, hashes);
         }
 
         let existing_map =  _.keyBy(existing_rows, function(record) {
@@ -215,23 +191,40 @@ async function updateData(update_object){
 
         pool = await processData(data_wrapper, pool);
 
-        let return_object = {
-            message: `updated ${written_hashes.length} of ${update_object.records.length} records`,
-            update_hashes: written_hashes,
-            skipped_hashes: skipped
-        };
-
         if(pool instanceof HDB_Pool){
             pool.killAll();
         }
 
-        return return_object;
+        return returnObject(UPDATE_ACTION, written_hashes, update_object, skipped);
     } catch(e){
         if(pool instanceof HDB_Pool){
             pool.killAll();
         }
         throw (e);
     }
+}
+
+/**
+ * constructs return object for insert and update.
+ * @param action
+ * @param written_hashes
+ * @param object
+ * @param skipped
+ * @returns {{skipped_hashes: *, update_hashes: *, message: string}}
+ */
+function returnObject(action, written_hashes, object, skipped) {
+    let return_object = {
+        message: `${action} ${written_hashes.length} of ${object.records.length} records`,
+        skipped_hashes: skipped
+    };
+
+    if (action === INSERT_ACTION) {
+        return_object.inserted_hashes = written_hashes;
+        return return_object;
+    }
+
+    return_object.update_hashes = written_hashes;
+    return return_object;
 }
 
 /**
@@ -259,7 +252,7 @@ async function getExistingRows(table_schema, hashes, attributes){
         return existing_records;
     } catch(e) {
         logger.error(e);
-        throw new Error(INTERNAL_ERROR_MESSAGE);
+        throw new Error(e);
     }
 }
 
@@ -290,7 +283,7 @@ async function processRows(insert_object, attributes, table_schema, epoch, exist
         await Promise.all(
             chunks.map(async chunk => {
                 try {
-                    let exploder_object = new WriteProcessorObject(hdb_path, insert_object.operation, chunk, table_schema, attributes, epoch, existing_rows);
+                    let exploder_object = new WriteProcessorObject(hdb_path(), insert_object.operation, chunk, table_schema, attributes, epoch, existing_rows);
 
                     let result = await pool.run('../data_layer/dataWriteProcessor').send(exploder_object).promise();
                     //each process returns an instance of its data we need to consolidate each result
@@ -319,7 +312,7 @@ async function processRows(insert_object, attributes, table_schema, epoch, exist
         chunks = undefined;
         data_wrapper = new ExplodedObject(written_hashes, skipped, Array.from(folders), raw_data, unlinks);
     } else{
-        let exploder_object = new WriteProcessorObject(hdb_path, insert_object.operation, insert_object.records, table_schema, attributes, epoch, existing_rows);
+        let exploder_object = new WriteProcessorObject(hdb_path(), insert_object.operation, insert_object.records, table_schema, attributes, epoch, existing_rows);
         data_wrapper = await exploder(exploder_object);
     }
     data_wrapper.pool = pool;
@@ -439,7 +432,7 @@ async function checkForNewAttributes(hdb_auth_header, table_schema, data_attribu
         );
     } catch(e){
         logger.error(e);
-        throw new Error(INTERNAL_ERROR_MESSAGE);
+        throw new Error(e);
     }
 }
 
@@ -488,10 +481,15 @@ async function createNewAttribute(hdb_auth_header,schema, table, attribute) {
 
     try {
         await p_create_attribute(attribute_object);
-    } catch(e) {
-        logger.error(e);
+    } catch(e){
+        //if the attribute already exists we do not want to stop the insert
+        if(typeof e === 'string' && e.indexOf(ATTRIBUTE_ALREADY_EXISTS) > -1){
+            logger.warn(e);
+        } else {
+            throw e;
+        }
     }
 }
 
 const schema = require('../data_layer/schema');
-const p_create_attribute = promisify(schema.createAttribute);
+const p_create_attribute = util.promisify(schema.createAttribute);

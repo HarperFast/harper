@@ -3,17 +3,17 @@
 const USERNAME_REQUIRED = 'username is required';
 const ALTERUSER_NOTHING_TO_UPDATE = 'nothing to update, must supply active, role or password to update';
 const EMPTY_PASSWORD = 'password cannot be an empty string';
-const EMPTY_ROLE = 'role cannot be an empty string';
+const EMPTY_ROLE = 'If role is specified, it cannot be empty.';
 const ACTIVE_BOOLEAN = 'active must be true or false';
 
 module.exports = {
-    addUser: addUserCB,
-    alterUser:alterUserCB,
-    dropUser: dropUserCB,
-    userInfo: userinfoCB,
-    listUsers: listUsersCB,
-    listUsersExternal : listUsersExternalCB,
-    setUsersToGlobal: setUsersToGlobalCB,
+    addUser: addUser,
+    alterUser:alterUser,
+    dropUser: dropUser,
+    userInfo: userInfo,
+    listUsers: listUsers,
+    listUsersExternal : listUsersExternal,
+    setUsersToGlobal: setUsersToGlobal,
     USERNAME_REQUIRED: USERNAME_REQUIRED,
     ALTERUSER_NOTHING_TO_UPDATE: ALTERUSER_NOTHING_TO_UPDATE,
     EMPTY_PASSWORD: EMPTY_PASSWORD,
@@ -43,17 +43,6 @@ const USER_ATTRIBUTE_WHITELIST = {
 const p_search_search_by_value = promisify(search.searchByValue);
 const p_search_search_by_hash = promisify(search.searchByHash);
 const p_delete_delete = promisify(delete_.delete);
-
-function addUserCB(user, callback){
-    let add_result = {};
-    addUser(user).then((result) => {
-        add_result = result;
-        return callback(null, add_result);
-    }).catch((err) => {
-        logger.error(`There was an error getting adding a user ${err}`);
-        return callback(err, null);
-    });
-}
 
 async function addUser(user){
     let clean_user = validate.cleanAttributes(user, USER_ATTRIBUTE_WHITELIST);
@@ -107,17 +96,6 @@ async function addUser(user){
     return `${clean_user.username} successfully added`;
 }
 
-function alterUserCB(json_message, callback) {
-    let alter_result = {};
-    alterUser(json_message).then((result) => {
-        alter_result = result;
-        return callback(null, alter_result);
-    }).catch((err) => {
-        logger.error(`There was an error altering user ${err}`);
-        return callback(err, null);
-    });
-}
-
 async function alterUser(json_message) {
     let clean_user = validate.cleanAttributes(json_message, USER_ATTRIBUTE_WHITELIST);
 
@@ -142,27 +120,30 @@ async function alterUser(json_message) {
         clean_user.password = password.hash(clean_user.password);
     }
 
-    if(!hdb_utility.isEmpty(clean_user.role) && hdb_utility.isEmptyOrZeroLength(clean_user.role.trim())){
+    // the not operator will consider an empty string as undefined, so we need to check for an empty string explicitly
+    if(clean_user.role === "") {
         throw new Error(EMPTY_ROLE);
     }
-
-    // Make sure assigned role exists.
-    let role_search_obj = {
-        schema: 'system',
-        table: 'hdb_role',
-        hash_attribute: 'id',
-        hash_values: [json_message.role],
-        get_attributes: ['*']
-    };
-    let role_data = await p_search_search_by_hash(role_search_obj).catch((err) => {
-        logger.error('Got an error searching for a role.');
-        logger.error(err);
-        throw err;
-    });
-    if(!role_data || role_data.length === 0) {
-        let msg = `Update failed.  Requested role id ${clean_user.role} not found.`;
-        logger.error(msg);
-        throw new Error(msg);
+    // Invalid roles will be found in the role search
+    if(clean_user.role) {
+        // Make sure assigned role exists.
+        let role_search_obj = {
+            schema: 'system',
+            table: 'hdb_role',
+            hash_attribute: 'id',
+            hash_values: [json_message.role],
+            get_attributes: ['*']
+        };
+        let role_data = await p_search_search_by_hash(role_search_obj).catch((err) => {
+            logger.error('Got an error searching for a role.');
+            logger.error(err);
+            throw err;
+        });
+        if (!role_data || role_data.length === 0) {
+            let msg = `Update failed.  Requested role id ${clean_user.role} not found.`;
+            logger.error(msg);
+            throw new Error(msg);
+        }
     }
 
     let update_object = {
@@ -187,17 +168,6 @@ async function alterUser(json_message) {
 
     signalling.signalUserChange({type: 'user'});
     return success;
-}
-
-function dropUserCB(user, callback){
-    let drop_result = {};
-    dropUser(user).then((result) => {
-        drop_result = result;
-        return callback(null, drop_result);
-    }).catch((err) => {
-        logger.error(`There was an error dropping a user ${err}`);
-        return callback(err, null);
-    });
 }
 
 async function dropUser(user) {
@@ -228,18 +198,6 @@ async function dropUser(user) {
     } catch(err) {
         throw err;
     }
-}
-
-
-function userinfoCB(body, callback) {
-    let user_info = {};
-    userInfo(body).then((result) => {
-        user_info = result;
-        return callback(null, user_info);
-    }).catch((err) => {
-        logger.error(`There was an error getting user info ${err}`);
-        return callback(err, null);
-    });
 }
 
 async function userInfo(body) {
@@ -274,19 +232,7 @@ async function userInfo(body) {
  * This function should be called by chooseOperation as it scrubs sensitive information before returning
  * the results of list users.
  * @param body - request body
- * @param callback
  */
-function listUsersExternalCB(body, callback) {
-    let list_result = {};
-    listUsersExternal().then((result) => {
-        list_result = result;
-        return callback(null, list_result);
-    }).catch((err) => {
-        logger.error(`There was an error with listUsersExternal ${err}`);
-        return callback(err, null);
-    });
-}
-
 async function listUsersExternal() {
     let user_data = await listUsers().catch((err) => {
        logger.error('Got an error listing users.');
@@ -301,17 +247,6 @@ async function listUsersExternal() {
         throw new Error('there was an error massaging the user data');
     }
     return user_data;
-}
-
-function listUsersCB(body, callback){
-    let list_result = {};
-    listUsers().then((result) => {
-        list_result = result;
-        return callback(null, list_result);
-    }).catch((err) => {
-        logger.error(`There was an error listing the users for this machine ${err}`);
-        return callback(err, null);
-    });
 }
 
 async function listUsers() {
@@ -356,17 +291,6 @@ async function listUsers() {
         return users;
     }
     return null;
-}
-
-function setUsersToGlobalCB(callback){
-    let set_result = {};
-    setUsersToGlobal().then((result) => {
-        set_result = result;
-        return callback(null, set_result);
-    }).catch((err) => {
-        logger.error(`There was an error setting users to global ${err}`);
-        return callback(err, null);
-    });
 }
 
 async function setUsersToGlobal() {

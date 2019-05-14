@@ -16,6 +16,10 @@
 							"script": {
 								"type": "text/javascript",
 								"exec": [
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    pm.response.to.have.status(200);\r",
+									"});\r",
+									"\r",
 									"tests[\"Create Schema\"] = responseBody.has(\"successfully created\");\r",
 									"\r",
 									"\r",
@@ -68,6 +72,80 @@
 					"response": []
 				},
 				{
+					"name": "create_schema confirm schema exists",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "14217742-15b0-45ec-adb4-520255b9b911",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"schema northnwd exists\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    var arrayData = Object.keys(jsonData)",
+									"    pm.expect(arrayData.includes(\"northnwd\")).to.be.true;",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3Q="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
 					"name": "create_schema_dev",
 					"event": [
 						{
@@ -75,6 +153,10 @@
 							"script": {
 								"type": "text/javascript",
 								"exec": [
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    pm.response.to.have.status(200);\r",
+									"});\r",
+									"\r",
 									"tests[\"Create Schema\"] = responseBody.has(\"successfully created\");\r",
 									"\r",
 									"\r",
@@ -134,6 +216,10 @@
 							"script": {
 								"type": "text/javascript",
 								"exec": [
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    pm.response.to.have.status(200);\r",
+									"});\r",
+									"\r",
 									"tests[\"Create Schema\"] = responseBody.has(\"successfully created\");\r",
 									"\r",
 									"\r",
@@ -193,7 +279,9 @@
 							"script": {
 								"type": "text/javascript",
 								"exec": [
-									"",
+									"pm.test(\"Status code is 500\", function () {",
+									"    pm.response.to.have.status(500);",
+									"});",
 									"",
 									"/*pm.test(\"sql select where (like) and (unitprice>100)\", function () {",
 									"    var jsonData = pm.response.json();",
@@ -264,6 +352,10 @@
 							"script": {
 								"type": "text/javascript",
 								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
 									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
 								]
 							}
@@ -317,6 +409,79 @@
 					"response": []
 				},
 				{
+					"name": "create_table confirm table exists",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "14217742-15b0-45ec-adb4-520255b9b911",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"table customers exists\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[0].name).to.eql(\"customers\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3Q="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"describe_schema\",\n\t\"schema\":\"northnwd\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
 					"name": "create_table_suppliers",
 					"event": [
 						{
@@ -324,6 +489,10 @@
 							"script": {
 								"type": "text/javascript",
 								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
 									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
 								]
 							}
@@ -388,6 +557,10 @@
 							"script": {
 								"type": "text/javascript",
 								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
 									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
 								]
 							}
@@ -462,6 +635,10 @@
 							"script": {
 								"type": "text/javascript",
 								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
 									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
 								]
 							}
@@ -526,6 +703,10 @@
 							"script": {
 								"type": "text/javascript",
 								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
 									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
 								]
 							}
@@ -590,6 +771,10 @@
 							"script": {
 								"type": "text/javascript",
 								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
 									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
 								]
 							}
@@ -654,6 +839,10 @@
 							"script": {
 								"type": "text/javascript",
 								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
 									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
 								]
 							}
@@ -718,6 +907,10 @@
 							"script": {
 								"type": "text/javascript",
 								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
 									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
 								]
 							}
@@ -782,6 +975,10 @@
 							"script": {
 								"type": "text/javascript",
 								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
 									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
 								]
 							}
@@ -846,6 +1043,10 @@
 							"script": {
 								"type": "text/javascript",
 								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
 									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
 								]
 							}
@@ -910,6 +1111,10 @@
 							"script": {
 								"type": "text/javascript",
 								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
 									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
 								]
 							}
@@ -974,6 +1179,10 @@
 							"script": {
 								"type": "text/javascript",
 								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
 									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
 								]
 							}
@@ -1034,6 +1243,10 @@
 							"script": {
 								"type": "text/javascript",
 								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
 									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
 								]
 							}
@@ -1094,6 +1307,10 @@
 							"script": {
 								"id": "14e5c33d-740c-4b17-94ed-d2e03239931b",
 								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
 									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
 								],
 								"type": "text/javascript"
@@ -1155,6 +1372,10 @@
 							"script": {
 								"type": "text/javascript",
 								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
 									"pm.test(\"test schema name\", function() {",
 									"    var jsonData = pm.response.json();",
 									"    pm.expect(jsonData[0].schema).to.eql(\"northnwd\");",
@@ -1207,6 +1428,63 @@
 						"body": {
 							"mode": "raw",
 							"raw": "{\n  \"operation\":\"describe_schema\",\n  \"schema\":\"northnwd\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "create_table_dev_invalid_attribute",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "b038bb2d-cde7-4c43-9be5-5dd1f859317d",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"create_table\",\n\t\"schema\":\"dev\",\n\t\"table\":\"invalid_attribute\",\n\t\"hash_attribute\": \"id\"\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -1972,27 +2250,33 @@
 											"    ",
 											"    let status = jsonData[0].status;",
 											"    ",
-											"    //",
-											"    ",
 											"    switch(status){",
 											"        case 'ERROR':",
+											"            console.log(jsonData[0]);",
+											"            if(pm.environment.get(\"next_request\")){",
+											"                postman.setNextRequest(pm.environment.get(\"next_request\"));",
+											"            }",
+											"            pm.expect(status).to.not.eql('ERROR');",
+											"            break;",
 											"        case 'COMPLETE':",
 											"            console.log(jsonData[0]);",
 											"            if(pm.environment.get(\"next_request\")){",
 											"                postman.setNextRequest(pm.environment.get(\"next_request\"));",
 											"            }",
+											"            pm.expect(status).to.be.oneOf(['COMPLETE', 'ERROR']);",
 											"            break;",
+											"        case '0':",
+											"        case 0:",
 											"        case 'IN_PROGRESS':",
 											"            console.log('in progress, checking again');",
 											"            postman.setNextRequest('Check Job Completed');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0']);",
 											"            break;",
 											"        default:",
 											"            postman.setNextRequest('Check Job Completed');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0', 'ERROR', 'COMPLETE']);",
 											"            break;",
 											"    }",
-											"    ",
-											"    //THIS MUST BE AT THE END!",
-											"    pm.expect(status).to.be.oneOf(['COMPLETE', 'IN_PROGRESS']);",
 											"});"
 										],
 										"type": "text/javascript"
@@ -2145,6 +2429,86 @@
 							"response": []
 						},
 						{
+							"name": "Import data bulk confirm specific value exists",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "f652fa3d-1652-4455-827f-fdfeb5f11003",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"Verify csv data load was successful\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData[0].remarks.includes(\"Lovely updated home\")).to.be.true;",
+											"    pm.expect(jsonData[0].id).to.eql(10);",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "f98d1e00-5ab4-447a-bb89-d4b79a98cd84",
+										"exec": [
+											"setTimeout(() =>{}, 200);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\":\"dev\",\n  \"table\":\"long_text\",\n  \"hash_attribute\": \"id\",\n  \"hash_values\":[10],\n  \"get_attributes\": [\"id\", \"remarks\"]\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "Search and confirm row 10 exists in schema dev table long_text\n"
+							},
+							"response": []
+						},
+						{
 							"name": "Import data bulk insert into call.aggr",
 							"event": [
 								{
@@ -2271,6 +2635,77 @@
 							"response": []
 						},
 						{
+							"name": "Insert confirm dot & double data",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "f652fa3d-1652-4455-827f-fdfeb5f11003",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"Verify csv data load was successful\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData[0].all).to.eql(11);",
+											"    pm.expect(jsonData[0].dog_name).to.eql(\".\");",
+											"    pm.expect(jsonData[0].owner_name).to.eql(\"..\");",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\":\"call\",\n  \"table\":\"aggr\",\n  \"hash_attribute\": \"all\",\n  \"hash_values\":[11],\n  \"get_attributes\": [\"all\", \"dog_name\", \"owner_name\"]\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "Search and confirm that insert dot & double data worked as expected. "
+							},
+							"response": []
+						},
+						{
 							"name": "Insert attributes into DropAttributeTest",
 							"event": [
 								{
@@ -2332,15 +2767,1871 @@
 								}
 							},
 							"response": []
+						},
+						{
+							"name": "Insert confirm attributes added",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "f652fa3d-1652-4455-827f-fdfeb5f11003",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"Verify csv data load was successful\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    var jsonDataKeys = Object.keys(jsonData[0])",
+											"    pm.expect(jsonData.length).to.eql(2);",
+											"    pm.expect(jsonDataKeys.includes(\"hashid\")).to.be.true;",
+											"    pm.expect(jsonDataKeys.includes(\"some_attribute\")).to.be.true;",
+											"    pm.expect(jsonDataKeys.includes(\"another_attribute\")).to.be.true;",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "85b54472-8b5d-42c7-9ff3-47f1017e558d",
+										"exec": [
+											"setTimeout(() => {}, 200)",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\":\"dev\",\n  \"table\":\"AttributeDropTest\",\n  \"hash_attribute\": \"hashid\",\n  \"hash_values\":[1, 2],\n  \"get_attributes\": [\"hashid\", \"some_attribute\", \"another_attribute\"]\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "Search and confirm that insert attributes worked as expected."
+							},
+							"response": []
 						}
 					],
 					"_postman_isSubFolder": true
+				},
+				{
+					"name": "CSV Bulk Load Tests",
+					"item": [
+						{
+							"name": "Invalid Attribute Check",
+							"item": [
+								{
+									"name": "csv_data_load with invalid attribute",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"id": "9cce8511-6fc6-411d-8b07-f56d08987431",
+												"exec": [
+													"pm.test(\"Check for job message\", function () {",
+													"    const jsonData = pm.response.json();",
+													"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
+													"    ",
+													"    eval(pm.globals.get(\"function:getJobId\"))(jsonData, \"csv_file_load with invalid attributes\");",
+													"});",
+													"",
+													"pm.test(\"Status code is 200\", function () {",
+													"    pm.response.to.have.status(200);",
+													"});"
+												],
+												"type": "text/javascript"
+											}
+										}
+									],
+									"request": {
+										"auth": {
+											"type": "basic",
+											"basic": [
+												{
+													"key": "password",
+													"value": "{{password}}",
+													"type": "string"
+												},
+												{
+													"key": "username",
+													"value": "{{username}}",
+													"type": "string"
+												}
+											]
+										},
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json",
+												"type": "text"
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n\t\"operation\": \"csv_data_load\",\n\t\"schema\": \"dev\",\n\t\"action\": \"insert\",\n\t\"table\": \"invalid_attribute\",\n\t\"data\": \"id,$ome=attribute\\n1,cheeseburger\\n2,hamburger with cheese\\n3,veggie burger\\n\"\n}"
+										},
+										"url": {
+											"raw": "{{host}}:{{port}}",
+											"host": [
+												"{{host}}"
+											],
+											"port": "{{port}}"
+										},
+										"description": "Checks to confirm that a 500 status and error msg are returned when an invalid attribute name is used"
+									},
+									"response": []
+								},
+								{
+									"name": "csv_file_load with invalid attributes",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"id": "9cce8511-6fc6-411d-8b07-f56d08987431",
+												"exec": [
+													"pm.test(\"Check for job message\", function () {",
+													"    const jsonData = pm.response.json();",
+													"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
+													"    ",
+													"    eval(pm.globals.get(\"function:getJobId\"))(jsonData, null);",
+													"});",
+													"",
+													"pm.test(\"Status code is 200\", function () {",
+													"    pm.response.to.have.status(200);",
+													"});"
+												],
+												"type": "text/javascript"
+											}
+										}
+									],
+									"request": {
+										"auth": {
+											"type": "basic",
+											"basic": [
+												{
+													"key": "password",
+													"value": "{{password}}",
+													"type": "string"
+												},
+												{
+													"key": "username",
+													"value": "{{username}}",
+													"type": "string"
+												}
+											]
+										},
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"type": "text",
+												"value": "application/json"
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n\t\"operation\": \"csv_file_load\",\n\t\"action\": \"insert\",\n\t\"schema\": \"dev\",\n\t\"table\": \"invalid_attribute\",\n\t\"file_path\": \"{{files_location}}InvalidAttributes.csv\"\n}"
+										},
+										"url": {
+											"raw": "{{host}}:{{port}}",
+											"host": [
+												"{{host}}"
+											],
+											"port": "{{port}}"
+										},
+										"description": "Checks to confirm that a 500 status and error msg are returned when invalid attribute names are used"
+									},
+									"response": []
+								},
+								{
+									"name": "Check Job Failed",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"id": "34b3186b-c5e9-45da-8bca-92ea79825179",
+												"exec": [
+													"pm.test(\"Status code is 200\", function () {",
+													"    pm.response.to.have.status(200);",
+													"});",
+													"",
+													"pm.test(\"test Job Found\", function () {",
+													"    var jsonData = pm.response.json();",
+													"    pm.expect(jsonData.length).to.eql(1);",
+													"    ",
+													"    pm.expect(jsonData[0]).to.have.property('status');",
+													"    ",
+													"    const status = jsonData[0].status;",
+													"    ",
+													"    //",
+													"    ",
+													"    switch(status){",
+													"        case 'ERROR':",
+													"            console.log(jsonData[0]);",
+													"            pm.expect(jsonData[0].message).to.contain('Invalid column name');",
+													"            if(pm.environment.get(\"next_request\")){",
+													"                postman.setNextRequest(pm.environment.get(\"next_request\"));",
+													"            }",
+													"            break;",
+													"        case 'COMPLETE':",
+													"        case 'IN_PROGRESS':",
+													"            console.log('in progress, checking again');",
+													"            postman.setNextRequest('Check Job Failed');",
+													"            break;",
+													"        default:",
+													"            postman.setNextRequest('Check Job Failed');",
+													"            break;",
+													"    }",
+													"    ",
+													"    //THIS MUST BE AT THE END!",
+													"    pm.expect(status).to.be.oneOf(['ERROR', 'IN_PROGRESS']);",
+													"});"
+												],
+												"type": "text/javascript"
+											}
+										},
+										{
+											"listen": "prerequest",
+											"script": {
+												"id": "c350ea7e-d128-486d-9aa2-24abaa82d300",
+												"exec": [
+													"setTimeout(()=>{}, 200);",
+													"console.log(\"Checking Job \" + pm.environment.get(\"job_id\"));"
+												],
+												"type": "text/javascript"
+											}
+										}
+									],
+									"request": {
+										"auth": {
+											"type": "basic",
+											"basic": [
+												{
+													"key": "password",
+													"value": "{{password}}",
+													"type": "string"
+												},
+												{
+													"key": "username",
+													"value": "{{username}}",
+													"type": "string"
+												},
+												{
+													"key": "saveHelperData",
+													"type": "any"
+												},
+												{
+													"key": "showPassword",
+													"value": false,
+													"type": "boolean"
+												}
+											]
+										},
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
+										},
+										"url": {
+											"raw": "http://localhost:9925",
+											"protocol": "http",
+											"host": [
+												"localhost"
+											],
+											"port": "9925"
+										}
+									},
+									"response": []
+								}
+							],
+							"event": [
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "f0e28c38-1570-4e92-ac5f-b5ebb3b8ae04",
+										"type": "text/javascript",
+										"exec": [
+											""
+										]
+									}
+								},
+								{
+									"listen": "test",
+									"script": {
+										"id": "13387355-58b8-4be8-80cf-508314551ea8",
+										"type": "text/javascript",
+										"exec": [
+											"postman.setGlobalVariable(\"function:getJobId\", (jsonData, next_req)=>{",
+											"    let id_index = jsonData.message.indexOf('id ');",
+											"    let parsedId = jsonData.message.substr(id_index + 3, jsonData.message.length);",
+											"    pm.environment.set(\"job_id\", parsedId);",
+											"    pm.environment.set(\"next_request\", next_req);",
+											"    postman.setNextRequest(\"Check Job Failed\");",
+											"});"
+										]
+									}
+								}
+							],
+							"_postman_isSubFolder": true
+						},
+						{
+							"name": "search for specific value from CSV load",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "f652fa3d-1652-4455-827f-fdfeb5f11003",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"Verify csv data load was successful\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData[0].supplierid).to.eql(10);",
+											"    pm.expect(jsonData[0].contactname).to.eql(\"Carlos Diaz\");",
+											"    pm.expect(jsonData[0].companyname).to.eql(\"Refrescos Americanas LTDA\");",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{supp_tb}}\",\n  \"hash_attribute\": \"{{supp_id}}\",\n  \"hash_values\":[10],\n  \"get_attributes\": [\"supplierid\", \"companyname\", \"contactname\"]\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "Search for supplier id 10 and confirm it matches the source CSV file"
+							},
+							"response": []
+						},
+						{
+							"name": "search for random value from CSV load",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "f652fa3d-1652-4455-827f-fdfeb5f11003",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"Verify csv data load was successful\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    var randomNumber = Math.floor(Math.random() * 29) + 1;",
+											"    pm.expect(jsonData[randomNumber]).to.not.eql(null)",
+											"    pm.expect(jsonData.length).to.eql(29);",
+											"    pm.expect(Object.keys(jsonData[randomNumber]).length).to.eql(12);",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"SELECT * FROM {{schema}}.{{supp_tb}}\"\n}\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "SQL select all from supplier table and confirm that a random row exists and attributes match source file."
+							},
+							"response": []
+						}
+					],
+					"description": "Test a designated and random row from bulk CSV upload",
+					"_postman_isSubFolder": true
+				},
+				{
+					"name": "Insert object into table",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "83493efa-2538-4d2d-85dd-765f55db06fe",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"insert object into table\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message).to.eql(\"inserted 1 of 1 records\");",
+									"    pm.expect(jsonData.inserted_hashes[0]).to.eql(\"TEST1\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"insert\",\n\t\"schema\":\"{{schema}}\",\n\t\"table\":\"{{cust_tb}}\",\n\t\"records\": [\n\t\t{\n\t\t\t\"postalcode\": { \"house\": 30, \"street\": \"South St\"},\n\t\t\t\"customerid\": \"TEST1\"\n\t\t}\n\t]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Insert object into northnwd.customers and confirm error"
+					},
+					"response": []
+				},
+				{
+					"name": "Insert object confirm ",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "83493efa-2538-4d2d-85dd-765f55db06fe",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"insert object into table confirm\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[0].postalcode).to.eql({ \"house\": 30, \"street\": \"South St\"});",
+									"    pm.expect(jsonData[0].customerid).to.eql(\"TEST1\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{cust_tb}}\",\n  \"hash_attribute\": \"{{supp_id}}\",\n  \"hash_values\":[\"TEST1\"],\n  \"get_attributes\": [\"postalcode\", \"customerid\"]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Confirm that the array from previous test was inserted into table as expected."
+					},
+					"response": []
+				},
+				{
+					"name": "Insert array into table",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "83493efa-2538-4d2d-85dd-765f55db06fe",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"insert array into table\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message).to.eql(\"inserted 1 of 1 records\");",
+									"    pm.expect(jsonData.inserted_hashes[0]).to.eql(\"TEST2\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"insert\",\n\t\"schema\":\"{{schema}}\",\n\t\"table\":\"{{cust_tb}}\",\n\t\"records\": [\n\t\t{\n\t\t\t\"postalcode\": [1, 2, 3],\n\t\t\t\"customerid\": \"TEST2\"\n\t\t}\n\t]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Insert an array into northnwd.customers table and confirm error"
+					},
+					"response": []
+				},
+				{
+					"name": "Insert array confirm ",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "83493efa-2538-4d2d-85dd-765f55db06fe",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"insert array into table confirm\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[0].postalcode).to.eql([1, 2, 3]);",
+									"    pm.expect(jsonData[0].customerid).to.eql(\"TEST2\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{cust_tb}}\",\n  \"hash_attribute\": \"{{supp_id}}\",\n  \"hash_values\":[\"TEST2\"],\n  \"get_attributes\": [\"postalcode\", \"customerid\"]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Confirm that the array from previous test was inserted into table as expected."
+					},
+					"response": []
+				},
+				{
+					"name": "Set attribute to number",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "83493efa-2538-4d2d-85dd-765f55db06fe",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"insert array into table\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message).to.eql(\"inserted 1 of 1 records\");",
+									"    pm.expect(jsonData.inserted_hashes[0]).to.eql(25);",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"insert\",\n\"schema\": \"{{schema}}\",\n\"table\":\"{{emps_tb}}\",\n\"records\": [\n  {\n    \"firstname\":\"Test for number attribute\",\n    \"4289\" :\"Mutt\",\n    \"employeeid\":25\n  }\n]\n}\n"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Set an attribute to a number."
+					},
+					"response": []
+				},
+				{
+					"name": "Set attribute to number confirm",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "d3875485-8e35-4256-973e-d28fdfbe5b2c",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"set attribute to number confirm\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    var found = false",
+									"    jsonData.attributes.forEach((obj) => {",
+									"        if( Object.values(obj)[0] === 4289 ) {",
+									"            found = true;",
+									"        }",
+									"    });",
+									"    pm.expect(found).to.be.true;",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"describe_table\",\n\t\"table\":\"{{emps_tb}}\",\n\t\"schema\":\"{{schema}}\"\n}\n"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Confirm number from previous test was successfully set as an attribute in table as expected."
+					},
+					"response": []
+				},
+				{
+					"name": "Set attribute name greater than 250 bytes",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "83493efa-2538-4d2d-85dd-765f55db06fe",
+								"exec": [
+									"pm.test(\"Status code is 500\", function () {",
+									"    pm.response.to.have.status(500);",
+									"});",
+									"",
+									"pm.test(\"attribute too long error message\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    var longAttribute = \"transaction aborted due to attribute name IIetmyLabradorcomeoutsidewithmewhenIwastakingthebinsoutonemorningIlethimgoforawanderthinkinghewasjustgoingtopeeonthetelegraphpoleattheendofourdrivewaylikehealwaysdoesInsteadhesawhisopportunityandseizeditHekeptwalkingpastthetelegraphpolepasttheborderofour being too long. Attribute names cannot be longer than 250 bytes.\"",
+									"    pm.expect(jsonData.error).to.eql(longAttribute);",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"insert\",\n\"schema\": \"{{schema}}\",\n\"table\":\"{{emps_tb}}\",\n\"records\": [\n  {\n    \"firstname\":\"Test for number attribute\",\n    \"4289\" :\"Mutt\",\n    \"employeeid\":31,\n    \"IIetmyLabradorcomeoutsidewithmewhenIwastakingthebinsoutonemorningIlethimgoforawanderthinkinghewasjustgoingtopeeonthetelegraphpoleattheendofourdrivewaylikehealwaysdoesInsteadhesawhisopportunityandseizeditHekeptwalkingpastthetelegraphpolepasttheborderofour\":\"a story about a dog\"\n  }\n]\n}\n"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Attribute can not be larger than 250 bytes. Here we try and set attribute to a value greater than 250 bytes and confirm error message."
+					},
+					"response": []
+				},
+				{
+					"name": "insert valid records into dev.invalid_attributes",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "f5949428-d42b-4db3-8fba-9cd529ccd2f0",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"inserted 2 records\", function () {",
+									"    const respMsg = pm.response.json().message;",
+									"    pm.expect(respMsg).to.contain('inserted 2');",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\":\"insert\",\n    \"schema\" :  \"dev\",\n    \"table\":\"invalid_attribute\",\n    \"records\": [\n    \t{\n        \"id\" : 100,\n        \"some_attribute\" : \"some_att1\",\n        \"another_attribute\": \"another_1\"\n      },\n      {\n        \"id\" : 101,\n        \"some_attribute\" : \"some_att2\",\n        \"another_attribute\": \"another_2\"\n      }\n    ]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "These records will be used to test updates with invalid attribute names."
+					},
+					"response": []
 				}
 			]
 		},
 		{
 			"name": "3. SQLTests",
 			"item": [
+				{
+					"name": "Invalid Attribute Check",
+					"item": [
+						{
+							"name": "insert invalid attribute name - single row",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "4e59598e-b8da-49ca-851d-fd43f7c619b5",
+										"exec": [
+											"pm.test(\"Status code is 500\", function () {",
+											"    pm.response.to.have.status(500);",
+											"});",
+											"",
+											"pm.test(\"Receives invalid SQL error msg\", function () {",
+											"    const errorMsg = pm.response.json().error;",
+											"    pm.expect(errorMsg).to.equal(",
+											"        \"Error: Attribute name can only contain alpha numeric characters or underscores\"",
+											"    );",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"type": "text",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"INSERT INTO dev.invalid_attribute (id, `some-attribute`) VALUES ('1', 'some_attribute')\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "update single row w/ invalid attribute name",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "a085f3c7-bab2-4e69-af26-659f6d131d80",
+										"exec": [
+											"pm.test(\"Status code is 500\", function () {",
+											"    pm.response.to.have.status(500);",
+											"});",
+											"",
+											"pm.test(\"Receives invalid SQL error msg\", function () {",
+											"    const errorMsg = pm.response.json().error;",
+											"    pm.expect(errorMsg).to.equal(",
+											"        \"Error: Attribute name can only contain alpha numeric characters or underscores\"",
+											"    );",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json",
+										"type": "text"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\": \"sql\",\n\t\"sql\": \"UPDATE dev.invalid_attribute SET `$ome-attribute` = 'some attribute' WHERE id = 100\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "insert all invalid attribute names - multiple rows",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "4e59598e-b8da-49ca-851d-fd43f7c619b5",
+										"exec": [
+											"pm.test(\"Status code is 500\", function () {",
+											"    pm.response.to.have.status(500);",
+											"});",
+											"",
+											"pm.test(\"Receives invalid SQL error msg\", function () {",
+											"    const errorMsg = pm.response.json().error;",
+											"    pm.expect(errorMsg).to.equal(",
+											"        \"Error: Attribute name can only contain alpha numeric characters or underscores\"",
+											"    );",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"type": "text",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"INSERT INTO dev.invalid_attribute (id, `some+attribute1`, `$ome_attribute2`, `some=attribute3`) VALUES ('1', 'some_attribute', 'another_attribute', 'some_other_attribute'), ('2', 'some_attribute', 'another_attribute', 'some_other_attribute'), ('3', 'some_attribute', 'another_attribute', 'some_other_attribute'), ('4', 'some_attribute', 'another_attribute', 'some_other_attribute'), ('5', 'some_attribute', 'another_attribute', 'some_other_attribute'), ('6', 'some_attribute', 'another_attribute', 'some_other_attribute')\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "update multiple rows with invalid attribute",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "4e59598e-b8da-49ca-851d-fd43f7c619b5",
+										"exec": [
+											"pm.test(\"Status code is 500\", function () {",
+											"    pm.response.to.have.status(500);",
+											"});",
+											"",
+											"pm.test(\"Receives invalid SQL error msg\", function () {",
+											"    const errorMsg = pm.response.json().error;",
+											"    pm.expect(errorMsg).to.equal(",
+											"        \"Error: Attribute name can only contain alpha numeric characters or underscores\"",
+											"    );",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"type": "text",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"UPDATE dev.invalid_attribute SET `$ome_attribute` = 'new_value' WHERE id IN(100, 101)\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "insert some invalid attribute names - multiple rows",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "4e59598e-b8da-49ca-851d-fd43f7c619b5",
+										"exec": [
+											"pm.test(\"Status code is 500\", function () {",
+											"    pm.response.to.have.status(500);",
+											"});",
+											"",
+											"pm.test(\"Receives invalid SQL error msg\", function () {",
+											"    const errorMsg = pm.response.json().error;",
+											"    pm.expect(errorMsg).to.equal(",
+											"        \"Error: Attribute name can only contain alpha numeric characters or underscores\"",
+											"    )",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"type": "text",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"INSERT INTO dev.invalid_attribute (id, some_attribute, another_attribute, `some=other_attribute`) VALUES ('1', 'some_attribute', 'another_attribute', 'some_other_attribute'), ('2', 'some_attribute', 'another_attribute', 'some_other_attribute'), ('3', 'some_attribute', 'another_attribute', 'some_other_attribute'), ('4', 'some_attribute', 'another_attribute', 'some_other_attribute'), ('5', 'some_attribute', 'another_attribute', 'some_other_attribute'), ('6', 'some_attribute', 'another_attribute', 'some_other_attribute')\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						}
+					],
+					"auth": {
+						"type": "basic",
+						"basic": [
+							{
+								"key": "password",
+								"value": "admin",
+								"type": "string"
+							},
+							{
+								"key": "username",
+								"value": "admin",
+								"type": "string"
+							}
+						]
+					},
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"id": "fb40ed61-2b6c-4133-9070-85669b8bff67",
+								"type": "text/javascript",
+								"exec": [
+									""
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"id": "ee4922d8-f043-4bb5-90c4-e5d5ca8d4fd1",
+								"type": "text/javascript",
+								"exec": [
+									""
+								]
+							}
+						}
+					],
+					"_postman_isSubFolder": true
+				},
+				{
+					"name": "insert value into table",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "403b6b08-c231-4fe5-9afb-96a01c338612",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"SQL insert successful reponse\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message).to.eql(\"inserted 1 of 1 records\");",
+									"    pm.expect(jsonData.inserted_hashes[0]).to.eql(\"TEST3\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"id": "6f3757ba-a910-40f7-bdf2-4fac031bdcd8",
+								"exec": [
+									"setTimeout(() => {}, 100);"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"INSERT INTO northnwd.customers (customerid, postalcode, companyname) VALUES ('TEST3', '11385', 'Microsoft')\"\n}\n"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "insert value into table confirm",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "403b6b08-c231-4fe5-9afb-96a01c338612",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"SQL insert value exists\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[0].customerid).to.eql(\"TEST3\");",
+									"    pm.expect(jsonData[0].postalcode).to.eql(11385);",
+									"    pm.expect(jsonData[0].companyname).to.eql(\"Microsoft\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"id": "ae9ff63c-d3d4-482a-8acd-d44c46d27a23",
+								"exec": [
+									"setTimeout(() => {}, 100);"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"SELECT customerid, postalcode, companyname FROM northnwd.customers WHERE customerid = 'TEST3'\"\n}\n"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Confirm inserted value exists in table."
+					},
+					"response": []
+				},
+				{
+					"name": "update value in table",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "403b6b08-c231-4fe5-9afb-96a01c338612",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"SQL update successful reponse\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message).to.eql(\"updated 1 of 1 records\");",
+									"    pm.expect(jsonData.update_hashes[0]).to.eql(\"TEST3\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"id": "ea5ae6e8-2279-40d9-9a03-39e91e9206d0",
+								"exec": [
+									"setTimeout(() => {}, 100);"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"UPDATE northnwd.customers SET companyname = 'Google' WHERE customerid = 'TEST3'\"\n}\n"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Update a value in a table and test for success message"
+					},
+					"response": []
+				},
+				{
+					"name": "update value in table confirm",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "403b6b08-c231-4fe5-9afb-96a01c338612",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"SQL insert value exists\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[0].customerid).to.eql(\"TEST3\");",
+									"    pm.expect(jsonData[0].postalcode).to.eql(11385);",
+									"    pm.expect(jsonData[0].companyname).to.eql(\"Google\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"id": "a14817bc-335b-4f98-9d38-a8be1ed5dce7",
+								"exec": [
+									"setTimeout(() => {}, 100);"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"SELECT customerid, postalcode, companyname FROM northnwd.customers WHERE customerid = 'TEST3'\"\n}\n"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Confirm updated value exists in table."
+					},
+					"response": []
+				},
+				{
+					"name": "delete value from table",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "403b6b08-c231-4fe5-9afb-96a01c338612",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"SQL delete successful reponse\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message).to.eql(\"records successfully deleted\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"id": "1e7639d4-4ebf-47fc-a65f-b91779aa7e72",
+								"exec": [
+									"setTimeout(() => {}, 100);"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"DELETE FROM northnwd.customers WHERE customerid = 'TEST3'\"\n}\n"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Using SQL, delete a value and confirm success response"
+					},
+					"response": []
+				},
+				{
+					"name": "delete value from table confirm",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "403b6b08-c231-4fe5-9afb-96a01c338612",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"SQL delete value does not exists\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.eql([]);",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"id": "f2c66d92-eba8-485b-a6a2-ca298aa386dd",
+								"exec": [
+									"setTimeout(() => {}, 100);"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"SELECT customerid, postalcode, companyname FROM northnwd.customers WHERE companyname = 'Microsoft'\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Confirm deleted value does not exist in table."
+					},
+					"response": []
+				},
 				{
 					"name": "select employees orderby id asc",
 					"event": [
@@ -3895,12 +6186,468 @@
 						}
 					},
 					"response": []
+				},
+				{
+					"name": "update employee with falsey data",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "853acc52-10d0-4652-b5d7-fd976a5d3887",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"address is false and hireDate is 0\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.update_hashes[0]).to.eql(1);",
+									"});",
+									"",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"UPDATE {{schema}}.{{emps_tb}} SET address = false, hireDate = 0, notes = null, birthdate = undefined WHERE {{emps_id}} = 1\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Update employee attributes to false/0/null/undefined to validate values are stored correctly."
+					},
+					"response": []
+				},
+				{
+					"name": "select employee to confirm falsey update",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "5d1eab1c-73f5-448f-8dea-b3887585ef84",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"address is false and hireDate is 0\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[0].address).to.be.false;",
+									"    pm.expect(jsonData[0].hireDate).to.eql(0);",
+									"});",
+									"",
+									"pm.test(\"notes and birthdate do not exist afting being set to null and undefined\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.not.have.property('notes');",
+									"    pm.expect(jsonData).to.not.have.property('birthdate');",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"SELECT * FROM {{schema}}.{{emps_tb}} WHERE {{emps_id}} = 1\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
 				}
 			]
 		},
 		{
 			"name": "4. NoSQL Tests",
 			"item": [
+				{
+					"name": "Invalid Attribute Check",
+					"item": [
+						{
+							"name": "insert invalid attribute name - single row",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "4e59598e-b8da-49ca-851d-fd43f7c619b5",
+										"exec": [
+											"pm.test(\"Status code is 500\", function () {",
+											"    pm.response.to.have.status(500);",
+											"});",
+											"",
+											"pm.test(\"Receives invalid attribute name error msg\", function () {",
+											"    const errorMsg = pm.response.json().error;",
+											"    pm.expect(errorMsg).to.equal(",
+											"        \"Error: Attribute name can only contain alpha numeric characters or underscores\"",
+											"    )",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"type": "text",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\":\"insert\",\n    \"schema\" :  \"dev\",\n    \"table\":\"invalid_attribute\",\n    \"records\": [\n    \t{\n        \"id\" : 1,\n        \"$ome_attribute\" : \"some_attribute\"\n      }\n    ]\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "update single row w/ invalid attribute name",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "a085f3c7-bab2-4e69-af26-659f6d131d80",
+										"exec": [
+											"pm.test(\"Status code is 500\", function () {",
+											"    pm.response.to.have.status(500);",
+											"});",
+											"",
+											"pm.test(\"Receives invalid SQL error msg\", function () {",
+											"    const errorMsg = pm.response.json().error;",
+											"    pm.expect(errorMsg).to.equal(",
+											"        \"Error: Attribute name can only contain alpha numeric characters or underscores\"",
+											"    );",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"type": "text",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\":\"update\",\n    \"schema\" :  \"dev\",\n    \"table\":\"invalid_attribute\",\n    \"records\": [\n    \t{\n        \"id\" : 100,\n        \"$ome_attribute\" : \"some_attribute\"\n      }\n    ]\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "insert all invalid attribute names - multiple rows",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "4e59598e-b8da-49ca-851d-fd43f7c619b5",
+										"exec": [
+											"pm.test(\"Status code is 500\", function () {",
+											"    pm.response.to.have.status(500);",
+											"});",
+											"",
+											"pm.test(\"Receives invalid attribute name error msg\", function () {",
+											"    const errorMsg = pm.response.json().error;",
+											"    pm.expect(errorMsg).to.equal(",
+											"        \"Error: Attribute name can only contain alpha numeric characters or underscores\"",
+											"    )",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json",
+										"type": "text"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\":\"insert\",\n    \"schema\" :  \"dev\",\n    \"table\":\"invalid_attribute\",\n    \"records\": [\n    \t{\n        \t\"id\" : 1,\n        \t\"$ome_attribute1\" : \"some_attribute1\",\n        \t\"some-attribute2\" : \"some_attribute2\",\n        \t\"$ome-attribute3\" : \"some_attribute3\",\n        \t\"some_attribute4+\" : \"some_attribute4\"\n    \t},    \t\n    \t{\n        \t\"id\" : 2,\n        \t\"$ome_attribute1\" : \"some_attribute1\",\n        \t\"some-attribute2\" : \"some_attribute2\",\n        \t\"$ome-attribute3\" : \"some_attribute3\",\n        \t\"some_attribute4+\" : \"some_attribute4\"\n    \t},    \t\n    \t{\n        \t\"id\" : 3,\n        \t\"$ome_attribute1\" : \"some_attribute1\",\n        \t\"some-attribute2\" : \"some_attribute2\",\n        \t\"$ome-attribute3\" : \"some_attribute3\",\n        \t\"some_attribute4+\" : \"some_attribute4\"\n    \t},    \t\n    \t{\n        \t\"id\" : 4,\n        \t\"$ome_attribute1\" : \"some_attribute1\",\n        \t\"some-attribute2\" : \"some_attribute2\",\n        \t\"$ome-attribute3\" : \"some_attribute3\",\n        \t\"some_attribute4+\" : \"some_attribute4\"\n    \t},    \t\n    \t{\n        \t\"id\" : 5,\n        \t\"$ome_attribute1\" : \"some_attribute1\",\n        \t\"some-attribute2\" : \"some_attribute2\",\n        \t\"$ome-attribute3\" : \"some_attribute3\",\n        \t\"some_attribute4+\" : \"some_attribute4\"\n    \t},    \t\n    \t{\n        \t\"id\" : 6,\n        \t\"$ome_attribute1\" : \"some_attribute1\",\n        \t\"some-attribute2\" : \"some_attribute2\",\n        \t\"$ome-attribute3\" : \"some_attribute3\",\n        \t\"some_attribute4+\" : \"some_attribute4\"\n    \t}\n    ]\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "update multiple rows with invalid attribute",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "4e59598e-b8da-49ca-851d-fd43f7c619b5",
+										"exec": [
+											"pm.test(\"Status code is 500\", function () {",
+											"    pm.response.to.have.status(500);",
+											"});",
+											"",
+											"pm.test(\"Receives invalid SQL error msg\", function () {",
+											"    const errorMsg = pm.response.json().error;",
+											"    pm.expect(errorMsg).to.equal(",
+											"        \"Error: Attribute name can only contain alpha numeric characters or underscores\"",
+											"    );",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"type": "text",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"update\",\n    \"schema\": \"dev\",\n    \"table\": \"invalid_attribute\",\n    \"records\": [\n        {\n            \"id\": 100,\n            \"$ome_attribute\": \"some_attribute\"\n        },\n        {\n            \"id\": 101,\n            \"some-attribute\": \"some_attribute\"\n        }\n    ]\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "insert some invalid attribute names - multiple rows",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "4e59598e-b8da-49ca-851d-fd43f7c619b5",
+										"exec": [
+											"pm.test(\"Status code is 500\", function () {",
+											"    pm.response.to.have.status(500);",
+											"});",
+											"",
+											"pm.test(\"Receives invalid attribute name error msg\", function () {",
+											"    const errorMsg = pm.response.json().error;",
+											"    pm.expect(errorMsg).to.equal(",
+											"        \"Error: Attribute name can only contain alpha numeric characters or underscores\"",
+											"    )",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"type": "text",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\":\"insert\",\n    \"schema\" :  \"dev\",\n    \"table\":\"invalid_attribute\",\n    \"records\": [\n    \t{\n        \t\"id\" : 1,\n        \t\"some_attribute1\" : \"some_attribute1\",\n        \t\"some_attribute2\" : \"some_attribute2\",\n        \t\"some-attribute3\" : \"some_attribute3\",\n        \t\"some_attribute4+\" : \"some_attribute4\"\n    \t},    \t\n    \t{\n        \t\"id\" : 2,\n        \t\"some_attribute1\" : \"some_attribute1\",\n        \t\"some_attribute2\" : \"some_attribute2\",\n        \t\"some-attribute3\" : \"some_attribute3\",\n        \t\"some_attribute4+\" : \"some_attribute4\"\n    \t},    \t\n    \t{\n        \t\"id\" : 3,\n        \t\"some_attribute1\" : \"some_attribute1\",\n        \t\"some_attribute2\" : \"some_attribute2\",\n        \t\"some-attribute3\" : \"some_attribute3\",\n        \t\"some_attribute4+\" : \"some_attribute4\"\n    \t},    \t\n    \t{\n        \t\"id\" : 4,\n        \t\"some_attribute1\" : \"some_attribute1\",\n        \t\"some_attribute2\" : \"some_attribute2\",\n        \t\"some-attribute3\" : \"some_attribute3\",\n        \t\"some_attribute4+\" : \"some_attribute4\"\n    \t},    \t\n    \t{\n        \t\"id\" : 5,\n        \t\"some_attribute1\" : \"some_attribute1\",\n        \t\"some_attribute2\" : \"some_attribute2\",\n        \t\"some-attribute3\" : \"some_attribute3\",\n        \t\"some_attribute4+\" : \"some_attribute4\"\n    \t},    \t\n    \t{\n        \t\"id\" : 6,\n        \t\"some_attribute1\" : \"some_attribute1\",\n        \t\"some_attribute2\" : \"some_attribute2\",\n        \t\"some-attribute3\" : \"some_attribute3\",\n        \t\"some_attribute4+\" : \"some_attribute4\"\n    \t}\n    ]\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						}
+					],
+					"auth": {
+						"type": "basic",
+						"basic": [
+							{
+								"key": "password",
+								"value": "{{password}}",
+								"type": "string"
+							},
+							{
+								"key": "username",
+								"value": "{{username}}",
+								"type": "string"
+							}
+						]
+					},
+					"_postman_isSubFolder": true
+				},
 				{
 					"name": "update NoSQL employee",
 					"event": [
@@ -3964,6 +6711,75 @@
 							],
 							"port": "{{port}}"
 						}
+					},
+					"response": []
+				},
+				{
+					"name": "update NoSQL employee confirm",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "cf0ba3d8-bc6b-4847-ad53-889cdef4c948",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"value from previous test update\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[0].employeeid).to.eql(1);",
+									"    pm.expect(jsonData[0].address).to.eql(\"def1234\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_hash\",\n\t\"schema\":\"{{schema}}\",\n\t\"table\":\"{{emps_tb}}\",\n\t\"hash_attribute\": \"{{emps_id}}\",\n\t\"hash_values\":[1],\n\t\"get_attributes\": [\"{{emps_id}}\", \"address\"]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Confirm employee table has been updated with specific value."
 					},
 					"response": []
 				},
@@ -4392,6 +7208,434 @@
 							],
 							"port": "{{port}}"
 						}
+					},
+					"response": []
+				},
+				{
+					"name": "update NoSQL employee with falsey attributes",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "fc485361-f0b8-40e7-af13-0f5e46e0a438",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Update employee id 2 address, hiredate, notes\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message).to.eql(\"updated 1 of 1 records\");",
+									"    pm.expect(jsonData.update_hashes[0]).to.eql(2);",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"update\",\n\"schema\":\"{{schema}}\",\n\"table\":\"{{emps_tb}}\",\n\"records\": [\n  {\n    \"{{emps_id}}\": 2,\n    \"address\": 0,\n    \"hiredate\": null,\n    \"notes\": false\n  }\n]\n\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Update employee attributes to false/0/null/undefined to validate values are stored correctly."
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL search by hash to confirm falsey update",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "f652fa3d-1652-4455-827f-fdfeb5f11003",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Verify NoSQL falsey update worked as expected\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[0].address).to.eql(0);",
+									"    pm.expect(jsonData[0].hireDate).to.eql(null);",
+									"    pm.expect(jsonData[0].notes).to.eql(false);",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{emps_tb}}\",\n  \"hash_attribute\": \"{{emps_id}}\",\n  \"hash_values\":[2],\n  \"get_attributes\": [\"address\", \"hireDate\", \"notes\"]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Search for employee id 2 and confirm that false/0/null attributes have been updated"
+					},
+					"response": []
+				},
+				{
+					"name": "update NoSQL one employee record with no hash attribute",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "fc485361-f0b8-40e7-af13-0f5e46e0a438",
+								"exec": [
+									"pm.test(\"Status code is 500\", function () {",
+									"    pm.response.to.have.status(500);",
+									"});",
+									"",
+									"pm.test(\"Valid error message is recieved\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.eql(\"a valid hash attribute must be provided with update record\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"update\",\n\"schema\":\"{{schema}}\",\n\"table\":\"{{emps_tb}}\",\n\"records\": [\n  {\n    \"address\": \"3000 Dog Place\"\n  }\n]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Update employee attributes without providing a primary key/hash and check for error."
+					},
+					"response": []
+				},
+				{
+					"name": "update NoSQL one employee record with empty hash attribute",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "fc485361-f0b8-40e7-af13-0f5e46e0a438",
+								"exec": [
+									"pm.test(\"Status code is 500\", function () {",
+									"    pm.response.to.have.status(500);",
+									"});",
+									"",
+									"pm.test(\"Valid error message is recieved\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.eql(\"a valid hash attribute must be provided with update record\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"update\",\n\"schema\":\"{{schema}}\",\n\"table\":\"{{emps_tb}}\",\n\"records\": [\n {\n    \"{{emps_id}}\": \"\",\n    \"address\": \"123 North Blvd\",\n    \"notes\": \"This guy is the real deal\"\n  }\n]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Update employee attributes without providing a primary key/hash and check for error."
+					},
+					"response": []
+				},
+				{
+					"name": "update NoSQL multiple employee records with no hash attribute",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "fc485361-f0b8-40e7-af13-0f5e46e0a438",
+								"exec": [
+									"pm.test(\"Status code is 500\", function () {",
+									"    pm.response.to.have.status(500);",
+									"});",
+									"",
+									"pm.test(\"Valid error message is recieved\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.eql(\"a valid hash attribute must be provided with update record\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"update\",\n\"schema\":\"{{schema}}\",\n\"table\":\"{{emps_tb}}\",\n\"records\": [\n {\n    \"{{emps_id}}\": 2,\n    \"address\": \"123 North Blvd\",\n    \"notes\": \"This guy is the real deal\"\n  },\n  {\n    \"address\": \"45 Lost St\",\n    \"notes\": \"This person doesn't even have an id!\"\n  }, \n  {\n    \"{{emps_id}}\": 3,\n    \"address\": \"1 Main St\",\n    \"notes\": \"This guy okay\"\n  }\n]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Update employee attributes without providing a primary key/hash and check for error."
+					},
+					"response": []
+				},
+				{
+					"name": "update NoSQL employee with valid nonexistent hash",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "fc485361-f0b8-40e7-af13-0f5e46e0a438",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"update with nonexistent hash skips hash\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message).to.eql(\"updated 0 of 1 records\");",
+									"    pm.expect(jsonData.skipped_hashes[0]).to.eql(\"There is no way this exists\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"update\",\n\"schema\":\"{{schema}}\",\n\"table\":\"{{emps_tb}}\",\n\"records\": [\n  {\n    \"{{emps_id}}\": \"There is no way this exists\",\n    \"notes\": \"who is this fella?\"\n  }\n]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Try to update employee record with valid nonexistent hash. "
 					},
 					"response": []
 				}
@@ -9702,7 +12946,7 @@
 					"response": []
 				},
 				{
-					"name": "SQL drop_role Copy",
+					"name": "SQL drop_role",
 					"event": [
 						{
 							"listen": "test",
@@ -9768,7 +13012,490 @@
 			]
 		},
 		{
-			"name": "10. Configuration",
+			"name": "10. Alter User Tests",
+			"item": [
+				{
+					"name": "SQL Add non SU role",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "6d42cf23-2901-455c-9d6a-a3742af81cd4",
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"responseData = JSON.parse(responseBody);",
+									"postman.setEnvironmentVariable(\"role_id\", responseData.id)"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"add_role\",\n\"role\":\"developer_test_5\",\n\"permission\":{\n  \"super_user\": false,\n  \"northnwd\":{\n\n   \"tables\": {\n     \"customers\": {\n         \"read\":true,\n         \"insert\":true,\n         \"update\":true,\n         \"delete\":true,\n         \"attribute_restrictions\":[]\n      },\n      \"suppliers\": {\n         \"read\":false,\n         \"insert\":false,\n         \"update\":false,\n         \"delete\":false,\n         \"attribute_restrictions\":[]\n      },\n      \"region\": {\n         \"read\":true,\n         \"insert\":false,\n         \"update\":false,\n         \"delete\":false,\n         \"attribute_restrictions\":[{\n               \"attribute_name\": \"regiondescription\",\n               \"read\":true,\n               \"insert\":false,\n               \"update\":false,\n               \"delete\":false\n            }]\n      },\n      \"territories\": {\n         \"read\":true,\n         \"insert\":true,\n         \"update\":false,\n         \"delete\":false,\n         \"attribute_restrictions\":[\n           {\n               \"attribute_name\": \"territorydescription\",\n               \"read\":true,\n               \"insert\":true,\n               \"update\":false,\n               \"delete\":false\n            }\n           ]\n      },\n      \"categories\": {\n         \"read\":true,\n         \"insert\":true,\n         \"update\":true,\n         \"delete\":false,\n         \"attribute_restrictions\":[\n           {\n               \"attribute_name\": \"description\",\n               \"read\":true,\n               \"insert\":true,\n               \"update\":true,\n               \"delete\":false\n            }\n           ]\n      },\n      \"shippers\": {\n         \"read\":true,\n         \"insert\":true,\n         \"update\":true,\n         \"delete\":true,\n         \"attribute_restrictions\":[\n           {\n               \"attribute_name\": \"companyname\",\n               \"read\":false,\n               \"insert\":false,\n               \"update\":false,\n               \"delete\":false\n            }\n           ]\n      }\n   }\n}\n  }\n\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL Add User with new Role",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "8bc25e1a-10dc-45a5-8491-d5560c59a2a7",
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"{{role_id}}\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":\"true\"\n\n}"
+						},
+						"url": {
+							"raw": "http://localhost:9925/",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "9925",
+							"path": [
+								""
+							]
+						},
+						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+					},
+					"response": []
+				},
+				{
+					"name": "Alter User with empty role",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "8bc25e1a-10dc-45a5-8491-d5560c59a2a7",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(500);",
+									"});",
+									"",
+									"pm.test(\"SQL insert successful reponse\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.eql(\"If role is specified, it cannot be empty.\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"alter_user\",\n\"role\":\"\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":true\n\n}"
+						},
+						"url": {
+							"raw": "http://localhost:9925/",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "9925",
+							"path": [
+								""
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Alter User set active to false.",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "8bc25e1a-10dc-45a5-8491-d5560c59a2a7",
+								"exec": [
+									"pm.test(\"Status code is 500\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"SQL insert successful reponse\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message).to.eql(\"updated 1 of 1 records\");",
+									"    pm.expect(jsonData.update_hashes[0]).to.eql(\"test_user\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"alter_user\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":false\n\n}"
+						},
+						"url": {
+							"raw": "http://localhost:9925/",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "9925",
+							"path": [
+								""
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Check for active=false",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "76aa9bd9-5983-451d-8fb6-e0f5c936bbee",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"for(let user of pm.response.json()) {",
+									"   if(user.username === \"test_user\") {",
+									"       pm.environment.set(\"found_user\", user);",
+									"   }",
+									"}",
+									"",
+									"pm.test(\"user active should be false.\", function () {",
+									"    let temp = pm.environment.get(\"found_user\");",
+									"   pm.expect(temp.active).to.eql(false);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"list_users\"\n\n}"
+						},
+						"url": {
+							"raw": "http://localhost:9925",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "9925"
+						},
+						"description": "Method for listing all users.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'list_users'</li>"
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL drop test user",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "43e34308-05a8-433b-be7d-964fccf09f03",
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46cGFzc3dvcmQ="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"drop_user\",\n  \"username\":\"test_user\"\n}"
+						},
+						"url": {
+							"raw": "http://localhost:9925",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "9925"
+						},
+						"description": "This method is used for dropping a role.  \n\n<i>You cannot drop a role with associated users.  </i>\n\n<ul>\n<li><b>operation </b><i>(required)</i> - this must always be drop_role </li>\n<li><b>id </b><i>(required) </i> - this is the id of the role you are dropping\n</ul>"
+					},
+					"response": []
+				},
+				{
+					"name": "SQL drop_role",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "43e34308-05a8-433b-be7d-964fccf09f03",
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46cGFzc3dvcmQ="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"drop_role\",\n\"id\":\"{{role_id}}\"\n\n}"
+						},
+						"url": {
+							"raw": "http://localhost:9925",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "9925"
+						},
+						"description": "This method is used for dropping a role.  \n\n<i>You cannot drop a role with associated users.  </i>\n\n<ul>\n<li><b>operation </b><i>(required)</i> - this must always be drop_role </li>\n<li><b>id </b><i>(required) </i> - this is the id of the role you are dropping\n</ul>"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "11. Configuration",
 			"item": [
 				{
 					"name": "Describe table DropAttributeTest",
@@ -11006,10 +14733,32 @@
 						}
 					]
 				}
+			],
+			"event": [
+				{
+					"listen": "prerequest",
+					"script": {
+						"id": "5ea4f68b-709f-40b3-8628-1b895be66ec3",
+						"type": "text/javascript",
+						"exec": [
+							""
+						]
+					}
+				},
+				{
+					"listen": "test",
+					"script": {
+						"id": "eb1055bb-d692-4b37-aebb-5ee2fd84aa22",
+						"type": "text/javascript",
+						"exec": [
+							""
+						]
+					}
+				}
 			]
 		},
 		{
-			"name": "11. Environment Clean Up",
+			"name": "12. Environment Clean Up",
 			"item": [
 				{
 					"name": "sql delete schema",

@@ -17,13 +17,13 @@ const schema = require('../data_layer/schema');
 const delete_ = require('../data_layer/delete');
 const user = require('../security/user');
 const role = require('../security/role');
-const read_log = require('../utility/logging/read_logs');
 const harper_logger = require('../utility/logging/harper_logger');
 const common_utils = require('./common_utils.js');
 const bucket = require('../sqlTranslator/sql_statement_bucket');
 const cluster_utilities = require('../server/clustering/clusterUtilities');
 const data_export = require('../data_layer/export');
 const reg = require('./registration/registrationHandler');
+const stop = require('../bin/stop');
 
 const required_permissions = new Map();
 const DELETE_PERM = 'delete';
@@ -52,8 +52,8 @@ class permission {
     }
 }
 
-required_permissions.set(write.insertCB.name, new permission(false, [INSERT_PERM]));
-required_permissions.set(write.updateCB.name, new permission(false, [UPDATE_PERM]));
+required_permissions.set(write.insert.name, new permission(false, [INSERT_PERM]));
+required_permissions.set(write.update.name, new permission(false, [UPDATE_PERM]));
 required_permissions.set(search.searchByHash.name, new permission(false, [READ_PERM]));
 required_permissions.set(search.searchByValue.name, new permission(false, [READ_PERM]));
 required_permissions.set(search.search.name, new permission(false, [READ_PERM]));
@@ -78,7 +78,7 @@ required_permissions.set(role.addRole.name, new permission(true, []));
 required_permissions.set(role.alterRole.name, new permission(true, []));
 required_permissions.set(role.dropRole.name, new permission(true, []));
 required_permissions.set(user.userInfo.name, new permission(false, []));
-required_permissions.set(read_log.read_log.name, new permission(true, []));
+required_permissions.set(harper_logger.readLog.name, new permission(true, []));
 required_permissions.set(cluster_utilities.addNode.name, new permission(true, []));
 required_permissions.set(cluster_utilities.removeNode.name, new permission(true, []));
 required_permissions.set(cluster_utilities.configureCluster.name, new permission(true, []));
@@ -88,6 +88,7 @@ required_permissions.set(reg.setLicense.name, new permission(true, []));
 required_permissions.set(data_export.export_to_s3.name, new permission(false, [READ_PERM]));
 required_permissions.set(data_export.export_local.name, new permission(false, [READ_PERM]));
 required_permissions.set(delete_.deleteFilesBefore.name, new permission(true, []));
+required_permissions.set(stop.restartProcesses.name, new permission(true, []));
 
 // SQL operations are distinct from operations above, so we need to store required perms for both.
 required_permissions.set(SQL_CREATE, new permission(false, [INSERT_PERM]));
@@ -133,10 +134,13 @@ function verifyPermsAst(ast, user, operation) {
             harper_logger.info(`No schemas defined in verifyPermsAst(), will not continue.`);
             throw new Error(ERR_PROCESSING);
         }
-        if(user.role.permission.super_user) {
-            //admins can do anything through the hole in sheet!
+        // set to true if this operation affects a system table.  Only su can read from system tables, but can't update/delete.
+        let is_su_system_operation = schemas.includes('system');
+        if(user.role.permission.super_user && !is_su_system_operation) {
+            //admins can do (almost) anything through the hole in sheet!
             return true;
         }
+
         for(let s = 0; s<schemas.length; s++) {
             let tables = parsed_ast.getTablesBySchemaName(schemas[s]);
             if(!tables) {
@@ -171,8 +175,10 @@ function hasPermissions(user, op, schema_table_map ) {
         harper_logger.info(`hasPermissions has an invalid parameter`);
         throw new Error(ERR_PROCESSING);
     }
-    if(user.role.permission.super_user) {
-         //admins can do anything through the hole in sheet!
+    // set to true if this operation affects a system table.  Only su can read from system tables, but can't update/delete.
+    let is_su_system_operation = schema_table_map.has('system');
+    if(user.role.permission.super_user && !is_su_system_operation) {
+         //admins can do (almost) anything through the hole in sheet!
         return true;
     }
     if(!required_permissions.get(op) || (required_permissions.get(op) && required_permissions.get(op).requires_su)) {
@@ -244,9 +250,10 @@ function verifyPerms(request_json, operation) {
         harper_logger.error(`User ${request_json.hdb_user.username }has no role or permissions.  Please assign the user a valid role.`);
         return false;
     }
-
-    if(request_json.hdb_user.role.permission.super_user) {
-        //admins can do anything through the hole in sheet!
+    // set to true if this operation affects a system table.  Only su can read from system tables, but can't update/delete.
+    let is_su_system_operation = schema_table_map.has('system');
+    if(request_json.hdb_user.role.permission.super_user && !is_su_system_operation) {
+        //admins can do (almost) anything through the hole in sheet!
         return true;
     }
     // go
@@ -281,7 +288,7 @@ function checkAttributePerms(record_attributes, role_attribute_restrictions, ope
     //TODO: Replace with common utils empty check when it is merged
     // leave early if the role has no attribute permissions set
     if(!role_attribute_restrictions || role_attribute_restrictions.size === 0) {
-        harper_logger.info(`No role restructions set (this is OK).`);
+        harper_logger.info(`No role restrictions set (this is OK).`);
         return true;
     }
 

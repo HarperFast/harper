@@ -2,8 +2,8 @@ const insert = require('../../data_layer/insert');
 const node_Validator = require('../../validation/nodeValidator');
 const hdb_utils = require('../../utility/common_utils');
 const log = require('../../utility/logging/harper_logger');
-const {promisify} = require('util');
-const {inspect} = require('util');
+const util = require('util');
+const cb_insert_insert = util.callbackify(insert.insert);
 const del = require('../../data_layer/delete');
 const terms = require('../../utility/hdbTerms');
 const env_mgr = require('../../utility/environment/environmentManager');
@@ -13,19 +13,39 @@ const auth = require('../../security/auth');
 const ClusterStatusObject = require('../../server/clustering/ClusterStatusObject');
 const signalling = require('../../utility/signalling');
 const cluster_status_event = require('../../events/ClusterStatusEmitter');
+const children_stopped_event = require('../../events/AllChildrenStoppedEvent');
+const common = require('../../utility/common_utils');
+const child_process = require('child_process');
+const path = require('path');
 
 //Promisified functions
-const p_delete_delete = promisify(del.delete);
-const p_auth_authorize = promisify(auth.authorize);
+const p_delete_delete = util.promisify(del.delete);
+const p_auth_authorize = util.promisify(auth.authorize);
 
 const iface = os.networkInterfaces();
 const addresses = [];
 const started_forks = {};
 let is_enterprise = false;
+let child_event_count = 0;
 
-const STATUS_TIMEOUT_MS = 2000;
-
+const STATUS_TIMEOUT_MS = 4000;
 const DUPLICATE_ERR_MSG = 'Cannot add a node that matches the hosts clustering config.';
+
+// If we have more than 1 process, we need to get the status from the master process which has that info stored
+// in global.  We subscribe to an event that master will emit once it has gathered the data.  We want to build
+// in a timeout in case the event never comes.
+const timeout_promise = hdb_utils.timeoutPromise(STATUS_TIMEOUT_MS, 'Timeout trying to get cluster status.');
+const event_promise = new Promise((resolve) => {
+    cluster_status_event.clusterEmitter.on(cluster_status_event.EVENT_NAME, (msg) => {
+        log.info(`Got cluster status event response: ${util.inspect(msg)}`);
+        try {
+            timeout_promise.cancel();
+        } catch(err) {
+            log.error('Error trying to cancel timeout.');
+        }
+        resolve(msg);
+    });
+});
 
 for (let k in iface) {
     for (let k2 in iface[k]) {
@@ -40,9 +60,13 @@ function setEnterprise(enterprise) {
     is_enterprise = enterprise;
 }
 
+/**
+ * Kicks off the clustering server and processes.  Only called with a valid license installed.
+ * @returns {Promise<void>}
+ */
 async function kickOffEnterprise() {
     const enterprise_util = require('../../utility/enterpriseInitialization');
-    const p_kick_off_enterprise = promisify(enterprise_util.kickOffEnterprise);
+    const p_kick_off_enterprise = util.promisify(enterprise_util.kickOffEnterprise);
 
     global.forks.forEach((fork) => {
         fork.send({"type": "enterprise", "enterprise": is_enterprise});
@@ -95,45 +119,24 @@ function addNode(new_node, callback) {
         "records": [new_node]
     };
 
-    insert.insertCB(new_node_insert, function(err, results){
-        if(err) {
+    cb_insert_insert(new_node_insert, (err, results) => {
+        if (err) {
             log.error(`Error adding new cluster node ${new_node_insert}.  ${err}`);
             return callback(err);
         }
 
-        if(!hdb_utils.isEmptyOrZeroLength(results.skipped_hashes)){
+        if (!hdb_utils.isEmptyOrZeroLength(results.skipped_hashes)) {
             log.info(`Node '${new_node.name}' has already been already added. Operation aborted.`);
             return callback(null, `Node '${new_node.name}' has already been already added. Operation aborted.`);
         }
 
         // Send IPC message so master will command forks to rescan for new nodes.
-        process.send({
-            "type": "node_added"
+        common.callProcessSend({
+            "type": terms.CLUSTER_MESSAGE_TYPE_ENUM.NODE_ADDED,
+            "node_name": new_node.name
         });
-        return callback(null, `successfully added ${new_node.name} to manifest`);
-    });
-}
 
-/**
- * A callback wrapper for removeNode.  This is needed to match the processLocalTransaction style currently used until we fully
- * migrate to async/await.  Once that migration is complete, this function can be removed and have it replaced in module.exports
- * with the async function.
- *
- * @param remove_node
- * @param callback
- * @returns {*}
- */
-function removeNodeCB(remove_node, callback) {
-    if(!remove_node) {
-        return callback('Invalid JSON message for remove_node', null);
-    }
-    let response = {};
-    removeNode(remove_node).then((result) => {
-        response['message'] = result;
-        return callback(null, response);
-    }).catch((err) => {
-        log.error(`There was an error removing node ${err}`);
-        return callback(err, null);
+        return callback(null, `successfully added ${new_node.name} to manifest`);
     });
 }
 
@@ -159,7 +162,7 @@ async function removeNode(remove_json_message) {
     try {
         results = await p_delete_delete(delete_obj);
     } catch(err) {
-        log.error(`Error removing cluster node ${inspect(delete_obj)}.  ${err}`);
+        log.error(`Error removing cluster node ${util.inspect(delete_obj)}.  ${err}`);
         throw err;
     }
     if(!hdb_utils.isEmptyOrZeroLength(results.skipped_hashes)) {
@@ -168,8 +171,9 @@ async function removeNode(remove_json_message) {
     }
 
     // Send IPC message so master will command forks to rescan for new nodes.
-    process.send({
-        "type": "node_added"
+    common.callProcessSend({
+        "type": terms.CLUSTER_MESSAGE_TYPE_ENUM.NODE_REMOVED,
+        "node_name": remove_json_message.name
     });
     return `successfully removed ${remove_json_message.name} from manifest`;
 }
@@ -189,29 +193,6 @@ function payloadHandler(msg) {
             global.cluster_server.send(msg, msg.res);
     break;
     }
-}
-
-/**
- * A callback wrapper for configureCluster.  This is needed to match the processLocalTransaction style currently used until we fully
- * migrate to async/await.  Once that migration is complete, this function can be removed and have it replaced in module.exports
- * with the async function.
- *
- * @param enable_cluster_json - The json message containing the port, node name, enabled to use to enable clustering
- * @param callback
- * @returns {*}
- */
-function configureClusterCB(enable_cluster_json, callback) {
-    if(!enable_cluster_json) {
-        return callback('Invalid JSON message for remove_node', null);
-    }
-    let response = {};
-    configureCluster(enable_cluster_json).then(() => {
-        response['message'] = 'Successfully wrote clustering config settings.  A backup file was created.';
-        return callback(null, response);
-    }).catch((err) => {
-        log.error(`There was an error removing node ${err}`);
-        return callback(err, null);
-    });
 }
 
 /**
@@ -238,34 +219,12 @@ async function configureCluster(enable_cluster_json) {
 }
 
 /**
- * A callback wrapper for clusterStatusCB.  This is needed to match the processLocalTransaction style currently used until we fully
- * migrate to async/await.  Once that migration is complete, this function can be removed and have it replaced in module.exports
- * with the async function.
- *
- * @param cluster_status_json - The json message containing the port, node name, enabled to use to enable clustering
- * @param callback
- * @returns {*}
- */
-function clusterStatusCB(cluster_status_json, callback) {
-    if(!cluster_status_json) {
-        return callback('Invalid JSON message for remove_node', null);
-    }
-    let response = {};
-    clusterStatus(cluster_status_json).then((result) => {
-        response = result;
-        return callback(null, response);
-    }).catch((err) => {
-        log.error(`There was an error getting cluster status ${err}`);
-        return callback(err, null);
-    });
-}
-
-/**
  * Get the status of this hosts clustering configuration and connections.
- * @param enable_cluster_json
+ * @param cluster_status_json - Inbound message json.
  * @returns {Promise<void>}
  */
 async function clusterStatus(cluster_status_json) {
+    log.debug(`getting cluster status`);
     let response = {};
     try {
         let clustering_enabled = env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY);
@@ -278,22 +237,6 @@ async function clusterStatus(cluster_status_json) {
             response["status"] = JSON.stringify(getClusterStatus());
             return response;
         }
-
-        // If we have more than 1 process, we need to get the status from the master process which has that info stored
-        // in global.  We subscribe to an event that master will emit once it has gathered the data.  We want to build
-        // in a timeout in case the event never comes.
-        const timeout_promise = hdb_utils.timeoutPromise(STATUS_TIMEOUT_MS, 'Timeout trying to get cluster status.');
-        const event_promise = new Promise((resolve) => {
-            cluster_status_event.clusterEmitter.on(cluster_status_event.EVENT_NAME, (msg) => {
-                log.info(`Got cluster status event response: ${inspect(msg)}`);
-                try {
-                    timeout_promise.cancel();
-                } catch(err) {
-                    log.error('Error trying to cancel timeout.');
-                }
-                resolve(msg);
-            });
-        });
 
         // send a signal to master to gather cluster data.
         signalling.signalClusterStatus();
@@ -320,7 +263,6 @@ function selectProcess(target_process_id) {
         }
         if (global.forks[i].process.pid === target_process_id) {
             specified_process = global.forks[i];
-            //specified_process.send(msg);
             log.info(`Processing job on process: ${target_process_id}`);
             return specified_process;
         }
@@ -335,7 +277,7 @@ function selectProcess(target_process_id) {
  * This will build and populate a ClusterStatusObject and send it back to the process that requested it.
  */
 function getClusterStatus() {
-
+    log.debug('getting cluster status.');
     if(!global.cluster_server) {
         log.error(`Tried to get cluster status, but the cluster is not initialized.`);
         throw new Error(`Tried to get cluster status, but the cluster is not initialized.`);
@@ -344,13 +286,13 @@ function getClusterStatus() {
     try {
         status_obj.my_node_port = global.cluster_server.socket_server.port;
         status_obj.my_node_name = global.cluster_server.socket_server.name;
-
+        log.debug(`There are ${global.cluster_server.socket_client.length} socket clients.`);
         for (let conn of global.cluster_server.socket_client) {
             let new_status = new ClusterStatusObject.ConnectionStatus();
             new_status.direction = conn.direction;
             if (conn.other_node) {
-                new_status.host = conn.other_node.hostname;
-                new_status.port = conn.other_node.host;
+                new_status.host = conn.other_node.host;
+                new_status.port = conn.other_node.port;
             }
             let status = conn.client.connected;
             new_status.connection_status = (status ? ClusterStatusObject.CONNECTION_STATUS_ENUM.CONNECTED :
@@ -457,15 +399,69 @@ function clusterMessageHandler(msg) {
                 }
                 break;
             case terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STARTED:
-                log.info('Received child started event.');
+                log.trace(`Got child started event`);
                 if(started_forks[msg.pid]) {
                     log.warn(`Got a duplicate child started event for pid ${msg.pid}`);
                 } else {
+                    child_event_count++;
+                    log.info(`Received ${child_event_count} child started event(s).`);
                     started_forks[msg.pid] = true;
                     if(Object.keys(started_forks).length === global.forks.length) {
                         //all children are started, kick off enterprise.
+                        child_event_count = 0;
                         kickOffEnterprise();
                     }
+                }
+                break;
+            case terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STOPPED:
+                log.trace(`Got child stopped event`);
+                if(started_forks[msg.pid] === false) {
+                    log.warn(`Got a duplicate child started event for pid ${msg.pid}`);
+                } else {
+                    child_event_count++;
+                    log.info(`Received ${child_event_count} child stopped event(s).`);
+                    log.info(`started forks: ${util.inspect(started_forks)}`);
+                    started_forks[msg.pid] = false;
+                    for(let fork of Object.keys(started_forks)) {
+                        // We still have children running, break;
+                        if(started_forks[fork] === true) {
+                            return;
+                        }
+                    }
+                    //All children are stopped, emit event
+                    log.debug(`All children stopped, restarting.`);
+                    child_event_count = 0;
+                    children_stopped_event.allChildrenStoppedEmitter.emit(children_stopped_event.EVENT_NAME, new children_stopped_event.AllChildrenStoppedMessage());
+                }
+                break;
+            case terms.CLUSTER_MESSAGE_TYPE_ENUM.RESTART:
+                log.info('Received restart event.');
+                if(!global.forks || global.forks.length === 0) {
+                    log.info('No processes found');
+                } else {
+                    log.info(`Shutting down ${global.forks.length} process.`);
+                }
+
+                if(msg.force_shutdown) {
+                    restartHDB();
+                    log.info('Force shutting down processes.');
+                    break;
+                }
+
+                for(let i=0; i<global.forks.length; i++) {
+                    if(global.forks[i]) {
+                        try {
+                            log.debug(`Sending ${terms.RESTART_CODE} signal to process with pid:${global.forks[i].process.pid}`);
+                            global.forks[i].send({type: terms.CLUSTER_MESSAGE_TYPE_ENUM.RESTART});
+                        } catch(err) {
+                            log.error(`Got an error trying to send ${terms.RESTART_CODE} to process ${global.forks[i].process.pid}.`);
+                        }
+                    }
+                }
+                // Try to shutdown all SocketServer and SocketClient connections.
+                if(global.cluster_server) {
+                    // Close server will emit an event once it is done
+                    global.cluster_server.closeServer();
                 }
                 break;
             default:
@@ -490,14 +486,42 @@ async function authHeaderToUser(json_body){
     return json_body;
 }
 
+/**
+ * Function spawns child process and calls restart.
+ */
+function restartHDB() {
+    try {
+        // try to change to 'bin' dir
+        let command = (global.running_from_repo ? 'node' : 'harperdb');
+        let args = (global.running_from_repo ? ['harperdb', 'restart'] : ['restart']);
+        let base = env_mgr.get(terms.HDB_SETTINGS_NAMES.PROJECT_DIR_KEY);
+        process.chdir(path.join(base, 'bin'));
+        let child = child_process.spawn(command, args);
+        child.on('error', (err) => {
+            log.error('restart error, please manually restart.' + err);
+            console.log('restart error, please manually restart.' + err);
+            throw new Error('Got an error restarting HarperDB.  Please manually restart.');
+        });
+        child.on('data', () => {
+            log.error('Restart successful');
+        });
+    } catch(err) {
+        let msg = `There was an error restarting HarperDB.  Please restart manually. ${err}`;
+        console.log(msg);
+        log.error(msg);
+        throw err;
+    }
+}
+
 module.exports = {
     addNode: addNode,
     // The reference to the callback functions can be removed once processLocalTransaction has been refactored
-    configureCluster: configureClusterCB,
-    clusterStatus: clusterStatusCB,
-    removeNode: removeNodeCB,
+    configureCluster: configureCluster,
+    clusterStatus: clusterStatus,
+    removeNode: removeNode,
     payloadHandler: payloadHandler,
     clusterMessageHandler: clusterMessageHandler,
     authHeaderToUser: authHeaderToUser,
-    setEnterprise: setEnterprise
+    setEnterprise: setEnterprise,
+    restartHDB: restartHDB
 };

@@ -16,7 +16,7 @@ module.exports = {
      */
     distinct_array:  (array)=>{
         if(Array.isArray(array) && array.length > 1){
-            return _.uniqWith(array, _.isEqual)
+            return _.uniqWith(array, _.isEqual);
         } else {
             return array;
         }

@@ -4,6 +4,8 @@
  */
 
 const assert = require('assert');
+const chai = require('chai');
+const { spawn } = require('child_process');
 const cu = require('../../utility/common_utils');
 const test_utils = require('../test_utils');
 // try to move to /bin directory so our properties reader doesn't explode.
@@ -11,6 +13,8 @@ test_utils.changeProcessToBinDir();
 
 const upgrade_directive = require('../../upgrade/UpgradeDirective');
 const env_variable = require('../../upgrade/EnvironmentVariable');
+const ps_list = require('../../utility/psList');
+const { expect } = chai
 const ALL_SPACES = '     ';
 
 describe(`Test errorizeMessage`, function () {
@@ -212,6 +216,14 @@ describe(`Test autoCast`, function(){
         assert.equal(cu.autoCast("42.42"), 42.42);
     });
 
+    it(`Pass in string of '0102', expect number 102`, function(){
+        assert.equal(cu.autoCast("0102"), 102);
+    });
+
+    it(`Pass in string of sigle entry number array, expect real array`, function(){
+        assert.deepEqual(cu.autoCast("[1]"), [1]);
+    });
+
     it(`Pass in string of number array, expect real array`, function(){
         assert.deepEqual(cu.autoCast("[1,2,3]"), [1,2,3]);
     });
@@ -222,6 +234,41 @@ describe(`Test autoCast`, function(){
 
     it(`Pass in string of json object, expect json object`, function(){
         assert.deepEqual(cu.autoCast('{"id":1, "name":"test"}'), {"id":1, "name":"test"});
+    });
+
+    it(`Pass in false, expect false`, function(){
+        assert.strictEqual(cu.autoCast(false), false);
+    });
+
+    it(`Pass in true, expect true`, function(){
+        assert.strictEqual(cu.autoCast(true), true);
+    });
+
+    it(`Pass in 1, expect 1`, function(){
+        assert.strictEqual(cu.autoCast(1), 1);
+    });
+
+    it(`Pass in 0, expect 0`, function(){
+        assert.strictEqual(cu.autoCast(0), 0);
+    });
+
+    it(`Pass in date , expect date back`, function(){
+        assert.deepEqual(cu.autoCast(new Date('2019-01-01')), new Date('2019-01-01'));
+    });
+
+    it(`Pass in array , expect array back`, function(){
+        let assert_array = ['sup', 'dude'];
+        assert.deepEqual(cu.autoCast(assert_array), assert_array);
+    });
+
+    it(`Pass in array of various values , expect array back`, function(){
+        let assert_array = [1, null, undefined, NaN, 2];
+        assert.deepEqual(cu.autoCast(assert_array), assert_array);
+    });
+
+    it(`Pass in object , expect object back`, function(){
+        let assert_object = {id:1, stuff: 'here'};
+        assert.deepEqual(cu.autoCast(assert_object), assert_object);
     });
 });
 
@@ -392,5 +439,83 @@ describe('Test compareVersions', function() {
         let new_version = '1.1.0.122';
         let should_upgrade = cu.compareVersions(oldVersion, new_version);
         assert.ok(should_upgrade < 0, `expected returned value less than than 0`);
+    });
+});
+
+describe('Test isClusterOperation', function() {
+    it('Test nominal case of isClusterOperation', function() {
+       assert.equal(cu.isClusterOperation('create_schema'), true, 'Expected true result');
+    });
+    it('Test strange casing in isClusterOperation', function() {
+        assert.equal(cu.isClusterOperation('crEaTe_Schema'), true, 'Expected true result');
+    });
+    it('Test operation not in cluster ops, expect false', function() {
+        assert.equal(cu.isClusterOperation('alter_user'), false, 'Expected false result');
+    });
+    it('Test case, expect true', function() {
+        assert.equal(cu.isClusterOperation('CREATE_SCHEMA'), true, 'Expected true result');
+    });
+    it('Test empty operation, expect false', function() {
+        assert.equal(cu.isClusterOperation(null), false, 'Expected false result');
+    });
+    it('Test undefined operation, expect false', function() {
+        assert.equal(cu.isClusterOperation(undefined), false, 'Expected false result');
+    });
+    it('Test numeric operation, expect false', function() {
+        assert.equal(cu.isClusterOperation(42), false, 'Expected false result');
+    });
+});
+
+
+describe('Test isHarperRunning', () => {
+    let child;
+
+    // on run of harperdb, if hdb is not running it will output 2 data events. First for the dog, second for the successfully started
+    // we test to handle where it is already running to force a failure
+    // we test the 2nd event to make sure we get the success started message.
+    it('Should start HDB and return starting message', (done)=>{
+        child = spawn('node', ['harperdb']);
+        let x = 0;
+
+        child.stdout.on('data', (data) => {
+            let data_string = data.toString();
+
+            if(data_string === 'HarperDB is already running.\n'){
+                expect(data_string).to.not.equal('HarperDB is already running.\n');
+                done();
+            } else if(x === 1) {
+                expect(data_string).to.include('successfully started');
+                done();
+            }
+            x++;
+        });
+    });
+
+    it('Should return true - HDB is running', (done)=>{
+        child.on('close', () => {
+            let result = cu.isHarperRunning();
+            result.then((running)=>{
+                expect(running).to.be.true
+                done();
+            });
+        });
+    });
+
+    it('Should stop HDB and return stopping message', (done)=>{
+        child = spawn('node', ['harperdb', 'stop']);
+        child.stdout.on('data', (data) => {
+            expect(data.toString()).to.include('Stopping HarperDB.');
+            done();
+        });
+    });
+
+    it('Should return false - HDB is not running', (done)=>{
+        child.on('exit', () => {
+            let result = cu.isHarperRunning();
+            result.then((running) => {
+                expect(running).to.be.false;
+                done();
+            });
+        });
     });
 });

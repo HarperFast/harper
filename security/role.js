@@ -1,9 +1,14 @@
-const insert = require('../data_layer/insert'),
-    search = require('../data_layer/search'),
-    delete_ = require('../data_layer/delete'),
-    validation = require('../validation/role_validation'),
-    signalling  = require('../utility/signalling'),
-    uuidV4 = require('uuid/v4');
+const insert = require('../data_layer/insert');
+const search = require('../data_layer/search');
+const delete_ = require('../data_layer/delete');
+const validation = require('../validation/role_validation');
+const signalling = require('../utility/signalling');
+const uuidV4 = require('uuid/v4');
+const util = require('util');
+
+const p_search_search_by_value = util.promisify(search.searchByValue);
+const p_search_search_by_conditions = util.promisify(search.searchByConditions);
+const p_delete_delete = util.promisify(delete_.delete);
 
 module.exports = {
     addRole: addRole,
@@ -12,66 +17,79 @@ module.exports = {
     listRoles: listRoles
 };
 
-function addRole(role, callback){
+function scrubRoleDetails(role) {
+    try {
+        if(role.hdb_auth_header) {
+            delete role.hdb_auth_header;
+        }
+        if(role.HDB_INTERNAL_PATH) {
+            delete role.HDB_INTERNAL_PATH;
+        }
+        if(role.operation) {
+            delete role.operation;
+        }
+        if(role.hdb_user) {
+            delete role.hdb_user;
+        }
+    } catch(err) {
+        //no-op, failure is ok
+    }
+    return role;
+}
+
+async function addRole(role){
     let validation_resp = validation.addRoleValidation(role);
-    if(validation_resp){
-        callback(validation_resp);
-        return;
+    if(validation_resp) {
+        throw new Error(validation_resp);
     }
 
-    delete role.hdb_user;
-    delete role.operation;
-     
+    role = scrubRoleDetails(role);
+
     let search_obj = {
         schema: 'system',
         table : 'hdb_role',
         search_attribute : 'role',
         search_value : role.role,
         hash_attribute : 'id',
-        get_attributes: ['id']
+        get_attributes: ['*']
     };
 
-    search.searchByValue(search_obj, function (err, search_role) {
-        if(err){
-            return callback(err);
-        }
-        if(search_role && search_role.length > 0){
-            return callback('Role already exists');
+    let search_role = await p_search_search_by_value(search_obj).catch((err) => {
+        throw err;
+    });
 
-        }
-        if(!role.id)
-            role.id =  role.id = uuidV4();
-
-        let insert_object = {
-            operation:'insert',
-            schema :  'system',
-            table:'hdb_role',
-            hash_attribute: 'id',
-            records: [role]
-        };
-
-        insert.insertCB(insert_object, function(err, success){
-            if(err){
-                callback(err);
-                return;
-            }
-            signalling.signalUserChange({type: 'user'});
-            delete role.hdb_auth_header;
-            delete role.HDB_INTERNAL_PATH;
-            callback(null, role);
-        });
-    })
-}
-
-function alterRole(role, callback){
-    let validation_resp = validation.alterRoleValidation(role);
-    if(validation_resp){
-        callback(validation_resp);
-        return;
+    if(search_role && search_role.length > 0) {
+        search_role = scrubRoleDetails(search_role);
+        return search_role[0];
     }
 
-    delete role.hdb_user;
-    delete role.operation;
+    if(!role.id)
+        role.id = uuidV4();
+
+    let insert_object = {
+        operation:'insert',
+        schema :  'system',
+        table:'hdb_role',
+        hash_attribute: 'id',
+        records: [role]
+    };
+
+    let success = await insert.insert(insert_object).catch((err) => {
+       throw err;
+    });
+    signalling.signalUserChange({type: 'user'});
+
+    role = scrubRoleDetails(role);
+    return role;
+}
+
+async function alterRole(role){
+    let validation_resp = validation.alterRoleValidation(role);
+    if(validation_resp){
+        throw new Error(validation_resp);
+    }
+
+    role = scrubRoleDetails(role);
 
     let update_object = {
         operation:'update',
@@ -81,21 +99,17 @@ function alterRole(role, callback){
         records: [role]
     };
 
-    insert.updateCB(update_object, function(err, success){
-        if(err) {
-            callback(err);
-            return;
-        }
-        signalling.signalUserChange({type: 'user'});
-        callback(null, success);
+    let success = await insert.update(update_object).catch((err) => {
+       throw err;
     });
+    signalling.signalUserChange({type: 'user'});
+    return success;
 }
 
-function dropRole(role, callback){
+async function dropRole(role){
     let validation_resp = validation.dropRoleValidation(role);
     if(validation_resp){
-        callback(validation_resp);
-        return;
+        throw new Error(validation_resp);
     }
 
     let conditions = [
@@ -104,7 +118,7 @@ function dropRole(role, callback){
                 {"=":["role",role.id]}
         },
         {"and":
-            {"=":["active",true]}
+                {"=":["active",true]}
         }
     ];
 
@@ -122,64 +136,47 @@ function dropRole(role, callback){
         get_attributes: ['role']
     };
 
-    search.searchByConditions(search_for_role_name, function(err, role_name){        
-        if(err)
-            return callback(`${err}`);
-        if(role_name.length === 0)
-            return callback(`Role not found`);
-        
-        search.searchByConditions(search_for_users, function(err, users){
-            if(users && users.length > 0){
-                return callback(`Cannot drop role ${role_name[0].role} ${users.length} users are tied to this role`);
-            }
-            let delete_object = {
-                table:"hdb_role",
-                schema:"system",
-                hash_values: [role.id]
-            };
-                        
-            delete_.delete(delete_object, function(err, success){
-                if(err){
-                    callback(err);
-                    return;
-                }
-                signalling.signalUserChange({type: 'user'});
-                    callback(null, `${role_name[0].role} successfully deleted`);
-            });
-        });
+    let role_name = await p_search_search_by_conditions(search_for_role_name).catch((err) => {
+        throw err;
     });
+    if(role_name.length === 0) {
+        throw new Error(`Role not found`);
+    }
+
+    let users = await p_search_search_by_conditions(search_for_users).catch((err) => {
+       throw err;
+    });
+    if(users && users.length > 0){
+        throw new Error(`Cannot drop role ${role_name[0].role} ${users.length} users are tied to this role`);
+    }
+    let delete_object = {
+        table:"hdb_role",
+        schema:"system",
+        hash_values: [role.id]
+    };
+
+    let success = await p_delete_delete(delete_object).catch((err) => {
+       throw err;
+    });
+
+    signalling.signalUserChange({type: 'user'});
+    return `${role_name[0].role} successfully deleted`;
 }
 
-function listRoles(req_body, callback){
-    var search_obj = {
+async function listRoles(){
+    let search_obj = {
         table: "hdb_role",
         schema: "system",
         hash_attribute:"id",
         search_attribute:"id",
         search_value:"*",
         get_attributes: ["*"]
-    }
+    };
 
-    search.searchByValue(search_obj, function(err, roles){
-        if(err){
-            return callback(err);
-        }
-
-        return callback(null, roles);
+    let roles = await p_search_search_by_value(search_obj).catch((err) => {
+       throw err;
     });
-}
 
-function validatePermission(table_obj){
-    if(!table_obj)
-        return "Missing role";
-
-    if(!table_obj.role)
-        return "role.role must be defined";
-
-    if(!table_obj.permission)
-        return "role.permission must be defined";
-
-    if(table_obj.su)
-        return;
+    return roles;
 }
 
