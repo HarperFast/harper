@@ -55,7 +55,8 @@ function preTestPrep() {
     });
     // Try to change to bin
     changeProcessToBinDir();
-    env.setPropsFilePath(`${__dirname}/hdb_boot_properties.file`);
+    // TODO: Check this after the boot props file refactor.
+    env.setPropsFilePath(`./hdb_boot_properties.file`);
     env.initSync();
 }
 

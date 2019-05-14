@@ -16,6 +16,7 @@ const fs = require('fs');
 const moment = require('moment');
 const util = require('util');
 const validator = require('../../validation/readLogValidator');
+const common = require('../common_utils');
 
 //Using numbers rather than strings for faster comparison
 const WIN = 1;
@@ -28,8 +29,9 @@ let log_location = undefined;
 // read environment settings to get preferred logger and default log level
 const PropertiesReader = require('properties-reader');
 let hdb_properties = undefined;
+let boot_props_file_path = common.getPropsFilePath();
 try {
-    hdb_properties = PropertiesReader(`${__dirname}/../../hdb_boot_properties.file`);
+    hdb_properties = PropertiesReader(boot_props_file_path);
     hdb_properties.append(hdb_properties.get('settings_path'));
 
     // read environment settings to get log level

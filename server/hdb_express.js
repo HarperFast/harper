@@ -1,20 +1,16 @@
+"use strict";
+
 const cluster = require('cluster');
 const DEBUG = false;
 const harper_logger = require('../utility/logging/harper_logger');
 // We want to kick off the mgr initSync as soon as possible.
 const env = require('../utility/environment/environmentManager');
-try {
-    env.initSync();
-} catch(err) {
-    harper_logger.error(`Got an error loading the environment.  Exiting.${err}`);
-    process.exit(0);
-}
+env.initSync();
 const uuidv1 = require('uuid/v1');
 const user_schema = require('../utility/user_schema');
 const async = require('async');
 const os = require('os');
 const job_runner = require('./jobRunner');
-const hdb_util = require('../utility/common_utils');
 const guidePath = require('path');
 // Leaving global_schema and search here so we can load them early.  They are used in other modules and should be loaded before.
 const global_schema = require('../utility/globalSchema');

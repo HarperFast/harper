@@ -214,7 +214,7 @@ describe('Test readSettingsFile', () => {
     });
     it('Nominal, store key path', () => {
         props.set(terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, TEST_SETTINGS_FILE_PATH);
-        env_rw.__set__('PROPS_FILE_PATH', TEST_SETTINGS_FILE_PATH);
+        env_rw.__set__('BOOT_PROPS_FILE_PATH', TEST_SETTINGS_FILE_PATH);
         env_rw.__set__('hdb_properties', props);
         try {
             readSettingsFile();
@@ -229,7 +229,7 @@ describe('Test readSettingsFile', () => {
     it('invalid key path', () => {
         access_stub = sandbox.stub(fs, 'accessSync').throws(new Error('INVALID PATH'));
         props.set(terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, './thisisabadpath');
-        env_rw.__set__('PROPS_FILE_PATH', TEST_PROPS_FILE_PATH);
+        env_rw.__set__('BOOT_PROPS_FILE_PATH', TEST_PROPS_FILE_PATH);
         env_rw.__set__('hdb_properties', props);
 
         let err = undefined;
@@ -269,7 +269,7 @@ describe('Test readPropsFile', () => {
         access_stub = sandbox.stub(fs, 'accessSync').resolves(ACCESS_RESPONSE);
         read_settings_stub = sandbox.stub().resolves('');
         props.set(terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, './thisisavalidpath');
-        env_rw.__set__('PROPS_FILE_PATH', TEST_PROPS_FILE_PATH);
+        env_rw.__set__('BOOT_PROPS_FILE_PATH', TEST_PROPS_FILE_PATH);
         env_rw.__set__('hdb_properties', props);
         env_rw.__set__('readSettingsFile', read_settings_stub);
         try {
@@ -285,7 +285,7 @@ describe('Test readPropsFile', () => {
         access_stub = sandbox.stub(fs, 'accessSync').throws(new Error('INVALID PATH'));
         props.set(terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, './thisisabadpath');
         read_settings_stub = sandbox.stub().resolves('');
-        env_rw.__set__('PROPS_FILE_PATH', TEST_PROPS_FILE_PATH);
+        env_rw.__set__('BOOT_PROPS_FILE_PATH', TEST_PROPS_FILE_PATH);
         env_rw.__set__('hdb_properties', props);
         env_rw.__set__('readSettingsFile', read_settings_stub);
         let err = undefined;
@@ -480,7 +480,7 @@ describe('Test initSync', () => {
         root_path_stub = sandbox.stub().resolves('');
         access_stub = sandbox.stub(fs, 'accessSync').resolves(ACCESS_RESPONSE);
         props.set(terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, TEST_SETTINGS_FILE_PATH);
-        env_rw.__set__('PROPS_FILE_PATH', TEST_PROPS_FILE_PATH);
+        env_rw.__set__('BOOT_PROPS_FILE_PATH', TEST_PROPS_FILE_PATH);
         env_rw.__set__('readPropsFile', loadThisInstead);
         env_rw.__set__('readRootPath', root_path_stub);
         env_rw.__set__('readCertPath', cert_path_stub);
