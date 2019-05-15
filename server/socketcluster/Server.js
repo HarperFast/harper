@@ -1,5 +1,6 @@
 'use strict';
 const SocketCluster = require('socketcluster');
+const promisify = require('util').promisify;
 const env = require('../../utility/environment/environmentManager');
 env.initSync();
 const log = require('../../utility/logging/harper_logger');
@@ -78,6 +79,7 @@ let socketCluster = new SocketCluster({
     wsEngine: 'ws'
 });
 
+let p_send_to_worker = promisify(socketCluster.sendToWorker).bind(socketCluster);
 registerHandlers();
 
 function registerHandlers(){
@@ -97,7 +99,7 @@ function registerHandlers(){
 //handle inbound messages from thje parent process, this will only occur when HDB spawns SC Server
 process.on('message', data=>{
     hdb_data = {hdb_data: data};
-    sendDataToFirstWorker();
+    sendDataToFirstWorker().then(()=>{});
 });
 
 
@@ -168,18 +170,17 @@ function workerClusterStartHandler(worker_cluster_info){
 function workerClusterReadyHandler(worker_cluster_info){
     console.log('worker cluster ready');
     sc_ready = true;
-    sendDataToFirstWorker();
+    sendDataToFirstWorker().then(()=>{});
 }
 
-function sendDataToFirstWorker(){
+async function sendDataToFirstWorker(){
     if(hdb_data !== undefined && sc_ready === true){
-        socketCluster.sendToWorker(0, hdb_data, (err, response)=>{
-            if(err){
-                log.error(err);
-            } else{
-                log.info('sent hdb data to worker');
-            }
-        });
+        try {
+            await p_send_to_worker(0, hdb_data);
+            log.info('sent hdb data to worker');
+        } catch(e){
+            log.error(e);
+        }
     }
 }
 
