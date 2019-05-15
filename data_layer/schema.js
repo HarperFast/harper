@@ -569,7 +569,7 @@ async function createAttributeStructure(create_attribute_object) {
             for (let att in attributes) {
                 if (attributes[att].schema === create_attribute_object.schema
                     && attributes[att].table === create_attribute_object.table) {
-                    throw `attribute already exists with id ${JSON.stringify(attributes[att])}`;
+                    throw new Error(`attribute already exists with id ${JSON.stringify(attributes[att])}`);
                 }
             }
         }

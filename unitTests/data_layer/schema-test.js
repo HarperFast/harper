@@ -1304,7 +1304,7 @@ describe('Test schema module', function() {
                 error = err;
             }
 
-            expect(error).to.equal(`attribute already exists with id ${JSON.stringify(CREATE_ATTR_OBJECT_TEST)}`);
+            expect(error.message).to.equal(`attribute already exists with id ${JSON.stringify(CREATE_ATTR_OBJECT_TEST)}`);
             expect(search_by_value_stub).to.have.been.calledOnce;
             expect(attr_validator_stub).to.have.been.calledOnce;
         });

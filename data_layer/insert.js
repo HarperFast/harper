@@ -487,7 +487,7 @@ async function createNewAttribute(hdb_auth_header,schema, table, attribute) {
         await schema_mod.createAttribute(attribute_object);
     } catch(e){
         //if the attribute already exists we do not want to stop the insert
-        if(typeof e === 'string' && e.indexOf(ATTRIBUTE_ALREADY_EXISTS) > -1){
+        if(typeof e === 'object' && e.message !== undefined && e.message.includes(ATTRIBUTE_ALREADY_EXISTS)){
             logger.warn(e);
         } else {
             throw e;
