@@ -79,8 +79,7 @@ let socketCluster = new SocketCluster({
     wsEngine: 'ws'
 });
 
-let p_send_to_worker = promisify(socketCluster.sendToWorker.bind(socketCluster));
-
+let p_send_to_worker = promisify(socketCluster.sendToWorker).bind(socketCluster);
 registerHandlers();
 
 function registerHandlers(){
@@ -102,6 +101,7 @@ process.on('message', data=>{
     hdb_data = {hdb_data: data};
     sendDataToFirstWorker().then(()=>{});
 });
+
 
 /**
  * Any error from any child process or master will cause the 'fail' event to be emitted on your SocketCluster instance (assuming the propagateErrors option is not set to false).
@@ -178,7 +178,7 @@ async function sendDataToFirstWorker(){
         try {
             await p_send_to_worker(0, hdb_data);
             log.info('sent hdb data to worker');
-        } catch(e) {
+        } catch(e){
             log.error(e);
         }
     }

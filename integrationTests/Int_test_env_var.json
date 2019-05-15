@@ -175,6 +175,11 @@
       "type": "text",
       "description": "",
       "enabled": true
+    },
+    {
+      "key": "cluster_user_role_id",
+      "value": "6b5347c9-7ca5-4263-885a-0762e53b5714",
+      "enabled": true
     }
   ],
   "_postman_variable_scope": "environment",
