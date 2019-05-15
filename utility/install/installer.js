@@ -126,8 +126,9 @@ function termsAgreement(callback) {
 function checkInstall(callback) {
     winston.info('Checking for previous installation.');
     try {
-        fs.accessSync(`${__dirname}/../../hdb_boot_properties.file`, fs.constants.F_OK | fs.constants.R_OK);
-        env.setPropsFilePath(`${__dirname}/../../hdb_boot_properties.file`);
+        let boot_prop_path = comm.getPropsFilePath();
+        fs.accessSync(boot_prop_path, fs.constants.F_OK | fs.constants.R_OK);
+        env.setPropsFilePath(boot_prop_path);
         env.initSync();
         if (!env.get('HDB_ROOT')) {
             return callback(null, true);
