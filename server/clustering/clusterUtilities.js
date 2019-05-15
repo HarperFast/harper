@@ -64,18 +64,9 @@ function setEnterprise(enterprise) {
  */
 async function kickOffEnterprise() {
     try {
-        const enterprise_util = require('../../utility/enterpriseInitialization');
-
-        global.forks.forEach((fork) => {
-            fork.send({"type": "enterprise", "enterprise": is_enterprise});
-        });
-
-        let enterprise_msg = await enterprise_util.kickOffEnterprise();
-        if (enterprise_msg.clustering) {
-            global.clustering_on = true;
-            global.forks.forEach((fork) => {
-                fork.send({"type": "clustering"});
-            });
+        if(global.clustering_on === true) {
+            const enterprise_util = require('../../utility/enterpriseInitialization');
+            await enterprise_util.kickOffEnterprise();
         }
     } catch(e){
         log.error(e);
@@ -375,12 +366,6 @@ function getClusterStatus() {
 function clusterMessageHandler(msg) {
     try {
         switch(msg.type) {
-            case terms.CLUSTER_MESSAGE_TYPE_ENUM.CLUSTERING:
-                global.clustering_on = true;
-                global.forks.forEach((fork) => {
-                    fork.send(msg);
-                });
-                break;
             case terms.CLUSTER_MESSAGE_TYPE_ENUM.SCHEMA:
                 global.forks.forEach((fork) => {
                     fork.send(msg);

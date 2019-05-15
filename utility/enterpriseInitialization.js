@@ -33,9 +33,6 @@ async function kickOffEnterprise() {
         let child = fork(path.join(__dirname,'../server/socketcluster/server.js'));
 
         child.send(sc_data_payload);
-    } else {
-        // default to clustering not set response
-        return {"clustering": false};
     }
 }
 
