@@ -10,10 +10,16 @@ const log = require('../../../utility/logging/harper_logger');
 class OriginatorCheckMiddleware extends MiddlewareIF {
     constructor(middleware_type_enum, eval_function) {
         eval_function = (req, next) => {
-            log.trace('Evaluating originator check middleware');
-            if(req.data.__originator !== req.socket.id) {
-                log.debug('Passed Originator Middleware');
-                return;
+            try {
+                log.trace('Evaluating originator check middleware');
+                if (req.data.__originator !== req.socket.id) {
+                    log.debug('Passed Originator Middleware');
+                    return;
+                }
+            } catch(err) {
+                log.error('Got an error in OriginatorCheckMiddleware');
+                log.error(err);
+                return types.ERROR_CODES.MIDDLEWARE_ERROR;
             }
             log.debug('Failed Originator Middleware check');
             return types.ERROR_CODES.MIDDLEWARE_SWALLOW;

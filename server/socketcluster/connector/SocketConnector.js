@@ -1,3 +1,5 @@
+"use strict";
+const log = require('../../../utility/logging/harper_logger');
 
 class SocketConnector{
     /**
@@ -15,25 +17,26 @@ class SocketConnector{
 
     init(socket_client, options, credentials) {
         this.socket = socket_client.create(options);
-
         this.socket.name = this.name;
 
         this.socket.on('error', err =>{
-            console.error(err);
+            log.error('ERROR on HDB Client socket');
+            log.error(err);
         });
 
         this.socket.on('connect', status =>{
             this.disconnect_timestamp = null;
-            console.log(status);
+            log.info(status);
         });
 
         this.socket.on('disconnect', status =>{
             this.disconnect_timestamp = Date.now();
-            console.log(status);
+            log.error('Disconnected from cluster server.');
+            log.error(status);
         });
 
         this.socket.on('login', (data, res)=>{
-            console.log('logging in');
+            log.debug('logging in');
             res(null, credentials);
         });
     }

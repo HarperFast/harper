@@ -26,6 +26,9 @@ class DecisionMatrixIF {
         if(!rule_if_object) {
             throw new Error('Added invalid rule');
         }
+        if(connector_type_enum === null || connector_type_enum === undefined) {
+            throw new Error('invalid data source passed.');
+        }
         if(connector_type_enum === types.CONNECTOR_TYPE_ENUM.CORE) {
             this.core_rules.addCommand(rule_if_object);
             return;
@@ -56,11 +59,14 @@ class DecisionMatrixIF {
         if(!rule_id) {
             throw new Error('Invalid parameter passed to removeRule');
         }
+        if(connector_type_enum === null || connector_type_enum=== undefined) {
+            throw new Error('Invalid connector source');
+        }
         try {
             if (connector_type_enum === types.CONNECTOR_TYPE_ENUM.CORE) {
                 return this.searchAndRemoveRule(this.core_rules, rule_id);
             }
-            return this.cluster_rules.push(this.cluster_rules, rule_id);
+            return this.searchAndRemoveRule(this.cluster_rules, rule_id);
         } catch(err) {
             log.error(`There was an error removing rule with id: ${rule_id}`);
             log.error(err);
@@ -75,7 +81,7 @@ class DecisionMatrixIF {
      * @throws
      */
     listRules(connector_type_enum) {
-        if(!connector_type_enum) {
+        if(!connector_type_enum === null || connector_type_enum === undefined) {
             throw new Error('Invalid parameter passed to listRules');
         }
         // TODO: might need to return a deep copy of the rules so the caller can't modify the rules.
@@ -91,13 +97,8 @@ class DecisionMatrixIF {
      * @param rule_if_object_id
      */
     searchAndRemoveRule(rule_collection, rule_if_object_id) {
-        for(let i=0; i<rule_collection.length; i++) {
-            if(rule_collection[i].id === rule_if_object_id) {
-                rule_collection.splice(i,1);
-                return true;
-            }
-        }
-        return false;
+        let result = rule_collection.removeCommand(rule_if_object_id);
+        return result;
     }
 }
 module.exports = DecisionMatrixIF;

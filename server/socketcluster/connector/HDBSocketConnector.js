@@ -6,10 +6,15 @@ class HDBSocketConnector extends SocketConnector{
         options.query = {hdb_worker:1};
         super(socket_client, name, options, credentials);
         this.addEventListener('connect', this.connectHandler.bind(this));
+        this.addEventListener('disconnect', this.disconnectHandler.bind(this));
     }
 
     connectHandler(status){
-        this.subscribe(this.socket.id, this.hdbWorkerWatcher.bind(this));
+        this.subscribe(`worker_${process.pid}`, this.hdbWorkerWatcher.bind(this));
+    }
+
+    disconnectHandler(status){
+        console.log(`Disconnected from room worker_${process.pid} with status: ${status}`);
     }
 
     hdbWorkerWatcher(data){
