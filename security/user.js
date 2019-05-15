@@ -296,6 +296,7 @@ async function userInfo(body) {
         });
         user.role = role_data[0];
         delete user.password;
+        delete user.hash;
     } catch(err) {
         logger.error(err);
         throw err;
@@ -329,6 +330,7 @@ async function listUsersExternal() {
     try {
         for (let u in user_data) {
             delete user_data[u].password;
+            delete user_data[u].hash;
         }
     } catch (e) {
         throw new Error('there was an error massaging the user data');
