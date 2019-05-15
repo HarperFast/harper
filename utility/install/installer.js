@@ -345,40 +345,55 @@ function createAdminUser(callback) {
     role.permission = {};
     role.permission.super_user = true;
 
-    // Look for existing role if this is a reinstall
-    if (keep_data) {
-        // 1.  Get list of all roles that are su
-        // 2.  IFF > 1, Show list to user and require selection of primary su role
+    schema.setSchemaDataToGlobal(() => {
+        if (keep_data) {
+            // Look for existing role if this is a reinstall
+            cb_role_list_role((null), (err, res) => {
+                winston.info(`found ${res.length} existing roles.`);
+                let role_list = 'Please select the number assigned to the role that should be assigned to the new user.';
 
-        cb_role_list_role((null), (err, res) => {
-            winston.info(`found ${res.length} existing roles.`);
-            let role_list = 'Please select the number assigned to the role that should be assigned to the new user.';
-
-            if (res && res.length > 1) {
-                for (let i = 0; i < res.length; i++) {
-                    // It would be confusing to offer 0 as a number for the user to select, so offset by 1 to start at 1.
-                    role_list += `\n ${i + 1}. ${res[i].role}`;
-                }
-
-                let role_schema = {
-                    properties: {
-                        ROLE: {
-                            message: colors.red(role_list),
-                            type: 'number',
-                            minimum: 1,
-                            maximum: res.length,
-                            warning: 'Must select the number corresponding to the desired role.',
-                            default: '1'
-                        }
+                if (res && res.length > 1) {
+                    for (let i = 0; i < res.length; i++) {
+                        // It would be confusing to offer 0 as a number for the user to select, so offset by 1 to start at 1.
+                        role_list += `\n ${i + 1}. ${res[i].role}`;
                     }
-                };
 
-                prompt.get(role_schema, function (err, selected_role) {
+                    let role_schema = {
+                        properties: {
+                            ROLE: {
+                                message: colors.red(role_list),
+                                type: 'number',
+                                minimum: 1,
+                                maximum: res.length,
+                                warning: 'Must select the number corresponding to the desired role.',
+                                default: '1'
+                            }
+                        }
+                    };
+
+                    prompt.get(role_schema, function (err, selected_role) {
+                        let admin_user = {};
+                        admin_user.username = wizard_result.HDB_ADMIN_USERNAME;
+                        admin_user.password = wizard_result.HDB_ADMIN_PASSWORD;
+                        // account for the offset
+                        admin_user.role = res[selected_role.ROLE - 1].id;
+                        admin_user.active = true;
+
+                        cb_user_add_user(admin_user, (err) => {
+                            if (err) {
+                                winston.error('user creation error' + err);
+                                console.error('There was a problem creating the admin user.  Please check the install log for details.');
+                                return callback(err);
+                            }
+                            return callback(null);
+                        });
+                    });
+
+                } else {
                     let admin_user = {};
                     admin_user.username = wizard_result.HDB_ADMIN_USERNAME;
                     admin_user.password = wizard_result.HDB_ADMIN_PASSWORD;
-                    // account for the offset
-                    admin_user.role = res[selected_role.ROLE - 1].id;
+                    admin_user.role = res[0].id;
                     admin_user.active = true;
 
                     cb_user_add_user(admin_user, (err) => {
@@ -389,13 +404,21 @@ function createAdminUser(callback) {
                         }
                         return callback(null);
                     });
-                });
+                }
+            });
 
-            } else {
+        } else {
+            cb_role_add_role(role, (err, res) => {
+                if (err) {
+                    winston.error('role failed to create ' + err);
+                    console.log('There was a problem creating the default role.  Please check the install log for details.');
+                    return callback(err);
+                }
+
                 let admin_user = {};
                 admin_user.username = wizard_result.HDB_ADMIN_USERNAME;
                 admin_user.password = wizard_result.HDB_ADMIN_PASSWORD;
-                admin_user.role = res[0].id;
+                admin_user.role = res.id;
                 admin_user.active = true;
 
                 cb_user_add_user(admin_user, (err) => {
@@ -406,33 +429,9 @@ function createAdminUser(callback) {
                     }
                     return callback(null);
                 });
-            }
-        });
-
-    } else {
-        cb_role_add_role(role, (err, res) => {
-            if (err) {
-                winston.error('role failed to create ' + err);
-                console.log('There was a problem creating the default role.  Please check the install log for details.');
-                return callback(err);
-            }
-
-            let admin_user = {};
-            admin_user.username = wizard_result.HDB_ADMIN_USERNAME;
-            admin_user.password = wizard_result.HDB_ADMIN_PASSWORD;
-            admin_user.role = res.id;
-            admin_user.active = true;
-
-            cb_user_add_user(admin_user, (err) => {
-                if (err) {
-                    winston.error('user creation error' + err);
-                    console.error('There was a problem creating the admin user.  Please check the install log for details.');
-                    return callback(err);
-                }
-                return callback(null);
             });
-        });
-    }
+        }
+    });
 }
 
 function createSettingsFile(mount_status, callback) {
@@ -724,6 +723,7 @@ function createBootPropertiesFile(settings_path, callback) {
         winston.info('info', `props path ${props_file_path}`);
         env.setProperty(hdb_terms.HDB_SETTINGS_NAMES.INSTALL_USER, `${install_user}`);
         env.setProperty(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, settings_path);
+        env.setPropsFilePath(props_file_path);
         return callback(null, 'success');
     });
 }
