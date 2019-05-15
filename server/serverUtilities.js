@@ -31,8 +31,6 @@ module.exports = {
     chooseOperation: chooseOperation,
     getOperationFunction: getOperationFunction,
     processLocalTransaction: processLocalTransaction,
-    proccessDelegatedTransaction: proccessDelegatedTransaction,
-    processInThread: processInThread,
     UNAUTH_RESPONSE,
     UNAUTHORIZED_TEXT
 };
@@ -98,67 +96,6 @@ function setResponseStatus(res, status, msg) {
     } catch(err) {
         harper_logger.info('Tried to set response status, but it has already been set.');
     }
-}
-
-function processInThread(operation, operation_function, callback) {
-    if (!operationParameterValid(operation)) {
-        return callback(OPERATION_PARAM_ERROR_MSG, null);
-    }
-    if (operation_function === undefined || operation_function === null) {
-        let msg = `operation_function parameter in processInThread is undefined`;
-        harper_logger.error(msg);
-        return callback(msg, null);
-    }
-    try {
-        if (operation.operation !== 'read_log')
-            harper_logger.info(JSON.stringify(operation));
-    } catch (e) {
-        harper_logger.error(e);
-        return callback(e);
-    }
-    operation_function(operation, (error, data) => {
-        if (error) {
-            harper_logger.info(error);
-            if (typeof error !== 'object')
-                error = {"error": error};
-            return callback(error, null);
-        }
-        if (typeof data !== 'object')
-            data = {"message": data};
-        return callback(null, data);
-    });
-}
-
-//TODO: operation_function is not used, do we need it?
-function proccessDelegatedTransaction(operation, operation_function, callback) {
-    if (!operationParameterValid(operation)) {
-        return callback(OPERATION_PARAM_ERROR_MSG, null);
-    }
-    if (global.forks === undefined || global.forks === null) {
-        let message = 'global forks is undefined';
-        harper_logger.error(message);
-        return callback(message, null);
-    }
-
-    let req = {};
-    req.headers = {};
-    req.headers.authorization = operation.hdb_auth_header;
-
-    auth.authorize(req, null, function (err, user) {
-        if (err) {
-            return callback(err);
-        }
-
-        operation.hdb_user = user;
-        let f = Math.floor(Math.random() * Math.floor(global.forks.length))
-        let payload = {
-            "id": uuidv1(),
-            "body": operation,
-            "type": "delegate_transaction"
-        };
-        global.delegate_callback_queue[payload.id] = callback;
-        global.forks[f].send(payload);
-    });
 }
 
 // TODO: This doesn't really need a callback, should simplify it to a return statement.
@@ -379,12 +316,4 @@ function signalJob(json, callback) {
         harper_logger.error(message);
         return callback(message, null);
     });
-}
-
-function operationParameterValid(operation) {
-    if (operation === undefined || operation === null) {
-        harper_logger.error(OPERATION_PARAM_ERROR_MSG);
-        return false;
-    }
-    return true;
 }

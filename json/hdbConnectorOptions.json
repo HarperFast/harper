@@ -6,5 +6,8 @@
   "autoReconnectOptions": {
     "initialDelay": 1000,
     "maxDelay": 2000
+  },
+  "query": {
+    "hdb_worker":true
   }
 }

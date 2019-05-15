@@ -136,32 +136,7 @@ class WorkerIF extends SCWorker{
         return next(`There was a middleware failure. ${result}`);
     }
 
-    /**
-     * Get and evaluate the middleware for authenticate.  Will call next middleware if all middleware passes, and swallow
-     * the message if it fails.
-     * @param req - the request
-     * @param next - the next middleware function to call.
-     * @returns {*}
-     */
-    evalRoomHandshakeSCMiddleware(req, next) {
-        // TODO: We should be able to make this a premade middleware.
-        console.log('sc shaking hands');
 
-        req.socket.emit('login', 'send login credentials', (error, credentials)=>{
-            if(error){
-                return console.error(error);
-            }
-            console.log(credentials);
-            if(!credentials || !credentials.username || !credentials.password){
-                return console.error('Invalid credentials');
-            }
-
-            //right now setting a dummy token, we do need to handle this scenario: https://github.com/SocketCluster/socketcluster/issues/343
-            req.socket.setAuthToken({username: 'hdb'}, {expiresIn: 2000});
-        });
-
-        next();
-    }
 
     run() {
         throw new Error('Not Implemented.');

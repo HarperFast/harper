@@ -9,6 +9,7 @@ const {inspect} = require('util');
 const {promisify} = require('util');
 const log = require('../../../utility/logging/harper_logger');
 const NodeConnector = require('../connector/NodeConnector');
+const password_utility = require('../../../utility/password');
 
 /**
  * Represents a WorkerIF implementation for socketcluster.
@@ -55,6 +56,9 @@ class ClusterWorker extends WorkerIF {
         console.log('Running ClusterWorker');
         log.debug('Cluster Worker starting up.');
         let app = express();
+
+        this.on('masterMessage', this.masterMessageHandler.bind(this));
+
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_IN, this.checkNewRoom.bind(this));
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_IN, this.messagePrepMiddleware.bind(this));
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_IN, this.evalRoomPublishInMiddleware.bind(this));
@@ -72,7 +76,34 @@ class ClusterWorker extends WorkerIF {
         this.exchange_set = promisify(this.exchange.set).bind(this.exchange);
 
         if(this.isLeader){
-            new NodeConnector(require('../connector/node'), this);
+            new NodeConnector(require('../../../json/node'), this);
+        }
+    }
+
+    masterMessageHandler(data, respond){
+        try {
+            if (data.hdb_data !== undefined) {
+                this.setHDBDatatoExchange(data.hdb_data).then(() => {
+                    log.info('hdb_data successfully set to exchange');
+                });
+            }
+            respond();
+        }catch(e){
+            respond(e);
+        }
+    }
+
+    async setHDBDatatoExchange(hdb_data){
+        if(hdb_data.schema !== undefined){
+            await this.exchange_set('hdb_schema', hdb_data.schema);
+        }
+
+        if(hdb_data.users !== undefined){
+            await this.exchange_set('hdb_users', hdb_data.users);
+        }
+
+        if(hdb_data.nodes !== undefined){
+            await this.exchange_set('hdb_nodes', hdb_data.nodes);
         }
     }
 
@@ -132,6 +163,57 @@ class ClusterWorker extends WorkerIF {
                 types.CONNECTOR_TYPE_ENUM.CORE);
         }
         next();
+    }
+
+    /**
+     * Get and evaluate the middleware for authenticate.  Will call next middleware if all middleware passes, and swallow
+     * the message if it fails.
+     * @param req - the request
+     * @param next - the next middleware function to call.
+     * @returns {*}
+     */
+    evalRoomHandshakeSCMiddleware(req, next) {
+        // TODO: We should be able to make this a premade middleware.
+        log.trace('starting evalRoomHandshakeSCMiddleware');
+
+        req.socket.emit('login', 'send login credentials', (error, credentials)=>{
+            if(error){
+                console.error(error);
+                return false;
+            }
+
+            if(!credentials || !credentials.username || !credentials.password){
+                console.error('Invalid credentials');
+                return false;
+            }
+
+            this.handleLoginResponse(req, credentials).then(()=>{
+                log.info('socket successfully authenticated');
+            });
+        });
+
+        next();
+    }
+
+    async handleLoginResponse(req, credentials){
+        let users = await this.exchange_get('hdb_users');
+        let found_user = undefined;
+        for(let x = 0; x < users.length; x++){
+            let user = users[x];
+            if(user.username === credentials.username && user.role.permission.super_user === true && password_utility.validate(user.password, credentials.password)){
+                found_user = user;
+                break;
+            }
+        }
+
+        if(found_user === undefined) {
+            req.socket.destroy();
+            return log.error('invalid credentials, access denied');
+        }
+
+        //we may need to handle this scenario: https://github.com/SocketCluster/socketcluster/issues/343
+        //set the JWT to expire in 1 day
+        req.socket.setAuthToken({username: credentials.username}, {expiresIn: '1d'});
     }
 }
 new ClusterWorker();

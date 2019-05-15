@@ -3,6 +3,7 @@
 const SocketConnector = require('./SocketConnector');
 const socket_client = require('socketcluster-client');
 const sc_objects = require('../socketClusterObjects');
+const creds =require('../../../json/sc_credentials');
 const AssignToHdbChildWorkerRule = require('../decisionMatrix/rules/AssignToHdbChildWorkerRule');
 const SubscriptionObject = sc_objects.SubscriptionObject;
 const NodeObject = sc_objects.NodeObject;
@@ -39,10 +40,10 @@ class NodeConnector {
      */
     spawnRemoteConnections(nodes){
         nodes.forEach(node =>{
-            let options = require('./connectorOptions');
+            let options = require('../../../json/connectorOptions');
             options.hostname = node.host;
             options.port = node.port;
-            let connection = new SocketConnector(socket_client, node.name,options, {username: 'kyle', password:'test'});
+            let connection = new SocketConnector(socket_client, node.name,options, creds);
 
             if(node.subscriptions){
                 node.subscriptions.push(this.HDB_Schema_Subscription);

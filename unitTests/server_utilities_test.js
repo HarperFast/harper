@@ -139,60 +139,6 @@ describe(`Test chooseOperation`, function () {
     });
 });
 
-describe(`Test proccessDelegatedTransaction`, function () {
-    it('Pass in operation, expect err in callback', function (done) {
-        let proccessDelegatedTransaction = server_utilities.__get__('proccessDelegatedTransaction');
-        global.forks = [FORK_STUB];
-        proccessDelegatedTransaction(undefined, 'insert', function (err, found) {
-            assert.ok(err.length > 0);
-            done();
-        })
-    });
-    it('Global.forks undefined', function (done) {
-        let proccessDelegatedTransaction = server_utilities.__get__('proccessDelegatedTransaction');
-        global.forks = undefined;
-        proccessDelegatedTransaction('insert', 'insert', function (err, found) {
-            assert.ok(err.length > 0);
-            done();
-        })
-    });
-});
-
-describe(`Test processInThread`, function () {
-    it('Test processInThread nominal path by using test_func declared above', function (done) {
-        let processInThread = server_utilities.__get__('processInThread');
-        //Use the test_func function above as an operation function stub
-        processInThread('insert', test_func, function (err, found) {
-            assert.equal(found.message,true);
-            done();
-        });
-    });
-    it('Test processInThread error path by using test_func_error declared above', function (done) {
-        let processInThread = server_utilities.__get__('processInThread');
-        //Use the test_func function above as an operation function stub
-        processInThread('insert', test_func_error, function (err, found) {
-            assert.ok(err.error.length > 0 );
-            done();
-        });
-    });
-    it('Test processInThread pass invalid operation', function (done) {
-        let processInThread = server_utilities.__get__('processInThread');
-        //Use the test_func function above as an operation function stub
-        processInThread(undefined, test_func_error, function (err, found) {
-            assert.ok(err.length > 0 );
-            done();
-        });
-    });
-    it('Test processInThread pass invalid operation_function', function (done) {
-        let processInThread = server_utilities.__get__('processInThread');
-        //Use the test_func function above as an operation function stub
-        processInThread('insert', undefined, function (err, found) {
-            assert.ok(err.length > 0 );
-            done();
-        });
-    });
-});
-
 describe(`Test processLocalTransaction`, function () {
     let mock_request = {"body":"blah"};
 
