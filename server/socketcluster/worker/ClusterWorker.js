@@ -197,11 +197,13 @@ class ClusterWorker extends WorkerIF {
     async handleLoginResponse(req, credentials){
         let users = await this.exchange_get('hdb_users');
         let found_user = undefined;
-        users.forEach(user=>{
-            if(user.username === credentials.username && user.role.role === 'super_user' && password_utility.validate(user.password, credentials.password)){
+        for(let x = 0; x < users.length; x++){
+            let user = users[x];
+            if(user.username === credentials.username && user.role.permission.super_user === true && password_utility.validate(user.password, credentials.password)){
                 found_user = user;
+                break;
             }
-        });
+        }
 
         if(found_user === undefined) {
             req.socket.destroy();
