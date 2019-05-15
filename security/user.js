@@ -69,7 +69,7 @@ async function addUser(user){
         table : 'hdb_role',
         hash_values: [clean_user.role],
         hash_attribute : 'id',
-        get_attributes: ['id']
+        get_attributes: ['id', 'permission']
     };
 
     let search_role = await p_search_search_by_hash(search_obj).catch((err) => {
@@ -81,7 +81,7 @@ async function addUser(user){
         throw new Error("Role not found.");
     }
 
-    if(search_role.permission.cluster_user === true){
+    if(search_role[0].permission.cluster_user === true){
         clean_user.hash = crypto_hash.encrypt(clean_user.password);
     }
 
@@ -143,7 +143,13 @@ async function alterUser(json_message) {
         throw new Error(ACTIVE_BOOLEAN);
     }
 
+    let is_cluster_user = isClusterUser(clean_user.username);
+
     if(!hdb_utility.isEmpty(clean_user.password) && !hdb_utility.isEmptyOrZeroLength(clean_user.password.trim())) {
+        //if this is a cluster_user we must regenerate the hash when password changes
+        if(is_cluster_user){
+            clean_user.hash = crypto_hash.encrypt(clean_user.password);
+        }
         clean_user.password = password.hash(clean_user.password);
     }
 
@@ -153,6 +159,11 @@ async function alterUser(json_message) {
     }
     // Invalid roles will be found in the role search
     if(clean_user.role) {
+        //if this is a cluster_user you cannot change it's role
+        if(is_cluster_user){
+            throw new Error('cannot change the role of a cluster_user');
+        }
+
         // Make sure assigned role exists.
         let role_search_obj = {
             schema: 'system',
@@ -195,6 +206,20 @@ async function alterUser(json_message) {
 
     signalling.signalUserChange({type: 'user'});
     return success;
+}
+
+function isClusterUser(username){
+    // get user's current role
+    let is_cluster_user = false;
+    for(let x = 0; x < global.hdb_users.length; x++){
+        let tmp_user = global.hdb_users[x];
+        if(tmp_user.username === username && tmp_user.role.permission.cluster_user === true){
+            is_cluster_user = true;
+            break;
+        }
+    }
+
+    return is_cluster_user;
 }
 
 function dropUserCB(user, callback){

@@ -49,11 +49,17 @@ function customValidate(object) {
     if (object.permission.cluster_user) {
         if (!validate.isBoolean(object.permission.cluster_user))
             validationErrors.push(validate.isBoolean(object.permission.cluster_user));
+
+        if(Object.keys(object.permission).length > 1){
+            validationErrors.push(new Error('cluster_user permission cannot be mixed with other permissions'));
+        }
     }
 
     if (object.permission.super_user) {
         if (!validate.isBoolean(object.permission.super_user))
             validationErrors.push(validate.isBoolean(object.permission.super_user));
+
+
     }
 
     for (let item in  object.permission) {
