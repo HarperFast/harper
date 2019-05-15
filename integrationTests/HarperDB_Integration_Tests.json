@@ -10822,6 +10822,700 @@
 					"response": []
 				},
 				{
+					"name": "Query system table as SU",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "d6c2b8a5-2350-4570-9825-da63397845d9",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"SU can view system table\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    var objKeysData = Object.keys(jsonData[0]);",
+									"    pm.expect(jsonData[0].username).to.eql(environment[\"username\"]);",
+									"    pm.expect(objKeysData.includes(\"password\")).to.be.true;",
+									"    pm.expect(objKeysData.includes(\"role\")).to.be.true;",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3Q="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{ \n  \"operation\": \"search_by_value\", \n  \"table\":\"hdb_user\",\n  \"schema\": \"system\",\n  \"search_attribute\":\"username\",\n  \"search_value\":\"{{username}}\",\n  \"get_attributes\":[\"*\"]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Confirm that a super user can query a system table"
+					},
+					"response": []
+				},
+				{
+					"name": "Query system table non SU",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "d6c2b8a5-2350-4570-9825-da63397845d9",
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"pm.test(\"SU can view system table\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.eql(\"You are not authorized to perform the operation specified\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3Q="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{ \n  \"operation\": \"search_by_value\", \n  \"table\":\"hdb_user\",\n  \"schema\": \"system\",\n  \"search_attribute\":\"username\",\n  \"search_value\":\"{{username}}\",\n  \"get_attributes\":[\"*\"]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Confirm that a non super user can NOT query a system table"
+					},
+					"response": []
+				},
+				{
+					"name": "Insert record system table as SU",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "d6c2b8a5-2350-4570-9825-da63397845d9",
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"pm.test(\"SU can view system table\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.eql(\"You are not authorized to perform the operation specified\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3Q="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"system\",\n\"table\":\"hdb_user\",\n\"records\": [\n  {\n\t\"username\": \"admin\",\n    \"role\": \"0bffc136-0b0b-4582-8efe-44031f40d906\",\n    \"password\": \"fakepassword\",\n    \"active\": true\n  }\n]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Confirm that a super user can NOT insert record into system table"
+					},
+					"response": []
+				},
+				{
+					"name": "Insert record system table as non SU",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "d6c2b8a5-2350-4570-9825-da63397845d9",
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"pm.test(\"SU can view system table\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.eql(\"You are not authorized to perform the operation specified\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3Q="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"system\",\n\"table\":\"hdb_user\",\n\"records\": [\n  {\n\t\"username\": \"admin\",\n    \"role\": \"0bffc136-0b0b-4582-8efe-44031f40d906\",\n    \"password\": \"fakepassword\",\n    \"active\": true\n  }\n]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Confirm that a non super user can NOT insert record into system table"
+					},
+					"response": []
+				},
+				{
+					"name": "Update record system table as SU",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "d6c2b8a5-2350-4570-9825-da63397845d9",
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"pm.test(\"SU can view system table\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.eql(\"You are not authorized to perform the operation specified\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3Q="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"update\",\n\"schema\":\"system\",\n\"table\":\"hdb_user\",\n\"records\": [\n  {\n\t\"username\": \"admin\",\n    \"role\": \"0bffc136-0b0b-4582-8efe-44031f40d906\",\n    \"password\": \"fakepassword\",\n    \"active\": true\n  }\n]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Confirm that a super user can NOT update record in system table"
+					},
+					"response": []
+				},
+				{
+					"name": "Update record system table as non SU ",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "d6c2b8a5-2350-4570-9825-da63397845d9",
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"pm.test(\"SU can view system table\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.eql(\"You are not authorized to perform the operation specified\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3Q="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"update\",\n\"schema\":\"system\",\n\"table\":\"hdb_user\",\n\"records\": [\n  {\n\t\"username\": \"admin\",\n    \"role\": \"0bffc136-0b0b-4582-8efe-44031f40d906\",\n    \"password\": \"fakepassword\",\n    \"active\": true\n  }\n]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Confirm that a non super user can NOT update record in system table"
+					},
+					"response": []
+				},
+				{
+					"name": "Delete record system table as SU ",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "d6c2b8a5-2350-4570-9825-da63397845d9",
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"pm.test(\"SU can view system table\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.eql(\"You are not authorized to perform the operation specified\");",
+									"});",
+									"",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3Q="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"delete\",\n\"schema\":\"system\",\n\"table\":\"hdb_user\",\n\"hash_values\": [\"admin1\"]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Confirm that a super user can NOT delete record from system table"
+					},
+					"response": []
+				},
+				{
+					"name": "Delete record system table as non SU ",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "d6c2b8a5-2350-4570-9825-da63397845d9",
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"pm.test(\"SU can view system table\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.eql(\"You are not authorized to perform the operation specified\");",
+									"});",
+									"",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3Q="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"delete\",\n\"schema\":\"system\",\n\"table\":\"hdb_user\",\n\"hash_values\": [\"admin1\"]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Confirm that a non super user can NOT delete record from system table"
+					},
+					"response": []
+				},
+				{
+					"name": "Drop system table as SU",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "d6c2b8a5-2350-4570-9825-da63397845d9",
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"pm.test(\"SU can view system table\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.eql(\"You are not authorized to perform the operation specified\");",
+									"});",
+									"",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3Q="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"drop_table\",\n\"schema\":\"system\",\n\"table\":\"hdb_user\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Confirm that a super user can NOT drop system table."
+					},
+					"response": []
+				},
+				{
+					"name": "Drop system table as non SU",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "d6c2b8a5-2350-4570-9825-da63397845d9",
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"pm.test(\"SU can view system table\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.eql(\"You are not authorized to perform the operation specified\");",
+									"});",
+									"",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3Q="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"drop_table\",\n\"schema\":\"system\",\n\"table\":\"hdb_user\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Confirm that a non super user can NOT drop system table."
+					},
+					"response": []
+				},
+				{
 					"name": "Jobs - Add jobs test schema",
 					"event": [
 						{
