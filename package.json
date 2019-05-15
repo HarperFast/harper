@@ -5,7 +5,7 @@
   "main": "run.js",
   "bin": "./bin/run.js",
   "scripts": {
-    "build": "babel bin/ data_layer/ events/ json/ lib/ security/ server/ sqlTranslator/ upgrade/ utility/ validation/ -d compiled/",
+    "build": "eslint -c ./.eslintbuild bin/ data_layer/ events/ lib/ security/ server/ sqlTranslator/ upgrade/ utility/ validation/",
     "test": "cd bin/ && mocha ../node_modules/mocha/bin/_mocha --timeout 0 --ui bdd --recursive  ../unitTests --watch",
     "hdb-check": "./utility/devops/hdb-check.sh",
     "prepublish": "npm run build",
