@@ -11,6 +11,7 @@ const os = require('os');
 const assert = require('assert');
 const signal = require('../../utility/signalling');
 const stop = require('../../bin/stop');
+const hdb_terms = require('../../utility/hdbTerms');
 
 chai.use(sinon_chai);
 let sandbox = sinon.createSandbox();
@@ -51,7 +52,8 @@ describe('Test stop.js' , () => {
 
             stop.stop((err) => {
                 expect(err).to.be.null;
-                expect(find_ps_stub).to.have.been.calledOnce;
+               // expect(find_ps_stub).to.have.been.first.called.with(hdb_terms.HDB_PROC_NAME, hdb_terms.HDB_PROC_DESCRIPTOR);
+               // expect(find_ps_stub).to.have.been.second.called.with(hdb_terms.SC_PROC_NAME, hdb_terms.SC_PROC_DESCRIPTOR);
                 expect(console_log_spy).to.have.been.calledWith("Stopping HarperDB.");
                 expect(console_log_spy).to.have.been.calledWith("No instances of HarperDB are running.");
             });

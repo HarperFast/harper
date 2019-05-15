@@ -40,55 +40,61 @@ async function restartProcesses(json_message) {
  * this will fail.
  */
 function stop(callback) {
-    let curr_user = os.userInfo();
     console.log("Stopping HarperDB.");
+    try {
+        killHDBAndSCServers().then(() => callback(null));
+    } catch(e){
+        console.error(e);
+        return callback(e);
+    }
+}
 
-    ps_list.findPs(hdb_terms.HDB_PROC_NAME).then(harperdb_instances => {
+async function killHDBAndSCServers(){
+    await killProcs(hdb_terms.HDB_PROC_NAME, 'HarperDB');
+    await killProcs(hdb_terms.SC_PROC_NAME, 'Cluster Server');
+}
 
+async function killProcs(proc_name, descriptor){
+    try {
+        let curr_user = os.userInfo();
+        let harperdb_instances = await ps_list.findPs(proc_name);
         if(harperdb_instances.length === 0) {
-            console.log("No instances of HarperDB are running.");
-            return callback(null);
-        } else {
-            harperdb_instances.forEach(function killProcs(proc) {
-                // Note we are doing loose equality (==) rather than strict
-                // equality here, as find-process returns the uid as a string.  No point in spending time converting it.
-                // if curr_user.uid is 0, the user has run stop using sudo or logged in as root.
-                if (curr_user.uid == 0 || proc.uid == curr_user.uid) {
-                    try {
-                        process.kill(proc.pid);
-                    } catch (err) {
-                        console.error(err);
-                    }
-                }
-            });
-
+            console.log(`No instances of ${descriptor} are running.`);
+            return;
         }
 
-        checkHdbProcsEnd().then(()=>{
-            return callback(null);
+        harperdb_instances.forEach(function killProcs(proc) {
+            // Note we are doing loose equality (==) rather than strict
+            // equality here, as find-process returns the uid as a string.  No point in spending time converting it.
+            // if curr_user.uid is 0, the user has run stop using sudo or logged in as root.
+            if (curr_user.uid == 0 || proc.uid == curr_user.uid) {
+                try {
+                    process.kill(proc.pid);
+                } catch (err) {
+                    console.error(err);
+                }
+            }
         });
 
-    }).catch( function stopErr(err) {
-        if(err) {
-            console.error(err);
-            return callback(err);
-        }
-    });
+        await checkHdbProcsEnd();
+    }catch( err) {
+        throw err;
+    }
 }
 
 /**
  * Verifies all processes have stopped before fulfilling promise.
  * @returns {Promise<void>}
  */
-async function  checkHdbProcsEnd(){
+async function checkHdbProcsEnd(proc_name){
     let go_on = true;
 
     do{
         await async_settimeout(HDB_PROC_END_TIMEOUT);
 
-        let instances =  await ps_list.findPs(hdb_terms.HDB_PROC_NAME);
+        let instances = await ps_list.findPs(proc_name);
         if(instances.length === 0) {
-            go_on = false
+            go_on = false;
         }
     } while(go_on);
 }
