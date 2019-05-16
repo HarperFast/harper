@@ -182,29 +182,6 @@ async function removeNode(remove_json_message) {
 }
 
 /**
- * A callback wrapper for configureCluster.  This is needed to match the processLocalTransaction style currently used until we fully
- * migrate to async/await.  Once that migration is complete, this function can be removed and have it replaced in module.exports
- * with the async function.
- *
- * @param enable_cluster_json - The json message containing the port, node name, enabled to use to enable clustering
- * @param callback
- * @returns {*}
- */
-function configureClusterCB(enable_cluster_json, callback) {
-    if(!enable_cluster_json) {
-        return callback('Invalid JSON message for remove_node', null);
-    }
-    let response = {};
-    configureCluster(enable_cluster_json).then(() => {
-        response['message'] = 'Successfully wrote clustering config settings.  A backup file was created.';
-        return callback(null, response);
-    }).catch((err) => {
-        log.error(`There was an error removing node ${err}`);
-        return callback(err, null);
-    });
-}
-
-/**
  * Configure clustering by updating the config settings file with the specified paramters in the message, and then
  * start or stop clustering depending on the enabled value.
  * @param enable_cluster_json
@@ -527,7 +504,6 @@ module.exports = {
     configureCluster: configureCluster,
     clusterStatus: clusterStatus,
     removeNode: removeNode,
-    payloadHandler: payloadHandler,
     clusterMessageHandler: clusterMessageHandler,
     authHeaderToUser: authHeaderToUser,
     setEnterprise: setEnterprise,

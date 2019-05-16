@@ -136,8 +136,6 @@ class WorkerIF extends SCWorker{
         return next(`There was a middleware failure. ${result}`);
     }
 
-
-
     run() {
         throw new Error('Not Implemented.');
     }

@@ -25,9 +25,8 @@ const sio_server_stopped_event = require('../events/SioServerStoppedEvent');
 const signalling = require('../utility/signalling');
 const terms = require('../utility/hdbTerms');
 const RestartEventObject = require('./RestartEventObject');
-const child_process = require('child_process');
-const {inspect, promisify} = require('util');
-const path = require('path');
+const util = require('util');
+const promisify = util.promisify;
 
 const p_schema_to_global = promisify(global_schema.setSchemaDataToGlobal);
 const p_users_to_global = promisify(user_schema.setUsersToGlobal);
