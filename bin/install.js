@@ -18,4 +18,4 @@ function install (callback) {
 }
 module.exports = {
     install: install
-}
+};

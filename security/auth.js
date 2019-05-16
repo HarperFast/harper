@@ -7,7 +7,9 @@ const validation = require('../validation/check_permissions');
 const passport = require('passport');
 const LocalStrategy = require('passport-local').Strategy;
 const BasicStrategy = require('passport-http').BasicStrategy;
+const util = require('util');
 const user_functions = require('./user');
+const cb_users_set_global = util.callbackify(user_functions.setUsersToGlobal);
 const clone = require('clone');
 const systemSchema = require('../json/systemSchema');
 const terms = require('../utility/hdbTerms');
@@ -46,13 +48,12 @@ function appendSystemTablesToRole(user_role) {
 
 function findAndValidateUser(username, password, done) {
     if (!global.hdb_users) {
-        user_functions.setUsersToGlobal(function () {
+        cb_users_set_global(() => {
             handleResponse();
         });
     } else {
         handleResponse();
     }
-
 
     function handleResponse() {
         let user_tmp = global.hdb_users.filter((user) => {
@@ -71,6 +72,7 @@ function findAndValidateUser(username, password, done) {
             return done('Cannot complete request:  Invalid password', false);
         }
         delete user.password;
+        delete user.hash;
         appendSystemTablesToRole(user.role);
         return done(null, user);
     }

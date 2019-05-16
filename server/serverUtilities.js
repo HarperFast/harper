@@ -1,6 +1,5 @@
 "use strict";
 
-const write = require('../data_layer/insert');
 const uuidv1 = require('uuid/v1');
 const search = require('../data_layer/search');
 const sql = require('../sqlTranslator/index');
@@ -9,7 +8,6 @@ const schema = require('../data_layer/schema');
 const delete_ = require('../data_layer/delete');
 const user = require('../security/user');
 const role = require('../security/role');
-const read_log = require('../utility/logging/read_logs');
 const cluster_utilities = require('./clustering/clusterUtilities');
 const auth = require('../security/auth');
 const harper_logger = require('../utility/logging/harper_logger');
@@ -21,7 +19,31 @@ const job_runner = require('./jobRunner');
 const terms = require('../utility/hdbTerms');
 const reg = require('../utility/registration/registrationHandler');
 const stop = require('../bin/stop');
-const {callbackify} = require('util');
+const util = require('util');
+const insert = require('../data_layer/insert');
+
+/**
+ * Callback functions are still heavily relied on.
+ * Callbackify takes an async function and converts to an error-first callback style function.
+* */
+const cb_insert_insert = util.callbackify(insert.insert);
+const cb_insert_update = util.callbackify(insert.update);
+const cb_schema_drop_attribute = util.callbackify(schema.dropAttribute);
+const cb_user_add_user = util.callbackify(user.addUser);
+const cb_user_alter_user = util.callbackify(user.alterUser);
+const cb_user_drop_user = util.callbackify(user.dropUser);
+const cb_user_user_info = util.callbackify(user.userInfo);
+const cb_user_list_user_external = util.callbackify(user.listUsersExternal);
+const cb_role_add_role = util.callbackify(role.addRole);
+const cb_role_alter_role = util.callbackify(role.alterRole);
+const cb_role_drop_role = util.callbackify(role.dropRole);
+const cb_role_list_role = util.callbackify(role.listRoles);
+const cb_reg_hand_get_finger = util.callbackify(reg.getFingerprint);
+const cb_reg_hand_set_licence = util.callbackify(reg.setLicense);
+const cb_clust_util_config = util.callbackify(cluster_utilities.configureCluster);
+const cb_clust_util_status = util.callbackify(cluster_utilities.clusterStatus);
+const cb_clust_util_remove_node = util.callbackify(cluster_utilities.removeNode);
+const cb_read_log = util.callbackify(harper_logger.readLog);
 
 const UNAUTH_RESPONSE = 403;
 const UNAUTHORIZED_TEXT = 'You are not authorized to perform the operation specified';
@@ -142,10 +164,10 @@ function getOperationFunction(json){
 
     switch (json.operation) {
         case terms.OPERATIONS_ENUM.INSERT:
-            operation_function = write.insertCB;
+            operation_function = cb_insert_insert;
             break;
         case terms.OPERATIONS_ENUM.UPDATE:
-            operation_function = write.updateCB;
+            operation_function = cb_insert_update;
             break;
         case terms.OPERATIONS_ENUM.SEARCH_BY_HASH:
             operation_function = search.searchByHash;
@@ -187,7 +209,7 @@ function getOperationFunction(json){
             operation_function = schema.dropTable;
             break;
         case terms.OPERATIONS_ENUM.DROP_ATTRIBUTE:
-            operation_function = schema.dropAttribute;
+            operation_function = cb_schema_drop_attribute;
             break;
         case terms.OPERATIONS_ENUM.DESCRIBE_SCHEMA:
             operation_function = schema.describeSchema;
@@ -202,46 +224,46 @@ function getOperationFunction(json){
             operation_function = delete_.delete;
             break;
         case terms.OPERATIONS_ENUM.ADD_USER:
-            operation_function = user.addUser;
+            operation_function = cb_user_add_user;
             break;
         case terms.OPERATIONS_ENUM.ALTER_USER:
-            operation_function = user.alterUser;
+            operation_function = cb_user_alter_user;
             break;
         case terms.OPERATIONS_ENUM.DROP_USER:
-            operation_function = user.dropUser;
+            operation_function = cb_user_drop_user;
             break;
         case terms.OPERATIONS_ENUM.LIST_USERS:
-            operation_function = user.listUsersExternal;
+            operation_function = cb_user_list_user_external;
             break;
         case terms.OPERATIONS_ENUM.LIST_ROLES:
-            operation_function = role.listRoles;
+            operation_function = cb_role_list_role;
             break;
         case terms.OPERATIONS_ENUM.ADD_ROLE:
-            operation_function = role.addRole;
+            operation_function = cb_role_add_role;
             break;
         case terms.OPERATIONS_ENUM.ALTER_ROLE:
-            operation_function = role.alterRole;
+            operation_function = cb_role_alter_role;
             break;
         case terms.OPERATIONS_ENUM.DROP_ROLE:
-            operation_function = role.dropRole;
+            operation_function = cb_role_drop_role;
             break;
         case terms.OPERATIONS_ENUM.USER_INFO:
-            operation_function = user.userInfo;
+            operation_function = cb_user_user_info;
             break;
         case terms.OPERATIONS_ENUM.READ_LOG:
-            operation_function = read_log.read_log;
+            operation_function = cb_read_log;
             break;
         case terms.OPERATIONS_ENUM.ADD_NODE:
             operation_function = cluster_utilities.addNode;
             break;
         case terms.OPERATIONS_ENUM.REMOVE_NODE:
-            operation_function = cluster_utilities.removeNode;
+            operation_function = cb_clust_util_remove_node;
             break;
         case terms.OPERATIONS_ENUM.CONFIGURE_CLUSTER:
-            operation_function = cluster_utilities.configureCluster;
+            operation_function = cb_clust_util_config;
             break;
         case terms.OPERATIONS_ENUM.CLUSTER_STATUS:
-            operation_function = cluster_utilities.clusterStatus;
+            operation_function = cb_clust_util_status;
             break;
         case terms.OPERATIONS_ENUM.EXPORT_TO_S3:
             operation_function = signalJob;
@@ -268,14 +290,14 @@ function getOperationFunction(json){
             operation_function = jobs.updateJob;
             break;
         case terms.OPERATIONS_ENUM.GET_FINGERPRINT:
-            operation_function = reg.getFingerprint;
+            operation_function = cb_reg_hand_get_finger;
             break;
         case terms.OPERATIONS_ENUM.SET_LICENSE:
-            operation_function = reg.setLicense;
+            operation_function = cb_reg_hand_set_licence;
             break;
         case terms.OPERATIONS_ENUM.RESTART:
             // TODO: Does callbackify work?
-            let restart_cb = callbackify(stop.restartProcesses);
+            let restart_cb = util.callbackify(stop.restartProcesses);
             operation_function = restart_cb;
             break;
         default:

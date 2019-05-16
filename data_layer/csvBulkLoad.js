@@ -7,7 +7,8 @@ const validator = require('../validation/csvLoadValidator');
 const request_promise = require('request-promise-native');
 const hdb_terms = require('../utility/hdbTerms');
 const hdb_utils = require('../utility/common_utils');
-const {promisify} = require('util');
+const util = require('util');
+const cb_insert_insert = util.callbackify(insert.insert);
 const {promise} = require('alasql');
 const logger = require('../utility/logging/harper_logger');
 const fs = require('fs');
@@ -18,8 +19,8 @@ const unix_filename_regex = new RegExp(/[^-_.A-Za-z0-9]/);
 const ALASQL_MIDDLEWARE_PARSE_PARAMETERS = 'SELECT * FROM CSV(?, {headers:true, separator:","})';
 
 // Promisify bulkLoad to avoid more of a refactor for now.
-const p_bulk_load = promisify(bulkLoad);
-const p_fs_access = promisify(fs.access);
+const p_bulk_load = util.promisify(bulkLoad);
+const p_fs_access = util.promisify(fs.access);
 
 module.exports = {
     csvDataLoad: csvDataLoad,
@@ -225,9 +226,9 @@ function bulkLoad(records, schema, table, action, callback){
 
     let write_function;
     if(action === 'insert'){
-        write_function = insert.insertCB;
+        write_function = cb_insert_insert;
     } else {
-        write_function = insert.updateCB;
+        write_function = cb_insert_insert;
     }
 
     write_function(target_object, (err, data)=> {

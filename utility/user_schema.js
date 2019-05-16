@@ -1,13 +1,15 @@
-"use strict"
+"use strict";
 const logger = require('../utility/logging/harper_logger');
 const user = require('../security/user');
+const util = require('util');
+const cb_user_list_users = util.callbackify(user.listUsers);
 
 module.exports = {
     setUsersToGlobal: setUsersToGlobal
 };
 
 function setUsersToGlobal(callback) {
-    user.listUsers(null, (err, users)=>{
+    cb_user_list_users(null, (err, users) => {
         if(err){
             return logger.error(err);
         }

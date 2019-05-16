@@ -23,6 +23,7 @@ async function processData(process_wrapper) {
     let no_hash = false;
     let long_hash = false;
     let long_attribute = false;
+    let long_attribute_name;
     let bad_hash_value = false;
     let blank_attribute = false;
     let hashes = [];
@@ -97,9 +98,11 @@ async function processData(process_wrapper) {
                 blank_attribute = true;
                 break;
             }
+
             //evaluate that there are no attributes who have a name longer than 250 characters
             if (Buffer.byteLength(String(property)) > INSERT_ENUM.MAX_CHARACTER_SIZE) {
                 long_attribute = true;
+                long_attribute_name = String(property);
                 break;
             }
 
@@ -147,7 +150,7 @@ async function processData(process_wrapper) {
     }
 
     if (long_attribute) {
-        throw new Error(`transaction aborted due to record(s) with an attribute that exceeds ${INSERT_ENUM.MAX_CHARACTER_SIZE} bytes.`);
+        throw new Error(`transaction aborted due to attribute name ${long_attribute_name} being too long. Attribute names cannot be longer than ${INSERT_ENUM.MAX_CHARACTER_SIZE} bytes.`);
     }
 
     if (blank_attribute) {

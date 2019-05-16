@@ -7,13 +7,13 @@ const EMPTY_ROLE = 'If role is specified, it cannot be empty.';
 const ACTIVE_BOOLEAN = 'active must be true or false';
 
 module.exports = {
-    addUser: addUserCB,
-    alterUser:alterUserCB,
-    dropUser: dropUserCB,
-    userInfo: userinfoCB,
-    listUsers: listUsersCB,
-    listUsersExternal : listUsersExternalCB,
-    setUsersToGlobal: setUsersToGlobalCB,
+    addUser: addUser,
+    alterUser:alterUser,
+    dropUser: dropUser,
+    userInfo: userInfo,
+    listUsers: listUsers,
+    listUsersExternal : listUsersExternal,
+    setUsersToGlobal: setUsersToGlobal,
     USERNAME_REQUIRED: USERNAME_REQUIRED,
     ALTERUSER_NOTHING_TO_UPDATE: ALTERUSER_NOTHING_TO_UPDATE,
     EMPTY_PASSWORD: EMPTY_PASSWORD,
@@ -32,6 +32,7 @@ const hdb_utility = require('../utility/common_utils');
 const validate = require('validate.js');
 const logger = require('../utility/logging/harper_logger');
 const {promisify} = require('util');
+const crypto_hash = require('./cryptoHash');
 
 const USER_ATTRIBUTE_WHITELIST = {
     username: true,
@@ -43,17 +44,6 @@ const USER_ATTRIBUTE_WHITELIST = {
 const p_search_search_by_value = promisify(search.searchByValue);
 const p_search_search_by_hash = promisify(search.searchByHash);
 const p_delete_delete = promisify(delete_.delete);
-
-function addUserCB(user, callback){
-    let add_result = {};
-    addUser(user).then((result) => {
-        add_result = result;
-        return callback(null, add_result);
-    }).catch((err) => {
-        logger.error(`There was an error getting adding a user ${err}`);
-        return callback(err, null);
-    });
-}
 
 async function addUser(user){
     let clean_user = validate.cleanAttributes(user, USER_ATTRIBUTE_WHITELIST);
@@ -68,7 +58,7 @@ async function addUser(user){
         table : 'hdb_role',
         hash_values: [clean_user.role],
         hash_attribute : 'id',
-        get_attributes: ['id']
+        get_attributes: ['id', 'permission']
     };
 
     let search_role = await p_search_search_by_hash(search_obj).catch((err) => {
@@ -78,6 +68,10 @@ async function addUser(user){
     });
     if(!search_role || search_role.length < 1){
         throw new Error("Role not found.");
+    }
+
+    if(search_role[0].permission.cluster_user === true){
+        clean_user.hash = crypto_hash.encrypt(clean_user.password);
     }
 
     clean_user.password = password.hash(clean_user.password);
@@ -107,17 +101,6 @@ async function addUser(user){
     return `${clean_user.username} successfully added`;
 }
 
-function alterUserCB(json_message, callback) {
-    let alter_result = {};
-    alterUser(json_message).then((result) => {
-        alter_result = result;
-        return callback(null, alter_result);
-    }).catch((err) => {
-        logger.error(`There was an error altering user ${err}`);
-        return callback(err, null);
-    });
-}
-
 async function alterUser(json_message) {
     let clean_user = validate.cleanAttributes(json_message, USER_ATTRIBUTE_WHITELIST);
 
@@ -138,7 +121,13 @@ async function alterUser(json_message) {
         throw new Error(ACTIVE_BOOLEAN);
     }
 
+    let is_cluster_user = isClusterUser(clean_user.username);
+
     if(!hdb_utility.isEmpty(clean_user.password) && !hdb_utility.isEmptyOrZeroLength(clean_user.password.trim())) {
+        //if this is a cluster_user we must regenerate the hash when password changes
+        if(is_cluster_user){
+            clean_user.hash = crypto_hash.encrypt(clean_user.password);
+        }
         clean_user.password = password.hash(clean_user.password);
     }
 
@@ -148,6 +137,11 @@ async function alterUser(json_message) {
     }
     // Invalid roles will be found in the role search
     if(clean_user.role) {
+        //if this is a cluster_user you cannot change it's role
+        if(is_cluster_user){
+            throw new Error('cannot change the role of a cluster_user');
+        }
+
         // Make sure assigned role exists.
         let role_search_obj = {
             schema: 'system',
@@ -192,16 +186,20 @@ async function alterUser(json_message) {
     return success;
 }
 
-function dropUserCB(user, callback){
-    let drop_result = {};
-    dropUser(user).then((result) => {
-        drop_result = result;
-        return callback(null, drop_result);
-    }).catch((err) => {
-        logger.error(`There was an error dropping a user ${err}`);
-        return callback(err, null);
-    });
+function isClusterUser(username){
+    // get user's current role
+    let is_cluster_user = false;
+    for(let x = 0; x < global.hdb_users.length; x++){
+        let tmp_user = global.hdb_users[x];
+        if(tmp_user.username === username && tmp_user.role.permission.cluster_user === true){
+            is_cluster_user = true;
+            break;
+        }
+    }
+
+    return is_cluster_user;
 }
+
 
 async function dropUser(user) {
     try {
@@ -233,18 +231,6 @@ async function dropUser(user) {
     }
 }
 
-
-function userinfoCB(body, callback) {
-    let user_info = {};
-    userInfo(body).then((result) => {
-        user_info = result;
-        return callback(null, user_info);
-    }).catch((err) => {
-        logger.error(`There was an error getting user info ${err}`);
-        return callback(err, null);
-    });
-}
-
 async function userInfo(body) {
     let user = {};
     try {
@@ -266,6 +252,7 @@ async function userInfo(body) {
         });
         user.role = role_data[0];
         delete user.password;
+        delete user.hash;
     } catch(err) {
         logger.error(err);
         throw err;
@@ -277,19 +264,7 @@ async function userInfo(body) {
  * This function should be called by chooseOperation as it scrubs sensitive information before returning
  * the results of list users.
  * @param body - request body
- * @param callback
  */
-function listUsersExternalCB(body, callback) {
-    let list_result = {};
-    listUsersExternal().then((result) => {
-        list_result = result;
-        return callback(null, list_result);
-    }).catch((err) => {
-        logger.error(`There was an error with listUsersExternal ${err}`);
-        return callback(err, null);
-    });
-}
-
 async function listUsersExternal() {
     let user_data = await listUsers().catch((err) => {
        logger.error('Got an error listing users.');
@@ -299,22 +274,12 @@ async function listUsersExternal() {
     try {
         for (let u in user_data) {
             delete user_data[u].password;
+            delete user_data[u].hash;
         }
     } catch (e) {
         throw new Error('there was an error massaging the user data');
     }
     return user_data;
-}
-
-function listUsersCB(body, callback){
-    let list_result = {};
-    listUsers().then((result) => {
-        list_result = result;
-        return callback(null, list_result);
-    }).catch((err) => {
-        logger.error(`There was an error listing the users for this machine ${err}`);
-        return callback(err, null);
-    });
 }
 
 async function listUsers() {
@@ -359,17 +324,6 @@ async function listUsers() {
         return users;
     }
     return null;
-}
-
-function setUsersToGlobalCB(callback){
-    let set_result = {};
-    setUsersToGlobal().then((result) => {
-        set_result = result;
-        return callback(null, set_result);
-    }).catch((err) => {
-        logger.error(`There was an error setting users to global ${err}`);
-        return callback(err, null);
-    });
 }
 
 async function setUsersToGlobal() {

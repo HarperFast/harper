@@ -72,7 +72,7 @@ const PREMADE_MIDDLEWARE_TYPES = {
 
 const PREMADE_RULE_TYPES = {
     SEND_TO_WORKER: 0
-}
+};
 
 const COMMAND_EVAL_ORDER_ENUM = {
     VERY_FIRST: 1, // This rule should be evaluated first, only one rule in the collection can contain this
