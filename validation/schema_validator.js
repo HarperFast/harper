@@ -47,7 +47,7 @@ const constraints = {
 
 
 function makeAttributesStrings(object) {
-    for (attr in object) {
+    for (let attr in object) {
         object[attr] = object[attr].toString();
     }
     return object;

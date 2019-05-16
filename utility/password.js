@@ -1,25 +1,24 @@
-var crypto = require('crypto');
-
-var SaltLength = 9;
+let crypto = require('crypto');
+let SaltLength = 9;
 
 function createHash(password) {
-    var salt = generateSalt(SaltLength);
-    var hash = md5(password + salt);
+    let salt = generateSalt(SaltLength);
+    let hash = md5(password + salt);
     return salt + hash;
 }
 
 function validateHash(hash, password) {
-    var salt = hash.substr(0, SaltLength);
-    var validHash = salt + md5(password + salt);
+    let salt = hash.substr(0, SaltLength);
+    let validHash = salt + md5(password + salt);
     return hash === validHash;
 }
 
 function generateSalt(len) {
-    var set = '0123456789abcdefghijklmnopqurstuvwxyzABCDEFGHIJKLMNOPQURSTUVWXYZ',
+    let set = '0123456789abcdefghijklmnopqurstuvwxyzABCDEFGHIJKLMNOPQURSTUVWXYZ',
         setLen = set.length,
         salt = '';
-    for (var i = 0; i < len; i++) {
-        var p = Math.floor(Math.random() * setLen);
+    for (let i = 0; i < len; i++) {
+        let p = Math.floor(Math.random() * setLen);
         salt += set[p];
     }
     return salt;
