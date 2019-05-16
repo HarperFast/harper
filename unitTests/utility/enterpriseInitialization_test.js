@@ -136,7 +136,6 @@ describe('Test kickOffEnterprise', function () {
         assert.equal(result.clustering, true, 'function should return clustering = true');
     });
     it('No node data in hdb_nodes table, expect cluster server initiated', async function () {
-        // stub searchByValue to return 4 default cluster nodes
         search_nodes_stub = sandbox.stub(search, 'searchByValue').yields('', []);
         env.append('CLUSTERING', 'TRUE');
         env.append('CLUSTERING_PORT', '1115');
