@@ -12,6 +12,7 @@ const test_utils = require('../../test_utils');
 test_utils.preTestPrep();
 const reg = rewire('../../../utility/registration/registrationHandler');
 const hdb_license = require('../../../utility/registration/hdb_license');
+const check_permissions = require('../../../utility/check_permissions');
 
 const parse_orig = reg.__get__('parseLicense');
 
@@ -91,15 +92,18 @@ describe(`Test getFingerprint`, function () {
     let sandbox = null;
     let err = undefined;
     let getFingerprint = reg.__get__('getFingerprint');
+    let check_perms_stub = undefined;
 
     beforeEach(() => {
         sandbox = sinon.createSandbox();
+        check_perms_stub = sandbox.stub(check_permissions, "checkPermission").returns();
     });
     afterEach(() => {
         sandbox.restore();
     });
     it('Nominal, set license key stub write file', async function () {
         generate_stub = sandbox.stub(hdb_license, 'generateFingerPrint').resolves('blahhash');
+
         let result = undefined;
         try {
             result = await getFingerprint();

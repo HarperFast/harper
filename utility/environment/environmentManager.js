@@ -261,7 +261,7 @@ function readSettingsFile() {
     try {
         fs.accessSync(hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY), fs.constants.F_OK | fs.constants.R_OK);
     } catch(e) {
-        let error_msg = `The settings file at path ${BOOT_PROPS_FILE_PATH} does not exist.`;
+        let error_msg = `The settings file at path ${hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY)} does not exist.`;
         log.error(error_msg);
     }
 

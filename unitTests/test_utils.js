@@ -3,7 +3,8 @@ const path = require('path');
 const sinon = require('sinon');
 const fs = require('fs');
 const env = require('../utility/environment/environmentManager');
-
+const terms = require('../utility/hdbTerms');
+const os = require('os');
 /**
  * This needs to be called near the top of our unit tests.  Most will fail when loading harper modules due to the
  * properties reader trying to look in bin.  We can iterate on this to make it smarter if needed, for now this works.
@@ -56,7 +57,11 @@ function preTestPrep() {
     // Try to change to bin
     changeProcessToBinDir();
     // TODO: Check this after the boot props file refactor.
-    env.setPropsFilePath(`./hdb_boot_properties.file`);
+    let props_path = process.cwd();
+    props_path = path.join(props_path, '../', 'unitTests');
+    env.setPropsFilePath(`${props_path}/hdb_boot_properties.file`);
+    env.setProperty(terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, `${props_path}/settings.test`);
+    env.setProperty(terms.HDB_SETTINGS_NAMES.INSTALL_USER, os.userInfo().username);
     env.initSync();
 }
 
