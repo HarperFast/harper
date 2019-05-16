@@ -46,13 +46,16 @@ function run_install(callback) {
     winston.configure({
         transports: [
             new (winston.transports.File)({
-                filename: LOG_LOCATION, level: 'verbose', handleExceptions: true,
+                filename: LOG_LOCATION,
+                level: 'verbose',
+                handleExceptions: true,
                 prettyPrint: true
             })
-        ], exitOnError: false
+        ],
+        exitOnError: false
     });
 
-    if(comm.isEmptyOrZeroLength(os.userInfo().uid) ) {
+    if (comm.isEmptyOrZeroLength(os.userInfo().uid)) {
         let msg = `Installing user: ${os.userInfo().username} has no pid.  Please install with a properly created user. Cancelling install.`;
         winston.error(msg);
         console.log(msg);
@@ -105,8 +108,8 @@ function termsAgreement(callback) {
         }
     };
     prompt.get(terms_schema, function (err, result) {
-        if( err ) { return callback(err); }
-        if(result.TC_AGREEMENT === 'yes' || result.TC_AGREEMENT === 'y') {
+        if (err) { return callback(err); }
+        if (result.TC_AGREEMENT === 'yes' || result.TC_AGREEMENT === 'y') {
             return callback(null, true);
         }
         winston.error('Terms and Conditions agreement was refused.');
@@ -160,12 +163,12 @@ function promptForReinstall(callback) {
     };
 
     prompt.get(reinstall_schema, function (err, reinstall_result) {
-        if( err ) { return callback(err); }
+        if (err) { return callback(err); }
 
-        if(reinstall_result.REINSTALL === 'yes' || reinstall_result.REINSTALL === 'y') {
+        if (reinstall_result.REINSTALL === 'yes' || reinstall_result.REINSTALL === 'y') {
             check_install_path = true;
             prompt.get(overwrite_schema, function (err, overwrite_result) {
-                if(overwrite_result.KEEP_DATA === 'no' || overwrite_result.KEEP_DATA === 'n' ) {
+                if (overwrite_result.KEEP_DATA === 'no' || overwrite_result.KEEP_DATA === 'n' ) {
                     // don't keep data, tear it all out.
                     fs.remove(env.get('HDB_ROOT'), function (err) {
                         if (err) {
@@ -194,7 +197,6 @@ function promptForReinstall(callback) {
         }
     });
 }
-
 
 /**
  * Prepare all data needed to perform a reinstall.
@@ -235,7 +237,7 @@ function wizard(err, callback) {
                 default: (env.getHdbBasePath() ? env.getHdbBasePath() : process.env['HOME'] + '/hdb'),
                 ask: function() {
                     // only ask for HDB_ROOT if it is not defined.
-                    if(env.getHdbBasePath()) {
+                    if (env.getHdbBasePath()) {
                         console.log(`Using previous install path: ${env.getHdbBasePath()}`);
                         return false;
                     }
@@ -301,7 +303,7 @@ function wizard(err, callback) {
                 return callback('~ was specified in the path, but the HOME environment variable is not defined.');
             }
         }
-        if(!check_install_path) {
+        if (!check_install_path) {
             // Only if reinstall not detected by presence of hdb_boot_props file.  Dig around the provided path to see if an existing install is already there.
             if (!fs.existsSync(wizard_result.HDB_ROOT) ||
                 !fs.existsSync(wizard_result.HDB_ROOT + '/config/settings.js') ||
@@ -333,25 +335,29 @@ function createAdminUser(callback) {
     // in the installer.
     const user_ops = require('../../security/user');
     const role_ops = require('../../security/role');
+    const util = require('util');
+    const cb_role_add_role = util.callbackify(role_ops.addRole);
+    const cb_role_list_role = util.callbackify(role_ops.listRoles);
+    const cb_user_add_user = util.callbackify(user_ops.addUser);
     let role = {};
     role.role = 'super_user';
     role.permission = {};
     role.permission.super_user = true;
 
     // Look for existing role if this is a reinstall
-    if(keep_data) {
+    if (keep_data) {
         // 1.  Get list of all roles that are su
         // 2.  IFF > 1, Show list to user and require selection of primary su role
 
-        role_ops.listRoles((null), function(err, result) {
-            winston.info(`found ${result.length} existing roles.`);
+        cb_role_list_role((null), (err, res) => {
+            winston.info(`found ${res.length} existing roles.`);
             let role_list = 'Please select the number assigned to the role that should be assigned to the new user.';
-            if(result && result.length > 1) {
-                for (let i = 0; i < result.length; i++) {
-                    // It would be confusing to offer 0 as a number for the user to select, so offset by 1 to start at 1.
-                    role_list += `\n ${i + 1}. ${result[i].role}`;
-                }
 
+            if (res && res.length > 1) {
+                for (let i = 0; i < res.length; i++) {
+                    // It would be confusing to offer 0 as a number for the user to select, so offset by 1 to start at 1.
+                    role_list += `\n ${i + 1}. ${res[i].role}`;
+                }
 
                 let role_schema = {
                     properties: {
@@ -359,21 +365,22 @@ function createAdminUser(callback) {
                             message: colors.red(role_list),
                             type: 'number',
                             minimum: 1,
-                            maximum: result.length,
+                            maximum: res.length,
                             warning: 'Must select the number corresponding to the desired role.',
                             default: '1'
                         }
                     }
                 };
+
                 prompt.get(role_schema, function (err, selected_role) {
                     let admin_user = {};
                     admin_user.username = wizard_result.HDB_ADMIN_USERNAME;
                     admin_user.password = wizard_result.HDB_ADMIN_PASSWORD;
                     // account for the offset
-                    admin_user.role = result[selected_role.ROLE - 1].id;
+                    admin_user.role = res[selected_role.ROLE - 1].id;
                     admin_user.active = true;
 
-                    user_ops.addUser(admin_user, function (err) {
+                    cb_user_add_user(admin_user, (err) => {
                         if (err) {
                             winston.error('user creation error' + err);
                             console.error('There was a problem creating the admin user.  Please check the install log for details.');
@@ -382,14 +389,15 @@ function createAdminUser(callback) {
                         return callback(null);
                     });
                 });
+
             } else {
                 let admin_user = {};
                 admin_user.username = wizard_result.HDB_ADMIN_USERNAME;
                 admin_user.password = wizard_result.HDB_ADMIN_PASSWORD;
-                admin_user.role = result[0].id;
+                admin_user.role = res[0].id;
                 admin_user.active = true;
 
-                user_ops.addUser(admin_user, function (err) {
+                cb_user_add_user(admin_user, (err) => {
                     if (err) {
                         winston.error('user creation error' + err);
                         console.error('There was a problem creating the admin user.  Please check the install log for details.');
@@ -399,9 +407,9 @@ function createAdminUser(callback) {
                 });
             }
         });
-    } else {
 
-        role_ops.addRole(role, function (err, result) {
+    } else {
+        cb_role_add_role(role, (err, res) => {
             if (err) {
                 winston.error('role failed to create ' + err);
                 console.log('There was a problem creating the default role.  Please check the install log for details.');
@@ -411,10 +419,10 @@ function createAdminUser(callback) {
             let admin_user = {};
             admin_user.username = wizard_result.HDB_ADMIN_USERNAME;
             admin_user.password = wizard_result.HDB_ADMIN_PASSWORD;
-            admin_user.role = result.id;
+            admin_user.role = res.id;
             admin_user.active = true;
 
-            user_ops.addUser(admin_user, function (err) {
+            cb_user_add_user(admin_user, (err) => {
                 if (err) {
                     winston.error('user creation error' + err);
                     console.error('There was a problem creating the admin user.  Please check the install log for details.');
@@ -434,15 +442,15 @@ function createSettingsFile(mount_status, callback) {
         return callback('mount failed');
     }
 
-    if(keep_data) {
+    if (keep_data) {
         console.log('Existing settings.js file will be moved to settings.js.backup.  Remember to update the new settings file with your old settings.');
         winston.info('Existing settings.js file will be moved to settings.js.backup.  Remember to update the new settings file with your old settings.');
     }
     let settings_path = `${wizard_result.HDB_ROOT}/config/settings.js`;
     createBootPropertiesFile(settings_path, (err) => {
         // copy settings file to backup.
-        if(keep_data) {
-            if(fs.existsSync(settings_path)) {
+        if (keep_data) {
+            if (fs.existsSync(settings_path)) {
                 try {
                     fs.copySync(settings_path, settings_path+'.back');
                 } catch(err) {
@@ -549,66 +557,83 @@ function generateKeys(callback) {
     cert.validity.notBefore = new Date();
     cert.validity.notAfter = new Date();
     cert.validity.notAfter.setFullYear(cert.validity.notBefore.getFullYear() + 1);
-    let attrs = [{
-        name: 'commonName',
-        value: 'harperdb.io'
-    }, {
-        name: 'countryName',
-        value: 'US'
-    }, {
-        shortName: 'ST',
-        value: 'Colorado'
-    }, {
-        name: 'localityName',
-        value: 'Denver'
-    }, {
-        name: 'organizationName',
-        value: 'HarperDB, Inc'
-    }, {
-        shortName: 'OU',
-        value: 'HDB'
-    }];
+    let attrs = [
+        {
+            name: 'commonName',
+            value: 'harperdb.io'
+        },
+        {
+            name: 'countryName',
+            value: 'US'
+        },
+        {
+            shortName: 'ST',
+            value: 'Colorado'
+        },
+        {
+            name: 'localityName',
+            value: 'Denver'
+        },
+        {
+            name: 'organizationName',
+            value: 'HarperDB, Inc'
+        },
+        {
+            shortName: 'OU',
+            value: 'HDB'
+        }
+    ];
     cert.setSubject(attrs);
     cert.setIssuer(attrs);
-    cert.setExtensions([{
-        name: 'basicConstraints',
-        cA: true,
-        id: 'hdb_1.0'
-    }, {
-        name: 'keyUsage',
-        keyCertSign: true,
-        digitalSignature: true,
-        nonRepudiation: true,
-        keyEncipherment: true,
-        dataEncipherment: true
-    }, {
-        name: 'extKeyUsage',
-        serverAuth: true,
-        clientAuth: true,
-        codeSigning: true,
-        emailProtection: true,
-        timeStamping: true
-    }, {
-        name: 'nsCertType',
-        client: true,
-        server: true,
-        email: true,
-        objsign: true,
-        sslCA: true,
-        emailCA: true,
-        objCA: true
-    }, {
-        name: 'subjectAltName',
-        altNames: [{
-            type: 6, // URI
-            value: 'http://example.org/webid#me'
-        }, {
-            type: 7, // IP
-            ip: '127.0.0.1'
-        }]
-    }, {
-        name: 'subjectKeyIdentifier'
-    }]);
+    cert.setExtensions([
+        {
+            name: 'basicConstraints',
+            cA: true,
+            id: 'hdb_1.0'
+        },
+        {
+            name: 'keyUsage',
+            keyCertSign: true,
+            digitalSignature: true,
+            nonRepudiation: true,
+            keyEncipherment: true,
+            dataEncipherment: true
+        },
+        {
+            name: 'extKeyUsage',
+            serverAuth: true,
+            clientAuth: true,
+            codeSigning: true,
+            emailProtection: true,
+            timeStamping: true
+        },
+        {
+            name: 'nsCertType',
+            client: true,
+            server: true,
+            email: true,
+            objsign: true,
+            sslCA: true,
+            emailCA: true,
+            objCA: true
+        },
+        {
+            name: 'subjectAltName',
+            altNames: [
+                {
+                    type: 6, // URI
+                    value: 'http://example.org/webid#me'
+                },
+                {
+                    type: 7, // IP
+                    ip: '127.0.0.1'
+                }
+            ]
+        },
+        {
+            name: 'subjectKeyIdentifier'
+        }
+    ]);
 
     cert.sign(keys.privateKey);
 

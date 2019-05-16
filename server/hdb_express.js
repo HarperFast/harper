@@ -25,9 +25,8 @@ const sio_server_stopped_event = require('../events/SioServerStoppedEvent');
 const signalling = require('../utility/signalling');
 const terms = require('../utility/hdbTerms');
 const RestartEventObject = require('./RestartEventObject');
-const child_process = require('child_process');
-const {inspect, promisify} = require('util');
-const path = require('path');
+const util = require('util');
+const promisify = util.promisify;
 
 const p_schema_to_global = promisify(global_schema.setSchemaDataToGlobal);
 const p_users_to_global = promisify(user_schema.setUsersToGlobal);
@@ -101,30 +100,6 @@ global.clustering_on = false;
 /**
  * Kicks off the clustering server and processes.  Only called with a valid license installed.
  */
-// This was put in hdb_expres rather than clusterUtils as we don't want restart to be called by any other module.
-function restartHDB() {
-    try {
-        // try to change to 'bin' dir
-        let command = (global.running_from_repo ? 'node' : 'harperdb');
-        let args = (global.running_from_repo ? ['harperdb', 'restart'] : ['restart']);
-        let base = env.get(terms.HDB_SETTINGS_NAMES.PROJECT_DIR_KEY);
-        process.chdir(path.join(base, 'bin'));
-        let child = child_process.spawn(command, args);
-        child.on('error', (err) => {
-            harper_logger.error('restart error, please manually restart.' + err);
-            console.log('restart error, please manually restart.' + err);
-            throw new Error('Got an error restarting HarperDB.  Please manually restart.');
-        });
-        child.on('data', () => {
-            harper_logger.error('Restart successful');
-        });
-    } catch(err) {
-        let msg = `There was an error restarting HarperDB.  Please restart manually. ${err}`;
-        console.log(msg);
-        harper_logger.error(msg);
-        throw err;
-    }
-}
 
 cluster.on('exit', (dead_worker, code, signal) => {
     if(code === terms.RESTART_CODE_NUM) {
@@ -183,7 +158,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
             if(restart_event_tracker.isReadyForRestart()) {
                 if(!restart_in_progress) {
                     restart_in_progress = true;
-                    restartHDB();
+                    cluster_utilities.restartHDB();
                 }
             }
         } catch(err) {
@@ -199,7 +174,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
             if(restart_event_tracker.isReadyForRestart()) {
                 if(!restart_in_progress) {
                     restart_in_progress = true;
-                    restartHDB();
+                    cluster_utilities.restartHDB();
                 }
             }
         } catch(err) {
@@ -435,7 +410,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
             harper_logger.warn(`Process pid:${process.pid} - SIGINT received, closing connections and finishing existing work.`);
             harper_logger.info(`There are ${Object.keys(server_connections).length} connections.`);
             for (let conn of Object.keys(server_connections)) {
-                harper_logger.info(`Closing connection ${inspect(server_connections[conn])}`);
+                harper_logger.info(`Closing connection ${util.inspect(server_connections[conn])}`);
                 server_connections[conn].destroy();
             }
             setTimeout(() => {

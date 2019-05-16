@@ -138,8 +138,6 @@ module.exports = {
                     }
                 });
 
-
-
             }else{
                 let results = [];
                 async.map(tables, function (table, caller) {

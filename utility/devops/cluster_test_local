@@ -2,10 +2,10 @@
 
 
 working_dir=$(pwd)
-target_dir=/opt/harperdb_cluster
+target_dir=$(pwd)/harperdb_cluster
 node_count=$2
 port_offset=3
-http_port=9925
+http_port=9935
 cluster_port=1111
 
 
@@ -17,9 +17,10 @@ do
 
 mkdir -p $target_dir/node_$node_count/harperdb
 mkdir -p $target_dir/node_$node_count/data
-cp -R $working_dir/* $target_dir/node_$node_count/harperdb/
+rsync -avq $working_dir/* $target_dir/node_$node_count/harperdb --exclude $target_dir
+#p -R $working_dir/* $target_dir/node_$node_count/harperdb/
 
-sed -i "/HDB_PROC_NAME/ s/ =.*/ = 'no_oneis_here';/" $target_dir/node_$node_count/harperdb/bin/run.js
+#sed -i "s/HDB_PROC_NAME =.*/HDB_PROC_NAME='NoOne';/1" $target_dir/node_$node_count/harperdb/utility/common_utils.js
 
 cd $target_dir/node_$node_count/harperdb/bin
 
@@ -46,7 +47,7 @@ node harperdb run
 sleep 10s
 
 #Add Node
-newman run https://api.getpostman.com/collections/4f5d17b0-e923-e7c0-feb9-f80dbcf1764a?apikey=fe1dfb2c3647474f8f3e9d836783e694 --environment https://api.getpostman.com/environments/e8201aee-1a99-7de7-4910-62c0e0e6b755?apikey=fe1dfb2c3647474f8f3e9d836783e694 --folder add_node$node_count
+$working_dir/node_modules/newman/bin/newman.js run https://api.getpostman.com/collections/4f5d17b0-e923-e7c0-feb9-f80dbcf1764a?apikey=fe1dfb2c3647474f8f3e9d836783e694 --environment https://api.getpostman.com/environments/e8201aee-1a99-7de7-4910-62c0e0e6b755?apikey=fe1dfb2c3647474f8f3e9d836783e694 --folder add_node$node_count
 
 #sleep 5s
 #echo "*********************$target_dir/node_$node_count"
@@ -84,12 +85,12 @@ done
 #done
 
 #Add Schema
-newman run https://api.getpostman.com/collections/4f5d17b0-e923-e7c0-feb9-f80dbcf1764a?apikey=fe1dfb2c3647474f8f3e9d836783e694 --environment https://api.getpostman.com/environments/e8201aee-1a99-7de7-4910-62c0e0e6b755?apikey=fe1dfb2c3647474f8f3e9d836783e694 --folder create_schema
+$working_dir/node_modules/newman/bin/newman.js run https://api.getpostman.com/collections/4f5d17b0-e923-e7c0-feb9-f80dbcf1764a?apikey=fe1dfb2c3647474f8f3e9d836783e694 --environment https://api.getpostman.com/environments/e8201aee-1a99-7de7-4910-62c0e0e6b755?apikey=fe1dfb2c3647474f8f3e9d836783e694 --folder create_schema
 sleep 2s
 #create table and delay request 1000ms btween checking and adding data
-newman run https://api.getpostman.com/collections/4f5d17b0-e923-e7c0-feb9-f80dbcf1764a?apikey=fe1dfb2c3647474f8f3e9d836783e694 --environment https://api.getpostman.com/environments/e8201aee-1a99-7de7-4910-62c0e0e6b755?apikey=fe1dfb2c3647474f8f3e9d836783e694 --folder create_table --delay-request 1000
+$working_dir/node_modules/newman/bin/newman.js run https://api.getpostman.com/collections/4f5d17b0-e923-e7c0-feb9-f80dbcf1764a?apikey=fe1dfb2c3647474f8f3e9d836783e694 --environment https://api.getpostman.com/environments/e8201aee-1a99-7de7-4910-62c0e0e6b755?apikey=fe1dfb2c3647474f8f3e9d836783e694 --folder create_table --delay-request 1000
 #check data select by hash
-newman run https://api.getpostman.com/collections/4f5d17b0-e923-e7c0-feb9-f80dbcf1764a?apikey=fe1dfb2c3647474f8f3e9d836783e694 --environment https://api.getpostman.com/environments/e8201aee-1a99-7de7-4910-62c0e0e6b755?apikey=fe1dfb2c3647474f8f3e9d836783e694 --folder data_wait --delay-request 500
+$working_dir/node_modules/newman/bin/newman.js run https://api.getpostman.com/collections/4f5d17b0-e923-e7c0-feb9-f80dbcf1764a?apikey=fe1dfb2c3647474f8f3e9d836783e694 --environment https://api.getpostman.com/environments/e8201aee-1a99-7de7-4910-62c0e0e6b755?apikey=fe1dfb2c3647474f8f3e9d836783e694 --folder data_wait --delay-request 500
 
 
 
@@ -98,8 +99,8 @@ echo "DONE"
 
 destroy(){
 kill $(ps -ef | grep [c]luster/node_ | awk '{print $2}')
-rm -rf $target_dir/*
-echo "Targe dir empty? $(ls -al $target_dir)"
+rm -rf $target_dir
+echo "Target dir empty? $(ls -al $target_dir)"
 echo "cluster processess killed? $(ps -ef | grep [n]ode_)"
 }
 

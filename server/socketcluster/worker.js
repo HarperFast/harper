@@ -232,8 +232,6 @@ class Worker extends SCWorker{
         console.log('Worker ' + this.id + ' is ready to accept requests');
     }
 
-
-
     /**
      * Emitted when the master process sends a message to this worker. The handler function accepts two arguments;
      * the first is the data which was sent by the master process, the second is a respond callback function which you can call to respond to the event using IPC.

@@ -7,13 +7,13 @@ const EMPTY_ROLE = 'If role is specified, it cannot be empty.';
 const ACTIVE_BOOLEAN = 'active must be true or false';
 
 module.exports = {
-    addUser: addUserCB,
-    alterUser:alterUserCB,
-    dropUser: dropUserCB,
-    userInfo: userinfoCB,
-    listUsers: listUsersCB,
-    listUsersExternal : listUsersExternalCB,
-    setUsersToGlobal: setUsersToGlobalCB,
+    addUser: addUser,
+    alterUser:alterUser,
+    dropUser: dropUser,
+    userInfo: userInfo,
+    listUsers: listUsers,
+    listUsersExternal : listUsersExternal,
+    setUsersToGlobal: setUsersToGlobal,
     USERNAME_REQUIRED: USERNAME_REQUIRED,
     ALTERUSER_NOTHING_TO_UPDATE: ALTERUSER_NOTHING_TO_UPDATE,
     EMPTY_PASSWORD: EMPTY_PASSWORD,
@@ -44,17 +44,6 @@ const USER_ATTRIBUTE_WHITELIST = {
 const p_search_search_by_value = promisify(search.searchByValue);
 const p_search_search_by_hash = promisify(search.searchByHash);
 const p_delete_delete = promisify(delete_.delete);
-
-function addUserCB(user, callback){
-    let add_result = {};
-    addUser(user).then((result) => {
-        add_result = result;
-        return callback(null, add_result);
-    }).catch((err) => {
-        logger.error(`There was an error getting adding a user ${err}`);
-        return callback(err, null);
-    });
-}
 
 async function addUser(user){
     let clean_user = validate.cleanAttributes(user, USER_ATTRIBUTE_WHITELIST);
@@ -110,17 +99,6 @@ async function addUser(user){
 
     signalling.signalUserChange({type: 'user'});
     return `${clean_user.username} successfully added`;
-}
-
-function alterUserCB(json_message, callback) {
-    let alter_result = {};
-    alterUser(json_message).then((result) => {
-        alter_result = result;
-        return callback(null, alter_result);
-    }).catch((err) => {
-        logger.error(`There was an error altering user ${err}`);
-        return callback(err, null);
-    });
 }
 
 async function alterUser(json_message) {
@@ -222,16 +200,6 @@ function isClusterUser(username){
     return is_cluster_user;
 }
 
-function dropUserCB(user, callback){
-    let drop_result = {};
-    dropUser(user).then((result) => {
-        drop_result = result;
-        return callback(null, drop_result);
-    }).catch((err) => {
-        logger.error(`There was an error dropping a user ${err}`);
-        return callback(err, null);
-    });
-}
 
 async function dropUser(user) {
     try {
@@ -261,18 +229,6 @@ async function dropUser(user) {
     } catch(err) {
         throw err;
     }
-}
-
-
-function userinfoCB(body, callback) {
-    let user_info = {};
-    userInfo(body).then((result) => {
-        user_info = result;
-        return callback(null, user_info);
-    }).catch((err) => {
-        logger.error(`There was an error getting user info ${err}`);
-        return callback(err, null);
-    });
 }
 
 async function userInfo(body) {
@@ -308,19 +264,7 @@ async function userInfo(body) {
  * This function should be called by chooseOperation as it scrubs sensitive information before returning
  * the results of list users.
  * @param body - request body
- * @param callback
  */
-function listUsersExternalCB(body, callback) {
-    let list_result = {};
-    listUsersExternal().then((result) => {
-        list_result = result;
-        return callback(null, list_result);
-    }).catch((err) => {
-        logger.error(`There was an error with listUsersExternal ${err}`);
-        return callback(err, null);
-    });
-}
-
 async function listUsersExternal() {
     let user_data = await listUsers().catch((err) => {
        logger.error('Got an error listing users.');
@@ -336,17 +280,6 @@ async function listUsersExternal() {
         throw new Error('there was an error massaging the user data');
     }
     return user_data;
-}
-
-function listUsersCB(body, callback){
-    let list_result = {};
-    listUsers().then((result) => {
-        list_result = result;
-        return callback(null, list_result);
-    }).catch((err) => {
-        logger.error(`There was an error listing the users for this machine ${err}`);
-        return callback(err, null);
-    });
 }
 
 async function listUsers() {
@@ -391,17 +324,6 @@ async function listUsers() {
         return users;
     }
     return null;
-}
-
-function setUsersToGlobalCB(callback){
-    let set_result = {};
-    setUsersToGlobal().then((result) => {
-        set_result = result;
-        return callback(null, set_result);
-    }).catch((err) => {
-        logger.error(`There was an error setting users to global ${err}`);
-        return callback(err, null);
-    });
 }
 
 async function setUsersToGlobal() {

@@ -33,7 +33,7 @@ const fs_extra = require('fs-extra');
 const { isHarperRunning } = require('../utility/common_utils');
 
 
-const UPGRADE_DIR_NAME= 'hdb_upgrade'
+const UPGRADE_DIR_NAME= 'hdb_upgrade';
 const TAR_FILE_NAME = 'hdb-latest.tar';
 const EXE_COPY_NAME = 'hdb';
 const EXE_NAME = 'harperdb';
@@ -323,7 +323,7 @@ function findOs() {
     if (os.arch() === 'arm' || os.arch() === 'arm64') {
         switch (os.release()) {
             case "armv7l":
-                return 'ARM 7'
+                return 'ARM 7';
             case "armv6l":
                 return 'ARM 6';
             default:

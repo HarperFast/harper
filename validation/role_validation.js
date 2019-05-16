@@ -62,7 +62,7 @@ function customValidate(object) {
 
     }
 
-    for (let item in  object.permission) {
+    for (let item in object.permission) {
         if (ROLE_TYPES.indexOf(item) < 0) {
             let schema = object.permission[item];
             if(!item || !global.hdb_schema[item]) {
