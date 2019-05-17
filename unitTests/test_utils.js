@@ -1,10 +1,16 @@
 "use strict"
 const path = require('path');
-// const sinon = require('sinon');
 const fs = require('fs');
-const util = require('util');
+const uuid = require('uuid/v4');
 const moment = require('moment');
 const env = require('../utility/environment/environmentManager');
+
+const HDB_HASH_FOLDER_NAME = "__hdb_hash";
+const ATTR_PATH_OBJECT = {
+    "files": [],
+    "journals": [],
+    "system": []
+}
 
 /**
  * This needs to be called near the top of our unit tests.  Most will fail when loading harper modules due to the
@@ -89,86 +95,130 @@ function cleanUpDirectories(target_path) {
     }
 }
 
-// const BASE_PATH = path.join(process.cwd(), 'bin');
-const HDB_HASH_FOLDER_NAME = "__hdb_hash";
-const HASH_ATTRIBUTE_NAME = "id";
-
-// const ATTRIBUTE_1_INSTANCE_NAME = '';
-// const ATTRIBUTE_1_TIME_NAME = moment().valueOf();
-// const ATTRIBUTE_2_TIME_NAME = moment().subtract(6, 'hours').valueOf();
-// const TEST_FILE_NAME_1 = `${ATTRIBUTE_1_TIME_NAME}.hdb`;
-// const TEST_FILE_NAME_2 = `${ATTRIBUTE_2_TIME_NAME}.hdb`;
-// const FILE_CONTENTS = "Name";
-// const DELETE_MOD_BASE_PATH_NAME = 'BASE_PATH';
-// const TEST_ATTRIBUTE_NAME = 'Name';
-// const TEST_ATTRIBUTE_AGE = 'Age';
-
 function makeTheDir(path) {
     if(!fs.existsSync(path)) {
         fs.mkdirSync(path);
     }
 }
 
-function createMockSchemaTableFileStructure(schema_path, schema, table, test_data) {
+//TODO: Update docs for this method
+/**
+ * This function will simulate the HDB data structure with the data passed in.  It will pull the hash attribute from the
+ * global.hdb_schema values above.  A table value must be defined in the data so the function knows which table to pull
+ * from.  The schema is always assumed to be 'test'.
+ * @param data
+ */
+function createMockSchemaTableFS(hash_attribute, schema_path, schema, table, test_data) {
     try {
         //create schema
         makeTheDir(schema_path);
+
         //create table
+        const table_id = uuid();
         const table_path = path.join(schema_path, table);
-        makeTheDir(table_path)
+        makeTheDir(table_path);
         let table_hash_dir_path = path.join(table_path, HDB_HASH_FOLDER_NAME);
         makeTheDir(table_hash_dir_path);
-        //create attributes and hash dir
+
+        const test_table_paths = {
+            table_dir: table_path,
+            hash_dir: table_hash_dir_path
+        };
+
+        //create attribute and hash dirs
         const attribute_names = [];
-        const final_test_data = test_data.map(data => {
-            let keys = Object.keys(data).filter(key => (key !== 'file_paths' && key !== 'journal_paths' && key !== 'table'));
+        const test_table_data = test_data.map(data => {
+            const test_record_paths = deepClone(ATTR_PATH_OBJECT);
+            const keys = Object.keys(data).filter(key => (key !== 'table'));
             for (let i=0; i < keys.length; i++) {
-                let curr_attribute = keys[i];
-                attribute_names.push(curr_attribute);
-                let is_hash = curr_attribute === HASH_ATTRIBUTE_NAME;
-                let hash_dir_path = path.join(table_path, HDB_HASH_FOLDER_NAME, curr_attribute);
-                makeTheDir(hash_dir_path);
-                let attribute_dir_path = path.join(table_path, curr_attribute);
-                makeTheDir(attribute_dir_path);
-                let attribute_instance_dir_path = path.join(attribute_dir_path, `${data[curr_attribute]}`);
-                makeTheDir(attribute_instance_dir_path);
-                if (is_hash) {
-                    data.journal_paths.push(attribute_instance_dir_path);
+                const curr_attribute = keys[i];
+                if (attribute_names.indexOf(curr_attribute) < 0) {
+                    attribute_names.push(curr_attribute);
                 }
+                const is_hash = curr_attribute === hash_attribute;
+                const hash_dir_path = path.join(table_path, HDB_HASH_FOLDER_NAME, curr_attribute);
+                makeTheDir(hash_dir_path);
+                const attribute_dir_path = path.join(table_path, curr_attribute);
+                makeTheDir(attribute_dir_path);
+                const attribute_instance_dir_path = path.join(attribute_dir_path, `${data[curr_attribute]}`);
+                makeTheDir(attribute_instance_dir_path);
                 // make the hash file
-                let hash_file_path = path.join(hash_dir_path, data[HASH_ATTRIBUTE_NAME] + '.hdb');
+                let hash_file_path = path.join(hash_dir_path, data[hash_attribute] + '.hdb');
                 fs.writeFileSync(hash_file_path, data[curr_attribute]);
-                data.file_paths.push(hash_file_path);
+                test_record_paths.files.push(hash_file_path);
                 if (!is_hash) {
-                    let link_path = path.join(attribute_instance_dir_path, data[HASH_ATTRIBUTE_NAME] + '.hdb');
+                    let link_path = path.join(attribute_instance_dir_path, data[hash_attribute] + '.hdb');
                     fs.linkSync(hash_file_path, link_path);
-                    data.file_paths.push(link_path);
+                    test_record_paths.files.push(link_path);
                 } else {
                     // for hash attributes, we need to write a file with the current time stamp and the delta of the data
                     let time_file_name = path.join(attribute_instance_dir_path, `${moment().valueOf()}.hdb`);
-                    fs.writeFileSync(time_file_name, util.inspect(data), 'utf-8');
-                    data.journal_paths.push(time_file_name);
-                    data.file_paths.push(time_file_name);
+                    fs.writeFileSync(time_file_name, JSON.stringify(data),'utf-8');
+                    test_record_paths.journals.push(attribute_instance_dir_path);
+                    test_record_paths.journals.push(time_file_name);
                 }
             }
+            data.paths = test_record_paths;
             return data;
         });
         //set hdb_global
-        setGlobalSchema(schema, table, attribute_names);
-        return final_test_data;
+        setGlobalSchema(hash_attribute, schema, table, table_id, attribute_names);
+        test_table_data.paths = test_table_paths;
+        return test_table_data;
     } catch(e) {
          console.error(e);
     }
 }
 
-function setGlobalSchema(schema, table, attribute_names) {
+function tearDownMockFS(target_path) {
+    if(!target_path) return;
+    let files = [];
+    if( fs.existsSync(target_path) ) {
+        try {
+            files = fs.readdirSync(target_path);
+            for(let i = 0; i<files.length; i++) {
+                let file = files[i];
+                let curPath = path.join(target_path, file);
+                if (fs.lstatSync(curPath).isDirectory()) { // recurse
+                    tearDownMockFS(curPath);
+                } else {
+                    fs.unlinkSync(curPath);
+                }
+            }
+            fs.rmdirSync(target_path);
+        } catch (e) {
+            console.error(e);
+        }
+    }
+}
+
+function validateFSDeletion(paths) {
+    for (let i = 0; i < paths.length; i++) {
+        if (fs.existsSync(paths[i]) === true) {
+            return false;
+        }
+    }
+    return true;
+}
+
+function validateFSCreation(paths) {
+    for(let i = 0; i < paths.length; i++) {
+        if (fs.exists(paths[i]) === false) {
+            return false;
+        }
+    }
+    return true;
+}
+
+//TODO: Add docs for this method
+function setGlobalSchema(hash_attribute, schema, table, table_id, attribute_names) {
     const attributes = attribute_names.map(name => ({ "attributes": name }));
     if (global.hdb_schema === undefined) {
         global.hdb_schema = {
             [schema]: {
                 [table]: {
-                    "hash_attribute": `${HASH_ATTRIBUTE_NAME}`,
-                    "id": "8650f230-be55-4455-8843-55bcfe7f61c4",
+                    "hash_attribute": `${hash_attribute}`,
+                    "id": `${table_id}`,
                     "name": `${table}`,
                     "schema": `${schema}`,
                     "attributes": attributes
@@ -268,8 +318,8 @@ function setGlobalSchema(schema, table, attribute_names) {
         };
     } else {
         global.hdb_schema[schema][table] = {
-            "hash_attribute": `${HASH_ATTRIBUTE_NAME}`,
-            "id": "8650f230-be55-4455-8843-55bcfe7f61c4",
+            "hash_attribute": `${hash_attribute}`,
+            "id": `${table_id}`,
             "name": `${table}`,
             "schema": `${schema}`,
             "attributes": attributes
@@ -283,6 +333,9 @@ module.exports = {
     mochaAsyncWrapper:mochaAsyncWrapper,
     preTestPrep:preTestPrep,
     cleanUpDirectories:cleanUpDirectories,
-    createMockSchemaTableFileStructure:createMockSchemaTableFileStructure,
-    makeTheDir:makeTheDir
+    createMockSchemaTableFS:createMockSchemaTableFS,
+    makeTheDir:makeTheDir,
+    tearDownMockFS:tearDownMockFS,
+    validateFSDeletion:validateFSDeletion,
+    validateFSCreation:validateFSCreation
 };
