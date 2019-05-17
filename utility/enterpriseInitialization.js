@@ -30,9 +30,12 @@ async function kickOffEnterprise() {
             users: users
         };
 
-        let child = fork(path.join(__dirname,'../server/socketcluster/Server.js'));
-
-        child.send(sc_data_payload);
+        try {
+            let child = fork(path.join(__dirname, '../server/socketcluster/Server.js'));
+            child.send(sc_data_payload);
+        } catch(err) {
+            log.error(err);
+        }
     }
 }
 
