@@ -5,7 +5,6 @@
  * parameter.
  * @type {MiddlewareIF}
  */
-const MiddlewareIF = require('./MiddlewareIF');
 const GenericMiddleware = require('./GenericMiddleware');
 const OriginatorCheckMiddleware = require('./OriginatorCheckMiddleware');
 const RequestDataValidMiddleware = require('./RequestDataValidMiddleware');
@@ -52,10 +51,6 @@ function createMiddleware(middleware_type_enum, eval_function, options) {
                 case types.PREMADE_MIDDLEWARE_TYPES.STAMP_REQUEST:
                     log.trace('Creating Stamp middleware');
                     created_middleware = new StampRequestMiddleware(middleware_type_enum, null);
-                    break;
-                case types.PREMADE_MIDDLEWARE_TYPES.CORE_QUEUE_PUBLISH:
-                    log.trace('Creating core queue publish middleware');
-                    created_middleware = new CoreQueuePublish(middleware_type_enum, null);
                     break;
                 case types.PREMADE_MIDDLEWARE_TYPES.MSG_PREP:
                     log.trace('Creating msg prep middleware');
