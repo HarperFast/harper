@@ -33,9 +33,6 @@ class RulesIF {
             this.command_order = rule_eval_order_enum;
         }
     }
-    evaluateRule(req, args, worker) {
-        throw new Error('Not Implemented');
-    }
 }
 
 module.exports = RulesIF;
