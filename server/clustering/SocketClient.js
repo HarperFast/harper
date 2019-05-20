@@ -24,9 +24,6 @@ const cluster_handlers = require('./clusterHandlers');
 const p_server_utilities_choose_operation = promisify(server_utilities.chooseOperation);
 const p_server_utilities_proccess_delegated_transaction = promisify(server_utilities.proccessDelegatedTransaction);
 const p_schema_describe_all = promisify(schema.describeAll);
-const p_schema_create_schema = promisify(schema.createSchema);
-const p_schema_create_table = promisify(schema.createTable);
-const p_schema_create_attribute = promisify(schema.createAttribute);
 
 const WHITELISTED_ERRORS = 'already exists';
 const ERROR_NO_HDB_USER = 'there is no hdb_user';
@@ -358,7 +355,7 @@ class SocketClient {
 
 async function createMissingSchemas(missing_schemas){
     await Promise.all(missing_schemas.map(async (this_schema) => {
-        await p_schema_create_schema({"schema": this_schema})
+        await schema.createSchema({"schema": this_schema})
             .catch(err=>{
                 if(err !== 'schema already exists') {
                     throw err;
@@ -379,7 +376,7 @@ async function createMissingTables(missing_tables, residence_table_map){
             table_create_object.residence = residence_table_map[tokens[0] + "." + tokens[1]];
         }
 
-        await p_schema_create_table(table_create_object)
+        await schema.createTable(table_create_object)
             .catch(err=>{
                 if(err !== `table ${table_create_object.table} already exists in schema ${table_create_object.schema}`){
                     throw err;
@@ -398,7 +395,7 @@ async function createMissingAttributes(missing_attributes) {
                 "attribute": tokens[ATTRIBUTE_INDEX]
             };
 
-            await p_schema_create_attribute(attr_create_object)
+            await schema.createAttribute(attr_create_object)
                 .catch(err =>{
                     if(WHITELISTED_ERRORS.indexOf(err) < 0) {
                         throw err;
