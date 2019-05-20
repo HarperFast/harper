@@ -26,7 +26,7 @@ const HDB_PROC_END_TIMEOUT = 5;
 describe('Test stop.js' , () => {
     let log_error_stub;
     let log_info_stub;
-    let console_log_stub;
+    let console_log_spy;
     let console_error_stub;
     let find_ps_stub;
     let harper_instances_fake = [{
@@ -54,7 +54,8 @@ describe('Test stop.js' , () => {
     before(() => {
         log_error_stub = sinon.stub(logger, 'error');
         log_info_stub = sinon.stub(logger, 'info');
-        console_log_stub = sinon.stub(console, 'log');
+        // I had console.log as a stub but it was stopping npm test from running on the command line.
+        console_log_spy = sinon.spy(console, 'log');
         console_error_stub = sinon.stub(console, 'error');
         find_ps_stub = sinon.stub(ps_list, 'findPs');
     });
@@ -129,8 +130,8 @@ describe('Test stop.js' , () => {
         it('should call killProcs and logger with valid parameters', async () => {
             await stop.stop();
 
-            expect(console_log_stub).to.have.been.calledOnce;
-            expect(console_log_stub).to.have.been.calledWith('Stopping HarperDB.');
+            expect(console_log_spy).to.have.been.calledOnce;
+            expect(console_log_spy).to.have.been.calledWith('Stopping HarperDB.');
             expect(kill_procs_stub).to.have.been.calledTwice;
             expect(log_info_stub).to.have.been.calledTwice;
             expect(kill_procs_stub).to.have.been.calledWith(hdb_terms.HDB_PROC_NAME, hdb_terms.HDB_PROC_DESCRIPTOR);
@@ -183,8 +184,8 @@ describe('Test stop.js' , () => {
             expect(os_user_info_stub).to.have.been.calledOnce;
             expect(find_ps_stub).to.have.been.calledOnce;
             expect(find_ps_stub).to.have.been.calledWith(hdb_terms.HDB_PROC_NAME);
-            expect(console_log_stub).to.have.been.calledOnce;
-            expect(console_log_stub).to.have.been.calledWith(`No instances of ${hdb_terms.HDB_PROC_DESCRIPTOR} are running.`);
+            expect(console_log_spy).to.have.been.calledOnce;
+            expect(console_log_spy).to.have.been.calledWith(`No instances of ${hdb_terms.HDB_PROC_DESCRIPTOR} are running.`);
         });
 
         it('should call process kill for each process', async () => {
