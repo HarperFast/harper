@@ -29,7 +29,7 @@
     },
     {
       "key": "files_location",
-      "value": "/home/harperdb/test/data/integrationTestsCsvs/",
+      "value": "../test/data/integrationTestsCsvs/",
       "enabled": true
     },
     {
