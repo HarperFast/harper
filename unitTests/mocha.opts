@@ -1,6 +1,5 @@
 ../unitTests/bin
 ../unitTests/data_layer
-../unitTests/lib
 ../unitTests/security
 ../unitTests/server/jobRunner-test.js
 ../unitTests/server/jobs-test.js
