@@ -258,17 +258,6 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     let props_cors = env.get(PROPS_CORS_KEY);
     let props_cors_whitelist = env.get(PROPS_CORS_WHITELIST_KEY);
 
-    if(enterprise === true && global.clustering_on === true){
-        const socketclient = require('socketcluster-client');
-        const HDBSocketConnector = require('./socketcluster/connector/HDBSocketConnector');
-        //TODO replace creds with actual credentials
-        const creds = require('../json/sc_credentials');
-        let connector_options = require('../json/hdbConnectorOptions');
-        connector_options.hostname = 'localhost';
-        connector_options.port = env.get('CLUSTERING_PORT');
-        global.hdb_socket_client = new HDBSocketConnector(socketclient, 'worker_' + process.pid, connector_options, creds);
-    }
-
     if (props_cors && (props_cors === true || props_cors.toUpperCase() === TRUE_COMPARE_VAL)) {
         let cors_options = {
             origin: true,
@@ -403,6 +392,46 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
        harper_logger.info(`Server close event received for process ${process.pid}`);
     });
 
+    function spawnSCConnection(){
+        if(enterprise !== true && global.clustering_on !== true){
+            return;
+        }
+
+        const socketclient = require('socketcluster-client');
+        const HDBSocketConnector = require('./socketcluster/connector/HDBSocketConnector');
+        const crypto_hash = require('../security/cryptoHash');
+        let connector_options = require('../json/hdbConnectorOptions');
+
+        //get the CLUSTER_USER
+        let cluster_user_name = env.get('CLUSTERING_USER');
+        let cluster_user = hdb_util.getClusterUser(global.hdb_users, cluster_user_name);
+
+        if(cluster_user === undefined){
+            return;
+        }
+
+        let creds = {
+            username: cluster_user.username,
+            password: crypto_hash.decrypt(cluster_user.hash)
+        };
+
+        connector_options.hostname = 'localhost';
+        connector_options.port = env.get('CLUSTERING_PORT');
+        global.hdb_socket_client = new HDBSocketConnector(socketclient, 'worker_' + process.pid, connector_options, creds);
+    }
+
+    async function setUp(){
+        try {
+            harper_logger.trace('Configuring child process.');
+            await p_schema_to_global();
+            await p_users_to_global();
+            spawnSCConnection();
+
+        } catch(e) {
+            harper_logger.error(e);
+        }
+    }
+
     async function shutDown(force_bool) {
         harper_logger.debug(`calling shutdown`);
         let target_server = (httpServer ? httpServer : secureServer);
@@ -437,23 +466,18 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         const props_http_on = env.get(PROPS_HTTP_ON_KEY);
 
         global.isMaster = cluster.isMaster;
+
         harper_logger.debug(`child process ${process.pid} starting up.`);
+
+        setUp().then(()=>{});
+
         if (props_http_secure_on &&
             (props_http_secure_on === true || props_http_secure_on.toUpperCase() === TRUE_COMPARE_VAL)) {
             secureServer = httpsecure.createServer(credentials, app);
             secureServer.setTimeout(server_timeout ? server_timeout : DEFAULT_SERVER_TIMEOUT);
             secureServer.listen(env.get(PROPS_HTTP_SECURE_PORT_KEY), function () {
                 harper_logger.info(`HarperDB ${pjson.version} HTTPS Server running on ${env.get(PROPS_HTTP_SECURE_PORT_KEY)}`);
-                async.parallel(
-                    [
-                        global_schema.setSchemaDataToGlobal,
-                        user_schema.setUsersToGlobal,
-                        signalling.signalChildStarted
-                    ], (error) => {
-                        if (error) {
-                            harper_logger.error(error);
-                        }
-                    });
+                signalling.signalChildStarted();
             });
         }
 
@@ -472,21 +496,11 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
             httpServer.setTimeout(server_timeout ? server_timeout : DEFAULT_SERVER_TIMEOUT);
             httpServer.listen(env.get(PROPS_HTTP_PORT_KEY), function () {
                 harper_logger.info(`HarperDB ${pjson.version} HTTP Server running on ${env.get(PROPS_HTTP_PORT_KEY)}`);
-                async.parallel(
-                    [
-                        () => {
-                            harper_logger.debug('Configuring child process.');
-                        },
-                        global_schema.setSchemaDataToGlobal,
-                        user_schema.setUsersToGlobal,
-                        signalling.signalChildStarted
-                    ], (error) => {
-                        if (error) {
-                            harper_logger.error(error);
-                        }
-                    });
+                signalling.signalChildStarted();
             });
         }
+
+
     } catch (e) {
         harper_logger.error(e);
     }
