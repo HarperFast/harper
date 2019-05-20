@@ -184,6 +184,7 @@ function completeRun() {
     async.waterfall([
         checkPermission,
         kickOffExpress,
+
     ], (error, data) => {
         if (error)
             console.error(error);
@@ -222,9 +223,11 @@ function foregroundHandler() {
  */
 function processExitHandler(options, err) {
     if (options.is_foreground) {
-        stop.stop((err) => {
-            console.error(err);
-        });
+        stop.stop()
+            .then()
+            .catch((err) => {
+                console.log(err);
+            });
     }
 }
 
