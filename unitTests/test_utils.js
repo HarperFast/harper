@@ -5,7 +5,30 @@ const uuid = require('uuid/v4');
 const moment = require('moment');
 const env = require('../utility/environment/environmentManager');
 
-const HDB_HASH_FOLDER_NAME = "__hdb_hash";
+const TEST_FS_DIR_NAME = "test_fs";
+const SYSTEM_DIR_NAMES = {
+    system: "system",
+    schema: "hdb_schema",
+    table: "hdb_table",
+    attribute: "hdb_attribute"
+};
+
+const SYSTEM_ATTRS = {
+    active: "active",
+    attribute: "attribute",
+    createddate: "createddate",
+    hash_attribute: "hash_attribute",
+    id: "id",
+    name: "name",
+    password: "password",
+    residence: "residence",
+    role: "role",
+    schema: "schema",
+    schema_table: "schema_table",
+    table: "table",
+    username: "username"
+};
+const HDB_HASH_DIR_NAME = "__hdb_hash";
 const ATTR_PATH_OBJECT = {
     "files": [],
     "journals": [],
@@ -67,38 +90,14 @@ function preTestPrep() {
     env.initSync();
 }
 
-/**
- * Call this function to delete all directories under the specified path.  This is a synchronous function.
- * @param target_path
- */
-function cleanUpDirectories(target_path) {
-    if(!target_path) return;
-    //Just in case
-    if(target_path === '/') return;
-    let files = [];
-    if( fs.existsSync(target_path) ) {
-        try {
-            files = fs.readdirSync(target_path);
-            for(let i = 0; i<files.length; i++) {
-                let file = files[i];
-                let curPath = path.join(target_path, file);
-                if (fs.lstatSync(curPath).isDirectory()) { // recurse
-                    cleanUpDirectories(curPath);
-                } else {
-                    fs.unlinkSync(curPath);
-                }
-            }
-            fs.rmdirSync(target_path);
-        } catch (e) {
-            console.error(e);
-        }
-    }
-}
-
 function makeTheDir(path) {
     if(!fs.existsSync(path)) {
         fs.mkdirSync(path);
     }
+}
+
+function getMockFSDirPath(base_path) {
+    return path.join(base_path, TEST_FS_DIR_NAME);
 }
 
 //TODO: Update docs for this method
@@ -108,16 +107,20 @@ function makeTheDir(path) {
  * from.  The schema is always assumed to be 'test'.
  * @param data
  */
-function createMockSchemaTableFS(hash_attribute, schema_path, schema, table, test_data) {
+function createMockFS(test_base_path, hash_attribute, schema, table, test_data) {
     try {
+        //create default mock fs dir
+        makeTheDir(test_base_path)
+
         //create schema
+        const schema_path = path.join(test_base_path, schema);
         makeTheDir(schema_path);
 
         //create table
         const table_id = uuid();
         const table_path = path.join(schema_path, table);
         makeTheDir(table_path);
-        let table_hash_dir_path = path.join(table_path, HDB_HASH_FOLDER_NAME);
+        let table_hash_dir_path = path.join(table_path, HDB_HASH_DIR_NAME);
         makeTheDir(table_hash_dir_path);
 
         const test_table_paths = {
@@ -136,7 +139,7 @@ function createMockSchemaTableFS(hash_attribute, schema_path, schema, table, tes
                     attribute_names.push(curr_attribute);
                 }
                 const is_hash = curr_attribute === hash_attribute;
-                const hash_dir_path = path.join(table_path, HDB_HASH_FOLDER_NAME, curr_attribute);
+                const hash_dir_path = path.join(table_path, HDB_HASH_DIR_NAME, curr_attribute);
                 makeTheDir(hash_dir_path);
                 const attribute_dir_path = path.join(table_path, curr_attribute);
                 makeTheDir(attribute_dir_path);
@@ -164,50 +167,140 @@ function createMockSchemaTableFS(hash_attribute, schema_path, schema, table, tes
         //set hdb_global
         setGlobalSchema(hash_attribute, schema, table, table_id, attribute_names);
         test_table_data.paths = test_table_paths;
+
+        //set
+        const system_schema_path = path.join(test_base_path, SYSTEM_DIR_NAMES.system);
+        createMockSystemSchema(system_schema_path, hash_attribute, schema, table, attribute_names);
         return test_table_data;
     } catch(e) {
          console.error(e);
     }
 }
 
-function tearDownMockFS(target_path) {
-    if(!target_path) return;
-    let files = [];
-    if( fs.existsSync(target_path) ) {
-        try {
-            files = fs.readdirSync(target_path);
-            for(let i = 0; i<files.length; i++) {
-                let file = files[i];
-                let curPath = path.join(target_path, file);
-                if (fs.lstatSync(curPath).isDirectory()) { // recurse
-                    tearDownMockFS(curPath);
-                } else {
-                    fs.unlinkSync(curPath);
-                }
-            }
-            fs.rmdirSync(target_path);
-        } catch (e) {
-            console.error(e);
-        }
-    }
-}
+function createMockSystemSchema(test_system_base_path, hash_attribute, schema, table, attributes) {
+    // create default dir structure
+    makeTheDir(test_system_base_path)
 
-function validateFSDeletion(paths) {
-    for (let i = 0; i < paths.length; i++) {
-        if (fs.existsSync(paths[i]) === true) {
-            return false;
-        }
-    }
-    return true;
-}
+    // schema
+    const schema_dir_path = path.join(test_system_base_path, SYSTEM_DIR_NAMES.schema);
+    makeTheDir(schema_dir_path);
 
-function validateFSCreation(paths) {
-    for(let i = 0; i < paths.length; i++) {
-        if (fs.exists(paths[i]) === false) {
-            return false;
-        }
-    }
-    return true;
+    // schema > name
+    const schema_name_dir = path.join(schema_dir_path, SYSTEM_ATTRS.name);
+    makeTheDir(schema_name_dir);
+
+    // schema > name > [schema]
+    const schema_name_schema_dir = path.join(schema_name_dir, schema);
+    makeTheDir(schema_name_schema_dir);
+    // write file
+    const timestamp_value = `${moment().valueOf()}`;
+    const schema_time_file_name = path.join(schema_name_schema_dir, `${timestamp_value}.hdb`);
+    const schema_data = JSON.stringify({ name: schema, createddate: timestamp_value });
+    fs.writeFileSync(schema_time_file_name, schema_data,'utf-8');
+
+    // schema > createddate
+    const schema_createddate_dir = path.join(schema_dir_path, SYSTEM_ATTRS.createddate);
+    makeTheDir(schema_createddate_dir);
+    // schema > createddate > [timestamp]
+    const schema_createddate_timestamp_dir = path.join(schema_createddate_dir, timestamp_value)
+    makeTheDir(schema_createddate_timestamp_dir);
+
+    // schema > __hdb_hash
+    const schema_hdb_hash_path = path.join(schema_dir_path, HDB_HASH_DIR_NAME)
+    makeTheDir(schema_hdb_hash_path);
+
+    // schema > __hdb_hash > name
+    const schema_hdb_hash_name = path.join(schema_hdb_hash_path, SYSTEM_ATTRS.name);
+    makeTheDir(schema_hdb_hash_name);
+    //create record
+    const name_hash_file = path.join(schema_hdb_hash_name, `${schema}.hdb`);
+    fs.writeFileSync(name_hash_file, schema,'utf-8');
+
+    // schema > __hdb_hash > createddate
+    const schema_hdb_hash_createddate = path.join(schema_hdb_hash_path, SYSTEM_ATTRS.createddate);
+    makeTheDir(schema_hdb_hash_createddate);
+    //create hdb_hash createddate record
+    const createddate_hash_file = path.join(schema_hdb_hash_createddate, `${schema}.hdb`);
+    fs.writeFileSync(createddate_hash_file, timestamp_value,'utf-8');
+    const s_link_path = path.join(schema_createddate_timestamp_dir, `${schema}.hdb`);
+    fs.linkSync(createddate_hash_file, s_link_path);
+
+
+    // table
+    const table_dir_path = path.join(test_system_base_path, SYSTEM_DIR_NAMES.table);
+    makeTheDir(table_dir_path);
+    const table_hash_value = uuid();
+
+    // table > hash_attribute
+    const table_hash_att_dir = path.join(test_system_base_path, SYSTEM_ATTRS.hash_attribute);
+    makeTheDir(table_hash_att_dir);
+    const table_hash_att_id_dir = path.join(table_hash_att_dir, SYSTEM_ATTRS.id)
+    makeTheDir(table_hash_att_id_dir);
+
+    // table > id
+    const table_id_dir = path.join(test_system_base_path, SYSTEM_ATTRS.id);
+    makeTheDir(table_id_dir);
+
+    // table > name
+    const table_name_dir = path.join(test_system_base_path, SYSTEM_ATTRS.name);
+    makeTheDir(table_name_dir);
+    const table_name_name_dir = path.join(table_hash_att_dir, table)
+    makeTheDir(table_name_name_dir);
+
+    // table > residence
+    const table_residence_dir = path.join(test_system_base_path, SYSTEM_ATTRS.residence);
+    makeTheDir(table_residence_dir);
+
+    // table > schema
+    const table_schema_dir = path.join(test_system_base_path, SYSTEM_ATTRS.schema);
+    makeTheDir(table_schema_dir);
+    const table_schema_schema_dir = path.join(table_schema_dir, schema)
+    makeTheDir(table_schema_schema_dir);
+
+    // table > __hdb_hash
+    const table_hdb_hash_dir = path.join(test_system_base_path, HDB_HASH_DIR_NAME);
+    makeTheDir(table_hdb_hash_dir);
+    // hash_attribute
+    const hash_hash_attr_dir = path.join(table_hdb_hash_dir, SYSTEM_ATTRS.hash_attribute);
+    makeTheDir(hash_hash_attr_dir);
+    const hash_hash_attr_file = path.join(hash_hash_attr_dir, `${table_hash_value}.hdb`);
+    fs.writeFileSync(hash_hash_attr_file, SYSTEM_ATTRS.id, 'utf-8');
+    const t_id_link_file = path.join(table_hash_att_id_dir, `${table_hash_value}.hdb`);
+    fs.linkSync(hash_hash_attr_file, t_id_link_file);
+
+    // id
+    const hash_id_dir = path.join(table_hdb_hash_dir, SYSTEM_ATTRS.id);
+    makeTheDir(hash_id_dir);
+    const hash_id_file = path.join(hash_id_dir, `${table_hash_value}.hdb`);
+    fs.writeFileSync(hash_id_file, table_hash_value, 'utf-8');
+
+    // name
+    const hash_name_dir = path.join(table_hdb_hash_dir, SYSTEM_ATTRS.name);
+    makeTheDir(hash_name_dir);
+    const hash_name_file = path.join(hash_name_dir, `${table_hash_value}.hdb`);
+    fs.writeFileSync(hash_name_file, table, 'utf-8');
+    const t_name_link_file = path.join(table_name_name_dir, `${table_hash_value}.hdb`);
+    fs.linkSync(hash_name_file, t_name_link_file);
+
+    // schema
+    const hash_schema_dir = path.join(table_hdb_hash_dir, SYSTEM_ATTRS.schema);
+    makeTheDir(hash_schema_dir)
+    const hash_schema_file = path.join(hash_schema_dir, `${table_hash_value}.hdb`);
+    fs.writeFileSync(hash_schema_file, schema, 'utf-8');
+    const t_schema_link_file = path.join(table_schema_schema_dir, `${table_hash_value}.hdb`);
+    fs.linkSync(hash_schema_file, t_schema_link_file);
+
+    // attributes
+    const attr_dir_path = path.join(test_system_base_path, SYSTEM_DIR_NAMES.attribute);
+    makeTheDir(attr_dir_path);
+
+    // Other schema > system directories
+    makeTheDir(path.join(test_system_base_path, "hdb_license"));
+    makeTheDir(path.join(test_system_base_path, "hdb_job"));
+    makeTheDir(path.join(test_system_base_path, "hdb_nodes"));
+    makeTheDir(path.join(test_system_base_path, "hdb_queue"));
+    makeTheDir(path.join(test_system_base_path, "hdb_role"));
+    makeTheDir(path.join(test_system_base_path, "hdb_user"));
 }
 
 //TODO: Add docs for this method
@@ -327,15 +420,41 @@ function setGlobalSchema(hash_attribute, schema, table, table_id, attribute_name
     }
 }
 
+/**
+ * Call this function to delete all directories under the specified path.  This is a synchronous function.
+ * @param target_path
+ */
+function cleanUpDirectories(target_path) {
+    if (!target_path) return;
+    //Just in case
+    if (target_path === '/') return;
+    let files = [];
+    if (fs.existsSync(target_path)) {
+        try {
+            files = fs.readdirSync(target_path);
+            for (let i = 0; i<files.length; i++) {
+                let file = files[i];
+                let curPath = path.join(target_path, file);
+                if (fs.lstatSync(curPath).isDirectory()) { // recurse
+                    cleanUpDirectories(curPath);
+                } else {
+                    fs.unlinkSync(curPath);
+                }
+            }
+            fs.rmdirSync(target_path);
+        } catch (e) {
+            console.error(e);
+        }
+    }
+}
+
 module.exports = {
     changeProcessToBinDir:changeProcessToBinDir,
     deepClone:deepClone,
     mochaAsyncWrapper:mochaAsyncWrapper,
     preTestPrep:preTestPrep,
     cleanUpDirectories:cleanUpDirectories,
-    createMockSchemaTableFS:createMockSchemaTableFS,
+    createMockFS:createMockFS,
     makeTheDir:makeTheDir,
-    tearDownMockFS:tearDownMockFS,
-    validateFSDeletion:validateFSDeletion,
-    validateFSCreation:validateFSCreation
+    getMockFSDirPath:getMockFSDirPath
 };
