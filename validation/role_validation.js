@@ -15,6 +15,8 @@ const constraints = {
     }
 };
 
+const ROLE_TYPES = ['super_user', 'cluster_user'];
+
 function addRoleValidation(object) {
     constraints.role.presence = true;
     constraints.id.presence = false;
@@ -44,13 +46,24 @@ function customValidate(object) {
         validationErrors.push(validate_result);
     }
 
+    if (object.permission.cluster_user) {
+        if (!validate.isBoolean(object.permission.cluster_user))
+            validationErrors.push(validate.isBoolean(object.permission.cluster_user));
+
+        if(Object.keys(object.permission).length > 1){
+            validationErrors.push(new Error('cluster_user permission cannot be mixed with other permissions'));
+        }
+    }
+
     if (object.permission.super_user) {
         if (!validate.isBoolean(object.permission.super_user))
             validationErrors.push(validate.isBoolean(object.permission.super_user));
+
+
     }
 
-    for (let item in  object.permission) {
-        if (item != 'super_user') {
+    for (let item in object.permission) {
+        if (ROLE_TYPES.indexOf(item) < 0) {
             let schema = object.permission[item];
             if(!item || !global.hdb_schema[item]) {
                 validationErrors.push(new Error(`Invalid schema ${item}`));

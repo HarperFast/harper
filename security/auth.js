@@ -72,6 +72,7 @@ function findAndValidateUser(username, password, done) {
             return done('Cannot complete request:  Invalid password', false);
         }
         delete user.password;
+        delete user.hash;
         appendSystemTablesToRole(user.role);
         return done(null, user);
     }

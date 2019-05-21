@@ -147,12 +147,30 @@ async function insertData(insert_object){
             pool.killAll();
         }
 
+        convertOperationToTransaction(insert_object, written_hashes, table_schema.hash_attribute);
+
         return returnObject(INSERT_ACTION, written_hashes, insert_object, skipped);
     } catch(e){
         if(pool instanceof HDB_Pool){
             pool.killAll();
         }
         throw (e);
+    }
+}
+
+function convertOperationToTransaction(operation, written_hashes, hash_attribute){
+    if(global.hdb_socket_client !== undefined && operation.schema !== 'system' && Array.isArray(written_hashes) && written_hashes.length > 0){
+        let transaction = {
+            operation: "insert",
+            records:[]
+        };
+
+        operation.records.forEach(record =>{
+            if(written_hashes.indexOf(h_utils.autoCast(record[hash_attribute])) >= 0) {
+                transaction.records.push(record);
+            }
+        });
+        h_utils.sendTransactionToSocketCluster(`${operation.schema}:${operation.table}`, transaction);
     }
 }
 
@@ -194,6 +212,8 @@ async function updateData(update_object){
         if(pool instanceof HDB_Pool){
             pool.killAll();
         }
+
+        convertOperationToTransaction(update_object, written_hashes, table_schema.hash_attribute);
 
         return returnObject(UPDATE_ACTION, written_hashes, update_object, skipped);
     } catch(e){
