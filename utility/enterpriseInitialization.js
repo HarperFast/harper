@@ -28,7 +28,19 @@ async function kickOffEnterprise() {
 
         //get the CLUSTER_USER
         let cluster_user_name = env.get('CLUSTERING_USER');
+
+        if(hdb_util.isEmpty(cluster_user_name)){
+            log.warn('No CLUSTERING_USER specified, cannot start clustering.');
+            return;
+        }
+
         let user = hdb_util.getClusterUser(users, cluster_user_name);
+
+        if(hdb_util.isEmpty(user)){
+            log.warn('No CLUSTERING_USER found, cannot start clustering.');
+            return;
+        }
+
         let cluster_user = {
             username: user.username,
             hash: user.hash
@@ -42,8 +54,7 @@ async function kickOffEnterprise() {
         };
 
         try {
-            let child = fork(path.join(__dirname, '../server/socketcluster/Server.js'), [JSON.stringify(sc_data_payload)]);
-            //child.send(sc_data_payload);
+            fork(path.join(__dirname, '../server/socketcluster/Server.js'), [JSON.stringify(sc_data_payload)]);
         } catch(err) {
             log.error(err);
         }

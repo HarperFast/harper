@@ -404,9 +404,16 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
 
         //get the CLUSTER_USER
         let cluster_user_name = env.get('CLUSTERING_USER');
+
+        if(hdb_util.isEmpty(cluster_user_name)){
+            harper_logger.warn('No CLUSTERING_USER found, unable connect to local clustering server');
+            return;
+        }
+
         let cluster_user = hdb_util.getClusterUser(global.hdb_users, cluster_user_name);
 
-        if(cluster_user === undefined){
+        if(hdb_util.isEmpty(cluster_user)){
+            harper_logger.warn('No CLUSTERING_USER found, unable connect to local clustering server');
             return;
         }
 

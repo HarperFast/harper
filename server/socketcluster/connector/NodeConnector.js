@@ -19,6 +19,11 @@ class NodeConnector {
 
         //spawn local connection
         this.worker = worker;
+
+        if(this.worker === undefined || this.worker === null){
+            throw new Error('worker is undefined, cannot spawn connections to other nodes');
+        }
+
         this.publishin_promises = [];
         this.creds = {
             username: cluster_user.username,

@@ -448,12 +448,17 @@ function getClusterUser(users, cluster_user_name){
     }
 
     let cluster_user = undefined;
-    for(let x = 0; x < users.length; x++){
-        let user = users[x];
-        if(user.username === cluster_user_name && user.role.permission.cluster_user === true && user.active === true){
-            cluster_user = user;
-            break;
+    try {
+        for (let x = 0; x < users.length; x++) {
+            let user = users[x];
+            if (user.username === cluster_user_name && user.role.permission.cluster_user === true && user.active === true) {
+                cluster_user = user;
+                break;
+            }
         }
+    } catch(e){
+        log.error(`unable to find cluster_user due to: ${e.message}`);
+        return;
     }
 
     if(cluster_user === undefined){
