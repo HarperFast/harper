@@ -164,6 +164,7 @@ function createMockFS(test_base_path, hash_attribute, schema, table, test_data) 
             data.paths = test_record_paths;
             return data;
         });
+
         //set hdb_global
         setGlobalSchema(hash_attribute, schema, table, table_id, attribute_names);
         test_table_data.paths = test_table_paths;
@@ -306,6 +307,7 @@ function createMockSystemSchema(test_system_base_path, hash_attribute, schema, t
 //TODO: Add docs for this method
 function setGlobalSchema(hash_attribute, schema, table, table_id, attribute_names) {
     const attributes = attribute_names.map(name => ({ "attributes": name }));
+
     if (global.hdb_schema === undefined) {
         global.hdb_schema = {
             [schema]: {
@@ -420,6 +422,11 @@ function setGlobalSchema(hash_attribute, schema, table, table_id, attribute_name
     }
 }
 
+function tearDownMockFS(path) {
+    cleanUpDirectories(path);
+    global.hdb_schema = undefined;
+}
+
 /**
  * Call this function to delete all directories under the specified path.  This is a synchronous function.
  * @param target_path
@@ -455,6 +462,7 @@ module.exports = {
     preTestPrep:preTestPrep,
     cleanUpDirectories:cleanUpDirectories,
     createMockFS:createMockFS,
+    tearDownMockFS:tearDownMockFS,
     makeTheDir:makeTheDir,
     getMockFSDirPath:getMockFSDirPath
 };

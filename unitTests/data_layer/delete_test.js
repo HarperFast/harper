@@ -1,7 +1,7 @@
 "use strict";
 
 const test_utils = require('../test_utils');
-const { cleanUpDirectories, createMockFS, deepClone, makeTheDir, getMockFSDirPath, mochaAsyncWrapper } = test_utils;
+const { createMockFS, deepClone, makeTheDir, getMockFSDirPath, mochaAsyncWrapper, tearDownMockFS } = test_utils;
 // try to move to /bin directory so our properties reader doesn't explode.
 test_utils.preTestPrep();
 
@@ -91,8 +91,13 @@ describe('Test DELETE', () => {
     before(() => {
         search_stub.yields(null, TEST_DATA_DOG);
         delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, TEST_FS_DIR);
-        cleanUpDirectories(TEST_FS_DIR);
+        tearDownMockFS(TEST_FS_DIR);
     });
+
+    after(() => {
+        rewire('../../data_layer/delete');
+        search_stub.reset();
+    })
 
     describe('Test deleteFilesInPath', () => {
         let test_data;
@@ -113,7 +118,7 @@ describe('Test DELETE', () => {
             test_data = undefined;
             files_to_check = undefined;
             search_stub.reset();
-            cleanUpDirectories(TEST_FS_DIR);
+            tearDownMockFS(TEST_FS_DIR);
         });
 
         it('Nominal path of deleteFilesInPath, test against DOG table', mochaAsyncWrapper(async () => {
@@ -165,7 +170,11 @@ describe('Test DELETE', () => {
     describe('Test deleteFilesBefore', () => {
         let test_data = undefined;
         let files_to_check;
-        let deleteFilesBefore = delete_rewire.__get__("deleteFilesBefore");
+        let deleteFilesBefore;
+
+        before(() => {
+            deleteFilesBefore = delete_rewire.__get__("deleteFilesBefore");
+        });
 
         beforeEach(() => {
             search_stub.yields(null, TEST_DATA_DOG);
@@ -177,7 +186,7 @@ describe('Test DELETE', () => {
             search_stub.reset();
             test_data = undefined;
             files_to_check = undefined;
-            cleanUpDirectories(TEST_FS_DIR);
+            tearDownMockFS(TEST_FS_DIR);
         });
 
         it('deleteFilesBefore with yesterday as a time stamp, expect no files removed', mochaAsyncWrapper(async () => {
@@ -299,7 +308,7 @@ describe('Test DELETE', () => {
         });
 
         after(() => {
-            cleanUpDirectories(TEST_FS_DIR);
+            tearDownMockFS(TEST_FS_DIR);
             search_stub.reset();
         });
 
@@ -334,8 +343,8 @@ describe('Test DELETE', () => {
 
         afterEach(() => {
             found_hashes_to_remove = [];
-            cleanUpDirectories(TEST_FS_DIR);
             search_stub.reset();
+            tearDownMockFS(TEST_FS_DIR);
         });
 
         it('Nominal path to search the dog directory.  Should find both ids in TEST_DATA', mochaAsyncWrapper(async () => {
@@ -459,7 +468,7 @@ describe('Test DELETE', () => {
             test_data = undefined;
             files_to_remove = undefined;
             search_stub.reset();
-            cleanUpDirectories(TEST_FS_DIR);
+            tearDownMockFS(TEST_FS_DIR);
         });
 
         it('Nominal path of removeFiles on dog table', mochaAsyncWrapper(async () => {
@@ -497,7 +506,7 @@ describe('Test DELETE', () => {
 
     describe('Test removeIDFiles', () => {
         let removeIDFiles;
-        let test_values = undefined;
+        let test_values;
 
         before(() => {
             removeIDFiles = delete_rewire.__get__('removeIDFiles');
@@ -509,7 +518,7 @@ describe('Test DELETE', () => {
 
         afterEach(() => {
             test_values = undefined;
-            cleanUpDirectories(TEST_FS_DIR);
+            tearDownMockFS(TEST_FS_DIR);
         });
 
         it('Nominal path of removeIDFiles against dog table.', mochaAsyncWrapper(async () => {
@@ -534,10 +543,11 @@ describe('Test DELETE', () => {
     });
 
     describe('Test getDirectoriesInPath', () => {
-        let getDirectoriesInPath = delete_rewire.__get__('getDirectoriesInPath');
+        let getDirectoriesInPath;
 
         before(() => {
             setup();
+            getDirectoriesInPath = delete_rewire.__get__('getDirectoriesInPath');
             const ATTRIBUTE_TIME_NAME = moment().subtract(6, 'hours').valueOf();
             const TEST_FILE_NAME = `${ATTRIBUTE_TIME_NAME}.hdb`;
             const FILE_CONTENTS = "Name";
@@ -545,7 +555,7 @@ describe('Test DELETE', () => {
         });
 
         after(() => {
-            cleanUpDirectories(TEST_FS_DIR);
+            tearDownMockFS(TEST_FS_DIR);
         });
 
         // There should be 2 directories, each with 1 file, and 1 text file in the current directory
@@ -587,20 +597,25 @@ describe('Test DELETE', () => {
     });
 
     describe('Test deleteRecord', () => {
-        let test_data = undefined;
+        let err;
+        let global_schema_stub;
+        let test_data;
 
         before(() => {
-            sinon.stub(global_schema, "getTableSchema").yields("", null);
+            global_schema_stub = sinon.stub(global_schema, "getTableSchema");
         });
 
         beforeEach(() => {
+            global_schema_stub.yields("", null);
             search_stub.yields(null, [TEST_DATA_DOG[0]]);
             test_data = setup();
         });
 
         afterEach(() => {
-            cleanUpDirectories(TEST_FS_DIR);
+            err = undefined;
+            global_schema_stub.reset();
             search_stub.reset();
+            tearDownMockFS(TEST_FS_DIR);
         });
 
         it('Nominal path for delete Record', () => {
@@ -618,32 +633,36 @@ describe('Test DELETE', () => {
         });
 
         it('test deleteRecord with bad deleteObject parameter', () => {
-            delete_rewire.delete(null, (err) => {
-                assert.ok(err.message.length > 0);
+            delete_rewire.delete(null, (e) => {
+                err = e;
             });
+            assert.ok(err.message.length > 0);
         });
 
         it('test deleteRecord with bad schema in deleteObject parameter', () => {
             let del_obj = deepClone(JSON_OBJECT_DELETE);
             del_obj.schema = 'hootiehoo';
-            delete_rewire.delete(del_obj, (err) => {
-                assert.ok(err.message.length > 0);
+            delete_rewire.delete(del_obj, (e) => {
+                err = e;
             });
+            assert.ok(err.message.length > 0);
         });
 
         it('test deleteRecord with bad table in deleteObject parameter', () => {
             let del_obj = deepClone(JSON_OBJECT_DELETE);
             del_obj.table = 'hootiehoo';
-            delete_rewire.delete(del_obj, (err) => {
-                assert.ok(err.message.length > 0);
+            delete_rewire.delete(del_obj, (e) => {
+                err = e;
             });
+            assert.ok(err.message.length > 0);
         });
 
         it('test deleteRecord with search returning no results', () => {
             search_stub.yields(null, []);
-            delete_rewire.delete(JSON_OBJECT_DELETE, (err) => {
-                assert.ok(err.message.length > 0);
+            delete_rewire.delete(JSON_OBJECT_DELETE, (e) => {
+                err = e;
             });
+            assert.ok(err.message.length > 0);
         });
     });
 
@@ -653,8 +672,9 @@ describe('Test DELETE', () => {
     });
 
     describe('Test deleteRecords', () => {
-        let test_data = undefined;
-        let files_to_check = undefined;
+        let err;
+        let files_to_check;
+        let test_data;
 
         beforeEach(() => {
             search_stub.yields(null, TEST_DATA_DOG);
@@ -663,8 +683,9 @@ describe('Test DELETE', () => {
         });
 
         afterEach(() => {
+            err = undefined;
             test_data = undefined;
-            cleanUpDirectories(TEST_FS_DIR);
+            tearDownMockFS(TEST_FS_DIR);
         });
 
         it('Nominal path for deleteRecords', () => {
@@ -676,24 +697,27 @@ describe('Test DELETE', () => {
         });
 
         it('deleteRecords with invalid schema', () => {
-            delete_rewire.deleteRecords(null, TEST_TABLE_DOG, TEST_DATA_DOG, (err) => {
-                assert.ok(err.message.length > 0);
-                assert.equal(err.message, "hash attribute not found");
+            delete_rewire.deleteRecords(null, TEST_TABLE_DOG, TEST_DATA_DOG, (e) => {
+                err = e;
             });
+            assert.ok(err.message.length > 0);
+            assert.equal(err.message, "hash attribute not found");
         });
 
         it('deleteRecords with invalid table', () => {
-            delete_rewire.deleteRecords(TEST_SCHEMA, null, TEST_DATA_DOG, (err) => {
-                assert.ok(err.message.length > 0);
-                assert.equal(err.message, "hash attribute not found");
+            delete_rewire.deleteRecords(TEST_SCHEMA, null, TEST_DATA_DOG, (e) => {
+                err = e;
             });
+            assert.ok(err.message.length > 0);
+            assert.equal(err.message, "hash attribute not found");
         });
 
         it('deleteRecords with empty records', () => {
-            delete_rewire.deleteRecords(TEST_SCHEMA, TEST_TABLE_DOG, [], (err) => {
-                assert.ok(err.message.length > 0);
-                assert.equal(err.message, "Item not found!");
+            delete_rewire.deleteRecords(TEST_SCHEMA, TEST_TABLE_DOG, [], (e) => {
+                err = e;
             });
+            assert.ok(err.message.length > 0);
+            assert.equal(err.message, "Item not found!");
         });
     });
 
