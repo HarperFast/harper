@@ -62,6 +62,8 @@ describe('Test stop.js' , () => {
 
     after(() => {
         stop = rewire('../../bin/stop');
+        log_error_stub.restore();
+        log_info_stub.restore();
     });
 
     /**
