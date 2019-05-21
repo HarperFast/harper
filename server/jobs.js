@@ -21,6 +21,7 @@ const {promisify} = require('util');
 const moment = require('moment');
 const hdb_sql = require('../sqlTranslator/index');
 const hdb_delete = require('../data_layer/delete');
+const csv_file_validator = require('../validation/csvFileLoadValidator');
 
 //Promisified functions
 const p_search_by_value = promisify(search.searchByValue);
@@ -121,11 +122,15 @@ async function addJob(json_body) {
         result.error = err_msg;
         return result;
 	}
-	
+
     // Check for valid job type.
     if(!hdb_terms.JOB_TYPE_ENUM[json_body.operation]) {
         log.info(`invalid job type specified: ${json_body.operation}.`);
         return result;
+    }
+
+    if(json_body.operation === 'csv_file_load') {
+        await csv_file_validator.csvFileLoadValidator(json_body);
     }
 
     let new_job = new JobObject();

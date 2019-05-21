@@ -69,6 +69,7 @@ function stop(callback) {
         }
 
         checkHdbProcsEnd().then(()=>{
+            log.notify(`HarperDB has stopped`);
             return callback(null);
         });
 
