@@ -106,7 +106,7 @@ cluster.on('exit', (dead_worker, code, signal) => {
         harper_logger.info(`Received restart code, disabling process auto restart.`);
         return;
     }
-    harper_logger.info(`worker ${dead_worker.process.pid} died with signal ${signal} and code ${code}`);
+    harper_logger.fatal(`worker ${dead_worker.process.pid} died with signal ${signal} and code ${code}`);
     let new_worker = undefined;
     try {
         new_worker = cluster.fork();
@@ -215,7 +215,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                 harper_logger.error(e);
             }
         }));
-
+        harper_logger.notify(`HarperDB successfully started`);
         harper_logger.info(`Master ${process.pid} is running`);
         harper_logger.info(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
         harper_logger.info(`Number of processes allowed by license is:${numCPUs}, number of cores on this machine: ${num_workers}`);
