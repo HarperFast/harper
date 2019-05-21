@@ -77,7 +77,23 @@ class ClusterWorker extends WorkerIF {
         this.exchange_set = promisify(this.exchange.set).bind(this.exchange);
 
         if(this.isLeader){
-            new NodeConnector(require('../../../json/node'), this);
+            this.processArgs().then(hdb_data=>{
+                new NodeConnector(hdb_data.nodes, hdb_data.cluster_user, this);
+            });
+        }
+    }
+
+    async processArgs(){
+        try{
+            let data = process.argv[2];
+            let hdb_data = JSON.parse(data);
+            if(hdb_data !== undefined) {
+                await this.setHDBDatatoExchange(hdb_data);
+                log.info('hdb_data successfully set to exchange');
+                return hdb_data;
+            }
+        } catch(e){
+            log.error(e);
         }
     }
 

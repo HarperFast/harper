@@ -7,6 +7,7 @@ let fork = require('child_process').fork;
 const path = require('path');
 const promisify = require('util').promisify;
 const p_search_by_value = promisify(search.searchByValue);
+const hdb_util = require('./common_utils');
 
 async function kickOffEnterprise() {
     log.trace('in kickOffEnterprise');
@@ -24,15 +25,25 @@ async function kickOffEnterprise() {
         let nodes = await p_search_by_value(search_obj);
         let schema = global.hdb_schema;
         let users = global.hdb_users;
+
+        //get the CLUSTER_USER
+        let cluster_user_name = env.get('CLUSTERING_USER');
+        let user = hdb_util.getClusterUser(users, cluster_user_name);
+        let cluster_user = {
+            username: user.username,
+            hash: user.hash
+        };
+
         let sc_data_payload = {
             nodes: nodes,
             schema: schema,
-            users: users
+            users: users,
+            cluster_user: cluster_user
         };
 
         try {
-            let child = fork(path.join(__dirname, '../server/socketcluster/Server.js'));
-            child.send(sc_data_payload);
+            let child = fork(path.join(__dirname, '../server/socketcluster/Server.js'), [JSON.stringify(sc_data_payload)]);
+            //child.send(sc_data_payload);
         } catch(err) {
             log.error(err);
         }
