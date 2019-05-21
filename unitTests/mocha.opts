@@ -1,10 +1,2 @@
 ../unitTests/bin
-../unitTests/data_layer
-../unitTests/security
-../unitTests/sqlTranslator
-../unitTests/upgrade
-../unitTests/utility/environment
-../unitTests/utility/registration
-../unitTests/utility/
-../unitTests/validation
-../unitTests/server_utilities_test.js
+
