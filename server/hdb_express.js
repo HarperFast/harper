@@ -106,7 +106,7 @@ cluster.on('exit', (dead_worker, code, signal) => {
         harper_logger.info(`Received restart code, disabling process auto restart.`);
         return;
     }
-    harper_logger.info(`worker ${dead_worker.process.pid} died with signal ${signal} and code ${code}`);
+    harper_logger.fatal(`worker ${dead_worker.process.pid} died with signal ${signal} and code ${code}`);
     let new_worker = undefined;
     try {
         new_worker = cluster.fork();
@@ -189,6 +189,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     }
 
     async function launch(){
+        let clustering = false;
         await p_schema_to_global();
         await p_users_to_global();
         let licenses = await p_search_by_value(licenseKeySearch);
@@ -198,7 +199,9 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
             try {
                 let license_validation = await hdb_license.validateLicense(license.license_key, license.company);
                 if (license_validation.valid_machine && license_validation.valid_date && license_validation.valid_license) {
-                    enterprise = true;
+                    this.enterprise = true;
+                    clustering = env.get('CLUSTERING');
+                    global.clustering_on = clustering;
                     cluster_utilities.setEnterprise(true);
                     if (num_workers > numCPUs) {
                         if (numCPUs === 4) {
@@ -212,7 +215,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                 harper_logger.error(e);
             }
         }));
-
+        harper_logger.notify(`HarperDB successfully started`);
         harper_logger.info(`Master ${process.pid} is running`);
         harper_logger.info(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
         harper_logger.info(`Number of processes allowed by license is:${numCPUs}, number of cores on this machine: ${num_workers}`);
@@ -223,7 +226,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         let forks = [];
         for (let i = 0; i < numCPUs; i++) {
             try {
-                let forked = cluster.fork({});
+                let forked = cluster.fork({enterprise:this.enterprise, clustering:clustering});
                 // assign handler for messages expected from child processes.
                 forked.on('message', cluster_utilities.clusterMessageHandler);
                 harper_logger.debug(`kicked off fork.`);
@@ -249,21 +252,15 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     const cors = require('cors');
 
     const app = express();
-    let enterprise = false;
-    global.clustering_on = false;
+    let enterprise = process.env['enterprise'] === undefined ? false : (process.env['enterprise'] === 'true');
+    global.clustering_on = process.env['clustering'] === undefined ? false : (process.env['clustering'] === 'true');
+
     let props_cors = env.get(PROPS_CORS_KEY);
     let props_cors_whitelist = env.get(PROPS_CORS_WHITELIST_KEY);
 
     //TODO make sure this is wired in so it only spawns when we are licensed
     //if(global.clustering_on === true){
-        const socketclient = require('socketcluster-client');
-        const HDBSocketConnector = require('./socketcluster/connector/HDBSocketConnector');
-        //TODO replace creds with actual credentials
-        const creds = require('../json/sc_credentials');
-        let connector_options = require('../json/hdbConnectorOptions');
-        connector_options.hostname = 'localhost';
-        connector_options.port = env.get('CLUSTERING_PORT');
-        global.hdb_socket_client = new HDBSocketConnector(socketclient, 'worker_' + process.pid, connector_options, creds);
+       spawnSCConnection();
     //}
 
     if (props_cors && (props_cors === true || props_cors.toUpperCase() === TRUE_COMPARE_VAL)) {
@@ -366,12 +363,6 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                     harper_logger.error(e);
                 });
                 break;
-            case 'enterprise':
-                enterprise = msg.enterprise;
-                break;
-            case 'clustering':
-                global.clustering_on = true;
-                break;
             case terms.CLUSTER_MESSAGE_TYPE_ENUM.CLUSTER_STATUS:
                 harper_logger.info('Got cluster status message via IPC');
                 cluster_event.clusterEmitter.emit(cluster_event.EVENT_NAME, msg.status);
@@ -405,6 +396,67 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     process.on('close', () => {
        harper_logger.info(`Server close event received for process ${process.pid}`);
     });
+
+    function spawnSCConnection(){
+        if(enterprise !== true && global.clustering_on !== true){
+            return;
+        }
+
+        const socketclient = require('socketcluster-client');
+        const HDBSocketConnector = require('./socketcluster/connector/HDBSocketConnector');
+        const crypto_hash = require('../security/cryptoHash');
+        let connector_options = require('../json/hdbConnectorOptions');
+
+        //get the CLUSTER_USER
+        let cluster_user = getClusterUser();
+
+        if(cluster_user === undefined){
+            return;
+        }
+
+        let creds = {
+            username: cluster_user.username,
+            password: crypto_hash.decrypt(cluster_user.hash)
+        };
+
+        connector_options.hostname = 'localhost';
+        connector_options.port = env.get('CLUSTERING_PORT');
+        global.hdb_socket_client = new HDBSocketConnector(socketclient, 'worker_' + process.pid, connector_options, creds);
+    }
+
+    function getClusterUser(){
+        let cluster_user_name = env.get('CLUSTER_USER');
+        if(hdb_util.isEmpty(cluster_user_name)){
+            return harper_logger.warn('No CLUSTER_USER defined, clustering disabled');
+        }
+
+        let cluster_user = undefined;
+        for(let x = 0; x < global.hdb_users.length; x++){
+            let user = global.hdb_users[x];
+            if(user.username === cluster_user_name && user.permission.cluster_user === true && user.active === true){
+                cluster_user = user;
+                break;
+            }
+        }
+
+        if(cluster_user === undefined){
+            return harper_logger.warn(`CLUSTER_USER: ${cluster_user_name} not found or is not active.`);
+        }
+
+        return cluster_user;
+    }
+
+    async function setUp(){
+        try {
+            harper_logger.trace('Configuring child process.');
+            await p_schema_to_global();
+            await p_users_to_global();
+            signalling.signalChildStarted();
+            spawnSCConnection();
+        } catch(e) {
+            harper_logger.error(e);
+        }
+    }
 
     async function shutDown(force_bool) {
         harper_logger.debug(`calling shutdown`);
@@ -447,16 +499,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
             secureServer.setTimeout(server_timeout ? server_timeout : DEFAULT_SERVER_TIMEOUT);
             secureServer.listen(env.get(PROPS_HTTP_SECURE_PORT_KEY), function () {
                 harper_logger.info(`HarperDB ${pjson.version} HTTPS Server running on ${env.get(PROPS_HTTP_SECURE_PORT_KEY)}`);
-                async.parallel(
-                    [
-                        global_schema.setSchemaDataToGlobal,
-                        user_schema.setUsersToGlobal,
-                        signalling.signalChildStarted
-                    ], (error) => {
-                        if (error) {
-                            harper_logger.error(error);
-                        }
-                    });
+                setUp().then(()=>{});
             });
         }
 
@@ -475,19 +518,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
             httpServer.setTimeout(server_timeout ? server_timeout : DEFAULT_SERVER_TIMEOUT);
             httpServer.listen(env.get(PROPS_HTTP_PORT_KEY), function () {
                 harper_logger.info(`HarperDB ${pjson.version} HTTP Server running on ${env.get(PROPS_HTTP_PORT_KEY)}`);
-                async.parallel(
-                    [
-                        () => {
-                            harper_logger.debug('Configuring child process.');
-                        },
-                        global_schema.setSchemaDataToGlobal,
-                        user_schema.setUsersToGlobal,
-                        signalling.signalChildStarted
-                    ], (error) => {
-                        if (error) {
-                            harper_logger.error(error);
-                        }
-                    });
+                setUp().then(()=>{});
             });
         }
     } catch (e) {

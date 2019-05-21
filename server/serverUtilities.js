@@ -43,6 +43,11 @@ const cb_reg_hand_set_licence = util.callbackify(reg.setLicense);
 const cb_clust_util_config = util.callbackify(cluster_utilities.configureCluster);
 const cb_clust_util_status = util.callbackify(cluster_utilities.clusterStatus);
 const cb_clust_util_remove_node = util.callbackify(cluster_utilities.removeNode);
+const cb_schema_create_schema = util.callbackify(schema.createSchema);
+const cb_schema_create_attribute = util.callbackify(schema.createAttribute);
+const cb_schema_create_table = util.callbackify(schema.createTable);
+const cb_schema_drop_schema = util.callbackify(schema.dropSchema);
+const cb_schema_drop_table = util.callbackify(schema.dropTable);
 const cb_read_log = util.callbackify(harper_logger.readLog);
 
 const UNAUTH_RESPONSE = 403;
@@ -194,19 +199,19 @@ function getOperationFunction(json){
             job_operation_function = csv.csvURLLoad;
             break;
         case terms.OPERATIONS_ENUM.CREATE_SCHEMA:
-            operation_function = schema.createSchema;
+            operation_function = cb_schema_create_schema;
             break;
         case terms.OPERATIONS_ENUM.CREATE_TABLE:
-            operation_function = schema.createTable;
+            operation_function = cb_schema_create_table;
             break;
         case terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE:
-            operation_function = schema.createAttribute;
+            operation_function = cb_schema_create_attribute;
             break;
         case terms.OPERATIONS_ENUM.DROP_SCHEMA:
-            operation_function = schema.dropSchema;
+            operation_function = cb_schema_drop_schema;
             break;
         case terms.OPERATIONS_ENUM.DROP_TABLE:
-            operation_function = schema.dropTable;
+            operation_function = cb_schema_drop_table;
             break;
         case terms.OPERATIONS_ENUM.DROP_ATTRIBUTE:
             operation_function = cb_schema_drop_attribute;

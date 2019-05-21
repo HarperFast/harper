@@ -35,11 +35,8 @@ async function kickOffEnterprise() {
             child.send(sc_data_payload);
         } catch(err) {
             log.error(err);
-            return {"clustering": false};
         }
-        return {"clustering": true};
     }
-    return {"clustering": false};
 }
 
 

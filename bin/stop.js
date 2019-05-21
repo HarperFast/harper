@@ -79,6 +79,7 @@ async function killProcs(proc_name, descriptor){
         });
 
         await checkHdbProcsEnd(proc_name);
+        log.notify(`HarperDB has stopped`);
     }catch( err) {
         throw err;
     }
