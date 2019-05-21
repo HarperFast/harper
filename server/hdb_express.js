@@ -189,6 +189,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     }
 
     async function launch(){
+        let clustering = false;
         await p_schema_to_global();
         await p_users_to_global();
         let licenses = await p_search_by_value(licenseKeySearch);
@@ -198,7 +199,9 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
             try {
                 let license_validation = await hdb_license.validateLicense(license.license_key, license.company);
                 if (license_validation.valid_machine && license_validation.valid_date && license_validation.valid_license) {
-                    enterprise = true;
+                    this.enterprise = true;
+                    clustering = env.get('CLUSTERING');
+                    global.clustering_on = clustering;
                     cluster_utilities.setEnterprise(true);
                     if (num_workers > numCPUs) {
                         if (numCPUs === 4) {
@@ -223,7 +226,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         let forks = [];
         for (let i = 0; i < numCPUs; i++) {
             try {
-                let forked = cluster.fork({});
+                let forked = cluster.fork({enterprise:this.enterprise, clustering:clustering});
                 // assign handler for messages expected from child processes.
                 forked.on('message', cluster_utilities.clusterMessageHandler);
                 harper_logger.debug(`kicked off fork.`);
@@ -249,8 +252,9 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     const cors = require('cors');
 
     const app = express();
-    let enterprise = false;
-    global.clustering_on = false;
+    let enterprise = process.env['enterprise'] === undefined ? false : (process.env['enterprise'] === 'true');
+    global.clustering_on = process.env['clustering'] === undefined ? false : (process.env['clustering'] === 'true');
+
     let props_cors = env.get(PROPS_CORS_KEY);
     let props_cors_whitelist = env.get(PROPS_CORS_WHITELIST_KEY);
 
@@ -358,12 +362,6 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                 }).catch(function isError(e) {
                     harper_logger.error(e);
                 });
-                break;
-            case 'enterprise':
-                enterprise = msg.enterprise;
-                break;
-            case 'clustering':
-                global.clustering_on = true;
                 break;
             case terms.CLUSTER_MESSAGE_TYPE_ENUM.CLUSTER_STATUS:
                 harper_logger.info('Got cluster status message via IPC');
