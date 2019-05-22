@@ -103,7 +103,6 @@ describe(`Test getFingerprint`, function () {
     });
     it('Nominal, set license key stub write file', async function () {
         generate_stub = sandbox.stub(hdb_license, 'generateFingerPrint').resolves('blahhash');
-
         let result = undefined;
         try {
             result = await getFingerprint();

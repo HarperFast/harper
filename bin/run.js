@@ -18,9 +18,7 @@ const HTTP_ON_KEY = 'HTTP_ON';
 const stop = require('./stop');
 
 const FOREGROUND_ARG = 'foreground';
-
 let fork = require('child_process').fork;
-
 let child = undefined;
 
 /***

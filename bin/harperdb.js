@@ -37,26 +37,12 @@ function checkCallingUserSync() {
 
 function harperDBService() {
     let service;
-    /*let currentDir_tokens = process.cwd().split('/');
-    if (currentDir_tokens[currentDir_tokens.length - 1] != 'bin') {
-        return console.error('You must run harperdb from HDB_HOME/bin');
-    }*/
 
     let inBin = false;
     fs.readdir(__dirname, (err, files) => {
         if (err) {
             return logger.error(err);
         }
-
-        /*for (let f in files) {
-            if (files[f] === 'harperdb.js' || files[f] === 'harperdb_macOS' || files[f] === 'harperdb') {
-                inBin = true;
-            }
-        }
-
-        if (!inBin) {
-            return console.error('You must run harperdb from HDB_HOME/bin');
-        }*/
 
         if (process.argv && process.argv[2]) {
             service = process.argv[2].toLowerCase();
