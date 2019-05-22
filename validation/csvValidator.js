@@ -43,7 +43,7 @@ async function csvValidator(json_body) {
 
 async function csvFileLoadValidator(json_body) {
     try {
-        // Checks that file is readable and exists in directory
+        // Checks that file has read permissions and exists in directory
         await p_fs_access(json_body.file_path, fs.constants.R_OK | fs.constants.F_OK);
     } catch(err) {
         throw err.message;

@@ -14,7 +14,7 @@ test_utils.changeProcessToBinDir();
 const upgrade_directive = require('../../upgrade/UpgradeDirective');
 const env_variable = require('../../upgrade/EnvironmentVariable');
 const ps_list = require('../../utility/psList');
-const { expect } = chai
+const { expect } = chai;
 const ALL_SPACES = '     ';
 
 describe(`Test errorizeMessage`, function () {
@@ -463,6 +463,37 @@ describe('Test isClusterOperation', function() {
     });
     it('Test numeric operation, expect false', function() {
         assert.equal(cu.isClusterOperation(42), false, 'Expected false result');
+    });
+});
+
+describe('Test checkGlobalSchemaTable', function() {
+
+    before(() => {
+        global.hdb_schema = {
+            "dev": {
+                "perro": {}
+            }
+        };
+    });
+
+    after(() => {
+        delete global.hdb_schema['dev'];
+    });
+
+    it('should throw schema does not exist message', function () {
+        try {
+            cu.checkGlobalSchemaTable('dogsOfHogwarts', 'wizards');
+        } catch(err) {
+            assert.equal(err, `schema dogsOfHogwarts does not exist`, 'Expected "schema dogsOfHogwarts does not exist" result');
+        }
+    });
+
+    it('should throw table does not exist message', function () {
+        try {
+            cu.checkGlobalSchemaTable('dev', 'dumbledog');
+        } catch(err) {
+            assert.equal(err, `table dev.dumbledog does not exist`, 'Expected "table dev.dumbledog does not exist" result');
+        }
     });
 });
 
