@@ -9370,6 +9370,486 @@
 						"description": "This method is used for dropping a role.  \n\n<i>You cannot drop a role with associated users.  </i>\n\n<ul>\n<li><b>operation </b><i>(required)</i> - this must always be drop_role </li>\n<li><b>id </b><i>(required) </i> - this is the id of the role you are dropping\n</ul>"
 					},
 					"response": []
+				},
+				{
+					"name": "NoSQL Add cluster_user Role",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "6d42cf23-2901-455c-9d6a-a3742af81cd4",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Response has id\", ()=>{",
+									"    pm.response.to.have.jsonBody('id');",
+									"    postman.setEnvironmentVariable(\"cluster_user_role_id\", pm.response.json().id);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"add_role\",\n\"role\":\"cluster_user\",\n\"permission\":{\n  \"cluster_user\": true\n  }\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL Add cluster_user with another permission, expect fail",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "6d42cf23-2901-455c-9d6a-a3742af81cd4",
+								"exec": [
+									"pm.test(\"Status code is 500\", function () {",
+									"    pm.response.to.have.status(500);",
+									"});",
+									"",
+									"pm.test(\"Response has error\", ()=>{",
+									"    pm.response.to.have.jsonBody('error');",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.contain('Error: cluster_user permission cannot be mixed with other permissions.');",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"add_role\",\n\"role\":\"cluster_user_bad\",\n\"permission\":{\n  \"cluster_user\": true,\n  \"super_user\":true\n  }\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL Add User with cluster_user Role",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "8bc25e1a-10dc-45a5-8491-d5560c59a2a7",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Success message\", function () {",
+									"    pm.response.to.have.jsonBody('message');",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message).to.contain('successfully added');",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"{{cluster_user_role_id}}\",\n\"username\":\"test_cluster_user\",\n\"password\":\"{{password}}\", \n\"active\":\"true\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL alter cluster user, change password",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "8bc25e1a-10dc-45a5-8491-d5560c59a2a7",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Success message\", function () {",
+									"    pm.response.to.have.jsonBody('message');",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message).to.contain('updated 1 of 1 records');",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"alter_user\",\n\"username\":\"test_cluster_user\",\n\"password\":\"{{password}}111\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL alter cluster user, change role, expect fail",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "8bc25e1a-10dc-45a5-8491-d5560c59a2a7",
+								"exec": [
+									"pm.test(\"Status code is 500\", function () {",
+									"    pm.response.to.have.status(500);",
+									"});",
+									"",
+									"pm.test(\"Error message\", function () {",
+									"    pm.response.to.have.jsonBody('error');",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.contain('cannot change the role of a cluster_user');",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"alter_user\",\n\"username\":\"test_cluster_user\",\n\"role\":\"{{role_id}}\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL drop test_cluster_user",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "43e34308-05a8-433b-be7d-964fccf09f03",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Success message\", function () {",
+									"    pm.response.to.have.jsonBody('message');",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message).to.contain('successfully deleted');",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46cGFzc3dvcmQ="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"drop_user\",\n  \"username\":\"test_cluster_user\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "This method is used for dropping a role.  \n\n<i>You cannot drop a role with associated users.  </i>\n\n<ul>\n<li><b>operation </b><i>(required)</i> - this must always be drop_role </li>\n<li><b>id </b><i>(required) </i> - this is the id of the role you are dropping\n</ul>"
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL drop cluster_user role",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "43e34308-05a8-433b-be7d-964fccf09f03",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Success message\", function () {",
+									"    pm.response.to.have.jsonBody('message');",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message).to.contain('successfully deleted');",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46cGFzc3dvcmQ="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"drop_role\",\n\"id\":\"{{cluster_user_role_id}}\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "This method is used for dropping a role.  \n\n<i>You cannot drop a role with associated users.  </i>\n\n<ul>\n<li><b>operation </b><i>(required)</i> - this must always be drop_role </li>\n<li><b>id </b><i>(required) </i> - this is the id of the role you are dropping\n</ul>"
+					},
+					"response": []
 				}
 			]
 		},

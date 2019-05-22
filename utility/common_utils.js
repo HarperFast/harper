@@ -9,7 +9,7 @@ const { promisify } = require('util');
 const ps_list = require('./psList');
 
 const EMPTY_STRING = '';
-const FILE_EXTENSION_LEGNTH = 4;
+const FILE_EXTENSION_LENGTH = 4;
 const CHARACTER_LIMIT = 255;
 
 const HDB_PROC_NAME = 'hdb_express.js';
@@ -21,6 +21,12 @@ const AUTOCAST_COMMON_STRINGS = {
     'null': null,
     'NaN': NaN
 };
+
+const SCHEMA_TRANSACTIONS = [
+    'create_schema',
+    'create_table',
+    'create_attribute'
+];
 
 
 module.exports = {
@@ -42,7 +48,8 @@ module.exports = {
     timeoutPromise: timeoutPromise,
     callProcessSend: callProcessSend,
     isHarperRunning: isHarperRunning,
-    isClusterOperation: isClusterOperation
+    isClusterOperation: isClusterOperation,
+    sendTransactionToSocketCluster: sendTransactionToSocketCluster
 };
 
 /**
@@ -148,7 +155,7 @@ function stripFileExtension(file_name) {
     if(isEmptyOrZeroLength(file_name)) {
         return EMPTY_STRING;
     }
-    return file_name.substr(0, file_name.length-FILE_EXTENSION_LEGNTH);
+    return file_name.substr(0, file_name.length-FILE_EXTENSION_LENGTH);
 }
 
 /**
@@ -413,4 +420,17 @@ function isClusterOperation(operation_name) {
         log.error(`Error checking operation against cluster ops ${err}`);
     }
     return false;
+}
+
+/**
+ * sends a processed transaction from HarperDB to socketcluster
+ * @param channel
+ * @param transaction
+ */
+function sendTransactionToSocketCluster(channel, transaction){
+    if(global.hdb_socket_client !== undefined){
+        transaction.__transacted = true;
+        let {hdb_user, hdb_auth_header, ...data} = transaction;
+        global.hdb_socket_client.publish(channel, data);
+    }
 }

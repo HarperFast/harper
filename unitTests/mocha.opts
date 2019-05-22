@@ -1,0 +1,12 @@
+../unitTests/data_layer
+../unitTests/security
+../unitTests/server/jobRunner-test.js
+../unitTests/server/jobs-test.js
+../unitTests/server/socketcluster/decisionMatrix/
+../unitTests/server/socketcluster/middleware/
+../unitTests/server/socketcluster/room
+../unitTests/sqlTranslator
+../unitTests/upgrade
+../unitTests/utility
+../unitTests/validation
+../unitTests/server_utilities_test.js

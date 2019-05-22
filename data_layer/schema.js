@@ -58,6 +58,8 @@ module.exports = {
 async function createSchema(schema_create_object) {
     try {
         let schema_structure = await createSchemaStructure(schema_create_object);
+
+        hdb_util.sendTransactionToSocketCluster('internal:create_schema', schema_create_object);
         signalling.signalSchemaChange({type: 'schema'});
 
         return schema_structure;
@@ -108,6 +110,8 @@ async function createSchemaStructure(schema_create_object) {
 async function createTable(create_table_object) {
     try {
         let create_table_structure = await createTableStructure(create_table_object);
+
+        hdb_util.sendTransactionToSocketCluster('internal:create_table', create_table_object);
         signalling.signalSchemaChange({type: 'schema'});
 
         return create_table_structure;

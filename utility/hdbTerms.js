@@ -7,6 +7,10 @@
 
  // Name of the HDB process
 const HDB_PROC_NAME = 'hdb_express.js';
+const SC_PROC_NAME = 'Server.js';
+
+const HDB_PROC_DESCRIPTOR = 'HarperDB';
+const SC_PROC_DESCRIPTOR = 'Cluster Server';
 
 const PERIOD_REGEX = /^\.$/;
 
@@ -291,6 +295,9 @@ const CLUSTER_EVENTS_DEFS_ENUM = {
 module.exports = {
     LOCAL_HARPERDB_OPERATIONS,
     HDB_PROC_NAME,
+    HDB_PROC_DESCRIPTOR,
+    SC_PROC_NAME,
+    SC_PROC_DESCRIPTOR,
     SYSTEM_SCHEMA_NAME,
     HASH_FOLDER_NAME,
     CLUSTERING_VERSION_HEADER_NAME,

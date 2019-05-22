@@ -393,6 +393,10 @@ function deleteRecord(delete_object, callback){
                 return callback(err);
             }
 
+            if(delete_object.schema !== 'system') {
+                common_utils.sendTransactionToSocketCluster(`${delete_object.schema}:${delete_object.table}`, delete_object);
+            }
+
             return callback(null, SUCCESS_MESSAGE);
         });
     } catch(e){
