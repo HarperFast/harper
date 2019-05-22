@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SocketCluster</title>
+    <link href="//fonts.googleapis.com/css?family=Roboto:100,300" rel="stylesheet" type="text/css">
+    <link rel="icon" type="image/png" href="/favicon.ico">
+    <script type="text/javascript" src="../../node_modules/socketcluster-client/socketcluster.js"></script>
+    <style>
+        html {
+            height: 100%;
+        }
+        body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            color: #666666;
+            display: table;
+            font-weight: 100;
+            font-family: 'Roboto', Helvetica, sans-serif;
+        }
+        a {
+            font-weight: 300;
+            color: #72B963;
+        }
+        .container {
+            display: table-cell;
+            text-align: center;
+            vertical-align: middle;
+        }
+        .content {
+            text-align: center;
+            display: inline-block;
+        }
+
+        .title {
+            font-size: 96px;
+            margin-bottom: 20px;
+        }
+
+        .text {
+            font-size: 24px;
+            margin-bottom: 20px;
+        }
+        .small {
+            font-size: 18px;
+        }
+
+        .github-button {
+            padding-top: 10px;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="content">
+        <div class="title">
+            Socket Cluster Client
+        </div>
+        <div class="text">
+            In Chrome hold CTRL+SHIFT+i to bring up Developer Tools Console.  CLick the console tab, from there you can interact with the socket object
+        </div>
+    </div>
+</div>
+<script type="text/javascript">
+    // Initiate the connection to the server
+    let socket = socketCluster.connect({
+        port:1111
+    });
+
+    socket.name = 'test';
+
+
+
+    socket.on('error', function (err) {
+        console.error(err);
+    });
+
+    socket.on('login', (data, res)=>{
+        res(null, {username: 'kyle', password: 'test'});
+    });
+
+    socket.on('connect', (data, res)=>{
+        //subscribe(socket.id);
+
+    });
+
+    function publish(channel, data){
+        socket.publish(channel, data, (err, ackData)=>{
+            if(err){
+                console.error(err);
+            }
+
+            console.log(ackData);
+        });
+    }
+
+    function subscribe(channel){
+        socket.subscribe(channel).watch(data => {
+            console.log( data);
+        });
+    }
+</script>
+</body>
+</html>

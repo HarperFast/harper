@@ -1,18 +1,17 @@
 "use strict";
 
 const search = require('../data_layer/search');
-const harper_logger = require('../utility/logging/harper_logger');
+const log = require('../utility/logging/harper_logger');
 const env = require('../utility/environment/environmentManager');
-const ClusterServer = require('../server/clustering/ClusterServer');
+let fork = require('child_process').fork;
+const path = require('path');
+const promisify = require('util').promisify;
+const p_search_by_value = promisify(search.searchByValue);
 
-function kickOffEnterprise(callback) {
+async function kickOffEnterprise() {
+    log.trace('in kickOffEnterprise');
     let clustering_setting = env.get('CLUSTERING');
     if (clustering_setting && clustering_setting.toString().toLowerCase() === 'true') {
-        let node = {
-            "name": env.get('NODE_NAME'),
-            "port": env.get('CLUSTERING_PORT'),
-        };
-
         let search_obj = {
             "table": "hdb_nodes",
             "schema": "system",
@@ -21,32 +20,25 @@ function kickOffEnterprise(callback) {
             "search_value": "*",
             "get_attributes": ["*"]
         };
-        search.searchByValue(search_obj, function (err, nodes) {
-            if (err) {
-                harper_logger.error(err);
-            }
 
-            if(!Array.isArray(nodes)){
-                nodes = [];
-            }
+        let nodes = await p_search_by_value(search_obj);
+        let schema = global.hdb_schema;
+        let users = global.hdb_users;
+        let sc_data_payload = {
+            nodes: nodes,
+            schema: schema,
+            users: users
+        };
 
-            node.other_nodes = nodes;
-            global.cluster_server = new ClusterServer(node, nodes);
-
-            global.cluster_server.init(function (err) {
-                if (err) {
-                    harper_logger.error(err);
-                    return callback(null, {"clustering":false});
-                }
-                return callback(null, { "clustering":true});
-            });
-
-        });
-    } else {
-        // default to clustering not set response
-        return callback(null, {"clustering": false});
+        try {
+            let child = fork(path.join(__dirname, '../server/socketcluster/Server.js'));
+            child.send(sc_data_payload);
+        } catch(err) {
+            log.error(err);
+        }
     }
 }
+
 
 module.exports = {
     kickOffEnterprise: kickOffEnterprise

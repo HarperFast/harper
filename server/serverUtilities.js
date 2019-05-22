@@ -43,6 +43,11 @@ const cb_reg_hand_set_licence = util.callbackify(reg.setLicense);
 const cb_clust_util_config = util.callbackify(cluster_utilities.configureCluster);
 const cb_clust_util_status = util.callbackify(cluster_utilities.clusterStatus);
 const cb_clust_util_remove_node = util.callbackify(cluster_utilities.removeNode);
+const cb_schema_create_schema = util.callbackify(schema.createSchema);
+const cb_schema_create_attribute = util.callbackify(schema.createAttribute);
+const cb_schema_create_table = util.callbackify(schema.createTable);
+const cb_schema_drop_schema = util.callbackify(schema.dropSchema);
+const cb_schema_drop_table = util.callbackify(schema.dropTable);
 const cb_read_log = util.callbackify(harper_logger.readLog);
 
 const UNAUTH_RESPONSE = 403;
@@ -51,9 +56,8 @@ let OPERATION_PARAM_ERROR_MSG = `operation parameter is undefined`;
 
 module.exports = {
     chooseOperation: chooseOperation,
+    getOperationFunction: getOperationFunction,
     processLocalTransaction: processLocalTransaction,
-    proccessDelegatedTransaction: proccessDelegatedTransaction,
-    processInThread: processInThread,
     UNAUTH_RESPONSE,
     UNAUTHORIZED_TEXT
 };
@@ -121,73 +125,45 @@ function setResponseStatus(res, status, msg) {
     }
 }
 
-function processInThread(operation, operation_function, callback) {
-    if (!operationParameterValid(operation)) {
-        return callback(OPERATION_PARAM_ERROR_MSG, null);
-    }
-    if (operation_function === undefined || operation_function === null) {
-        let msg = `operation_function parameter in processInThread is undefined`;
-        harper_logger.error(msg);
-        return callback(msg, null);
-    }
-    try {
-        if (operation.operation !== 'read_log')
-            harper_logger.info(JSON.stringify(operation));
-    } catch (e) {
-        harper_logger.error(e);
-        return callback(e);
-    }
-    operation_function(operation, (error, data) => {
-        if (error) {
-            harper_logger.info(error);
-            if (typeof error !== 'object')
-                error = {"error": error};
-            return callback(error, null);
-        }
-        if (typeof data !== 'object')
-            data = {"message": data};
-        return callback(null, data);
-    });
-}
-
-//TODO: operation_function is not used, do we need it?
-function proccessDelegatedTransaction(operation, operation_function, callback) {
-    if (!operationParameterValid(operation)) {
-        return callback(OPERATION_PARAM_ERROR_MSG, null);
-    }
-    if (global.forks === undefined || global.forks === null) {
-        let message = 'global forks is undefined';
-        harper_logger.error(message);
-        return callback(message, null);
-    }
-
-    let req = {};
-    req.headers = {};
-    req.headers.authorization = operation.hdb_auth_header;
-
-    auth.authorize(req, null, function (err, user) {
-        if (err) {
-            return callback(err);
-        }
-
-        operation.hdb_user = user;
-        let f = Math.floor(Math.random() * Math.floor(global.forks.length));
-        let payload = {
-            "id": uuidv1(),
-            "body": operation,
-            "type": "delegate_transaction"
-        };
-        global.delegate_callback_queue[payload.id] = callback;
-        global.forks[f].send(payload);
-    });
-}
-
 // TODO: This doesn't really need a callback, should simplify it to a return statement.
 function chooseOperation(json, callback) {
     if (json === undefined || json === null) {
         harper_logger.error(`invalid message body parameters found`);
         return nullOperation(json, callback);
     }
+
+    let {operation_function, job_operation_function} = getOperationFunction(json);
+    // Here there is a SQL statement in either the operation or the search_operation (from jobs like export_local).  Need to check the perms
+    // on all affected tables/attributes.
+    try {
+        if (json.operation === 'sql' || (json.search_operation && json.search_operation.operation === 'sql')) {
+            let sql_statement = (json.operation === 'sql' ? json.sql : json.search_operation.sql);
+            let parsed_sql_object = sql.convertSQLToAST(sql_statement);
+            json.parsed_sql_object = parsed_sql_object;
+            if (!sql.checkASTPermissions(json, parsed_sql_object)) {
+                harper_logger.error(`${UNAUTH_RESPONSE} from operation ${json.search_operation}`);
+                return callback(UNAUTH_RESPONSE, `${UNAUTH_RESPONSE} from operation ${json.search_operation}`);
+            }
+        } else {
+            let function_to_check = (job_operation_function === undefined ? operation_function : job_operation_function);
+            let operation_json = ((json.search_operation) ? json.search_operation : json);
+            if (!operation_json.hdb_user) {
+                operation_json.hdb_user = json.hdb_user;
+            }
+            if (!op_auth.verifyPerms(operation_json, function_to_check)) {
+                harper_logger.error(`${UNAUTH_RESPONSE} from operation ${json.search_operation}`);
+                return callback(UNAUTH_RESPONSE, null);
+            }
+        }
+    } catch (e) {
+        // This should catch all non auth related processing errors and return the message
+        return callback(e.message, null);
+    }
+    return callback(null, operation_function);
+}
+
+function getOperationFunction(json){
+
     let operation_function = nullOperation;
     let job_operation_function = undefined;
 
@@ -223,19 +199,19 @@ function chooseOperation(json, callback) {
             job_operation_function = csv.csvURLLoad;
             break;
         case terms.OPERATIONS_ENUM.CREATE_SCHEMA:
-            operation_function = schema.createSchema;
+            operation_function = cb_schema_create_schema;
             break;
         case terms.OPERATIONS_ENUM.CREATE_TABLE:
-            operation_function = schema.createTable;
+            operation_function = cb_schema_create_table;
             break;
         case terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE:
-            operation_function = schema.createAttribute;
+            operation_function = cb_schema_create_attribute;
             break;
         case terms.OPERATIONS_ENUM.DROP_SCHEMA:
-            operation_function = schema.dropSchema;
+            operation_function = cb_schema_drop_schema;
             break;
         case terms.OPERATIONS_ENUM.DROP_TABLE:
-            operation_function = schema.dropTable;
+            operation_function = cb_schema_drop_table;
             break;
         case terms.OPERATIONS_ENUM.DROP_ATTRIBUTE:
             operation_function = cb_schema_drop_attribute;
@@ -305,7 +281,7 @@ function chooseOperation(json, callback) {
         case terms.OPERATIONS_ENUM.EXPORT_LOCAL:
             operation_function = signalJob;
             job_operation_function = export_.export_local;
-			break;
+            break;
         case terms.OPERATIONS_ENUM.SEARCH_JOBS_BY_START_DATE:
             operation_function = jobs.jobHandler;
             break;
@@ -332,33 +308,11 @@ function chooseOperation(json, callback) {
         default:
             break;
     }
-    // Here there is a SQL statement in either the operation or the search_operation (from jobs like export_local).  Need to check the perms
-    // on all affected tables/attributes.
-    try {
-        if (json.operation === 'sql' || (json.search_operation && json.search_operation.operation === 'sql')) {
-            let sql_statement = (json.operation === 'sql' ? json.sql : json.search_operation.sql);
-            let parsed_sql_object = sql.convertSQLToAST(sql_statement);
-            json.parsed_sql_object = parsed_sql_object;
-            if (!sql.checkASTPermissions(json, parsed_sql_object)) {
-                harper_logger.error(`${UNAUTH_RESPONSE} from operation ${json.search_operation}`);
-                return callback(UNAUTH_RESPONSE, `${UNAUTH_RESPONSE} from operation ${json.search_operation}`);
-            }
-        } else {
-            let function_to_check = (job_operation_function === undefined ? operation_function : job_operation_function);
-            let operation_json = ((json.search_operation) ? json.search_operation : json);
-            if (!operation_json.hdb_user) {
-                operation_json.hdb_user = json.hdb_user;
-            }
-            if (!op_auth.verifyPerms(operation_json, function_to_check)) {
-                harper_logger.error(`${UNAUTH_RESPONSE} from operation ${json.search_operation}`);
-                return callback(UNAUTH_RESPONSE, null);
-            }
-        }
-    } catch (e) {
-        // This should catch all non auth related processing errors and return the message
-        return callback(e.message, null);
-    }
-    return callback(null, operation_function);
+
+    return {
+        operation_function: operation_function,
+        job_operation_function: job_operation_function
+    };
 }
 
 function nullOperation(json, callback) {
@@ -389,12 +343,4 @@ function signalJob(json, callback) {
         harper_logger.error(message);
         return callback(message, null);
     });
-}
-
-function operationParameterValid(operation) {
-    if (operation === undefined || operation === null) {
-        harper_logger.error(OPERATION_PARAM_ERROR_MSG);
-        return false;
-    }
-    return true;
 }

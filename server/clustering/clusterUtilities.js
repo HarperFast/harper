@@ -65,19 +65,13 @@ function setEnterprise(enterprise) {
  * @returns {Promise<void>}
  */
 async function kickOffEnterprise() {
-    const enterprise_util = require('../../utility/enterpriseInitialization');
-    const p_kick_off_enterprise = util.promisify(enterprise_util.kickOffEnterprise);
-
-    global.forks.forEach((fork) => {
-        fork.send({"type": "enterprise", "enterprise": is_enterprise});
-    });
-
-    let enterprise_msg = await p_kick_off_enterprise();
-    if (enterprise_msg.clustering) {
-        global.clustering_on = true;
-        global.forks.forEach((fork) => {
-            fork.send({"type": "clustering"});
-        });
+    try {
+        if(global.clustering_on === true) {
+            const enterprise_util = require('../../utility/enterpriseInitialization');
+            await enterprise_util.kickOffEnterprise();
+        }
+    } catch(e){
+        log.error(e);
     }
 }
 
@@ -176,23 +170,6 @@ async function removeNode(remove_json_message) {
         "node_name": remove_json_message.name
     });
     return `successfully removed ${remove_json_message.name} from manifest`;
-}
-
-function payloadHandler(msg) {
-    if(hdb_utils.isEmptyOrZeroLength(global.cluster_server)) {
-        log.error(`Cannot send cluster updates, cluster server is not initialized.`);
-        return;
-    }
-    switch(msg.clustering_type) {
-        case "broadcast":
-            log.info(`broadcasting cluster message`);
-            global.cluster_server.broadCast(msg);
-            break;
-        case "send":
-            log.info('sending cluster message');
-            global.cluster_server.send(msg, msg.res);
-    break;
-    }
 }
 
 /**
@@ -323,19 +300,6 @@ function getClusterStatus() {
 function clusterMessageHandler(msg) {
     try {
         switch(msg.type) {
-            case terms.CLUSTER_MESSAGE_TYPE_ENUM.CLUSTERING_PAYLOAD:
-                global.forkClusterMsgQueue[msg.id] = msg;
-                payloadHandler(msg);
-                break;
-            case terms.CLUSTER_MESSAGE_TYPE_ENUM.DELEGATE_THREAD_RESPONSE:
-                global.delegate_callback_queue[msg.id](msg.err, msg.data);
-                break;
-            case terms.CLUSTER_MESSAGE_TYPE_ENUM.CLUSTERING:
-                global.clustering_on = true;
-                global.forks.forEach((fork) => {
-                    fork.send(msg);
-                });
-                break;
             case terms.CLUSTER_MESSAGE_TYPE_ENUM.SCHEMA:
                 global.forks.forEach((fork) => {
                     fork.send(msg);
@@ -409,7 +373,13 @@ function clusterMessageHandler(msg) {
                     if(Object.keys(started_forks).length === global.forks.length) {
                         //all children are started, kick off enterprise.
                         child_event_count = 0;
-                        kickOffEnterprise();
+                        try {
+                            kickOffEnterprise().then(() => {
+                                log.info('clustering initialized');
+                            });
+                        } catch(e){
+                            log.error('clustering failed to start: ' + e);
+                        }
                     }
                 }
                 break;
@@ -519,7 +489,6 @@ module.exports = {
     configureCluster: configureCluster,
     clusterStatus: clusterStatus,
     removeNode: removeNode,
-    payloadHandler: payloadHandler,
     clusterMessageHandler: clusterMessageHandler,
     authHeaderToUser: authHeaderToUser,
     setEnterprise: setEnterprise,

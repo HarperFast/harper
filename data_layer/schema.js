@@ -1,6 +1,7 @@
+'use strict';
+
 const fs = require('fs-extra');
 const insert = require('./insert.js');
-const async = require('async');
 const validation = require('../validation/schema_validator.js');
 const search = require('./search.js');
 const logger = require('../utility/logging/harper_logger');
@@ -12,13 +13,9 @@ const delete_ = require('../data_layer/delete');
 const schema_describe = require('./schemaDescribe');
 const env = require('../utility/environment/environmentManager');
 const clone = require('clone');
-// TODO: Replace this with fs-extra mkdirp and remove module.
-const mkdirp = require('mkdirp');
 const _ = require('underscore');
 const signalling = require('../utility/signalling');
-const log = require('../utility/logging/harper_logger');
 const util = require('util');
-const cb_insert_insert = util.callbackify(insert.insert);
 const hdb_util = require('../utility/common_utils');
 const terms = require('../utility/hdbTerms');
 const common = require('../utility/common_utils');
@@ -26,6 +23,7 @@ const common = require('../utility/common_utils');
 // Promisified functions
 let p_search_search_by_value = util.promisify(search.searchByValue);
 let p_delete_delete = util.promisify(delete_.delete);
+let p_search_by_conditions = util.promisify(search.searchByConditions);
 
 // This is used by moveFileToTrash to decide where to put the removed file(s) in the trash directory.
 const ENTITY_TYPE_ENUM = {
@@ -33,9 +31,10 @@ const ENTITY_TYPE_ENUM = {
     SCHEMA: 'schema',
     ATTRIBUTE: 'attribute'
 };
-
 const DATE_SUBSTR_LENGTH = 19;
 const TRASH_BASE_PATH = `${env.get('HDB_ROOT')}/trash/`;
+
+let current_date = new Date().toISOString().substr(0, DATE_SUBSTR_LENGTH);
 
 module.exports = {
     createSchema: createSchema,
@@ -56,127 +55,90 @@ module.exports = {
 
 /** EXPORTED FUNCTIONS **/
 
-function createSchema(schema_create_object, callback) {
+async function createSchema(schema_create_object) {
     try {
-        createSchemaStructure(schema_create_object, function (err, success) {
-            if (err) {
-                callback(err);
-                return;
-            }
+        let schema_structure = await createSchemaStructure(schema_create_object);
 
-            signalling.signalSchemaChange({type: 'schema'});
-            return callback(null, success);
-        });
-    } catch (e) {
-        callback(e);
+        hdb_util.sendTransactionToSocketCluster('internal:create_schema', schema_create_object);
+        signalling.signalSchemaChange({type: 'schema'});
+
+        return schema_structure;
+    } catch(err) {
+        logger.error(err);
+        throw err;
     }
 }
 
-function createSchemaStructure(schema_create_object, callback) {
+async function createSchemaStructure(schema_create_object) {
+    let validation_error = validation.schema_object(schema_create_object);
+    if (validation_error) {
+        throw validation_error;
+    }
+
     try {
-        let validation_error = validation.schema_object(schema_create_object);
-        if (validation_error) {
-            callback(validation_error, null);
-            return;
+        let schema_search = await searchForSchema(schema_create_object.schema);
+
+        if (schema_search && schema_search.length > 0) {
+            throw new Error(`Schema ${schema_create_object.schema} already exists`);
         }
 
-        searchForSchema(schema_create_object.schema, (err, schema) => {
-            if (schema && schema.length > 0) {
-                return callback(`Schema ${schema_create_object.schema} already exists`);
-            }
-
-            let insertObject = {
-                operation: 'insert',
-                schema: 'system',
-                table: 'hdb_schema',
-                records: [
-                    {
-                        name: schema_create_object.schema,
-                        createddate: '' + Date.now()
-                    }
-                ]
-            };
-
-            cb_insert_insert(insertObject, (err) => {
-                if (err) {
-                    callback(err);
-                    return;
+        let insert_object = {
+            operation: 'insert',
+            schema: 'system',
+            table: 'hdb_schema',
+            records: [
+                {
+                    name: schema_create_object.schema,
+                    createddate: '' + Date.now()
                 }
+            ]
+        };
 
-                let schema = schema_create_object.schema;
+        await insert.insert(insert_object);
+        let schema_object = schema_create_object.schema;
+        await fs.mkdir(env.get('HDB_ROOT') + '/schema/' + schema_object);
 
-                fs.mkdir(env.get('HDB_ROOT') + '/schema/' + schema, function (err, data) {
-                    if (err) {
-                        if (err.errno === -17) {
-                            callback("schema already exists", null);
-                            return;
-
-                        } else {
-                            callback(err.message, null);
-                            return;
-                        }
-                    }
-                    callback(err, `schema ${schema_create_object.schema} successfully created`);
-                });
-            });
-
-        });
-    } catch (e) {
-        callback(e);
-    }
-}
-
-function createTable(create_table_object, callback) {
-    try {
-        createTableStructure(create_table_object, function (err, success) {
-            if (err) {
-                callback(err);
-                return;
-            }
-
-            signalling.signalSchemaChange({type: 'schema'});
-            return callback(null, success);
-        });
-    } catch (e) {
-        callback(e);
-    }
-}
-
-function createTableStructure(create_table_object, callback) {
-    let validation_obj = clone(create_table_object);
-
-    let validator = validation.create_table_object(validation_obj);
-    if (validator) {
-        callback(validator);
-        return;
-    }
-
-    try{
-        validation.validateTableResidence(create_table_object.residence);
-    } catch(e){
-        return callback(e);
-    }
-
-    async.waterfall([
-        searchForSchema.bind(null, create_table_object.schema),
-        (schema, caller) => {
-            if (!schema || schema.length === 0) {
-                return caller(`schema ${create_table_object.schema} does not exist`);
-            }
-
-            caller();
-        },
-        searchForTable.bind(null, create_table_object.schema, create_table_object.table),
-        (table, caller) => {
-            if (table && table.length > 0) {
-                return caller(`table ${create_table_object.table} already exists in schema ${create_table_object.schema}`);
-            }
-
-            caller();
+        return `schema ${schema_create_object.schema} successfully created`;
+    } catch(err) {
+        if (err.errno === -17) {
+            throw new Error('schema already exists');
         }
-    ], (err) => {
-        if (err) {
-            return callback(err);
+        throw err;
+    }
+}
+
+async function createTable(create_table_object) {
+    try {
+        let create_table_structure = await createTableStructure(create_table_object);
+
+        hdb_util.sendTransactionToSocketCluster('internal:create_table', create_table_object);
+        signalling.signalSchemaChange({type: 'schema'});
+
+        return create_table_structure;
+    } catch(err) {
+        logger.error(err);
+        throw err;
+    }
+}
+
+async function createTableStructure(create_table_object) {
+    let validation_obj = clone(create_table_object);
+    let validation_error = validation.create_table_object(validation_obj);
+    if (validation_error) {
+        throw validation_error;
+    }
+
+    validation.validateTableResidence(create_table_object.residence);
+
+    try {
+        let schema_search = await searchForSchema(create_table_object.schema);
+        if (!schema_search || schema_search.length === 0) {
+            throw new Error(`schema ${create_table_object.schema} does not exist`);
+        }
+
+        let table_search = await searchForTable(create_table_object.schema, create_table_object.table);
+        if (table_search && table_search.length > 0) {
+            throw new Error(`table ${create_table_object.table} already exists in schema ${create_table_object.schema}`);
         }
 
         let table = {
@@ -189,168 +151,140 @@ function createTableStructure(create_table_object, callback) {
         if(create_table_object.residence) {
             if(global.clustering_on) {
                 table.residence = create_table_object.residence;
-                insertTable();
+                await insertTable(table, create_table_object);
             } else {
-                return callback(`Clustering does not appear to be enabled.  Cannot insert table with property 'residence'.`);
+                throw new Error(`Clustering does not appear to be enabled. Cannot insert table with property 'residence'.`);
             }
         } else {
-            insertTable();
+            await insertTable(table, create_table_object);
         }
 
-        function insertTable(){
-            let insertObject = {
-                operation: 'insert',
-                schema: 'system',
-                table: 'hdb_table',
-                hash_attribute: 'id',
-                records: [table]
-            };
+        return `table ${create_table_object.schema}.${create_table_object.table} successfully created.`;
+    } catch(err) {
+        throw err;
+    }
+}
 
-            cb_insert_insert(insertObject, (err) => {
-                if (err) {
-                    callback(err);
-                    return;
-                }
+async function insertTable(table, create_table_object) {
+    let insertObject = {
+        operation: 'insert',
+        schema: 'system',
+        table: 'hdb_table',
+        hash_attribute: 'id',
+        records: [table]
+    };
 
-                fs.mkdir(env.get('HDB_ROOT') + '/schema/' + create_table_object.schema + '/' + create_table_object.table, function (err, data) {
-                    if (err) {
-                        if (err.errno === -2) {
-                            callback("schema does not exist", null);
-                            return;
-                        }
-
-                        if (err.errno === -17) {
-                            callback("table already exists", null);
-                            return;
-
-                        } else {
-                            callback('createTableStructure:' + err.message);
-                            return;
-                        }
-                    }
-
-                    callback(null, `table ${create_table_object.schema}.${create_table_object.table} successfully created.`);
-                });
-            });
+    try {
+        await insert.insert(insertObject);
+        await fs.mkdir(env.get('HDB_ROOT') + '/schema/' + create_table_object.schema + '/' + create_table_object.table);
+    } catch(err) {
+        if (err.errno === -2) {
+            throw new Error('schema does not exist');
         }
-    });
+        if (err.errno === -17) {
+            throw new Error('table already exists');
+        }
+        throw err;
+    }
+}
+
+async function dropSchema(drop_schema_object) {
+    try {
+        let move_schema_struc_trash = await moveSchemaStructureToTrash(drop_schema_object);
+        signalling.signalSchemaChange({type: 'schema'});
+        delete global.hdb_schema[drop_schema_object.schema];
+
+        return move_schema_struc_trash;
+    } catch(err) {
+        logger.error(err);
+        throw err;
+    }
 }
 
 /**
  * Moves a schema and it's contained tables/attributes to the trash directory.
- * @param drop_schema_object - Object describing the schema targeted for 'deletion'.
- * @param callback - callback object
- * @returns {*}
+ * @param drop_schema_object
+ * @returns {Promise<string>}
  */
-function moveSchemaStructureToTrash(drop_schema_object, callback) {
+async function moveSchemaStructureToTrash(drop_schema_object) {
+    let validation_error = validation.schema_object(drop_schema_object);
+    if (validation_error) {
+        throw validation_error;
+    }
+
+    let schema = drop_schema_object.schema;
+    let delete_schema_object = {
+        table: "hdb_schema",
+        schema: "system",
+        hash_values: [schema]
+    };
+
+    let search_object = {
+        schema: 'system',
+        table: 'hdb_table',
+        hash_attribute: 'id',
+        search_attribute: 'schema',
+        search_value: schema,
+        get_attributes: ['id']
+    };
+
     try {
-        let validation_error = validation.schema_object(drop_schema_object);
-        if (validation_error) {
-            callback(validation_error, null);
-            return;
-        }
+        await p_delete_delete(delete_schema_object);
+        let search_value = await p_search_search_by_value(search_object);
+        await moveSchemaToTrash(drop_schema_object, search_value);
+        await deleteAttributeStructure(drop_schema_object);
 
-        let schema = drop_schema_object.schema;
-        let delete_schema_object = {
-            table: "hdb_schema",
-            schema: "system",
-            hash_values: [schema]
-        };
+        return `successfully deleted schema ${schema}`;
+    } catch(err) {
+        throw err;
+    }
+}
 
-        async.waterfall([
-                delete_.delete.bind(null, delete_schema_object),    // returns text 'records successfully deleted'
-                buildDropSchemaSearchObject.bind(null, schema),     // returns search_obj
-                search.searchByValue,                               // returns 'data'
-                moveSchemaToTrash.bind(null, drop_schema_object),   // takes 'data' as tables, returns 'delete_table_object'
-                deleteSchemaAttributes.bind(null, drop_schema_object) // takes 'drop_schema_object, returns text successfully deleted ${schema}`
-            ],
-            function(err, data) {
-                if( err) {
-                    logger.error(`There was a problem deleting ${schema}.  Please check the logs for more info`);
-                    logger.error(err);
-                    return callback(err);
-                } else {
-                    callback(null, `successfully deleted schema ${schema}`);
-                }
-            });
-    } catch (e) {
-        logger.error(e);
-        return callback(e);
+async function dropTable(drop_table_object) {
+    try {
+        let move_table_struc_trash = await moveTableStructureToTrash(drop_table_object);
+        signalling.signalSchemaChange({type: 'schema'});
+
+        return move_table_struc_trash;
+    } catch(err) {
+        logger.error(err);
+        throw err;
     }
 }
 
 /**
  * Moves a target table and it's attributes to the trash directory.
  * @param drop_table_object - Descriptor for the table being targeted for move.
- * @param callback - callback function.
+ * @returns {Promise<string>}
  */
-function moveTableStructureToTrash(drop_table_object, callback) {
+async function moveTableStructureToTrash(drop_table_object) {
     let validation_error = validation.table_object(drop_table_object);
     if (validation_error) {
-        callback(validation_error, null);
-        return;
+        throw validation_error;
     }
+
+    let schema = drop_table_object.schema;
+    let table = drop_table_object.table;
+
+    let search_object = {
+        schema: 'system',
+        table: 'hdb_table',
+        hash_attribute: 'id',
+        search_attribute: 'name',
+        search_value: table,
+        get_attributes: ['name', 'schema', 'id']
+    };
+
     try {
-        let schema = drop_table_object.schema;
-        let table = drop_table_object.table;
-        let search_obj = {};
-        search_obj.schema = 'system';
-        search_obj.table = 'hdb_table';
-        search_obj.hash_attribute = 'id';
-        search_obj.search_attribute = 'name';
-        search_obj.search_value = drop_table_object.table;
-        search_obj.get_attributes = ['name', 'schema', 'id'];
-        async.waterfall([
-            search.searchByValue.bind(null, search_obj),
-            buildDropTableObject.bind(null, drop_table_object),
-            delete_.delete,
-            moveTableToTrash.bind(null, drop_table_object),
-            deleteTableAttributes.bind(null, drop_table_object)
-        ], function(err, result) {
-            if( err) {
-                logger.error(`There was a problem deleting ${schema}.  Please check the logs for more info`);
-                logger.error(err);
-                return callback(err);
-            } else {
-                callback(null, result);
-            }
-        });
-    } catch (e) {
-        callback(e);
-    }
-}
+        let search_value = await p_search_search_by_value(search_object);
+        let delete_table_object = await buildDropTableObject(drop_table_object, search_value);
+        await p_delete_delete(delete_table_object);
+        await moveTableToTrash(drop_table_object);
+        await deleteAttributeStructure(drop_table_object);
 
-function dropSchema(drop_schema_object, callback) {
-    try {
-        moveSchemaStructureToTrash(drop_schema_object, function (err, success) {
-            if (err) {
-                callback(err);
-                return;
-            }
-            signalling.signalSchemaChange({type: 'schema'});
-
-            delete global.hdb_schema[drop_schema_object.schema];
-            return callback(null, success);
-        });
-    } catch (e) {
-        logger.error(e);
-        return callback(e);
-    }
-}
-
-function dropTable(drop_table_object, callback) {
-    try {
-        moveTableStructureToTrash(drop_table_object, function (err, success) {
-            if (err) {
-                callback(err);
-                return;
-            }
-
-            signalling.signalSchemaChange({type: 'schema'});
-            return callback(null, success);
-        });
-    } catch (e) {
-        callback(e);
+        return `successfully deleted table ${schema}.${table}`;
+    } catch(err) {
+        throw err;
     }
 }
 
@@ -362,37 +296,24 @@ function dropTable(drop_table_object, callback) {
 async function dropAttribute(drop_attribute_object) {
     let validation_error = validation.attribute_object(drop_attribute_object);
     if (validation_error) {
-        throw new Error(validation_error);
+        throw validation_error;
     }
+
     if(drop_attribute_object.attribute === global.hdb_schema[drop_attribute_object.schema][drop_attribute_object.table].hash_attribute) {
         throw new Error('You cannot drop a hash attribute');
     }
-    let success = await moveAttributeToTrash(drop_attribute_object).catch((err) => {
-        log.error(`Got an error deleting attribute ${util.inspect(drop_attribute_object)}.`);
+
+    try {
+        let success = await moveAttributeToTrash(drop_attribute_object);
+
+        return success;
+    } catch(err) {
+        logger.error(`Got an error deleting attribute ${util.inspect(drop_attribute_object)}.`);
         throw err;
-    });
-    return success;
+   }
 }
 
 /** HELPER FUNCTIONS **/
-
-/**
- * Builds the object used by search to find records for deletion.
- * @param schema - The schema targeted for deletion
- * @param msg - The return message from delete.delete
- * @param callback - callback function
- */
-function buildDropSchemaSearchObject(schema, msg, callback) {
-    let search_obj = {
-        schema: 'system',
-        table: 'hdb_table',
-        hash_attribute: 'id',
-        search_attribute: 'schema',
-        search_value: schema,
-        get_attributes: ['id']
-    };
-    callback(null, search_obj);
-}
 
 /**
  * Moves the schema and it's contained tables to the trash folder.  Note the trash folder is not
@@ -400,189 +321,165 @@ function buildDropSchemaSearchObject(schema, msg, callback) {
  *
  * @param drop_schema_object - Object describing the table being dropped
  * @param tables - the tables contained by the schema that will also be deleted
- * @param callback - callback function
- * @returns {*}
+ * @returns {Promise<void>}
  */
-function moveSchemaToTrash(drop_schema_object, tables, callback) {
-    if(!drop_schema_object) { return callback("drop_table_object was not found.");}
-    if(!tables) { return callback("tables parameter was null.");}
+async function moveSchemaToTrash(drop_schema_object, tables) {
+    if (!tables) {
+        throw new Error('tables parameter was null.');
+    }
+
     let root_path = env.get('HDB_ROOT');
-    let path = `${root_path}/schema/${drop_schema_object.schema}`;
-    let currDate = new Date().toISOString().substr(0, DATE_SUBSTR_LENGTH);
-    let destination_name = `${drop_schema_object.schema}-${currDate}`;
-    let trash_path = `${root_path}/trash`;
+    let origin_path = `${root_path}/schema/${drop_schema_object.schema}`;
+    let destination_name = `${drop_schema_object.schema}-${current_date}`;
+    let trash_path = `${TRASH_BASE_PATH}${destination_name}`;
 
-    //mkdirp will no-op if the 'trash' dir already exists.
-    mkdirp(trash_path, function checkTrashDir(err) {
-        if (err) {
-            return callback(err);
+    try {
+        await moveFolderToTrash(origin_path, trash_path);
+
+        let delete_table_object = {
+            table: "hdb_table",
+            schema: "system",
+            hash_values: []
+        };
+
+        if (tables && tables.length > 0) {
+            for (let t in tables) {
+                delete_table_object.hash_values.push(tables[t].id);
+            }
         }
-        fs.move(`${path}`,
-            `${root_path}/trash/${destination_name}`, function buildDeleteObject(err) {
-                if (err) {
-                    return callback(err);
-                }
-                let delete_table_object = {
-                    table: "hdb_table",
-                    schema: "system",
-                    hash_values: []
-                };
-                if (tables && tables.length > 0) {
-                    for (let t in tables) {
-                        delete_table_object.hash_values.push(tables[t].id);
-                    }
-                }
-                if( delete_table_object.hash_values && delete_table_object.hash_values.length > 0 ) {
-                    delete_.delete(delete_table_object, function (err) {
-                        if (err) {
-                            return callback(err);
-                        } else {
-                            callback();
-                        }
-                    });
-                } else {
-                    callback();
-                }
-            });
-    });
-}
 
-/**
- * Deletes the attributes contained by the schema.
- * @param drop_schema_object - The object used to described the schema being deleted.
- * @param callback - callback function.
- */
-function deleteSchemaAttributes(drop_schema_object, callback) {
-    deleteAttributeStructure(drop_schema_object, function deleteSuccess(err, data) {
-        if (err) { return callback(err); }
-        return callback(null, `successfully deleted schema attributes ${data}`);
-    });
+        if( delete_table_object.hash_values && delete_table_object.hash_values.length > 0 ) {
+            await p_delete_delete(delete_table_object);
+        }
+    } catch(err) {
+        throw err;
+    }
 }
 
 /**
  * Builds a descriptor object that describes the table targeted for the trash.
  * @param drop_table_object - Top level descriptor of the table being moved.
  * @param data - The data found by the search function.
- * @param callback - Callback function.
- * @returns {*}
+ * @returns {Promise<{schema: string, hash_attribute: string, hash_values: *[], table: string}>}
  */
-function buildDropTableObject (drop_table_object, data, callback) {
-    let delete_tb = null;
+function buildDropTableObject(drop_table_object, data) {
+    let delete_table;
+
     // Data found by the search function should match the drop_table_object
     for (let item in data) {
         if (data[item].name === drop_table_object.table && data[item].schema === drop_table_object.schema) {
-            delete_tb = data[item];
+            delete_table = data[item];
         }
     }
 
-    if(!delete_tb) {
-        return callback(`${drop_table_object.schema}.${drop_table_object.table} was not found`);
+    if (!delete_table) {
+        throw new Error(`${drop_table_object.schema}.${drop_table_object.table} was not found`);
     }
+
     let delete_table_object = {
         table: "hdb_table",
         schema: "system",
         hash_attribute: "id",
-        hash_values: [delete_tb.id]
+        hash_values: [delete_table.id]
     };
-    callback(null, delete_table_object);
+
+    return delete_table_object;
 }
 
 /**
  * Performs the move of the target table to the trash directory.
  * @param drop_table_object - Descriptor of the table being moved to trash.
- * @param msg - Message returned from the delete.delete function.
- * @param callback - Callback function.
+ * @returns {Promise<void>}
  */
-function moveTableToTrash (drop_table_object, msg, callback) {
-    let currDate = new Date().toISOString().substr(0, DATE_SUBSTR_LENGTH);
-    let destination_name = `${drop_table_object.table}-${currDate}`;
-    let trash_path = `${env.get('HDB_ROOT')}/trash`;
-    mkdirp(trash_path, function checkTrashDir(err) {
-        if (err) {
-            return callback(err);
-        }
-        fs.move(`${env.get('HDB_ROOT')}/schema/${drop_table_object.schema}/${drop_table_object.table}`,
-            `${env.get('HDB_ROOT')}/trash/${destination_name}`, function moveToTrash(err) {
-                if (err) {
-                    return callback(err);
-                } else {
-                    return callback(null, drop_table_object);
-                }
-            });
-    });
+async function moveTableToTrash(drop_table_object) {
+    let root_path = env.get('HDB_ROOT');
+    let origin_path = `${root_path}/schema/${drop_table_object.schema}/${drop_table_object.table}`;
+    let destination_name = `${drop_table_object.schema}-${drop_table_object.table}-${current_date}`;
+    let trash_path = `${TRASH_BASE_PATH}${destination_name}`;
+
+    try {
+        await moveFolderToTrash(origin_path, trash_path);
+    } catch(err) {
+        throw err;
+    }
 }
 
 /**
  * Remove an attribute from __hdb_attribute.
- * @param drop_attribute_object - the drop attribute json recieved in drop_attribute inbound message.
+ * @param drop_attribute_object - the drop attribute json received in drop_attribute inbound message.
  * @returns {Promise<string>}
  */
 async function dropAttributeFromSystem(drop_attribute_object) {
-    // Remove the attribute from hdb_attribute
-    let search_obj = {};
-    search_obj.schema = 'system';
-    search_obj.table = 'hdb_attribute';
-    search_obj.hash_attribute = 'id';
-    search_obj.search_attribute = 'attribute';
-    search_obj.search_value = drop_attribute_object.attribute;
-    search_obj.get_attributes = ['id'];
-
-    let attributes = await p_search_search_by_value(search_obj).catch((err) => {
-        log.error(err);
-    });
-
-    if (!attributes || attributes.length < 1) {
-        return `Attribute ${drop_attribute_object.attribute} was not found.`;
-    }
-
-    let delete_table_object = {
-        table: "hdb_attribute",
-        schema: "system",
-        hash_attribute: "id",
-        hash_values: [attributes[0].id]
+    let search_object = {
+        schema: 'system',
+        table: 'hdb_attribute',
+        hash_attribute: 'id',
+        search_attribute: 'attribute',
+        search_value: drop_attribute_object.attribute,
+        get_attributes: ['id']
     };
-    // Remove the specified attribute from hdb_attribute
-    let result = await p_delete_delete(delete_table_object).catch((err) => {
-        log.error(`Got an error removing attribute ${drop_attribute_object.attribute} from hdb_attribute.`);
-        throw err;
-    });
 
-    return result;
+    try {
+        let attributes = await p_search_search_by_value(search_object);
+        if (!attributes || attributes.length < 1) {
+            throw new Error(`Attribute ${drop_attribute_object.attribute} was not found.`);
+        }
+
+        let delete_table_object = {
+            table: "hdb_attribute",
+            schema: "system",
+            hash_attribute: "id",
+            hash_values: [attributes[0].id]
+        };
+
+        let success_message = await p_delete_delete(delete_table_object);
+
+        return success_message;
+    } catch(err) {
+        throw err;
+    }
 }
 
 /**
  * Performs the move of the target attribute and it's __hdb_hash entry to the trash directory.
  * @param drop_attribute_object - Descriptor of the table being moved to trash.
  */
-async function moveAttributeToTrash (drop_attribute_object) {
+async function moveAttributeToTrash(drop_attribute_object) {
     // TODO: Need to do specific rollback actions if any of the actions below fails.  https://harperdb.atlassian.net/browse/HDB-312
-    let path = `${env.get('HDB_ROOT')}/schema/${drop_attribute_object.schema}/${drop_attribute_object.table}/${drop_attribute_object.attribute}`;
+    let origin_path = `${env.get('HDB_ROOT')}/schema/${drop_attribute_object.schema}/${drop_attribute_object.table}/${drop_attribute_object.attribute}`;
     let hash_path = `${env.get('HDB_ROOT')}/schema/${drop_attribute_object.schema}/${drop_attribute_object.table}/${terms.HASH_FOLDER_NAME}/${drop_attribute_object.attribute}`;
-    let currDate = new Date().toISOString().substr(0, DATE_SUBSTR_LENGTH);
-    let attribute_trash_path = `${env.get('HDB_ROOT')}/trash/${ENTITY_TYPE_ENUM.ATTRIBUTE}/${drop_attribute_object.attribute}-${currDate}`;
+    let attribute_trash_path = `${env.get('HDB_ROOT')}/trash/${ENTITY_TYPE_ENUM.ATTRIBUTE}/${drop_attribute_object.attribute}-${current_date}`;
     let attribute_hash_trash_path = `${attribute_trash_path}/${terms.HASH_FOLDER_NAME}/${drop_attribute_object.attribute}`;
 
-    let att_result = await moveFolderToTrash(path, attribute_trash_path).catch((err) => {
-       log.error(`There was a problem moving the attribute at path ${path} to the trash at path: ${attribute_trash_path}`);
-       // Not good, rollback attribute folder
-       throw err;
-    });
-    if(!att_result) {
-        return false;
-    }
-    let hash_result = await moveFolderToTrash(hash_path, attribute_hash_trash_path).catch((err) => {
-       log.error(`There was a problem moving the hash attribute at path ${path} to the trash at path: ${attribute_trash_path}`);
-        // Not good, rollback attribute __hdb_hash folder and attribute folder
+    try {
+        let att_result = await moveFolderToTrash(origin_path, attribute_trash_path);
+        if(!att_result) {
+
+            return false;
+        }
+    } catch(err) {
+        // Not good, rollback attribute folder
+        logger.error(`There was a problem moving the attribute at path ${origin_path} to the trash at path: ${attribute_trash_path}`);
         throw err;
-    });
+    }
 
-    let drop_result = await dropAttributeFromSystem(drop_attribute_object).catch((err) => {
-       log.error(`There was a problem dropping attribute: ${drop_attribute_object.attribute} from hdb_attribute.`);
+    try {
+       await moveFolderToTrash(hash_path, attribute_hash_trash_path);
+    } catch(err) {
+        // Not good, rollback attribute __hdb_hash folder and attribute folder
+        logger.error(`There was a problem moving the hash attribute at path ${origin_path} to the trash at path: ${attribute_trash_path}`);
+        throw err;
+    }
+
+    try {
+        let drop_result = await dropAttributeFromSystem(drop_attribute_object);
+
+        return drop_result;
+    } catch(err) {
         // Not good, rollback attribute folder, __hdb_hash folder, and attribute removal from hdb_attribute if it happened.
-       throw err;
-    });
-
-    return drop_result;
+        logger.error(`There was a problem dropping attribute: ${drop_attribute_object.attribute} from hdb_attribute.`);
+        throw err;
+    }
 }
 
 /**
@@ -592,39 +489,28 @@ async function moveAttributeToTrash (drop_attribute_object) {
  * @param trash_path
  * @returns {Promise<boolean>}
  */
-async function moveFolderToTrash(path, trash_path) {
-    if(hdb_util.isEmptyOrZeroLength(path) || hdb_util.isEmptyOrZeroLength(trash_path)) {
+async function moveFolderToTrash(origin_path, trash_path) {
+    if(hdb_util.isEmptyOrZeroLength(origin_path) || hdb_util.isEmptyOrZeroLength(trash_path)) {
         return false;
     }
 
-    // if mk_result is returned as null, the folder already exists.
-    let mk_result = await fs.mkdirp(TRASH_BASE_PATH).catch((err) => {
-        log.info(`Failed to create the trash directory.`);
+    try {
+        await fs.mkdirp(trash_path);
+    } catch(err) {
+        logger.error(`Failed to create the trash directory.`);
         throw err;
-    });
-    let move_result = await fs.move(path, trash_path, {overwrite: true}).catch((err) => {
-       log.error(`Got an error moving path ${path} to trash path: ${trash_path}`);
-       throw err;
-    });
+    }
+
+    try {
+        await fs.move(origin_path,trash_path, {overwrite: true});
+    } catch(err) {
+        logger.error(`Got an error moving path ${origin_path} to trash path: ${trash_path}`);
+        throw err;
+    }
     return true;
 }
 
-/**
- * Delete the attributes of the table described in the drop_table_object parameter.
- * @param err - Error returned from the moveTableToTrash function.
- * @param drop_table_object - Descriptor of the table being moved.
- * @param callback - Callback function.
- */
-function deleteTableAttributes(err, drop_table_object, callback) {
-    deleteAttributeStructure(drop_table_object, function completedDrop(err, success) {
-        if (err) {
-            return callback(err);
-        }
-        callback(null, `successfully deleted table ${drop_table_object.schema}.${drop_table_object.table}`);
-    });
-}
-
-function searchForSchema(schema_name, callback) {
+async function searchForSchema(schema_name) {
     let search_obj = {
         schema: 'system',
         table: 'hdb_schema',
@@ -634,15 +520,16 @@ function searchForSchema(schema_name, callback) {
         }]
     };
 
-    search.searchByConditions(search_obj, (err, data) => {
-        if (err) {
-            return callback(err);
-        }
-        callback(null, data);
-    });
+    try {
+        let search_result = await p_search_by_conditions(search_obj);
+
+        return search_result;
+    } catch(err) {
+        throw err;
+    }
 }
 
-function searchForTable(schema_name, table_name, callback) {
+async function searchForTable(schema_name, table_name) {
     let search_obj = {
         schema: 'system',
         table: 'hdb_table',
@@ -655,166 +542,147 @@ function searchForTable(schema_name, table_name, callback) {
             }]
     };
 
-    search.searchByConditions(search_obj, (err, data) => {
-        if (err) {
-            return callback(err);
-        }
-        callback(null, data);
-    });
+    try {
+        let search_result = await p_search_by_conditions(search_obj);
+
+        return search_result;
+    } catch(err) {
+        throw err;
+    }
 }
 
-function createAttributeStructure(create_attribute_object, callback) {
+async function createAttributeStructure(create_attribute_object) {
+    let validation_error = validation.attribute_object(create_attribute_object);
+    if (validation_error) {
+        throw validation_error;
+    }
+
+    let search_object = {
+        schema: 'system',
+        table: 'hdb_attribute',
+        hash_attribute: 'id',
+        get_attributes: ['*'],
+        search_attribute: 'attribute',
+        search_value: create_attribute_object.attribute
+    };
+
     try {
-        let validation_error = validation.attribute_object(create_attribute_object);
-        if (validation_error) {
-            callback(validation_error, null);
-            return;
-        }
+        let attributes = await p_search_search_by_value(search_object);
 
-        let search_obj = {};
-        search_obj.schema = 'system';
-        search_obj.table = 'hdb_attribute';
-        search_obj.hash_attribute = 'id';
-        search_obj.get_attributes = ['*'];
-        search_obj.search_attribute = 'attribute';
-        search_obj.search_value = create_attribute_object.attribute;
-
-        search.searchByValue(search_obj, function(err, attributes){
-            if(attributes && attributes.length > 0){
-                for(let att in attributes){
-                    if(attributes[att].schema === create_attribute_object.schema
-                        && attributes[att].table === create_attribute_object.table){
-                        return callback(`attribute already exists with id ${ JSON.stringify(attributes[att])}`);
-                    }
+        if(attributes && attributes.length > 0) {
+            for (let att in attributes) {
+                if (attributes[att].schema === create_attribute_object.schema
+                    && attributes[att].table === create_attribute_object.table) {
+                    throw new Error(`attribute already exists with id ${JSON.stringify(attributes[att])}`);
                 }
             }
+        }
 
-            let record = {
-                schema: create_attribute_object.schema,
-                table: create_attribute_object.table,
-                attribute: create_attribute_object.attribute,
-                id: uuidV4(),
-                schema_table: create_attribute_object.schema + '.' + create_attribute_object.table
-            };
+        let record = {
+            schema: create_attribute_object.schema,
+            table: create_attribute_object.table,
+            attribute: create_attribute_object.attribute,
+            id: uuidV4(),
+            schema_table: create_attribute_object.schema + '.' + create_attribute_object.table
+        };
 
-            if(create_attribute_object.id){
-                record.id = create_attribute_object.id;
-            }
+        if(create_attribute_object.id){
+            record.id = create_attribute_object.id;
+        }
 
-            let insertObject = {
-                operation: 'insert',
-                schema: 'system',
-                table: 'hdb_attribute',
-                hash_attribute: 'id',
-                records: [record]
-            };
-            logger.info("insert object:" + JSON.stringify(insertObject));
+        let insert_object = {
+            operation: 'insert',
+            schema: 'system',
+            table: 'hdb_attribute',
+            hash_attribute: 'id',
+            records: [record]
+        };
 
-            cb_insert_insert(insertObject, (err, res) => {
-                logger.info('attribute:' + record.attribute);
-                logger.info(res);
-                callback(err, res);
+        logger.info('insert object: ' + JSON.stringify(insert_object));
+        let insert_response = await insert.insert(insert_object);
+        logger.info('attribute: ' + record.attribute);
+        logger.info(insert_response);
 
-            });
-        });
-    } catch (e) {
-        callback(e);
+        return insert_response;
+    } catch(err) {
+        throw err;
     }
 }
 
-function deleteAttributeStructure(attribute_drop_object, callback) {
-    let search_obj = {};
-    search_obj.schema = 'system';
-    search_obj.table = 'hdb_attribute';
-    search_obj.hash_attribute = 'id';
-    search_obj.get_attributes = ['id', 'attribute'];
+async function deleteAttributeStructure(attribute_drop_object) {
+    let search_object = {
+        schema:'system',
+        table: 'hdb_attribute',
+        hash_attribute: 'id',
+        get_attributes: ['id', 'attribute']
+    };
 
     if (attribute_drop_object.table && attribute_drop_object.schema) {
-        search_obj.search_attribute = 'schema_table';
-        search_obj.search_value = `${attribute_drop_object.schema}.${attribute_drop_object.table}`;
+        search_object.search_attribute = 'schema_table';
+        search_object.search_value = `${attribute_drop_object.schema}.${attribute_drop_object.table}`;
     } else if (attribute_drop_object.schema) {
-        search_obj.search_attribute = 'schema';
-        search_obj.search_value = `${attribute_drop_object.schema}`;
+        search_object.search_attribute = 'schema';
+        search_object.search_value = `${attribute_drop_object.schema}`;
     } else {
-        callback('attribute drop requires table and or schema.');
-        return;
+        throw new Error('attribute drop requires table and or schema.');
     }
 
-    search.searchByValue(search_obj, function (err, attributes) {
-        if (err) {
-            callback(err);
-            return;
-        }
+    try {
+        let attributes = await p_search_search_by_value(search_object);
 
         if (attributes && attributes.length > 0) {
-            let delete_table_object = {"table": "hdb_attribute", "schema": "system", "hash_values": []};
+            let delete_table_object = {
+                table: 'hdb_attribute',
+                schema: 'system',
+                hash_values: []
+            };
+
             for (let att in attributes) {
                 if ((attribute_drop_object.attribute && attribute_drop_object.attribute === attributes[att].attribute)
                     || !attribute_drop_object.attribute) {
-
                     delete_table_object.hash_values.push(attributes[att].id);
                 }
             }
+            await p_delete_delete(delete_table_object);
 
-            delete_.delete(delete_table_object, function (err, success) {
-                if (err) {
-                    callback(err);
-                    return;
-                }
-
-                callback(null, `successfully deleted ${delete_table_object.hash_values.length} attributes`);
-            });
-        } else {
-            callback(null, null);
+            return `successfully deleted ${delete_table_object.hash_values.length} attributes`;
         }
-    });
+    } catch(err) {
+        throw err;
+    }
 }
 
-function createAttribute(create_attribute_object, callback) {
+async function createAttribute(create_attribute_object) {
+    let attribute_structure;
     try {
         if(global.clustering_on
-            && !create_attribute_object.delegated && create_attribute_object.schema != 'system') {
+            && !create_attribute_object.delegated && create_attribute_object.schema !== 'system') {
 
-            createAttributeStructure(create_attribute_object, function (err, success) {
-                if (err) {
-                    callback(err);
-                    return;
-                }
+            attribute_structure = await createAttributeStructure(create_attribute_object);
+            create_attribute_object.delegated = true;
+            create_attribute_object.operation = 'create_attribute';
+            create_attribute_object.id = attribute_structure.id;
 
-                create_attribute_object.delegated = true;
-                create_attribute_object.operation = 'create_attribute';
-                create_attribute_object.id = success.id;
+            let payload = {
+                "type": "clustering_payload",
+                "pid": process.pid,
+                "clustering_type": "broadcast",
+                "id": attribute_structure.id,
+                "body": create_attribute_object
+            };
 
-                let payload = {
-                    "type": "clustering_payload", "pid": process.pid,
-                    "clustering_type": "broadcast",
-                    "id": success.id,
-                    "body": create_attribute_object
-                };
+            common.callProcessSend(payload);
+            signalling.signalSchemaChange({type: 'schema'});
 
-                try {
-                    common.callProcessSend(payload);
-                } catch(e) {
-                    logger.error(e);
-                }
+            return attribute_structure;
+        } else {
+            attribute_structure = await createAttributeStructure(create_attribute_object);
+            signalling.signalSchemaChange({type: 'schema'});
 
-                signalling.signalSchemaChange({type: 'schema'});
-                return callback(null, success);
-
-            });
-
-        }else{
-            createAttributeStructure(create_attribute_object, function (err, success) {
-                if (err) {
-                    callback(err);
-                    return;
-                }
-
-                signalling.signalSchemaChange({type: 'schema'});
-                return callback(null, success);
-            });
+            return attribute_structure;
         }
-    } catch (e) {
-        callback(e);
+    } catch(err) {
+        logger.error(err);
+        throw err;
     }
 }

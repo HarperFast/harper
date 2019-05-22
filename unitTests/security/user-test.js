@@ -74,7 +74,7 @@ const TEST_DROP_USER_JSON = {
     "username":"test_user"
 };
 
-const TEST_ADD_USER_SEARCH_OBJ = {
+const TEST_ADD_USER_SEARCH_OBJ = [{
     "schema": "system",
     "table": "hdb_role",
     "hash_values": [
@@ -84,7 +84,7 @@ const TEST_ADD_USER_SEARCH_OBJ = {
     "get_attributes": [
         "id"
     ]
-};
+}];
 
 const TEST_USER_INFO_JSON = {
     "operation": "user_info",
@@ -159,7 +159,7 @@ describe('Test addUser', function () {
     beforeEach( function() {
         // We are not testing these other functions, so we stub them.
         //search_stub = sinon.stub(search, "searchByHash").yields("", TEST_ADD_USER_SEARCH_OBJ);
-        search_stub = sinon.stub().resolves(TEST_ADD_USER_SEARCH_OBJ);
+        search_stub = sinon.stub().resolves(TEST_USER_INFO_SEARCH_RESPONSE);
         user.__set__('p_search_search_by_hash', search_stub);
         insert_stub = sinon.stub(insert, "insert").resolves(true);
         validate_stub = sinon.stub(validation, "addUserValidation").callsFake(function() {
