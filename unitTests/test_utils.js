@@ -30,13 +30,13 @@ const {
     ATTR_TABLE_KEY,
 } = terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES;
 
-const UNIT_TEST_DIR = __dirname
+const UNIT_TEST_DIR = __dirname;
 const TEST_FS_DIR_NAME = "test_fs";
 const ATTR_PATH_OBJECT = {
     "files": [],
     "journals": [],
     "system": []
-}
+};
 
 /**
  * This needs to be called near the top of our unit tests.  Most will fail when loading harper modules due to the
@@ -69,7 +69,7 @@ let mochaAsyncWrapper = (fn) => {
             done(err);
         });
     };
-};
+}
 
 /**
  * Call this function near the top of any unit test to assign the unhandledReject event handler (this is due to a bug in Node).
@@ -115,7 +115,7 @@ function cleanUpDirectories(target_path) {
     if (fs.existsSync(target_path)) {
         try {
             files = fs.readdirSync(target_path);
-            for (let i = 0; i<files.length; i++) {
+            for (let i = 0; i < files.length; i++) {
                 let file = files[i];
                 let curPath = path.join(target_path, file);
                 if (fs.lstatSync(curPath).isDirectory()) { // recurse
@@ -220,10 +220,13 @@ function createMockFS(hash_attribute, schema, table, test_data) {
 
         //set hdb_global
         setGlobalSchema(hash_attribute, schema, table, table_id, attribute_names);
+
+        //set system > schema structure
+        createMockSystemSchema(hash_attribute, schema, table, attribute_names);
+
+        //add top-level table and hash directory paths to returned data for testing
         test_table_data.paths = test_table_paths;
 
-        //set
-        createMockSystemSchema(hash_attribute, schema, table, attribute_names);
         return test_table_data;
     } catch(e) {
          console.error(e);
@@ -231,7 +234,7 @@ function createMockFS(hash_attribute, schema, table, test_data) {
 }
 
 /**
- * Removes the mock FS directory created by `createMockFS()` and resets global.hdb_schema.
+ * Removes the mock FS directory created by `createMockFS()` and resets global.hdb_schema
  */
 function tearDownMockFS() {
     const test_base_path = getMockFSPath();
@@ -240,7 +243,7 @@ function tearDownMockFS() {
 }
 
 /**
- * This method is used in `createMockFS()` to create the mock FS structure for the schema > system directory.
+ * This method is used in `createMockFS()` to create the mock FS structure for the schema > system directory
  * TODO: Right now, this method does not return paths to specific directories or files being created.  This functionalty
  ** should be added as when needed in future tests in the `system` array value returned from `createMockFS()`.
  */
