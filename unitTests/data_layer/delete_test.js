@@ -1,10 +1,17 @@
 "use strict";
 
 const test_utils = require('../test_utils');
-const { createMockFS, deepClone, makeTheDir, getMockFSDirPath, mochaAsyncWrapper, tearDownMockFS } = test_utils;
 // try to move to /bin directory so our properties reader doesn't explode.
 test_utils.preTestPrep();
 
+const {
+    createMockFS,
+    deepClone,
+    makeTheDir,
+    getMockFSPath,
+    mochaAsyncWrapper,
+    tearDownMockFS
+} = test_utils;
 const path = require('path');
 const assert = require('assert');
 const sinon = require('sinon');
@@ -16,8 +23,7 @@ const global_schema = require('../../utility/globalSchema');
 const search = require('../../data_layer/search');
 
 const DELETE_MOD_BASE_PATH_NAME = 'BASE_PATH';
-const BASE = process.cwd();
-const TEST_FS_DIR = getMockFSDirPath(BASE);
+const TEST_FS_DIR = getMockFSPath();
 const TEST_SCHEMA = 'test';
 const TEST_SYSTEM = 'system';
 const TEST_SCHEMA_PATH = path.join(TEST_FS_DIR, TEST_SCHEMA);
@@ -76,8 +82,8 @@ function setup() {
     const test_data_clone_dog = deepClone(TEST_DATA_DOG);
     const test_data_clone_cat = deepClone(TEST_DATA_CAT);
 
-    const dog_instance = createMockFS(TEST_FS_DIR, HASH_ATTRIBUTE, TEST_SCHEMA, TEST_TABLE_DOG, test_data_clone_dog);
-    const cat_instance = createMockFS(TEST_FS_DIR, HASH_ATTRIBUTE, TEST_SCHEMA, TEST_TABLE_CAT, test_data_clone_cat);
+    const dog_instance = createMockFS(HASH_ATTRIBUTE, TEST_SCHEMA, TEST_TABLE_DOG, test_data_clone_dog);
+    const cat_instance = createMockFS(HASH_ATTRIBUTE, TEST_SCHEMA, TEST_TABLE_CAT, test_data_clone_cat);
 
     TEST_TABLE_DOG_PATH = dog_instance.paths.table_dir;
 
@@ -91,7 +97,7 @@ describe('Test DELETE', () => {
     before(() => {
         search_stub.yields(null, TEST_DATA_DOG);
         delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, TEST_FS_DIR);
-        tearDownMockFS(TEST_FS_DIR);
+        tearDownMockFS();
     });
 
     after(() => {
@@ -118,7 +124,7 @@ describe('Test DELETE', () => {
             test_data = undefined;
             files_to_check = undefined;
             search_stub.reset();
-            tearDownMockFS(TEST_FS_DIR);
+            tearDownMockFS();
         });
 
         it('Nominal path of deleteFilesInPath, test against DOG table', mochaAsyncWrapper(async () => {
@@ -186,7 +192,7 @@ describe('Test DELETE', () => {
             search_stub.reset();
             test_data = undefined;
             files_to_check = undefined;
-            tearDownMockFS(TEST_FS_DIR);
+            tearDownMockFS();
         });
 
         it('deleteFilesBefore with yesterday as a time stamp, expect no files removed', mochaAsyncWrapper(async () => {
@@ -308,7 +314,7 @@ describe('Test DELETE', () => {
         });
 
         after(() => {
-            tearDownMockFS(TEST_FS_DIR);
+            tearDownMockFS();
             search_stub.reset();
         });
 
@@ -344,7 +350,7 @@ describe('Test DELETE', () => {
         afterEach(() => {
             found_hashes_to_remove = [];
             search_stub.reset();
-            tearDownMockFS(TEST_FS_DIR);
+            tearDownMockFS();
         });
 
         it('Nominal path to search the dog directory.  Should find both ids in TEST_DATA', mochaAsyncWrapper(async () => {
@@ -468,7 +474,7 @@ describe('Test DELETE', () => {
             test_data = undefined;
             files_to_remove = undefined;
             search_stub.reset();
-            tearDownMockFS(TEST_FS_DIR);
+            tearDownMockFS();
         });
 
         it('Nominal path of removeFiles on dog table', mochaAsyncWrapper(async () => {
@@ -518,7 +524,7 @@ describe('Test DELETE', () => {
 
         afterEach(() => {
             test_values = undefined;
-            tearDownMockFS(TEST_FS_DIR);
+            tearDownMockFS();
         });
 
         it('Nominal path of removeIDFiles against dog table.', mochaAsyncWrapper(async () => {
@@ -555,7 +561,7 @@ describe('Test DELETE', () => {
         });
 
         after(() => {
-            tearDownMockFS(TEST_FS_DIR);
+            tearDownMockFS();
         });
 
         // There should be 2 directories, each with 1 file, and 1 text file in the current directory
@@ -615,7 +621,7 @@ describe('Test DELETE', () => {
             err = undefined;
             global_schema_stub.reset();
             search_stub.reset();
-            tearDownMockFS(TEST_FS_DIR);
+            tearDownMockFS();
         });
 
         it('Nominal path for delete Record', () => {
@@ -685,7 +691,7 @@ describe('Test DELETE', () => {
         afterEach(() => {
             err = undefined;
             test_data = undefined;
-            tearDownMockFS(TEST_FS_DIR);
+            tearDownMockFS();
         });
 
         it('Nominal path for deleteRecords', () => {

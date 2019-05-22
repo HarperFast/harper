@@ -4,8 +4,9 @@ const fs = require('fs');
 const uuid = require('uuid/v4');
 const moment = require('moment');
 const env = require('../utility/environment/environmentManager');
-// const terms = require('../utility/hdbTerms');
+const terms = require('../utility/hdbTerms');
 
+const UNIT_TEST_DIR = __dirname
 const TEST_FS_DIR_NAME = "test_fs";
 const SYSTEM_DIR_NAMES = {
     system: "system",
@@ -100,18 +101,67 @@ function makeTheDir(path) {
     }
 }
 
-function getMockFSDirPath(base_path) {
-    return path.join(base_path, TEST_FS_DIR_NAME);
+/**
+ * Call this function to delete all directories under the specified path.  This is a synchronous function.
+ * @param target_path The path to the directory to remove
+ *
+ * IMPORTANT: Use `tearDownMockFS()` to properly clean up the mock fs built using `createMockFS()`
+ */
+function cleanUpDirectories(target_path) {
+    if (!target_path) return;
+    //Just in case
+    if (target_path === '/') return;
+    let files = [];
+    if (fs.existsSync(target_path)) {
+        try {
+            files = fs.readdirSync(target_path);
+            for (let i = 0; i<files.length; i++) {
+                let file = files[i];
+                let curPath = path.join(target_path, file);
+                if (fs.lstatSync(curPath).isDirectory()) { // recurse
+                    cleanUpDirectories(curPath);
+                } else {
+                    fs.unlinkSync(curPath);
+                }
+            }
+            fs.rmdirSync(target_path);
+        } catch (e) {
+            console.error(e);
+        }
+    }
 }
 
-//TODO: Update docs for this method
+/** HELPER METHODS TO CREATE MOCK HDB SCHEMA FILE SYSTEM STRUCTURE */
+
 /**
- * This function will simulate the HDB data structure with the data passed in.  It will pull the hash attribute from the
- * global.hdb_schema values above.  A table value must be defined in the data so the function knows which table to pull
- * from.  The schema is always assumed to be 'test'.
- * @param data
+ * Returns the path to the directory with the mock FS structure that will be created by `createMockFS()`
+ * @returns String representing the path value to the mock file system directory
  */
-function createMockFS(test_base_path, hash_attribute, schema, table, test_data) {
+function getMockFSPath() {
+    return path.join(UNIT_TEST_DIR, TEST_FS_DIR_NAME);
+}
+
+/**
+ * This function will simulate the HDB data structure with the data passed in at the path accessed by using
+ * `getMockFSPath()` in your unit test file. It will build out a fs structure for the schema/table/attributes
+ * included in the parameters AND make appropriate updates to the schema > system structure AND set global.hdb_schema.
+ * This function can be used to build out multiple schemas and tables, if necessary.
+ *
+ * IMPORTANT: Please be sure to use `tearDownMockFS()` after any test/s using this mock fs structure to ensure the test
+ * data is properly removed from the file system and the global.hdb_schema is reset to undefined for other unit tests.
+ *
+ * @param hash_attribute The hash_attribute to use
+ * @param schema The name of the schema you'd like to create
+ * @param table The name of the table you'd like to create
+ * @param test_data The attribute data you'd like to insert into the table.
+ *          Ex: {"name":"Frank","id":"1","age":5}
+ * @returns Object in the format of ATTR_PATH_OBJECT above that includes paths associated with the files and journal
+ *          entries associated with the data passed in.
+ * TODO: The method does not currently return paths for the system schema directory.
+ */
+function createMockFS(hash_attribute, schema, table, test_data) {
+    const test_base_path = getMockFSPath();
+
     try {
         //create default mock fs dir
         makeTheDir(test_base_path)
@@ -182,8 +232,22 @@ function createMockFS(test_base_path, hash_attribute, schema, table, test_data) 
     }
 }
 
-// TODO: Create docs for this method
-function createMockSystemSchema(test_system_base_path, hash_attribute, schema, table, attributes) {
+/**
+ * Removes the mock FS directory created by `createMockFS()` and resets global.hdb_schema.
+ */
+function tearDownMockFS() {
+    const test_base_path = getMockFSPath();
+    cleanUpDirectories(test_base_path);
+    global.hdb_schema = undefined;
+}
+
+/**
+ * This method is used in `createMockFS()` to create the mock FS structure for the schema > system directory.
+ * TODO: Right now, this method does not return paths to specific directories or files being created.  This functionalty
+ ** should be added as when needed in future tests in the `system` array value returned from `createMockFS()`.
+ */
+
+function createMockSystemSchema(test_system_base_path, hash_attribute, schema, table, attributes_keys) {
     // create default dir structure
     makeTheDir(test_system_base_path)
 
@@ -230,7 +294,6 @@ function createMockSystemSchema(test_system_base_path, hash_attribute, schema, t
     fs.writeFileSync(createddate_hash_file, timestamp_value_schema,'utf-8');
     const s_link_path = path.join(schema_createddate_timestamp_dir, `${schema}.hdb`);
     fs.linkSync(createddate_hash_file, s_link_path);
-
 
     // table
     const timestamp_value_table = `${moment().valueOf()}`;
@@ -310,8 +373,8 @@ function createMockSystemSchema(test_system_base_path, hash_attribute, schema, t
     const attr_dir_path = path.join(test_system_base_path, SYSTEM_DIR_NAMES.attribute);
     makeTheDir(attr_dir_path);
 
-    for (let i=0; i < attributes.length; i++) {
-        const attr_value = attributes[i];
+    for (let i=0; i < attributes_keys.length; i++) {
+        const attr_value = attributes_keys[i];
         const attr_hash_value = uuid();
         const attr_timestamp = `${moment().valueOf()}`;
         const schematable_value = `${schema}.${table}`;
@@ -402,6 +465,7 @@ function createMockSystemSchema(test_system_base_path, hash_attribute, schema, t
     }
 
     // Other schema > system directories
+    // TODO: add additional structure to schema > system directories below as needed for testing.
     makeTheDir(path.join(test_system_base_path, "hdb_license"));
     makeTheDir(path.join(test_system_base_path, "hdb_job"));
     makeTheDir(path.join(test_system_base_path, "hdb_nodes"));
@@ -410,9 +474,11 @@ function createMockSystemSchema(test_system_base_path, hash_attribute, schema, t
     makeTheDir(path.join(test_system_base_path, "hdb_user"));
 }
 
-//TODO: Add docs for this method
-function setGlobalSchema(hash_attribute, schema, table, table_id, attribute_names) {
-    const attributes = attribute_names.map(name => ({ "attributes": name }));
+/**
+ * This method is used in `createMockFS()` to update global.hdb_schema based on the mocked FS structure created.
+ */
+function setGlobalSchema(hash_attribute, schema, table, table_id, attributes_keys) {
+    const attributes = attributes_keys.map(attr_key => ({ "attributes": attr_key }));
 
     if (global.hdb_schema === undefined) {
         global.hdb_schema = {
@@ -528,39 +594,6 @@ function setGlobalSchema(hash_attribute, schema, table, table_id, attribute_name
     }
 }
 
-function tearDownMockFS(path) {
-    cleanUpDirectories(path);
-    global.hdb_schema = undefined;
-}
-
-/**
- * Call this function to delete all directories under the specified path.  This is a synchronous function.
- * @param target_path
- */
-function cleanUpDirectories(target_path) {
-    if (!target_path) return;
-    //Just in case
-    if (target_path === '/') return;
-    let files = [];
-    if (fs.existsSync(target_path)) {
-        try {
-            files = fs.readdirSync(target_path);
-            for (let i = 0; i<files.length; i++) {
-                let file = files[i];
-                let curPath = path.join(target_path, file);
-                if (fs.lstatSync(curPath).isDirectory()) { // recurse
-                    cleanUpDirectories(curPath);
-                } else {
-                    fs.unlinkSync(curPath);
-                }
-            }
-            fs.rmdirSync(target_path);
-        } catch (e) {
-            console.error(e);
-        }
-    }
-}
-
 module.exports = {
     changeProcessToBinDir:changeProcessToBinDir,
     deepClone:deepClone,
@@ -570,5 +603,5 @@ module.exports = {
     createMockFS:createMockFS,
     tearDownMockFS:tearDownMockFS,
     makeTheDir:makeTheDir,
-    getMockFSDirPath:getMockFSDirPath
+    getMockFSPath:getMockFSPath
 };
