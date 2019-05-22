@@ -2,9 +2,8 @@
 const fs = require('fs');
 const util = require('util');
 const csv_load_validator = require('./csvLoadValidator');
-const global_schema = require('../utility/globalSchema');
+const common_utils = require('../utility/common_utils');
 
-const p_get_table_schema = util.promisify(global_schema.getTableSchema);
 const p_fs_access = util.promisify(fs.access);
 
 // Maximum files size in bytes
@@ -35,7 +34,7 @@ async function csvValidator(json_body) {
             throw validation_msg.message;
         }
 
-        await p_get_table_schema(json_body.schema, json_body.table);
+        common_utils.checkGlobalSchemaTable(json_body.schema, json_body.table);
 
     } catch(err) {
         throw new Error(err);
@@ -52,6 +51,6 @@ async function csvFileLoadValidator(json_body) {
 
     let file_size = fs.statSync(json_body.file_path).size;
     if (file_size > MAX_CSV_FILE_SIZE) {
-        throw (`File size is ${file_size} bytes, which exceeded the maximum size allowed of: ${MAX_CSV_FILE_SIZE} bytes`);
+        throw `File size is ${file_size} bytes, which exceeded the maximum size allowed of: ${MAX_CSV_FILE_SIZE} bytes`;
     }
 }

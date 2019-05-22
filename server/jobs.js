@@ -129,8 +129,10 @@ async function addJob(json_body) {
         return result;
     }
 
-    // Validate to ensure that action is valid, schema and table exist, and if file load - check file.
-    await csv_validator.csvValidator(json_body);
+    // Validate csv operation to ensure that action is valid, schema and table exist, and if file load - check file.
+    if(json_body.operation === 'csv_data_load' || json_body.operation === 'csv_file_load' || json_body.operation === 'csv_url_load') {
+        await csv_validator.csvValidator(json_body);
+    }
 
     let new_job = new JobObject();
     new_job.type = json_body.operation;

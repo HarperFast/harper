@@ -205,7 +205,7 @@ function descTable(describe_table_object, callback) {
                     }
 
                     if(!table_result.hash_attribute){
-                        return callback("Invalid table or schema");
+                        return callback("Invalid table");
                     }
 
                     let attribute_search_obj = {};
