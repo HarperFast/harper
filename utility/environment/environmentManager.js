@@ -5,6 +5,8 @@ const PropertiesReader = require('properties-reader');
 const log = require('../logging/harper_logger');
 const common_utils = require('../common_utils');
 const hdb_terms = require('../hdbTerms');
+const path = require('path');
+const os = require('os');
 
 let BOOT_PROPS_FILE_PATH = common_utils.getPropsFilePath();
 
@@ -27,7 +29,8 @@ module.exports = {
     initSync: initSync,
     setProperty: setProperty,
     append: append,
-    writeSettingsFileSync: writeSettingsFileSync
+    writeSettingsFileSync: writeSettingsFileSync,
+    initTestEnvironment : initTestEnvironment
 };
 
 let hdb_properties = PropertiesReader();
@@ -321,6 +324,36 @@ function initSync() {
                 readEnvVariable(value);
             }
         }
+    } catch(err) {
+        let msg = `Error reading in HDB environment variables from path ${BOOT_PROPS_FILE_PATH}.  Please check your boot props and settings files`;
+        log.fatal(msg);
+        log.error(err);
+    }
+}
+
+function initTestEnvironment() {
+    try {
+        let props_path = process.cwd();
+        props_path = path.join(props_path, '../', 'unitTests');
+        setPropsFilePath(`${props_path}/hdb_boot_properties.file`);
+        setProperty(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, `${props_path}/settings.test`);
+        setProperty(hdb_terms.HDB_SETTINGS_NAMES.INSTALL_USER, os.userInfo().username);
+        readSettingsFile();
+        readRootPath();
+        readCertPath();
+        readPrivateKeyPath();
+        //These settings are read in separate function calls above to handle file IO errors.
+        let ignore_settings = [hdb_terms.HDB_SETTINGS_NAMES.CERT_KEY, hdb_terms.HDB_SETTINGS_NAMES.PRIVATE_KEY_KEY, hdb_terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY];
+        let keys = Object.keys(hdb_terms.HDB_SETTINGS_NAMES);
+        for (let i = 0; i < keys.length; i++) {
+            let key = keys[i];
+            let value = hdb_terms.HDB_SETTINGS_NAMES[key];
+            if (ignore_settings.includes(value)) {
+                continue;
+            }
+            readEnvVariable(value);
+        }
+
     } catch(err) {
         let msg = `Error reading in HDB environment variables from path ${BOOT_PROPS_FILE_PATH}.  Please check your boot props and settings files`;
         log.fatal(msg);
