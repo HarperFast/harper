@@ -9,7 +9,7 @@ const jobs = rewire('../../server/jobs');
 const sinon = require('sinon');
 const hdb_term = require('../../utility/hdbTerms');
 const JobObject = require('../../server/JobObject');
-const csv_file_validator = require('../../validation/csvFileLoadValidator');
+const csv_validator = require('../../validation/csvValidator');
 
 const INSERT_RESULT = {
     'message': 'inserted 1 of 1 records',
@@ -229,7 +229,7 @@ describe('Test addJob', function() {
 
 	beforeEach(function() {
 		sandbox = sinon.createSandbox();
-        sandbox.stub(csv_file_validator, 'csvFileLoadValidator');
+        sandbox.stub(csv_validator, 'csvValidator');
 	});
 	afterEach(function() {
 		sandbox.restore();
