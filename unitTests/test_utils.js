@@ -6,32 +6,32 @@ const moment = require('moment');
 const env = require('../utility/environment/environmentManager');
 const terms = require('../utility/hdbTerms');
 
+const {
+    JOB_TABLE_NAME,
+    NODE_TABLE_NAME,
+    ATTRIBUTE_TABLE_NAME,
+    LICENSE_TABLE_NAME,
+    QUEUE_TABLE_NAME,
+    ROLE_TABLE_NAME,
+    SCHEMA_TABLE_NAME,
+    TABLE_TABLE_NAME,
+    USER_TABLE_NAME
+} = terms.SYSTEM_TABLE_NAMES;
+
+const {
+    ATTR_ATTRIBUTE_KEY,
+    ATTR_CREATEDDATE_KEY,
+    ATTR_HASH_ATTRIBUTE_KEY,
+    ATTR_ID_KEY,
+    ATTR_NAME_KEY,
+    ATTR_RESIDENCE_KEY,
+    ATTR_SCHEMA_KEY,
+    ATTR_SCHEMA_TABLE_KEY,
+    ATTR_TABLE_KEY,
+} = terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES;
+
 const UNIT_TEST_DIR = __dirname
 const TEST_FS_DIR_NAME = "test_fs";
-const SYSTEM_DIR_NAMES = {
-    system: "system",
-    schema: "hdb_schema",
-    table: "hdb_table",
-    attribute: "hdb_attribute"
-};
-
-// TODO - use hdbTerms or create them there
-const SYSTEM_ATTRS = {
-    active: "active",
-    attribute: "attribute",
-    createddate: "createddate",
-    hash_attribute: "hash_attribute",
-    id: "id",
-    name: "name",
-    password: "password",
-    residence: "residence",
-    role: "role",
-    schema: "schema",
-    schema_table: "schema_table",
-    table: "table",
-    username: "username"
-};
-const HDB_HASH_DIR_NAME = "__hdb_hash";
 const ATTR_PATH_OBJECT = {
     "files": [],
     "journals": [],
@@ -132,7 +132,6 @@ function cleanUpDirectories(target_path) {
 }
 
 /** HELPER METHODS TO CREATE MOCK HDB SCHEMA FILE SYSTEM STRUCTURE */
-
 /**
  * Returns the path to the directory with the mock FS structure that will be created by `createMockFS()`
  * @returns String representing the path value to the mock file system directory
@@ -174,7 +173,7 @@ function createMockFS(hash_attribute, schema, table, test_data) {
         const table_id = uuid();
         const table_path = path.join(schema_path, table);
         makeTheDir(table_path);
-        let table_hash_dir_path = path.join(table_path, HDB_HASH_DIR_NAME);
+        let table_hash_dir_path = path.join(table_path, terms.HASH_FOLDER_NAME);
         makeTheDir(table_hash_dir_path);
 
         const test_table_paths = {
@@ -186,14 +185,14 @@ function createMockFS(hash_attribute, schema, table, test_data) {
         const attribute_names = [];
         const test_table_data = test_data.map(data => {
             const test_record_paths = deepClone(ATTR_PATH_OBJECT);
-            const keys = Object.keys(data).filter(key => (key !== 'table'));
+            const keys = Object.keys(data).filter(key => (key !== 'table' && key !== 'schema'));
             for (let i=0; i < keys.length; i++) {
                 const curr_attribute = keys[i];
                 if (attribute_names.indexOf(curr_attribute) < 0) {
                     attribute_names.push(curr_attribute);
                 }
                 const is_hash = curr_attribute === hash_attribute;
-                const hash_dir_path = path.join(table_path, HDB_HASH_DIR_NAME, curr_attribute);
+                const hash_dir_path = path.join(table_path, terms.HASH_FOLDER_NAME, curr_attribute);
                 makeTheDir(hash_dir_path);
                 const attribute_dir_path = path.join(table_path, curr_attribute);
                 makeTheDir(attribute_dir_path);
@@ -224,8 +223,7 @@ function createMockFS(hash_attribute, schema, table, test_data) {
         test_table_data.paths = test_table_paths;
 
         //set
-        const system_schema_path = path.join(test_base_path, SYSTEM_DIR_NAMES.system);
-        createMockSystemSchema(system_schema_path, hash_attribute, schema, table, attribute_names);
+        createMockSystemSchema(hash_attribute, schema, table, attribute_names);
         return test_table_data;
     } catch(e) {
          console.error(e);
@@ -247,16 +245,19 @@ function tearDownMockFS() {
  ** should be added as when needed in future tests in the `system` array value returned from `createMockFS()`.
  */
 
-function createMockSystemSchema(test_system_base_path, hash_attribute, schema, table, attributes_keys) {
+function createMockSystemSchema(hash_attribute, schema, table, attributes_keys) {
+    const test_base_path = getMockFSPath();
+    const test_system_base_path = path.join(test_base_path, terms.SYSTEM_SCHEMA_NAME);
+
     // create default dir structure
     makeTheDir(test_system_base_path)
 
     // schema
-    const schema_dir_path = path.join(test_system_base_path, SYSTEM_DIR_NAMES.schema);
+    const schema_dir_path = path.join(test_system_base_path, SCHEMA_TABLE_NAME);
     makeTheDir(schema_dir_path);
 
     // schema > name
-    const schema_name_dir = path.join(schema_dir_path, SYSTEM_ATTRS.name);
+    const schema_name_dir = path.join(schema_dir_path, ATTR_NAME_KEY);
     makeTheDir(schema_name_dir);
 
     // schema > name > [schema]
@@ -269,25 +270,25 @@ function createMockSystemSchema(test_system_base_path, hash_attribute, schema, t
     fs.writeFileSync(schema_time_file_name, schema_data,'utf-8');
 
     // schema > createddate
-    const schema_createddate_dir = path.join(schema_dir_path, SYSTEM_ATTRS.createddate);
+    const schema_createddate_dir = path.join(schema_dir_path, ATTR_CREATEDDATE_KEY);
     makeTheDir(schema_createddate_dir);
     // schema > createddate > [timestamp]
     const schema_createddate_timestamp_dir = path.join(schema_createddate_dir, timestamp_value_schema)
     makeTheDir(schema_createddate_timestamp_dir);
 
     // schema > __hdb_hash
-    const schema_hdb_hash_path = path.join(schema_dir_path, HDB_HASH_DIR_NAME)
+    const schema_hdb_hash_path = path.join(schema_dir_path, terms.HASH_FOLDER_NAME)
     makeTheDir(schema_hdb_hash_path);
 
     // schema > __hdb_hash > name
-    const schema_hdb_hash_name = path.join(schema_hdb_hash_path, SYSTEM_ATTRS.name);
+    const schema_hdb_hash_name = path.join(schema_hdb_hash_path, ATTR_NAME_KEY);
     makeTheDir(schema_hdb_hash_name);
     //create record
     const name_hash_file = path.join(schema_hdb_hash_name, `${schema}.hdb`);
     fs.writeFileSync(name_hash_file, schema,'utf-8');
 
     // schema > __hdb_hash > createddate
-    const schema_hdb_hash_createddate = path.join(schema_hdb_hash_path, SYSTEM_ATTRS.createddate);
+    const schema_hdb_hash_createddate = path.join(schema_hdb_hash_path, ATTR_CREATEDDATE_KEY);
     makeTheDir(schema_hdb_hash_createddate);
     //create hdb_hash createddate record
     const createddate_hash_file = path.join(schema_hdb_hash_createddate, `${schema}.hdb`);
@@ -297,64 +298,64 @@ function createMockSystemSchema(test_system_base_path, hash_attribute, schema, t
 
     // table
     const timestamp_value_table = `${moment().valueOf()}`;
-    const table_dir_path = path.join(test_system_base_path, SYSTEM_DIR_NAMES.table);
+    const table_dir_path = path.join(test_system_base_path, TABLE_TABLE_NAME);
     makeTheDir(table_dir_path);
     const table_hash_value = uuid();
 
     // table > hash_attribute
-    const table_hash_att_dir = path.join(table_dir_path, SYSTEM_ATTRS.hash_attribute);
+    const table_hash_att_dir = path.join(table_dir_path, ATTR_HASH_ATTRIBUTE_KEY);
     makeTheDir(table_hash_att_dir);
     // table > hash_attribute > id
-    const table_hash_att_id_dir = path.join(table_hash_att_dir, SYSTEM_ATTRS.id)
+    const table_hash_att_id_dir = path.join(table_hash_att_dir, ATTR_ID_KEY)
     makeTheDir(table_hash_att_id_dir);
 
     // table > id
-    const table_id_dir = path.join(table_dir_path, SYSTEM_ATTRS.id);
+    const table_id_dir = path.join(table_dir_path, ATTR_ID_KEY);
     makeTheDir(table_id_dir);
     // table > id > [hash_value]
     const table_id_hash_dir = path.join(table_id_dir, table_hash_value)
     makeTheDir(table_id_hash_dir);
     const t_id_timestamp_file = path.join(table_id_hash_dir, `${timestamp_value_table}.hdb`);
-    const table_data = JSON.stringify({ name: table, schema: schema, id: table_hash_value, hash_attribute: SYSTEM_ATTRS.id })
+    const table_data = JSON.stringify({ name: table, schema: schema, id: table_hash_value, hash_attribute: hash_attribute })
     fs.writeFileSync(t_id_timestamp_file, table_data,'utf-8');
 
     // table > name
-    const table_name_dir = path.join(table_dir_path, SYSTEM_ATTRS.name);
+    const table_name_dir = path.join(table_dir_path, ATTR_NAME_KEY);
     makeTheDir(table_name_dir);
     // table > name > [table]
     const table_name_name_dir = path.join(table_name_dir, table)
     makeTheDir(table_name_name_dir);
 
     // table > residence
-    const table_residence_dir = path.join(table_dir_path, SYSTEM_ATTRS.residence);
+    const table_residence_dir = path.join(table_dir_path, ATTR_RESIDENCE_KEY);
     makeTheDir(table_residence_dir);
 
     // table > schema
-    const table_schema_dir = path.join(table_dir_path, SYSTEM_ATTRS.schema);
+    const table_schema_dir = path.join(table_dir_path, ATTR_SCHEMA_KEY);
     makeTheDir(table_schema_dir);
     // table > schema > [schema]
     const table_schema_schema_dir = path.join(table_schema_dir, schema)
     makeTheDir(table_schema_schema_dir);
 
     // table > __hdb_hash
-    const table_hdb_hash_dir = path.join(table_dir_path, HDB_HASH_DIR_NAME);
+    const table_hdb_hash_dir = path.join(table_dir_path, terms.HASH_FOLDER_NAME);
     makeTheDir(table_hdb_hash_dir);
     // table > __hdb_hash > hash_attribute
-    const hash_hash_attr_dir = path.join(table_hdb_hash_dir, SYSTEM_ATTRS.hash_attribute);
+    const hash_hash_attr_dir = path.join(table_hdb_hash_dir, ATTR_HASH_ATTRIBUTE_KEY);
     makeTheDir(hash_hash_attr_dir);
     const hash_hash_attr_file = path.join(hash_hash_attr_dir, `${table_hash_value}.hdb`);
-    fs.writeFileSync(hash_hash_attr_file, SYSTEM_ATTRS.id, 'utf-8');
+    fs.writeFileSync(hash_hash_attr_file, ATTR_ID_KEY, 'utf-8');
     const t_id_link_file = path.join(table_hash_att_id_dir, `${table_hash_value}.hdb`);
     fs.linkSync(hash_hash_attr_file, t_id_link_file);
 
     // table > __hdb_hash > id
-    const hash_id_dir = path.join(table_hdb_hash_dir, SYSTEM_ATTRS.id);
+    const hash_id_dir = path.join(table_hdb_hash_dir, ATTR_ID_KEY);
     makeTheDir(hash_id_dir);
     const hash_id_file = path.join(hash_id_dir, `${table_hash_value}.hdb`);
     fs.writeFileSync(hash_id_file, table_hash_value, 'utf-8');
 
     // table > __hdb_hash > name
-    const hash_name_dir = path.join(table_hdb_hash_dir, SYSTEM_ATTRS.name);
+    const hash_name_dir = path.join(table_hdb_hash_dir, ATTR_NAME_KEY);
     makeTheDir(hash_name_dir);
     const hash_name_file = path.join(hash_name_dir, `${table_hash_value}.hdb`);
     fs.writeFileSync(hash_name_file, table, 'utf-8');
@@ -362,7 +363,7 @@ function createMockSystemSchema(test_system_base_path, hash_attribute, schema, t
     fs.linkSync(hash_name_file, t_name_link_file);
 
     // table > __hdb_hash > schema
-    const hash_schema_dir = path.join(table_hdb_hash_dir, SYSTEM_ATTRS.schema);
+    const hash_schema_dir = path.join(table_hdb_hash_dir, ATTR_SCHEMA_KEY);
     makeTheDir(hash_schema_dir)
     const hash_schema_file = path.join(hash_schema_dir, `${table_hash_value}.hdb`);
     fs.writeFileSync(hash_schema_file, schema, 'utf-8');
@@ -370,7 +371,7 @@ function createMockSystemSchema(test_system_base_path, hash_attribute, schema, t
     fs.linkSync(hash_schema_file, t_schema_link_file);
 
     // attributes
-    const attr_dir_path = path.join(test_system_base_path, SYSTEM_DIR_NAMES.attribute);
+    const attr_dir_path = path.join(test_system_base_path, ATTRIBUTE_TABLE_NAME);
     makeTheDir(attr_dir_path);
 
     for (let i=0; i < attributes_keys.length; i++) {
@@ -380,14 +381,14 @@ function createMockSystemSchema(test_system_base_path, hash_attribute, schema, t
         const schematable_value = `${schema}.${table}`;
 
         // attr > attribute
-        const attr_attribute_dir = path.join(attr_dir_path, SYSTEM_ATTRS.attribute);
+        const attr_attribute_dir = path.join(attr_dir_path, ATTR_ATTRIBUTE_KEY);
         makeTheDir(attr_attribute_dir);
         // attr > attribute > [attribute]
         const attr_attribute_value_dir = path.join(attr_attribute_dir, attr_value);
         makeTheDir(attr_attribute_value_dir);
 
         // attr > id
-        const attr_id_dir = path.join(attr_dir_path, SYSTEM_ATTRS.id);
+        const attr_id_dir = path.join(attr_dir_path, ATTR_ID_KEY);
         makeTheDir(attr_id_dir);
         // attr > id > [hash_value]
         const attr_id_hash_dir = path.join(attr_id_dir, attr_hash_value);
@@ -400,32 +401,32 @@ function createMockSystemSchema(test_system_base_path, hash_attribute, schema, t
         fs.writeFileSync(attr_id_hash_file, attr_data, 'utf-8');
 
         // attr > schema
-        const attr_schema_dir = path.join(attr_dir_path, SYSTEM_ATTRS.schema);
+        const attr_schema_dir = path.join(attr_dir_path, ATTR_SCHEMA_KEY);
         makeTheDir(attr_schema_dir);
         // attr > schema > [schema]
         const attr_schema_value_dir = path.join(attr_schema_dir, schema);
         makeTheDir(attr_schema_value_dir);
 
         // attr > schema_table
-        const attr_schematable_dir = path.join(attr_dir_path, SYSTEM_ATTRS.schema_table);
+        const attr_schematable_dir = path.join(attr_dir_path, ATTR_SCHEMA_TABLE_KEY);
         makeTheDir(attr_schematable_dir);
         // attr > schema_table > [schema.table]
         const attr_schematable_value_dir = path.join(attr_schematable_dir, schematable_value);
         makeTheDir(attr_schematable_value_dir);
 
         // attr > table
-        const attr_table_dir = path.join(attr_dir_path, SYSTEM_ATTRS.table);
+        const attr_table_dir = path.join(attr_dir_path, ATTR_TABLE_KEY);
         makeTheDir(attr_table_dir);
         // attr > table > [table]
         const attr_table_value_dir = path.join(attr_table_dir, table);
         makeTheDir(attr_table_value_dir);
 
         // attr > __hdb_hash
-        const attr_hdb_hash_dir = path.join(attr_dir_path, HDB_HASH_DIR_NAME);
+        const attr_hdb_hash_dir = path.join(attr_dir_path, terms.HASH_FOLDER_NAME);
         makeTheDir(attr_hdb_hash_dir);
 
         // attr > __hdb_hash > attribute
-        const attr_hash_attr_dir = path.join(attr_hdb_hash_dir, SYSTEM_ATTRS.attribute);
+        const attr_hash_attr_dir = path.join(attr_hdb_hash_dir, ATTR_ATTRIBUTE_KEY);
         makeTheDir(attr_hash_attr_dir);
         const attr_hash_attr_file = path.join(attr_hash_attr_dir, `${attr_hash_value}.hdb`);
         fs.writeFileSync(attr_hash_attr_file, attr_value, 'utf-8');
@@ -433,13 +434,13 @@ function createMockSystemSchema(test_system_base_path, hash_attribute, schema, t
         fs.linkSync(attr_hash_attr_file, a_hash_attr_link_file);
 
         // attr > __hdb_hash > id
-        const attr_hash_id_dir = path.join(attr_hdb_hash_dir, SYSTEM_ATTRS.id);
+        const attr_hash_id_dir = path.join(attr_hdb_hash_dir, ATTR_ID_KEY);
         makeTheDir(attr_hash_id_dir);
         const attr_hash_id_file = path.join(attr_hash_id_dir, `${attr_hash_value}.hdb`);
         fs.writeFileSync(attr_hash_id_file, attr_hash_value, 'utf-8');
 
         // attr > __hdb_hash > schema
-        const attr_hash_schema_dir = path.join(attr_hdb_hash_dir, SYSTEM_ATTRS.schema);
+        const attr_hash_schema_dir = path.join(attr_hdb_hash_dir, ATTR_SCHEMA_KEY);
         makeTheDir(attr_hash_schema_dir);
         const attr_hash_schema_file = path.join(attr_hash_schema_dir, `${attr_hash_value}.hdb`);
         fs.writeFileSync(attr_hash_schema_file, schema, 'utf-8');
@@ -447,7 +448,7 @@ function createMockSystemSchema(test_system_base_path, hash_attribute, schema, t
         fs.linkSync(attr_hash_schema_file, a_hash_schema_link_file);
 
         // attr > __hdb_hash > schema_table
-        const attr_hash_schematable_dir = path.join(attr_hdb_hash_dir, SYSTEM_ATTRS.schema_table);
+        const attr_hash_schematable_dir = path.join(attr_hdb_hash_dir, ATTR_SCHEMA_TABLE_KEY);
         makeTheDir(attr_hash_schematable_dir);
         const attr_hash_schematable_file = path.join(attr_hash_schematable_dir, `${attr_hash_value}.hdb`);
         fs.writeFileSync(attr_hash_schematable_file, schematable_value, 'utf-8');
@@ -455,7 +456,7 @@ function createMockSystemSchema(test_system_base_path, hash_attribute, schema, t
         fs.linkSync(attr_hash_schematable_file, a_hash_schematable_link_file);
 
         // attr > __hdb_hash > table
-        const attr_hash_table_dir = path.join(attr_hdb_hash_dir, SYSTEM_ATTRS.table);
+        const attr_hash_table_dir = path.join(attr_hdb_hash_dir, ATTR_TABLE_KEY);
         makeTheDir(attr_hash_table_dir);
         const attr_hash_table_file = path.join(attr_hash_table_dir, `${attr_hash_value}.hdb`);
         fs.writeFileSync(attr_hash_table_file, table, 'utf-8');
@@ -466,12 +467,12 @@ function createMockSystemSchema(test_system_base_path, hash_attribute, schema, t
 
     // Other schema > system directories
     // TODO: add additional structure to schema > system directories below as needed for testing.
-    makeTheDir(path.join(test_system_base_path, "hdb_license"));
-    makeTheDir(path.join(test_system_base_path, "hdb_job"));
-    makeTheDir(path.join(test_system_base_path, "hdb_nodes"));
-    makeTheDir(path.join(test_system_base_path, "hdb_queue"));
-    makeTheDir(path.join(test_system_base_path, "hdb_role"));
-    makeTheDir(path.join(test_system_base_path, "hdb_user"));
+    makeTheDir(path.join(test_system_base_path, LICENSE_TABLE_NAME));
+    makeTheDir(path.join(test_system_base_path, JOB_TABLE_NAME));
+    makeTheDir(path.join(test_system_base_path, NODE_TABLE_NAME));
+    makeTheDir(path.join(test_system_base_path, QUEUE_TABLE_NAME));
+    makeTheDir(path.join(test_system_base_path, ROLE_TABLE_NAME));
+    makeTheDir(path.join(test_system_base_path, USER_TABLE_NAME));
 }
 
 /**

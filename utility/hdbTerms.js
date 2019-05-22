@@ -55,6 +55,21 @@ const SYSTEM_TABLE_NAMES = {
     USER_TABLE_NAME: 'hdb_user'
 };
 
+const SYSTEM_DEFAULT_ATTRIBUTE_NAMES = {
+    ATTR_ATTRIBUTE_KEY: "attribute",
+    ATTR_CREATEDDATE_KEY: "createddate",
+    ATTR_HASH_ATTRIBUTE_KEY: "hash_attribute",
+    ATTR_ID_KEY: "id",
+    ATTR_NAME_KEY: "name",
+    ATTR_PASSWORD_KEY: "password",
+    ATTR_RESIDENCE_KEY: "residence",
+    ATTR_ROLE_KEY: "role",
+    ATTR_SCHEMA_KEY: "schema",
+    ATTR_SCHEMA_TABLE_KEY: "schema_table",
+    ATTR_TABLE_KEY: "table",
+    ATTR_USERNAME_KEY: "username"
+};
+
 // Registration key file name
 const REG_KEY_FILE_NAME = '060493.ks';
 
@@ -304,6 +319,7 @@ module.exports = {
     INSERT_MODULE_ENUM,
     RESTART_CODE,
     RESTART_CODE_NUM,
-    CLUSTER_OPERATIONS
+    CLUSTER_OPERATIONS,
+    SYSTEM_DEFAULT_ATTRIBUTE_NAMES
 };
 
