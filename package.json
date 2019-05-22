@@ -9,7 +9,7 @@
     "test": "cd bin/ && ../node_modules/mocha/bin/_mocha --timeout 0 --ui bdd --recursive --opts ../unitTests/mocha.opts",
     "hdb-check": "./utility/devops/hdb-check.sh",
     "prepublish": "npm run build",
-    "prebuild":"date",
+    "prebuild": "date",
     "coverage": "nyc report --reporter=html npm test"
   },
   "author": "HarperDB, Inc.",
