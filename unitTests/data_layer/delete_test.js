@@ -26,26 +26,26 @@ const DELETE_MOD_BASE_PATH_NAME = 'BASE_PATH';
 const TEST_FS_DIR = getMockFSPath();
 const TEST_SCHEMA = 'test';
 const TEST_SCHEMA_PATH = path.join(TEST_FS_DIR, TEST_SCHEMA);
-const HASH_ATTRIBUTE = 'new_id';
+const HASH_ATTRIBUTE = 'id';
 const BAD_DIR_PATH = path.join(TEST_FS_DIR, '/tmp/zaphodbeeblebrox');
 let TEST_TABLE_DOG_PATH;
 
 const TEST_DATA_DOG = [
     {
         "name":"Frank",
-        "new_id":"1",
+        "id":"1",
         "age":5
     },
     {
         "name":"Bill",
-        "new_id":"2",
+        "id":"2",
         "age":4
     }
 ];
 const TEST_DATA_CAT = [
     {
         "name":"Eddie",
-        "new_id":"1",
+        "id":"1",
         "age":4
     }
 ];
