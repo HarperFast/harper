@@ -30,6 +30,7 @@ const {
     ATTR_TABLE_KEY,
 } = terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES;
 
+const MOCK_FS_ARGS_ERROR_MSG = "Null, undefined, and/or empty string argument values not allowed when building mock HDB FS for testing";
 const UNIT_TEST_DIR = __dirname;
 const TEST_FS_DIR_NAME = "test_fs";
 const ATTR_PATH_OBJECT = {
@@ -141,6 +142,18 @@ function getMockFSPath() {
 }
 
 /**
+ * Validates that arguments passed into `createMockFS()` are not null, undefined, or "" - throws error, if so
+ * @param argArray Array of arg values
+ */
+function validateMockFSArgs(argArray) {
+    for (let i=0; i < argArray.length; i++) {
+        if (argArray[i] === null || argArray[i] === undefined || argArray[i] === "") {
+            throw new Error(MOCK_FS_ARGS_ERROR_MSG);
+        }
+    }
+}
+
+/**
  * This function will simulate the HDB data structure with the data passed in at the path accessed by using
  * `getMockFSPath()` in your unit test file. It will build out a fs structure for the schema/table/attributes
  * included in the parameters AND make appropriate updates to the schema > system structure AND set global.hdb_schema.
@@ -159,10 +172,11 @@ function getMockFSPath() {
  * TODO: The method does not currently return paths for the system schema directory.
  */
 function createMockFS(hash_attribute, schema, table, test_data) {
-    const test_base_path = getMockFSPath();
-
     try {
+        validateMockFSArgs([hash_attribute, schema, table, test_data]);
+
         //create default mock fs dir
+        const test_base_path = getMockFSPath();
         makeTheDir(test_base_path)
 
         //create schema
