@@ -25,6 +25,16 @@ const ExplodedObject = require('./ExplodedObject');
 const WriteProcessorObject = require('./WriteProcessorObject');
 const HDB_Pool = require('threads').Pool;
 
+class InsertObject {
+    constructor(operation_string, schema_string, table_string, hash_attribute_string, records_array) {
+        this.operation = operation_string;
+        this.schema = schema_string;
+        this.table = table_string;
+        this.hash_attribute = hash_attribute_string;
+        this.records = records_array;
+    }
+};
+
 // Search is used in the installer, and the base path may be undefined when search is instantiated.  Dynamically
 // get the base path from the environment manager before using it.
 let hdb_path = function() {
@@ -37,17 +47,15 @@ const CHUNK_SIZE = hdb_terms.INSERT_MODULE_ENUM.CHUNK_SIZE;
 
 //for release 2.0 we need to turn off threading.  this variable will control the enable/disable
 const ENABLE_THREADING = false;
-
 const INTERNAL_ERROR_MESSAGE = 'An internal error occurred, please check the logs for more information.';
-
 const ATTRIBUTE_ALREADY_EXISTS = 'attribute already exists';
-
 const UPDATE_ACTION = 'updated';
 const INSERT_ACTION = 'inserted';
 
 module.exports = {
     insert: insertData,
-    update: updateData
+    update: updateData,
+    InsertObject : InsertObject
 };
 //this must stay after the export to correct a circular dependency issue
 const global_schema = require('../utility/globalSchema');

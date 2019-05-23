@@ -1,7 +1,6 @@
 "use strict";
 const path = require('path');
 const test_util = require('../test_utils');
-
 test_util.preTestPrep();
 
 const env = require('../../utility/environment/environmentManager');
@@ -10,13 +9,17 @@ const sinon = require('sinon');
 const version = require('../../bin/version');
 const hdb_utils = require('../../utility/common_utils');
 const fs = require('fs');
-const request_promise = require("request-promise-native");
+const util = require('util');
+const insert = require('../../data_layer/insert');
+const search = require('../../data_layer/search');
+const delete_ = require('../../data_layer/delete');
+const hdb_terms = require('../../utility/hdbTerms');
+const BinObjects = require('../../bin/BinObjects');
 
 const rewire = require('rewire');
-const upgrade_rw = rewire(`../../bin/upgrade`);
-const upgrade_directive = require('../../upgrade/UpgradeDirective');
+let upgrade_rw = rewire(`../../bin/upgrade`);
 const process_directives_rw = rewire('../../upgrade/processDirectives');
-const BASE = process.cwd();
+let p_search_search_by_value = util.promisify(search.searchByValue);
 
 const directive_manager_stub = require('../upgrade/directives/testDirectives/directiveManagerStub');
 
@@ -34,6 +37,83 @@ describe('Upgrade Test - Test processDirectives', function() {
     upgrade_rw.__set__('process_directives', process_directives_rw);
     it('test startUpgradeDirectives', function() {
         startUpgradeDirectives('1.1.0', '2.1.0');
+    });
+});
+
+describe('Test insert hdb_info', function() {
+
+    it('test insert ', async function() {
+        let bin_insert = new BinObjects.HdbInfoInsertObject(4, '1.3.001', '1.3.001');
+        let insert_object = new insert.InsertObject(hdb_terms.OPERATIONS_ENUM.INSERT,
+            hdb_terms.SYSTEM_SCHEMA_NAME,
+            hdb_terms.HDB_INFO_TABLE_NAME,
+            'info_id',
+            [bin_insert]);
+        try {
+            insert.insert(insert_object);
+        } catch(err) {
+            throw err;
+        }
+    });
+});
+
+describe('Test delete hdb_info', function() {
+
+    it('test delete ', async function() {
+        const p_delete_record = util.promisify(delete_.delete);
+        let records_to_remove = {"operation": "delete",
+            "table": `hdb_info`,
+            "schema": `system`,
+            "hash_values": [2, 4]
+        };
+
+        try {
+            await p_delete_record(records_to_remove);
+        } catch(err) {
+            throw err;
+        }
+    });
+});
+
+
+describe('Test updateHdbInfo', function() {
+    let sandbox = undefined;
+    let search_stub = undefined;
+    let search_orig = upgrade_rw.__get__('p_search_search_by_value');
+    let insert_stub = undefined;
+    let insert_orig = upgrade_rw.__get__('insert');
+    beforeEach(() => {
+        sandbox = sinon.createSandbox();
+    });
+
+    afterEach(() => {
+        sandbox.reset();
+    });
+    it('test update nominal case', async function() {
+        try {
+            let search_obj = {
+                schema: 'system',
+                table : 'hdb_info',
+                search_attribute : 'info_id',
+                hash_attribute : 'id',
+                get_attributes: ['info_id'],
+                "search_value":"*"
+            };
+
+            // Tried map() function, it was exponentially slower than a good old for loop.
+            let version_data = await p_search_search_by_value(search_obj);
+            // always have a 0 in case the search returned nothing.  That way we will have an entry at 1 if there are no rows.
+            let vals=[0];
+            for(let i=0;i<version_data.length;i++){
+                vals.push(version_data[i].info_id);
+            }
+            //get the largest one.
+            let latest_id = Math.max.apply(null, vals);
+            latest_id++;
+            let info_table_insert_object = new BinObjects.HdbInfoInsertObject(latest_id, '1.3.2', '1.3.2');
+        } catch(err) {
+            throw err;
+        }
     });
 });
 

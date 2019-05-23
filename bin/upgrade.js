@@ -31,7 +31,12 @@ const {spawn} = require('child_process');
 const path = require('path');
 const fs_extra = require('fs-extra');
 const { isHarperRunning } = require('../utility/common_utils');
+const insert = require('../data_layer/insert');
+const search = require('../data_layer/search');
+const util = require('util');
+const BinObjects = require('./BinObjects');
 
+let p_search_search_by_value = util.promisify(search.searchByValue);
 
 const UPGRADE_DIR_NAME= 'hdb_upgrade';
 const TAR_FILE_NAME = 'hdb-latest.tar';
@@ -175,8 +180,10 @@ async function upgrade() {
  * This function is called during an upgrade from the existing install's harperdb executable.  We needed to be able to
  * overwrite the existing executable during upgrade as well as reference directive files that are packaged into latest
  * versions.
+ * @throws
+ * @returns {Promise}
  */
-function startUpgrade() {
+async function startUpgrade() {
     try {
         let curr_version_path = path.join(process.cwd(), '../', 'package.json');
         let curr_package_json = fs.readFileSync(curr_version_path, 'utf8');
@@ -232,11 +239,62 @@ function startUpgrade() {
         console.error(msg);
     }
 
+
     // Logging and exception handling occurs in postInstallCleanUp.
     postInstallCleanUp();
     countdown.stop();
     printToLogAndConsole(`HarperDB was successfully upgraded to version ${version.version()}`, log.INFO);
 }
+
+async function updateHdbInfo(new_version_string) {
+    // get the latest hdb_info id
+    let search_obj = {
+        schema: 'system',
+        table : 'hdb_info',
+        search_attribute : 'info_id',
+        hash_attribute : 'id',
+        get_attributes: ['info_id']
+    };
+
+    // Using a NoSql search and filter to get the largest info_id, as running SQL searches internally is difficult.
+    let version_data = undefined;
+    let info_table_insert_object = undefined;
+    try {
+        version_data = await p_search_search_by_value(search_obj);
+        // always have a 0 in case the search returned nothing.  That way we will have an entry at 1 if there are no rows returned due to table
+        // not existing (upgrade from old install).
+        let vals=[0];
+        for(let i=0;i<version_data.length;i++){
+            vals.push(version_data[i].info_id);
+        }
+        // get the largest
+        let latest_id = Math.max.apply(null, vals);
+        latest_id++;
+        info_table_insert_object = new BinObjects.HdbInfoInsertObject(latest_id, new_version_string, new_version_string);
+    } catch(err) {
+        throw err;
+    }
+
+    if(!info_table_insert_object) {
+        // This should never be a thing, but fatal if it somehow happens.
+        log.fatal('Not able to increment the hdb_info table.  Your data state may be compromised.');
+        throw new Error('Not able to update hdb_info table');
+    }
+
+    //Insert the new version into the hdb_info table.
+    let insert_object = new insert.InsertObject(hdb_terms.OPERATIONS_ENUM.INSERT,
+        hdb_terms.SYSTEM_SCHEMA_NAME,
+        hdb_terms.HDB_INFO_TABLE_NAME,
+        global.hdb_schema[hdb_terms.SYSTEM_SCHEMA_NAME][hdb_terms.HDB_INFO_TABLE_NAME].hash_attribute,
+        [info_table_insert_object]);
+
+    try {
+        insert.insert(insert_object);
+    } catch(err) {
+        throw err;
+    }
+}
+
 
 /**
  * Clean up files that were created during the upgrade process.
