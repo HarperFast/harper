@@ -16,6 +16,9 @@ const fs = require('fs');
 const moment = require('moment');
 const util = require('util');
 const validator = require('../../validation/readLogValidator');
+const os = require('os');
+const path = require('path');
+const terms = require('../hdbTerms');
 
 //Using numbers rather than strings for faster comparison
 const WIN = 1;
@@ -28,8 +31,9 @@ let log_location = undefined;
 // read environment settings to get preferred logger and default log level
 const PropertiesReader = require('properties-reader');
 let hdb_properties = undefined;
+let boot_props_file_path = getPropsFilePath();
 try {
-    hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
+    hdb_properties = PropertiesReader(boot_props_file_path);
     hdb_properties.append(hdb_properties.get('settings_path'));
 
     // read environment settings to get log level
@@ -472,4 +476,29 @@ function configureWinstonForQuery(log_path) {
         ],
         exitOnError: false
     });
+}
+
+/**
+ * This is a duplicate of common_utils.getPropsFilePath.  We need to have it duplicated here to avoid a circular dependency
+ * that happens when common_utils is imported.
+ * @returns {*}
+ */
+function getPropsFilePath() {
+    let home_dir = undefined;
+    try {
+        home_dir = os.homedir();
+    } catch(err) {
+        // could get here in android
+        home_dir = process.env.HOME;
+    }
+    if(!home_dir) {
+        home_dir = '~/';
+    }
+
+    let boot_props_file_path = path.join(home_dir, terms.HDB_HOME_DIR_NAME, terms.BOOT_PROPS_FILE_NAME);
+    // this checks how we used to store the boot props file for older installations.
+    if(!fs.existsSync(boot_props_file_path)) {
+        boot_props_file_path = path.join(__dirname, '../', 'hdb_boot_properties.file');
+    }
+    return boot_props_file_path;
 }

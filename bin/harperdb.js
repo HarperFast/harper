@@ -17,7 +17,7 @@ const p_upgrade = promisify(upgrade.upgrade);
 harperDBService();
 
 function checkCallingUserSync() {
-    let hdb_exe_path = path.join(process.cwd(), 'harperdb');
+    let hdb_exe_path = path.join(__dirname, 'harperdb.js');
     let stats = undefined;
     try {
         stats = fs.statSync(hdb_exe_path);
@@ -37,25 +37,11 @@ function checkCallingUserSync() {
 
 function harperDBService() {
     let service;
-    let currentDir_tokens = process.cwd().split('/');
-    if (currentDir_tokens[currentDir_tokens.length - 1] != 'bin') {
-        return console.error('You must run harperdb from HDB_HOME/bin');
-    }
 
     let inBin = false;
-    fs.readdir(process.cwd(), (err, files) => {
+    fs.readdir(__dirname, (err, files) => {
         if (err) {
             return logger.error(err);
-        }
-
-        for (let f in files) {
-            if (files[f] === 'harperdb.js' || files[f] === 'harperdb_macOS' || files[f] === 'harperdb') {
-                inBin = true;
-            }
-        }
-
-        if (!inBin) {
-            return console.error('You must run harperdb from HDB_HOME/bin');
         }
 
         if (process.argv && process.argv[2]) {

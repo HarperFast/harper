@@ -13,27 +13,20 @@ const HDB_PROC_DESCRIPTOR = 'HarperDB';
 const SC_PROC_DESCRIPTOR = 'Cluster Server';
 
 const PERIOD_REGEX = /^\.$/;
-
 const DOUBLE_PERIOD_REGEX = /^\.\.$/;
-
 const UNICODE_PERIOD = 'U+002E';
-
 const FORWARD_SLASH_REGEX = /\//g;
-
 const UNICODE_FORWARD_SLASH = 'U+002F';
-
 const ESCAPED_FORWARD_SLASH_REGEX = /U\+002F/g;
-
 const ESCAPED_PERIOD_REGEX = /^U\+002E$/;
-
 const ESCAPED_DOUBLE_PERIOD_REGEX = /^U\+002EU\+002E$/;
 
 // Name of the System schema
 const SYSTEM_SCHEMA_NAME = 'system';
-
 const HASH_FOLDER_NAME = '__hdb_hash';
-
 const CLUSTERING_VERSION_HEADER_NAME = 'hdb_version';
+const HDB_HOME_DIR_NAME = '.harperdb';
+const BOOT_PROPS_FILE_NAME = 'hdb_boot_properties.file';
 
 const RESTART_CODE = 'SIGTSTP';
 const RESTART_CODE_NUM = 24;
@@ -300,7 +293,9 @@ module.exports = {
     SC_PROC_DESCRIPTOR,
     SYSTEM_SCHEMA_NAME,
     HASH_FOLDER_NAME,
+    HDB_HOME_DIR_NAME,
     CLUSTERING_VERSION_HEADER_NAME,
+    BOOT_PROPS_FILE_NAME,
     JOB_TYPE_ENUM,
     JOB_STATUS_ENUM,
     SYSTEM_TABLE_NAMES,
