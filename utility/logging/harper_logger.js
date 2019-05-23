@@ -11,9 +11,11 @@
  */
 
 const winston = require('winston');
+require('winston-daily-rotate-file');
 const pino = require('pino');
 const fs = require('fs');
 const moment = require('moment');
+const path = require('path');
 const util = require('util');
 const validator = require('../../validation/readLogValidator');
 
@@ -24,6 +26,7 @@ const PIN = 2;
 let log_level = undefined;
 let log_type = undefined;
 let log_location = undefined;
+let log_directory = undefined;
 
 // read environment settings to get preferred logger and default log level
 const PropertiesReader = require('properties-reader');
@@ -41,6 +44,9 @@ try {
     if (log_location === undefined || log_location === 0 || log_location === null) {
         log_location = (hdb_properties.get('HDB_ROOT') + '/log/hdb_log.log');
     }
+
+    //setting directory location for Winston daily logs
+    log_directory = getLogDirectory(log_location);
 } catch (e) {
     // in early stage like install or run, settings file and folder is not available yet so let it takes default settings below
 }
@@ -98,6 +104,7 @@ if (log_location === undefined || log_location === null) {
 //TODO: not sure if this set to global is needed or useful.  This should be happening in a module.
 global.log_level = log_level;
 global.log_location = log_location;
+global.log_directory = log_directory;
 
 let pino_write_stream = fs.createWriteStream(log_location, {'flags': 'a'});
 
@@ -127,24 +134,45 @@ module.exports = {
 let pin_logger = undefined;
 let win_logger = undefined;
 
+const daily_rotate = false;
+
 /**
  * initialize the winston logger
  */
 function initWinstonLogger() {
     try {
-        win_logger = new (winston.Logger)({
-            transports: [
-                new (winston.transports.File)({
-                    level: log_level,
-                    filename: log_location,
-                    handleExceptions: true,
-                    prettyPrint: true
-                })
-            ],
-            levels: winston_log_levels,
-            level: log_level,
-            exitOnError: false
-        });
+        if (!daily_rotate) {
+            win_logger = new (winston.Logger)({
+                transports: [
+                    new (winston.transports.File)({
+                        level: log_level,
+                        filename: log_location,
+                        handleExceptions: true,
+                        prettyPrint: true
+                    })
+                ],
+                levels: winston_log_levels,
+                level: log_level,
+                exitOnError: false
+            });
+        } else {
+            const file_name = path.parse(log_location).base;
+            win_logger = new (winston.Logger)({
+                transports: [
+                    new (winston.transports.DailyRotateFile)({
+                        dirname: log_directory,
+                        filename: `%DATE%_${file_name}`,
+                        handleExceptions: true,
+                        level: log_level,
+                        prettyPrint: true,
+                        zippedArchive: true
+                    })
+                ],
+                levels: winston_log_levels,
+                level: log_level,
+                exitOnError: false
+            });
+        }
     } catch (err) {
         // if this fails we have no logger, so just write to the console and rethrow so everything fails.
         console.error('There was an error initializing the logger.');
@@ -297,7 +325,11 @@ function setLogLevel(level) {
                 //Winston is strange, it has a log level at the logger level, the transport level, and each individual transport.
                 win_logger.level = level;
                 win_logger.transports.level = level;
-                win_logger.transports.file.level = level;
+                if (daily_rotate) {
+                    win_logger.transports.DailyRotateFile.level = level;
+                } else {
+                    win_logger.transports.file.level = level;
+                }
                 break;
 
             case PIN:
@@ -356,6 +388,8 @@ function setLogLocation(path) {
     win_logger = undefined;
     log_location = path;
     global.log_location = path;
+    log_directory = getLogDirectory(path);
+    global.log_directory = log_directory;
 
     switch (log_type) {
         case WIN:
@@ -382,6 +416,10 @@ function setLogLocation(path) {
             }
             break;
     }
+}
+
+function getLogDirectory(path) {
+    return path.dirname(path);
 }
 
 let bones = winston;
@@ -464,12 +502,23 @@ async function readLog(read_log_object) {
 }
 
 function configureWinstonForQuery(log_path) {
-    bones.configure({
-        transports: [
-            new (winston.transports.File)({
-                filename: log_path
-            })
-        ],
-        exitOnError: false
-    });
+    if (daily_rotate && log_path !== LOGGER_PATH.INSTALL_LOG && log_path !== LOGGER_PATH.RUN_LOG) {
+        bones.configure({
+            transports: [
+                new (winston.transports.DailyRotateFile)({
+                    dirname: log_directory
+                })
+            ],
+            exitOnError: false
+        });
+    } else {
+        bones.configure({
+            transports: [
+                new (winston.transports.File)({
+                    filename: log_path
+                })
+            ],
+            exitOnError: false
+        });
+    }
 }
