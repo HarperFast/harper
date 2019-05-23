@@ -83,12 +83,12 @@ function harperDBService() {
                 });
                 break;
             case hdb_terms.SERVICE_ACTIONS_ENUM.STOP:
-                stop.stop(function(){});
+                stop.stop().then();
                 break;
             case hdb_terms.SERVICE_ACTIONS_ENUM.RESTART:
-                stop.stop(function () {
-                    run.run();
-                });
+                stop.stop().then(
+                    run.run()
+                );
                 break;
             case hdb_terms.SERVICE_ACTIONS_ENUM.VERSION:
                 version.printVersion();

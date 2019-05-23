@@ -7551,7 +7551,7 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test(\"Update employee id 2 address, hiredate, notes\", function () {",
+									"pm.test(\"Update employee id 2 address, hireDate, notes\", function () {",
 									"    var jsonData = pm.response.json();",
 									"    pm.expect(jsonData.message).to.eql(\"updated 1 of 1 records\");",
 									"    pm.expect(jsonData.update_hashes[0]).to.eql(2);",
@@ -7598,7 +7598,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\"operation\":\"update\",\n\"schema\":\"{{schema}}\",\n\"table\":\"{{emps_tb}}\",\n\"records\": [\n  {\n    \"{{emps_id}}\": 2,\n    \"address\": 0,\n    \"hiredate\": null,\n    \"notes\": false\n  }\n]\n\n}"
+							"raw": "{\n\"operation\":\"update\",\n\"schema\":\"{{schema}}\",\n\"table\":\"{{emps_tb}}\",\n\"records\": [\n  {\n    \"{{emps_id}}\": 2,\n    \"address\": 0,\n    \"hireDate\": null,\n    \"notes\": false\n  }\n]\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",

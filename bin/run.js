@@ -216,9 +216,11 @@ function foregroundHandler() {
  */
 function processExitHandler(options, err) {
     if (options.is_foreground) {
-        stop.stop((err) => {
-            console.error(err);
-        });
+        stop.stop()
+            .then()
+            .catch((err) => {
+                console.log(err);
+            });
     }
 }
 

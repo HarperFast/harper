@@ -7,6 +7,11 @@
 
  // Name of the HDB process
 const HDB_PROC_NAME = 'hdb_express.js';
+const SC_PROC_NAME = 'Server.js';
+
+const HDB_PROC_DESCRIPTOR = 'HarperDB';
+const SC_PROC_DESCRIPTOR = 'Cluster Server';
+
 const PERIOD_REGEX = /^\.$/;
 const DOUBLE_PERIOD_REGEX = /^\.\.$/;
 const UNICODE_PERIOD = 'U+002E';
@@ -45,6 +50,21 @@ const SYSTEM_TABLE_NAMES = {
     SCHEMA_TABLE_NAME: 'hdb_schema',
     TABLE_TABLE_NAME: 'hdb_table',
     USER_TABLE_NAME: 'hdb_user'
+};
+
+const SYSTEM_DEFAULT_ATTRIBUTE_NAMES = {
+    ATTR_ATTRIBUTE_KEY: "attribute",
+    ATTR_CREATEDDATE_KEY: "createddate",
+    ATTR_HASH_ATTRIBUTE_KEY: "hash_attribute",
+    ATTR_ID_KEY: "id",
+    ATTR_NAME_KEY: "name",
+    ATTR_PASSWORD_KEY: "password",
+    ATTR_RESIDENCE_KEY: "residence",
+    ATTR_ROLE_KEY: "role",
+    ATTR_SCHEMA_KEY: "schema",
+    ATTR_SCHEMA_TABLE_KEY: "schema_table",
+    ATTR_TABLE_KEY: "table",
+    ATTR_USERNAME_KEY: "username"
 };
 
 // Registration key file name
@@ -268,6 +288,9 @@ const CLUSTER_EVENTS_DEFS_ENUM = {
 module.exports = {
     LOCAL_HARPERDB_OPERATIONS,
     HDB_PROC_NAME,
+    HDB_PROC_DESCRIPTOR,
+    SC_PROC_NAME,
+    SC_PROC_DESCRIPTOR,
     SYSTEM_SCHEMA_NAME,
     HASH_FOLDER_NAME,
     HDB_HOME_DIR_NAME,
@@ -298,6 +321,7 @@ module.exports = {
     INSERT_MODULE_ENUM,
     RESTART_CODE,
     RESTART_CODE_NUM,
-    CLUSTER_OPERATIONS
+    CLUSTER_OPERATIONS,
+    SYSTEM_DEFAULT_ATTRIBUTE_NAMES
 };
 
