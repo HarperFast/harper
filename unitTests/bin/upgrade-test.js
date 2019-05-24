@@ -82,35 +82,40 @@ describe('Test updateHdbInfo', function() {
     let search_orig = upgrade_rw.__get__('p_search_search_by_value');
     let insert_stub = undefined;
     let insert_orig = upgrade_rw.__get__('insert');
+    const INFO_SEARCH_RESULT = [{
+        info_id: 1,
+        data_version_num: "1_2_0001",
+        hdb_version_numz: "1_2_0001"
+    },
+        {
+            info_id: 2,
+            data_version_num: "1_3_0001",
+            hdb_version_numz: "1_3_0001"
+        }
+    ];
     beforeEach(() => {
         sandbox = sinon.createSandbox();
     });
 
     afterEach(() => {
         sandbox.reset();
+        upgrade_rw.__set__('p_search_search_by_value', search_orig);
+        upgrade_rw.__set__('insert', insert_stub);
     });
     it('test update nominal case', async function() {
         try {
-            let search_obj = {
-                schema: 'system',
-                table : 'hdb_info',
-                search_attribute : 'info_id',
-                hash_attribute : 'id',
-                get_attributes: ['info_id'],
-                "search_value":"*"
-            };
+            let updateHdbInfo = upgrade_rw.__get__('updateHdbInfo');
+            search_stub = sandbox.stub().resolves(INFO_SEARCH_RESULT);
+            upgrade_rw.__set__('p_search_search_by_value', search_stub);
 
-            // Tried map() function, it was exponentially slower than a good old for loop.
-            let version_data = await p_search_search_by_value(search_obj);
-            // always have a 0 in case the search returned nothing.  That way we will have an entry at 1 if there are no rows.
-            let vals=[0];
-            for(let i=0;i<version_data.length;i++){
-                vals.push(version_data[i].info_id);
-            }
-            //get the largest one.
-            let latest_id = Math.max.apply(null, vals);
-            latest_id++;
-            let info_table_insert_object = new BinObjects.HdbInfoInsertObject(latest_id, '1.3.2', '1.3.2');
+            insert_stub = sandbox.stub().resolves('');
+            upgrade_rw.__set__('insert', insert_stub);
+
+            updateHdbInfo('2.0.0');
+
+            assert.equal(search_stub.called, true, 'expected search to be called');
+            assert.equal(insert_stub.called, true, 'expected insert to be called');
+
         } catch(err) {
             throw err;
         }
