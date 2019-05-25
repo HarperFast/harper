@@ -35,6 +35,7 @@ const insert = require('../data_layer/insert');
 const search = require('../data_layer/search');
 const util = require('util');
 const BinObjects = require('./BinObjects');
+const DataLayerObjects = require('../data_layer/DataLayerObjects');
 
 let p_search_search_by_value = util.promisify(search.searchByValue);
 
@@ -161,7 +162,7 @@ async function upgrade() {
            it's contents and re-run upgrade. ${e}`, log.ERR);
            return;
         });
-    };
+    }
 
     try {
         fs.mkdirSync(UPGRADE_DIR_PATH);
@@ -246,6 +247,12 @@ async function startUpgrade() {
     printToLogAndConsole(`HarperDB was successfully upgraded to version ${version.version()}`, log.INFO);
 }
 
+/**
+ * Insert a row into hdb_info with the new version.
+ * @param new_version_string
+ * @returns {Promise<void>}
+ * @throws
+ */
 async function updateHdbInfo(new_version_string) {
     // get the latest hdb_info id
     let search_obj = {
@@ -275,14 +282,13 @@ async function updateHdbInfo(new_version_string) {
         throw err;
     }
 
-    if(!info_table_insert_object) {
-        // This should never be a thing, but fatal if it somehow happens.
-        log.fatal('Not able to increment the hdb_info table.  Your data state may be compromised.');
-        throw new Error('Not able to update hdb_info table');
+    if(!info_table_insert_object.info_id) {
+        // This should never be a thing, but just in case we will set it an unlikely to already exist id
+        info_table_insert_object.info_id = 99;
     }
 
     //Insert the new version into the hdb_info table.
-    let insert_object = new insert.InsertObject(hdb_terms.OPERATIONS_ENUM.INSERT,
+    let insert_object = new DataLayerObjects.InsertObject(hdb_terms.OPERATIONS_ENUM.INSERT,
         hdb_terms.SYSTEM_SCHEMA_NAME,
         hdb_terms.HDB_INFO_TABLE_NAME,
         global.hdb_schema[hdb_terms.SYSTEM_SCHEMA_NAME][hdb_terms.HDB_INFO_TABLE_NAME].hash_attribute,
@@ -294,7 +300,6 @@ async function updateHdbInfo(new_version_string) {
         throw err;
     }
 }
-
 
 /**
  * Clean up files that were created during the upgrade process.
@@ -412,7 +417,7 @@ async function copyUpgradeExecutable() {
         throw e;
     });
     // Need to set perms on new hdb exe.
-    await p_fs_chmod(`${process.cwd()}/${EXE_COPY_NAME}`, 0o754).catch((e) => {
+    await p_fs_chmod(`${process.cwd()}/${EXE_COPY_NAME}`, FILE_PERM).catch((e) => {
         let msg = `Error setting permissions on newest version of HarperDB ${e}`;
         log.error(msg);
         throw e;

@@ -15,6 +15,8 @@ const search = require('../../data_layer/search');
 const delete_ = require('../../data_layer/delete');
 const hdb_terms = require('../../utility/hdbTerms');
 const BinObjects = require('../../bin/BinObjects');
+const SystemSchema = require('../../json/systemSchema');
+const DataLayerObjects = require('../../data_layer/DataLayerObjects');
 
 const rewire = require('rewire');
 let upgrade_rw = rewire(`../../bin/upgrade`);
@@ -39,12 +41,12 @@ describe('Upgrade Test - Test processDirectives', function() {
         startUpgradeDirectives('1.1.0', '2.1.0');
     });
 });
-
+/*
 describe('Test insert hdb_info', function() {
 
     it('test insert ', async function() {
         let bin_insert = new BinObjects.HdbInfoInsertObject(4, '1.3.001', '1.3.001');
-        let insert_object = new insert.InsertObject(hdb_terms.OPERATIONS_ENUM.INSERT,
+        let insert_object = new DataLayerObjects.InsertObject(hdb_terms.OPERATIONS_ENUM.INSERT,
             hdb_terms.SYSTEM_SCHEMA_NAME,
             hdb_terms.HDB_INFO_TABLE_NAME,
             'info_id',
@@ -74,14 +76,13 @@ describe('Test delete hdb_info', function() {
         }
     });
 });
-
+*/
 
 describe('Test updateHdbInfo', function() {
     let sandbox = undefined;
     let search_stub = undefined;
     let search_orig = upgrade_rw.__get__('p_search_search_by_value');
     let insert_stub = undefined;
-    let insert_orig = upgrade_rw.__get__('insert');
     const INFO_SEARCH_RESULT = [{
         info_id: 1,
         data_version_num: "1_2_0001",
@@ -95,12 +96,17 @@ describe('Test updateHdbInfo', function() {
     ];
     beforeEach(() => {
         sandbox = sinon.createSandbox();
+        global.hdb_schema = undefined;
+        global['hdb_schema'] = {system: {}};
+        //global['hdb_schema']['system'] = undefined;
+        global['hdb_schema']['system'] = SystemSchema;
     });
 
     afterEach(() => {
         sandbox.reset();
+        insert_stub.restore();
         upgrade_rw.__set__('p_search_search_by_value', search_orig);
-        upgrade_rw.__set__('insert', insert_stub);
+        global.hdb_schema = null;
     });
     it('test update nominal case', async function() {
         try {
@@ -108,14 +114,75 @@ describe('Test updateHdbInfo', function() {
             search_stub = sandbox.stub().resolves(INFO_SEARCH_RESULT);
             upgrade_rw.__set__('p_search_search_by_value', search_stub);
 
-            insert_stub = sandbox.stub().resolves('');
-            upgrade_rw.__set__('insert', insert_stub);
+            insert_stub = sandbox.stub(insert, 'insert').resolves('');
 
-            updateHdbInfo('2.0.0');
+            await updateHdbInfo('2.0.0');
 
             assert.equal(search_stub.called, true, 'expected search to be called');
             assert.equal(insert_stub.called, true, 'expected insert to be called');
+        } catch(err) {
+            throw err;
+        }
+    });
+    it('test update - search throws exception', async function() {
+        try {
+            let updateHdbInfo = upgrade_rw.__get__('updateHdbInfo');
+            search_stub = sandbox.stub().throws(new Error("Search error"));
+            upgrade_rw.__set__('p_search_search_by_value', search_stub);
 
+            insert_stub = sandbox.stub(insert, 'insert').resolves('');
+            let result = undefined;
+            try {
+                await updateHdbInfo('2.0.0');
+            } catch(err) {
+                result = err;
+            }
+
+            assert.equal(search_stub.called, true, 'expected search to be called');
+            assert.equal(insert_stub.called, false, 'expected insert to be called');
+            assert.equal(result instanceof Error, true, 'expected insert to be called');
+        } catch(err) {
+            throw err;
+        }
+    });
+    it('test update - insert throws exception', async function() {
+        try {
+            let updateHdbInfo = upgrade_rw.__get__('updateHdbInfo');
+            search_stub = sandbox.stub().resolves(INFO_SEARCH_RESULT);
+            upgrade_rw.__set__('p_search_search_by_value', search_stub);
+
+            insert_stub = sandbox.stub(insert, 'insert').throws(new Error('Insert Error'));
+            let result = undefined;
+            try {
+                await updateHdbInfo('2.0.0');
+            } catch(err) {
+                result = err;
+            }
+
+            assert.equal(search_stub.called, true, 'expected search to be called');
+            assert.equal(insert_stub.called, true, 'expected insert to be called');
+            assert.equal(result instanceof Error, true, 'expected insert to be called');
+        } catch(err) {
+            throw err;
+        }
+    });
+    it('test update - search returns no errors, still expect to run', async function() {
+        try {
+            let updateHdbInfo = upgrade_rw.__get__('updateHdbInfo');
+            search_stub = sandbox.stub().resolves([]);
+            upgrade_rw.__set__('p_search_search_by_value', search_stub);
+
+            insert_stub = sandbox.stub(insert, 'insert').resolves('');
+            let result = undefined;
+            try {
+                await updateHdbInfo('2.0.0');
+            } catch(err) {
+                result = err;
+            }
+
+            assert.equal(search_stub.called, true, 'expected search to be called');
+            assert.equal(insert_stub.called, true, 'expected insert to be called');
+            assert.equal(result, undefined, 'expected insert to be called');
         } catch(err) {
             throw err;
         }
@@ -123,7 +190,7 @@ describe('Test updateHdbInfo', function() {
 });
 
 // Commented out for https://harperdb.atlassian.net/browse/HDB-646
-// Put bback in when tests are running on their own build server
+// Put back in when tests are running on their own build server
 /*
 describe('Upgrade Test - Test checkIfRunning', function() {
     // the find-module function does an annoying way of bringing in it's modules that makes stubbing
@@ -332,22 +399,22 @@ describe('Upgrade Test - Test startUpgrade', function() {
         spinner.stop();
     });
 
-    it('test startUpgrade nominal path', function() {
+    it('test startUpgrade nominal path', async function() {
         let exep = undefined;
         try {
-            startUpgrade('1.1.0');
+            await startUpgrade('1.1.0');
         } catch(e) {
             exep = e;
         }
         assert.equal(exep, undefined, 'expected an exception');
     });
-    it('test startUpgrade with readFileSyncException', function() {
+    it('test startUpgrade with readFileSyncException', async function() {
         let exep = undefined;
         let exception_msg = "ReadFileSync Test Error";
         try {
             readFileSync_stub.restore();
             readFileSync_stub = sandbox.stub(fs, 'readFileSync').throws(new Error(exception_msg));
-            startUpgrade('1.1.0');
+            await startUpgrade('1.1.0');
         } catch(e) {
             exep = e;
         }
@@ -355,36 +422,36 @@ describe('Upgrade Test - Test startUpgrade', function() {
         // Make sure we are getting the expected exception
         assert.equal(exep.message === exception_msg, true, 'expected specific  exception message');
     });
-    it('test startUpgrade with backupCurrInstall Exception', function() {
+    it('test startUpgrade with backupCurrInstall Exception', async function() {
         let exep = undefined;
         let exception_msg = "backupCurrInstall Test Error";
         try {
             backupCurrInstall_stub = sandbox.stub().throws(new Error("backupCurrInstall Test Error"));
             upgrade_rw.__set__('backupCurrInstall', backupCurrInstall_stub);
-            startUpgrade('1.1.0');
+            await startUpgrade('1.1.0');
         } catch(e) {
             exep = e;
         }
         assert.equal((exep instanceof Error), true, 'expected no exceptions');
         assert.equal(exep.message === exception_msg, true, 'expected specific  exception message');
     });
-    it('test startUpgrade with startUpgradeDirectives_stub Exception', function() {
+    it('test startUpgrade with startUpgradeDirectives_stub Exception', async function() {
         let exep = undefined;
         try {
             startUpgradeDirectives_stub = sandbox.stub().throws(new Error("startUpgradeDirectives_stub Test Error"));
             upgrade_rw.__set__('startUpgradeDirectives', startUpgradeDirectives_stub);
-            startUpgrade('1.1.0');
+            await startUpgrade('1.1.0');
         } catch(e) {
             exep = e;
         }
         assert.equal(copyNewFilesIntoInstall_stub.called, true, 'Process keep going despite upgrade directive exception');
     });
-    it('test startUpgrade with chmodSync Exception', function() {
+    it('test startUpgrade with chmodSync Exception', async function() {
         let exep = undefined;
         try {
             chmodSync_stub.restore();
             chmodSync_stub = sandbox.stub(fs, 'chmodSync').throws(new Error("chmod exception"));
-            startUpgrade('1.1.0');
+            await startUpgrade('1.1.0');
         } catch(e) {
             exep = e;
         }

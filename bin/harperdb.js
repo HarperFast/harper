@@ -122,7 +122,9 @@ function harperDBService() {
                 logger.setLogLevel(logger.INFO);
 
                 if(hdb_utils.isEmptyOrZeroLength(tar_file_path)) {
-                    upgrade.startUpgrade();
+                    upgrade.startUpgrade().then(() => {
+                        logger.notify('Upgrade complete');
+                    });
                 } else {
                     upgrade.upgradeFromFilePath(tar_file_path);
                 }

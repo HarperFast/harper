@@ -33,7 +33,7 @@ class InsertObject {
         this.hash_attribute = hash_attribute_string;
         this.records = records_array;
     }
-};
+}
 
 // Search is used in the installer, and the base path may be undefined when search is instantiated.  Dynamically
 // get the base path from the environment manager before using it.
@@ -55,7 +55,7 @@ const INSERT_ACTION = 'inserted';
 module.exports = {
     insert: insertData,
     update: updateData,
-    InsertObject : InsertObject
+    InsertObject
 };
 //this must stay after the export to correct a circular dependency issue
 const global_schema = require('../utility/globalSchema');
