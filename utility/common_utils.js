@@ -49,7 +49,7 @@ module.exports = {
     callProcessSend: callProcessSend,
     isHarperRunning: isHarperRunning,
     isClusterOperation: isClusterOperation,
-    getClusterUser: getClusterUser
+    getClusterUser: getClusterUser,
     getHomeDir: getHomeDir,
     getPropsFilePath: getPropsFilePath,
     sendTransactionToSocketCluster: sendTransactionToSocketCluster
