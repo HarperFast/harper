@@ -50,10 +50,9 @@ module.exports = {
     isHarperRunning: isHarperRunning,
     isClusterOperation: isClusterOperation,
     sendTransactionToSocketCluster: sendTransactionToSocketCluster,
-    checkGlobalSchemaTable: checkGlobalSchemaTable
+    checkGlobalSchemaTable: checkGlobalSchemaTable,
     getHomeDir: getHomeDir,
     getPropsFilePath: getPropsFilePath,
-    sendTransactionToSocketCluster: sendTransactionToSocketCluster
 };
 
 /**
