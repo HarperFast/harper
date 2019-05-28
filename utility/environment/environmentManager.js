@@ -5,8 +5,10 @@ const PropertiesReader = require('properties-reader');
 const log = require('../logging/harper_logger');
 const common_utils = require('../common_utils');
 const hdb_terms = require('../hdbTerms');
+const path = require('path');
+const os = require('os');
 
-let PROPS_FILE_PATH = `${__dirname}/../../hdb_boot_properties.file`;
+let BOOT_PROPS_FILE_PATH = common_utils.getPropsFilePath();
 
 const defaults = {};
 
@@ -19,7 +21,7 @@ for(let key of Object.keys(hdb_terms.HDB_SETTINGS_NAMES)) {
 }
 
 module.exports = {
-    PROPS_FILE_PATH,
+    BOOT_PROPS_FILE_PATH,
     getHdbBasePath: getHdbBasePath,
     setPropsFilePath: setPropsFilePath,
     get:get,
@@ -27,7 +29,8 @@ module.exports = {
     initSync: initSync,
     setProperty: setProperty,
     append: append,
-    writeSettingsFileSync: writeSettingsFileSync
+    writeSettingsFileSync: writeSettingsFileSync,
+    initTestEnvironment : initTestEnvironment
 };
 
 let hdb_properties = PropertiesReader();
@@ -51,7 +54,7 @@ function setPropsFilePath(path) {
         return null;
     }
     try {
-        PROPS_FILE_PATH = path;
+        BOOT_PROPS_FILE_PATH = path;
     } catch (e) {
         log.warn(`Path is invalid.`);
         return null;
@@ -235,9 +238,9 @@ function readRootPath() {
 // This function always needs to be called first during initSync, as it loads the settings file.
 function readPropsFile() {
     try {
-        fs.accessSync(PROPS_FILE_PATH, fs.constants.F_OK | fs.constants.R_OK);
+        fs.accessSync(BOOT_PROPS_FILE_PATH, fs.constants.F_OK | fs.constants.R_OK);
     } catch(e) {
-        let error_msg = `The properties file at path ${PROPS_FILE_PATH} does not exist.  Setting up defaults.`;
+        let error_msg = `The properties file at path ${BOOT_PROPS_FILE_PATH} does not exist.  Setting up defaults.`;
         log.info(error_msg);
         log.error(e);
         //throw new Error(error_msg);
@@ -247,7 +250,7 @@ function readPropsFile() {
         return false;
     }
 
-    hdb_properties = PropertiesReader(PROPS_FILE_PATH);
+    hdb_properties = PropertiesReader(BOOT_PROPS_FILE_PATH);
     storeVariableValue(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY));
     storeVariableValue(hdb_terms.HDB_SETTINGS_NAMES.INSTALL_USER, hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.INSTALL_USER));
     readSettingsFile();
@@ -261,7 +264,7 @@ function readSettingsFile() {
     try {
         fs.accessSync(hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY), fs.constants.F_OK | fs.constants.R_OK);
     } catch(e) {
-        let error_msg = `The settings file at path ${PROPS_FILE_PATH} does not exist.`;
+        let error_msg = `The settings file at path ${hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY)} does not exist.`;
         log.error(error_msg);
     }
 
@@ -322,7 +325,28 @@ function initSync() {
             }
         }
     } catch(err) {
-        let msg = `Error reading in HDB environment variables from path ${PROPS_FILE_PATH}.  Please check your boot props and settings files`;
+        let msg = `Error reading in HDB environment variables from path ${BOOT_PROPS_FILE_PATH}.  Please check your boot props and settings files`;
+        log.fatal(msg);
+        log.error(err);
+    }
+}
+
+function initTestEnvironment() {
+    try {
+        let props_path = process.cwd();
+        props_path = path.join(props_path, '../', 'unitTests');
+        setPropsFilePath(`${props_path}/hdb_boot_properties.file`);
+        setProperty(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, `${props_path}/settings.test`);
+        setProperty(hdb_terms.HDB_SETTINGS_NAMES.INSTALL_USER, os.userInfo().username);
+        setProperty(hdb_terms.HDB_SETTINGS_NAMES.PRIVATE_KEY_KEY, `${props_path}/envDir/keys/privateKey.pem`);
+        setProperty(hdb_terms.HDB_SETTINGS_NAMES.CERT_KEY, `${props_path}/envDir/keys/certificate.pem`);
+        setProperty(hdb_terms.HDB_SETTINGS_NAMES.LOGGER_KEY, `1`);
+        setProperty(hdb_terms.HDB_SETTINGS_NAMES.LOG_LEVEL_KEY, `debug`);
+        setProperty(hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY, `${props_path}/envDir/log/hdb_log.log`);
+        setProperty(hdb_terms.HDB_SETTINGS_NAMES.PROJECT_DIR_KEY, `${props_path}/envDir/`);
+
+    } catch(err) {
+        let msg = `Error reading in HDB environment variables from path ${BOOT_PROPS_FILE_PATH}.  Please check your boot props and settings files`;
         log.fatal(msg);
         log.error(err);
     }
