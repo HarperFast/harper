@@ -41,7 +41,7 @@ const EXE_NAME = 'harperdb';
 const FILE_PERM = 0o754;
 
 // This will be set to the path of the upgrade directory.
-let UPGRADE_DIR_PATH = path.join(process.cwd(), '../', UPGRADE_DIR_NAME);
+let UPGRADE_DIR_PATH = path.join(__dirname, '../', UPGRADE_DIR_NAME);
 
 //Promisified functions
 const p_fs_readdir = promisify(fs.readdir);

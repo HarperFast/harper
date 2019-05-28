@@ -1,4 +1,17 @@
 const validator = require('./validationWrapper.js');
+const validate = require('validate.js');
+
+validate.validators.typeArray = function(value, options, key, attributes) {
+    if (options === true) {
+        if (validate.isArray(value)) {
+            return null;
+        } else {
+            return key + " has value " + value + " which is not an Array";
+        }
+    } else {
+        return null;
+    }
+};
 
 const constraints = {
     schema: {
@@ -25,6 +38,7 @@ const constraints = {
     },
     hash_values: {
         presence: true,
+        typeArray: true
     }
 };
 module.exports = function (delete_object) {

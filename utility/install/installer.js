@@ -34,6 +34,7 @@ let existing_users = [];
 let keep_data = false;
 let check_install_path = false;
 const NODE_NAME_BYTE_LENGTH = 4;
+const KEY_PAIR_BITS = 2048;
 
 env.initSync();
 
@@ -125,15 +126,14 @@ function termsAgreement(callback) {
 function checkInstall(callback) {
     winston.info('Checking for previous installation.');
     try {
-        fs.accessSync(`${process.cwd()}/../hdb_boot_properties.file`, fs.constants.F_OK | fs.constants.R_OK);
-        env.setPropsFilePath(`${process.cwd()}/../hdb_boot_properties.file`);
+        let boot_prop_path = comm.getPropsFilePath();
+        fs.accessSync(boot_prop_path, fs.constants.F_OK | fs.constants.R_OK);
+        env.setPropsFilePath(boot_prop_path);
         env.initSync();
         if (!env.get('HDB_ROOT')) {
             return callback(null, true);
         }
-        promptForReinstall((err, result) => {
-            return callback(err, result);
-        });
+        promptForReinstall((err, result) => callback(err, result));
     } catch(err) {
         return callback(err, true);
     }
@@ -176,7 +176,8 @@ function promptForReinstall(callback) {
                             console.log('There was a problem removing the existing installation.  Please check the install log for details.');
                             return callback(err);
                         }
-                        fs.unlink(`${process.cwd()}/../hdb_boot_properties.file`, function (err) {
+
+                        fs.unlink(env.BOOT_PROPS_FILE_PATH, function (err) {
                             if (err) {
                                 winston.error(err);
                                 console.log('There was a problem removing the existing installation.  Please check the install log for details.');
@@ -344,40 +345,55 @@ function createAdminUser(callback) {
     role.permission = {};
     role.permission.super_user = true;
 
-    // Look for existing role if this is a reinstall
-    if (keep_data) {
-        // 1.  Get list of all roles that are su
-        // 2.  IFF > 1, Show list to user and require selection of primary su role
+    schema.setSchemaDataToGlobal(() => {
+        if (keep_data) {
+            // Look for existing role if this is a reinstall
+            cb_role_list_role((null), (err, res) => {
+                winston.info(`found ${res.length} existing roles.`);
+                let role_list = 'Please select the number assigned to the role that should be assigned to the new user.';
 
-        cb_role_list_role((null), (err, res) => {
-            winston.info(`found ${res.length} existing roles.`);
-            let role_list = 'Please select the number assigned to the role that should be assigned to the new user.';
-
-            if (res && res.length > 1) {
-                for (let i = 0; i < res.length; i++) {
-                    // It would be confusing to offer 0 as a number for the user to select, so offset by 1 to start at 1.
-                    role_list += `\n ${i + 1}. ${res[i].role}`;
-                }
-
-                let role_schema = {
-                    properties: {
-                        ROLE: {
-                            message: colors.red(role_list),
-                            type: 'number',
-                            minimum: 1,
-                            maximum: res.length,
-                            warning: 'Must select the number corresponding to the desired role.',
-                            default: '1'
-                        }
+                if (res && res.length > 1) {
+                    for (let i = 0; i < res.length; i++) {
+                        // It would be confusing to offer 0 as a number for the user to select, so offset by 1 to start at 1.
+                        role_list += `\n ${i + 1}. ${res[i].role}`;
                     }
-                };
 
-                prompt.get(role_schema, function (err, selected_role) {
+                    let role_schema = {
+                        properties: {
+                            ROLE: {
+                                message: colors.red(role_list),
+                                type: 'number',
+                                minimum: 1,
+                                maximum: res.length,
+                                warning: 'Must select the number corresponding to the desired role.',
+                                default: '1'
+                            }
+                        }
+                    };
+
+                    prompt.get(role_schema, function (err, selected_role) {
+                        let admin_user = {};
+                        admin_user.username = wizard_result.HDB_ADMIN_USERNAME;
+                        admin_user.password = wizard_result.HDB_ADMIN_PASSWORD;
+                        // account for the offset
+                        admin_user.role = res[selected_role.ROLE - 1].id;
+                        admin_user.active = true;
+
+                        cb_user_add_user(admin_user, (err) => {
+                            if (err) {
+                                winston.error('user creation error' + err);
+                                console.error('There was a problem creating the admin user.  Please check the install log for details.');
+                                return callback(err);
+                            }
+                            return callback(null);
+                        });
+                    });
+
+                } else {
                     let admin_user = {};
                     admin_user.username = wizard_result.HDB_ADMIN_USERNAME;
                     admin_user.password = wizard_result.HDB_ADMIN_PASSWORD;
-                    // account for the offset
-                    admin_user.role = res[selected_role.ROLE - 1].id;
+                    admin_user.role = res[0].id;
                     admin_user.active = true;
 
                     cb_user_add_user(admin_user, (err) => {
@@ -388,13 +404,21 @@ function createAdminUser(callback) {
                         }
                         return callback(null);
                     });
-                });
+                }
+            });
 
-            } else {
+        } else {
+            cb_role_add_role(role, (err, res) => {
+                if (err) {
+                    winston.error('role failed to create ' + err);
+                    console.log('There was a problem creating the default role.  Please check the install log for details.');
+                    return callback(err);
+                }
+
                 let admin_user = {};
                 admin_user.username = wizard_result.HDB_ADMIN_USERNAME;
                 admin_user.password = wizard_result.HDB_ADMIN_PASSWORD;
-                admin_user.role = res[0].id;
+                admin_user.role = res.id;
                 admin_user.active = true;
 
                 cb_user_add_user(admin_user, (err) => {
@@ -405,33 +429,9 @@ function createAdminUser(callback) {
                     }
                     return callback(null);
                 });
-            }
-        });
-
-    } else {
-        cb_role_add_role(role, (err, res) => {
-            if (err) {
-                winston.error('role failed to create ' + err);
-                console.log('There was a problem creating the default role.  Please check the install log for details.');
-                return callback(err);
-            }
-
-            let admin_user = {};
-            admin_user.username = wizard_result.HDB_ADMIN_USERNAME;
-            admin_user.password = wizard_result.HDB_ADMIN_PASSWORD;
-            admin_user.role = res.id;
-            admin_user.active = true;
-
-            cb_user_add_user(admin_user, (err) => {
-                if (err) {
-                    winston.error('user creation error' + err);
-                    console.error('There was a problem creating the admin user.  Please check the install log for details.');
-                    return callback(err);
-                }
-                return callback(null);
             });
-        });
-    }
+        }
+    });
 }
 
 function createSettingsFile(mount_status, callback) {
@@ -485,7 +485,7 @@ function createSettingsFile(mount_status, callback) {
         let hdb_props_value = `   ;Settings for the HarperDB process.\n` +
             `\n` +
             `   ;The directory harperdb has been installed in.\n` +
-            `PROJECT_DIR = ${path.resolve(process.cwd(),'../')}\n` +
+            `PROJECT_DIR = ${path.resolve(__dirname,'../../')}\n` +
             `   ;The directory selected during install where the database files reside.\n` +
             `HDB_ROOT = ${wizard_result.HDB_ROOT}\n` +
             `   ;The port the HarperDB REST interface will listen on.\n` +
@@ -517,7 +517,7 @@ function createSettingsFile(mount_status, callback) {
             `NODE_ENV = production\n` +
             `   ;This allows self signed certificates to be used in clustering.  This is a security risk\n` +
             `   ;as clustering will not validate the cert, so should only be used internally.\n` +
-            `   ;The HDB install creates a self signed certficate, if you use that cert this must be set to true.\n` +
+            `   ;The HDB install creates a self signed certificate, if you use that cert this must be set to true.\n` +
             `ALLOW_SELF_SIGNED_SSL_CERTS = false\n` +
             `   ;Set the max number of processes HarperDB will start.  This can also be limited by number of cores and licenses.\n` +
             `MAX_HDB_PROCESSES = ${num_cores}\n` +
@@ -533,7 +533,7 @@ function createSettingsFile(mount_status, callback) {
         winston.info('info', `hdb_props_value ${JSON.stringify(hdb_props_value)}`);
         winston.info('info', `settings path: ${env.get('settings_path')}`);
         try {
-            fs.writeFile(env.get('settings_path'), hdb_props_value, function (err, data) {
+            fs.writeFile(env.get('settings_path'), hdb_props_value, function (err) {
                 if (err) {
                     console.error('There was a problem writing the settings file.  Please check the install log for details.');
                     winston.error(err);
@@ -552,7 +552,7 @@ function createSettingsFile(mount_status, callback) {
 function generateKeys(callback) {
     winston.info('Generating keys files.');
     let pki = forge.pki;
-    let keys = pki.rsa.generateKeyPair(2048);
+    let keys = pki.rsa.generateKeyPair(KEY_PAIR_BITS);
     let cert = pki.createCertificate();
     cert.publicKey = keys.publicKey;
     cert.serialNumber = '01';
@@ -640,13 +640,13 @@ function generateKeys(callback) {
     cert.sign(keys.privateKey);
 
     // convert a Forge certificate to PEM
-    fs.writeFile(env.get('CERTIFICATE'), pki.certificateToPem(cert), function (err, data) {
+    fs.writeFile(env.get('CERTIFICATE'), pki.certificateToPem(cert), function (err) {
         if (err) {
             winston.error(err);
             console.error('There was a problem creating the PEM file.  Please check the install log for details.');
             return callback(err);
         }
-        fs.writeFile(env.get('PRIVATE_KEY'), forge.pki.privateKeyToPem(keys.privateKey), function (err, data) {
+        fs.writeFile(env.get('PRIVATE_KEY'), forge.pki.privateKeyToPem(keys.privateKey), function (err) {
             if (err) {
                 winston.error(err);
                 console.error('There was a problem creating the private key file.  Please check the install log for details.');
@@ -662,7 +662,7 @@ function setupService(callback) {
     fs.readFile(`./utility/install/harperdb.service`, 'utf8', function (err, data) {
         let fileData = data.replace('{{project_dir}}', `${env.get('PROJECT_DIR')}`).replace('{{hdb_directory}}',
             env.get('HDB_ROOT'));
-        fs.writeFile('/etc/systemd/system/harperdb.service', fileData, function (err, result) {
+        fs.writeFile('/etc/systemd/system/harperdb.service', fileData, function (err) {
 
             if (err) {
                 winston.info('error', `Service Setup Error ${err}`);
@@ -671,7 +671,7 @@ function setupService(callback) {
             }
 
             let terminal = spawn('bash');
-            terminal.stderr.on('data', function (data) {
+            terminal.stderr.on('data', function () {
             });
 
             terminal.stdin.write(`sudo systemctl daemon-reload &`);
@@ -687,20 +687,45 @@ function createBootPropertiesFile(settings_path, callback) {
         winston.error('info', 'missing settings path');
         return callback('missing setings');
     }
-
+    let install_user = undefined;
+    try {
+        install_user = os.userInfo().username;
+    } catch(err) {
+        // this could fail on android, try env variables
+        install_user = process.env.USERNAME ||
+            process.env.USER ||
+            process.env.LOGNAME ||
+            process.env.LNAME ||
+            process.env.SUDO_USER;
+    }
+    if(!install_user) {
+        let msg = 'Could not determine current username in this environment.  Please set the USERNAME environment variable in your OS and try install again.';
+        console.error(msg);
+        winston.error(msg);
+        return callback(msg, null);
+    }
     let boot_props_value = `settings_path = ${settings_path}
-    install_user = ${require("os").userInfo().username}`;
+    install_user = ${install_user}`;
 
-    fs.writeFile(`${process.cwd()}/../hdb_boot_properties.file`, boot_props_value, function (err) {
+    let home_dir = comm.getHomeDir();
+    let home_dir_path = path.join(home_dir, hdb_terms.HDB_HOME_DIR_NAME);
+    try {
+        fs.mkdirpSync(home_dir_path);
+    } catch(err) {
+        console.log(`Could not make settings directory ${hdb_terms.HDB_HOME_DIR_NAME} in home directory.  Please check your permissions and try again.`);
+    }
 
+    let props_file_path = path.join(home_dir_path, hdb_terms.BOOT_PROPS_FILE_NAME);
+    fs.writeFile(props_file_path, boot_props_value, function (err) {
         if (err) {
             winston.error('info', `Bootloader error ${err}`);
             console.error('There was a problem creating the boot file.  Please check the install log for details.');
             return callback(err);
         }
-        winston.info('info', `props path ${process.cwd()}/../hdb_boot_properties.file`);
-        env.setProperty(hdb_terms.HDB_SETTINGS_NAMES.INSTALL_USER, `${require("os").userInfo().username}`);
+        winston.info('info', `props path ${props_file_path}`);
+        env.setProperty(hdb_terms.HDB_SETTINGS_NAMES.INSTALL_USER, `${install_user}`);
         env.setProperty(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, settings_path);
+        env.setPropsFilePath(props_file_path);
         return callback(null, 'success');
     });
 }

@@ -1,15 +1,16 @@
 "use strict";
+const env = require('../utility/environment/environmentManager');
+env.initSync();
 const fs = require('fs');
-const util = require('util');
 const path = require('path');
 const net = require('net');
 const install = require('../utility/install/installer.js');
 const colors = require("colors/safe");
 const logger = require('../utility/logging/harper_logger');
-const PropertiesReader = require('properties-reader');
 const async = require('async');
 const pjson = require('../package.json');
 const { isHarperRunning } = require('../utility/common_utils');
+
 const HTTPSECURE_PORT_KEY = 'HTTPS_PORT';
 const HTTP_PORT_KEY = 'HTTP_PORT';
 const HTTPSECURE_ON_KEY = 'HTTPS_ON';
@@ -17,11 +18,7 @@ const HTTP_ON_KEY = 'HTTP_ON';
 const stop = require('./stop');
 
 const FOREGROUND_ARG = 'foreground';
-
-let hdb_boot_properties = null;
-let hdb_properties = null;
 let fork = require('child_process').fork;
-
 let child = undefined;
 
 /***
@@ -66,12 +63,10 @@ function arePortsInUse(callback) {
     // If this fails to find the boot props file, this must be a new install.  This will fall through,
     // pass the process and port check, and then hit the install portion of startHarper().
     try {
-        hdb_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
-        hdb_properties.append(hdb_properties.get('settings_path'));
-        httpsecure_on = hdb_properties.get(HTTPSECURE_ON_KEY);
-        http_on = hdb_properties.get(HTTP_ON_KEY);
-        http_port = hdb_properties.get(HTTP_PORT_KEY);
-        httpsecure_port = hdb_properties.get(HTTPSECURE_PORT_KEY);
+        httpsecure_on = env.get(HTTPSECURE_ON_KEY);
+        http_on = env.get(HTTP_ON_KEY);
+        http_port = env.get(HTTP_PORT_KEY);
+        httpsecure_port = env.get(HTTPSECURE_PORT_KEY);
     } catch (e) {
         logger.info('hdb_boot_props file not found, starting install.');
         startHarper();
@@ -98,7 +93,7 @@ function arePortsInUse(callback) {
         tasks.push(function(cb) { return isPortTaken(httpsecure_port, cb); });
     }
 
-    async.parallel( tasks, function(err, results) {
+    async.parallel( tasks, function(err) {
         callback(err);
     });
 }
@@ -115,7 +110,7 @@ function isPortTaken(port, callback) {
 
     const tester = net.createServer()
         .once('error', function (err) {
-            if (err.code != 'EADDRINUSE') {
+            if (err.code !== 'EADDRINUSE') {
                 return callback(err);
             }
             callback(`Port ${port} is already in use.`);
@@ -132,7 +127,7 @@ function isPortTaken(port, callback) {
  * Helper function to start HarperDB.  If the hdb_boot properties file is not found, an install is started.
  */
 function startHarper() {
-    fs.stat(`${process.cwd()}/../hdb_boot_properties.file`, function(err, stats) {
+    fs.stat(env.BOOT_PROPS_FILE_PATH, function(err) {
         if(err) {
             if(err.errno === -2) {
                 install.install(function (err) {
@@ -140,7 +135,7 @@ function startHarper() {
                         logger.error(err);
                         return;
                     }
-                    hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
+                    env.initSync();
                     completeRun();
                     return;
                 });
@@ -149,9 +144,9 @@ function startHarper() {
                 return;
             }
         } else {
-            hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
+            env.initSync();
             try {
-                fs.stat(hdb_boot_properties.get('settings_path'), function (err, stats) {
+                fs.stat(env.get('settings_path'), function (err) {
                     if (err) {
                         if (err.errno === -2) {
                             install.install(function (err) {
@@ -159,7 +154,7 @@ function startHarper() {
                                     logger.error(err);
                                     return;
                                 }
-                                hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
+                                env.initSync();
                                 completeRun();
                                 return;
                             });
@@ -184,10 +179,9 @@ function completeRun() {
     async.waterfall([
         checkPermission,
         kickOffExpress,
-    ], (error, data) => {
-        if (error)
+    ], (error) => {
+        if(error)
             console.error(error);
-
         foregroundHandler();
     });
 }
@@ -222,9 +216,11 @@ function foregroundHandler() {
  */
 function processExitHandler(options, err) {
     if (options.is_foreground) {
-        stop.stop((err) => {
-            console.error(err);
-        });
+        stop.stop()
+            .then()
+            .catch((err) => {
+                console.log(err);
+            });
     }
 }
 
@@ -257,8 +253,8 @@ function checkPermission(callback) {
 
 function kickOffExpress(err, callback) {
 
-    if (hdb_properties && hdb_properties.get('MAX_MEMORY')) {
-        child = fork(path.join(__dirname,'../server/hdb_express.js'),[`--max-old-space-size=${hdb_properties.get('MAX_MEMORY')}`, `${hdb_properties.get('PROJECT_DIR')}/server/hdb_express.js`],{
+    if (env.get('MAX_MEMORY')) {
+        child = fork(path.join(__dirname,'../server/hdb_express.js'),[`--max-old-space-size=${env.get('MAX_MEMORY')}`, `${env.get('PROJECT_DIR')}/server/hdb_express.js`],{
             detached: true,
             stdio: 'ignore'
         });
@@ -272,31 +268,6 @@ function kickOffExpress(err, callback) {
     console.log(colors.magenta('' + fs.readFileSync(path.join(__dirname,'../utility/install/ascii_logo.txt'))));
     console.log(colors.magenta(`|------------- HarperDB ${pjson.version} successfully started ------------|`));
     return callback();
-}
-
-function increaseMemory(callback) {
-    try {
-        if (hdb_properties && hdb_properties.get('MAX_MEMORY')) {
-            const {spawn} = require('child_process');
-            const node = spawn('node', [`--max-old-space-size=${hdb_properties.get('MAX_MEMORY')}`, `${hdb_properties.get('PROJECT_DIR')}/server/hdb_express.js`]);
-
-            node.stdout.on('data', (data) => {
-                logger.info(`stdout: ${data}`);
-            });
-
-            node.stderr.on('data', (data) => {
-                logger.error(`stderr: ${data}`);
-            });
-
-            node.on('close', (code) => {
-                logger.log(`child process exited with code ${code}`);
-            });
-        } else {
-            callback();
-        }
-    } catch(e){
-        logger.error(e);
-    }
 }
 
 function exitInstall(){

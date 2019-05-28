@@ -130,10 +130,9 @@ describe('Test kickOffEnterprise', function () {
         env.append('CLUSTERING_PORT', '1115');
         env.append('NODE_NAME', 'node_1');
         
-        let result = await enterprise_initialization.kickOffEnterprise();
+        await enterprise_initialization.kickOffEnterprise();
         assert.equal(fork_stub.called, true, 'Child fork should have been called');
         assert.equal(child_send_spy.called, true, 'Child send() should have been called.');
-        assert.equal(result.clustering, true, 'function should return clustering = true');
     });
     it('No node data in hdb_nodes table, expect cluster server initiated', async function () {
         search_nodes_stub = sandbox.stub(search, 'searchByValue').yields('', []);
@@ -141,10 +140,9 @@ describe('Test kickOffEnterprise', function () {
         env.append('CLUSTERING_PORT', '1115');
         env.append('NODE_NAME', 'node_1');
         
-        let result = await enterprise_initialization.kickOffEnterprise();
+        await enterprise_initialization.kickOffEnterprise();
         assert.equal(fork_stub.called, true, 'Child fork should have been called');
         assert.equal(child_send_spy.called, true, 'Child send() should have been called.');
-        assert.equal(result.clustering, true, 'function should return clustering = true');
     });
     it('No cluster config in properties, expect no cluster node initiated', async function () {
         search_nodes_stub = sandbox.stub(search, 'searchByValue').yields('', SEARCH_RESULT_OBJECT);
@@ -152,10 +150,9 @@ describe('Test kickOffEnterprise', function () {
         if (env.get('CLUSTERING')) {
             env.append('CLUSTERING', '');
         }
-        let result = await enterprise_initialization.kickOffEnterprise();
+        await enterprise_initialization.kickOffEnterprise();
         assert.equal(fork_stub.called, false, 'new ClusterServer(...) should have not been called');
         assert.equal(null, global.cluster_server, 'global.cluster_server should not be set');
-        assert.equal(result.clustering, false, 'function should return clustering = false');
     });
     it('fork throws exception, expect clustering false', async function () {
         search_nodes_stub = sandbox.stub(search, 'searchByValue').yields('', SEARCH_RESULT_OBJECT);
@@ -166,8 +163,7 @@ describe('Test kickOffEnterprise', function () {
         fork_stub = null;
         fork_stub = sandbox.stub().throws(new Error('Fork Failure'));
         enterprise_initialization.__set__('fork', fork_stub);
-        let result = await enterprise_initialization.kickOffEnterprise();
+        await enterprise_initialization.kickOffEnterprise();
         assert.equal(fork_stub.called, true, 'Fork should have been called');
-        assert.equal(result.clustering, false, 'function should return clustering = false');
     });
 });

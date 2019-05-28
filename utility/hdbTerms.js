@@ -7,29 +7,26 @@
 
  // Name of the HDB process
 const HDB_PROC_NAME = 'hdb_express.js';
+const SC_PROC_NAME = 'Server.js';
+
+const HDB_PROC_DESCRIPTOR = 'HarperDB';
+const SC_PROC_DESCRIPTOR = 'Cluster Server';
 
 const PERIOD_REGEX = /^\.$/;
-
 const DOUBLE_PERIOD_REGEX = /^\.\.$/;
-
 const UNICODE_PERIOD = 'U+002E';
-
 const FORWARD_SLASH_REGEX = /\//g;
-
 const UNICODE_FORWARD_SLASH = 'U+002F';
-
 const ESCAPED_FORWARD_SLASH_REGEX = /U\+002F/g;
-
 const ESCAPED_PERIOD_REGEX = /^U\+002E$/;
-
 const ESCAPED_DOUBLE_PERIOD_REGEX = /^U\+002EU\+002E$/;
 
 // Name of the System schema
 const SYSTEM_SCHEMA_NAME = 'system';
-
 const HASH_FOLDER_NAME = '__hdb_hash';
-
 const CLUSTERING_VERSION_HEADER_NAME = 'hdb_version';
+const HDB_HOME_DIR_NAME = '.harperdb';
+const BOOT_PROPS_FILE_NAME = 'hdb_boot_properties.file';
 
 const RESTART_CODE = 'SIGTSTP';
 const RESTART_CODE_NUM = 24;
@@ -53,6 +50,21 @@ const SYSTEM_TABLE_NAMES = {
     SCHEMA_TABLE_NAME: 'hdb_schema',
     TABLE_TABLE_NAME: 'hdb_table',
     USER_TABLE_NAME: 'hdb_user'
+};
+
+const SYSTEM_DEFAULT_ATTRIBUTE_NAMES = {
+    ATTR_ATTRIBUTE_KEY: "attribute",
+    ATTR_CREATEDDATE_KEY: "createddate",
+    ATTR_HASH_ATTRIBUTE_KEY: "hash_attribute",
+    ATTR_ID_KEY: "id",
+    ATTR_NAME_KEY: "name",
+    ATTR_PASSWORD_KEY: "password",
+    ATTR_RESIDENCE_KEY: "residence",
+    ATTR_ROLE_KEY: "role",
+    ATTR_SCHEMA_KEY: "schema",
+    ATTR_SCHEMA_TABLE_KEY: "schema_table",
+    ATTR_TABLE_KEY: "table",
+    ATTR_USERNAME_KEY: "username"
 };
 
 // Registration key file name
@@ -276,9 +288,14 @@ const CLUSTER_EVENTS_DEFS_ENUM = {
 module.exports = {
     LOCAL_HARPERDB_OPERATIONS,
     HDB_PROC_NAME,
+    HDB_PROC_DESCRIPTOR,
+    SC_PROC_NAME,
+    SC_PROC_DESCRIPTOR,
     SYSTEM_SCHEMA_NAME,
     HASH_FOLDER_NAME,
+    HDB_HOME_DIR_NAME,
     CLUSTERING_VERSION_HEADER_NAME,
+    BOOT_PROPS_FILE_NAME,
     JOB_TYPE_ENUM,
     JOB_STATUS_ENUM,
     SYSTEM_TABLE_NAMES,
@@ -304,6 +321,7 @@ module.exports = {
     INSERT_MODULE_ENUM,
     RESTART_CODE,
     RESTART_CODE_NUM,
-    CLUSTER_OPERATIONS
+    CLUSTER_OPERATIONS,
+    SYSTEM_DEFAULT_ATTRIBUTE_NAMES
 };
 
