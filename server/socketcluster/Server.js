@@ -7,8 +7,6 @@ const log = require('../../utility/logging/harper_logger');
 const PORT = env.get('CLUSTERING_PORT');
 const DEFAULT_PORT = 12345;
 
-let hdb_data = undefined;
-let sc_ready = false;
 //initializes a new socket cluster all options can be seen here: https://socketcluster.io/#!/docs/api-socketcluster
 let socketCluster = new SocketCluster({
     // Number of worker processes, this will be config based
@@ -96,12 +94,6 @@ function registerHandlers(){
     socketCluster.on('brokerMessage', brokerMessageHandler);
 }
 
-//handle inbound messages from thje parent process, this will only occur when HDB spawns SC Server
-process.on('message', data=>{
-    hdb_data = {hdb_data: data};
-    sendDataToFirstWorker().then(()=>{});
-});
-
 
 /**
  * Any error from any child process or master will cause the 'fail' event to be emitted on your SocketCluster instance (assuming the propagateErrors option is not set to false).
@@ -169,19 +161,6 @@ function workerClusterStartHandler(worker_cluster_info){
  */
 function workerClusterReadyHandler(worker_cluster_info){
     console.log('worker cluster ready');
-    sc_ready = true;
-    sendDataToFirstWorker().then(()=>{});
-}
-
-async function sendDataToFirstWorker(){
-    if(hdb_data !== undefined && sc_ready === true){
-        try {
-            await p_send_to_worker(0, hdb_data);
-            log.info('sent hdb data to worker');
-        } catch(e){
-            log.error(e);
-        }
-    }
 }
 
 /**

@@ -49,6 +49,7 @@ module.exports = {
     callProcessSend: callProcessSend,
     isHarperRunning: isHarperRunning,
     isClusterOperation: isClusterOperation,
+    getClusterUser: getClusterUser,
     getHomeDir: getHomeDir,
     getPropsFilePath: getPropsFilePath,
     sendTransactionToSocketCluster: sendTransactionToSocketCluster
@@ -460,4 +461,37 @@ function sendTransactionToSocketCluster(channel, transaction){
         let {hdb_user, hdb_auth_header, ...data} = transaction;
         global.hdb_socket_client.publish(channel, data);
     }
+}
+
+function getClusterUser(users, cluster_user_name){
+    if(isEmpty(cluster_user_name)){
+        log.warn('No CLUSTERING_USER defined, clustering disabled');
+        return;
+    }
+
+    if(isEmptyOrZeroLength(users)){
+        log.warn('No users to search.');
+        return;
+    }
+
+    let cluster_user = undefined;
+    try {
+        for (let x = 0; x < users.length; x++) {
+            let user = users[x];
+            if (user.username === cluster_user_name && user.role.permission.cluster_user === true && user.active === true) {
+                cluster_user = user;
+                break;
+            }
+        }
+    } catch(e){
+        log.error(`unable to find cluster_user due to: ${e.message}`);
+        return;
+    }
+
+    if(cluster_user === undefined){
+        log.warn(`CLUSTERING_USER: ${cluster_user_name} not found or is not active.`);
+        return;
+    }
+
+    return cluster_user;
 }

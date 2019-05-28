@@ -3,17 +3,34 @@
 const SocketConnector = require('./SocketConnector');
 const socket_client = require('socketcluster-client');
 const sc_objects = require('../socketClusterObjects');
-const creds =require('../../../json/sc_credentials');
 const AssignToHdbChildWorkerRule = require('../decisionMatrix/rules/AssignToHdbChildWorkerRule');
+const log = require('../../../utility/logging/harper_logger');
+const crypto_hash = require('../../../security/cryptoHash');
 const SubscriptionObject = sc_objects.SubscriptionObject;
 const NodeObject = sc_objects.NodeObject;
 const promisify = require('util').promisify;
 
 class NodeConnector {
-    constructor(nodes, worker){
+    constructor(nodes, cluster_user, worker){
+        if(!cluster_user){
+            log.warn('no cluster_user, cannot connect to other nodes');
+            return;
+        }
+
         //spawn local connection
         this.worker = worker;
+
+        if(this.worker === undefined || this.worker === null){
+            throw new Error('worker is undefined, cannot spawn connections to other nodes');
+        }
+
         this.publishin_promises = [];
+        this.creds = {
+            username: cluster_user.username,
+            password: crypto_hash.decrypt(cluster_user.hash)
+        };
+
+        this.nodes = nodes;
 
         this.worker.scServer._middleware.publishIn.forEach(middleware_function=>{
             this.publishin_promises.push(promisify(middleware_function).bind(this.worker.scServer));
@@ -25,11 +42,11 @@ class NodeConnector {
         this.HDB_Attribute_Subscription = new SubscriptionObject('internal:create_attribute', true, true);
 
         this.AssignToHdbChildWorkerRule = new AssignToHdbChildWorkerRule();
-        this.spawnRemoteConnections(nodes);
         this.connections = socket_client;
+        this.spawnRemoteConnections(nodes);
 
         //get nodes & spwan them, watch for node changes
-        this.worker.exchange.subscribe('hdb_nodes').watch(data=>{
+        this.worker.exchange.subscribe('internal:hdb_nodes').watch(data=>{
             //TODO create / destroy node here
         });
     }
@@ -43,7 +60,7 @@ class NodeConnector {
             let options = require('../../../json/connectorOptions');
             options.hostname = node.host;
             options.port = node.port;
-            let connection = new SocketConnector(socket_client, node.name,options, creds);
+            let connection = new SocketConnector(socket_client, node.name,options, this.creds);
 
             if(node.subscriptions){
                 node.subscriptions.push(this.HDB_Schema_Subscription);
