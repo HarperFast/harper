@@ -263,10 +263,6 @@ describe('Test csvLoadValidator module', () => {
             validator_stub.restore();
         });
 
-        afterEach(() => {
-            sinon.resetHistory();
-        });
-
         it('should call validateObject and postValidateChecks with dataObject', () => {
             let data_constraints = csv_load_validator.__get__('data_constraints');
             csv_load_validator.dataObject(data_object);
