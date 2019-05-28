@@ -25,7 +25,7 @@ const LONG_STRING = "TheresolvedtechnologydisappearsThesynthesisperfectsanincomp
 describe('Test csvLoadValidator module', () => {
 
     let obj_no_schema = {
-        operation: "",
+        operation: "csv_data_load",
         action: "insert",
         table: "fordogs",
         data: "id, type\n1, English Pointer\n"
@@ -122,7 +122,6 @@ describe('Test csvLoadValidator module', () => {
      * Unit tests for validate module
      */
     context('Test validate module', () => {
-        obj_no_schema.operation = 'csv_data_load';
 
         it('should return schema cant be blank error from dataObject', () => {
             let result = csv_load_validator.dataObject(obj_no_schema);

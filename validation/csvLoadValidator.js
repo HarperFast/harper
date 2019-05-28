@@ -3,10 +3,7 @@ const validator = require('./validationWrapper.js');
 const common_utils = require('../utility/common_utils');
 const hdb_terms = require('../utility/hdbTerms');
 const log = require('../utility/logging/harper_logger');
-//const validate = require('validate.js');
 const fs = require('fs');
-//const util = require('util');
-//const p_fs_access = util.promisify(fs.access);
 
 // Maximum file size in bytes
 const MAX_CSV_FILE_SIZE = 1000000;
