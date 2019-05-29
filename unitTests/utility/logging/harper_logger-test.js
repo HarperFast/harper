@@ -75,8 +75,11 @@ function zeroizeOutputFile() {
     }
 }
 
-function resetTestLogger() {
+function rewireLogger() {
     harper_log = rewire('../../../utility/logging/harper_logger');
+}
+
+function resetLoggerSpies() {
     harper_trace_spy = sandbox.spy(harper_log, 'trace');
     harper_debug_spy = sandbox.spy(harper_log, 'debug');
     harper_info_spy = sandbox.spy(harper_log, 'info');
@@ -201,7 +204,7 @@ describe('Test harper_logger ', () => {
 
     describe(`Test log writing - Winston`, () => {
         before(() => {
-            resetTestLogger();
+            resetLoggerSpies();
             output_file_name = default_log_file_name;
             harper_log.__set__("daily_rotate", undefined);
             file_change_results = false;
@@ -310,7 +313,8 @@ describe('Test harper_logger ', () => {
 
     describe(`Test log writing - Winston Daily File Rotation`, () => {
         before(() => {
-            resetTestLogger();
+            rewireLogger();
+            resetLoggerSpies();
             harper_log.__set__("daily_rotate", true);
             harper_log.setLogType(WINSTON);
             output_file_name = daily_output_file_name;
@@ -418,7 +422,8 @@ describe('Test harper_logger ', () => {
 
     describe(`Test log writing - PINO`, () => {
         before(() => {
-            resetTestLogger();
+            rewireLogger();
+            resetLoggerSpies();
             output_file_name = default_log_file_name;
             harper_log.setLogType(PINO);
             if(!fs.existsSync(output_file_name)) {
@@ -522,9 +527,9 @@ describe('Test harper_logger ', () => {
         });
     });
 
-    describe(`Test log level writing - WINSTON`, (done) => {
+    describe(`Test log level writing - WINSTON`, () => {
         before(() => {
-            harper_log = rewire('../../../utility/logging/harper_logger');
+            rewireLogger();
             harper_log.setLogType(WINSTON);
         });
 
@@ -561,9 +566,9 @@ describe('Test harper_logger ', () => {
         });
     });
 
-    describe(`Test log level writing - PINO`, (done) => {
+    describe(`Test log level writing - PINO`, () => {
         before(() => {
-            harper_log = rewire('../../../utility/logging/harper_logger');
+            rewireLogger();
             harper_log.setLogType(PINO);
         });
 
@@ -600,7 +605,7 @@ describe('Test harper_logger ', () => {
         });
     });
 
-    describe(`Test setLogType`, (done) => {
+    describe(`Test setLogType`, () => {
         before(() => {
             harper_log.setLogType(WINSTON);
             file_change_results = false;
@@ -614,6 +619,7 @@ describe('Test harper_logger ', () => {
         });
         after(() => {
             zeroizeOutputFile();
+            watcher.close();
         });
         it('Pass in empty value, expect error written in log.', (done) => {
             harper_log.setLogType('');
@@ -631,8 +637,9 @@ describe('Test harper_logger ', () => {
         });
     });
 
-    describe(`Test setLogLocation`, (done) => {
+    describe(`Test setLogLocation`, () => {
         let new_output_file = undefined;
+
         before(() => {
             harper_log.setLogType(WINSTON);
             file_change_results = false;
@@ -725,16 +732,6 @@ function getMomentDate(date) {
         return moment.utc(Date.now());
     }
 }
-
-// function removeOutputFile(path) {
-//     try {
-//         if (fs.existsSync(path)) {
-//             fs.unlinkSync(path);
-//         }
-//     } catch(e) {
-//         console.log(e);
-//     }
-// }
 
 describe("Test read_log ", () => {
     let winston_configure_spy;
@@ -940,10 +937,8 @@ describe("Test read_log ", () => {
             } catch(e) {
                 expect(e).to.equal(null, 'readLog() should not have thrown an error');
             }
-            // TODO: Remove the comment below?
-            // There will be three log objects sent back for this query because of the trace log set when Winston is instantiated
-            expect(queryResults.file.length).to.equal(2);
 
+            expect(queryResults.file.length).to.equal(2);
             const winston_options = winston_query_spy.args[0][0];
             expect(winston_options.level).to.equal(undefined);
         }));
