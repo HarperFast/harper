@@ -258,11 +258,6 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     let props_cors = env.get(PROPS_CORS_KEY);
     let props_cors_whitelist = env.get(PROPS_CORS_WHITELIST_KEY);
 
-    //TODO make sure this is wired in so it only spawns when we are licensed
-    //if(global.clustering_on === true){
-       spawnSCConnection();
-    //}
-
     if (props_cors && (props_cors === true || props_cors.toUpperCase() === TRUE_COMPARE_VAL)) {
         let cors_options = {
             origin: true,
@@ -408,9 +403,17 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         let connector_options = require('../json/hdbConnectorOptions');
 
         //get the CLUSTER_USER
-        let cluster_user = getClusterUser();
+        let cluster_user_name = env.get('CLUSTERING_USER');
 
-        if(cluster_user === undefined){
+        if(hdb_util.isEmpty(cluster_user_name)){
+            harper_logger.warn('No CLUSTERING_USER found, unable connect to local clustering server');
+            return;
+        }
+
+        let cluster_user = hdb_util.getClusterUser(global.hdb_users, cluster_user_name);
+
+        if(hdb_util.isEmpty(cluster_user)){
+            harper_logger.warn('No CLUSTERING_USER found, unable connect to local clustering server');
             return;
         }
 
@@ -424,35 +427,13 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         global.hdb_socket_client = new HDBSocketConnector(socketclient, 'worker_' + process.pid, connector_options, creds);
     }
 
-    function getClusterUser(){
-        let cluster_user_name = env.get('CLUSTER_USER');
-        if(hdb_util.isEmpty(cluster_user_name)){
-            return harper_logger.warn('No CLUSTER_USER defined, clustering disabled');
-        }
-
-        let cluster_user = undefined;
-        for(let x = 0; x < global.hdb_users.length; x++){
-            let user = global.hdb_users[x];
-            if(user.username === cluster_user_name && user.permission.cluster_user === true && user.active === true){
-                cluster_user = user;
-                break;
-            }
-        }
-
-        if(cluster_user === undefined){
-            return harper_logger.warn(`CLUSTER_USER: ${cluster_user_name} not found or is not active.`);
-        }
-
-        return cluster_user;
-    }
-
     async function setUp(){
         try {
             harper_logger.trace('Configuring child process.');
             await p_schema_to_global();
             await p_users_to_global();
-            signalling.signalChildStarted();
             spawnSCConnection();
+
         } catch(e) {
             harper_logger.error(e);
         }
@@ -492,14 +473,18 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         const props_http_on = env.get(PROPS_HTTP_ON_KEY);
 
         global.isMaster = cluster.isMaster;
+
         harper_logger.debug(`child process ${process.pid} starting up.`);
+
+        setUp().then(()=>{});
+
         if (props_http_secure_on &&
             (props_http_secure_on === true || props_http_secure_on.toUpperCase() === TRUE_COMPARE_VAL)) {
             secureServer = httpsecure.createServer(credentials, app);
             secureServer.setTimeout(server_timeout ? server_timeout : DEFAULT_SERVER_TIMEOUT);
             secureServer.listen(env.get(PROPS_HTTP_SECURE_PORT_KEY), function () {
                 harper_logger.info(`HarperDB ${pjson.version} HTTPS Server running on ${env.get(PROPS_HTTP_SECURE_PORT_KEY)}`);
-                setUp().then(()=>{});
+                signalling.signalChildStarted();
             });
         }
 
@@ -518,9 +503,11 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
             httpServer.setTimeout(server_timeout ? server_timeout : DEFAULT_SERVER_TIMEOUT);
             httpServer.listen(env.get(PROPS_HTTP_PORT_KEY), function () {
                 harper_logger.info(`HarperDB ${pjson.version} HTTP Server running on ${env.get(PROPS_HTTP_PORT_KEY)}`);
-                setUp().then(()=>{});
+                signalling.signalChildStarted();
             });
         }
+
+
     } catch (e) {
         harper_logger.error(e);
     }

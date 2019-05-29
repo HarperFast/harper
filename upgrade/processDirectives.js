@@ -2,7 +2,7 @@
 /**
  * These classes define the data types used to define the necessary items for an upgrade.
  */
-
+const env = require('../utility/environment/environmentManager');
 const hdb_util = require('../utility/common_utils');
 const log = require('../utility/logging/harper_logger');
 const os = require('os');
@@ -20,7 +20,8 @@ let hdb_boot_properties = undefined;
 let hdb_properties = undefined;
 
 try {
-    hdb_boot_properties = PropertiesReader(`${process.cwd()}/../hdb_boot_properties.file`);
+    // We still use the PropertiesReader here as we need to write out comments during directives.
+    hdb_boot_properties = PropertiesReader(env.BOOT_PROPS_FILE_PATH);
     hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
 } catch(e) {
     log.info(`Couldn't read settings files.`);

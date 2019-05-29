@@ -1,11 +1,11 @@
 "use strict";
 const path = require('path');
+const fs = require('fs-extra');
 const log = require('./logging/harper_logger');
 const fs_extra = require('fs-extra');
 const truncate = require('truncate-utf8-bytes');
 const os = require('os');
 const terms = require('./hdbTerms');
-const { promisify } = require('util');
 const ps_list = require('./psList');
 
 const EMPTY_STRING = '';
@@ -49,6 +49,9 @@ module.exports = {
     callProcessSend: callProcessSend,
     isHarperRunning: isHarperRunning,
     isClusterOperation: isClusterOperation,
+    getClusterUser: getClusterUser,
+    getHomeDir: getHomeDir,
+    getPropsFilePath: getPropsFilePath,
     sendTransactionToSocketCluster: sendTransactionToSocketCluster
 };
 
@@ -352,17 +355,43 @@ function valueConverter(raw_value){
     };
 }
 
+function getHomeDir() {
+    let home_dir = undefined;
+    try {
+        home_dir = os.homedir();
+    } catch(err) {
+        // could get here in android
+        home_dir = process.env.HOME;
+    }
+    if(!home_dir) {
+        home_dir = '~/';
+    }
+    return home_dir;
+}
+
+/**
+ * This function will attempt to find the hdb_boot_properties.file path.  IT IS SYNCHRONOUS, SO SHOULD ONLY BE
+ * CALLED IN CERTAIN SITUATIONS (startup, upgrade, etc).
+ */
+function getPropsFilePath() {
+    let boot_props_file_path = path.join(getHomeDir(), terms.HDB_HOME_DIR_NAME, terms.BOOT_PROPS_FILE_NAME);
+    // this checks how we used to store the boot props file for older installations.
+    if(!fs.existsSync(boot_props_file_path)) {
+        boot_props_file_path = path.join(__dirname, '../', 'hdb_boot_properties.file');
+    }
+    return boot_props_file_path;
+}
+
 /**
  * Creates a promisified timeout that exposes a cancel() function in case the timeout needs to be cancelled.
  * @param ms
  * @param msg - The message to resolve the promise with should it timeout
- * @param action_function - Function that will be run after the timeout and before the promise is resolved.
  * @returns {{promise: (Promise|Promise<any>), cancel: cancel}}
  */
-function timeoutPromise(ms, msg, action_function) {
+function timeoutPromise(ms, msg) {
     let timeout, promise;
 
-    promise = new Promise(function(resolve, reject) {
+    promise = new Promise(function(resolve) {
         timeout = setTimeout(function() {
             resolve(msg);
         }, ms);
@@ -390,7 +419,6 @@ function callProcessSend(process_msg) {
 
 /**
  * Uses module ps_list to check if hdb process is running
- * @param none
  * @returns {process}
  */
 async function isHarperRunning(){
@@ -433,4 +461,37 @@ function sendTransactionToSocketCluster(channel, transaction){
         let {hdb_user, hdb_auth_header, ...data} = transaction;
         global.hdb_socket_client.publish(channel, data);
     }
+}
+
+function getClusterUser(users, cluster_user_name){
+    if(isEmpty(cluster_user_name)){
+        log.warn('No CLUSTERING_USER defined, clustering disabled');
+        return;
+    }
+
+    if(isEmptyOrZeroLength(users)){
+        log.warn('No users to search.');
+        return;
+    }
+
+    let cluster_user = undefined;
+    try {
+        for (let x = 0; x < users.length; x++) {
+            let user = users[x];
+            if (user.username === cluster_user_name && user.role.permission.cluster_user === true && user.active === true) {
+                cluster_user = user;
+                break;
+            }
+        }
+    } catch(e){
+        log.error(`unable to find cluster_user due to: ${e.message}`);
+        return;
+    }
+
+    if(cluster_user === undefined){
+        log.warn(`CLUSTERING_USER: ${cluster_user_name} not found or is not active.`);
+        return;
+    }
+
+    return cluster_user;
 }
