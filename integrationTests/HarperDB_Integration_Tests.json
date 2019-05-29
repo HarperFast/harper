@@ -3328,6 +3328,141 @@
 								"description": "Should abort CSV upload and return error message"
 							},
 							"response": []
+						},
+						{
+							"name": "csv bulk load update",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "f652fa3d-1652-4455-827f-fdfeb5f11003",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"csv_data_load\",\n  \"action\": \"update\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{supp_tb}}\",\n  \"data\":\"supplierid,companyname\\n19,The Chum Bucket\\n\"\n}\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "update a table with csv data uplaod"
+							},
+							"response": []
+						},
+						{
+							"name": "csv bulk load update confirm",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "f652fa3d-1652-4455-827f-fdfeb5f11003",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"Verify csv data load was successful\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData[0].supplierid).to.eql(19);",
+											"    pm.expect(jsonData[0].contactname).to.eql(\"Robb Merchant\");",
+											"    pm.expect(jsonData[0].companyname).to.eql(\"The Chum Bucket\");",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{supp_tb}}\",\n  \"hash_attribute\": \"{{supp_id}}\",\n  \"hash_values\":[19],\n  \"get_attributes\": [\"supplierid\", \"companyname\", \"contactname\"]\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "confirm that table was actually updated"
+							},
+							"response": []
 						}
 					],
 					"description": "Test a designated and random row from bulk CSV upload",
@@ -4211,6 +4346,226 @@
 							}
 						}
 					],
+					"_postman_isSubFolder": true
+				},
+				{
+					"name": "Search Response Data Type Check",
+					"item": [
+						{
+							"name": "select by hash no result",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "6c80b8ce-6544-4551-b7fa-eb4180db79b0",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"verify an empty array was returned\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(0);",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"SELECT * FROM {{schema}}.{{emps_tb}} WHERE {{emps_id}} = 190\"\n}\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "confirm select with no result returns an empty array"
+							},
+							"response": []
+						},
+						{
+							"name": "select by hash one result",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "4fc462a9-4230-434e-898c-b2de7d1a569c",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"verify an array with one object\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(1);",
+											"    pm.expect((typeof jsonData[0])).to.eql(\"object\");",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"SELECT * FROM {{schema}}.{{emps_tb}} WHERE {{emps_id}} = 3\"\n}\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "confirm select with one result returns an array with single object"
+							},
+							"response": []
+						},
+						{
+							"name": "select by hash multiple results",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "54ae73e8-7c19-4558-a36c-0b47e7a7bdc1",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"verify an array with one object\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(2);",
+											"    pm.expect((typeof jsonData[0])).to.eql(\"object\");",
+											"    pm.expect((typeof jsonData[1])).to.eql(\"object\");",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"SELECT * FROM {{schema}}.{{emps_tb}} WHERE {{emps_id}} = 3 OR {{emps_id}} = 5\"\n}\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "confirm select with multiple results returns an array with multiple objects"
+							},
+							"response": []
+						}
+					],
+					"description": "Test that response from search is object array ",
 					"_postman_isSubFolder": true
 				},
 				{
@@ -6974,6 +7329,455 @@
 							}
 						]
 					},
+					"_postman_isSubFolder": true
+				},
+				{
+					"name": "Search Response Data Type Check",
+					"item": [
+						{
+							"name": "NoSQL search by hash no result",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "ee2b6846-21de-42e9-b8b0-b146ebfc1799",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"verify an empty array was returned\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(0);",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{emps_tb}}\",\n  \"hash_attribute\": \"{{emps_id}}\",\n  \"hash_values\":[100],\n  \"get_attributes\": [\"firstname\", \"lastname\"]\n}\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "Confirm search by hash no result returns empty array"
+							},
+							"response": []
+						},
+						{
+							"name": "NoSQL search by hash one result",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "0a1e27d3-7f2f-4b1c-a5d9-fe6b17099f12",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"verify an array with one object\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(1);",
+											"    pm.expect((typeof jsonData[0])).to.eql(\"object\");",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{emps_tb}}\",\n  \"hash_attribute\": \"{{emps_id}}\",\n  \"hash_values\":[1],\n  \"get_attributes\": [\"firstname\", \"lastname\"]\n}\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "Confirm search by hash one result returns array with single object"
+							},
+							"response": []
+						},
+						{
+							"name": "NoSQL search by hash multiple results",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "83bff633-4197-4c69-8290-216204051258",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"verify an array with one object\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(2);",
+											"    pm.expect((typeof jsonData[0])).to.eql(\"object\");",
+											"    pm.expect((typeof jsonData[1])).to.eql(\"object\");",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{emps_tb}}\",\n  \"hash_attribute\": \"{{emps_id}}\",\n  \"hash_values\":[1, 5],\n  \"get_attributes\": [\"firstname\", \"lastname\"]\n}\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "Confirm search by hash multiple results returns array with N objects"
+							},
+							"response": []
+						},
+						{
+							"name": "NoSQL search by value no result",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "c4461bd7-ef58-4439-8cd2-c1b0a6b5c1bc",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"verify an empty array was returned\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(0);",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"search_by_value\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{emps_tb}}\",\n  \"hash_attribute\": \"{{emps_id}}\",\n  \"search_attribute\":\"lastname\",\n  \"search_value\":\"Xyz\",\n  \"get_attributes\": [\"firstname\", \"lastname\"]\n}\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "Confirm search by value no result returns empty array"
+							},
+							"response": []
+						},
+						{
+							"name": "NoSQL search by value one result",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "b8214010-e5d2-479c-87d0-447faae40101",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"verify an array with one object\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(1);",
+											"    pm.expect((typeof jsonData[0])).to.eql(\"object\");",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"search_by_value\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{emps_tb}}\",\n  \"hash_attribute\": \"{{emps_id}}\",\n  \"search_attribute\":\"lastname\",\n  \"search_value\":\"King\",\n  \"get_attributes\": [\"firstname\", \"lastname\"]\n}\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "Confirm search by value one result returns an array with single object"
+							},
+							"response": []
+						},
+						{
+							"name": "NoSQL search by value multiple results",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "69898717-9e05-4137-8407-b1240cf17411",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"verify an array with one object\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(2);",
+											"    pm.expect((typeof jsonData[0])).to.eql(\"object\");",
+											"    pm.expect((typeof jsonData[1])).to.eql(\"object\");",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"search_by_value\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{emps_tb}}\",\n  \"hash_attribute\": \"{{emps_id}}\",\n  \"search_attribute\":\"lastname\",\n  \"search_value\":\"D*\",\n  \"get_attributes\": [\"firstname\", \"lastname\"]\n}\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "Confirm search by value multiple results returns an array with N objects"
+							},
+							"response": []
+						}
+					],
+					"description": "Test that search returns object array",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"id": "6b58581c-de95-4e8a-a92d-3d7f6d41395a",
+								"type": "text/javascript",
+								"exec": [
+									""
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"id": "187a8c6d-2b26-4283-b599-61fcac3b8f98",
+								"type": "text/javascript",
+								"exec": [
+									""
+								]
+							}
+						}
+					],
 					"_postman_isSubFolder": true
 				},
 				{
