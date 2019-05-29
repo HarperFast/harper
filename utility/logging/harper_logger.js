@@ -27,6 +27,10 @@ let log_level = undefined;
 let log_type = undefined;
 let log_location = undefined;
 
+// let daily_rotate = true;
+// let max_daily_files = '2d';
+let daily_rotate = undefined;
+let max_daily_files = undefined;
 let log_directory = undefined;
 let hdb_log_file_name = undefined;
 
@@ -136,8 +140,6 @@ module.exports = {
 let pin_logger = undefined;
 let win_logger = undefined;
 
-const daily_rotate = true;
-
 /**
  * initialize the winston logger
  */
@@ -161,10 +163,10 @@ function initWinstonLogger() {
             win_logger = new (winston.Logger)({
                 transports: [
                     new (winston.transports.DailyRotateFile)({
-                        // dirname: log_directory,
                         filename: path.join(log_directory, `%DATE%_${hdb_log_file_name}`),
                         handleExceptions: true,
                         level: log_level,
+                        maxFiles: (max_daily_files ? max_daily_files : null),
                         prettyPrint: true,
                         json: true,
                         zippedArchive: true
@@ -188,6 +190,7 @@ function initWinstonLogger() {
  */
 function initPinoLogger() {
     const pino_write_stream = fs.createWriteStream(log_location, {'flags': 'a'});
+    win_logger = undefined;
     pin_logger = pino(
         {
             customLevels: {
@@ -333,9 +336,9 @@ function setLogLevel(level) {
                 win_logger.level = level;
                 win_logger.transports.level = level;
                 if (daily_rotate) {
-                    win_logger.transports.DailyRotateFile.level = level;
+                    win_logger.transports.dailyRotateFile.level = level;
                 } else {
-                    win_logger.transports.file.level = level;
+                win_logger.transports.file.level = level;
                 }
                 break;
 
@@ -359,7 +362,11 @@ function setLogLevel(level) {
                 //Winston is strange, it has a log level at the logger level, the transport level, and each individual transport.
                 win_logger.level = level;
                 win_logger.transports.level = level;
-                win_logger.transports.file.level = level;
+                if (daily_rotate) {
+                    win_logger.transports.dailyRotateFile.level = level;
+                } else {
+                    win_logger.transports.file.level = level;
+                }
                 break;
         }
 
@@ -387,17 +394,17 @@ function setLogType(type) {
  * Set a location for the log file to be written.  Will stop writing to any existing logs and start writing to the new location.
  * @param path
  */
-function setLogLocation(path) {
-    if (!path || path.length === 0) {
+function setLogLocation(log_path) {
+    if (!log_path || log_path.length === 0) {
         error(`An invalid log path was sent to the logger.`);
         return;
     }
     win_logger = undefined;
-    log_location = path;
-    global.log_location = path;
-    log_directory = getLogDirectory(path);
+    log_location = log_path;
+    global.log_location = log_path;
+    log_directory = getLogDirectory(log_path);
     global.log_directory = log_directory;
-    hdb_log_file_name = path.parse(path).base;
+    hdb_log_file_name = path.parse(log_path).base;
 
     switch (log_type) {
         case WIN:
@@ -495,7 +502,7 @@ async function readLog(read_log_object) {
         options.start = read_log_object.start;
     }
 
-    const p_query = util.promisify(bones.query);
+    const p_query = util.promisify(winston.query);
 
     try {
         return await p_query(options);
@@ -506,7 +513,7 @@ async function readLog(read_log_object) {
 }
 
 function configureWinstonForQuery(log_path) {
-    if (daily_rotate && !log_path) {
+    if (daily_rotate && !log_path && log_type === WIN) {
         bones.configure({
             transports: [
                 new (winston.transports.DailyRotateFile)({
@@ -517,10 +524,11 @@ function configureWinstonForQuery(log_path) {
             exitOnError: false
         });
     } else {
+        const query_path = log_path ? log_path : log_location;
         bones.configure({
             transports: [
                 new (winston.transports.File)({
-                    filename: log_path
+                    filename: query_path
                 })
             ],
             exitOnError: false
