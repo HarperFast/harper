@@ -82,7 +82,7 @@ function checkASTPermissions(json_message, parsed_sql_object) {
 function convertSQLToAST(sql) {
     let ast_response = new ParsedSQLObject();
     if(!sql) {
-        throw new Error('invalid SQL: ' + sql);
+        throw new Error('sql parameter is missing');
     }
     try {
         let trimmed_sql = sql.trim();
