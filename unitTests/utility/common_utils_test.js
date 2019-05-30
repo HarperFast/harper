@@ -17,6 +17,44 @@ const ps_list = require('../../utility/psList');
 const { expect } = chai;
 const ALL_SPACES = '     ';
 
+const USERS = [
+    {
+        "active": true,
+        "role": {
+            "id": "d2742e06-e7cc-4a90-9f10-205ac5fa5621",
+            "permission": {
+                "super_user": true
+            },
+            "role": "super_user"
+        },
+        "username": "HDB_ADMIN"
+    },
+    {
+        "active": true,
+        "role": {
+            "id": "d2742e06-e7cc-4a90-9f10-205ac5fa5621",
+            "permission": {
+                "super_user": true
+            },
+            "role": "super_user"
+        },
+        "username": "sgoldberg"
+    },
+    {
+        "active": true,
+        "role": {
+            "id": "916c9ce1-1411-4341-9c0a-7b7bd182a4c9",
+            "permission": {
+                "cluster_user": true
+            },
+            "role": "cluster_user3"
+        },
+        "username": "cluster_test"
+    }
+];
+
+const CLUSTER_USER_NAME = 'cluster_test'
+
 describe(`Test errorizeMessage`, function () {
     it('Nominal, pass message', function () {
         let err = cu.errorizeMessage('This is an error');
@@ -494,6 +532,21 @@ describe('Test checkGlobalSchemaTable', function() {
         } catch(err) {
             assert.equal(err, `table dev.dumbledog does not exist`, 'Expected "table dev.dumbledog does not exist" result');
         }
+    });
+});
+
+describe('Test getClusterUser', function() {
+    it('Test nominal case of isClusterOperation', function() {
+        assert.equal(cu.getClusterUser(USERS, CLUSTER_USER_NAME), USERS[2], 'Expected user');
+    });
+    it('Test non-existent cluster_user', function() {
+        assert.equal(cu.getClusterUser(USERS, CLUSTER_USER_NAME + 1), undefined, 'Expected true result');
+    });
+    it('Test no cluster_user_name', function() {
+        assert.equal(cu.getClusterUser(USERS, null), undefined, 'Expected undefined result');
+    });
+    it('Test no users', function() {
+        assert.equal(cu.getClusterUser(null, CLUSTER_USER_NAME), undefined, 'Expected undefined result');
     });
 });
 

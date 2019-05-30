@@ -10,6 +10,7 @@ const schema = require('../../data_layer/schema');
 
 const env = require('../../utility/environment/environmentManager');
 const search = require('../../data_layer/search');
+const hdb_utils = require('../../utility/common_utils');
 const assert = require('assert');
 const rewire = require('rewire');
 const sinon = require('sinon');
@@ -20,6 +21,44 @@ let FAKE_CHILD = {
     send(payload) {
     }
 };
+
+const CLUSTER_USER_INFO = {
+        "active": true,
+        "role": {
+            "id": "7237a0ec-417d-47a3-89bf-b7f1260e5654",
+            "permission": {
+                "cluster_user": true
+            },
+            "role": "cluster_user"
+        },
+        "username": "test_cluster_user",
+        "hash":"1234567"
+    };
+
+const GLOBAL_USERS = [
+    {
+        "active": true,
+        "role": {
+            "id": "09b16a62-0202-4328-b6ff-2b063e63b7f7",
+            "permission": {
+                "super_user": true
+            },
+            "role": "super_user"
+        },
+        "username": "HDB_ADMIN"
+    },
+    {
+        "active": true,
+        "role": {
+            "id": "7237a0ec-417d-47a3-89bf-b7f1260e5654",
+            "permission": {
+                "cluster_user": true
+            },
+            "role": "cluster_user"
+        },
+        "username": "test_cluster_user"
+    }
+];
 
 const SEARCH_RESULT_OBJECT = [
     {
@@ -101,6 +140,7 @@ describe('Test kickOffEnterprise', function () {
     let fork_stub = undefined;
     let child_send_spy = undefined;
     let search_nodes_stub = undefined;
+    let get_cluster_user_stub = undefined;
     let fork_orig = undefined;
     before(function() {
         fork_orig = enterprise_initialization.__get__('fork');
@@ -123,26 +163,31 @@ describe('Test kickOffEnterprise', function () {
     });
 
     it('Nominal, expect clusters are successfully established', async function () {
+        global.hdb_users = GLOBAL_USERS;
+
         // stub searchByValue to return 4 default cluster nodes
         search_nodes_stub = sandbox.stub(search, 'searchByValue').yields('', SEARCH_RESULT_OBJECT);
+        get_cluster_user_stub = sandbox.stub(hdb_utils, 'getClusterUser').returns(CLUSTER_USER_INFO);
 
         env.append('CLUSTERING', 'TRUE');
         env.append('CLUSTERING_PORT', '1115');
+        env.append('CLUSTERING_USER', 'test_cluster_user');
         env.append('NODE_NAME', 'node_1');
         
         await enterprise_initialization.kickOffEnterprise();
         assert.equal(fork_stub.called, true, 'Child fork should have been called');
-        assert.equal(child_send_spy.called, true, 'Child send() should have been called.');
     });
     it('No node data in hdb_nodes table, expect cluster server initiated', async function () {
         search_nodes_stub = sandbox.stub(search, 'searchByValue').yields('', []);
+        get_cluster_user_stub = sandbox.stub(hdb_utils, 'getClusterUser').returns(CLUSTER_USER_INFO);
+
         env.append('CLUSTERING', 'TRUE');
         env.append('CLUSTERING_PORT', '1115');
+        env.append('CLUSTERING_USER', 'test_cluster_user');
         env.append('NODE_NAME', 'node_1');
         
         await enterprise_initialization.kickOffEnterprise();
         assert.equal(fork_stub.called, true, 'Child fork should have been called');
-        assert.equal(child_send_spy.called, true, 'Child send() should have been called.');
     });
     it('No cluster config in properties, expect no cluster node initiated', async function () {
         search_nodes_stub = sandbox.stub(search, 'searchByValue').yields('', SEARCH_RESULT_OBJECT);
