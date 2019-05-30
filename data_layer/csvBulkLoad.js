@@ -202,10 +202,10 @@ function validateColumnNames(created_record) {
 
 /**
  * Performs either a bulk insert or update depending on the action passed to the function.
- * @param records
- * @param schema
- * @param table
- * @param action
+ * @param records - The records to be inserted/updated
+ * @param schema - The schema containing the specified table
+ * @param table - The table to perform the insert/update
+ * @param action - Specify either insert or update the specified records
  * @returns {Promise<{message: string}>}
  */
 async function bulkLoad(records, schema, table, action){
