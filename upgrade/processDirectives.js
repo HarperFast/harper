@@ -10,6 +10,7 @@ const fs = require('fs');
 const path = require('path');
 const PropertiesReader = require('properties-reader');
 const directive_manager = require('./directives/directiveManager');
+const terms = require('../utility/hdbTerms');
 
 module.exports = {
     writeEnvVariables: writeEnvVariables,
@@ -266,7 +267,7 @@ function makeDirectory(targetDir, {isRelativeToScript = false} = {}) {
         const curDir = path.resolve(baseDir, parentDir, childDir);
         try {
             if(curDir && curDir !== '/') {
-                fs.mkdirSync(curDir);
+                fs.mkdirSync(curDir, {mode: terms.HDB_FILE_PERMISSIONS});
                 log.info(`Directory ${curDir} created`);
             }
         } catch (err) {

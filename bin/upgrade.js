@@ -38,8 +38,6 @@ const TAR_FILE_NAME = 'hdb-latest.tar';
 const EXE_COPY_NAME = 'hdb';
 const EXE_NAME = 'harperdb';
 
-const FILE_PERM = 0o754;
-
 // This will be set to the path of the upgrade directory.
 let UPGRADE_DIR_PATH = path.join(__dirname, '../', UPGRADE_DIR_NAME);
 
@@ -98,7 +96,7 @@ function callUpgradeOnNew() {
 
 async function upgradeFromFilePath(file_path) {
     // Extract the tar file, use the 'finish' event to kick off the upgrade process.
-    let tarball = await fs.createReadStream(file_path, {mode: FILE_PERM}).pipe(tar.extract(UPGRADE_DIR_PATH));
+    let tarball = await fs.createReadStream(file_path, {mode: hdb_terms.HDB_FILE_PERMISSIONS}).pipe(tar.extract(UPGRADE_DIR_PATH));
     tarball.on('finish', async function () {
         printToLogAndConsole(`Finished extracting tar file at path: ${file_path}`);
         await copyUpgradeExecutable();
@@ -159,7 +157,7 @@ async function upgrade() {
     };
 
     try {
-        fs.mkdirSync(UPGRADE_DIR_PATH);
+        fs.mkdirSync(UPGRADE_DIR_PATH, {mode:  hdb_terms.HDB_FILE_PERMISSIONS});
     } catch(e) {
         printToLogAndConsole(`Got an error trying to create the upgrade directory. ${e}`, log.ERR);
     }
@@ -225,9 +223,9 @@ function startUpgrade() {
     let exe_path = path.join(process.cwd(), EXE_NAME);
     log.info(`Calling chmod on ${exe_path}`);
     try {
-        fs.chmodSync(exe_path, FILE_PERM);
+        fs.chmodSync(exe_path, hdb_terms.HDB_FILE_PERMISSIONS);
     } catch(e) {
-        let msg = `Unable to set permissions ${FILE_PERM} on ${exe_path}.  Please set the permissions using the command chmod ${FILE_PERM} ${exe_path}`;
+        let msg = `Unable to set permissions ${ hdb_terms.HDB_FILE_PERMISSIONS} on ${exe_path}.  Please set the permissions using the command chmod ${ hdb_terms.HDB_FILE_PERMISSIONS} ${exe_path}`;
         log.error(msg);
         console.error(msg);
     }
@@ -300,10 +298,10 @@ async function getBuild(opers) {
     try {
         // The request-promise repo recommends using plain old request when piping needs to happen.
         res = await request(options);
-        let file = await fs.createWriteStream(path.join(UPGRADE_DIR_PATH, TAR_FILE_NAME), {mode: FILE_PERM});
+        let file = await fs.createWriteStream(path.join(UPGRADE_DIR_PATH, TAR_FILE_NAME), {mode: hdb_terms.HDB_FILE_PERMISSIONS});
         res.pipe(file);
         file.on('finish', async function() {
-            let tarball = await fs.createReadStream(path.join(UPGRADE_DIR_PATH, TAR_FILE_NAME), {mode: FILE_PERM}).pipe(tar.extract(UPGRADE_DIR_PATH));
+            let tarball = await fs.createReadStream(path.join(UPGRADE_DIR_PATH, TAR_FILE_NAME), {mode: hdb_terms.HDB_FILE_PERMISSIONS}).pipe(tar.extract(UPGRADE_DIR_PATH));
             tarball.on('finish', async function () {
                 await copyUpgradeExecutable();
                 callUpgradeOnNew();
@@ -392,7 +390,7 @@ function backupCurrInstall() {
     if(fs.existsSync(backup_path)) {
         fs_extra.emptyDirSync(backup_path);
     } else {
-        fs.mkdirSync(backup_path);
+        fs.mkdirSync(backup_path, {mode:  hdb_terms.HDB_FILE_PERMISSIONS});
     }
     try {
         fs_extra.copySync(curr_install_base, backup_path);
