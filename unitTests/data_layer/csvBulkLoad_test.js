@@ -8,6 +8,7 @@ const sinon = require('sinon');
 const rewire = require('rewire');
 let csv_rewire = rewire('../../data_layer/csvBulkLoad');
 const hdb_terms = require('../../utility/hdbTerms');
+const validator = require('../../validation/csvLoadValidator');
 const insert = require('../../data_layer/insert');
 const fs = require('fs');
 const {promise} = require('alasql');
@@ -42,6 +43,7 @@ describe('Test csvDataLoad', function () {
         test_msg.data = VALID_CSV_DATA;
         bulk_load_stub = sandbox.stub().returns(BULK_LOAD_RESPONSE);
         csv_rewire.__set__('bulkLoad', bulk_load_stub);
+        sandbox.stub(validator, 'dataObject');
     });
     afterEach(function () {
         sandbox.restore();
@@ -147,6 +149,7 @@ describe('Test csvURLLoad', function () {
         test_msg.operation = hdb_terms.OPERATIONS_ENUM.csv_url_load;
         bulk_load_stub = sandbox.stub().returns(BULK_LOAD_RESPONSE);
         csv_rewire.__set__('bulkLoad', bulk_load_stub);
+        sandbox.stub(validator, 'urlObject');
     });
     afterEach(function () {
         sandbox.restore();
@@ -207,6 +210,7 @@ describe('Test csvFileLoad', function () {
         test_msg.operation = hdb_terms.OPERATIONS_ENUM.csv_file_load;
         bulk_load_stub = sandbox.stub().returns(BULK_LOAD_RESPONSE);
         csv_rewire.__set__('bulkLoad', bulk_load_stub);
+        sandbox.stub(validator, 'fileObject');
     });
     afterEach(function () {
         sandbox.restore();
