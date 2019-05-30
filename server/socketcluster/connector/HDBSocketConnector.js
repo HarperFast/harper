@@ -10,11 +10,11 @@ class HDBSocketConnector extends SocketConnector{
     }
 
     connectHandler(status){
-        this.subscribe(`worker_${process.pid}`, this.hdbWorkerWatcher.bind(this));
+        this.subscribe(this.socket.id, this.hdbWorkerWatcher.bind(this));
     }
 
     disconnectHandler(status){
-        console.log(`Disconnected from room worker_${process.pid} with status: ${status}`);
+        console.log(`worker_${process.pid} disconnected with status: ${status}`);
     }
 
     hdbWorkerWatcher(data){
