@@ -408,7 +408,7 @@ async function createFolders(folders, pool) {
             }
             await pool_handler(pool, folders, CHUNK_SIZE, '../utility/fs/mkdirp');
         } else {
-            await mkdirp(folders);
+            await mkdirp(folders, {mode:  hdb_terms.HDB_FILE_PERMISSIONS});
         }
 
         return pool;
