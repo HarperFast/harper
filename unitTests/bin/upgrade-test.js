@@ -10,18 +10,11 @@ const version = require('../../bin/version');
 const hdb_utils = require('../../utility/common_utils');
 const fs = require('fs');
 const util = require('util');
-const insert = require('../../data_layer/insert');
 const search = require('../../data_layer/search');
-const delete_ = require('../../data_layer/delete');
-const hdb_terms = require('../../utility/hdbTerms');
-const BinObjects = require('../../bin/BinObjects');
-const SystemSchema = require('../../json/systemSchema');
-const DataLayerObjects = require('../../data_layer/DataLayerObjects');
 
 const rewire = require('rewire');
 let upgrade_rw = rewire(`../../bin/upgrade`);
 const process_directives_rw = rewire('../../upgrade/processDirectives');
-let p_search_search_by_value = util.promisify(search.searchByValue);
 
 const directive_manager_stub = require('../upgrade/directives/testDirectives/directiveManagerStub');
 

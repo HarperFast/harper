@@ -1,5 +1,9 @@
 "use strict";
 
+/**
+ * Module meant as an intermediary between the hdb_info table and the upgrade/install processes.
+ */
+
 const insert = require('./insert');
 const search = require('./search');
 const util = require('util');
@@ -12,7 +16,7 @@ let p_search_search_by_value = util.promisify(search.searchByValue);
 
 /**
  * Insert a row into hdb_info with the new version.
- * @param new_version_string
+ * @param new_version_string - The version of this install/upgrade
  * @returns {Promise<void>}
  * @throws
  */
@@ -33,7 +37,8 @@ async function updateHdbInfo(new_version_string) {
     try {
         version_data = await p_search_search_by_value(search_obj);
     } catch(err) {
-        // search may fail during a new install as the table doesn't exist yet (we haven't done an insert).
+        // search may fail during a new install as the table doesn't exist yet (we haven't done an insert).  This is ok,
+        // we will assume an id of 0 below.
         log.info(err);
     }
     try {

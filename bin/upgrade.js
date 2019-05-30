@@ -31,14 +31,7 @@ const {spawn} = require('child_process');
 const path = require('path');
 const fs_extra = require('fs-extra');
 const { isHarperRunning } = require('../utility/common_utils');
-const insert = require('../data_layer/insert');
-const search = require('../data_layer/search');
-const util = require('util');
-const BinObjects = require('./BinObjects');
-const DataLayerObjects = require('../data_layer/DataLayerObjects');
 const hdbInfoController = require('../data_layer/hdbInfoController');
-
-let p_search_search_by_value = util.promisify(search.searchByValue);
 
 const UPGRADE_DIR_NAME= 'hdb_upgrade';
 const TAR_FILE_NAME = 'hdb-latest.tar';
@@ -175,7 +168,7 @@ async function upgrade() {
     } catch(err) {
         printToLogAndConsole(err, log.ERR);
         throw err;
-    };
+    }
 }
 
 /**

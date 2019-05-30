@@ -27,9 +27,7 @@ const HASH_FOLDER_NAME = '__hdb_hash';
 const CLUSTERING_VERSION_HEADER_NAME = 'hdb_version';
 const HDB_HOME_DIR_NAME = '.harperdb';
 const BOOT_PROPS_FILE_NAME = 'hdb_boot_properties.file';
-
 const HDB_INFO_TABLE_NAME = 'hdb_info';
-
 const RESTART_CODE = 'SIGTSTP';
 const RESTART_CODE_NUM = 24;
 const RESTART_TIMEOUT_MS = 60000;
