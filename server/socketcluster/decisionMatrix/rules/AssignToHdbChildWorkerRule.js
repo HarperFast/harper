@@ -19,7 +19,7 @@ class AssignToHdbChildWorkerRule extends RuleIF {
         }
         let internal_index = req.channel.indexOf('internal:');
         try {
-            if (req.channel.indexOf('internal:') >= 0) {
+            if (req.channel.indexOf('internal:') < 0) {
                 let target = req.channel.split(':');
                 req.data.schema = target[0];
                 req.data.table = target[1];

@@ -10,6 +10,7 @@ const {promisify} = require('util');
 const log = require('../../../utility/logging/harper_logger');
 const NodeConnector = require('../connector/NodeConnector');
 const password_utility = require('../../../utility/password');
+const get_cluster_user = require('../../../utility/common_utils').getClusterUser;
 
 /**
  * Represents a WorkerIF implementation for socketcluster.
@@ -76,7 +77,23 @@ class ClusterWorker extends WorkerIF {
         this.exchange_set = promisify(this.exchange.set).bind(this.exchange);
 
         if(this.isLeader){
-            new NodeConnector(require('../../../json/node'), this);
+            this.processArgs().then(hdb_data=>{
+                new NodeConnector(hdb_data.nodes, hdb_data.cluster_user, this);
+            });
+        }
+    }
+
+    async processArgs(){
+        try{
+            let data = process.argv[2];
+            let hdb_data = JSON.parse(data);
+            if(hdb_data !== undefined) {
+                await this.setHDBDatatoExchange(hdb_data);
+                log.info('hdb_data successfully set to exchange');
+                return hdb_data;
+            }
+        } catch(e){
+            log.error(e);
         }
     }
 
@@ -197,18 +214,11 @@ class ClusterWorker extends WorkerIF {
 
     async handleLoginResponse(req, credentials){
         let users = await this.exchange_get('hdb_users');
-        let found_user = undefined;
-        for(let x = 0; x < users.length; x++){
-            let user = users[x];
-            if(user.username === credentials.username && user.role.permission.super_user === true && password_utility.validate(user.password, credentials.password)){
-                found_user = user;
-                break;
-            }
-        }
+        let found_user = get_cluster_user(users, credentials.username);
 
-        if(found_user === undefined) {
+        if(found_user === undefined || !password_utility.validate(found_user.password, credentials.password)) {
             req.socket.destroy();
-            return log.error('invalid credentials, access denied');
+            return log.error('invalid user, access denied');
         }
 
         //we may need to handle this scenario: https://github.com/SocketCluster/socketcluster/issues/343

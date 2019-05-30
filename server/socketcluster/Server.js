@@ -1,14 +1,19 @@
 'use strict';
 const SocketCluster = require('socketcluster');
 const promisify = require('util').promisify;
+const fs = require('fs-extra');
 const env = require('../../utility/environment/environmentManager');
 env.initSync();
+
+const PROPS_PRIVATE_KEY = 'PRIVATE_KEY';
+const PROPS_CERT_KEY = 'CERTIFICATE';
+const PRIVATE_KEY = env.get(PROPS_PRIVATE_KEY);
+const CERTIFICATE = env.get(PROPS_CERT_KEY);
+
 const log = require('../../utility/logging/harper_logger');
 const PORT = env.get('CLUSTERING_PORT');
 const DEFAULT_PORT = 12345;
 
-let hdb_data = undefined;
-let sc_ready = false;
 //initializes a new socket cluster all options can be seen here: https://socketcluster.io/#!/docs/api-socketcluster
 let socketCluster = new SocketCluster({
     // Number of worker processes, this will be config based
@@ -55,7 +60,9 @@ let socketCluster = new SocketCluster({
     ackTimeout: 10000,
 
     // will always be https
-    protocol: 'http',
+    protocol: 'https',
+
+    protocolOptions: {key: fs.readFileSync(`${PRIVATE_KEY}`), cert: fs.readFileSync(`${CERTIFICATE}`)},
 
     /* A JS file which you can use to configure each of your
      * workers/servers - This is where most of your backend code should go
@@ -95,12 +102,6 @@ function registerHandlers(){
     socketCluster.on('brokerExit', brokerExitHandler);
     socketCluster.on('brokerMessage', brokerMessageHandler);
 }
-
-//handle inbound messages from thje parent process, this will only occur when HDB spawns SC Server
-process.on('message', data=>{
-    hdb_data = {hdb_data: data};
-    sendDataToFirstWorker().then(()=>{});
-});
 
 
 /**
@@ -169,19 +170,6 @@ function workerClusterStartHandler(worker_cluster_info){
  */
 function workerClusterReadyHandler(worker_cluster_info){
     console.log('worker cluster ready');
-    sc_ready = true;
-    sendDataToFirstWorker().then(()=>{});
-}
-
-async function sendDataToFirstWorker(){
-    if(hdb_data !== undefined && sc_ready === true){
-        try {
-            await p_send_to_worker(0, hdb_data);
-            log.info('sent hdb data to worker');
-        } catch(e){
-            log.error(e);
-        }
-    }
 }
 
 /**

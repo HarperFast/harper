@@ -8,7 +8,7 @@ const write = require('./insert');
 const clone = require('clone');
 const alasql = require('alasql');
 const util = require('util');
-const cb_insert_insert = util.callbackify(write.update);
+const cb_insert_update = util.callbackify(write.update);
 
 module.exports = {
     update: update
@@ -108,7 +108,7 @@ function updateRecords(table, records, callback){
         records:records
     };
 
-    cb_insert_insert(update_object, (err, res) => {
+    cb_insert_update(update_object, (err, res) => {
         if(err){
             callback(err);
             return;
