@@ -25,14 +25,12 @@ const terms = require('../hdbTerms');
 const WIN = 1;
 const PIN = 2;
 
+let daily_rotate = undefined;
+let max_daily_files = undefined;
 let log_level = undefined;
 let log_type = undefined;
 let log_location = undefined;
-
-// let daily_rotate = true;
-// let max_daily_files = '2d';
-let daily_rotate = undefined;
-let max_daily_files = undefined;
+// Variables used for log daily rotation
 let log_directory = undefined;
 let hdb_log_file_name = undefined;
 
@@ -45,7 +43,10 @@ try {
     hdb_properties = PropertiesReader(boot_props_file_path);
     hdb_properties.append(hdb_properties.get('settings_path'));
 
-    // read environment settings to get log level
+    // read environment settings to get log settings
+    daily_rotate = hdb_properties.get('LOG_DAILY_ROTATE');
+    const daily_max = hdb_properties.get('LOG_MAX_DAILY_FILES');
+    max_daily_files = daily_max ? daily_max + 'd' : null;
     log_level = hdb_properties.get('LOG_LEVEL');
     log_type = hdb_properties.get('LOGGER');
     log_location = hdb_properties.get('LOG_PATH');
@@ -169,7 +170,7 @@ function initWinstonLogger() {
                         filename: path.join(log_directory, `%DATE%_${hdb_log_file_name}`),
                         handleExceptions: true,
                         level: log_level,
-                        maxFiles: (max_daily_files ? max_daily_files : null),
+                        maxFiles: max_daily_files,
                         prettyPrint: true,
                         json: true,
                         zippedArchive: true
@@ -314,10 +315,6 @@ function notify(message) {
     write_log(NOTIFY, message);
 }
 
-function getLogDirectory(log_path) {
-    return path.parse(log_path).dir;
-}
-
 /**
  * Set the log level for the HDB Processes.  Default is error.  Options are trace, debug, info, error, fatal.
  * @param {string} level - The logging level for the HDB processes.
@@ -394,8 +391,17 @@ function setLogType(type) {
 }
 
 /**
+ * Parses file path and returns directory path
+ * @param log_path file path
+ * @returns {string} directory path
+ */
+function getLogDirectory(log_path) {
+    return path.parse(log_path).dir;
+}
+
+/**
  * Set a location for the log file to be written.  Will stop writing to any existing logs and start writing to the new location.
- * @param path
+ * @param log_path file path for logging
  */
 function setLogLocation(log_path) {
     if (!log_path || log_path.length === 0) {
@@ -403,6 +409,7 @@ function setLogLocation(log_path) {
         return;
     }
     win_logger = undefined;
+    pin_logger = undefined;
     log_location = log_path;
     global.log_location = log_path;
     log_directory = getLogDirectory(log_path);
@@ -537,14 +544,6 @@ function configureWinstonForQuery(log_path) {
             exitOnError: false
         });
     }
-    bones.configure({
-        transports: [
-            new (winston.transports.File)({
-                filename: log_path
-            })
-        ],
-        exitOnError: false
-    });
 }
 
 /**

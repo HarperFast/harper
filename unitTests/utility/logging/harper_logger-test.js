@@ -12,7 +12,7 @@ const assert = require('assert');
 const chai = require('chai');
 const sinon_chai = require('sinon-chai');
 const expect = chai.expect;
-chai.use(sinon_chai)
+chai.use(sinon_chai);
 const sinon = require('sinon');
 const fs = require('fs');
 const moment = require('moment');
@@ -22,15 +22,17 @@ const path = require('path');
 const rewire = require('rewire');
 let harper_log = rewire('../../../utility/logging/harper_logger');
 
-let output_file_name;
-let default_log_file_name = global.log_location;
+const default_test_log_dir = path.join(process.cwd(), "../", "unitTests");
+const default_test_log_name = 'test_log.log';
+const default_test_log_path = path.join(default_test_log_dir, default_test_log_name);
 // Create log location for Winston daily rotation file tests
-let daily_log_directory = path.parse(default_log_file_name).dir;
-let daily_log_file_name = path.parse(default_log_file_name).base;
 let current_date = moment().format("YYYY-MM-DD");
-let daily_file_name = `${current_date}_${daily_log_file_name}`;
-let daily_output_file_name = path.join(daily_log_directory, daily_file_name);
+let daily_file_name = `${current_date}_${default_test_log_name}`;
+let daily_test_log_path = path.join(default_test_log_dir, daily_file_name);
 let file_change_results = false;
+
+// Create variable to use for watchers and for ensuring test logs are cleaned up after testing
+let output_file_path;
 
 const LOG_DELIMITER = '______________';
 
@@ -70,13 +72,26 @@ function printLogs() {
 }
 
 function zeroizeOutputFile() {
-    if(ZEROIZE_OUTPUT_FILE) {
-        fs.truncateSync(output_file_name, 0);
+    if (ZEROIZE_OUTPUT_FILE) {
+        fs.truncateSync(output_file_path, 0);
     }
 }
 
-function rewireLogger() {
+function rewireDefaultLogger(log_type) {
+    const test_log_type = log_type ? log_type : WINSTON;
     harper_log = rewire('../../../utility/logging/harper_logger');
+    harper_log.__set__("log_type", test_log_type);
+    harper_log.__set__("log_location", default_test_log_path);
+    harper_log.__set__("daily_rotate", undefined);
+}
+
+function rewireDailyLogger() {
+    harper_log = rewire('../../../utility/logging/harper_logger');
+    harper_log.__set__("log_type", WINSTON);
+    harper_log.__set__("log_location", default_test_log_path);
+    harper_log.__set__("log_directory", default_test_log_dir);
+    harper_log.__set__("hdb_log_file_name", default_test_log_name);
+    harper_log.__set__("daily_rotate", true);
 }
 
 function resetLoggerSpies() {
@@ -89,13 +104,19 @@ function resetLoggerSpies() {
     harper_notify_spy = sandbox.spy(harper_log, 'notify');
 }
 
+function unlinkTestLog(path) {
+    if (fs.existsSync(path)) {
+        fs.unlinkSync(path);
+    }
+}
+
 function log_something(level, done) {
     harper_log.setLogLevel(level);
     harper_log.notify(LOG_DELIMITER+level);
     printLogs();
     harper_log.notify(LOG_DELIMITER+level);
     setTimeout(() => {
-        fs.readFile(output_file_name, function read(err, data) {
+        fs.readFile(output_file_path, function read(err, data) {
             if(err) {
                 console.log('ERROR!');
                 throw err;
@@ -199,25 +220,27 @@ function log_something(level, done) {
 describe('Test harper_logger ', () => {
     after(() => {
         sandbox.restore();
-        harper_log = rewire('../../../utility/logging/harper_logger');
-    })
+        rewireDefaultLogger();
+        unlinkTestLog(default_test_log_path);
+        unlinkTestLog(daily_test_log_path);
+    });
 
     describe(`Test log writing - Winston`, () => {
         before(() => {
+            rewireDefaultLogger();
             resetLoggerSpies();
-            output_file_name = default_log_file_name;
-            harper_log.__set__("daily_rotate", undefined);
+            output_file_path = default_test_log_path;
             file_change_results = false;
             harper_log.setLogType(WINSTON);
-            if (!fs.existsSync(output_file_name)) {
+            if (!fs.existsSync(output_file_path)) {
                 try {
-                    fs.writeFileSync(output_file_name, '');
+                    fs.writeFileSync(output_file_path, '');
                 } catch (e) {
                     console.log("Cannot write file ", e);
                 }
             }
 
-            watcher = fs.watch(output_file_name, {persistent: false}, (eventType, filename) => {
+            watcher = fs.watch(output_file_path, {persistent: false}, (eventType, filename) => {
                 if (filename) {
                     file_change_results = true;
                 } else {
@@ -233,7 +256,6 @@ describe('Test harper_logger ', () => {
         after(() => {
             zeroizeOutputFile();
             watcher.close();
-            // sandbox.resetHistory();
         });
 
         it('Test Trace Level', (done) => {
@@ -311,22 +333,20 @@ describe('Test harper_logger ', () => {
         });
     });
 
-    describe(`Test log writing - Winston Daily File Rotation`, () => {
+    describe(`Test log writing - WINSTON w/ Daily File Rotation`, () => {
         before(() => {
-            rewireLogger();
+            rewireDailyLogger();
             resetLoggerSpies();
-            harper_log.__set__("daily_rotate", true);
-            harper_log.setLogType(WINSTON);
-            output_file_name = daily_output_file_name;
-            if (!fs.existsSync(output_file_name)) {
+            output_file_path = daily_test_log_path;
+            if (!fs.existsSync(output_file_path)) {
                 try {
-                    fs.writeFileSync(output_file_name, '');
+                    fs.writeFileSync(output_file_path, '');
                 } catch (e) {
                     console.log("Cannot write file ", e);
                 }
             }
 
-            watcher = fs.watch(output_file_name, {persistent: false}, (eventType, filename) => {
+            watcher = fs.watch(output_file_path, {persistent: false}, (eventType, filename) => {
                 if (filename) {
                     file_change_results = true;
                 } else {
@@ -422,19 +442,18 @@ describe('Test harper_logger ', () => {
 
     describe(`Test log writing - PINO`, () => {
         before(() => {
-            rewireLogger();
+            rewireDefaultLogger(PINO);
             resetLoggerSpies();
-            output_file_name = default_log_file_name;
-            harper_log.setLogType(PINO);
-            if(!fs.existsSync(output_file_name)) {
+            output_file_path = default_test_log_path;
+            if(!fs.existsSync(output_file_path)) {
                 try {
-                    fs.writeFileSync(output_file_name, '');
+                    fs.writeFileSync(output_file_path, '');
                 } catch (e) {
                     console.log("Cannot write file ", e);
                 }
             }
 
-            watcher = fs.watch(output_file_name, {persistent: false}, (eventType, filename) => {
+            watcher = fs.watch(output_file_path, {persistent: false}, (eventType, filename) => {
                 if(filename) {
                     file_change_results = true;
                 } else {
@@ -529,8 +548,7 @@ describe('Test harper_logger ', () => {
 
     describe(`Test log level writing - WINSTON`, () => {
         before(() => {
-            rewireLogger();
-            harper_log.setLogType(WINSTON);
+            rewireDefaultLogger();
         });
 
         after(() => {
@@ -566,10 +584,50 @@ describe('Test harper_logger ', () => {
         });
     });
 
+    describe(`Test log level writing - WINSTON w/ Daily File Rotation`, () => {
+        before(() => {
+            rewireDailyLogger();
+            output_file_path = daily_test_log_path;
+        });
+
+        after(() => {
+            zeroizeOutputFile();
+        });
+
+        it('Set log level to notify, should only see notify messages', (done) => {
+            log_something(harper_log.NOTIFY, done);
+        });
+
+        it('Set log level to fatal, should only see fatal message', (done) => {
+            log_something(harper_log.FATAL, done);
+        });
+
+        it('Set log level to error, should only see error and fatal message', (done) => {
+            log_something(harper_log.ERR, done);
+        });
+
+        it('Set log level to warn, should only see error, fatal, warn message', (done) => {
+            log_something(harper_log.WARN, done);
+        });
+
+        it('Set log level to info, should see error, fatal, warn, info message', (done) => {
+            log_something(harper_log.INFO, done);
+        });
+
+        it('Set log level to debug, should see all but trace', (done) => {
+            log_something(harper_log.DEBUG, done);
+        });
+
+        it('Set log level to trace, should see all messages', (done) => {
+            log_something(harper_log.TRACE, done);
+        });
+    });
+
+
     describe(`Test log level writing - PINO`, () => {
         before(() => {
-            rewireLogger();
-            harper_log.setLogType(PINO);
+            rewireDefaultLogger(PINO);
+            output_file_path = default_test_log_path;
         });
 
         after(() => {
@@ -607,9 +665,11 @@ describe('Test harper_logger ', () => {
 
     describe(`Test setLogType`, () => {
         before(() => {
+            rewireDefaultLogger();
             harper_log.setLogType(WINSTON);
             file_change_results = false;
-            watcher = fs.watch(output_file_name, {persistent: false}, (eventType, filename) => {
+
+            watcher = fs.watch(output_file_path, {persistent: false}, (eventType, filename) => {
                 if(filename) {
                     file_change_results = true;
                 } else {
@@ -639,24 +699,28 @@ describe('Test harper_logger ', () => {
 
     describe(`Test setLogLocation`, () => {
         let new_output_file = undefined;
+        let default_path = undefined;
 
         before(() => {
-            harper_log.setLogType(WINSTON);
-            file_change_results = false;
+            default_path = default_test_log_path;
+            new_output_file = path.join(default_test_log_dir, 'new_test_log.log');
+        });
+
+        beforeEach(() => {
+            rewireDefaultLogger();
         });
 
         afterEach(() => {
-            try {
-                zeroizeOutputFile();
-                fs.unlinkSync(new_output_file);
-                fs.unlinkSync(output_file_name);
-            } catch(err) {
-                // no-op
-            }
+            file_change_results = false;
+            watcher.close();
         });
-        it('set log location', (done) => {
-            new_output_file = '../unitTests/testlog.log';
-            harper_log.__set__('log_location', '../run_log.log');
+
+        after(() => {
+            unlinkTestLog(new_output_file);
+            unlinkTestLog(default_test_log_path);
+        });
+
+        it('set log location', () => {
             harper_log.error('test');
             harper_log.setLogLocation(new_output_file);
             harper_log.error('new log path was set');
@@ -678,16 +742,14 @@ describe('Test harper_logger ', () => {
                     // Had to play with the timing on this to make it constantly pass.  Might need to be slower depending on the
                     // event loop and specs of any given system the test is run on.  Not the best way to test, but works for now.
                     assert.equal(file_change_results, true, "Did not detect a file change to new log file. This might be a timing issue with the test, not the functionality.");
-                    done();
-                }, 1300);
-            }, 500);
+                }, 200);
+            }, 200);
         });
-        it('set log location with bad path, expect log written to default path', (done) => {
-            new_output_file = undefined;
-            let default_path = '../run_log.log';
-            harper_log.__set__('log_location', default_path);
+
+        it('set log location with bad path, expect log written to default path', () => {
+            const bad_log_path = undefined;
             harper_log.error('test');
-            harper_log.setLogLocation(new_output_file);
+            harper_log.setLogLocation(bad_log_path);
             harper_log.error('bad log path was set');
             // need to wait for the logger to create and write to the file.
             try {
@@ -706,11 +768,10 @@ describe('Test harper_logger ', () => {
                 // Had to play with the timing on this to make it constantly pass.  Might need to be slower depending on the
                 // event loop and specs of any given system the test is run on.  Not the best way to test, but works for now.
                 assert.equal(file_change_results, true, 'Expected log written to default path.');
-                done();
-            }, 1200);
+            }, 200);
         });
     });
-})
+});
 
 const DEFAULT_OPTIONS_LIMIT = 100;
 
@@ -723,7 +784,7 @@ const TEST_READ_LOG_OBJECT = {
     "start": "0",
     "order": "desc",
     "level":"error"
-}
+};
 
 function getMomentDate(date) {
     if (date) {
@@ -739,13 +800,12 @@ describe("Test read_log ", () => {
     let test_read_log_obj;
 
     before(() => {
+        winston_configure_spy = sandbox.spy(winston, "configure");
         winston_query_spy = sandbox.spy(winston, "query");
-        output_file_name = default_log_file_name;
-        harper_log = rewire('../../../utility/logging/harper_logger');
+        rewireDefaultLogger();
         harper_log.setLogType(WINSTON);
-        harper_log.setLogLocation(output_file_name);
         harper_log.setLogLevel(harper_log.ERR);
-        if(fs.existsSync(output_file_name)) {
+        if(fs.existsSync(default_test_log_path)) {
             try {
                 zeroizeOutputFile();
             } catch (e) {
@@ -754,7 +814,7 @@ describe("Test read_log ", () => {
         }
         harper_log.error(ERROR_LOG_MESSAGE);
         harper_log.error(ERROR_LOG_MESSAGE);
-    })
+    });
 
     beforeEach(() => {
         harper_log.setLogType(WINSTON);
@@ -763,12 +823,14 @@ describe("Test read_log ", () => {
 
     afterEach(() => {
         sandbox.resetHistory();
-    })
+    });
 
     after(() => {
-        harper_log = rewire('../../../utility/logging/harper_logger');
+        rewireDefaultLogger();
+        unlinkTestLog(default_test_log_path);
+        unlinkTestLog(daily_test_log_path);
         sandbox.restore();
-    })
+    });
 
     it("Should call the query method if the validator does NOT return anything", test_utils.mochaAsyncWrapper(async () => {
         let queryResults;
@@ -787,7 +849,8 @@ describe("Test read_log ", () => {
     it("Should throw an error if the validator returns an error value", test_utils.mochaAsyncWrapper( async () => {
         let queryResults;
         let errorResponse;
-        test_read_log_obj.until="BOGO Jamba Juice!"
+        test_read_log_obj.until="BOGO Jamba Juice!";
+
         try {
             queryResults = await harper_log.readLog(test_read_log_obj);
         } catch(e) {
@@ -797,11 +860,7 @@ describe("Test read_log ", () => {
         expect(queryResults).to.equal(undefined);
     }));
 
-    describe("setting Winston configuration for query", () => {
-        before(() => {
-            winston_configure_spy = sandbox.spy(winston, "configure");
-        });
-
+    describe("setting default Winston configuration for query", () => {
         afterEach(() => {
             sandbox.resetHistory();
         });
@@ -818,14 +877,14 @@ describe("Test read_log ", () => {
             test_read_log_obj.log = "run_log";
             harper_log.readLog(test_read_log_obj);
 
-            expect(winston_configure_spy.args[0][0].transports[0].filename).to.equal('run_log.log')
+            expect(winston_configure_spy.args[0][0].transports[0].filename).to.equal('run_log.log');
             expect(winston_configure_spy.calledOnce).to.equal(true);
         });
 
         it("Should configure winston when there is no log set in the read_log_object ", () => {
             harper_log.readLog(test_read_log_obj);
 
-            expect(global.log_location).to.include(winston_configure_spy.args[0][0].transports[0].filename);
+            expect(default_test_log_path).to.include(winston_configure_spy.args[0][0].transports[0].filename);
             expect(winston_query_spy.calledOnce).to.equal(true);
         });
 
@@ -833,19 +892,19 @@ describe("Test read_log ", () => {
             harper_log.setLogType(PINO);
             harper_log.readLog(test_read_log_obj);
 
-            expect(global.log_location).to.include(winston_configure_spy.args[0][0].transports[0].filename);
+            expect(default_test_log_name).to.include(winston_configure_spy.args[0][0].transports[0].filename);
             expect(winston_configure_spy.calledOnce).to.equal(true);
         });
     });
 
     describe("bones.query() 'options' parameter ", () => {
-        const default_options_fields = harper_log.__get__('DEFAULT_LOGGER_FIELDS')
+        const default_options_fields = harper_log.__get__('DEFAULT_LOGGER_FIELDS');
         let queryResults;
 
         afterEach(() => {
             queryResults = undefined;
             sandbox.resetHistory();
-        })
+        });
 
         it("Should include 'limit' and 'fields' properties by default ", test_utils.mochaAsyncWrapper( async () => {
             delete test_read_log_obj['limit'];
@@ -894,7 +953,7 @@ describe("Test read_log ", () => {
                 } else {
                     expect(winston_options.option).to.equal(test_read_log_obj.option);
                 }
-            })
+            });
             expect(queryResults.file.length).to.equal(2);
         }));
 
@@ -980,5 +1039,40 @@ describe("Test read_log ", () => {
             const winston_options = winston_query_spy.args[0][0];
             expect(winston_options.start).to.equal(test_read_log_obj.start);
         }));
+    });
+
+    describe("setting daily rotation Winston configuration for query", () => {
+        let test_daily_file_template = '%DATE%_test_log.log';
+
+        before(() => {
+            rewireDailyLogger();
+        });
+
+        afterEach(() => {
+            sandbox.resetHistory();
+        });
+
+        it("Should configure a winston with the file name `install_log.log` when log equals install_log ", () => {
+            test_read_log_obj.log = "install_log";
+            harper_log.readLog(test_read_log_obj);
+
+            expect(winston_configure_spy.args[0][0].transports[0].filename).to.equal('install_log.log');
+            expect(winston_configure_spy.calledOnce).to.equal(true);
+        });
+
+        it("Should configure a winston with the file name `run_log.log` when log equals run_log ", () => {
+            test_read_log_obj.log = "run_log";
+            harper_log.readLog(test_read_log_obj);
+
+            expect(winston_configure_spy.args[0][0].transports[0].filename).to.equal('run_log.log');
+            expect(winston_configure_spy.calledOnce).to.equal(true);
+        });
+
+        it("Should configure a winston with daily rotation when there is no log set in the read_log_object ", () => {
+            harper_log.readLog(test_read_log_obj);
+
+            expect(test_daily_file_template).to.include(winston_configure_spy.args[0][0].transports[0].filename);
+            expect(winston_query_spy.calledOnce).to.equal(true);
+        });
     });
 });
