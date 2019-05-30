@@ -23,7 +23,8 @@ const user_schema = require('../../utility/user_schema');
 const comm = require('../common_utils');
 const hdb_terms = require('../hdbTerms');
 const crypto = require('crypto');
-
+const hdbInfoController = require('../../data_layer/hdbInfoController');
+const version = require('../../bin/version');
 const LOG_LOCATION = ('../install_log.log');
 module.exports = {
     install: run_install
@@ -74,6 +75,7 @@ function run_install(callback) {
                 createSettingsFile,
                 createAdminUser,
                 generateKeys,
+                updateHdbInfo,
                 () => {
                     console.log("HarperDB Installation was successful");
                     winston.info("Installation Successful");
@@ -85,8 +87,32 @@ function run_install(callback) {
                 }
                 return callback(null, null);
             });
+        } else {
+            console.log('Exiting installer');
+            process.exit(0);
         }
     });
+}
+
+/**
+ * Makes a call to update the hdb_info table with the newly installed version.  This is written as a callback function
+ * as we can't make the installer async until we pick a new CLI base.
+ * @param callback
+ */
+function updateHdbInfo(callback) {
+    let vers = version.version();
+    if(vers) {
+        hdbInfoController.updateHdbInfo(vers)
+            .then((err, res) => {
+                if(err) {
+                    winston.error('Error inserting product info');
+                    return callback(err, null);
+                } else {
+                    return callback(null, res);
+                }
+
+        });
+    }
 }
 
 /**
