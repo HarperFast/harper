@@ -3279,7 +3279,7 @@
 											"",
 											"pm.test(\"insert array into table confirm\", function () {",
 											"    var jsonData = pm.response.json();",
-											"    pm.expect(jsonData.error.includes('There was an error adding a job: ENOENT: no such file or directory, access')).to.be.true;",
+											"    pm.expect(jsonData.error.includes('There was an error adding a job: ENOENT: no such file or directory')).to.be.true;",
 											"});"
 										],
 										"type": "text/javascript"
@@ -3330,21 +3330,17 @@
 							"response": []
 						},
 						{
-							"name": "check error on invalid schema",
+							"name": "csv bulk load update",
 							"event": [
 								{
 									"listen": "test",
 									"script": {
-										"id": "b3e6adc2-3ccf-4752-8e57-b1657667249c",
+										"id": "f652fa3d-1652-4455-827f-fdfeb5f11003",
 										"exec": [
-											"pm.test(\"Status code is 500\", function () {",
-											"    pm.response.to.have.status(500);",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
 											"});",
-											"",
-											"pm.test(\"insert array into table confirm\", function () {",
-											"    var jsonData = pm.response.json();",
-											"    pm.expect(jsonData.error).to.equal(\"There was an error adding a job: schema thisDoesntExist does not exist\");",
-											"});"
+											""
 										],
 										"type": "text/javascript"
 									}
@@ -3376,11 +3372,15 @@
 									{
 										"key": "Content-Type",
 										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
 									}
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n  \"operation\":\"csv_file_load\",\n  \"action\":\"insert\",\n  \"schema\":\"thisDoesntExist\",\n  \"table\":\"{{supp_tb}}\",\n  \"file_path\":\"{{files_location}}Suppliers.csv\"\n}"
+									"raw": "{\n  \"operation\":\"csv_data_load\",\n  \"action\": \"update\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{supp_tb}}\",\n  \"data\":\"supplierid,companyname\\n19,The Chum Bucket\\n\"\n}\n"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -3389,26 +3389,29 @@
 									],
 									"port": "{{port}}"
 								},
-								"description": "Should abort CSV upload and return error message"
+								"description": "update a table with csv data uplaod"
 							},
 							"response": []
 						},
 						{
-							"name": "check error on invalid table",
+							"name": "csv bulk load update confirm",
 							"event": [
 								{
 									"listen": "test",
 									"script": {
-										"id": "b3e6adc2-3ccf-4752-8e57-b1657667249c",
+										"id": "f652fa3d-1652-4455-827f-fdfeb5f11003",
 										"exec": [
-											"pm.test(\"Status code is 500\", function () {",
-											"    pm.response.to.have.status(500);",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
 											"});",
 											"",
-											"pm.test(\"insert array into table confirm\", function () {",
+											"pm.test(\"Verify csv data load was successful\", function () {",
 											"    var jsonData = pm.response.json();",
-											"    pm.expect(jsonData.error).to.equal(\"There was an error adding a job: table northnwd.noTableHere does not exist\");",
-											"});"
+											"    pm.expect(jsonData[0].supplierid).to.eql(19);",
+											"    pm.expect(jsonData[0].contactname).to.eql(\"Robb Merchant\");",
+											"    pm.expect(jsonData[0].companyname).to.eql(\"The Chum Bucket\");",
+											"});",
+											""
 										],
 										"type": "text/javascript"
 									}
@@ -3440,75 +3443,15 @@
 									{
 										"key": "Content-Type",
 										"value": "application/json"
-									}
-								],
-								"body": {
-									"mode": "raw",
-									"raw": "{\n  \"operation\":\"csv_file_load\",\n  \"action\":\"insert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"noTableHere\",\n  \"file_path\":\"{{files_location}}Suppliers.csv\"\n}"
-								},
-								"url": {
-									"raw": "{{host}}:{{port}}",
-									"host": [
-										"{{host}}"
-									],
-									"port": "{{port}}"
-								},
-								"description": "Should abort CSV upload and return error message"
-							},
-							"response": []
-						},
-						{
-							"name": "check error on invalid action",
-							"event": [
-								{
-									"listen": "test",
-									"script": {
-										"id": "b3e6adc2-3ccf-4752-8e57-b1657667249c",
-										"exec": [
-											"pm.test(\"Status code is 500\", function () {",
-											"    pm.response.to.have.status(500);",
-											"});",
-											"",
-											"pm.test(\"insert array into table confirm\", function () {",
-											"    var jsonData = pm.response.json();",
-											"    pm.expect(jsonData.error).to.equal(\"There was an error adding a job: Action is required and must be either insert or update\");",
-											"});"
-										],
-										"type": "text/javascript"
-									}
-								}
-							],
-							"request": {
-								"auth": {
-									"type": "basic",
-									"basic": [
-										{
-											"key": "username",
-											"value": "{{username}}",
-											"type": "string"
-										},
-										{
-											"key": "password",
-											"value": "{{password}}",
-											"type": "string"
-										},
-										{
-											"key": "showPassword",
-											"value": false,
-											"type": "boolean"
-										}
-									]
-								},
-								"method": "POST",
-								"header": [
+									},
 									{
-										"key": "Content-Type",
-										"value": "application/json"
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
 									}
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n  \"operation\":\"csv_file_load\",\n  \"action\":\"delete\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{supp_tb}}\",\n  \"file_path\":\"{{files_location}}Suppliers.csv\"\n}"
+									"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{supp_tb}}\",\n  \"hash_attribute\": \"{{supp_id}}\",\n  \"hash_values\":[19],\n  \"get_attributes\": [\"supplierid\", \"companyname\", \"contactname\"]\n}"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -3517,7 +3460,7 @@
 									],
 									"port": "{{port}}"
 								},
-								"description": "Should abort CSV upload and return error message"
+								"description": "confirm that table was actually updated"
 							},
 							"response": []
 						}
@@ -8412,7 +8355,7 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test(\"Update employee id 2 address, hiredate, notes\", function () {",
+									"pm.test(\"Update employee id 2 address, hireDate, notes\", function () {",
 									"    var jsonData = pm.response.json();",
 									"    pm.expect(jsonData.message).to.eql(\"updated 1 of 1 records\");",
 									"    pm.expect(jsonData.update_hashes[0]).to.eql(2);",
