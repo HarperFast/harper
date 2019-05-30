@@ -8402,7 +8402,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\"operation\":\"update\",\n\"schema\":\"{{schema}}\",\n\"table\":\"{{emps_tb}}\",\n\"records\": [\n  {\n    \"{{emps_id}}\": 2,\n    \"address\": 0,\n    \"hireDate\": null,\n    \"notes\": false\n  }\n]\n}"
+							"raw": "{\n\"operation\":\"update\",\n\"schema\":\"{{schema}}\",\n\"table\":\"{{emps_tb}}\",\n\"records\": [\n  {\n    \"{{emps_id}}\": 2,\n    \"address\": 0,\n    \"hireDate\": null,\n    \"notes\": false\n  }\n]\n\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",

@@ -1,12 +1,17 @@
-const clone = require('clone'),
-    validator = require('./validationWrapper.js');
+const clone = require('clone');
+const validator = require('./validationWrapper.js');
+const common_utils = require('../utility/common_utils');
+const hdb_terms = require('../utility/hdbTerms');
+const log = require('../utility/logging/harper_logger');
+const fs = require('fs');
+
+// Maximum file size in bytes
+const MAX_CSV_FILE_SIZE = 1000000;
 
 const actions = ["update", "insert"];
 const constraints = {
     schema: {
-        presence: {
-            message: "is required"
-        },
+        presence: true,
         format: {
             pattern: "^[a-zA-Z0-9_]*$",
             message: "must be alpha numeric"
@@ -17,9 +22,7 @@ const constraints = {
         }
     },
     table: {
-        presence: {
-            message: "is required"
-        },
+        presence: true,
         format: {
             pattern: "^[a-zA-Z0-9_]*$",
             message: "must be alpha numeric"
@@ -44,31 +47,66 @@ const constraints = {
     data: {}
 };
 
-const data_contraints = clone(constraints);
-data_contraints.data.presence = {
+const data_constraints = clone(constraints);
+data_constraints.data.presence = {
     message: " is required"
 };
 
-const file_contraints = clone(constraints);
-file_contraints.file_path.presence = {
-    message: " is required"
+const file_constraints = clone(constraints);
+file_constraints.file_path.presence = {
+    message: " is required",
 };
 
-const url_contraints = clone(constraints);
-url_contraints.csv_url.presence = {
+const url_constraints = clone(constraints);
+url_constraints.csv_url.presence = {
     message: " is required"
 };
 
 function dataObject(object) {
-    return validator.validateObject(object, data_contraints);
+    let validate_res = validator.validateObject(object, data_constraints);
+    return postValidateChecks(object, validate_res);
 }
 
 function urlObject(object) {
-    return validator.validateObject(object, url_contraints);
+    let validate_res = validator.validateObject(object, url_constraints);
+    return postValidateChecks(object, validate_res);
 }
 
 function fileObject(object) {
-    return validator.validateObject(object, file_contraints);
+    let validate_res = validator.validateObject(object, file_constraints);
+    return postValidateChecks(object, validate_res);
+}
+
+/**
+ * Post validate module checks, confirms schema and table exist.
+ * If file upload - checks that it exists, permissions and size.
+ */
+function postValidateChecks(object, validate_res) {
+    if (!validate_res) {
+        let msg = common_utils.checkGlobalSchemaTable(object.schema, object.table);
+        if (msg) {
+            return new Error(msg);
+        }
+
+        if (object.operation === hdb_terms.OPERATIONS_ENUM.CSV_FILE_LOAD) {
+            try {
+                fs.accessSync(object.file_path,fs.constants.R_OK | fs.constants.F_OK);
+            } catch(err) {
+                return err;
+            }
+
+            try {
+                let file_size = fs.statSync(object.file_path).size;
+                if (file_size > MAX_CSV_FILE_SIZE) {
+                    return new Error(`File size is ${file_size} bytes, which exceeded the maximum size allowed of: ${MAX_CSV_FILE_SIZE} bytes`);
+                }
+            } catch(err) {
+                log.error(err);
+                console.error(err);
+            }
+        }
+    }
+    return validate_res;
 }
 
 module.exports = {

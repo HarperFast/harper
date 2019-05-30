@@ -21,7 +21,7 @@ const {promisify} = require('util');
 const moment = require('moment');
 const hdb_sql = require('../sqlTranslator/index');
 const hdb_delete = require('../data_layer/delete');
-const csv_file_validator = require('../validation/csvFileLoadValidator');
+const csv_load_validator = require('../validation/csvLoadValidator');
 
 //Promisified functions
 const p_search_by_value = promisify(search.searchByValue);
@@ -129,8 +129,23 @@ async function addJob(json_body) {
         return result;
     }
 
-    if(json_body.operation === 'csv_file_load') {
-        await csv_file_validator.csvFileLoadValidator(json_body);
+    // Validate csv operation to ensure that action is valid, schema and table exist, and if file load - check file.
+    let operation = json_body.operation;
+    let validation_msg;
+    switch (operation) {
+        case hdb_terms.OPERATIONS_ENUM.CSV_FILE_LOAD:
+            validation_msg = csv_load_validator.fileObject(json_body);
+            break;
+        case hdb_terms.OPERATIONS_ENUM.CSV_URL_LOAD:
+            validation_msg = csv_load_validator.urlObject(json_body);
+            break;
+        case hdb_terms.OPERATIONS_ENUM.CSV_DATA_LOAD:
+            validation_msg = csv_load_validator.dataObject(json_body);
+            break;
+        default:
+    }
+    if (validation_msg) {
+        throw validation_msg.message;
     }
 
     let new_job = new JobObject();
