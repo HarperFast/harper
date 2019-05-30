@@ -7,8 +7,8 @@ env.initSync();
 
 const PROPS_PRIVATE_KEY = 'PRIVATE_KEY';
 const PROPS_CERT_KEY = 'CERTIFICATE';
-const privateKey = env.get(PROPS_PRIVATE_KEY);
-const certificate = env.get(PROPS_CERT_KEY);
+const PRIVATE_KEY = env.get(PROPS_PRIVATE_KEY);
+const CERTIFICATE = env.get(PROPS_CERT_KEY);
 
 const log = require('../../utility/logging/harper_logger');
 const PORT = env.get('CLUSTERING_PORT');
@@ -62,7 +62,7 @@ let socketCluster = new SocketCluster({
     // will always be https
     protocol: 'https',
 
-    protocolOptions: {key: fs.readFileSync(`${privateKey}`), cert: fs.readFileSync(`${certificate}`)},
+    protocolOptions: {key: fs.readFileSync(`${PRIVATE_KEY}`), cert: fs.readFileSync(`${CERTIFICATE}`)},
 
     /* A JS file which you can use to configure each of your
      * workers/servers - This is where most of your backend code should go
