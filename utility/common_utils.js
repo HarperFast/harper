@@ -50,9 +50,10 @@ module.exports = {
     isHarperRunning: isHarperRunning,
     isClusterOperation: isClusterOperation,
     getClusterUser: getClusterUser,
+    sendTransactionToSocketCluster: sendTransactionToSocketCluster,
+    checkGlobalSchemaTable: checkGlobalSchemaTable,
     getHomeDir: getHomeDir,
     getPropsFilePath: getPropsFilePath,
-    sendTransactionToSocketCluster: sendTransactionToSocketCluster
 };
 
 /**
@@ -460,6 +461,21 @@ function sendTransactionToSocketCluster(channel, transaction){
         transaction.__transacted = true;
         let {hdb_user, hdb_auth_header, ...data} = transaction;
         global.hdb_socket_client.publish(channel, data);
+    }
+}
+
+/**
+ * Checks the global hdb_schema for a schema and table
+ * @param schema_name
+ * @param table_name
+ * @returns only returns a thrown message if schema and or table does not exist
+ */
+function checkGlobalSchemaTable(schema_name, table_name) {
+    if (!global.hdb_schema[schema_name]) {
+        throw `schema ${schema_name} does not exist`;
+    }
+    if (!global.hdb_schema[schema_name] || !global.hdb_schema[schema_name][table_name]) {
+        throw `table ${schema_name}.${table_name} does not exist`;
     }
 }
 
