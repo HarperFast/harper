@@ -515,7 +515,8 @@ function createSettingsFile(mount_status, callback) {
             `LOG_PATH = ${wizard_result.HDB_ROOT}/log/hdb_log.log\n` +
             `   ;Set to true to enable daily log file rotations - each log file name will be prepended with YYYY-MM-DD (for WINSTON logger only).\n` +
             `LOG_DAILY_ROTATE = FALSE\n` +
-            `   ;Set the number of daily log files to maintain when LOG_DAILY_ROTATE is enabled.  Value must be an integer.\n` +
+            `   ;Set the number of daily log files to maintain when LOG_DAILY_ROTATE is enabled. If no integer value is set, no limit will be set for\n` +
+            `   ;daily log files which may consume a large amount of storage depending on your log settings.\n` +
             `LOG_MAX_DAILY_FILES =\n` +
             `   ;The environment used by NodeJS.  Setting to production will be the most performant, settings to development will generate more logging.\n` +
             `NODE_ENV = production\n` +
