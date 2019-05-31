@@ -72,7 +72,6 @@ async function arePortsInUse() {
         httpsecure_port = env.get(terms.HDB_SETTINGS_NAMES.HTTP_SECURE_PORT_KEY);
     } catch (e) {
         logger.info('hdb_boot_props file not found.');
-        //await startHarper();
         return;
     }
 
@@ -86,7 +85,6 @@ async function arePortsInUse() {
         let port_err = 'http and https ports are both undefined.  Please check your settings file.';
         logger.error(port_err);
         await startHarper();
-        //throw new Error(port_err);
     }
 
     //let port_taken = undefined;
