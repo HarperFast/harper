@@ -11,32 +11,42 @@
  */
 
 const winston = require('winston');
+require('winston-daily-rotate-file');
 const pino = require('pino');
 const fs = require('fs');
 const moment = require('moment');
+const path = require('path');
 const util = require('util');
 const validator = require('../../validation/readLogValidator');
 const os = require('os');
-const path = require('path');
 const terms = require('../hdbTerms');
 
 //Using numbers rather than strings for faster comparison
 const WIN = 1;
 const PIN = 2;
 
+let daily_rotate = undefined;
+let max_daily_files = undefined;
 let log_level = undefined;
 let log_type = undefined;
 let log_location = undefined;
+// Variables used for log daily rotation
+let log_directory = undefined;
+let hdb_log_file_name = undefined;
 
 // read environment settings to get preferred logger and default log level
 const PropertiesReader = require('properties-reader');
 let hdb_properties = undefined;
 let boot_props_file_path = getPropsFilePath();
+
 try {
     hdb_properties = PropertiesReader(boot_props_file_path);
     hdb_properties.append(hdb_properties.get('settings_path'));
 
-    // read environment settings to get log level
+    // read environment settings to get log settings
+    daily_rotate = hdb_properties.get('LOG_DAILY_ROTATE');
+    const daily_max = hdb_properties.get('LOG_MAX_DAILY_FILES');
+    max_daily_files = daily_max ? daily_max + 'd' : null;
     log_level = hdb_properties.get('LOG_LEVEL');
     log_type = hdb_properties.get('LOGGER');
     log_location = hdb_properties.get('LOG_PATH');
@@ -45,6 +55,10 @@ try {
     if (log_location === undefined || log_location === 0 || log_location === null) {
         log_location = (hdb_properties.get('HDB_ROOT') + '/log/hdb_log.log');
     }
+
+    //setting directory location for Winston daily logs
+    log_directory = getLogDirectory(log_location);
+    hdb_log_file_name = path.parse(log_location).base;
 } catch (e) {
     // in early stage like install or run, settings file and folder is not available yet so let it takes default settings below
 }
@@ -102,8 +116,7 @@ if (log_location === undefined || log_location === null) {
 //TODO: not sure if this set to global is needed or useful.  This should be happening in a module.
 global.log_level = log_level;
 global.log_location = log_location;
-
-let pino_write_stream = fs.createWriteStream(log_location, {'flags': 'a'});
+global.log_directory = log_directory;
 
 module.exports = {
     trace:trace,
@@ -136,19 +149,38 @@ let win_logger = undefined;
  */
 function initWinstonLogger() {
     try {
-        win_logger = new (winston.Logger)({
-            transports: [
-                new (winston.transports.File)({
-                    level: log_level,
-                    filename: log_location,
-                    handleExceptions: true,
-                    prettyPrint: true
-                })
-            ],
-            levels: winston_log_levels,
-            level: log_level,
-            exitOnError: false
-        });
+        if (!daily_rotate || log_location === LOGGER_PATH.RUN_LOG) {
+            win_logger = new (winston.Logger)({
+                transports: [
+                    new (winston.transports.File)({
+                        level: log_level,
+                        filename: log_location,
+                        handleExceptions: true,
+                        prettyPrint: true
+                    })
+                ],
+                levels: winston_log_levels,
+                level: log_level,
+                exitOnError: false
+            });
+        } else {
+            win_logger = new (winston.Logger)({
+                transports: [
+                    new (winston.transports.DailyRotateFile)({
+                        filename: path.join(log_directory, `%DATE%_${hdb_log_file_name}`),
+                        handleExceptions: true,
+                        level: log_level,
+                        maxFiles: max_daily_files,
+                        prettyPrint: true,
+                        json: true,
+                        zippedArchive: true
+                    })
+                ],
+                levels: winston_log_levels,
+                level: log_level,
+                exitOnError: false
+            });
+        }
     } catch (err) {
         // if this fails we have no logger, so just write to the console and rethrow so everything fails.
         console.error('There was an error initializing the logger.');
@@ -161,6 +193,8 @@ function initWinstonLogger() {
  * Initialize the Pino logger with custom levels
  */
 function initPinoLogger() {
+    const pino_write_stream = fs.createWriteStream(log_location, {'flags': 'a'});
+    win_logger = undefined;
     pin_logger = pino(
         {
             customLevels: {
@@ -301,7 +335,11 @@ function setLogLevel(level) {
                 //Winston is strange, it has a log level at the logger level, the transport level, and each individual transport.
                 win_logger.level = level;
                 win_logger.transports.level = level;
+                if (daily_rotate) {
+                    win_logger.transports.dailyRotateFile.level = level;
+                } else {
                 win_logger.transports.file.level = level;
+                }
                 break;
 
             case PIN:
@@ -324,7 +362,11 @@ function setLogLevel(level) {
                 //Winston is strange, it has a log level at the logger level, the transport level, and each individual transport.
                 win_logger.level = level;
                 win_logger.transports.level = level;
-                win_logger.transports.file.level = level;
+                if (daily_rotate) {
+                    win_logger.transports.dailyRotateFile.level = level;
+                } else {
+                    win_logger.transports.file.level = level;
+                }
                 break;
         }
 
@@ -349,24 +391,37 @@ function setLogType(type) {
 }
 
 /**
- * Set a location for the log file to be written.  Will stop writing to any existing logs and start writing to the new location.
- * @param path
+ * Parses file path and returns directory path
+ * @param log_path file path
+ * @returns {string} directory path
  */
-function setLogLocation(path) {
-    if (!path || path.length === 0) {
+function getLogDirectory(log_path) {
+    return path.parse(log_path).dir;
+}
+
+/**
+ * Set a location for the log file to be written.  Will stop writing to any existing logs and start writing to the new location.
+ * @param log_path file path for logging
+ */
+function setLogLocation(log_path) {
+    if (!log_path || log_path.length === 0) {
         error(`An invalid log path was sent to the logger.`);
         return;
     }
     win_logger = undefined;
-    log_location = path;
-    global.log_location = path;
+    pin_logger = undefined;
+    log_location = log_path;
+    global.log_location = log_path;
+    log_directory = getLogDirectory(log_path);
+    global.log_directory = log_directory;
+    hdb_log_file_name = path.parse(log_path).base;
 
     switch (log_type) {
         case WIN:
             //WINSTON
             if (!win_logger) {
                 initWinstonLogger();
-                trace(`initialized winston logger writing to ${log_location}`);
+                trace(`initialized winston logger writing to ${daily_rotate ? log_directory : log_location}`);
             }
             break;
 
@@ -382,7 +437,7 @@ function setLogLocation(path) {
             //WINSTON is default
             if (!win_logger) {
                 initWinstonLogger();
-                trace(`initialized winston logger writing to ${log_location}`);
+                trace(`initialized winston logger writing to ${daily_rotate ? log_directory : log_location}`);
             }
             break;
     }
@@ -429,7 +484,7 @@ async function readLog(read_log_object) {
             break;
 
         default:
-            configureWinstonForQuery(log_location);
+            configureWinstonForQuery();
             break;
     }
 
@@ -457,7 +512,7 @@ async function readLog(read_log_object) {
         options.start = read_log_object.start;
     }
 
-    const p_query = util.promisify(bones.query);
+    const p_query = util.promisify(winston.query);
 
     try {
         return await p_query(options);
@@ -468,14 +523,27 @@ async function readLog(read_log_object) {
 }
 
 function configureWinstonForQuery(log_path) {
-    bones.configure({
-        transports: [
-            new (winston.transports.File)({
-                filename: log_path
-            })
-        ],
-        exitOnError: false
-    });
+    if (daily_rotate && !log_path && log_type === WIN) {
+        bones.configure({
+            transports: [
+                new (winston.transports.DailyRotateFile)({
+                    filename: path.join(log_directory, `%DATE%_${hdb_log_file_name}`),
+                    json: true,
+                })
+            ],
+            exitOnError: false
+        });
+    } else {
+        const query_path = log_path ? log_path : log_location;
+        bones.configure({
+            transports: [
+                new (winston.transports.File)({
+                    filename: query_path
+                })
+            ],
+            exitOnError: false
+        });
+    }
 }
 
 /**

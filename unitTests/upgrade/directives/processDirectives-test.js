@@ -228,6 +228,7 @@ describe('Test writeEnvVariables', function() {
             //no-op
         }
         process_directive_rw.__set__('settings_file_path', orig_settings_file_path);
+        sinon.restore();
     });
     it('test write environment variables, nominal case, ', function() {
         writeEnvVariables();
