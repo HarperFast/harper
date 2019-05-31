@@ -12,17 +12,13 @@ const terms = require('../utility/hdbTerms');
 let checkPermissions = require('../utility/check_permissions');
 const { isHarperRunning } = require('../utility/common_utils');
 const { promisify } = require('util');
-
-const HTTPSECURE_PORT_KEY = 'HTTPS_PORT';
-const HTTP_PORT_KEY = 'HTTP_PORT';
-const HTTPSECURE_ON_KEY = 'HTTPS_ON';
-const HTTP_ON_KEY = 'HTTP_ON';
 const stop = require('./stop');
 
 // These may change to match unit return codes (i.e. 0, 1)
 const SUCCESS_CODE = 'success';
 const FAILURE_CODE = 'failed';
 const FOREGROUND_ARG = 'foreground';
+const ENOENT_ERR_CODE = -2;
 
 // promisified functions
 const p_install_install = promisify(install.install);
@@ -53,7 +49,7 @@ async function run() {
         if(!is_in_use) {
             await startHarper();
         } else {
-            console.log(`Port ${}`);
+            console.log(`Can't start HarperDB.  Ports: ${env.get(terms.HDB_SETTINGS_NAMES.HTTP_PORT_KEY)} or ${env.get(terms.HDB_SETTINGS_NAMES.HTTP_SECURE_PORT_KEY)} in use.`);
         }
     } catch(err) {
         console.log(err);
@@ -70,10 +66,10 @@ async function arePortsInUse() {
     // If this fails to find the boot props file, this must be a new install.  This will fall through,
     // pass the process and port check, and then hit the install portion of startHarper().
     try {
-        httpsecure_on = env.get(HTTPSECURE_ON_KEY);
-        http_on = env.get(HTTP_ON_KEY);
-        http_port = env.get(HTTP_PORT_KEY);
-        httpsecure_port = env.get(HTTPSECURE_PORT_KEY);
+        httpsecure_on = env.get(terms.HDB_SETTINGS_NAMES.HTTP_SECURE_ENABLED_KEY);
+        http_on = env.get(terms.HDB_SETTINGS_NAMES.HTTP_ENABLED_KEY);
+        http_port = env.get(terms.HDB_SETTINGS_NAMES.HTTP_PORT_KEY);
+        httpsecure_port = env.get(terms.HDB_SETTINGS_NAMES.HTTP_SECURE_PORT_KEY);
     } catch (e) {
         logger.info('hdb_boot_props file not found.');
         //await startHarper();
@@ -89,7 +85,8 @@ async function arePortsInUse() {
     if (!http_port && !httpsecure_port) {
         let port_err = 'http and https ports are both undefined.  Please check your settings file.';
         logger.error(port_err);
-        throw new Error(port_err);
+        await startHarper();
+        //throw new Error(port_err);
     }
 
     //let port_taken = undefined;
@@ -155,7 +152,7 @@ async function startHarper() {
         boot_props_stats = await fs.stat(env.BOOT_PROPS_FILE_PATH);
         settings_stats = await fs.stat(env.get(terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY));
     } catch(err) {
-        if(err.errno === -2) {
+        if(err.errno === ENOENT_ERR_CODE) {
             // boot props not found, don't return and kick off install
             start_install = true;
         } else {
