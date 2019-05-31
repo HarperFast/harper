@@ -9,6 +9,6 @@
     "maxDelay": 2000
   },
   "query": {
-    "hdb_worker":true
+    "hdb_worker":1
   }
 }

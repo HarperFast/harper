@@ -1,4 +1,6 @@
-const validate = require('validate.js');
+"use strict";
+
+const validator = require('./validationWrapper.js');
 
 const constraints = {
     name : {
@@ -12,7 +14,7 @@ const constraints = {
     }
 };
 
-module.exports = function(insert_object) {
-    return validate(insert_object, constraints);
+module.exports = function(node) {
+    return validator.validateObject(node, constraints);
 };
 

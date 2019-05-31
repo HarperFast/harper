@@ -424,7 +424,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
 
         connector_options.hostname = 'localhost';
         connector_options.port = env.get('CLUSTERING_PORT');
-        global.hdb_socket_client = new HDBSocketConnector(socketclient, 'worker_' + process.pid, connector_options, creds);
+        global.hdb_socket_client = new HDBSocketConnector(socketclient, {name: 'worker_' + process.pid}, connector_options, creds);
     }
 
     async function setUp(){

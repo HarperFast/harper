@@ -3,9 +3,8 @@ const get_operation_function = require('../../serverUtilities').getOperationFunc
 const log = require('../../../utility/logging/harper_logger');
 
 class HDBSocketConnector extends SocketConnector{
-    constructor(socket_client, name, options, credentials){
-        options.query = {hdb_worker:1};
-        super(socket_client, name, options, credentials);
+    constructor(socket_client, additional_info, options, credentials){
+        super(socket_client, additional_info, options, credentials);
         this.addEventListener('connect', this.connectHandler.bind(this));
         this.addEventListener('disconnect', this.disconnectHandler.bind(this));
     }

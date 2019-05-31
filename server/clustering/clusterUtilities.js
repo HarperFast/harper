@@ -1,5 +1,6 @@
 const insert = require('../../data_layer/insert');
-const node_Validator = require('../../validation/nodeValidator');
+const node_validator = require('../../validation/nodeValidator');
+const node_subscription_validator = require('../../validation/nodeSubscriptionValidator');
 const hdb_utils = require('../../utility/common_utils');
 const log = require('../../utility/logging/harper_logger');
 const util = require('util');
@@ -30,6 +31,8 @@ let child_event_count = 0;
 
 const STATUS_TIMEOUT_MS = 4000;
 const DUPLICATE_ERR_MSG = 'Cannot add a node that matches the hosts clustering config.';
+
+const SUBSCRIPTIONS_MUST_BE_ARRAY = 'add_node subscriptions must be an array';
 
 // If we have more than 1 process, we need to get the status from the master process which has that info stored
 // in global.  We subscribe to an event that master will emit once it has gathered the data.  We want to build
@@ -77,7 +80,7 @@ async function kickOffEnterprise() {
 
 function addNode(new_node, callback) {
     // need to clean up new node as it hads operation and user on it
-    let validation = node_Validator(new_node);
+    let validation = node_validator(new_node);
     let cluster_port = undefined;
     let new_port = undefined;
     try {
@@ -106,6 +109,21 @@ function addNode(new_node, callback) {
         return callback(validation);
     }
 
+    if(!hdb_utils.isEmptyOrZeroLength(new_node.subscriptions) && !Array.isArray(new_node.subscriptions)){
+        log.error(`${SUBSCRIPTIONS_MUST_BE_ARRAY}: ${new_node.subscriptions}`);
+        return callback(SUBSCRIPTIONS_MUST_BE_ARRAY);
+    }
+
+    let subscription_validation = undefined;
+    if(!hdb_utils.isEmptyOrZeroLength(new_node.subscriptions)){
+        for(let b = 0; b < new_node.subscriptions.length; b++){
+            subscription_validation = node_subscription_validator(new_node.subscriptions[b]);
+            if(subscription_validation){
+                return callback(subscription_validation);
+            }
+        }
+    }
+
     let new_node_insert = {
         "operation":"insert",
         "schema":"system",
@@ -124,11 +142,7 @@ function addNode(new_node, callback) {
             return callback(null, `Node '${new_node.name}' has already been already added. Operation aborted.`);
         }
 
-        // Send IPC message so master will command forks to rescan for new nodes.
-        common.callProcessSend({
-            "type": terms.CLUSTER_MESSAGE_TYPE_ENUM.NODE_ADDED,
-            "node_name": new_node.name
-        });
+        hdb_utils.sendTransactionToSocketCluster('internal:hdb_nodes', {add_node: new_node});
 
         return callback(null, `successfully added ${new_node.name} to manifest`);
     });
@@ -164,11 +178,7 @@ async function removeNode(remove_json_message) {
         return `Node '${remove_json_message.name}' was not found.`;
     }
 
-    // Send IPC message so master will command forks to rescan for new nodes.
-    common.callProcessSend({
-        "type": terms.CLUSTER_MESSAGE_TYPE_ENUM.NODE_REMOVED,
-        "node_name": remove_json_message.name
-    });
+    hdb_utils.sendTransactionToSocketCluster('internal:hdb_nodes', {remove_node: remove_json_message});
     return `successfully removed ${remove_json_message.name} from manifest`;
 }
 
@@ -308,30 +318,6 @@ function clusterMessageHandler(msg) {
             case terms.CLUSTER_MESSAGE_TYPE_ENUM.USER:
                 global.forks.forEach((fork) => {
                     fork.send(msg);
-                });
-                break;
-            case terms.CLUSTER_MESSAGE_TYPE_ENUM.NODE_ADDED:
-                if(hdb_utils.isEmptyOrZeroLength(global.cluster_server)) {
-                    log.error('Cluster Server has not been initialized.  Do you have CLUSTERING=true in your config/settings file?');
-                    return;
-                }
-                global.cluster_server.scanNodes().then( () => {
-                    log.info('Done scanning for new cluster nodes');
-                }).catch( (e) => {
-                    log.error('There was an error scanning for new cluster nodes');
-                    log.error(e);
-                });
-                break;
-            case terms.CLUSTER_MESSAGE_TYPE_ENUM.NODE_REMOVED:
-                if(hdb_utils.isEmptyOrZeroLength(global.cluster_server)) {
-                    log.error('Cluster Server has not been initialized.  Do you have CLUSTERING=true in your config/settings file?');
-                    return;
-                }
-                global.cluster_server.scanNodes().then( () => {
-                    log.info('Done scanning for removed cluster nodes');
-                }).catch( (e) => {
-                    log.error('There was an error scanning for removed cluster nodes');
-                    log.error(e);
                 });
                 break;
             case terms.CLUSTER_MESSAGE_TYPE_ENUM.CLUSTER_STATUS:
