@@ -221,8 +221,10 @@ describe('Test harper_logger ', () => {
     after(() => {
         sandbox.restore();
         rewireDefaultLogger();
-        unlinkTestLog(default_test_log_path);
-        unlinkTestLog(daily_test_log_path);
+        setTimeout(() => {
+            unlinkTestLog(default_test_log_path);
+            unlinkTestLog(daily_test_log_path);
+        }, 200);
     });
 
     describe(`Test log writing - Winston`, () => {
