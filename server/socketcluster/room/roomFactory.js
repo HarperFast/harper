@@ -9,7 +9,6 @@ const log = require('../../../utility/logging/harper_logger');
 
 //Rules
 const AssignToHdbChildWorkerRule = require('../decisionMatrix/rules/AssignToHdbChildWorkerRule');
-const UpdateWorkerListWorkerRule = require('../decisionMatrix/rules/UpdateWorkerListWorkerRule');
 const WriteToTransactionLogRule = require('../decisionMatrix/rules/WriteToTransactionLogRule');
 
 /**
