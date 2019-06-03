@@ -218,12 +218,13 @@ function log_something(level, done) {
  */
 
 describe('Test harper_logger ', () => {
-    after(() => {
+    after((done) => {
         sandbox.restore();
         rewireDefaultLogger();
         setTimeout(() => {
             unlinkTestLog(default_test_log_path);
             unlinkTestLog(daily_test_log_path);
+            done();
         }, 200);
     });
 
@@ -722,7 +723,7 @@ describe('Test harper_logger ', () => {
             unlinkTestLog(default_test_log_path);
         });
 
-        it('set log location', () => {
+        it('set log location', (done) => {
             harper_log.error('test');
             harper_log.setLogLocation(new_output_file);
             harper_log.error('new log path was set');
@@ -744,18 +745,21 @@ describe('Test harper_logger ', () => {
                     // Had to play with the timing on this to make it constantly pass.  Might need to be slower depending on the
                     // event loop and specs of any given system the test is run on.  Not the best way to test, but works for now.
                     assert.equal(file_change_results, true, "Did not detect a file change to new log file. This might be a timing issue with the test, not the functionality.");
+                    done();
                 }, 200);
             }, 200);
         });
 
-        it('set log location with bad path, expect log written to default path', () => {
+        it('set log location with bad path, expect log written to default path', (done) => {
             const bad_log_path = undefined;
+            let curr_path = harper_log.__get__('log_location');
             harper_log.error('test');
             harper_log.setLogLocation(bad_log_path);
             harper_log.error('bad log path was set');
+
             // need to wait for the logger to create and write to the file.
             try {
-                watcher = fs.watch(default_path, {persistent: false}, (eventType, filename) => {
+                watcher = fs.watch(curr_path, {persistent: false}, (eventType, filename) => {
                     if (filename) {
                         file_change_results = true;
                     } else {
@@ -770,6 +774,7 @@ describe('Test harper_logger ', () => {
                 // Had to play with the timing on this to make it constantly pass.  Might need to be slower depending on the
                 // event loop and specs of any given system the test is run on.  Not the best way to test, but works for now.
                 assert.equal(file_change_results, true, 'Expected log written to default path.');
+                done();
             }, 200);
         });
     });

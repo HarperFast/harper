@@ -26,7 +26,7 @@ module.exports = {
     setPropsFilePath: setPropsFilePath,
     get:get,
     getProperty:getProperty,
-    initSync: initSync,
+    initSync,
     setProperty: setProperty,
     append: append,
     writeSettingsFileSync: writeSettingsFileSync,
