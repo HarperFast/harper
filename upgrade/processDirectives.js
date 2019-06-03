@@ -13,7 +13,8 @@ const directive_manager = require('./directives/directiveManager');
 
 module.exports = {
     writeEnvVariables: writeEnvVariables,
-    processDirectives: processDirectives
+    processDirectives: processDirectives,
+    getDirectiveChangeDescriptions: getDirectiveChangeDescriptions
 };
 
 let hdb_boot_properties = undefined;
@@ -36,6 +37,30 @@ try {
     settings_file_path = hdb_boot_properties.get('settings_path');
 } catch(e) {
     log.info('Could not set hdb_base and settings_file_path' + e);
+}
+
+/**
+ * Create an object containing change descriptor objects.
+ * @param curr_version
+ * @param upgrade_version
+ */
+function getDirectiveChangeDescriptions(curr_version, upgrade_version) {
+    let change_descriptions = [];
+    let loaded_directives = directive_manager.filterInvalidVersions(curr_version);
+    let upgrade_directives = getVersionsToInstall(curr_version, loaded_directives);
+    for(let vers of upgrade_directives) {
+        let new_description = {};
+        if(vers.change_description) {
+            new_description['change_description'] = vers.change_description;
+        }
+        if(vers.affected_file_paths.length > 0) {
+            new_description['affected_paths'] = vers.affected_file_paths;
+        }
+        if(Object.keys(new_description).length > 0) {
+            change_descriptions.push(new_description);
+        }
+    }
+    return change_descriptions;
 }
 
 /**

@@ -27,6 +27,7 @@ const HASH_FOLDER_NAME = '__hdb_hash';
 const CLUSTERING_VERSION_HEADER_NAME = 'hdb_version';
 const HDB_HOME_DIR_NAME = '.harperdb';
 const BOOT_PROPS_FILE_NAME = 'hdb_boot_properties.file';
+const UPDATE_FILE_NAME = '.updateConfig.json';
 
 const RESTART_CODE = 'SIGTSTP';
 const RESTART_CODE_NUM = 24;
@@ -294,6 +295,7 @@ module.exports = {
     SYSTEM_SCHEMA_NAME,
     HASH_FOLDER_NAME,
     HDB_HOME_DIR_NAME,
+    UPDATE_FILE_NAME,
     CLUSTERING_VERSION_HEADER_NAME,
     BOOT_PROPS_FILE_NAME,
     JOB_TYPE_ENUM,

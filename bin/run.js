@@ -13,8 +13,10 @@ let checkPermissions = require('../utility/check_permissions');
 const { isHarperRunning } = require('../utility/common_utils');
 const { promisify } = require('util');
 const stop = require('./stop');
+const os = require('os');
+const upgrade_prompt = require('../utility/userInterface/upgradePrompt');
 
-// These may change to match unit return codes (i.e. 0, 1)
+// These may change to match unix return codes (i.e. 0, 1)
 const SUCCESS_CODE = 'success';
 const FAILURE_CODE = 'failed';
 const FOREGROUND_ARG = 'foreground';
@@ -44,7 +46,19 @@ async function run() {
         logger.info(run_err);
         return;
     }
+
     try {
+        // Check to see if an upgrade file exists in $HOME/.harperdb.  If it exists, we need to force the user to upgrade.
+        let home_hdb_path = path.join(os.homedir(), terms.HDB_HOME_DIR_NAME, terms.UPDATE_FILE_NAME);
+        if(fs.existsSync(home_hdb_path)) {
+            try {
+                let update_json = JSON.parse(fs.readFileSync(home_hdb_path), 'utf8');
+                await forceUpdate(update_json);
+            } catch(err) {
+                console.error(`Got an error trying to read ${home_hdb_path}, please check the file is readable and try again.  Exiting HarperDB.`);
+                process.exit(1);
+            }
+        }
         let is_in_use = await arePortsInUse();
         if(!is_in_use) {
             await startHarper();
@@ -56,6 +70,17 @@ async function run() {
         logger.info(err);
         return;
     }
+}
+
+async function forceUpdate(udpate_json) {
+    let old_version = '1.1.0';
+    let new_version = '1.3.001';
+    let start_upgrade = await upgrade_prompt.forceUpdatePrompt('1.1.0', '1.3.001');
+    if(!start_upgrade) {
+        console.log('Cancelled upgrade, closing HarperDB');
+        process.exit(1);
+    }
+    let upgrade_result = upgrade.startUpgradeDirectives(old_version, new_version);
 }
 
 async function arePortsInUse() {
