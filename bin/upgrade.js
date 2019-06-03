@@ -31,7 +31,7 @@ const {spawn} = require('child_process');
 const path = require('path');
 const fs_extra = require('fs-extra');
 const { isHarperRunning } = require('../utility/common_utils');
-
+const hdbInfoController = require('../data_layer/hdbInfoController');
 
 const UPGRADE_DIR_NAME= 'hdb_upgrade';
 const TAR_FILE_NAME = 'hdb-latest.tar';
@@ -154,7 +154,7 @@ async function upgrade() {
            it's contents and re-run upgrade. ${e}`, log.ERR);
            return;
         });
-    };
+    }
 
     try {
         fs.mkdirSync(UPGRADE_DIR_PATH, {mode:  hdb_terms.HDB_FILE_PERMISSIONS});
@@ -166,15 +166,17 @@ async function upgrade() {
     } catch(err) {
         printToLogAndConsole(err, log.ERR);
         throw err;
-    };
+    }
 }
 
 /**
  * This function is called during an upgrade from the existing install's harperdb executable.  We needed to be able to
  * overwrite the existing executable during upgrade as well as reference directive files that are packaged into latest
  * versions.
+ * @throws
+ * @returns {Promise}
  */
-function startUpgrade() {
+async function startUpgrade() {
     try {
         let curr_version_path = path.join(process.cwd(), '../', 'package.json');
         let curr_package_json = fs.readFileSync(curr_version_path, 'utf8');
@@ -232,6 +234,12 @@ function startUpgrade() {
 
     // Logging and exception handling occurs in postInstallCleanUp.
     postInstallCleanUp();
+    try {
+        await hdbInfoController.updateHdbInfo(version.version());
+    } catch(err) {
+        log.error('Error updating the hdbInfo version table.');
+        log.error(err);
+    }
     countdown.stop();
     printToLogAndConsole(`HarperDB was successfully upgraded to version ${version.version()}`, log.INFO);
 }
@@ -352,7 +360,7 @@ async function copyUpgradeExecutable() {
         throw e;
     });
     // Need to set perms on new hdb exe.
-    await p_fs_chmod(`${process.cwd()}/${EXE_COPY_NAME}`, 0o754).catch((e) => {
+    await p_fs_chmod(`${process.cwd()}/${EXE_COPY_NAME}`, FILE_PERM).catch((e) => {
         let msg = `Error setting permissions on newest version of HarperDB ${e}`;
         log.error(msg);
         throw e;
