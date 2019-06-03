@@ -360,7 +360,7 @@ async function copyUpgradeExecutable() {
         throw e;
     });
     // Need to set perms on new hdb exe.
-    await p_fs_chmod(`${process.cwd()}/${EXE_COPY_NAME}`, FILE_PERM).catch((e) => {
+    await p_fs_chmod(`${process.cwd()}/${EXE_COPY_NAME}`, hdb_terms.HDB_FILE_PERMISSIONS).catch((e) => {
         let msg = `Error setting permissions on newest version of HarperDB ${e}`;
         log.error(msg);
         throw e;
