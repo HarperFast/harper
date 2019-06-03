@@ -251,8 +251,6 @@ const CLUSTER_MESSAGE_TYPE_ENUM = {
     DELEGATE_THREAD_RESPONSE: 'delegate_thread_response',
     CLUSTERING: 'clustering',
     SCHEMA: 'schema',
-    NODE_ADDED: 'node_added',
-    NODE_REMOVED: 'node_removed',
     CLUSTER_STATUS: 'cluster_status',
     JOB: 'job',
     CHILD_STARTED: 'child_started',

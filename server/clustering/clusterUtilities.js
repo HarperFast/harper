@@ -1,9 +1,9 @@
 const insert = require('../../data_layer/insert');
-const node_Validator = require('../../validation/nodeValidator');
+const node_validator = require('../../validation/nodeValidator');
+const node_subscription_validator = require('../../validation/nodeSubscriptionValidator');
 const hdb_utils = require('../../utility/common_utils');
 const log = require('../../utility/logging/harper_logger');
 const util = require('util');
-const cb_insert_insert = util.callbackify(insert.insert);
 const del = require('../../data_layer/delete');
 const terms = require('../../utility/hdbTerms');
 const env_mgr = require('../../utility/environment/environmentManager');
@@ -14,9 +14,9 @@ const ClusterStatusObject = require('../../server/clustering/ClusterStatusObject
 const signalling = require('../../utility/signalling');
 const cluster_status_event = require('../../events/ClusterStatusEmitter');
 const children_stopped_event = require('../../events/AllChildrenStoppedEvent');
-const common = require('../../utility/common_utils');
 const child_process = require('child_process');
 const path = require('path');
+const InsertObject = require('../../data_layer/DataLayerObjects').InsertObject;
 
 //Promisified functions
 const p_delete_delete = util.promisify(del.delete);
@@ -30,6 +30,9 @@ let child_event_count = 0;
 
 const STATUS_TIMEOUT_MS = 4000;
 const DUPLICATE_ERR_MSG = 'Cannot add a node that matches the hosts clustering config.';
+
+const SUBSCRIPTIONS_MUST_BE_ARRAY = 'add_node subscriptions must be an array';
+const INTERNAL_HDB_NODES_CHANNEL = 'internal:hdb_nodes';
 
 // If we have more than 1 process, we need to get the status from the master process which has that info stored
 // in global.  We subscribe to an event that master will emit once it has gathered the data.  We want to build
@@ -75,9 +78,9 @@ async function kickOffEnterprise() {
     }
 }
 
-function addNode(new_node, callback) {
+async function addNode(new_node) {
     // need to clean up new node as it hads operation and user on it
-    let validation = node_Validator(new_node);
+    let validation = node_validator(new_node);
     let cluster_port = undefined;
     let new_port = undefined;
     try {
@@ -85,53 +88,64 @@ function addNode(new_node, callback) {
         cluster_port = env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY);
         new_port = parseInt(new_node.port);
     } catch(err) {
-        return callback(`Invalid port: ${new_node.port} specified`, null);
+        throw new Error(`Invalid port: ${new_node.port} specified`);
     }
 
     //TODO: We may need to expand this depending on what is decided in https://harperdb.atlassian.net/browse/HDB-638
     if(new_port === cluster_port) {
         if((new_node.host === 'localhost' || new_node.host === '127.0.0.1')) {
-            return callback(DUPLICATE_ERR_MSG, null);
+            throw new Error(DUPLICATE_ERR_MSG);
         }
         if(addresses && addresses.includes(new_node.host)) {
-            return callback(DUPLICATE_ERR_MSG, null);
+            throw new Error(DUPLICATE_ERR_MSG);
         }
         if(os.hostname() === new_node.host) {
-            return callback(DUPLICATE_ERR_MSG, null);
+            throw new Error(DUPLICATE_ERR_MSG);
         }
     }
 
     if(validation) {
         log.error(`Validation error in addNode validation. ${validation}`);
-        return callback(validation);
+        throw new Error(validation);
     }
 
-    let new_node_insert = {
-        "operation":"insert",
-        "schema":"system",
-        "table":"hdb_nodes",
-        "records": [new_node]
-    };
+    if(!hdb_utils.isEmptyOrZeroLength(new_node.subscriptions) && !Array.isArray(new_node.subscriptions)){
+        log.error(`${SUBSCRIPTIONS_MUST_BE_ARRAY}: ${new_node.subscriptions}`);
+        throw new Error(SUBSCRIPTIONS_MUST_BE_ARRAY);
+    }
 
-    cb_insert_insert(new_node_insert, (err, results) => {
-        if (err) {
-            log.error(`Error adding new cluster node ${new_node_insert}.  ${err}`);
-            return callback(err);
+    let subscription_validation = undefined;
+    if(!hdb_utils.isEmptyOrZeroLength(new_node.subscriptions)){
+        for(let b = 0; b < new_node.subscriptions.length; b++){
+            subscription_validation = node_subscription_validator(new_node.subscriptions[b]);
+            if(subscription_validation){
+                throw new Error(subscription_validation);
+            }
         }
+    }
 
-        if (!hdb_utils.isEmptyOrZeroLength(results.skipped_hashes)) {
-            log.info(`Node '${new_node.name}' has already been already added. Operation aborted.`);
-            return callback(null, `Node '${new_node.name}' has already been already added. Operation aborted.`);
-        }
+    let new_node_insert = new InsertObject("insert", "system", "hdb_nodes", null, [new_node]);
 
-        // Send IPC message so master will command forks to rescan for new nodes.
-        common.callProcessSend({
-            "type": terms.CLUSTER_MESSAGE_TYPE_ENUM.NODE_ADDED,
-            "node_name": new_node.name
-        });
+    let results = undefined;
+    try {
+        results = await insert.insert(new_node_insert);
+    } catch(err) {
+        log.error(`Error adding new cluster node ${new_node_insert}.  ${err}`);
+        throw new Error(err);
+    }
 
-        return callback(null, `successfully added ${new_node.name} to manifest`);
-    });
+    if (!hdb_utils.isEmptyOrZeroLength(results.skipped_hashes)) {
+        log.info(`Node '${new_node.name}' has already been already added. Operation aborted.`);
+        throw new Error(`Node '${new_node.name}' has already been already added. Operation aborted.`);
+    }
+
+    try {
+        hdb_utils.sendTransactionToSocketCluster(INTERNAL_HDB_NODES_CHANNEL, {add_node: new_node});
+    } catch(e){
+        throw new Error(e);
+    }
+
+    return `successfully added ${new_node.name} to manifest`;
 }
 
 /**
@@ -164,11 +178,7 @@ async function removeNode(remove_json_message) {
         return `Node '${remove_json_message.name}' was not found.`;
     }
 
-    // Send IPC message so master will command forks to rescan for new nodes.
-    common.callProcessSend({
-        "type": terms.CLUSTER_MESSAGE_TYPE_ENUM.NODE_REMOVED,
-        "node_name": remove_json_message.name
-    });
+    hdb_utils.sendTransactionToSocketCluster(INTERNAL_HDB_NODES_CHANNEL, {remove_node: remove_json_message});
     return `successfully removed ${remove_json_message.name} from manifest`;
 }
 
@@ -308,30 +318,6 @@ function clusterMessageHandler(msg) {
             case terms.CLUSTER_MESSAGE_TYPE_ENUM.USER:
                 global.forks.forEach((fork) => {
                     fork.send(msg);
-                });
-                break;
-            case terms.CLUSTER_MESSAGE_TYPE_ENUM.NODE_ADDED:
-                if(hdb_utils.isEmptyOrZeroLength(global.cluster_server)) {
-                    log.error('Cluster Server has not been initialized.  Do you have CLUSTERING=true in your config/settings file?');
-                    return;
-                }
-                global.cluster_server.scanNodes().then( () => {
-                    log.info('Done scanning for new cluster nodes');
-                }).catch( (e) => {
-                    log.error('There was an error scanning for new cluster nodes');
-                    log.error(e);
-                });
-                break;
-            case terms.CLUSTER_MESSAGE_TYPE_ENUM.NODE_REMOVED:
-                if(hdb_utils.isEmptyOrZeroLength(global.cluster_server)) {
-                    log.error('Cluster Server has not been initialized.  Do you have CLUSTERING=true in your config/settings file?');
-                    return;
-                }
-                global.cluster_server.scanNodes().then( () => {
-                    log.info('Done scanning for removed cluster nodes');
-                }).catch( (e) => {
-                    log.error('There was an error scanning for removed cluster nodes');
-                    log.error(e);
                 });
                 break;
             case terms.CLUSTER_MESSAGE_TYPE_ENUM.CLUSTER_STATUS:
