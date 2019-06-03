@@ -1,23 +1,28 @@
 "use strict";
 const env = require('../utility/environment/environmentManager');
 env.initSync();
-const fs = require('fs');
+const fs = require('fs-extra');
 const path = require('path');
 const net = require('net');
 const install = require('../utility/install/installer.js');
 const colors = require("colors/safe");
 const logger = require('../utility/logging/harper_logger');
-const async = require('async');
 const pjson = require('../package.json');
+const terms = require('../utility/hdbTerms');
+let checkPermissions = require('../utility/check_permissions');
 const { isHarperRunning } = require('../utility/common_utils');
-
-const HTTPSECURE_PORT_KEY = 'HTTPS_PORT';
-const HTTP_PORT_KEY = 'HTTP_PORT';
-const HTTPSECURE_ON_KEY = 'HTTPS_ON';
-const HTTP_ON_KEY = 'HTTP_ON';
+const { promisify } = require('util');
 const stop = require('./stop');
 
+// These may change to match unit return codes (i.e. 0, 1)
+const SUCCESS_CODE = 'success';
+const FAILURE_CODE = 'failed';
 const FOREGROUND_ARG = 'foreground';
+const ENOENT_ERR_CODE = -2;
+
+// promisified functions
+const p_install_install = promisify(install.install);
+
 let fork = require('child_process').fork;
 let child = undefined;
 
@@ -25,77 +30,85 @@ let child = undefined;
  * Starts Harper DB.  If Harper is already running, or the port is in use, and error will be thrown and Harper will not
  * start.  If the hdb_boot_props file is not found, it is assumed an install needs to be performed.
  */
-function run() {
-  isHarperRunning().then(hdb_running => {
-      if(hdb_running) {
-          let run_err = 'HarperDB is already running.';
-          console.log(run_err);
-          logger.info(run_err);
-          return;
-      }
-
-      try {
-          arePortsInUse((err) => {
-              if (err) {
-                  console.log(err);
-                  logger.info(err);
-                  return;
-              }
-              startHarper();
-          });
-      } catch(err) {
-          console.log(err);
-          logger.info(err);
-      }
-
-  }).catch(err => {
-      console.log(err);
-      logger.error(err);
-  });
+async function run() {
+    let hdb_running = undefined;
+    try {
+        hdb_running = await isHarperRunning();
+    } catch(err) {
+        console.log(err);
+        logger.error(err);
+    }
+    if(hdb_running) {
+        let run_err = 'HarperDB is already running.';
+        console.log(run_err);
+        logger.info(run_err);
+        return;
+    }
+    try {
+        let is_in_use = await arePortsInUse();
+        if(!is_in_use) {
+            await startHarper();
+        } else {
+            console.log(`Can't start HarperDB.  Ports: ${env.get(terms.HDB_SETTINGS_NAMES.HTTP_PORT_KEY)} or ${env.get(terms.HDB_SETTINGS_NAMES.HTTP_SECURE_PORT_KEY)} in use.`);
+        }
+    } catch(err) {
+        console.log(err);
+        logger.info(err);
+        return;
+    }
 }
 
-function arePortsInUse(callback) {
+async function arePortsInUse() {
     let httpsecure_port;
     let http_port;
     let httpsecure_on;
     let http_on;
-    let tasks = [];
     // If this fails to find the boot props file, this must be a new install.  This will fall through,
     // pass the process and port check, and then hit the install portion of startHarper().
     try {
-        httpsecure_on = env.get(HTTPSECURE_ON_KEY);
-        http_on = env.get(HTTP_ON_KEY);
-        http_port = env.get(HTTP_PORT_KEY);
-        httpsecure_port = env.get(HTTPSECURE_PORT_KEY);
+        httpsecure_on = env.get(terms.HDB_SETTINGS_NAMES.HTTP_SECURE_ENABLED_KEY);
+        http_on = env.get(terms.HDB_SETTINGS_NAMES.HTTP_ENABLED_KEY);
+        http_port = env.get(terms.HDB_SETTINGS_NAMES.HTTP_PORT_KEY);
+        httpsecure_port = env.get(terms.HDB_SETTINGS_NAMES.HTTP_SECURE_PORT_KEY);
     } catch (e) {
-        logger.info('hdb_boot_props file not found, starting install.');
-        startHarper();
+        logger.info('hdb_boot_props file not found.');
         return;
     }
 
     if (http_on === 'FALSE' && httpsecure_on === 'FALSE') {
         let flag_err = 'http and https flags are both disabled.  Please check your settings file.';
         logger.error(flag_err);
-        return callback(flag_err);
+        throw new Error(flag_err);
     }
 
     if (!http_port && !httpsecure_port) {
         let port_err = 'http and https ports are both undefined.  Please check your settings file.';
         logger.error(port_err);
-        return callback(port_err);
+        await startHarper();
     }
 
+    //let port_taken = undefined;
     if (http_port && http_on === 'TRUE') {
-        tasks.push(function(cb) { return isPortTaken(http_port, cb); });
+        try {
+            let is_port_taken = await isPortTaken(http_port);
+            if(is_port_taken) {
+                return true;
+            }
+        } catch(err) {
+            console.error(`error checking for port ${http_port}`);
+        }
     }
 
     if (httpsecure_port && httpsecure_on === 'TRUE') {
-        tasks.push(function(cb) { return isPortTaken(httpsecure_port, cb); });
+        try {
+            let is_port_taken = await isPortTaken(httpsecure_port);
+            if(is_port_taken) {
+                return true;
+            }
+        } catch(err) {
+            console.error(`error checking for port ${http_port}`);
+        }
     }
-
-    async.parallel( tasks, function(err) {
-        callback(err);
-    });
 }
 
 /**
@@ -103,87 +116,75 @@ function arePortsInUse(callback) {
  * @param port - The port to check for running processes against
  * @param callback - Callback, returns (err, true/false)
  */
-function isPortTaken(port, callback) {
+function isPortTaken(port) {
     if(!port){
-        return callback();
+        throw new Error(`Invalid port passed as parameter`);
     }
 
-    const tester = net.createServer()
-        .once('error', function (err) {
+    const tester = net.createServer();
+    let event_response = new Promise(function(resolve, reject) {
+        tester.once('error', function (err) {
             if (err.code !== 'EADDRINUSE') {
-                return callback(err);
+                resolve(true);
             }
-            callback(`Port ${port} is already in use.`);
-        })
-        .once('listening', function() {
+            resolve(true);
+        });
+        tester.once('listening', function() {
             tester.once('close', function() {
-                callback(null);
+                resolve(false);
             }).close();
-        })
-        .listen(port);
+        });
+        tester.listen(port);
+    });
+    return event_response;
 }
 
 /**
  * Helper function to start HarperDB.  If the hdb_boot properties file is not found, an install is started.
  */
-function startHarper() {
-    fs.stat(env.BOOT_PROPS_FILE_PATH, function(err) {
-        if(err) {
-            if(err.errno === -2) {
-                install.install(function (err) {
-                    if (err) {
-                        logger.error(err);
-                        return;
-                    }
-                    env.initSync();
-                    completeRun();
-                    return;
-                });
-            } else {
-                logger.error(`start fail: ${err}`);
-                return;
-            }
+async function startHarper() {
+    let boot_props_stats = undefined;
+    let settings_stats = undefined;
+    let start_install = false;
+    try {
+        boot_props_stats = await fs.stat(env.BOOT_PROPS_FILE_PATH);
+        settings_stats = await fs.stat(env.get(terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY));
+    } catch(err) {
+        if(err.errno === ENOENT_ERR_CODE) {
+            // boot props not found, don't return and kick off install
+            start_install = true;
         } else {
-            env.initSync();
-            try {
-                fs.stat(env.get('settings_path'), function (err) {
-                    if (err) {
-                        if (err.errno === -2) {
-                            install.install(function (err) {
-                                if (err) {
-                                    logger.error(err);
-                                    return;
-                                }
-                                env.initSync();
-                                completeRun();
-                                return;
-                            });
-                        } else {
-                            logger.error(`HarperDB ${pjson.version} start fail: ${err}`);
-                            return;
-                        }
-                    } else {
-                        completeRun();
-                        return;
-                    }
-                });
-            } catch (e) {
-                console.error('There was a problem reading the boot properties file.  Please check the install logs.');
-                logger.error('There was a problem reading the boot properties file. ' + e);
-            }
+            logger.error(`start fail: ${err}`);
+            return;
         }
-    });
+    }
+    if(start_install) {
+        console.log(`Settings files not found, starting install process.`);
+        try {
+            await p_install_install();
+            console.log('Install complete, starting HarperDB');
+        } catch(err) {
+            console.error('There was an error during install.  Exiting.');
+            process.exit(1);
+        }
+    }
+    env.initSync();
+    await completeRun();
 }
 
-function completeRun() {
-    async.waterfall([
-        checkPermission,
-        kickOffExpress,
-    ], (error) => {
-        if(error)
-            console.error(error);
-        foregroundHandler();
-    });
+async function completeRun() {
+    try {
+        await checkPermission();
+        let result = await kickOffExpress();
+        if (result === SUCCESS_CODE) {
+            foregroundHandler();
+        } else {
+            process.exit(1);
+        }
+    } catch(err) {
+        console.error(err.message);
+        process.exit(1);
+    }
 }
 
 /**
@@ -197,7 +198,6 @@ function foregroundHandler() {
         child.unref();
         exitInstall();
     }
-
 
     process.on('exit', processExitHandler.bind(null, {is_foreground: is_foreground}));
 
@@ -214,13 +214,13 @@ function foregroundHandler() {
  * @param options
  * @param err
  */
-function processExitHandler(options, err) {
+async function processExitHandler(options) {
     if (options.is_foreground) {
-        stop.stop()
-            .then()
-            .catch((err) => {
-                console.log(err);
-            });
+        try {
+            await stop.stop();
+        } catch(err) {
+            console.log(err);
+        }
     }
 }
 
@@ -236,38 +236,39 @@ function isForegroundProcess(){
             break;
         }
     }
-
     return is_foreground;
 }
 
-function checkPermission(callback) {
-    let checkPermissions = require('../utility/check_permissions');
+async function checkPermission() {
     try {
         checkPermissions.checkPermission();
     } catch(err) {
-        console.error(err);
-        return callback(err, null);
+        throw err;
     }
-    return callback(null, 'success');
+    return SUCCESS_CODE;
 }
 
-function kickOffExpress(err, callback) {
-
-    if (env.get('MAX_MEMORY')) {
-        child = fork(path.join(__dirname,'../server/hdb_express.js'),[`--max-old-space-size=${env.get('MAX_MEMORY')}`, `${env.get('PROJECT_DIR')}/server/hdb_express.js`],{
-            detached: true,
-            stdio: 'ignore'
-        });
-    } else {
-        child = fork(path.join(__dirname,'../server/hdb_express.js'),{
-            detached: true,
-            stdio: 'ignore'
-        });
+async function kickOffExpress() {
+    try {
+        if (env.get('MAX_MEMORY')) {
+            child = fork(path.join(__dirname, '../server/hdb_express.js'), [`--max-old-space-size=${env.get('MAX_MEMORY')}`, `${env.get('PROJECT_DIR')}/server/hdb_express.js`], {
+                detached: true,
+                stdio: 'ignore'
+            });
+        } else {
+            child = fork(path.join(__dirname, '../server/hdb_express.js'), {
+                detached: true,
+                stdio: 'ignore'
+            });
+        }
+    } catch(err) {
+        console.error(`There was an error starting the REST server.  Please try again.`);
+        return FAILURE_CODE;
     }
 
     console.log(colors.magenta('' + fs.readFileSync(path.join(__dirname,'../utility/install/ascii_logo.txt'))));
     console.log(colors.magenta(`|------------- HarperDB ${pjson.version} successfully started ------------|`));
-    return callback();
+    return SUCCESS_CODE;
 }
 
 function exitInstall(){

@@ -83,12 +83,17 @@ function harperDBService() {
                 });
                 break;
             case hdb_terms.SERVICE_ACTIONS_ENUM.STOP:
-                stop.stop().then();
+                stop.stop().then().catch((err) => {
+                    console.error(err);
+                });
                 break;
             case hdb_terms.SERVICE_ACTIONS_ENUM.RESTART:
                 stop.stop().then(
                     run.run()
-                );
+                ).catch((err) => {
+                    console.error('There was an error stopping harperdb.  Please stop manually with harperdb stop and start again.');
+                    process.exit(1);
+                });
                 break;
             case hdb_terms.SERVICE_ACTIONS_ENUM.VERSION:
                 version.printVersion();
