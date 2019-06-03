@@ -252,6 +252,8 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     const cors = require('cors');
 
     const app = express();
+
+    const SC_WORKER_NAME_PREFIX = 'worker_';
     let enterprise = process.env['enterprise'] === undefined ? false : (process.env['enterprise'] === 'true');
     global.clustering_on = process.env['clustering'] === undefined ? false : (process.env['clustering'] === 'true');
 
@@ -424,7 +426,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
 
         connector_options.hostname = 'localhost';
         connector_options.port = env.get('CLUSTERING_PORT');
-        global.hdb_socket_client = new HDBSocketConnector(socketclient, {name: 'worker_' + process.pid}, connector_options, creds);
+        global.hdb_socket_client = new HDBSocketConnector(socketclient, {name: SC_WORKER_NAME_PREFIX + process.pid}, connector_options, creds);
     }
 
     async function setUp(){
