@@ -715,7 +715,7 @@ function createBootPropertiesFile(settings_path, callback) {
     let home_dir = comm.getHomeDir();
     let home_dir_path = path.join(home_dir, hdb_terms.HDB_HOME_DIR_NAME);
     try {
-        fs.mkdirpSync(home_dir_path);
+        fs.mkdirpSync(home_dir_path, {mode: hdb_terms.HDB_FILE_PERMISSIONS});
     } catch(err) {
         console.log(`Could not make settings directory ${hdb_terms.HDB_HOME_DIR_NAME} in home directory.  Please check your permissions and try again.`);
     }
