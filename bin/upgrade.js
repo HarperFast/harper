@@ -55,11 +55,11 @@ let Spinner = CLI.Spinner;
 let countdown = new Spinner(`Upgrading HarperDB `, ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷']);
 
 module.exports = {
-    upgrade: upgrade,
-    startUpgrade: startUpgrade,
-    upgradeFromFilePath:upgradeFromFilePath,
-    startUpgradeDirectives: startUpgradeDirectives,
-    listDirectiveChanges: listDirectiveChanges
+    upgrade,
+    startUpgrade,
+    upgradeFromFilePath,
+    startUpgradeDirectives,
+    listDirectiveChanges
 };
 
 let UPGRADE_VERSION_NUM = undefined;

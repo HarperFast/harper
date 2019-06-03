@@ -15,6 +15,7 @@ const { promisify } = require('util');
 const stop = require('./stop');
 const os = require('os');
 const upgrade_prompt = require('../utility/userInterface/upgradePrompt');
+const upgrade = require('./upgrade');
 
 // These may change to match unix return codes (i.e. 0, 1)
 const SUCCESS_CODE = 'success';
@@ -53,7 +54,10 @@ async function run() {
         if(fs.existsSync(home_hdb_path)) {
             try {
                 let update_json = JSON.parse(fs.readFileSync(home_hdb_path), 'utf8');
-                await forceUpdate(update_json);
+                let upgrade_result = await forceUpdate(update_json);
+                if(upgrade_result) {
+                    fs.unlinkSync(home_hdb_path);
+                }
             } catch(err) {
                 console.error(`Got an error trying to read ${home_hdb_path}, please check the file is readable and try again.  Exiting HarperDB.`);
                 process.exit(1);
@@ -80,7 +84,18 @@ async function forceUpdate(udpate_json) {
         console.log('Cancelled upgrade, closing HarperDB');
         process.exit(1);
     }
-    let upgrade_result = upgrade.startUpgradeDirectives(old_version, new_version);
+    try {
+        let upgrade_result = upgrade.startUpgradeDirectives(old_version, new_version);
+        upgrade_result.forEach((result) => {
+           logger.info(result);
+        });
+        // success, remove the upgrade file.
+        return true;
+    } catch(err) {
+        console.log('There was an error during the data upgrade.  Please check the logs.');
+        logger.error(err);
+        return false;
+    }
 }
 
 async function arePortsInUse() {
@@ -142,7 +157,7 @@ async function arePortsInUse() {
  * @param callback - Callback, returns (err, true/false)
  */
 function isPortTaken(port) {
-    if(!port){
+    if(!port) {
         throw new Error(`Invalid port passed as parameter`);
     }
 
