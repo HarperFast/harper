@@ -172,74 +172,72 @@ function descTable(describe_table_object, callback) {
         }
 
         if (describe_table_object.schema == 'system') {
-            //let global_schema = require('../utility/globalSchema');
-            //global_schema.setSchemaDataToGlobal(function (err, data) {
-                return global.hdb_schema['system'][describe_table_object.table];
-        } else {
+            return callback(null, global.hdb_schema['system'][describe_table_object.table]);
+        }
 
-            let table_search_obj = {};
-            table_search_obj.schema = 'system';
-            table_search_obj.table = 'hdb_table';
-            table_search_obj.hash_attribute = 'id';
-            table_search_obj.search_attribute = 'name';
-            table_search_obj.search_value = describe_table_object.table;
-            table_search_obj.hash_values = [];
-            table_search_obj.get_attributes = ['*'];
-            let table_result = {};
-            search.searchByValue(table_search_obj, function (err, tables) {
+        let table_search_obj = {};
+        table_search_obj.schema = 'system';
+        table_search_obj.table = 'hdb_table';
+        table_search_obj.hash_attribute = 'id';
+        table_search_obj.search_attribute = 'name';
+        table_search_obj.search_value = describe_table_object.table;
+        table_search_obj.hash_values = [];
+        table_search_obj.get_attributes = ['*'];
+        let table_result = {};
+        search.searchByValue(table_search_obj, function (err, tables) {
+            if (err) {
+                logger.error(err);
+                return;
+            }
+
+            async.map(tables, function (table, caller) {
+                if (table.schema === describe_table_object.schema) {
+                    table_result = table;
+                }
+                caller();
+
+            }, function (err, data) {
                 if (err) {
-                    logger.error(err);
+                    callback(err);
                     return;
                 }
 
-                async.map(tables, function (table, caller) {
-                    if (table.schema === describe_table_object.schema) {
-                        table_result = table;
-                    }
-                    caller();
+                if(!table_result.hash_attribute){
+                    return callback("Invalid table");
+                }
 
-                }, function (err, data) {
+                let attribute_search_obj = {};
+                attribute_search_obj.schema = 'system';
+                attribute_search_obj.table = 'hdb_attribute';
+                attribute_search_obj.hash_attribute = 'id';
+                attribute_search_obj.search_attribute = 'schema_table';
+                attribute_search_obj.search_value = describe_table_object.schema + "." + describe_table_object.table;
+                attribute_search_obj.get_attributes = ['attribute'];
+
+
+                search.searchByValue(attribute_search_obj, function (err, attributes) {
                     if (err) {
-                        callback(err);
+                        logger.error(err);
+                        //initialize();
                         return;
                     }
 
-                    if(!table_result.hash_attribute){
-                        return callback("Invalid table");
-                    }
-
-                    let attribute_search_obj = {};
-                    attribute_search_obj.schema = 'system';
-                    attribute_search_obj.table = 'hdb_attribute';
-                    attribute_search_obj.hash_attribute = 'id';
-                    attribute_search_obj.search_attribute = 'schema_table';
-                    attribute_search_obj.search_value = describe_table_object.schema + "." + describe_table_object.table;
-                    attribute_search_obj.get_attributes = ['attribute'];
-
-
-                    search.searchByValue(attribute_search_obj, function (err, attributes) {
-                        if (err) {
-                            logger.error(err);
-                            //initialize();
-                            return;
-                        }
-
-                        //need to remove possible dups
-                        attributes = _.uniqBy(attributes, (attribute)=>{
-                            return attribute.attribute;
-                        });
-
-                        table_result.attributes = attributes;
-                        callback(null, table_result);
-
-
+                    //need to remove possible dups
+                    attributes = _.uniqBy(attributes, (attribute)=>{
+                        return attribute.attribute;
                     });
+
+                    table_result.attributes = attributes;
+                    callback(null, table_result);
+
 
                 });
 
-
             });
-        }
+
+
+        });
+
     }catch(e){
         callback(e);
     }

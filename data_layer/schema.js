@@ -96,7 +96,7 @@ async function createSchemaStructure(schema_create_object) {
 
         await insert.insert(insert_object);
         let schema_object = schema_create_object.schema;
-        await fs.mkdir(env.get('HDB_ROOT') + '/schema/' + schema_object);
+        await fs.mkdir(env.get('HDB_ROOT') + '/schema/' + schema_object, {mode: terms.HDB_FILE_PERMISSIONS});
 
         return `schema ${schema_create_object.schema} successfully created`;
     } catch(err) {
@@ -176,7 +176,7 @@ async function insertTable(table, create_table_object) {
 
     try {
         await insert.insert(insertObject);
-        await fs.mkdir(env.get('HDB_ROOT') + '/schema/' + create_table_object.schema + '/' + create_table_object.table);
+        await fs.mkdir(env.get('HDB_ROOT') + '/schema/' + create_table_object.schema + '/' + create_table_object.table, {mode: terms.HDB_FILE_PERMISSIONS});
     } catch(err) {
         if (err.errno === -2) {
             throw new Error('schema does not exist');
@@ -495,7 +495,7 @@ async function moveFolderToTrash(origin_path, trash_path) {
     }
 
     try {
-        await fs.mkdirp(trash_path);
+        await fs.mkdirp(trash_path, {mode: terms.HDB_FILE_PERMISSIONS});
     } catch(err) {
         logger.error(`Failed to create the trash directory.`);
         throw err;

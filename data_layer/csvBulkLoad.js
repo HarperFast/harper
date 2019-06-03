@@ -2,13 +2,11 @@
 
 const insert = require('./insert');
 const _ = require('lodash');
-const async = require('async');
 const validator = require('../validation/csvLoadValidator');
 const request_promise = require('request-promise-native');
 const hdb_terms = require('../utility/hdbTerms');
 const hdb_utils = require('../utility/common_utils');
 const util = require('util');
-const cb_insert_insert = util.callbackify(insert.insert);
 const {promise} = require('alasql');
 const logger = require('../utility/logging/harper_logger');
 const fs = require('fs');
@@ -18,8 +16,6 @@ const NEWLINE = '\n';
 const unix_filename_regex = new RegExp(/[^-_.A-Za-z0-9]/);
 const ALASQL_MIDDLEWARE_PARSE_PARAMETERS = 'SELECT * FROM CSV(?, {headers:true, separator:","})';
 
-// Promisify bulkLoad to avoid more of a refactor for now.
-const p_bulk_load = util.promisify(bulkLoad);
 const p_fs_access = util.promisify(fs.access);
 
 module.exports = {
@@ -27,6 +23,7 @@ module.exports = {
     csvURLLoad: csvURLLoad,
     csvFileLoad: csvFileLoad
 };
+
 /**
  * Load csv values specified as a string in the message 'data' field.
  *
@@ -152,7 +149,6 @@ async function createReadStreamFromURL(url) {
     return response;
 }
 
-
 /**
  * Genericize the call to the middlware used for parsing (currently alasql);
  * @param parameter_string - The parameters to be passed into the middleware
@@ -180,7 +176,7 @@ async function callMiddleware(parameter_string, data) {
 async function callBulkLoad(csv_records, schema, table, action) {
     let bulk_load_result = {};
     if(csv_records && csv_records.length > 0 && validateColumnNames(csv_records[0])) {
-        bulk_load_result = await p_bulk_load(csv_records, schema, table, action);
+        bulk_load_result = await bulkLoad(csv_records, schema, table, action);
     } else {
         bulk_load_result.message = 'No records parsed from csv file.';
         logger.info(bulk_load_result.message);
@@ -210,10 +206,10 @@ function validateColumnNames(created_record) {
  * @param schema - The schema containing the specified table
  * @param table - The table to perform the insert/update
  * @param action - Specify either insert or update the specified records
- * @param callback - The caller
+ * @returns {Promise<{message: string}>}
  */
-function bulkLoad(records, schema, table, action, callback){
-    if( !action ) {
+async function bulkLoad(records, schema, table, action){
+    if (!action) {
         action = 'insert';
     }
 
@@ -225,22 +221,29 @@ function bulkLoad(records, schema, table, action, callback){
     };
 
     let write_function;
-    if(action === 'insert'){
-        write_function = cb_insert_insert;
+    if (action === 'insert'){
+        write_function = insert.insert;
     } else {
-        write_function = cb_insert_insert;
+        write_function = insert.update;
     }
 
-    write_function(target_object, (err, data)=> {
-        if (err) {
-            callback(err);
-            return;
+    try {
+        let write_response = await write_function(target_object);
+
+        let modified_hashes;
+        if (action === 'insert'){
+            modified_hashes = write_response.inserted_hashes;
+        } else {
+            modified_hashes = write_response.update_hashes;
         }
 
-        let number_written = hdb_utils.isEmptyOrZeroLength(data.inserted_hashes) ? 0 : data.inserted_hashes.length;
+        let number_written = hdb_utils.isEmptyOrZeroLength(modified_hashes) ? 0 : modified_hashes.length;
         let update_status = {
             message: `successfully loaded ${number_written} of ${records.length} records`
         };
-        callback(null, update_status);
-    });
+
+        return update_status;
+    } catch(err) {
+        throw err;
+    }
 }

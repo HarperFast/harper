@@ -52,7 +52,7 @@ async function stop() {
         log.info(`Stopping ${hdb_terms.SC_PROC_NAME} - ${hdb_terms.SC_PROC_DESCRIPTOR}.`);
     } catch(err){
         console.error(err);
-        return err;
+        throw err;
     }
 }
 

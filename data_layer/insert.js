@@ -37,11 +37,8 @@ const CHUNK_SIZE = hdb_terms.INSERT_MODULE_ENUM.CHUNK_SIZE;
 
 //for release 2.0 we need to turn off threading.  this variable will control the enable/disable
 const ENABLE_THREADING = false;
-
 const INTERNAL_ERROR_MESSAGE = 'An internal error occurred, please check the logs for more information.';
-
 const ATTRIBUTE_ALREADY_EXISTS = 'attribute already exists';
-
 const UPDATE_ACTION = 'updated';
 const INSERT_ACTION = 'inserted';
 
@@ -408,7 +405,7 @@ async function createFolders(folders, pool) {
             }
             await pool_handler(pool, folders, CHUNK_SIZE, '../utility/fs/mkdirp');
         } else {
-            await mkdirp(folders);
+            await mkdirp(folders, {mode:  hdb_terms.HDB_FILE_PERMISSIONS});
         }
 
         return pool;

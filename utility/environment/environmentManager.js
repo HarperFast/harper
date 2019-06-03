@@ -338,11 +338,12 @@ function initTestEnvironment() {
         setPropsFilePath(`${props_path}/hdb_boot_properties.file`);
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, `${props_path}/settings.test`);
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.INSTALL_USER, os.userInfo().username);
-        setProperty(hdb_terms.HDB_SETTINGS_NAMES.PRIVATE_KEY_KEY, `${props_path}/envDir/keys/privateKey.pem`);
-        setProperty(hdb_terms.HDB_SETTINGS_NAMES.CERT_KEY, `${props_path}/envDir/keys/certificate.pem`);
+        setProperty(hdb_terms.HDB_SETTINGS_NAMES.PRIVATE_KEY_KEY, `${props_path}/envDir/utility/keys/privateKey.pem`);
+        setProperty(hdb_terms.HDB_SETTINGS_NAMES.CERT_KEY, `${props_path}/envDir/utility/keys/certificate.pem`);
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.LOGGER_KEY, `1`);
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.LOG_LEVEL_KEY, `debug`);
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY, `${props_path}/envDir/log/hdb_log.log`);
+        setProperty(hdb_terms.HDB_SETTINGS_NAMES.LOG_DAILY_ROTATE_KEY, false);
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.PROJECT_DIR_KEY, `${props_path}/envDir/`);
 
     } catch(err) {

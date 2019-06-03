@@ -83,12 +83,17 @@ function harperDBService() {
                 });
                 break;
             case hdb_terms.SERVICE_ACTIONS_ENUM.STOP:
-                stop.stop().then();
+                stop.stop().then().catch((err) => {
+                    console.error(err);
+                });
                 break;
             case hdb_terms.SERVICE_ACTIONS_ENUM.RESTART:
                 stop.stop().then(
                     run.run()
-                );
+                ).catch((err) => {
+                    console.error('There was an error stopping harperdb.  Please stop manually with harperdb stop and start again.');
+                    process.exit(1);
+                });
                 break;
             case hdb_terms.SERVICE_ACTIONS_ENUM.VERSION:
                 version.printVersion();
@@ -108,11 +113,24 @@ function harperDBService() {
                 logger.setLogLevel(logger.INFO);
 
                 if(hdb_utils.isEmptyOrZeroLength(tar_file_path)) {
-                    upgrade.startUpgrade();
+                    upgrade.startUpgrade()
+                        .then(() => {
+                            logger.notify('Upgrade complete');
+                    })
+                        .catch((err) => {
+                            console.log('There was an error during the upgrade process.  Please check the logs for details.');
+                            logger.error(err);
+                        });
                 } else {
-                    upgrade.upgradeFromFilePath(tar_file_path);
+                    upgrade.upgradeFromFilePath(tar_file_path)
+                        .then(() => {
+                        logger.notify('Upgrade complete');
+                    })
+                        .catch((err) => {
+                            console.log('There was an error during the upgrade process.  Please check the logs for details.');
+                            logger.error(err);
+                        });
                 }
-
                 break;
             default:
                 run.run();

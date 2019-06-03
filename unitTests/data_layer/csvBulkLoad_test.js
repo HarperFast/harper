@@ -6,9 +6,10 @@ test_utils.preTestPrep();
 const assert = require('assert');
 const sinon = require('sinon');
 const rewire = require('rewire');
-const csv_rewire = rewire('../../data_layer/csvBulkLoad');
+let csv_rewire = rewire('../../data_layer/csvBulkLoad');
 const hdb_terms = require('../../utility/hdbTerms');
 const validator = require('../../validation/csvLoadValidator');
+const insert = require('../../data_layer/insert');
 const fs = require('fs');
 const {promise} = require('alasql');
 
@@ -41,9 +42,8 @@ describe('Test csvDataLoad', function () {
         test_msg.operation = hdb_terms.OPERATIONS_ENUM.csv_data_load;
         test_msg.data = VALID_CSV_DATA;
         bulk_load_stub = sandbox.stub().returns(BULK_LOAD_RESPONSE);
-        csv_rewire.__set__('p_bulk_load', bulk_load_stub);
+        csv_rewire.__set__('bulkLoad', bulk_load_stub);
         sandbox.stub(validator, 'dataObject');
-
     });
     afterEach(function () {
         sandbox.restore();
@@ -84,7 +84,7 @@ describe('Test csvDataLoad', function () {
     it('Test csvDataLoad incomplete csv data, expect nothing loaded message' , async function() {
         test_msg.data = 'a, b, c, d\n1,';
         bulk_load_stub = sandbox.stub().returns({message:'successfully loaded 1 of 1 records'});
-        csv_rewire.__set__('p_bulk_load', bulk_load_stub);
+        csv_rewire.__set__('bulkLoad', bulk_load_stub);
         let response = undefined;
         response = await csv_rewire.csvDataLoad(test_msg).catch( (e) => {
             response = e;
@@ -148,7 +148,7 @@ describe('Test csvURLLoad', function () {
         test_msg = test_utils.deepClone(DATA_LOAD_MESSAGE);
         test_msg.operation = hdb_terms.OPERATIONS_ENUM.csv_url_load;
         bulk_load_stub = sandbox.stub().returns(BULK_LOAD_RESPONSE);
-        csv_rewire.__set__('p_bulk_load', bulk_load_stub);
+        csv_rewire.__set__('bulkLoad', bulk_load_stub);
         sandbox.stub(validator, 'urlObject');
     });
     afterEach(function () {
@@ -209,7 +209,7 @@ describe('Test csvFileLoad', function () {
         test_msg = test_utils.deepClone(DATA_LOAD_MESSAGE);
         test_msg.operation = hdb_terms.OPERATIONS_ENUM.csv_file_load;
         bulk_load_stub = sandbox.stub().returns(BULK_LOAD_RESPONSE);
-        csv_rewire.__set__('p_bulk_load', bulk_load_stub);
+        csv_rewire.__set__('bulkLoad', bulk_load_stub);
         sandbox.stub(validator, 'fileObject');
     });
     afterEach(function () {
@@ -254,5 +254,81 @@ describe('Test csvFileLoad', function () {
         });
 
         assert.equal(result, 'No records parsed from csv file.', 'Got incorrect response' + result);
+    });
+});
+
+describe('Test bulkload', () => {
+    let sandbox = sinon.createSandbox();
+    let bulk_load;
+    let insert_insert_stub;
+    let insert_update_stub;
+    let records_fake = [{
+        id: 1,
+        name: 'hairy maclary'
+    }];
+    let schema_fake = 'houses';
+    let table_fake = 'forDogs';
+    let action_fake;
+    let fake_error = 'Attribute does not exist';
+    let write_insert_response_fake = {
+        message: 'inserted 1 of 1 records',
+        skipped_hashes: [],
+        inserted_hashes: [1]
+
+    };
+    let write_update_response_fake = {
+        message: 'updated 1 of 1 records',
+        skipped_hashes: [],
+        update_hashes: [1]
+    };
+
+    before(() => {
+        csv_rewire = rewire('../../data_layer/csvBulkLoad');
+        bulk_load = csv_rewire.__get__('bulkLoad');
+        insert_insert_stub = sandbox.stub(insert, 'insert');
+        insert_update_stub = sandbox.stub(insert, 'update');
+    });
+
+    after( () => {
+        sandbox.restore();
+        csv_rewire = rewire('../../data_layer/csvBulkLoad');
+    });
+
+    it('should successfully insert records', async () => {
+        insert_insert_stub.resolves(write_insert_response_fake);
+        let result = await bulk_load(records_fake, schema_fake, table_fake, action_fake);
+
+        assert.equal(result.message, `successfully loaded 1 of 1 records`, 'Got incorrect response ' + result.message);
+    });
+
+    it('should successfully skip insert records', async () => {
+        write_insert_response_fake.inserted_hashes = [];
+        write_insert_response_fake.skipped_hashes = [1];
+        insert_insert_stub.resolves(write_insert_response_fake);
+        let result = await bulk_load(records_fake, schema_fake, table_fake, action_fake);
+
+        assert.equal(result.message, `successfully loaded 0 of 1 records`, 'Got incorrect response ' + result.message);
+    });
+
+    it('should successfully update records', async () => {
+        action_fake = 'update';
+        insert_update_stub.resolves(write_update_response_fake);
+        let result = await bulk_load(records_fake, schema_fake, table_fake, action_fake);
+
+        assert.equal(result.message, `successfully loaded 1 of 1 records`, 'Got incorrect response ' + result.message);
+    });
+
+    it('should catch error from write_response', async () => {
+        insert_update_stub.throws(new Error(fake_error));
+        action_fake = 'update';
+        let error;
+
+        try {
+            await bulk_load(records_fake, schema_fake, table_fake, action_fake);
+        } catch(err) {
+            error = err;
+        }
+
+        assert.equal(error.message, fake_error, 'Got incorrect response ' + error);
     });
 });

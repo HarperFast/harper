@@ -1,7 +1,6 @@
 "use strict";
 const path = require('path');
 const test_util = require('../test_utils');
-
 test_util.preTestPrep();
 
 const env = require('../../utility/environment/environmentManager');
@@ -10,13 +9,12 @@ const sinon = require('sinon');
 const version = require('../../bin/version');
 const hdb_utils = require('../../utility/common_utils');
 const fs = require('fs');
-const request_promise = require("request-promise-native");
+const util = require('util');
+const search = require('../../data_layer/search');
 
 const rewire = require('rewire');
-const upgrade_rw = rewire(`../../bin/upgrade`);
-const upgrade_directive = require('../../upgrade/UpgradeDirective');
+let upgrade_rw = rewire(`../../bin/upgrade`);
 const process_directives_rw = rewire('../../upgrade/processDirectives');
-const BASE = process.cwd();
 
 const directive_manager_stub = require('../upgrade/directives/testDirectives/directiveManagerStub');
 
@@ -38,7 +36,7 @@ describe('Upgrade Test - Test processDirectives', function() {
 });
 
 // Commented out for https://harperdb.atlassian.net/browse/HDB-646
-// Put bback in when tests are running on their own build server
+// Put back in when tests are running on their own build server
 /*
 describe('Upgrade Test - Test checkIfRunning', function() {
     // the find-module function does an annoying way of bringing in it's modules that makes stubbing
@@ -247,22 +245,22 @@ describe('Upgrade Test - Test startUpgrade', function() {
         spinner.stop();
     });
 
-    it('test startUpgrade nominal path', function() {
+    it('test startUpgrade nominal path', async function() {
         let exep = undefined;
         try {
-            startUpgrade('1.1.0');
+            await startUpgrade('1.1.0');
         } catch(e) {
             exep = e;
         }
         assert.equal(exep, undefined, 'expected an exception');
     });
-    it('test startUpgrade with readFileSyncException', function() {
+    it('test startUpgrade with readFileSyncException', async function() {
         let exep = undefined;
         let exception_msg = "ReadFileSync Test Error";
         try {
             readFileSync_stub.restore();
             readFileSync_stub = sandbox.stub(fs, 'readFileSync').throws(new Error(exception_msg));
-            startUpgrade('1.1.0');
+            await startUpgrade('1.1.0');
         } catch(e) {
             exep = e;
         }
@@ -270,36 +268,36 @@ describe('Upgrade Test - Test startUpgrade', function() {
         // Make sure we are getting the expected exception
         assert.equal(exep.message === exception_msg, true, 'expected specific  exception message');
     });
-    it('test startUpgrade with backupCurrInstall Exception', function() {
+    it('test startUpgrade with backupCurrInstall Exception', async function() {
         let exep = undefined;
         let exception_msg = "backupCurrInstall Test Error";
         try {
             backupCurrInstall_stub = sandbox.stub().throws(new Error("backupCurrInstall Test Error"));
             upgrade_rw.__set__('backupCurrInstall', backupCurrInstall_stub);
-            startUpgrade('1.1.0');
+            await startUpgrade('1.1.0');
         } catch(e) {
             exep = e;
         }
         assert.equal((exep instanceof Error), true, 'expected no exceptions');
         assert.equal(exep.message === exception_msg, true, 'expected specific  exception message');
     });
-    it('test startUpgrade with startUpgradeDirectives_stub Exception', function() {
+    it('test startUpgrade with startUpgradeDirectives_stub Exception', async function() {
         let exep = undefined;
         try {
             startUpgradeDirectives_stub = sandbox.stub().throws(new Error("startUpgradeDirectives_stub Test Error"));
             upgrade_rw.__set__('startUpgradeDirectives', startUpgradeDirectives_stub);
-            startUpgrade('1.1.0');
+            await startUpgrade('1.1.0');
         } catch(e) {
             exep = e;
         }
         assert.equal(copyNewFilesIntoInstall_stub.called, true, 'Process keep going despite upgrade directive exception');
     });
-    it('test startUpgrade with chmodSync Exception', function() {
+    it('test startUpgrade with chmodSync Exception', async function() {
         let exep = undefined;
         try {
             chmodSync_stub.restore();
             chmodSync_stub = sandbox.stub(fs, 'chmodSync').throws(new Error("chmod exception"));
-            startUpgrade('1.1.0');
+            await startUpgrade('1.1.0');
         } catch(e) {
             exep = e;
         }

@@ -145,7 +145,12 @@ describe('Test stop.js' , () => {
         it('should catch error from killProcs and console error it', async () => {
             let kill_procs_err = 'An error occurred killing the process';
             kill_procs_stub.throws(new Error(kill_procs_err));
-            let result = await stop.stop();
+            let result = undefined;
+            try {
+                result = await stop.stop();
+            } catch(err) {
+                result = err;
+            }
 
             expect(result).to.be.an.instanceOf(Error);
             expect(result.message).to.equal(kill_procs_err);
