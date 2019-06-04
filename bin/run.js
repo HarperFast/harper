@@ -16,6 +16,7 @@ const stop = require('./stop');
 const os = require('os');
 const upgrade_prompt = require('../utility/userInterface/upgradePrompt');
 const upgrade = require('./upgrade');
+const version = require('./version');
 
 // These may change to match unix return codes (i.e. 0, 1)
 const SUCCESS_CODE = 'success';
@@ -63,6 +64,7 @@ async function run() {
                 process.exit(1);
             }
         }
+        console.log('Upgrade complete.  Starting HarperDB.');
         let is_in_use = await arePortsInUse();
         if(!is_in_use) {
             await startHarper();
@@ -76,16 +78,29 @@ async function run() {
     }
 }
 
-async function forceUpdate(udpate_json) {
-    let old_version = '1.1.0';
-    let new_version = '1.3.001';
-    let start_upgrade = await upgrade_prompt.forceUpdatePrompt('1.1.0', '1.3.001');
+async function forceUpdate(update_json) {
+    let old_version = update_json[terms.UPGRADE_JSON_FIELD_NAMES_ENUM.CURRENT_VERSION];
+    let new_version = update_json[terms.UPGRADE_JSON_FIELD_NAMES_ENUM.UPGRADE_VERSION];
+    if(!old_version) {
+        console.log('Current Version field missing from the config file.  Cannot continue with upgrade.  Please contact support@harperdb.io');
+        logger.notify('Missing current version field from upgradeconfig');
+        process.exit(1);
+    }
+    if(!new_version) {
+        new_version = version.version();
+        if(!new_version) {
+            console.log('Current Version field missing from the config file.  Cannot continue with upgrade.  Please contact support@harperdb.io');
+            logger.notify('Missing new version field from upgradeconfig');
+            process.exit(1);
+        }
+    }
+    let start_upgrade = await upgrade_prompt.forceUpdatePrompt(old_version, new_version);
     if(!start_upgrade) {
         console.log('Cancelled upgrade, closing HarperDB');
         process.exit(1);
     }
     try {
-        let upgrade_result = upgrade.startUpgradeDirectives(old_version, new_version);
+        let upgrade_result = await upgrade.startUpgradeDirectives(old_version, new_version);
         upgrade_result.forEach((result) => {
            logger.info(result);
         });

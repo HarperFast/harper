@@ -41,6 +41,11 @@ const INSERT_MODULE_ENUM = {
     MAX_CHARACTER_SIZE: 250
 };
 
+const UPGRADE_JSON_FIELD_NAMES_ENUM = {
+    CURRENT_VERSION: 'currentVersion',
+    UPGRADE_VERSION: 'upgradeVersion'
+};
+
 const SYSTEM_TABLE_NAMES = {
     JOB_TABLE_NAME : 'hdb_job',
     NODE_TABLE_NAME :'hdb_nodes',
@@ -321,6 +326,7 @@ module.exports = {
     REG_KEY_FILE_NAME,
     RESTART_TIMEOUT_MS,
     INSERT_MODULE_ENUM,
+    UPGRADE_JSON_FIELD_NAMES_ENUM,
     RESTART_CODE,
     RESTART_CODE_NUM,
     CLUSTER_OPERATIONS,

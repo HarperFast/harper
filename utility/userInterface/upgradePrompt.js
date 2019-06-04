@@ -1,10 +1,9 @@
 "use strict";
 
-const prompt = require('prompt');
 const log = require('../logging/harper_logger');
 const inquirer = require('inquirer');
 const os = require('os');
-const upgrade = require('upgrade');
+const upgrade = require('../../bin/upgrade');
 
 async function forceUpdatePrompt(old_version_string, new_version_string) {
     // pull directive changes
@@ -49,8 +48,6 @@ async function forceUpdatePrompt(old_version_string, new_version_string) {
     if(!response || !response.updateResponse) {
         return false;
     }
-    //4.  Notify upgrade complete, remove .updateConfig.json file.
-    console.log('Upgrade complete.');
     return true;
 }
 

@@ -12,9 +12,9 @@ const PropertiesReader = require('properties-reader');
 const directive_manager = require('./directives/directiveManager');
 
 module.exports = {
-    writeEnvVariables: writeEnvVariables,
-    processDirectives: processDirectives,
-    getDirectiveChangeDescriptions: getDirectiveChangeDescriptions
+    writeEnvVariables,
+    processDirectives,
+    getDirectiveChangeDescriptions
 };
 
 let hdb_boot_properties = undefined;
@@ -87,7 +87,9 @@ function processDirectives(curr_version, upgrade_version) {
     let variable_comments = undefined;
     let func_responses = [];
     for(let vers of upgrade_directives) {
-        log.info(`Starting upgrade to version ${vers.version}`);
+        let notify_msg = `Starting upgrade to version ${vers.version}`;
+        log.notify(notify_msg);
+        console.log(notify_msg);
         // Create Directories
         let directories_to_create = vers.relative_directory_paths;
         try {

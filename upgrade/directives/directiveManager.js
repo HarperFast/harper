@@ -59,7 +59,7 @@ function getModuleByVersion(version) {
 }
 
 module.exports = {
-    getSortedVersions: getSortedVersions,
-    getModuleByVersion: getModuleByVersion,
-    filterInvalidVersions: filterInvalidVersions
+    getSortedVersions,
+    getModuleByVersion,
+    filterInvalidVersions
 };

@@ -40,7 +40,7 @@ module.exports = {
     stripFileExtension: stripFileExtension,
     autoCast: autoCast,
     removeDir: removeDir,
-    compareVersions: compareVersions,
+    compareVersions,
     escapeRawValue: escapeRawValue,
     unescapeValue: unescapeValue,
     stringifyProps: stringifyProps,
