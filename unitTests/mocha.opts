@@ -1,10 +1,11 @@
+--timeout 0
+--ui bdd
+--recursive
+--exit
+../unitTests/bin
 ../unitTests/data_layer
 ../unitTests/security
-../unitTests/server/jobRunner-test.js
-../unitTests/server/jobs-test.js
-../unitTests/server/socketcluster/decisionMatrix/
-../unitTests/server/socketcluster/middleware/
-../unitTests/server/socketcluster/room
+../unitTests/server
 ../unitTests/sqlTranslator
 ../unitTests/upgrade
 ../unitTests/utility
