@@ -31,11 +31,22 @@ try {
     let ver = version.version();
     upgrade_object[terms.UPGRADE_JSON_FIELD_NAMES_ENUM.UPGRADE_VERSION] = ver;
     upgrade_object[terms.UPGRADE_JSON_FIELD_NAMES_ENUM.CURRENT_VERSION] = curr_version;
-    fs.writeFileSync(update_config_path, JSON.stringify(upgrade_object));
+    if(ver !== curr_version) {
+        fs.writeFileSync(update_config_path, JSON.stringify(upgrade_object));
+        console.log('wrote update config file to ' + update_config_path);
+    } else {
+        // We have matching versions, this is either a reinstall or an upgrade was run and not needed.  Delete the file.
+        try {
+            console.info('matching versions, removing ugprade file.');
+            fs.unlinkSync(update_config_path);
+        } catch(err) {
+            console.error(`Could not remove upgrade file ${update_config_path}.  Please manually delete this file and restart HarperDB.`);
+            process.exit(1);q
+        }
+    }
 } catch(err) {
     console.error('error writing file.');
     console.error(err);
 }
 
-console.log('wrote update config file to ' + update_config_path);
 process.exit(0);
