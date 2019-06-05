@@ -9030,7 +9030,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"{{role_id}}\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":\"true\"\n\n}"
+							"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"{{role_id}}\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":true\n\n}"
 						},
 						"url": {
 							"raw": "http://localhost:9925/",
@@ -10505,7 +10505,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"{{cluster_user_role_id}}\",\n\"username\":\"test_cluster_user\",\n\"password\":\"{{password}}\", \n\"active\":\"true\"\n}"
+							"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"{{cluster_user_role_id}}\",\n\"username\":\"test_cluster_user\",\n\"password\":\"{{password}}\", \n\"active\":true\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -10914,7 +10914,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"{{role_id}}\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":\"true\"\n\n}"
+							"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"{{role_id}}\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":true\n\n}"
 						},
 						"url": {
 							"raw": "http://localhost:9925/",
@@ -12555,7 +12555,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"{{role_id}}\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":\"true\"\n\n}"
+							"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"{{role_id}}\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":true\n\n}"
 						},
 						"url": {
 							"raw": "http://localhost:9925/",
@@ -15713,7 +15713,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"{{role_id}}\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":\"true\"\n\n}"
+							"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"{{role_id}}\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":true\n\n}"
 						},
 						"url": {
 							"raw": "http://localhost:9925/",

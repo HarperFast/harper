@@ -1,17 +1,13 @@
 'use strict';
 const ServerSocket = require('./ServerSocket');
 const log = require('../../../utility/logging/harper_logger');
-const promisify = require('util').promisify;
+const terms = require('../../../utility/hdbTerms');
 
 class SCServer{
     constructor(worker){
         this.worker = worker;
         this.sc_server = worker.scServer;
         this.registerHandlers();
-
-        this.exchange_set = promisify(this.worker.exchange.set).bind(this.worker.exchange);
-        this.exchange_get = promisify(this.worker.exchange.get).bind(this.worker.exchange);
-        this.exchange_remove = promisify(this.worker.exchange.remove).bind(this.worker.exchange);
     }
 
     /**
@@ -75,18 +71,14 @@ class SCServer{
      * @param status
      */
     connectionHandler(socket, status){
-
-
-        let new_socket = new ServerSocket(this.worker, socket);
-        console.log('socket connected: ', status);
+        new ServerSocket(this.worker, socket);
         log.info('socket connected: ' + socket.remoteAddress);
 
         if(socket.request.url === '/socketcluster/?hdb_worker=1'){
             try {
-                this.exchange_set(['hdb_worker', socket.id], 1).then(data => {
-                    this.exchange_get('hdb_worker').then(data => {
-                        console.log(data);
-                        this.worker.hdb_workers = Object.keys(data);
+                this.worker.exchange_set([terms.INTERNAL_SC_CHANNELS.HDB_WORKERS, socket.id], 1).then(data => {
+                    this.worker.exchange_get(terms.INTERNAL_SC_CHANNELS.HDB_WORKERS).then(data => {
+                        this.worker.exchange.publish(terms.INTERNAL_SC_CHANNELS.HDB_WORKERS, Object.keys(data));
                     });
                 });
             } catch(e){
@@ -103,10 +95,9 @@ class SCServer{
     disconnectionHandler(socket){
         //add logic for unsubscribe to hdb_worker channel
         if(socket.request.url === '/socketcluster/?hdb_worker=1'){
-            this.exchange_remove(['hdb_worker', socket.id]).then(data => {
-                this.exchange_get('hdb_worker').then(data=>{
-                    this.worker.hdb_workers = Object.keys(data);
-                    console.log(data);
+            this.worker.exchange_remove([terms.INTERNAL_SC_CHANNELS.HDB_WORKERS, socket.id]).then(data => {
+                this.worker.exchange_get(terms.INTERNAL_SC_CHANNELS.HDB_WORKERS).then(data=>{
+                    this.worker.exchange.publish(terms.INTERNAL_SC_CHANNELS.HDB_WORKERS, Object.keys(data));
                 });
             });
         }

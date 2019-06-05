@@ -65,7 +65,17 @@
 <script type="text/javascript">
     // Initiate the connection to the server
     let socket = socketCluster.connect({
-        port:1111
+        "rejectUnauthorized": false,
+        "autoConnect":true,
+        hostname: "localhost",
+        port: 12345,
+        "secure": true,
+        "connectTimeout": 10000,
+        "ackTimeout": 10000,
+        "autoReconnectOptions": {
+            "initialDelay": 1000,
+            "maxDelay": 2000
+        }
     });
 
     socket.name = 'test';
@@ -77,7 +87,7 @@
     });
 
     socket.on('login', (data, res)=>{
-        res(null, {username: 'kyle', password: 'test'});
+        res(null, {username: 'test_cluster_user2', password: '1400'});
     });
 
     socket.on('connect', (data, res)=>{

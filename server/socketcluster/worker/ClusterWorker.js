@@ -1,16 +1,15 @@
 "use strict";
 
 const WorkerIF = require('./WorkerIF');
-let express = require('express');
 const room_factory = require('../room/roomFactory');
 const SCServer = require('../handlers/SCServer');
 const types = require('../types');
-const {inspect} = require('util');
 const {promisify} = require('util');
 const log = require('../../../utility/logging/harper_logger');
 const NodeConnector = require('../connector/NodeConnector');
 const password_utility = require('../../../utility/password');
 const get_cluster_user = require('../../../utility/common_utils').getClusterUser;
+const terms = require('../../../utility/hdbTerms');
 
 /**
  * Represents a WorkerIF implementation for socketcluster.
@@ -54,11 +53,15 @@ class ClusterWorker extends WorkerIF {
      * Run this worker.
      */
     run() {
-        console.log('Running ClusterWorker');
         log.debug('Cluster Worker starting up.');
-        let app = express();
 
         this.on('masterMessage', this.masterMessageHandler.bind(this));
+        this.hdb_workers = [];
+        this.hdb_users = {};
+
+        this.exchange_get = promisify(this.exchange.get).bind(this.exchange);
+        this.exchange_set = promisify(this.exchange.set).bind(this.exchange);
+        this.exchange_remove = promisify(this.exchange.remove).bind(this.exchange);
 
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_IN, this.checkNewRoom.bind(this));
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_IN, this.messagePrepMiddleware.bind(this));
@@ -68,18 +71,92 @@ class ClusterWorker extends WorkerIF {
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_OUT, this.evalRoomPublishOutMiddleware.bind(this));
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_SUBSCRIBE, this.checkNewRoom.bind(this));
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_SUBSCRIBE, this.evalRoomSubscribeMiddleware.bind(this));
-        let sc_server = new SCServer(this);
+        new SCServer(this);
 
-        this.hdb_workers = [];
-        this.transaction_map = {};
-
-        this.exchange_get = promisify(this.exchange.get).bind(this.exchange);
-        this.exchange_set = promisify(this.exchange.set).bind(this.exchange);
-
+        this.createWatchers();
         if(this.isLeader){
             this.processArgs().then(hdb_data=>{
                 this.node_connector = new NodeConnector(hdb_data.nodes, hdb_data.cluster_user, this);
             });
+
+            this.internalUserWatchers();
+        }
+    }
+
+    createWatchers(){
+        this.exchange.subscribe(terms.INTERNAL_SC_CHANNELS.HDB_USERS);
+        this.exchange.subscribe(terms.INTERNAL_SC_CHANNELS.HDB_WORKERS);
+        this.exchange.watch(terms.INTERNAL_SC_CHANNELS.HDB_USERS, this.watchUsers.bind(this));
+        this.exchange.watch(terms.INTERNAL_SC_CHANNELS.HDB_WORKERS, this.watchWorkers.bind(this));
+    }
+
+    watchWorkers(workers){
+        if(workers && Array.isArray(workers)) {
+            this.hdb_workers = workers;
+        } else {
+            this.hdb_workers = [];
+        }
+    }
+
+    watchUsers(users){
+        if(users && typeof users === 'object') {
+            this.hdb_users = users;
+        } else {
+            this.hdb_users = {};
+        }
+    }
+
+    internalUserWatchers(){
+        this.exchange.subscribe(terms.INTERNAL_SC_CHANNELS.ADD_USER);
+        this.exchange.subscribe(terms.INTERNAL_SC_CHANNELS.ALTER_USER);
+        this.exchange.subscribe(terms.INTERNAL_SC_CHANNELS.DROP_USER);
+
+        this.exchange.watch(terms.INTERNAL_SC_CHANNELS.ADD_USER, this.addUser.bind(this));
+        this.exchange.watch(terms.INTERNAL_SC_CHANNELS.DROP_USER, this.dropUser.bind(this));
+        this.exchange.watch(terms.INTERNAL_SC_CHANNELS.ALTER_USER, this.dropUser.bind(this));
+    }
+
+    async addUser(user){
+        try {
+            if (this.hdb_users[user.username] === undefined) {
+                this.hdb_users[user.username] = user;
+
+                await this.exchange_set(terms.INTERNAL_SC_CHANNELS.HDB_USERS, this.hdb_users);
+                this.exchange.publish(terms.INTERNAL_SC_CHANNELS.HDB_USERS, this.hdb_users);
+            }
+        }catch(e){
+            log.error(e);
+        }
+    }
+
+    async dropUser(user){
+        try {
+            if (this.hdb_users[user.username] !== undefined) {
+                delete this.hdb_users[user.username];
+
+                await this.exchange_set(terms.INTERNAL_SC_CHANNELS.HDB_USERS, this.hdb_users);
+                this.exchange.publish(terms.INTERNAL_SC_CHANNELS.HDB_USERS, this.hdb_users);
+            }
+        }catch(e){
+            log.error(e);
+        }
+    }
+
+    async alterUser(user){
+        try {
+            let current_user = this.hdb_users[user.username];
+            if (current_user !== undefined) {
+                Object.keys(user).forEach((attribute)=>{
+                    current_user[attribute] = user[attribute];
+                });
+
+                this.hdb_users[user.username] = current_user;
+
+                await this.exchange_set(terms.INTERNAL_SC_CHANNELS.HDB_USERS, this.hdb_users);
+                this.exchange.publish(terms.INTERNAL_SC_CHANNELS.HDB_USERS, this.hdb_users);
+            }
+        }catch(e){
+            log.error(e);
         }
     }
 
@@ -111,16 +188,26 @@ class ClusterWorker extends WorkerIF {
     }
 
     async setHDBDatatoExchange(hdb_data){
-        if(hdb_data.schema !== undefined){
-            await this.exchange_set('hdb_schema', hdb_data.schema);
-        }
+        try {
+            if (hdb_data.schema !== undefined) {
+                await this.exchange_set('hdb_schema', hdb_data.schema);
+            }
 
-        if(hdb_data.users !== undefined){
-            await this.exchange_set('hdb_users', hdb_data.users);
-        }
+            //convert the users array into an object where the key is the username, this allows for easier searching of users
+            if (hdb_data.users !== undefined) {
+                let users = {};
+                hdb_data.users.forEach((user) => {
+                    users[user.username] = user;
+                });
+                await this.exchange_set(terms.INTERNAL_SC_CHANNELS.HDB_USERS, users);
+                await this.exchange.publish(terms.INTERNAL_SC_CHANNELS.HDB_USERS, users);
+            }
 
-        if(hdb_data.nodes !== undefined){
-            await this.exchange_set('hdb_nodes', hdb_data.nodes);
+            if (hdb_data.nodes !== undefined) {
+                await this.exchange_set('hdb_nodes', hdb_data.nodes);
+            }
+        }catch(e){
+            log.error(e);
         }
     }
 
@@ -213,17 +300,21 @@ class ClusterWorker extends WorkerIF {
     }
 
     async handleLoginResponse(req, credentials){
-        let users = await this.exchange_get('hdb_users');
-        let found_user = get_cluster_user(users, credentials.username);
+        try {
+            let users = Object.values(this.hdb_users);
+            let found_user = get_cluster_user(users, credentials.username);
 
-        if(found_user === undefined || !password_utility.validate(found_user.password, credentials.password)) {
-            req.socket.destroy();
-            return log.error('invalid user, access denied');
+            if (found_user === undefined || !password_utility.validate(found_user.password, credentials.password)) {
+                req.socket.destroy();
+                return log.error('invalid user, access denied');
+            }
+
+            //we may need to handle this scenario: https://github.com/SocketCluster/socketcluster/issues/343
+            //set the JWT to expire in 1 day
+            req.socket.setAuthToken({username: credentials.username}, {expiresIn: '1d'});
+        } catch(e){
+            log.error(e);
         }
-
-        //we may need to handle this scenario: https://github.com/SocketCluster/socketcluster/issues/343
-        //set the JWT to expire in 1 day
-        req.socket.setAuthToken({username: credentials.username}, {expiresIn: '1d'});
     }
 }
 new ClusterWorker();

@@ -2,6 +2,7 @@
 const RuleIF = require('./RulesIF');
 const log = require('../../../../utility/logging/harper_logger');
 const types = require('../../types');
+const terms = require('../../../../utility/hdbTerms');
 
 /**
  * This worker rule sends a request via socketcluster to an HDBChild for processing in core.
@@ -17,9 +18,9 @@ class AssignToHdbChildWorkerRule extends RuleIF {
             log.error('invalid worker sent to AssignToHdbChildWorkerRule.');
             return false;
         }
-        let internal_index = req.channel.indexOf('internal:');
+
         try {
-            if (req.channel.indexOf('internal:') < 0) {
+            if (req.channel.indexOf(terms.HDB_INTERNAL_SC_CHANNEL_PREFIX) < 0) {
                 let target = req.channel.split(':');
                 req.data.schema = target[0];
                 req.data.table = target[1];
