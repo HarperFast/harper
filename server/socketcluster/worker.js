@@ -31,7 +31,7 @@ class Worker extends SCWorker{
         this.exchange_get = promisify(this.exchange.get).bind(this.exchange);
         this.exchange_set = promisify(this.exchange.set).bind(this.exchange);
         this.exchange_add = promisify(this.exchange.add).bind(this.exchange);
-        this.exchange_get('hdb_worker').then(data => {
+        this.exchange_get(terms.INTERNAL_SC_CHANNELS.HDB_WORKERS).then(data => {
             console.log(data);
             if(typeof data === 'object') {
                 this.hdb_workers = Object.keys(data);
@@ -110,7 +110,7 @@ class Worker extends SCWorker{
 
 
     sendTransactionToWorker(channel, data){
-        if(channel.indexOf('internal:') < 0) {
+        if(channel.indexOf(terms.HDB_INTERNAL_SC_CHANNEL_PREFIX) < 0) {
             channel = channel.split(':');
             data.schema = channel[0];
             data.table = channel[1];

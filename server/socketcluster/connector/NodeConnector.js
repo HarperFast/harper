@@ -9,6 +9,7 @@ const crypto_hash = require('../../../security/cryptoHash');
 const SubscriptionObject = sc_objects.SubscriptionObject;
 const NodeObject = sc_objects.NodeObject;
 const promisify = require('util').promisify;
+const terms = require('../../../utility/hdbTerms');
 
 class NodeConnector {
     constructor(nodes, cluster_user, worker){
@@ -37,16 +38,16 @@ class NodeConnector {
         });
 
         //used to auto pub/sub the hdb_schema channel across the cluster
-        this.HDB_Schema_Subscription = new SubscriptionObject('internal:create_schema', true, true);
-        this.HDB_Table_Subscription = new SubscriptionObject('internal:create_table', true, true);
-        this.HDB_Attribute_Subscription = new SubscriptionObject('internal:create_attribute', true, true);
+        this.HDB_Schema_Subscription = new SubscriptionObject(terms.INTERNAL_SC_CHANNELS.CREATE_SCHEMA, true, true);
+        this.HDB_Table_Subscription = new SubscriptionObject(terms.INTERNAL_SC_CHANNELS.CREATE_TABLE, true, true);
+        this.HDB_Attribute_Subscription = new SubscriptionObject(terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, true, true);
 
         this.AssignToHdbChildWorkerRule = new AssignToHdbChildWorkerRule();
         this.connections = socket_client;
         this.spawnRemoteConnections(nodes);
 
         //get nodes & spwan them, watch for node changes
-        this.worker.exchange.subscribe('internal:hdb_nodes').watch(data=>{
+        this.worker.exchange.subscribe(terms.INTERNAL_SC_CHANNELS.HDB_NODES).watch(data=>{
             //TODO create / destroy node here
         });
     }
