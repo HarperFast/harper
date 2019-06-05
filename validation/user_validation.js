@@ -17,7 +17,11 @@ const constraints = {
         format: "[\\w\\-\\_]+"
     },
     active: {
-        presence: true
+        presence: true,
+        inclusion:{
+            within: [true, false],
+            message: "must be a boolean"
+        }
     }
 };
 

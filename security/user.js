@@ -59,7 +59,7 @@ async function addUser(user){
         table : 'hdb_role',
         hash_values: [clean_user.role],
         hash_attribute : 'id',
-        get_attributes: ['id', 'permission']
+        get_attributes: ['id', 'permission', 'role']
     };
 
     let search_role = await p_search_search_by_hash(search_obj).catch((err) => {
@@ -98,7 +98,8 @@ async function addUser(user){
        throw err;
     });
 
-    hdb_utility.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.ADD_USER, user);
+    clean_user.role = search_role[0];
+    hdb_utility.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.ADD_USER, clean_user);
     signalling.signalUserChange({type: 'user'});
     return `${clean_user.username} successfully added`;
 }
@@ -184,7 +185,7 @@ async function alterUser(json_message) {
         throw err;
     });
 
-    hdb_utility.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.ALTER_USER, json_message);
+    hdb_utility.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.ALTER_USER, clean_user);
     signalling.signalUserChange({type: 'user'});
     return success;
 }
