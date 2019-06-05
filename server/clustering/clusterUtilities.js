@@ -32,7 +32,6 @@ const STATUS_TIMEOUT_MS = 4000;
 const DUPLICATE_ERR_MSG = 'Cannot add a node that matches the hosts clustering config.';
 
 const SUBSCRIPTIONS_MUST_BE_ARRAY = 'add_node subscriptions must be an array';
-const INTERNAL_HDB_NODES_CHANNEL = 'internal:hdb_nodes';
 
 // If we have more than 1 process, we need to get the status from the master process which has that info stored
 // in global.  We subscribe to an event that master will emit once it has gathered the data.  We want to build
@@ -140,7 +139,7 @@ async function addNode(new_node) {
     }
 
     try {
-        hdb_utils.sendTransactionToSocketCluster(INTERNAL_HDB_NODES_CHANNEL, {add_node: new_node});
+        hdb_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.HDB_NODES, {add_node: new_node});
     } catch(e){
         throw new Error(e);
     }
@@ -178,7 +177,7 @@ async function removeNode(remove_json_message) {
         return `Node '${remove_json_message.name}' was not found.`;
     }
 
-    hdb_utils.sendTransactionToSocketCluster(INTERNAL_HDB_NODES_CHANNEL, {remove_node: remove_json_message});
+    hdb_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.HDB_NODES, {remove_node: remove_json_message});
     return `successfully removed ${remove_json_message.name} from manifest`;
 }
 
