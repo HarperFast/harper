@@ -94,7 +94,7 @@ class ClusterWorker extends WorkerIF {
 
     watchWorkers(workers){
         if(workers && Array.isArray(workers)) {
-            this.hdb_workers = Object.keys(workers);
+            this.hdb_workers = workers;
         } else {
             this.hdb_workers = [];
         }
