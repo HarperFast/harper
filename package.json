@@ -7,6 +7,8 @@
   "scripts": {
     "build": "eslint -c ./.eslintbuild bin/ data_layer/ events/ lib/ security/ server/ sqlTranslator/ upgrade/ utility/ validation/",
     "test": "npm run build && cd bin/ && ../node_modules/mocha/bin/_mocha --timeout 0 --ui bdd --recursive --opts ../unitTests/mocha.opts",
+    "preinstall": "node ./upgrade/scripts/preinstall.js",
+    "postinstall": "node ./upgrade/scripts/postinstall.js",
     "hdb-check": "./utility/devops/hdb-check.sh",
     "prepublish": "npm run build",
     "prebuild": "date",
