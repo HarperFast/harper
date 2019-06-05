@@ -113,11 +113,24 @@ function harperDBService() {
                 logger.setLogLevel(logger.INFO);
 
                 if(hdb_utils.isEmptyOrZeroLength(tar_file_path)) {
-                    upgrade.startUpgrade();
+                    upgrade.startUpgrade()
+                        .then(() => {
+                            logger.notify('Upgrade complete');
+                    })
+                        .catch((err) => {
+                            console.log('There was an error during the upgrade process.  Please check the logs for details.');
+                            logger.error(err);
+                        });
                 } else {
-                    upgrade.upgradeFromFilePath(tar_file_path);
+                    upgrade.upgradeFromFilePath(tar_file_path)
+                        .then(() => {
+                        logger.notify('Upgrade complete');
+                    })
+                        .catch((err) => {
+                            console.log('There was an error during the upgrade process.  Please check the logs for details.');
+                            logger.error(err);
+                        });
                 }
-
                 break;
             default:
                 run.run();

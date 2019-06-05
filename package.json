@@ -6,7 +6,7 @@
   "bin": "./bin/run.js",
   "scripts": {
     "build": "eslint -c ./.eslintbuild bin/ data_layer/ events/ lib/ security/ server/ sqlTranslator/ upgrade/ utility/ validation/",
-    "test": "cd bin/ && ../node_modules/mocha/bin/_mocha --timeout 0 --ui bdd --recursive --opts ../unitTests/mocha.opts",
+    "test": "npm run build && cd bin/ && ../node_modules/mocha/bin/_mocha --timeout 0 --ui bdd --recursive --opts ../unitTests/mocha.opts",
     "hdb-check": "./utility/devops/hdb-check.sh",
     "prepublish": "npm run build",
     "prebuild": "date",
@@ -63,7 +63,8 @@
     "underscore": "^1.9.1",
     "uuid": "^3.3.2",
     "validate.js": "^0.11.1",
-    "winston": "^2.4.4"
+    "winston": "^2.4.4",
+    "winston-daily-rotate-file": "^3.9.0"
   },
   "pkg": {
     "scripts": [],

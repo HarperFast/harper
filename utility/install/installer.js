@@ -23,7 +23,8 @@ const user_schema = require('../../utility/user_schema');
 const comm = require('../common_utils');
 const hdb_terms = require('../hdbTerms');
 const crypto = require('crypto');
-
+const hdbInfoController = require('../../data_layer/hdbInfoController');
+const version = require('../../bin/version');
 const LOG_LOCATION = ('../install_log.log');
 module.exports = {
     install: run_install
@@ -75,6 +76,7 @@ function run_install(callback) {
                 createSettingsFile,
                 createAdminUser,
                 generateKeys,
+                updateHdbInfo,
                 () => {
                     console.log("HarperDB Installation was successful");
                     winston.info("Installation Successful");
@@ -86,8 +88,32 @@ function run_install(callback) {
                 }
                 return callback(null, null);
             });
+        } else {
+            console.log('Exiting installer');
+            process.exit(0);
         }
     });
+}
+
+/**
+ * Makes a call to update the hdb_info table with the newly installed version.  This is written as a callback function
+ * as we can't make the installer async until we pick a new CLI base.
+ * @param callback
+ */
+function updateHdbInfo(callback) {
+    let vers = version.version();
+    if(vers) {
+        hdbInfoController.updateHdbInfo(vers)
+            .then((err, res) => {
+                if(err) {
+                    winston.error('Error inserting product info');
+                    return callback(err, null);
+                } else {
+                    return callback(null, res);
+                }
+
+        });
+    }
 }
 
 /**
@@ -513,6 +539,11 @@ function createSettingsFile(mount_status, callback) {
             `LOGGER = 1\n` +
             `   ;The path where log files will be written.\n` +
             `LOG_PATH = ${wizard_result.HDB_ROOT}/log/hdb_log.log\n` +
+            `   ;Set to true to enable daily log file rotations - each log file name will be prepended with YYYY-MM-DD (for WINSTON logger only).\n` +
+            `LOG_DAILY_ROTATE = FALSE\n` +
+            `   ;Set the number of daily log files to maintain when LOG_DAILY_ROTATE is enabled. If no integer value is set, no limit will be set for\n` +
+            `   ;daily log files which may consume a large amount of storage depending on your log settings.\n` +
+            `LOG_MAX_DAILY_FILES =\n` +
             `   ;The environment used by NodeJS.  Setting to production will be the most performant, settings to development will generate more logging.\n` +
             `NODE_ENV = production\n` +
             `   ;This allows self signed certificates to be used in clustering.  This is a security risk\n` +
@@ -710,7 +741,7 @@ function createBootPropertiesFile(settings_path, callback) {
     let home_dir = comm.getHomeDir();
     let home_dir_path = path.join(home_dir, hdb_terms.HDB_HOME_DIR_NAME);
     try {
-        fs.mkdirpSync(home_dir_path);
+        fs.mkdirpSync(home_dir_path, {mode: hdb_terms.HDB_FILE_PERMISSIONS});
     } catch(err) {
         console.log(`Could not make settings directory ${hdb_terms.HDB_HOME_DIR_NAME} in home directory.  Please check your permissions and try again.`);
     }

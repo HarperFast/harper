@@ -26,7 +26,7 @@ module.exports = {
     setPropsFilePath: setPropsFilePath,
     get:get,
     getProperty:getProperty,
-    initSync: initSync,
+    initSync,
     setProperty: setProperty,
     append: append,
     writeSettingsFileSync: writeSettingsFileSync,
@@ -343,6 +343,7 @@ function initTestEnvironment() {
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.LOGGER_KEY, `1`);
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.LOG_LEVEL_KEY, `debug`);
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY, `${props_path}/envDir/log/hdb_log.log`);
+        setProperty(hdb_terms.HDB_SETTINGS_NAMES.LOG_DAILY_ROTATE_KEY, false);
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.PROJECT_DIR_KEY, `${props_path}/envDir/`);
 
     } catch(err) {

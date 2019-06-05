@@ -1,7 +1,6 @@
 "use strict";
 
 const log = require('../logging/harper_logger');
-const {prompt} = require('enquirer');
 const { Select } = require('enquirer');
 const os = require('os');
 const upgrade = require('../../bin/upgrade');

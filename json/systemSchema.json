@@ -146,6 +146,22 @@
       }
     ]
   },
+  "hdb_info":{
+    "hash_attribute":"info_id",
+    "name":"hdb_info",
+    "schema":"system",
+    "attributes": [
+      {
+        "attribute": "info_id"
+      },
+      {
+        "attribute": "data_version_num"
+      },
+      {
+        "attribute": "hdb_version_num"
+      }
+    ]
+  },
   "hdb_nodes":{
     "hash_attribute": "name",
     "name": "hdb_nodes",

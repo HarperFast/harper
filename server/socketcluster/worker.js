@@ -8,6 +8,7 @@ const promisify = require('util').promisify;
 const fs = require('fs-extra');
 const env = require('../../utility/environment/environmentManager');
 env.initSync();
+const terms = require('../../utility/hdbTerms');
 const HDB_QUEUE_PATH = env.getHdbBasePath() + '/schema/system/hdb_queue/';
 const uuid = require('uuid/v4');
 const json_2_csv = require('json-2-csv');
@@ -88,7 +89,7 @@ class Worker extends SCWorker{
 
     async checkFSChannelMap(channel){
         if(this.fs_channel_map[channel] === undefined){
-            await fs.mkdirp(HDB_QUEUE_PATH + channel + '/' + channel);
+            await fs.mkdirp(HDB_QUEUE_PATH + channel + '/' + channel, {mode: terms.HDB_FILE_PERMISSIONS});
             this.fs_channel_map[channel] = fs.createWriteStream(HDB_QUEUE_PATH + channel, {flags:'a'});
         }
     }

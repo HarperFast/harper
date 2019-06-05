@@ -33,7 +33,7 @@ const p_fs_rmdir = promisify(fs.rmdir);
 
 module.exports = {
     delete: deleteRecord,
-    conditionalDelete:conditionalDelete,
+    conditionalDelete: conditionalDelete,
     deleteRecords: deleteRecords,
     deleteFilesBefore: deleteFilesBefore
 };

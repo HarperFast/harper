@@ -5,6 +5,9 @@ const uuid = require('uuid/v4');
 const moment = require('moment');
 const env = require('../utility/environment/environmentManager');
 const terms = require('../utility/hdbTerms');
+const sinon = require('sinon');
+
+let env_mgr_init_sync_stub = undefined;
 
 const {
     JOB_TABLE_NAME,
@@ -78,7 +81,12 @@ let mochaAsyncWrapper = (fn) => {
  */
 function preTestPrep() {
     let unhandledRejectionExitCode = 0;
-
+    if(env_mgr_init_sync_stub) {
+        env_mgr_init_sync_stub.restore();
+    }
+    env_mgr_init_sync_stub = sinon.stub(env, 'initSync').callsFake(() => {
+       env.initTestEnvironment();
+    });
     process.on("unhandledRejection", (reason) => {
         console.log("unhandled rejection:", reason);
         unhandledRejectionExitCode = 1;

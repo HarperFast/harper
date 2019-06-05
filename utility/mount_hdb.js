@@ -4,8 +4,9 @@
  * @Description: Create the filesystem under the path root specified in hdb_path
  */
 
-const fs = require('fs'),
-    path = require('path');
+const fs = require('fs');
+const path = require('path');
+const terms = require('../utility/hdbTerms');
 
 module.exports = function (logger, hdb_path, callback) {
 
@@ -18,7 +19,7 @@ module.exports = function (logger, hdb_path, callback) {
             const curDir = path.resolve(baseDir, parentDir, childDir);
             try {
                 if(curDir && curDir !== '/') {
-                    fs.mkdirSync(curDir);
+                    fs.mkdirSync(curDir, {mode: terms.HDB_FILE_PERMISSIONS});
                     logger.info(`Directory ${curDir} created`);
                 }
             } catch (err) {
