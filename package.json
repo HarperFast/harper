@@ -6,7 +6,7 @@
   "bin": "./bin/run.js",
   "scripts": {
     "build": "eslint -c ./.eslintbuild bin/ data_layer/ events/ lib/ security/ server/ sqlTranslator/ upgrade/ utility/ validation/",
-    "test": "cd bin/ && ../node_modules/mocha/bin/_mocha --timeout 0 --ui bdd --recursive --opts ../unitTests/mocha.opts",
+    "test": "npm run build && cd bin/ && ../node_modules/mocha/bin/_mocha --timeout 0 --ui bdd --recursive --opts ../unitTests/mocha.opts",
     "hdb-check": "./utility/devops/hdb-check.sh",
     "prepublish": "npm run build",
     "prebuild": "date",

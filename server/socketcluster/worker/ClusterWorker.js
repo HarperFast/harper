@@ -78,7 +78,7 @@ class ClusterWorker extends WorkerIF {
         this.createWatchers();
         if(this.isLeader){
             this.processArgs().then(hdb_data=>{
-                new NodeConnector(hdb_data.nodes, hdb_data.cluster_user, this);
+                this.node_connector = new NodeConnector(hdb_data.nodes, hdb_data.cluster_user, this);
             });
 
             this.internalUserWatchers();

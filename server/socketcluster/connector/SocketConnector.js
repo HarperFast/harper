@@ -9,15 +9,18 @@ class SocketConnector{
      * @param options
      * @param credentials
      */
-    constructor(socket_client, name, options, credentials){
-        this.name = name;
+    constructor(socket_client, additional_info, options, credentials){
+        this.additional_info = additional_info;
         this.init(socket_client, options, credentials);
         this.disconnect_timestamp = null;
     }
 
     init(socket_client, options, credentials) {
         this.socket = socket_client.create(options);
-        this.socket.name = this.name;
+
+        if(typeof this.additional_info === 'object'){
+            this.socket.additional_info = this.additional_info;
+        }
 
         this.socket.on('error', err =>{
             log.error('ERROR on HDB Client socket');

@@ -9,7 +9,6 @@ const log = require('../../../utility/logging/harper_logger');
 
 //Rules
 const AssignToHdbChildWorkerRule = require('../decisionMatrix/rules/AssignToHdbChildWorkerRule');
-const UpdateWorkerListWorkerRule = require('../decisionMatrix/rules/UpdateWorkerListWorkerRule');
 const WriteToTransactionLogRule = require('../decisionMatrix/rules/WriteToTransactionLogRule');
 
 /**
@@ -78,8 +77,6 @@ function createRoom(topicName, room_type_enum) {
             let new_decision_matrix = new CoreDecisionMatrix();
             
             new_decision_matrix.addRule(new AssignToHdbChildWorkerRule(), types.CONNECTOR_TYPE_ENUM.CLUSTER);
-            new_decision_matrix.addRule(new UpdateWorkerListWorkerRule(), types.CONNECTOR_TYPE_ENUM.CLUSTER);
-            new_decision_matrix.addRule(new UpdateWorkerListWorkerRule(), types.CONNECTOR_TYPE_ENUM.CORE);
 
             let write_transaction_rule = new WriteToTransactionLogRule();
             new_decision_matrix.addRule(write_transaction_rule, types.CONNECTOR_TYPE_ENUM.CLUSTER);

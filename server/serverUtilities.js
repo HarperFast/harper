@@ -42,6 +42,7 @@ const cb_reg_hand_get_finger = util.callbackify(reg.getFingerprint);
 const cb_reg_hand_set_licence = util.callbackify(reg.setLicense);
 const cb_clust_util_config = util.callbackify(cluster_utilities.configureCluster);
 const cb_clust_util_status = util.callbackify(cluster_utilities.clusterStatus);
+const cb_clust_util_add_node = util.callbackify(cluster_utilities.addNode);
 const cb_clust_util_remove_node = util.callbackify(cluster_utilities.removeNode);
 const cb_schema_create_schema = util.callbackify(schema.createSchema);
 const cb_schema_create_attribute = util.callbackify(schema.createAttribute);
@@ -259,7 +260,7 @@ function getOperationFunction(json){
             operation_function = cb_read_log;
             break;
         case terms.OPERATIONS_ENUM.ADD_NODE:
-            operation_function = cluster_utilities.addNode;
+            operation_function = cb_clust_util_add_node;
             break;
         case terms.OPERATIONS_ENUM.REMOVE_NODE:
             operation_function = cb_clust_util_remove_node;
