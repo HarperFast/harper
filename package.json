@@ -1,10 +1,19 @@
 {
   "name": "@harperdb/harperdb_js_test",
-  "version": "2.0.8",
+  "version": "2.0.10",
   "description": "",
   "main": "harperdb.js",
   "bin": {
     "harperdb": "./bin/harperdb.js"
+  },
+  "engines": {
+    "node": ">=10.x.x"
+  },
+  "homepage": "https://www.harperdb.io/",
+  "bugs": "support@harperdb.io",
+  "author": {
+    "name": "HarperDB",
+    "email": "support@harperdb.io"
   },
   "scripts": {
     "build": "eslint -c ./.eslintbuild bin/ data_layer/ events/ lib/ security/ server/ sqlTranslator/ upgrade/ utility/ validation/",
@@ -13,11 +22,8 @@
     "hdb-check": "./utility/devops/hdb-check.sh",
     "prepublish": "npm run build",
     "prebuild": "date",
-    "start": "cd bin/ && node harperdb.js run",
-    "stop": "cd bin/ && node harperdb.js stop",
     "coverage": "nyc report --reporter=html npm test"
   },
-  "author": "HarperDB, Inc.",
   "license": "ISC",
   "dependencies": {
     "@turf/area": "^6.0.1",
