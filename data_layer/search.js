@@ -230,7 +230,7 @@ function search(statement, callback){
         let validator = new SelectValidator(statement);
         validator.validate();
 
-        let search = new FileSearch(validator.statement, validator.attributes, base_path());
+        let search = new FileSearch(validator.statement, validator.attributes);
         let search_results = undefined;
 
         search.search().then( (data) => {
