@@ -1,10 +1,10 @@
 {
   "name": "@harperdb/harperdb_js_test",
-  "version": "2.0.6",
+  "version": "2.0.7",
   "description": "",
   "main": "harperdb.js",
   "bin": {
-    "harperdb": "./bin/harperdb.js,"
+    "harperdb": "./bin/harperdb.js"
   },
   "scripts": {
     "build": "eslint -c ./.eslintbuild bin/ data_layer/ events/ lib/ security/ server/ sqlTranslator/ upgrade/ utility/ validation/",
