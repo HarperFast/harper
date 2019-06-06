@@ -24,7 +24,8 @@ if(!homedir) {
 // If there is no hdb_boot_props file, then assume this is a new install.
 let boot_props_path = path.join(homedir, terms.HDB_HOME_DIR_NAME, terms.BOOT_PROPS_FILE_NAME);
 if(!fs.existsSync(boot_props_path)) {
-    console.log(`${boot_props_path} not found.  Assuming this is a new install.`);
+    console.log(`${boot_props_path} not found.  This seems to beq a new install.`);
+    console.log(`Finished downloading HarperDB.  Complete the installation by running 'harperdb' if you installed globally.`);
     process.exit(SUCCESS);
 }
 env.initSync();

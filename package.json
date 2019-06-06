@@ -1,9 +1,11 @@
 {
   "name": "@harperdb/harperdb_js_test",
-  "version": "2.0.4",
+  "version": "2.0.5",
   "description": "",
   "main": "harperdb.js",
-  "bin": "./bin/",
+  "bin": {
+    "harperdb": "./bin/harperdb.js,"
+  },
   "scripts": {
     "build": "eslint -c ./.eslintbuild bin/ data_layer/ events/ lib/ security/ server/ sqlTranslator/ upgrade/ utility/ validation/",
     "test": "npm run build && cd bin/ && ../node_modules/mocha/bin/_mocha --timeout 0 --ui bdd --recursive --opts ../unitTests/mocha.opts",
@@ -11,6 +13,8 @@
     "hdb-check": "./utility/devops/hdb-check.sh",
     "prepublish": "npm run build",
     "prebuild": "date",
+    "start": "cd bin/ && node harperdb.js run",
+    "stop": "cd bin/ && node harperdb.js stop",
     "coverage": "nyc report --reporter=html npm test"
   },
   "author": "HarperDB, Inc.",
