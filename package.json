@@ -4,7 +4,7 @@
   "description": "",
   "main": "harperdb.js",
   "bin": {
-    "harperdb": "node ./bin/harperdb.js"
+    "harperdb": "./bin/harperdb.js"
   },
   "scripts": {
     "build": "eslint -c ./.eslintbuild bin/ data_layer/ events/ lib/ security/ server/ sqlTranslator/ upgrade/ utility/ validation/",
