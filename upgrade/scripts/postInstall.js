@@ -36,10 +36,6 @@ try {
         process.exit(FAILURE);
     }
     let upgrade_object = new UpgradeObject();
-    if(!fs.existsSync(update_config_path)) {
-        console.error(`Could not found ${terms.UPDATE_FILE_NAME} upgrade file, cant perform upgrade without the ${terms.UPGRADE_JSON_FIELD_NAMES_ENUM.CURRENT_VERSION} specified.  ${terms.SUPPORT_HELP_MSG}`);
-        // We want to move forward despite not having a current version written so the file will be written.  This will notify the user an upgrade needs to be performed.
-    }
     let curr_version = getCurrentVersion();
     if(!curr_version) {
         // no current version found, must be a new install.

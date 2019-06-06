@@ -1,9 +1,9 @@
 {
   "name": "@harperdb/harperdb_js_test",
-  "version": "2.0.2",
+  "version": "2.0.4",
   "description": "",
-  "main": "run.js",
-  "bin": "./bin/run.js",
+  "main": "harperdb.js",
+  "bin": "./bin/",
   "scripts": {
     "build": "eslint -c ./.eslintbuild bin/ data_layer/ events/ lib/ security/ server/ sqlTranslator/ upgrade/ utility/ validation/",
     "test": "npm run build && cd bin/ && ../node_modules/mocha/bin/_mocha --timeout 0 --ui bdd --recursive --opts ../unitTests/mocha.opts",

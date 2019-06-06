@@ -73,11 +73,6 @@ function processDirectives(curr_version, upgrade_version) {
     // Currently we only support upgrading to latest which will be the largest version in the directive manager.  We
     // could support upgrading to a specific version later by allowing the filter function to accept a specific version;
     let loaded_directives = directive_manager.filterInvalidVersions(curr_version);
-    if(hdb_util.isEmptyOrZeroLength(loaded_directives)) {
-        console.error('No directive files found.  Exiting.');
-        log.error('No directive files found.  Exiting.');
-        process.exit(1);
-    }
     if(hdb_util.isEmptyOrZeroLength(curr_version)) {
         log.info('Invalid value for curr_version');
     }
