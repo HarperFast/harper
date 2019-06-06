@@ -6,7 +6,6 @@ const terms = require('../../utility/hdbTerms');
 const path = require('path');
 const version = require('../../bin/version');
 const {UpgradeObject} = require('../UpgradeObjects');
-const hdbInfoController = require('../../data_layer/hdbInfoController');
 const env = require('../../utility/environment/environmentManager');
 const {compareVersions} = require('../../utility/common_utils');
 const SUCCESS = 0;

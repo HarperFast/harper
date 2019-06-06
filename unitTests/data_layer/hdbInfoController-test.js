@@ -192,12 +192,3 @@ describe('Test getLatestDataVersion', function() {
         }
     });
 });
-
-/* TODO: Remove this test code!
-describe('Test insert', function() {
-    let env = require('../../utility/environment/environmentManager');
-    env.initSync();
-   it('test insert', async () => {
-       await hdb_info_controller_rw.updateHdbInfo('2.0.2');
-   });
-})*/
