@@ -1,5 +1,10 @@
 "use strict";
 
+/**
+ * This script should be run by npm after the install is complete.  It will determine if upgrade directives need to be run and
+ * create a file denoting to core that an upgrade needs to be run.
+ * @type {module:fs}
+ */
 const fs = require('fs');
 const os = require('os');
 const terms = require('../../utility/hdbTerms');
@@ -70,9 +75,12 @@ try {
     process.exit(FAILURE);
 }
 
+/**
+ * Gets the version installed before the update.  Used to populate the .updateConfig.json file.
+ * @returns version string.
+ */
 function getCurrentVersion() {
     //TODO: This call might not work depending on how the build affects the binary structure.
-    //return await hdbInfoController.getLatestDataVersion();
     let curr_version = undefined;
     let info_dir_path = path.join(env.getHdbBasePath(),
         SCHEMA_DIR_NAME,
