@@ -1,6 +1,6 @@
 {
   "name": "@harperdb/harperdb_js_test",
-  "version": "2.0.10",
+  "version": "2.0.11",
   "description": "",
   "main": "harperdb.js",
   "bin": {
