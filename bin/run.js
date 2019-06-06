@@ -78,6 +78,11 @@ async function run() {
     }
 }
 
+/**
+ * Force the user to perform an upgrade by running the upgrade scripts.  If they cancel, process will term.
+ * @param update_json - JSON read in from the .harperdb/.updateConfig.json file.
+ * @returns {Promise<boolean>}
+ */
 async function forceUpdate(update_json) {
     let old_version = update_json[terms.UPGRADE_JSON_FIELD_NAMES_ENUM.CURRENT_VERSION];
     let new_version = update_json[terms.UPGRADE_JSON_FIELD_NAMES_ENUM.UPGRADE_VERSION];

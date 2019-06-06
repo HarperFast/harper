@@ -8,6 +8,12 @@ const upgrade = require('../../bin/upgrade');
 const UPGRADE_PROCEED = 'Yes, proceed';
 const UPGRADE_CANCEL = 'No, cancel the upgrade';
 
+/**
+ * Prompt the user that they need to run the upgrade scripts, typically after upgrading via a package manager.
+ * @param old_version_string - The previously installed version number
+ * @param new_version_string - The newly installed version number.
+ * @returns {Promise<boolean>}
+ */
 async function forceUpdatePrompt(old_version_string, new_version_string) {
     // pull directive changes
     let changes = upgrade.listDirectiveChanges(old_version_string, new_version_string);

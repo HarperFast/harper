@@ -60,7 +60,7 @@ try {
             // try to remove the file just in case it exists.  OK if this fails.
             fs.unlinkSync(update_config_path);
         } catch(err) {
-            console.error(`Could not remove upgrade file ${update_config_path}.  Please manually delete this file and restart HarperDB.`);
+
         }
     }
 
