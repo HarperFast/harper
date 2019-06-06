@@ -33,6 +33,7 @@ const HDB_HOME_DIR_NAME = '.harperdb';
 const BOOT_PROPS_FILE_NAME = 'hdb_boot_properties.file';
 const UPDATE_FILE_NAME = '.updateConfig.json';
 const HDB_INFO_TABLE_NAME = 'hdb_info';
+const HDB_INTO_TABLE_HASH_ATTRIBUTE = 'id';
 const RESTART_CODE = 'SIGTSTP';
 const RESTART_CODE_NUM = 24;
 const RESTART_TIMEOUT_MS = 60000;
@@ -309,6 +310,7 @@ module.exports = {
     SC_PROC_DESCRIPTOR,
     SYSTEM_SCHEMA_NAME,
     HDB_INFO_TABLE_NAME,
+    HDB_INTO_TABLE_HASH_ATTRIBUTE,
     HASH_FOLDER_NAME,
     HDB_HOME_DIR_NAME,
     UPDATE_FILE_NAME,

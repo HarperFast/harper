@@ -222,6 +222,7 @@ async function removeDir(dir_path) {
  * Sorting function, Get old_version list of version directives to run during an upgrade.
  * Can be used via [<versions>].sort(compareVersions). Can also be used to just compare strictly version
  * numbers.  Returns a number less than 0 if the old_version is less than new_version.
+ * e.x. compareVersionsompareVersions('1.1.0', '2.0.0') will return a value less than 0.
  * @param old_version - As an UpgradeDirective object or just a version number as a string
  * @param new_version - Newest version As an UpgradeDirective object or just a version number as a string
  * @returns {*}

@@ -18,13 +18,13 @@ describe('Test updateHdbInfo', function() {
     let insert_stub = undefined;
     const INFO_SEARCH_RESULT = [{
         info_id: 1,
-        data_version_num: "1_2_0001",
-        hdb_version_numz: "1_2_0001"
+        data_version_num: "1.2.0001",
+        hdb_version_num: "1.2.0001"
     },
         {
             info_id: 2,
-            data_version_num: "1_3_0001",
-            hdb_version_numz: "1_3_0001"
+            data_version_num: "1.3.0001",
+            hdb_version_num: "1.3.0001"
         }
     ];
     beforeEach(() => {
@@ -120,3 +120,84 @@ describe('Test updateHdbInfo', function() {
         }
     });
 });
+
+describe('Test getLatestDataVersion', function() {
+    let sandbox = undefined;
+    let search_stub = undefined;
+    let search_orig = hdb_info_controller_rw.__get__('p_search_search_by_value');
+    const INFO_SEARCH_RESULT = [{
+        info_id: 1,
+        data_version_num: "1.2.0001",
+        hdb_version_num: "1.2.0001"
+    },
+        {
+            info_id: 2,
+            data_version_num: "1.3.0001",
+            hdb_version_num: "1.3.0001"
+        }
+    ];
+    beforeEach(() => {
+        sandbox = sinon.createSandbox();
+        global.hdb_schema = undefined;
+        global['hdb_schema'] = {system: {}};
+        global['hdb_schema']['system'] = SystemSchema;
+    });
+
+    afterEach(() => {
+        sandbox.reset();
+        hdb_info_controller_rw.__set__('p_search_search_by_value', search_orig);
+        global.hdb_schema = null;
+    });
+    it('getLatestDataVersion nominal test', async () => {
+        let result = undefined;
+        search_stub = sandbox.stub().resolves(INFO_SEARCH_RESULT);
+        hdb_info_controller_rw.__set__('p_search_search_by_value', search_stub);
+        try {
+            result = await hdb_info_controller_rw.getLatestDataVersion();
+        } catch(err) {
+            result = err;
+        }
+        assert.equal(result, '1.3.0001', 'Expected 1.3.0001 result');
+    });
+    it('test getLatestDataVersion - search throws exception', async function() {
+        try {
+            search_stub = sandbox.stub().throws(new Error("Search error"));
+            hdb_info_controller_rw.__set__('p_search_search_by_value', search_stub);
+
+            let result = undefined;
+            try {
+                result = await hdb_info_controller_rw.getLatestDataVersion();
+            } catch(err) {
+                result = err;
+            }
+            assert.equal(result, undefined, 'Expected undefined result');
+        } catch(err) {
+            throw err;
+        }
+    });
+    it('test getLatestDataVersion - search returns no errors, expect undefined back', async function() {
+        try {
+            search_stub = sandbox.stub().resolves([]);
+            hdb_info_controller_rw.__set__('p_search_search_by_value', search_stub);
+
+            let result = undefined;
+            try {
+                result = await hdb_info_controller_rw.getLatestDataVersion();
+            } catch(err) {
+                result = err;
+            }
+            assert.equal(result, undefined, 'Expected undefined result');
+        } catch(err) {
+            throw err;
+        }
+    });
+});
+
+/* TODO: Remove this test code!
+describe('Test insert', function() {
+    let env = require('../../utility/environment/environmentManager');
+    env.initSync();
+   it('test insert', async () => {
+       await hdb_info_controller_rw.updateHdbInfo('2.0.2');
+   });
+})*/

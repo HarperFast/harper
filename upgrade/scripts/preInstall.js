@@ -22,6 +22,7 @@ try {
     }
     let upgrade_object = new UpgradeObject();
     let ver = version.version();
+    console.log(`Storing version: ${ver}`);
     upgrade_object[terms.UPGRADE_JSON_FIELD_NAMES_ENUM.CURRENT_VERSION] = ver;
 
     fs.writeFileSync(update_config_path, JSON.stringify(upgrade_object), {mode: terms.HDB_FILE_PERMISSIONS});
