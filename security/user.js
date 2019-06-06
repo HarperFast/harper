@@ -33,6 +33,7 @@ const validate = require('validate.js');
 const logger = require('../utility/logging/harper_logger');
 const {promisify} = require('util');
 const crypto_hash = require('./cryptoHash');
+const terms = require('../utility/hdbTerms');
 
 const USER_ATTRIBUTE_WHITELIST = {
     username: true,
@@ -58,7 +59,7 @@ async function addUser(user){
         table : 'hdb_role',
         hash_values: [clean_user.role],
         hash_attribute : 'id',
-        get_attributes: ['id', 'permission']
+        get_attributes: ['id', 'permission', 'role']
     };
 
     let search_role = await p_search_search_by_hash(search_obj).catch((err) => {
@@ -97,6 +98,8 @@ async function addUser(user){
        throw err;
     });
 
+    clean_user.role = search_role[0];
+    hdb_utility.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.ADD_USER, clean_user);
     signalling.signalUserChange({type: 'user'});
     return `${clean_user.username} successfully added`;
 }
@@ -182,6 +185,7 @@ async function alterUser(json_message) {
         throw err;
     });
 
+    hdb_utility.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.ALTER_USER, clean_user);
     signalling.signalUserChange({type: 'user'});
     return success;
 }
@@ -224,6 +228,8 @@ async function dropUser(user) {
             logger.error(err);
             throw err;
         });
+
+        hdb_utility.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.DROP_USER, user);
         signalling.signalUserChange({type: 'user'});
         return `${user.username} successfully deleted`;
     } catch(err) {
