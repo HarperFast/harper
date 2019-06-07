@@ -3,6 +3,7 @@
 const MiddlewareIF = require('./MiddlewareIF');
 const log = require('../../../utility/logging/harper_logger');
 const types = require('../types');
+const uuid = require('uuid/v4');
 
 /**
  * This middleware stamps a request with the time and originator of the message.
@@ -16,6 +17,10 @@ class StampRequestMiddleware extends MiddlewareIF {
             }
             //add / change tghe timestamp
             req.data.timestamp = Date.now();
+
+            if(!req.data.__id) {
+                req.data.__id = uuid();
+            }
 
             //the __originator attribute is added so we can filter out sending back the same object to the sender
             req.data.__originator = req.socket.id;

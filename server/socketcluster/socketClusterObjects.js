@@ -32,7 +32,22 @@ class SubscriptionObject{
     }
 }
 
+class CatchupObject{
+    /**
+     *
+     * @param {string} channel
+     * @param {Boolean} start_timestamp
+     * @param {Boolean} end_timestamp
+     */
+    constructor(channel, start_timestamp, end_timestamp){
+        this.channel = channel;
+        this.start_timestamp = start_timestamp;
+        this.end_timestamp = end_timestamp;
+    }
+}
+
 module.exports = {
     NodeObject,
-    SubscriptionObject
+    SubscriptionObject,
+    CatchupObject
 };

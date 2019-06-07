@@ -2,7 +2,7 @@ const fs = require('fs-extra');
 const EventEmitter = require('events').EventEmitter;
 
 /**
- * Utility class to implement a file read stream, break each chunk of data apart by line and execute a function angainst the array of rows.
+ * Utility class to implement a file read stream, break each chunk of data apart by line and execute a function against the array of rows.
  * each returned result then gets emitted back.
  */
 class FSReadStream extends EventEmitter{

@@ -92,7 +92,7 @@ class WorkerIF extends SCWorker{
     evalRoomPublishOutMiddleware(req, next) {
         log.trace(`evaluating room publish out middleware`);
         let result = this.evalRoomMiddleware(req, next, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_OUT);
-        if(!result) {
+        if(!result && req.data.__originator !== req.socket.id) {
             return next();
         }
         // There was a problem in the middleware, parse the returned ERROR_CODE and log appropriately.

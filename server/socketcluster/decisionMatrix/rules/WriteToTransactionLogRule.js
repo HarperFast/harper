@@ -10,8 +10,8 @@ const fs = require('fs-extra');
 const json_csv_parser = require('json-2-csv');
 
 const LINE_DELIMITER = '\r\n';
-const INSERT_UPDATE_FIELDS = ['__id', 'timestamp', 'operation', 'schema', 'table', 'records'];
-const DELETE_FIELDS = ['__id', 'timestamp', 'operation', 'schema', 'table', 'hash_values'];
+const INSERT_UPDATE_FIELDS = ['__id', 'timestamp', 'operation', 'records'];
+const DELETE_FIELDS = ['__id', 'timestamp', 'operation', 'hash_values'];
 const VALID_OPERATIONS = ['insert', 'update', 'delete'];
 
 /**
@@ -22,7 +22,6 @@ class WriteToTransactionLogRule extends RuleIF {
     constructor() {
         super();
         this.setRuleOrder(types.COMMAND_EVAL_ORDER_ENUM.LOW);
-        this.pending_transaction_stream = undefined;
         this.transaction_stream = undefined;
     }
     async evaluateRule(req, args, worker) {
@@ -32,22 +31,15 @@ class WriteToTransactionLogRule extends RuleIF {
             return true;
         }
 
-        delete req.data.__transacted;
-
         if(VALID_OPERATIONS.indexOf(req.data.operation) < 0){
             log.debug('Invalid operation, not writing to transaction log.');
             return true;
         }
 
         try {
-            if(this.pending_transaction_stream === undefined){
-                this.pending_transaction_stream = fs.createWriteStream(HDB_QUEUE_PATH + 'pending:' + req.channel, {flags:'a'});
-            }
-
             if(this.transaction_stream === undefined){
                 this.transaction_stream = fs.createWriteStream(HDB_QUEUE_PATH + req.channel, {flags:'a'});
             }
-
 
             let keys = [];
             if(req.data.operation === 'insert' || req.data.update === 'insert'){
@@ -60,12 +52,6 @@ class WriteToTransactionLogRule extends RuleIF {
                 let transaction_csv = await json_csv_parser.json2csvAsync(req.data, {prependHeader: false, keys: keys});
                 transaction_csv += LINE_DELIMITER;
                 this.transaction_stream.write(transaction_csv);
-
-            } else {
-                keys.push('error', 'status');
-                let transaction_csv = await json_csv_parser.json2csvAsync(req.data, {prependHeader: false, keys: keys});
-                transaction_csv += LINE_DELIMITER;
-                this.pending_transaction_stream.write(transaction_csv);
             }
         } catch(err) {
             log.error(err);
