@@ -6,9 +6,9 @@
  * @type {MiddlewareIF}
  */
 
-const types = require('../types');
+const types = require('../../types');
 const hdb_terms = require('../../../../utility/hdbTerms');
-const log = require('../../../utility/logging/harper_logger');
+const log = require('../../../../utility/logging/harper_logger');
 
 // handler imports
 const WorkerRoomSubscriptionHandler = require('../subscriptionHandlers/WorkerRoomSubscriptionHandler');

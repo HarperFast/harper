@@ -1,14 +1,14 @@
 "use strict";
 
 const SubscriptionHandlerIF = require('./SubscriptionHandlerIF');
-const types = require('../../clusterTypes');
+const types = require('../../types');
 const hdb_terms = require('../../../../utility/hdbTerms');
 const log = require('../../../../utility/logging/harper_logger');
 const {inspect} = require('util');
 
 class WatchUsersSubscriptionHandler extends SubscriptionHandlerIF {
     constructor(worker) {
-        super(worker, types.INTERNAL_SC_CHANNELS.HDB_USERS);
+        super(worker, hdb_terms.INTERNAL_SC_CHANNELS.HDB_USERS);
     }
 
     async handler(users, response) {
