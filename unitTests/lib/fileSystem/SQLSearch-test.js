@@ -12,13 +12,14 @@ const {
 } = test_utils;
 
 const assert = require('assert');
+const chai = require('chai');
+const { expect } = chai;
 const sinon = require('sinon');
 const env = require('../../../utility/environment/environmentManager');
 const FileSearch = require('../../../lib/fileSystem/SQLSearch');
 
 const TEST_FS_DIR = getMockFSPath();
 const TEST_SCHEMA = 'test';
-// const TEST_SCHEMA_PATH = path.join(TEST_FS_DIR, TEST_SCHEMA);
 const HASH_ATTRIBUTE = 'id';
 const TEST_TABLE_CAT = 'cat';
 const TEST_TABLE_DOG = 'dog';
@@ -134,7 +135,7 @@ const TEST_ATTRIBUTES_DOG = [
 
 let test_instance;
 
-const sandbox = sinon.createSandbox();
+let sandbox;
 let search_spy;
 let _getColumns_spy;
 let _getTables_spy;
@@ -158,7 +159,6 @@ let _finalSQL_spy;
 let _buildSQL_spy;
 let _stripFileExtension_spy;
 
-sandbox.stub(env, 'getHdbBasePath').returns(TEST_FS_DIR);
 
 function setupData() {
     const test_data_dog = deepClone(TEST_DATA_DOG);
@@ -169,6 +169,8 @@ function setupData() {
 }
 
 function setClassMethodSpies() {
+    sandbox = sinon.createSandbox();
+    sandbox.stub(env, 'getHdbBasePath').returns(TEST_FS_DIR);
     _getColumns_spy = sandbox.spy(FileSearch.prototype, '_getColumns');
     _getTables_spy = sandbox.spy(FileSearch.prototype, '_getTables');
     _conditionsToFetchAttributeValues_spy = sandbox.spy(FileSearch.prototype, '_conditionsToFetchAttributeValues');
@@ -181,8 +183,9 @@ function setupTestInstance(statement, attributes) {
     test_instance = new FileSearch(test_statement, test_attributes);
 }
 
-describe('FileSystem class methods', () => {
+describe('Test FileSystem class', () => {
     before(() => {
+        tearDownMockFS();
         setupData();
         setClassMethodSpies();
     });
