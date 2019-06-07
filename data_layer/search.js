@@ -231,10 +231,8 @@ function search(statement, callback){
         validator.validate();
 
         let search = new FileSearch(validator.statement, validator.attributes);
-        let search_results = undefined;
 
         search.search().then( (data) => {
-            search_results = data;
             callback(null, data);
         }).catch((e) => {
            callback(e, null);
