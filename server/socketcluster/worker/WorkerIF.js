@@ -3,6 +3,8 @@
 let SCWorker = require('socketcluster/scworker');
 const types = require('../types');
 const log = require('../../../utility/logging/harper_logger');
+const terms = require('../../../utility/hdbTerms');
+const room_factory = require('../room/roomFactory');
 
 /**
  * This is a super class that is used to represent some kind of worker clustering will use for message passing.  Since Javascript doesn't have enforceable interfaces,
@@ -12,8 +14,36 @@ class WorkerIF extends SCWorker{
     constructor() {
         super();
         this.rooms = {};
-        //throw new Error('Should not instantiate Interface.');
-        // TODO: rooms list.
+        this.subscriptions = [];
+    }
+
+    /**
+     * Decides which room to create based on the topic name.
+     * @param topic_name_string
+     */
+    createRoom(topic_name_string) {
+        if(!topic_name_string) {
+            log.debug(`Invalid topic name sent to create room.`);
+            return;
+        }
+        let created_room = undefined;
+        try {
+            switch (topic_name_string) {
+                case terms.INTERNAL_SC_CHANNELS.WORKER_ROOM: {
+                    created_room = room_factory.createRoom(topic_name_string, types.ROOM_TYPE.WORKER_ROOM);
+                    break;
+                }
+
+                default:
+                    // default to a standard room.
+                    created_room = room_factory.createRoom(topic_name_string, types.ROOM_TYPE.STANDARD);
+                    break;
+            }
+        } catch(err) {
+            log.error('There was an error creating a new SC room.');
+            log.error(err);
+        }
+        return created_room;
     }
 
     /**
@@ -43,6 +73,25 @@ class WorkerIF extends SCWorker{
             return this.rooms[topic_name_string];
         }
         return null;
+    }
+
+    addSubscription(subscription_if_object) {
+        if(!subscription_if_object) {
+            log.info('Got invalid subscription handler in addSubscription.');
+            return;
+        }
+        for(let i=0; i<this.subscriptions.length; i++) {
+            if(this.subscriptions.topic === subscription_if_object.topic) {
+                log.info(`subscription ${subscription_if_object.topic} has already been added`);
+                return;
+            }
+        }
+        this.subscriptions.push(subscription_if_object);
+        this.exchange.subscribe(terms.INTERNAL_SC_CHANNELS.ADD_USER);
+        if(subscription_if_object.handler !== undefined && subscription_if_object.handler !== {}) {
+            this.exchange.watch(terms.INTERNAL_SC_CHANNELS.ADD_USER, subscription_if_object.handler);
+        }
+        log.info(`Worker: ${this.pid} subscribed to topic: ${subscription_if_object.topic}`);
     }
 
     /**

@@ -2,6 +2,8 @@
 
 const RoomIF = require('./RoomIF');
 const CoreRoom = require('./CoreRoom');
+const WorkerRoom = require('./WorkerRoom');
+
 const types = require('../types');
 const middleware_factory = require('../middleware/MiddlewareFactory');
 const CoreDecisionMatrix = require('../decisionMatrix/CoreDecisionMatrix');
@@ -83,6 +85,10 @@ function createRoom(topicName, room_type_enum) {
             new_decision_matrix.addRule(write_transaction_rule, types.CONNECTOR_TYPE_ENUM.CORE);
 
             created_room.setDecisionMatrix(new_decision_matrix);
+            break;
+        }
+        case types.ROOM_TYPE.WORKER_ROOM: {
+            created_room = new WorkerRoom(topicName);
             break;
         }
         default:

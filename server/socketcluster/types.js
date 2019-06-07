@@ -16,7 +16,8 @@ const ROOM_TYPE = {
     HDB_DEMO: 'CoreSource',
     CLUSTER_SOURCE: 'ClusterSource',
     CORE_SOURCE: 'CoreSource',
-    STANDARD: 'Standard'
+    STANDARD: 'Standard',
+    WORKER_ROOM: 'WorkerRoom'
 };
 
 const MESSAGE_PRIORITY_ENUM = {

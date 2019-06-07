@@ -10,6 +10,7 @@ const NodeConnector = require('../connector/NodeConnector');
 const password_utility = require('../../../utility/password');
 const get_cluster_user = require('../../../utility/common_utils').getClusterUser;
 const terms = require('../../../utility/hdbTerms');
+const SubscriptionHandlerFactory = require('./subscriptionHandlers/SubscriptionHandlerFactory');
 
 /**
  * Represents a WorkerIF implementation for socketcluster.
@@ -36,8 +37,10 @@ class ClusterWorker extends WorkerIF {
                 // TODO - we will need a way to distinguish from the req if this room is
                 // for a core connection or a cluster connection.
                 log.debug('Creating room: ' + req.channel);
-                let newRoom = room_factory.createRoom(req.channel, types.ROOM_TYPE.STANDARD);
-                this.addRoom(newRoom);
+                let newRoom = this.createRoom(req.channel);
+                if(newRoom) {
+                    this.addRoom(newRoom);
+                }
                 next();
             } else {
                 next();
@@ -83,81 +86,16 @@ class ClusterWorker extends WorkerIF {
         }
     }
 
-    createWatchers(){
-        this.exchange.subscribe(terms.INTERNAL_SC_CHANNELS.HDB_USERS);
-        this.exchange.subscribe(terms.INTERNAL_SC_CHANNELS.HDB_WORKERS);
-        this.exchange.watch(terms.INTERNAL_SC_CHANNELS.HDB_USERS, this.watchUsers.bind(this));
-        this.exchange.watch(terms.INTERNAL_SC_CHANNELS.HDB_WORKERS, this.watchWorkers.bind(this));
+    createWatchers() {
+        this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.WORKER_ROOM));
+        this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.HDB_USERS));
+        this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.HDB_WORKERS));
     }
 
-    watchWorkers(workers){
-        if(workers && Array.isArray(workers)) {
-            this.hdb_workers = workers;
-        } else {
-            this.hdb_workers = [];
-        }
-    }
-
-    watchUsers(users){
-        if(users && typeof users === 'object') {
-            this.hdb_users = users;
-        } else {
-            this.hdb_users = {};
-        }
-    }
-
-    internalUserWatchers(){
-        this.exchange.subscribe(terms.INTERNAL_SC_CHANNELS.ADD_USER);
-        this.exchange.subscribe(terms.INTERNAL_SC_CHANNELS.ALTER_USER);
-        this.exchange.subscribe(terms.INTERNAL_SC_CHANNELS.DROP_USER);
-
-        this.exchange.watch(terms.INTERNAL_SC_CHANNELS.ADD_USER, this.addUser.bind(this));
-        this.exchange.watch(terms.INTERNAL_SC_CHANNELS.DROP_USER, this.dropUser.bind(this));
-        this.exchange.watch(terms.INTERNAL_SC_CHANNELS.ALTER_USER, this.dropUser.bind(this));
-    }
-
-    async addUser(user){
-        try {
-            if (this.hdb_users[user.username] === undefined) {
-                this.hdb_users[user.username] = user;
-
-                await this.exchange_set(terms.INTERNAL_SC_CHANNELS.HDB_USERS, this.hdb_users);
-                this.exchange.publish(terms.INTERNAL_SC_CHANNELS.HDB_USERS, this.hdb_users);
-            }
-        }catch(e){
-            log.error(e);
-        }
-    }
-
-    async dropUser(user){
-        try {
-            if (this.hdb_users[user.username] !== undefined) {
-                delete this.hdb_users[user.username];
-
-                await this.exchange_set(terms.INTERNAL_SC_CHANNELS.HDB_USERS, this.hdb_users);
-                this.exchange.publish(terms.INTERNAL_SC_CHANNELS.HDB_USERS, this.hdb_users);
-            }
-        }catch(e){
-            log.error(e);
-        }
-    }
-
-    async alterUser(user){
-        try {
-            let current_user = this.hdb_users[user.username];
-            if (current_user !== undefined) {
-                Object.keys(user).forEach((attribute)=>{
-                    current_user[attribute] = user[attribute];
-                });
-
-                this.hdb_users[user.username] = current_user;
-
-                await this.exchange_set(terms.INTERNAL_SC_CHANNELS.HDB_USERS, this.hdb_users);
-                this.exchange.publish(terms.INTERNAL_SC_CHANNELS.HDB_USERS, this.hdb_users);
-            }
-        }catch(e){
-            log.error(e);
-        }
+    internalUserWatchers() {
+        this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.WORKER_ROOM));
+        this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.DROP_USER));
+        this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.ALTER_USER));
     }
 
     async processArgs(){
