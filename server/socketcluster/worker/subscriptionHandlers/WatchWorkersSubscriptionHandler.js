@@ -1,0 +1,27 @@
+"use strict";
+
+const SubscriptionHandlerIF = require('./SubscriptionHandlerIF');
+const types = require('../../clusterTypes');
+const hdb_terms = require('../../../../utility/hdbTerms');
+const log = require('../../../../utility/logging/harper_logger');
+const {inspect} = require('util');
+
+class WatchWorkersSubscriptionHandler extends SubscriptionHandlerIF {
+    constructor(worker) {
+        super(worker, types.INTERNAL_SC_CHANNELS.HDB_USERS);
+    }
+
+    async handler(workers, response) {
+        try {
+            if(workers && Array.isArray(workers)) {
+                this.worker.hdb_workers = workers;
+            } else {
+                this.worker.hdb_workers = [];
+            }
+        }catch(e){
+            log.error(e);
+        }
+    }
+}
+
+module.exports = WatchWorkersSubscriptionHandler;
