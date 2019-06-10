@@ -11,7 +11,8 @@ const password_utility = require('../../../utility/password');
 const get_cluster_user = require('../../../utility/common_utils').getClusterUser;
 const terms = require('../../../utility/hdbTerms');
 const SubscriptionHandlerFactory = require('./subscriptionHandlers/SubscriptionHandlerFactory');
-
+const {inspect} = require('util');
+log.trace('Loading ClusterWorker');
 /**
  * Represents a WorkerIF implementation for socketcluster.
  */
@@ -56,6 +57,7 @@ class ClusterWorker extends WorkerIF {
     /**
      * Run this worker.
      */
+
     run() {
         log.debug('Cluster Worker starting up.');
 
@@ -78,7 +80,9 @@ class ClusterWorker extends WorkerIF {
         new SCServer(this);
 
         this.createWatchers();
+        //log.trace(`Leader ? ${this.isLeader ? true : false}`);
         if(this.isLeader){
+            log.trace('Calling processArgs');
             this.processArgs().then(hdb_data=>{
                 if(hdb_data && hdb_data.nodes && hdb_data.cluster_user) {
                     this.node_connector = new NodeConnector(hdb_data.nodes, hdb_data.cluster_user, this);
@@ -103,11 +107,33 @@ class ClusterWorker extends WorkerIF {
         this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.ALTER_USER));
     }
 
+    addSubscription(subscription_if_object) {
+        log.trace('Adding subscription');
+        if (!subscription_if_object) {
+            log.info('Got invalid subscription handler in addSubscription.');
+            return;
+        }
+        for (let i = 0; i < this.subscriptions.length; i++) {
+            if (this.subscriptions.topic === subscription_if_object.topic) {
+                log.info(`subscription ${subscription_if_object.topic} has already been added`);
+                return;
+            }
+        }
+        this.subscriptions.push(subscription_if_object);
+        this.exchange.subscribe(terms.INTERNAL_SC_CHANNELS.ADD_USER);
+        if (subscription_if_object.handler !== undefined && subscription_if_object.handler !== {}) {
+            log.trace('Adding handler');
+            this.exchange.watch(terms.INTERNAL_SC_CHANNELS.ADD_USER, subscription_if_object.handler.bind(this));
+        }
+        log.info(`Worker: ${this.id} subscribed to topic: ${subscription_if_object.topic}`);
+    }
+
     async processArgs() {
         log.trace('processArgs');
         try{
             let data = process.argv[2];
             let hdb_data = JSON.parse(data);
+            log.trace(`Processing ${inspect(hdb_data)}`);
             if(hdb_data !== undefined) {
                 await this.setHDBDatatoExchange(hdb_data);
                 log.info('hdb_data successfully set to exchange');
@@ -140,11 +166,15 @@ class ClusterWorker extends WorkerIF {
             }
 
             //convert the users array into an object where the key is the username, this allows for easier searching of users
+            log.trace('Trying to add users');
+            log.trace(`Users: ${hdb_data.users.length}`);
+            log.trace(`Users list: ${inspect(hdb_data.users)}`);
             if (hdb_data.users !== undefined) {
                 let users = {};
                 hdb_data.users.forEach((user) => {
                     users[user.username] = user;
                 });
+                log.trace(`Set Users list: ${inspect(users)}`);
                 await this.exchange_set(terms.INTERNAL_SC_CHANNELS.HDB_USERS, users);
                 await this.exchange.publish(terms.INTERNAL_SC_CHANNELS.HDB_USERS, users);
             }

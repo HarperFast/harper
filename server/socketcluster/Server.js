@@ -17,6 +17,7 @@ const DEFAULT_PORT = 12345;
 //initializes a new socket cluster all options can be seen here: https://socketcluster.io/#!/docs/api-socketcluster
 let socketCluster = undefined;
 try {
+    log.trace('Starting Cluster Server');
     socketCluster = new SocketCluster({
         // Number of worker processes, this will be config based
         workers: 1,
@@ -89,7 +90,9 @@ try {
     });
 
     let p_send_to_worker = promisify(socketCluster.sendToWorker).bind(socketCluster);
+    log.trace('Registering Server handlers');
     registerHandlers();
+    log.trace('Done registering server handlers');
 } catch(err) {
     log.fatal('There was a fatal error starting clustering.  Please check the logs and try again.');
     log.fatal(err);
@@ -166,6 +169,7 @@ function workerMessageHandler(worker_id, data, callback){
  */
 function workerClusterStartHandler(worker_cluster_info){
     console.log('worker cluster start');
+    log.trace('Worker Cluster started.');
 }
 
 /**
@@ -176,6 +180,7 @@ function workerClusterStartHandler(worker_cluster_info){
  */
 function workerClusterReadyHandler(worker_cluster_info){
     console.log('worker cluster ready');
+    log.trace('Worker Cluster Ready.');
 }
 
 /**
@@ -185,7 +190,7 @@ function workerClusterReadyHandler(worker_cluster_info){
  * @param worker_cluster_info
  */
 function workerClusterExitHandler(worker_cluster_info){
-
+    log.trace('Worker Cluster Exited.');
 }
 
 /**
@@ -196,6 +201,7 @@ function workerClusterExitHandler(worker_cluster_info){
  */
 function brokerStartHandler(broker_info){
     console.log('broker start', broker_info);
+    log.trace('Broker Started.');
 }
 
 /**
@@ -204,7 +210,7 @@ function brokerStartHandler(broker_info){
  * @param broker_info
  */
 function brokerExitHandler(broker_info){
-
+    log.trace('Broker Exited.');
 }
 
 /**

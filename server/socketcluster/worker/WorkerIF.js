@@ -76,26 +76,6 @@ class WorkerIF extends SCWorker{
         return null;
     }
 
-    addSubscription(subscription_if_object) {
-        log.trace('Adding subscription');
-        if(!subscription_if_object) {
-            log.info('Got invalid subscription handler in addSubscription.');
-            return;
-        }
-        for(let i=0; i<this.subscriptions.length; i++) {
-            if(this.subscriptions.topic === subscription_if_object.topic) {
-                log.info(`subscription ${subscription_if_object.topic} has already been added`);
-                return;
-            }
-        }
-        this.subscriptions.push(subscription_if_object);
-        this.exchange.subscribe(terms.INTERNAL_SC_CHANNELS.ADD_USER);
-        if(subscription_if_object.handler !== undefined && subscription_if_object.handler !== {}) {
-            this.exchange.watch(terms.INTERNAL_SC_CHANNELS.ADD_USER, subscription_if_object.handler);
-        }
-        log.info(`Worker: ${this.id} subscribed to topic: ${subscription_if_object.topic}`);
-    }
-
     /**
      * Evaluates the middleware for the room that represents the channel topic.
      * @param req - the inbound request.
