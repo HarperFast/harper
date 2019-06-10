@@ -27,6 +27,7 @@ const terms = require('../utility/hdbTerms');
 const RestartEventObject = require('./RestartEventObject');
 const util = require('util');
 const promisify = util.promisify;
+const {inspect} = require('util');
 
 const p_schema_to_global = promisify(global_schema.setSchemaDataToGlobal);
 const p_users_to_global = promisify(user_schema.setUsersToGlobal);
@@ -229,18 +230,30 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                 let forked = cluster.fork({enterprise:this.enterprise, clustering:clustering});
                 // assign handler for messages expected from child processes.
                 forked.on('message', cluster_utilities.clusterMessageHandler);
+                forked.on('error', (err) => {
+                   harper_logger.fatal('There was an error starting the HDB Child process.');
+                   harper_logger.fatal('err');
+                });
+                forked.on('disconnect', (err) => {
+                   harper_logger.fatal('Cluster worker has been disconnected.');
+                   harper_logger.fatal(err);
+                });
+                forked.on('listening', (address) => {
+                    harper_logger.info(`HDB child process is listening on ${inspect(address)}`);
+                });
+                forked.on('online', (address) => {
+                    harper_logger.info(`HDB child process is online.`);
+                });
+
                 harper_logger.debug(`kicked off fork.`);
                 forks.push(forked);
             } catch (e) {
                 harper_logger.fatal(`Had trouble kicking off new HDB processes.  ${e}`);
             }
         }
-
         global.forks = forks;
     }
 } else {
-
-
     harper_logger.info('In express' + process.cwd());
     harper_logger.info(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
     const express = require('express');

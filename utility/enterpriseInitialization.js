@@ -54,7 +54,11 @@ async function kickOffEnterprise() {
         };
 
         try {
-            fork(path.join(__dirname, '../server/socketcluster/Server.js'), [JSON.stringify(sc_data_payload)]);
+            fork(path.join(__dirname, '../server/socketcluster/Server.js'), [JSON.stringify(sc_data_payload)], {
+                detached: true,
+                stdio: 'ignore'
+            });
+            log.debug('Started Clustering server.');
         } catch(err) {
             log.error(err);
         }

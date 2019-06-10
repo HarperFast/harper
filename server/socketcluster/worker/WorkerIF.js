@@ -91,7 +91,7 @@ class WorkerIF extends SCWorker{
         if(subscription_if_object.handler !== undefined && subscription_if_object.handler !== {}) {
             this.exchange.watch(terms.INTERNAL_SC_CHANNELS.ADD_USER, subscription_if_object.handler);
         }
-        log.info(`Worker: ${this.pid} subscribed to topic: ${subscription_if_object.topic}`);
+        log.info(`Worker: ${this.id} subscribed to topic: ${subscription_if_object.topic}`);
     }
 
     /**
