@@ -1,6 +1,6 @@
 {
   "name": "@harperdb/harperdb_js_test",
-  "version": "2.0.11",
+  "version": "2.0.12",
   "description": "",
   "main": "harperdb.js",
   "bin": {
@@ -17,7 +17,7 @@
   },
   "scripts": {
     "build": "eslint -c ./.eslintbuild bin/ data_layer/ events/ lib/ security/ server/ sqlTranslator/ upgrade/ utility/ validation/",
-    "postinstall": "node ./upgrade/scripts/postinstall.js",
+    "postinstall": "node ./upgrade/scripts/postInstall.js",
     "test": "npm run build && cd bin/ && ../node_modules/mocha/bin/_mocha --opts '../unitTests/mocha.opts'",
     "hdb-check": "./utility/devops/hdb-check.sh",
     "prepublish": "npm run build",

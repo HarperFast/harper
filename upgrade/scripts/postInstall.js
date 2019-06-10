@@ -65,7 +65,7 @@ try {
             // try to remove the file just in case it exists.  OK if this fails.
             fs.unlinkSync(update_config_path);
         } catch(err) {
-
+            //no-op
         }
     }
 
