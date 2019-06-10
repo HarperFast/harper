@@ -95,16 +95,18 @@ class ClusterWorker extends WorkerIF {
 
     createWatchers() {
         log.trace('createWatchers');
-        this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.WORKER_ROOM));
-        this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.HDB_USERS));
-        this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.HDB_WORKERS));
+        this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.HDB_USERS, this));
+        //this.exchange.subscribe(terms.INTERNAL_SC_CHANNELS.HDB_USERS);
+        //this.exchange.watch(terms.INTERNAL_SC_CHANNELS.HDB_USERS, this.watchUsers.bind(this));
+        //this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.HDB_WORKERS, this));
+        //this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.WORKER_ROOM, this));
     }
 
     internalUserWatchers() {
         log.trace('internalUserWatchers');
-        this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.WORKER_ROOM));
-        this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.DROP_USER));
-        this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.ALTER_USER));
+        //this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.WORKER_ROOM, this));
+        //this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.DROP_USER, this));
+        //this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.ALTER_USER, this));
     }
 
     addSubscription(subscription_if_object) {
@@ -120,12 +122,23 @@ class ClusterWorker extends WorkerIF {
             }
         }
         this.subscriptions.push(subscription_if_object);
-        this.exchange.subscribe(terms.INTERNAL_SC_CHANNELS.ADD_USER);
+        this.exchange.subscribe(terms.INTERNAL_SC_CHANNELS.HDB_USERS);
+        //subscription_if_object.handler('test', null);
+        this.exchange.watch(terms.INTERNAL_SC_CHANNELS.HDB_USERS, subscription_if_object.handler.bind(this));//this.watchUsers.bind(this));
+        /*this.exchange.subscribe(terms.INTERNAL_SC_CHANNELS.ADD_USER);
         if (subscription_if_object.handler !== undefined && subscription_if_object.handler !== {}) {
             log.trace('Adding handler');
-            this.exchange.watch(terms.INTERNAL_SC_CHANNELS.ADD_USER, subscription_if_object.handler.bind(this));
+            this.exchange.watch(terms.INTERNAL_SC_CHANNELS.ADD_USER, this.watchUsers.bind(this));//subscription_if_object.handler.bind(this));
+        }*/
+        log.info(`Worker: ${subscription_if_object.worker.id} subscribed to topic: ${subscription_if_object.topic}`);
+    }
+
+    watchUsers(users) {
+        if(users && typeof users === 'object') {
+            this.hdb_users = users;
+        } else {
+            this.hdb_users = {};
         }
-        log.info(`Worker: ${this.id} subscribed to topic: ${subscription_if_object.topic}`);
     }
 
     async processArgs() {
@@ -175,6 +188,7 @@ class ClusterWorker extends WorkerIF {
                     users[user.username] = user;
                 });
                 log.trace(`Set Users list: ${inspect(users)}`);
+                //this.hdb_users = users;
                 await this.exchange_set(terms.INTERNAL_SC_CHANNELS.HDB_USERS, users);
                 await this.exchange.publish(terms.INTERNAL_SC_CHANNELS.HDB_USERS, users);
             }

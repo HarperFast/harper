@@ -64,5 +64,5 @@ async function kickOffEnterprise() {
 
 
 module.exports = {
-    kickOffEnterprise: kickOffEnterprise
+    kickOffEnterprise
 };

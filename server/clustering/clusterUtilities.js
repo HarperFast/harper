@@ -67,6 +67,7 @@ function setEnterprise(enterprise) {
  * @returns {Promise<void>}
  */
 async function kickOffEnterprise() {
+    log.trace('clusterUtilities kickOffEnterprise');
     try {
         if(global.clustering_on === true) {
             const enterprise_util = require('../../utility/enterpriseInitialization');
@@ -353,7 +354,9 @@ function clusterMessageHandler(msg) {
                     log.warn(`Got a duplicate child started event for pid ${msg.pid}`);
                 } else {
                     child_event_count++;
-
+                    kickOffEnterprise().then(() => {
+                        log.info('clustering initialized');
+                    });
                     log.info(`Received ${child_event_count} child started event(s).`);
                     started_forks[msg.pid] = true;
                     if(Object.keys(started_forks).length === global.forks.length) {
@@ -361,9 +364,7 @@ function clusterMessageHandler(msg) {
                         child_event_count = 0;
                         try {
                             //TODO: Restore kickoffenterprise here
-                            kickOffEnterprise().then(() => {
-                                log.info('clustering initialized');
-                            });
+
                         } catch(e){
                             log.error('clustering failed to start: ' + e);
                         }

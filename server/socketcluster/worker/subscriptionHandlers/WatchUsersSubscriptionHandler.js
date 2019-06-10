@@ -15,9 +15,9 @@ class WatchUsersSubscriptionHandler extends SubscriptionHandlerIF {
         try {
             log.trace('WatchUserSubscriptionHandler handler');
             if(users && typeof users === 'object') {
-                this.worker.hdb_users = users;
+                this.hdb_users = users;
             } else {
-                this.worker.hdb_users = {};
+                this.hdb_users = {};
             }
         }catch(e){
             log.error(e);
