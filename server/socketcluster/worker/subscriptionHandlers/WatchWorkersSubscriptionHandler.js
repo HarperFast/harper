@@ -15,9 +15,9 @@ class WatchWorkersSubscriptionHandler extends SubscriptionHandlerIF {
         log.trace('WatchWorkersSubscriptionHandler handler');
         try {
             if(workers && Array.isArray(workers)) {
-                this.worker.hdb_workers = workers;
+                this.hdb_workers = workers;
             } else {
-                this.worker.hdb_workers = [];
+                this.hdb_workers = [];
             }
         }catch(e){
             log.error(e);

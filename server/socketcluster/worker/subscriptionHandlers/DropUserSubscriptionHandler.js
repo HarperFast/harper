@@ -18,7 +18,7 @@ class DropUserSubscriptionHandler extends SubscriptionHandlerIF {
                 delete this.hdb_users[user.username];
 
                 await this.exchange_set(hdb_terms.INTERNAL_SC_CHANNELS.HDB_USERS, this.worker.hdb_users);
-                this.worker.exchange.publish(hdb_terms.INTERNAL_SC_CHANNELS.HDB_USERS, this.worker.hdb_users);
+                this.exchange.publish(hdb_terms.INTERNAL_SC_CHANNELS.HDB_USERS, this.worker.hdb_users);
             }
         }catch(e){
             log.error(e);

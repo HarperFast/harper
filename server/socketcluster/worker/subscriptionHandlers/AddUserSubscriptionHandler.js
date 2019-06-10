@@ -14,11 +14,11 @@ class AddUserSubscriptionHandler extends SubscriptionHandlerIF {
     async handler(user, response) {
         try {
             log.trace('AddUserSubscriptionHandler handler');
-            if (this.worker.hdb_users[user.username] === undefined) {
-                this.worker.hdb_users[user.username] = user;
+            if (this.hdb_users[user.username] === undefined) {
+                this.hdb_users[user.username] = user;
 
-                await this.worker.exchange_set(hdb_terms.INTERNAL_SC_CHANNELS.HDB_USERS, this.worker.hdb_users);
-                this.worker.exchange.publish(hdb_terms.INTERNAL_SC_CHANNELS.HDB_USERS, this.worker.hdb_users);
+                await this.exchange_set(hdb_terms.INTERNAL_SC_CHANNELS.HDB_USERS, this.hdb_users);
+                this.exchange.publish(hdb_terms.INTERNAL_SC_CHANNELS.HDB_USERS, this.hdb_users);
             }
         }catch(e){
             log.error(e);
