@@ -28,6 +28,7 @@ class ClusterWorker extends WorkerIF {
      * @returns {*}
      */
     checkNewRoom(req, next) {
+        log.trace('In checkNewRoom');
         try {
             if(!req || !req.channel) {
                 log.error('Got an invalid request.');
@@ -89,18 +90,21 @@ class ClusterWorker extends WorkerIF {
     }
 
     createWatchers() {
+        log.trace('createWatchers');
         this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.WORKER_ROOM));
         this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.HDB_USERS));
         this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.HDB_WORKERS));
     }
 
     internalUserWatchers() {
+        log.trace('internalUserWatchers');
         this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.WORKER_ROOM));
         this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.DROP_USER));
         this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.ALTER_USER));
     }
 
-    async processArgs(){
+    async processArgs() {
+        log.trace('processArgs');
         try{
             let data = process.argv[2];
             let hdb_data = JSON.parse(data);
@@ -114,7 +118,8 @@ class ClusterWorker extends WorkerIF {
         }
     }
 
-    masterMessageHandler(data, respond){
+    masterMessageHandler(data, respond) {
+        log.trace('masterMessageHandler.');
         try {
             if (data.hdb_data !== undefined) {
                 this.setHDBDatatoExchange(data.hdb_data).then(() => {
@@ -127,7 +132,8 @@ class ClusterWorker extends WorkerIF {
         }
     }
 
-    async setHDBDatatoExchange(hdb_data){
+    async setHDBDatatoExchange(hdb_data) {
+        log.trace('setHDBDatatoExchange');
         try {
             if (hdb_data.schema !== undefined) {
                 await this.exchange_set('hdb_schema', hdb_data.schema);
@@ -162,6 +168,7 @@ class ClusterWorker extends WorkerIF {
      */
     // TODO: Can middleware be async?
     evalRoomRules(req, next) {
+        log.trace('evalRoomRules');
         if(!req.hdb_header) {
             return next(types.ERROR_CODES.MIDDLEWARE_SWALLOW);
         }
@@ -239,9 +246,11 @@ class ClusterWorker extends WorkerIF {
         next();
     }
 
-    async handleLoginResponse(req, credentials){
+    async handleLoginResponse(req, credentials) {
+        log.trace('handleLoginResponse');
         try {
             let users = Object.values(this.hdb_users);
+            log.trace(`found ${users.length} users.`);
             let found_user = get_cluster_user(users, credentials.username);
 
             if (found_user === undefined || !password_utility.validate(found_user.password, credentials.password)) {

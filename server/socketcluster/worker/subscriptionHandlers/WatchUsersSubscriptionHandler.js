@@ -13,6 +13,7 @@ class WatchUsersSubscriptionHandler extends SubscriptionHandlerIF {
 
     async handler(users, response) {
         try {
+            log.trace('WatchUserSubscriptionHandler handler');
             if(users && typeof users === 'object') {
                 this.worker.hdb_users = users;
             } else {

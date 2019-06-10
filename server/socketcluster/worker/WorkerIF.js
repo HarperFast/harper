@@ -22,6 +22,7 @@ class WorkerIF extends SCWorker{
      * @param topic_name_string
      */
     createRoom(topic_name_string) {
+        log.trace('Creating Room');
         if(!topic_name_string) {
             log.debug(`Invalid topic name sent to create room.`);
             return;
@@ -76,6 +77,7 @@ class WorkerIF extends SCWorker{
     }
 
     addSubscription(subscription_if_object) {
+        log.trace('Adding subscription');
         if(!subscription_if_object) {
             log.info('Got invalid subscription handler in addSubscription.');
             return;

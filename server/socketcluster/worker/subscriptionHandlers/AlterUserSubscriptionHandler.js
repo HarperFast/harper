@@ -12,6 +12,7 @@ class AlterUserSubscriptionHandler extends SubscriptionHandlerIF {
     }
 
     async handler(user, response) {
+        log.trace('AlterUserSubscriptionHandler handler');
         try {
             let current_user = this.worker.hdb_users[user.username];
             if (current_user !== undefined) {

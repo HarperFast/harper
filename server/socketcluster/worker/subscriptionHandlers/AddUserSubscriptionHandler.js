@@ -13,6 +13,7 @@ class AddUserSubscriptionHandler extends SubscriptionHandlerIF {
 
     async handler(user, response) {
         try {
+            log.trace('AddUserSubscriptionHandler handler');
             if (this.worker.hdb_users[user.username] === undefined) {
                 this.worker.hdb_users[user.username] = user;
 

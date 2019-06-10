@@ -12,6 +12,7 @@ class WorkerRoomSubscriptionHandler extends SubscriptionHandlerIF {
     }
 
     async handler(input, response) {
+        log.trace('WorkerRoomSubscriptionHandler handler');
         console.log('Handling Room message: ' + inspect(input));
     }
 }

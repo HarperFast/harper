@@ -12,6 +12,7 @@ class DropUserSubscriptionHandler extends SubscriptionHandlerIF {
     }
 
     async handler(user, response) {
+        log.trace('DropUserSubscriptionHandler handler');
         try {
             if (this.worker.hdb_users[user.username] !== undefined) {
                 delete this.hdb_users[user.username];

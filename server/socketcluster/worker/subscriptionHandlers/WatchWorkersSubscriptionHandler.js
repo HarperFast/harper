@@ -12,6 +12,7 @@ class WatchWorkersSubscriptionHandler extends SubscriptionHandlerIF {
     }
 
     async handler(workers, response) {
+        log.trace('WatchWorkersSubscriptionHandler handler');
         try {
             if(workers && Array.isArray(workers)) {
                 this.worker.hdb_workers = workers;

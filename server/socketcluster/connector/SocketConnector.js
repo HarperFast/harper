@@ -1,6 +1,6 @@
 "use strict";
 const log = require('../../../utility/logging/harper_logger');
-
+const {inspect} = require('util');
 class SocketConnector{
     /**
      *
@@ -40,6 +40,7 @@ class SocketConnector{
 
         this.socket.on('login', (data, res)=>{
             log.debug('logging in');
+            log.debug(`login data: ${inspect(credentials)}`);
             res(null, credentials);
         });
     }
