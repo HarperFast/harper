@@ -11,12 +11,13 @@ const {
     tearDownMockFS
 } = test_utils;
 
-const assert = require('assert');
 const chai = require('chai');
 const { expect } = chai;
 const sinon = require('sinon');
-const env = require('../../../utility/environment/environmentManager');
-const FileSearch = require('../../../lib/fileSystem/SQLSearch');
+
+const alasql = require('alasql');
+const rewire = require('rewire');
+const FileSearch = rewire('../../../lib/fileSystem/SQLSearch');
 
 const TEST_FS_DIR = getMockFSPath();
 const TEST_SCHEMA = 'test';
@@ -25,51 +26,51 @@ const TEST_TABLE_CAT = 'cat';
 const TEST_TABLE_DOG = 'dog';
 const TEST_DATA_DOG = [
     {
-        "id": 1,
         "age": 5,
-        "name": "Sam",
-        "breed": "Mutt"
+        "breed": "Mutt",
+        "id": 1,
+        "name": "Sam"
     },
     {
-        "id": 2,
         "age": 4,
-        "name": "David",
-        "breed": "Golden Retriever"
+        "breed": "Golden Retriever",
+        "id": 2,
+        "name": "David"
     },
     {
+        "age": 10,
+        "breed": "Pit Bull",
         "id": 3,
-        "age": 10,
-        "name": "Kyle",
-        "breed": "Pit Bull"
+        "name": "Kyle"
     },
     {
+        "age": 10,
+        "breed": "Pit",
         "id": 4,
-        "age": 10,
-        "name": "Sam",
-        "breed": "Pit"
+        "name": "Sam"
     },
     {
-        "id": 5,
         "age": 15,
-        "name": "Eli",
-        "breed": "Poodle"
+        "breed": "Poodle",
+        "id": 5,
+        "name": "Eli"
     },
     {
-        "id": 6,
         "age": 8,
-        "name": "Sarah",
-        "breed": "Poodle"
+        "breed": "Poodle",
+        "id": 6,
+        "name": "Sarah"
     }
 ];
 const TEST_DATA_CAT = [
     {
-        "id": 1,
         "age": 5,
+        "id": 1,
         "name": "Sam"
     },
     {
-        "id": 2,
         "age": 4,
+        "id": 2,
         "name": "David"
     }
 ];
@@ -132,6 +133,8 @@ const TEST_ATTRIBUTES_DOG = [
         }
     }
 ];
+const TEST_WHERE_COL = { "columnid": "id", "tableid": "dog" };
+const TEST_WHERE_COL_VAL = (val) => ({"value": val});
 
 let test_instance;
 
@@ -170,17 +173,78 @@ function setupData() {
 
 function setClassMethodSpies() {
     sandbox = sinon.createSandbox();
-    sandbox.stub(env, 'getHdbBasePath').returns(TEST_FS_DIR);
+    const getHdbBasePath_stub = function() {
+        return `${TEST_FS_DIR}`;
+    };
+    FileSearch.__set__('base_path', getHdbBasePath_stub)
+    search_spy = sandbox.spy(FileSearch.prototype, 'search');
     _getColumns_spy = sandbox.spy(FileSearch.prototype, '_getColumns');
     _getTables_spy = sandbox.spy(FileSearch.prototype, '_getTables');
     _conditionsToFetchAttributeValues_spy = sandbox.spy(FileSearch.prototype, '_conditionsToFetchAttributeValues');
     _backtickAllSchemaItems_spy = sandbox.spy(FileSearch.prototype, '_backtickAllSchemaItems');
+    _checkEmptySQL_spy = sandbox.spy(FileSearch.prototype, '_checkEmptySQL');
+    _findColumn_spy = sandbox.spy(FileSearch.prototype, '_findColumn');
+    _addFetchColumns_spy = sandbox.spy(FileSearch.prototype, '_addFetchColumns');
+    _getFetchAttributeValues_spy = sandbox.spy(FileSearch.prototype, '_getFetchAttributeValues');
+    _checkHashValueExists_spy = sandbox.spy(FileSearch.prototype, '_checkHashValueExists');
+    _retrieveIds_spy = sandbox.spy(FileSearch.prototype, '_retrieveIds');
+    _readBlobFilesForSetup_spy = sandbox.spy(FileSearch.prototype, '_readBlobFilesForSetup');
+    _consolidateData_spy = sandbox.spy(FileSearch.prototype, '_consolidateData');
+    _processJoins_spy = sandbox.spy(FileSearch.prototype, '_processJoins');
+    _decideReadPattern_spy = sandbox.spy(FileSearch.prototype, '_decideReadPattern');
+    _readRawFiles_spy = sandbox.spy(FileSearch.prototype, '_readRawFiles');
+    _readAttributeFilesByIds_spy = sandbox.spy(FileSearch.prototype, '_readAttributeFilesByIds');
+    _readAttributeValues_spy = sandbox.spy(FileSearch.prototype, '_readAttributeValues');
+    _readBlobFiles_spy = sandbox.spy(FileSearch.prototype, '_readBlobFiles');
+    _finalSQL_spy = sandbox.spy(FileSearch.prototype, '_finalSQL');
+    _buildSQL_spy = sandbox.spy(FileSearch.prototype, '_buildSQL');
+    _stripFileExtension_spy = sandbox.spy(FileSearch.prototype, '_stripFileExtension');
+}
+
+function mockAttrsStmt(attrs) {
+    const attrs_clone = deepClone(attrs);
+    return attrs_clone.map(attr => {
+        attr.table = new alasql.yy.Table(attr.table);
+        return attr;
+    });
+}
+
+function mockColumnAndFromStmt(stmt) {
+    const stmt_clone = deepClone(stmt);
+    const final_stmt = new alasql.yy.Select();
+    final_stmt.columns = stmt_clone.columns.map(col => new alasql.yy.Column(col));
+    final_stmt.from = stmt_clone.from.map(from => new alasql.yy.Table(from));
+
+    return final_stmt;
+}
+
+function mockWhereStmt(left, op, right) {
+    let fromStmt = new alasql.yy.Expression();
+    fromStmt.expression = new alasql.yy.Op();
+    fromStmt.expression.left = new alasql.yy.Column(left);
+    fromStmt.expression.op = op;
+    fromStmt.expression.right = new alasql.yy.NumValue(right);
+    return fromStmt;
 }
 
 function setupTestInstance(statement, attributes) {
-    const test_statement = statement ? statement : TEST_STATEMENT_DOG;
-    const test_attributes = attributes ? attributes : TEST_ATTRIBUTES_DOG;
+    const test_statement = statement ? statement : mockColumnAndFromStmt(TEST_STATEMENT_DOG);
+    const test_attributes = attributes ? mockAttrsStmt(attributes) : mockAttrsStmt(TEST_ATTRIBUTES_DOG);
     test_instance = new FileSearch(test_statement, test_attributes);
+}
+
+function sortTestResults(test_results) {
+    const sorted_arr = test_results.sort((a, b) => a.id - b.id);
+    const sorted_results = [];
+    sorted_arr.forEach(result => {
+        const sorted_result = {}
+        const sort_keys = Object.keys(result).sort();
+        sort_keys.forEach(key => {
+            sorted_result[key] = result[key];
+        });
+        sorted_results.push(sorted_result);
+    });
+    return sorted_results;
 }
 
 describe('Test FileSystem class', () => {
@@ -191,21 +255,23 @@ describe('Test FileSystem class', () => {
     });
 
     afterEach(() => {
+        test_instance = null;
         sandbox.resetHistory();
     })
 
     after(() => {
         tearDownMockFS();
         sandbox.restore();
+        rewire('../../../lib/fileSystem/SQLSearch');
     });
 
     describe('constructor()', () => {
         it('should call four class methods when instantiated', () => {
             setupTestInstance();
-            assert.equal(_getColumns_spy.calledOnce, true);
-            assert.equal(_getTables_spy.calledOnce, true);
-            assert.equal(_conditionsToFetchAttributeValues_spy.calledOnce, true);
-            assert.equal(_backtickAllSchemaItems_spy.calledOnce, true);
+            expect(_getColumns_spy.calledOnce).to.be.true;
+            expect(_getTables_spy.calledOnce).to.be.true;
+            expect(_conditionsToFetchAttributeValues_spy.calledOnce).to.be.true;
+            expect(_backtickAllSchemaItems_spy.calledOnce).to.be.true;
         });
 
         it('should throw an exception if no statement argument is provided', () => {
@@ -215,13 +281,73 @@ describe('Test FileSystem class', () => {
             } catch(e) {
                 err = e;
             }
-            assert.equal(err, 'statement cannot be null');
+            expect(err).to.equal('statement cannot be null');
         });
     });
     describe('search()', () => {
-        it('', () => {
+        it('should return all rows when there is no WHERE clause', mochaAsyncWrapper(async () => {
+            let search_results;
 
-        });
+            setupTestInstance();
+            try {
+                search_results = await test_instance.search();
+            } catch(e) {
+                console.log(e);
+            }
+
+            const sorted_results = sortTestResults(search_results);
+            expect(sorted_results).to.deep.equal(TEST_DATA_DOG);
+        }));
+
+        it('should return matching row based on WHERE clause', mochaAsyncWrapper(async() => {
+            let search_results;
+            const test_row = TEST_DATA_DOG[2];
+            const test_sql_statement = mockColumnAndFromStmt(TEST_STATEMENT_DOG);
+            test_sql_statement.where = mockWhereStmt(TEST_WHERE_COL, '=', TEST_WHERE_COL_VAL(test_row.id));
+
+            setupTestInstance(test_sql_statement);
+            try {
+                search_results = await test_instance.search();
+            } catch(e) {
+                console.log(e);
+            }
+
+            const sorted_results = sortTestResults(search_results);
+            expect(sorted_results[0]).to.deep.equal(test_row);
+        }));
+
+        it('should return matching rows based on WHERE clause', mochaAsyncWrapper(async() => {
+            let search_results;
+            const test_rows = [TEST_DATA_DOG[0], TEST_DATA_DOG[1], TEST_DATA_DOG[2]];
+            const test_sql_statement = mockColumnAndFromStmt(TEST_STATEMENT_DOG);
+            test_sql_statement.where = mockWhereStmt(TEST_WHERE_COL, '<=', TEST_WHERE_COL_VAL(TEST_DATA_DOG[2].id));
+
+            setupTestInstance(test_sql_statement);
+            try {
+                search_results = await test_instance.search();
+            } catch(e) {
+                console.log(e);
+            }
+
+            const sorted_results = sortTestResults(search_results);
+            expect(sorted_results).to.deep.equal(test_rows);
+        }));
+
+        it('should return [] if no rows meet WHERE clause', mochaAsyncWrapper(async() => {
+            let search_results;
+            const test_incorrect_id = TEST_DATA_DOG.length + 1;
+            const test_sql_statement = mockColumnAndFromStmt(TEST_STATEMENT_DOG);
+            test_sql_statement.where = mockWhereStmt(TEST_WHERE_COL, '=', TEST_WHERE_COL_VAL(test_incorrect_id));
+
+            setupTestInstance(test_sql_statement);
+            try {
+                search_results = await test_instance.search();
+            } catch(e) {
+                console.log(e);
+            }
+
+            expect(search_results).to.be.an('array').that.is.empty;;
+        }));
     });
     describe('_checkEmptySQL()', () => {
         it('', () => {

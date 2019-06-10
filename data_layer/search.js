@@ -69,12 +69,11 @@ function searchByHash(search_object, callback){
 }
 
 function removeTableFromAttributeAlias(attributes, table_name){
-    attributes.forEach((attribute)=>{
-        if(typeof attribute !== 'string') {
+    attributes.forEach(attribute => {
+        if (typeof attribute !== 'string') {
             attribute.alias = attribute.alias.replace(`${table_name}.`, '');
         }
     });
-
     return attributes;
 }
 
@@ -86,14 +85,14 @@ function searchByValue (search_object, callback) {
             return;
         }
         let operation = '=';
-        if(search_object.search_value !== '*' && search_object.search_value !== '%' && (search_object.search_value.includes('*') || search_object.search_value.includes('%'))){
+        if (search_object.search_value !== '*' && search_object.search_value !== '%' && (search_object.search_value.includes('*') || search_object.search_value.includes('%'))) {
             operation = 'like';
         }
         let condition = {};
         condition[operation] = [search_object.search_attribute, search_object.search_value];
 
         let hash_attribute = null;
-        if(search_object.schema === 'system'){
+        if (search_object.schema === 'system') {
             hash_attribute = system_schema[search_object.table].hash_attribute;
         } else {
             hash_attribute = global.hdb_schema[search_object.schema][search_object.table].hash_attribute;
@@ -175,7 +174,7 @@ function searchByConditions(search_object, callback){
 
 }
 
-function multiConditionSearch(conditions, table_schema, callback){
+function multiConditionSearch(conditions, table_schema, callback) {
     try {
         let all_ids = [];
 
@@ -187,7 +186,6 @@ function multiConditionSearch(conditions, table_schema, callback){
                 condition = condition[condition_key];
             }
 
-
             let pattern = condition_patterns.createPatterns(condition, table_schema, base_path());
 
             file_search.findIDsByRegex(pattern.folder_search_path, pattern.folder_search, pattern.blob_search, (err, results) => {
@@ -198,7 +196,7 @@ function multiConditionSearch(conditions, table_schema, callback){
                 }
                 caller();
             });
-        }, (err) => {
+        }, err => {
             if (err) {
                 callback(err);
                 return;
@@ -225,16 +223,16 @@ function multiConditionSearch(conditions, table_schema, callback){
     }
 }
 
-function search(statement, callback){
+function search(statement, callback) {
     try {
         let validator = new SelectValidator(statement);
         validator.validate();
 
         let search = new FileSearch(validator.statement, validator.attributes);
 
-        search.search().then( (data) => {
+        search.search().then(data => {
             callback(null, data);
-        }).catch((e) => {
+        }).catch(e => {
            callback(e, null);
         });
     } catch(e){
@@ -246,34 +244,34 @@ RegExp.escape= function(s) {
     return s.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
 };
 
-function consolidateData(hash_attribute, attributes_data, callback){
+function consolidateData(hash_attribute, attributes_data, callback) {
     let data_array = [];
     let data_keys = Object.keys(attributes_data);
 
-    if(!attributes_data || data_keys.length === 0) {
+    if (!attributes_data || data_keys.length === 0) {
         return callback(null, data_array);
     }
 
     let ids;
-    if(attributes_data[hash_attribute]){
+    if (attributes_data[hash_attribute]) {
         ids = Object.keys(attributes_data[hash_attribute]);
     } else {
-        Object.keys(attributes_data).forEach((key)=>{
+        Object.keys(attributes_data).forEach(key => {
             let split_key = key.split('.');
-            if(split_key.length > 1 && split_key[1] === hash_attribute){
+            if (split_key.length > 1 && split_key[1] === hash_attribute) {
                 ids = Object.keys(attributes_data[key]);
             }
         });
     }
 
-    if(!ids) {
+    if (!ids) {
         ids = Object.keys(attributes_data[Object.keys(attributes_data)[0]]);
     }
 
-    ids.forEach(function(key){
+    ids.forEach(function(key) {
         let data_object = {};
 
-        data_keys.forEach(function(attribute){
+        data_keys.forEach(function(attribute) {
             data_object[attribute] = attributes_data[attribute][key];
         });
         data_array.push(data_object);
@@ -283,36 +281,35 @@ function consolidateData(hash_attribute, attributes_data, callback){
 
 function getAttributeFiles(get_attributes, table_path, hash_files, callback){
     let attributes_data = {};
-    async.each(get_attributes, (attribute, caller)=>{
+    async.each(get_attributes, (attribute, caller) => {
         //evaluate if an array of strings or objects has been passed in and assign values accordingly
         let attribute_name = (typeof attribute === 'string') ? attribute : attribute.attribute;
         let alias_name = (typeof attribute === 'string') ? attribute :
             (attribute.alias ? attribute.alias : attribute.name);
-        readAttributeFiles(table_path, attribute_name, hash_files, (err, results)=>{
-            if(err){
+        readAttributeFiles(table_path, attribute_name, hash_files, (err, results) => {
+            if (err){
                 caller(err);
                 return;
             }
 
-            attributes_data[alias_name]=results;
+            attributes_data[alias_name] = results;
             caller();
         });
-    }, (error)=>{
-        if(error){
+    }, error => {
+        if (error) {
             callback(error);
             return;
         }
-
         callback(null, attributes_data);
     });
 }
 
-function readAttributeFiles(table_path, attribute, hash_files, callback){
+function readAttributeFiles(table_path, attribute, hash_files, callback) {
     let attribute_data = {};
-    async.eachLimit(hash_files, 1000, (file, caller)=>{
-        fs.readFile(`${table_path}__hdb_hash/${attribute}/${file}.hdb`, 'utf-8', (error, data)=>{
-            if(error){
-                if(error.code === 'ENOENT'){
+    async.eachLimit(hash_files, 1000, (file, caller) => {
+        fs.readFile(`${table_path}__hdb_hash/${attribute}/${file}.hdb`, 'utf-8', (error, data) => {
+            if(error) {
+                if(error.code === 'ENOENT') {
                     caller(null, null);
                 } else {
                     caller(error);
@@ -322,11 +319,11 @@ function readAttributeFiles(table_path, attribute, hash_files, callback){
 
             let value = autoCast(data.toString());
 
-            attribute_data[file]=value;
+            attribute_data[file] = value;
             caller();
         });
-    }, (err)=>{
-        if(err){
+    }, err => {
+        if (err) {
             callback(err);
             return;
         }
@@ -335,28 +332,24 @@ function readAttributeFiles(table_path, attribute, hash_files, callback){
     });
 }
 
-function evaluateTableAttributes(get_attributes, table_info, callback){
-    let star_attribute =  _.filter(get_attributes, (attribute)=> {
-        return attribute === '*' || attribute.attribute === '*';
-    });
+function evaluateTableAttributes(get_attributes, table_info, callback) {
+    let star_attribute =  _.filter(get_attributes, attribute => attribute === '*' || attribute.attribute === '*');
 
-    if(star_attribute && star_attribute.length > 0){
-        getAllAttributeNames(table_info, (err, attributes)=>{
-            if(err){
+    if (star_attribute && star_attribute.length > 0) {
+        getAllAttributeNames(table_info, (err, attributes) => {
+            if (err){
                 callback(err);
                 return;
             }
-            get_attributes = _.filter(get_attributes, (attribute)=>{
-                return attribute !== '*' && attribute.attribute !== '*';
-            });
+            get_attributes = _.filter(get_attributes, attribute => attribute !== '*' && attribute.attribute !== '*');
 
-            attributes.forEach((attribute)=>{
+            attributes.forEach(attribute => {
                 get_attributes.push(attribute);
             });
 
             callback(null, _.uniqBy(get_attributes, 'alias'));
         });
-    }else {
+    } else {
         callback(null, get_attributes);
     }
 }
@@ -364,14 +357,14 @@ function evaluateTableAttributes(get_attributes, table_info, callback){
 function getAllAttributeNames(table_info, callback){
     let search_path = `${base_path()}${table_info.schema}/${table_info.table}/__hdb_hash/`;
 
-    file_search.findDirectoriesByRegex(search_path, /.*/, (err, folders)=>{
-        if(err){
+    file_search.findDirectoriesByRegex(search_path, /.*/, (err, folders) => {
+        if (err) {
             callback(err);
             return;
         }
 
         let attributes = [];
-        folders.forEach((folder)=>{
+        folders.forEach(folder => {
             attributes.push({
                 attribute:folder,
                 alias: folder,
