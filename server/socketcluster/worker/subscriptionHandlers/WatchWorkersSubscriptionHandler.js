@@ -8,7 +8,7 @@ const {inspect} = require('util');
 
 class WatchWorkersSubscriptionHandler extends SubscriptionHandlerIF {
     constructor(worker) {
-        super(worker, hdb_terms.INTERNAL_SC_CHANNELS.HDB_USERS);
+        super(worker, hdb_terms.INTERNAL_SC_CHANNELS.HDB_WORKERS);
     }
 
     async handler(workers, response) {

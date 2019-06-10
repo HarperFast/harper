@@ -12,7 +12,7 @@ const get_cluster_user = require('../../../utility/common_utils').getClusterUser
 const terms = require('../../../utility/hdbTerms');
 const SubscriptionHandlerFactory = require('./subscriptionHandlers/SubscriptionHandlerFactory');
 const {inspect} = require('util');
-log.trace('Loading ClusterWorker');
+
 /**
  * Represents a WorkerIF implementation for socketcluster.
  */
@@ -80,7 +80,6 @@ class ClusterWorker extends WorkerIF {
         new SCServer(this);
 
         this.createWatchers();
-        //log.trace(`Leader ? ${this.isLeader ? true : false}`);
         if(this.isLeader){
             log.trace('Calling processArgs');
             this.processArgs().then(hdb_data=>{
@@ -122,18 +121,9 @@ class ClusterWorker extends WorkerIF {
         this.subscriptions.push(subscription_if_object);
         this.exchange.subscribe(subscription_if_object.topic);
         if (subscription_if_object.handler !== undefined && subscription_if_object.handler !== {}) {
-            log.trace('Adding handler');
             this.exchange.watch(subscription_if_object.topic, this.subscriptions[this.subscriptions.length-1].handler.bind(this));//subscription_if_object.handler.bind(this));
         }
         log.info(`Worker: ${subscription_if_object.worker.id} subscribed to topic: ${subscription_if_object.topic}`);
-    }
-
-    watchUsers(users) {
-        if(users && typeof users === 'object') {
-            this.hdb_users = users;
-        } else {
-            this.hdb_users = {};
-        }
     }
 
     async processArgs() {
@@ -141,7 +131,6 @@ class ClusterWorker extends WorkerIF {
         try{
             let data = process.argv[2];
             let hdb_data = JSON.parse(data);
-            log.trace(`Processing ${inspect(hdb_data)}`);
             if(hdb_data !== undefined) {
                 await this.setHDBDatatoExchange(hdb_data);
                 log.info('hdb_data successfully set to exchange');
@@ -174,15 +163,11 @@ class ClusterWorker extends WorkerIF {
             }
 
             //convert the users array into an object where the key is the username, this allows for easier searching of users
-            log.trace('Trying to add users');
-            log.trace(`Users: ${hdb_data.users.length}`);
-            log.trace(`Users list: ${inspect(hdb_data.users)}`);
             if (hdb_data.users !== undefined) {
                 let users = {};
                 hdb_data.users.forEach((user) => {
                     users[user.username] = user;
                 });
-                log.trace(`Set Users list: ${inspect(users)}`);
                 await this.exchange_set(terms.INTERNAL_SC_CHANNELS.HDB_USERS, users);
                 await this.exchange.publish(terms.INTERNAL_SC_CHANNELS.HDB_USERS, users);
             }
@@ -288,7 +273,6 @@ class ClusterWorker extends WorkerIF {
         log.trace('handleLoginResponse');
         try {
             let users = Object.values(this.hdb_users);
-            log.trace(`found ${users.length} users.`);
             let found_user = get_cluster_user(users, credentials.username);
 
             if (found_user === undefined || !password_utility.validate(found_user.password, credentials.password)) {
