@@ -18,7 +18,7 @@ class UsersRoom extends RoomIF {
 
     }
 
-    inboundMsgHandler(req, worker) {
+    inboundMsgHandler(req, worker, response) {
         if(!req.data) {
             return;
         }

@@ -10,7 +10,6 @@ try {
     process.exit(0);
 }
 const user_schema = require('../utility/user_schema');
-const async = require('async');
 const os = require('os');
 const job_runner = require('./jobRunner');
 const hdb_util = require('../utility/common_utils');
@@ -19,7 +18,6 @@ const guidePath = require('path');
 const global_schema = require('../utility/globalSchema');
 const fs = require('fs');
 const cluster_utilities = require('./clustering/clusterUtilities');
-const cluster_event = require('../events/ClusterStatusEmitter');
 const all_children_stopped_event = require('../events/AllChildrenStoppedEvent');
 const sio_server_stopped_event = require('../events/SioServerStoppedEvent');
 const signalling = require('../utility/signalling');
@@ -374,8 +372,8 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                 });
                 break;
             case terms.CLUSTER_MESSAGE_TYPE_ENUM.CLUSTER_STATUS:
-                harper_logger.info('Got cluster status message via IPC');
-                cluster_event.clusterEmitter.emit(cluster_event.EVENT_NAME, msg.status);
+                //QZZQ: REMOVE THIS, SIGNALING, ETC.
+
                 break;
             case terms.CLUSTER_MESSAGE_TYPE_ENUM.RESTART:
                 harper_logger.info(`Server close event received for process ${process.pid}`);

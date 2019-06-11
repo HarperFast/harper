@@ -161,7 +161,7 @@ class RoomIF {
         throw new Error('Not Implemented');
     }
 
-    async inboundMsgHandler(input, worker) {
+    async inboundMsgHandler(input, worker, response) {
         throw new Error('Not Implemented');
     }
 }

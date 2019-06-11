@@ -15,6 +15,7 @@ const hdb_terms = require('../../../utility/hdbTerms');
 const middleware_factory = require('../middleware/MiddlewareFactory');
 const CoreDecisionMatrix = require('../decisionMatrix/CoreDecisionMatrix');
 const log = require('../../../utility/logging/harper_logger');
+const {inspect} = require('util');
 
 //Rules
 const AssignToHdbChildWorkerRule = require('../decisionMatrix/rules/AssignToHdbChildWorkerRule');
@@ -74,6 +75,7 @@ function createRoom(topicName) {
             created_room = new CoreRoom(topicName);
             configureStandardRoom(created_room);
     }
+    log.debug(`Created room: ${inspect(created_room)}`);
     return created_room;
 }
 
@@ -83,13 +85,9 @@ function createRoom(topicName) {
  * @param created_room
  */
 function configureSingleFunctionRoom(created_room) {
-    let call_handler = new CallRoomMsgHandlerRule();
     // Remove the AssignToHdbChildWorker rule.
     created_room.decision_matrix.removeRuleByType(types.RULE_TYPE_ENUM.ASSIGN_TO_HDB_WORKER, types.CONNECTOR_TYPE_ENUM.CORE);
     created_room.decision_matrix.removeRuleByType(types.RULE_TYPE_ENUM.ASSIGN_TO_HDB_WORKER, types.CONNECTOR_TYPE_ENUM.CLUSTER);
-
-    created_room.decision_matrix.addRule(call_handler, types.CONNECTOR_TYPE_ENUM.CLUSTER);
-    created_room.decision_matrix.addRule(call_handler, types.CONNECTOR_TYPE_ENUM.CORE);
 
     created_room.decision_matrix.removeRuleByType(types.RULE_TYPE_ENUM.WRITE_TO_TRANSACTION_LOG, types.CONNECTOR_TYPE_ENUM.CORE);
     created_room.decision_matrix.removeRuleByType(types.RULE_TYPE_ENUM.WRITE_TO_TRANSACTION_LOG, types.CONNECTOR_TYPE_ENUM.CLUSTER);
@@ -154,6 +152,10 @@ function configureStandardRoom(created_room) {
     let write_transaction_rule = new WriteToTransactionLogRule();
     new_decision_matrix.addRule(write_transaction_rule, types.CONNECTOR_TYPE_ENUM.CLUSTER);
     new_decision_matrix.addRule(write_transaction_rule, types.CONNECTOR_TYPE_ENUM.CORE);
+
+    let call_handler = new CallRoomMsgHandlerRule();
+    new_decision_matrix.addRule(call_handler, types.CONNECTOR_TYPE_ENUM.CLUSTER);
+    new_decision_matrix.addRule(call_handler, types.CONNECTOR_TYPE_ENUM.CORE);
 
     created_room.setDecisionMatrix(new_decision_matrix);
 }

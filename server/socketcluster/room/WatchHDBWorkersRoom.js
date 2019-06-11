@@ -18,7 +18,7 @@ class WatchHDBWorkersRoom extends RoomIF {
 
     }
 
-    inboundMsgHandler(req, worker) {
+    inboundMsgHandler(req, worker, response) {
         log.trace('WatchWorkers Room handler');
         if(!req) {
             return;

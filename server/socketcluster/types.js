@@ -71,10 +71,6 @@ const PREMADE_MIDDLEWARE_TYPES = {
     MSG_PREP: 6
 };
 
-const PREMADE_RULE_TYPES = {
-    SEND_TO_WORKER: 0
-};
-
 const COMMAND_EVAL_ORDER_ENUM = {
     VERY_FIRST: 1, // This rule should be evaluated first, only one rule in the collection can contain this
     HIGH: 2, // This rule should be evaluated after VERY_FIRST, but before MID
@@ -97,6 +93,18 @@ const RULE_TYPE_ENUM = {
     TEST_RULE: 4
 };
 
+// Message types that will flow through the Cluster Worker room.
+const WORKER_ROOM_MSG_TYPE_ENUM = {
+    STATUS: 0,
+    STATUS_RESPONSE: 1
+};
+
+// Message types that will flow through the HDB Child and Cluster Worker room.
+const CORE_ROOM_MSG_TYPE_ENUM = {
+    GET_CLUSTER_STATUS: 10,
+    CLUSTER_STATUS_RESPONSE: 11
+};
+
 module.exports = {
     MIDDLEWARE_TYPE,
     ROOM_TYPE: ROOM_TYPE,
@@ -109,5 +117,7 @@ module.exports = {
     COMMAND_EVAL_ORDER_ENUM: COMMAND_EVAL_ORDER_ENUM,
     CORE_QUEUE_EVENTS_ENUM,
     REQUEST_HEADER_ATTRIBUTE_NAMES,
-    RULE_TYPE_ENUM
+    RULE_TYPE_ENUM,
+    WORKER_ROOM_MSG_TYPE_ENUM,
+    CORE_ROOM_MSG_TYPE_ENUM
 };

@@ -65,11 +65,13 @@ class ClusterWorker extends WorkerIF {
         this.exchange_set = promisify(this.exchange.set).bind(this.exchange);
         this.exchange_remove = promisify(this.exchange.remove).bind(this.exchange);
 
+        this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_IN, this.announceInMsg.bind(this));
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_IN, this.checkNewRoom.bind(this));
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_IN, this.messagePrepMiddleware.bind(this));
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_IN, this.evalRoomPublishInMiddleware.bind(this));
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_IN, this.evalRoomRules.bind(this));
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_HANDSHAKE_SC, this.evalRoomHandshakeSCMiddleware.bind(this));
+        this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_OUT, this.announceOutMsg.bind(this));
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_OUT, this.evalRoomPublishOutMiddleware.bind(this));
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_SUBSCRIBE, this.checkNewRoom.bind(this));
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_SUBSCRIBE, this.evalRoomSubscribeMiddleware.bind(this));
@@ -83,6 +85,16 @@ class ClusterWorker extends WorkerIF {
                 }
             });
         }
+    }
+
+    announceInMsg(req, next) {
+        log.trace('Processing PUBLISH_IN');
+        next();
+    }
+
+    announceOutMsg(req, next) {
+        log.trace('Processing PUBLISH_OUT');
+        next();
     }
 
     async processArgs() {

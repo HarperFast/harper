@@ -11,7 +11,7 @@ const os = require('os');
 const configure_validator = require('../../validation/clustering/configureValidator');
 const auth = require('../../security/auth');
 const ClusterStatusObject = require('../../server/clustering/ClusterStatusObject');
-const signalling = require('../../utility/signalling');
+const EventPromise = require('../../events/EventPromise');
 const cluster_status_event = require('../../events/ClusterStatusEmitter');
 const children_stopped_event = require('../../events/AllChildrenStoppedEvent');
 const child_process = require('child_process');
@@ -28,7 +28,7 @@ const started_forks = {};
 let is_enterprise = false;
 let child_event_count = 0;
 
-const STATUS_TIMEOUT_MS = 4000;
+const STATUS_TIMEOUT_MS = 400000;
 const DUPLICATE_ERR_MSG = 'Cannot add a node that matches the hosts clustering config.';
 
 const SUBSCRIPTIONS_MUST_BE_ARRAY = 'add_node subscriptions must be an array';
@@ -211,6 +211,8 @@ async function configureCluster(enable_cluster_json) {
  * @returns {Promise<void>}
  */
 async function clusterStatus(cluster_status_json) {
+    // QZZQ SHOULD GO HERE.
+
     log.debug(`getting cluster status`);
     let response = {};
     try {
@@ -219,17 +221,24 @@ async function clusterStatus(cluster_status_json) {
         if (!clustering_enabled) {
             return response;
         }
-        // we only have 1 process, call get status directly
-        if (process.send === undefined) {
-            response["status"] = JSON.stringify(getClusterStatus());
-            return response;
-        }
 
-        // send a signal to master to gather cluster data.
-        signalling.signalClusterStatus();
-        // use race to incorporate the timeout.  There is no way to cancel the event_promise, but at least we can
-        // keep this code from waiting indefinitely.
-        response["status"] = await Promise.race([event_promise, timeout_promise.promise]);
+        if(!global.hdb_socket_client || !global.hdb_socket_client.socket.id) {
+            log.error('Cannot request cluster status.  Disconnected from clustering.');
+            return;
+        }
+        let cluster_status_msg = hdb_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.GET_CLUSTER_STATUS);
+        if(!cluster_status_msg) {
+            log.error('Error building a cluster status message');
+            return;
+        }
+        cluster_status_msg.requesting_hdb_worker_id = process.pid;
+        cluster_status_msg.requestor_channel = global.hdb_socket_client.socket.id;
+        cluster_status_msg["data"] = 'blah';
+        hdb_utils.sendTransactionToSocketCluster( cluster_status_msg.requestor_channel, cluster_status_msg);
+        // Wait for cluster status event to fire then respond to client
+        let result = await Promise.race([event_promise, timeout_promise.promise]);
+        log.trace(`cluster status result: ${util.inspect(result)}`);
+        response["status"] = result;
     } catch(err) {
         log.error(`Got an error getting cluster status ${err}`);
     }
@@ -475,7 +484,7 @@ module.exports = {
     addNode: addNode,
     // The reference to the callback functions can be removed once processLocalTransaction has been refactored
     configureCluster: configureCluster,
-    clusterStatus: clusterStatus,
+    clusterStatus,
     removeNode: removeNode,
     clusterMessageHandler: clusterMessageHandler,
     authHeaderToUser: authHeaderToUser,

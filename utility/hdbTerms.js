@@ -33,6 +33,10 @@ const RESTART_CODE_NUM = 24;
 const RESTART_TIMEOUT_MS = 60000;
 const HDB_FILE_PERMISSIONS = 0o700;
 
+// Trying to keep socket cluster as modular as possible, so we will create values in here that point to values
+// inside of the socketcluster types module.
+const cluster_types = require('../server/socketcluster/types');
+
 const INSERT_MODULE_ENUM = {
     HDB_PATH_KEY: 'HDB_INTERNAL_PATH',
     HDB_AUTH_HEADER: 'hdb_auth_header',
@@ -303,6 +307,11 @@ const CLUSTER_EVENTS_DEFS_ENUM = {
     DIRECTION_CHANGE: 'direction_change'
 };
 
+const CLUSTERING_MESSAGE_TYPES = {
+    GET_CLUSTER_STATUS: cluster_types.CORE_ROOM_MSG_TYPE_ENUM.GET_CLUSTER_STATUS,
+    CLUSTER_STATUS_RESPONSE: cluster_types.CORE_ROOM_MSG_TYPE_ENUM.CLUSTER_STATUS_RESPONSE
+};
+
 module.exports = {
     LOCAL_HARPERDB_OPERATIONS,
     HDB_PROC_NAME,
@@ -344,6 +353,7 @@ module.exports = {
     CLUSTER_OPERATIONS,
     SYSTEM_DEFAULT_ATTRIBUTE_NAMES,
     HDB_INTERNAL_SC_CHANNEL_PREFIX,
-    INTERNAL_SC_CHANNELS
+    INTERNAL_SC_CHANNELS,
+    CLUSTERING_MESSAGE_TYPES
 };
 

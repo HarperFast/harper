@@ -20,7 +20,7 @@ class DropUserRoom extends RoomIF {
 
     }
 
-    async inboundMsgHandler(req, worker) {
+    async inboundMsgHandler(req, worker, response) {
         let user = req.data;
         log.trace('DropUser handler');
         try {
