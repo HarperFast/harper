@@ -75,6 +75,32 @@ class DecisionMatrixIF {
     }
 
     /**
+     * Removes the rule matching the rule_id parameter.  returns true on success, false on failure or if rule is not found.
+     * @returns boolean
+     * @throws
+     * @param rule_id - The id of the affected rule
+     * @param connector_type_enum - Used to decide which rules collection to look in.
+     */
+    removeRuleByType(rule_type_enum, connector_type_enum) {
+        if(!rule_type_enum) {
+            throw new Error('Invalid parameter passed to removeRule');
+        }
+        if(connector_type_enum === null || connector_type_enum=== undefined) {
+            throw new Error('Invalid connector source');
+        }
+        try {
+            if (connector_type_enum === types.CONNECTOR_TYPE_ENUM.CORE) {
+                return this.core_rules.removeCommandsByType(rule_type_enum);
+            }
+            return this.cluster_rules.removeCommandsByType(rule_type_enum);
+        } catch(err) {
+            log.error(`There was an error removing rule with type: ${rule_type_enum}`);
+            log.error(err);
+            return false;
+        }
+    }
+
+    /**
      * Returns an array of rules stored for a given connector type.
      * @param connector_type_enum
      * @returns {Array}

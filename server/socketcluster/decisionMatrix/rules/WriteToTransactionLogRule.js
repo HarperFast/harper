@@ -22,6 +22,7 @@ class WriteToTransactionLogRule extends RuleIF {
     constructor() {
         super();
         this.setRuleOrder(types.COMMAND_EVAL_ORDER_ENUM.LOW);
+        this.type = types.RULE_TYPE_ENUM.WRITE_TO_TRANSACTION_LOG;
         this.pending_transaction_stream = undefined;
         this.transaction_stream = undefined;
     }

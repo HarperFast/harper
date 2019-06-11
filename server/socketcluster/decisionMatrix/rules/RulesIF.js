@@ -14,6 +14,7 @@ class RulesIF {
     constructor() {
         this.id = uuidV4();
         this.command_order = types.COMMAND_EVAL_ORDER_ENUM.MID;
+        this.type = types.RULE_TYPE_ENUM.BASE_TYPE;
     }
 
     /**

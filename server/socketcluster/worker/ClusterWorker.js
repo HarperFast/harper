@@ -94,16 +94,19 @@ class ClusterWorker extends WorkerIF {
 
     createWatchers() {
         log.trace('createWatchers');
-        this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.HDB_USERS, this));
-        this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.HDB_WORKERS, this));
-        this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.WORKER_ROOM, this));
+        this.checkNewRoom({"channel": terms.INTERNAL_SC_CHANNELS.HDB_USERS}, () => {return;});
+        //let temp = terms.INTERNAL_SC_CHANNELS.HDB_WORKERS;
+        //this.checkNewRoom({"channel": terms.INTERNAL_SC_CHANNELS.HDB_WORKERS}, () => {return;});
+        //this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.HDB_USERS, this));
+        //this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.HDB_WORKERS, this));
+        //this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.WORKER_ROOM, this));
     }
 
     internalUserWatchers() {
         log.trace('internalUserWatchers');
-        this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.ADD_USER, this));
-        this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.DROP_USER, this));
-        this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.ALTER_USER, this));
+        //this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.ADD_USER, this));
+        //this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.DROP_USER, this));
+        //this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.ALTER_USER, this));
     }
 
     addSubscription(subscription_if_object) {
@@ -168,6 +171,7 @@ class ClusterWorker extends WorkerIF {
                 hdb_data.users.forEach((user) => {
                     users[user.username] = user;
                 });
+                this.hdb_users = users;
                 await this.exchange_set(terms.INTERNAL_SC_CHANNELS.HDB_USERS, users);
                 await this.exchange.publish(terms.INTERNAL_SC_CHANNELS.HDB_USERS, users);
             }

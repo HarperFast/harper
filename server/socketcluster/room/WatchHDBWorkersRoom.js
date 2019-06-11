@@ -8,19 +8,31 @@ const log = require('../../../utility/logging/harper_logger');
  * This is a standard room that represents a socketcluster channel, as well as the middleware for that channel, and
  * worker rules for that channel.  Rooms should never be instantiated directly, instead the room factory should be used.
  */
-class CoreRoom extends RoomIF {
+class WatchHDBWorkersRoom extends RoomIF {
     constructor(new_topic_string) {
         super();
         this.setTopic(new_topic_string);
     }
 
     publishToRoom(msg) {
-        log.info(`Called publishToRoom in CoreRoom with topic: ${this.topic}.  Not defined.`);
+
     }
 
-    inboundMsgHandler(input, response) {
-        log.info(`Called inboundMsgHandler in CoreRoom with topic: ${this.topic}.  Not defined.`);
+    inboundMsgHandler(req, response) {
+        log.trace('WatchWorkers Room handler');
+        if(!req) {
+            return;
+        }
+        try {
+            if(req.data && req.data.workers && Array.isArray(req.data.workers)) {
+                this.hdb_workers = req.data.workers;
+            } else {
+                this.hdb_workers = [];
+            }
+        }catch(e){
+            log.error(e);
+        }
     }
 }
 
-module.exports = CoreRoom;
+module.exports = WatchHDBWorkersRoom;

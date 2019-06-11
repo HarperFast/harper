@@ -29,17 +29,7 @@ class WorkerIF extends SCWorker{
         }
         let created_room = undefined;
         try {
-            switch (topic_name_string) {
-                case terms.INTERNAL_SC_CHANNELS.WORKER_ROOM: {
-                    created_room = room_factory.createRoom(topic_name_string, types.ROOM_TYPE.WORKER_ROOM);
-                    break;
-                }
-
-                default:
-                    // default to a standard room.
-                    created_room = room_factory.createRoom(topic_name_string, types.ROOM_TYPE.STANDARD);
-                    break;
-            }
+            created_room = room_factory.createRoom(topic_name_string);
         } catch(err) {
             log.error('There was an error creating a new SC room.');
             log.error(err);
@@ -61,6 +51,13 @@ class WorkerIF extends SCWorker{
             throw new Error(`Room: ${roomIF_object.topic} already exists.`);
         }
         this.rooms[roomIF_object.topic] = roomIF_object;
+
+        // subscribe and watch topic
+        this.exchange.subscribe(roomIF_object.topic);
+        if (roomIF_object.inboundMsgHandler !== undefined && roomIF_object.inboundMsgHandler !== {}) {
+            this.exchange.watch(roomIF_object.topic, this.getRoom(roomIF_object.topic).inboundMsgHandler.bind(this));
+        }
+        log.info(`Worker: ${this.id} subscribed to topic: ${roomIF_object.topic}`);
     }
 
     /**
