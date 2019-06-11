@@ -54,7 +54,6 @@ class ClusterWorker extends WorkerIF {
     /**
      * Run this worker.
      */
-
     run() {
         log.debug('Cluster Worker starting up.');
 
@@ -76,7 +75,6 @@ class ClusterWorker extends WorkerIF {
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_SUBSCRIBE, this.evalRoomSubscribeMiddleware.bind(this));
         new SCServer(this);
 
-        this.createWatchers();
         if(this.isLeader){
             log.trace('Calling processArgs');
             this.processArgs().then(hdb_data=>{
@@ -84,45 +82,7 @@ class ClusterWorker extends WorkerIF {
                     this.node_connector = new NodeConnector(hdb_data.nodes, hdb_data.cluster_user, this);
                 }
             });
-            this.internalUserWatchers();
         }
-    }
-
-    createWatchers() {
-        log.trace('createWatchers');
-        //this.checkNewRoom({"channel": terms.INTERNAL_SC_CHANNELS.HDB_USERS}, () => {return;});
-        //let temp = terms.INTERNAL_SC_CHANNELS.HDB_WORKERS;
-        //this.checkNewRoom({"channel": terms.INTERNAL_SC_CHANNELS.HDB_WORKERS}, () => {return;});
-        //this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.HDB_USERS, this));
-        //this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.HDB_WORKERS, this));
-        //this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.WORKER_ROOM, this));
-    }
-
-    internalUserWatchers() {
-        log.trace('internalUserWatchers');
-        //this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.ADD_USER, this));
-        //this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.DROP_USER, this));
-        //this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.ALTER_USER, this));
-    }
-
-    addSubscription(subscription_if_object) {
-        log.trace('Adding subscription');
-        if (!subscription_if_object) {
-            log.info('Got invalid subscription handler in addSubscription.');
-            return;
-        }
-        for (let i = 0; i < this.subscriptions.length; i++) {
-            if (this.subscriptions.topic === subscription_if_object.topic) {
-                log.info(`subscription ${subscription_if_object.topic} has already been added`);
-                return;
-            }
-        }
-        this.subscriptions.push(subscription_if_object);
-        this.exchange.subscribe(subscription_if_object.topic);
-        if (subscription_if_object.handler !== undefined && subscription_if_object.handler !== {}) {
-            this.exchange.watch(subscription_if_object.topic, this.subscriptions[this.subscriptions.length-1].handler.bind(this));//subscription_if_object.handler.bind(this));
-        }
-        log.info(`Worker: ${subscription_if_object.worker.id} subscribed to topic: ${subscription_if_object.topic}`);
     }
 
     async processArgs() {
@@ -189,7 +149,6 @@ class ClusterWorker extends WorkerIF {
      * @param req - The request
      * @param next - The next function that should be called if this is successful.
      */
-    // TODO: Can middleware be async?
     evalRoomRules(req, next) {
         log.trace('evalRoomRules');
         if(!req.hdb_header) {
