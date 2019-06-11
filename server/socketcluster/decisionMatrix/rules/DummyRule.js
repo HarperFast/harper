@@ -10,7 +10,7 @@ class BaseRule extends RuleIF {
         this.command_order = null;
         this.type = types.RULE_TYPE_ENUM.BASE_TYPE;
     }
-    evaluateRule() {
+    async evaluateRule() {
         throw new Error('Should not be evaluating the base rule');
     }
 }

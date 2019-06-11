@@ -19,10 +19,11 @@ class WorkerRoom extends RoomIF {
 
     }
 
-    inboundMsgHandler(input, response) {
+    inboundMsgHandler(input, worker) {
         try {
-            log.trace('WorkerRoomSubscriptionHandler handler');
+            log.trace('WorkerRoom handler');
             console.log('Handling Room message: ' + inspect(input));
+
         }catch(e){
             log.error(e);
         }

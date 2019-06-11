@@ -117,7 +117,7 @@ describe('Test CoreDecisionMatrix', function() {
     });
     it('Test rule failure due to exception with Cluster connector source', async () => {
         let exception_rule = new BadTestRule();
-        exception_rule.evaluateRule = (req, args, worker) => {
+        await exception_rule.evaluateRule = (req, args, worker) => {
             throw new Error('Rule Exception');
         };
         test_instance.addRule(exception_rule, types.CONNECTOR_TYPE_ENUM.CLUSTER);

@@ -13,7 +13,7 @@ class AssignToHdbChildWorkerRule extends RuleIF {
         this.setRuleOrder(types.COMMAND_EVAL_ORDER_ENUM.VERY_LAST);
         this.type = types.RULE_TYPE_ENUM.ASSIGN_TO_HDB_WORKER;
     }
-    evaluateRule(req, args, worker) {
+    async evaluateRule(req, args, worker) {
         log.trace('Evaluating Assign to Hdb Child worker rule');
         if(!worker) {
             log.error('invalid worker sent to AssignToHdbChildWorkerRule.');

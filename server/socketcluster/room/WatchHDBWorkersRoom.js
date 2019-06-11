@@ -18,16 +18,16 @@ class WatchHDBWorkersRoom extends RoomIF {
 
     }
 
-    inboundMsgHandler(req, response) {
+    inboundMsgHandler(req, worker) {
         log.trace('WatchWorkers Room handler');
         if(!req) {
             return;
         }
         try {
             if(req.data && req.data.workers && Array.isArray(req.data.workers)) {
-                this.hdb_workers = req.data.workers;
+                worker.hdb_workers = req.data.workers;
             } else {
-                this.hdb_workers = [];
+                worker.hdb_workers = [];
             }
         }catch(e){
             log.error(e);

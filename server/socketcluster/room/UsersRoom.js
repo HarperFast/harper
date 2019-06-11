@@ -18,13 +18,16 @@ class UsersRoom extends RoomIF {
 
     }
 
-    inboundMsgHandler(users, response) {
+    inboundMsgHandler(req, worker) {
+        if(!req.data) {
+            return;
+        }
         try {
-            log.trace('WatchUserSubscriptionHandler handler');
-            if(users && typeof users === 'object') {
-                this.hdb_users = users;
+            log.trace('WatchUsers handler');
+            if(req.data.users && typeof req.data.users === 'object') {
+                worker.hdb_users = req.data.users;
             } else {
-                this.hdb_users = {};
+                worker.hdb_users = {};
             }
         }catch(e){
             log.error(e);

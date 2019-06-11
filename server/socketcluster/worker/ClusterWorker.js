@@ -1,7 +1,6 @@
 "use strict";
 
 const WorkerIF = require('./WorkerIF');
-const room_factory = require('../room/roomFactory');
 const SCServer = require('../handlers/SCServer');
 const types = require('../types');
 const {promisify} = require('util');
@@ -10,8 +9,6 @@ const NodeConnector = require('../connector/NodeConnector');
 const password_utility = require('../../../utility/password');
 const get_cluster_user = require('../../../utility/common_utils').getClusterUser;
 const terms = require('../../../utility/hdbTerms');
-const SubscriptionHandlerFactory = require('./subscriptionHandlers/SubscriptionHandlerFactory');
-const {inspect} = require('util');
 
 /**
  * Represents a WorkerIF implementation for socketcluster.
@@ -87,14 +84,13 @@ class ClusterWorker extends WorkerIF {
                     this.node_connector = new NodeConnector(hdb_data.nodes, hdb_data.cluster_user, this);
                 }
             });
-
             this.internalUserWatchers();
         }
     }
 
     createWatchers() {
         log.trace('createWatchers');
-        this.checkNewRoom({"channel": terms.INTERNAL_SC_CHANNELS.HDB_USERS}, () => {return;});
+        //this.checkNewRoom({"channel": terms.INTERNAL_SC_CHANNELS.HDB_USERS}, () => {return;});
         //let temp = terms.INTERNAL_SC_CHANNELS.HDB_WORKERS;
         //this.checkNewRoom({"channel": terms.INTERNAL_SC_CHANNELS.HDB_WORKERS}, () => {return;});
         //this.addSubscription(SubscriptionHandlerFactory.createSubscriptionHandler(terms.INTERNAL_SC_CHANNELS.HDB_USERS, this));

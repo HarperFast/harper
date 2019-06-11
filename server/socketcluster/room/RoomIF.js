@@ -157,11 +157,11 @@ class RoomIF {
         return result;
     }
 
-    publishToRoom(msg) {
+    async publishToRoom(msg) {
         throw new Error('Not Implemented');
     }
 
-    inboundMsgHandler(input, response) {
+    async inboundMsgHandler(input, worker) {
         throw new Error('Not Implemented');
     }
 }

@@ -13,17 +13,22 @@ class CallRoomMsgHandlerRule extends RuleIF {
         this.setRuleOrder(types.COMMAND_EVAL_ORDER_ENUM.VERY_LAST);
         this.type = types.RULE_TYPE_ENUM.CALL_ROOM_MSG_HANDLER;
     }
-    evaluateRule(req, args, worker) {
-        log.trace('Evaluating Assign to Hdb Child worker rule');
+    async evaluateRule(req, args, worker) {
+        log.trace('Evaluating call handler rule');
         if(!worker) {
             log.error('invalid worker sent to CallRoomMsgHandlerRule.');
+            return false;
+        }
+
+        if(!req) {
+            log.info('Invalid request sent to evaluateRule');
             return false;
         }
 
         try {
             let room = worker.getRoom(req.channel);
             if(room) {
-                room.inboundMsgHandler(req);
+                await room.inboundMsgHandler(req, worker);
             }
         } catch(err) {
             log.error(err);

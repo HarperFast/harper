@@ -33,7 +33,7 @@ class WorkerIF extends SCWorker{
         } catch(err) {
             log.error('There was an error creating a new SC room.');
             log.error(err);
-        }
+    }
         return created_room;
     }
 
