@@ -44,6 +44,7 @@
     "moment": "^2.23.0",
     "node-forge": "^0.7.6",
     "optimist": "^0.6.1",
+    "papaparse": "^5.0.0",
     "passport": "^0.3.2",
     "passport-http": "^0.3.0",
     "passport-local": "^1.0.0",

@@ -7,6 +7,7 @@ const truncate = require('truncate-utf8-bytes');
 const os = require('os');
 const terms = require('./hdbTerms');
 const ps_list = require('./psList');
+const papa_parse = require('papaparse');
 
 const EMPTY_STRING = '';
 const FILE_EXTENSION_LENGTH = 4;
@@ -54,6 +55,7 @@ module.exports = {
     checkGlobalSchemaTable: checkGlobalSchemaTable,
     getHomeDir: getHomeDir,
     getPropsFilePath: getPropsFilePath,
+    promisifyPapaParse
 };
 
 /**
@@ -510,4 +512,20 @@ function getClusterUser(users, cluster_user_name){
     }
 
     return cluster_user;
+}
+
+function promisifyPapaParse(){
+    papa_parse.parsePromise = function (stream, chunkFunc) {
+        return new Promise(function (resolve, reject) {
+            papa_parse.parse(stream,
+                {
+                    header: true,
+                    chunk: chunkFunc,
+                    skipEmptyLines: true,
+                    dynamicTyping: true,
+                    error: reject,
+                    complete: resolve
+                });
+        });
+    };
 }

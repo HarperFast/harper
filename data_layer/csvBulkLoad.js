@@ -10,11 +10,15 @@ const util = require('util');
 const {promise} = require('alasql');
 const logger = require('../utility/logging/harper_logger');
 const fs = require('fs');
+const papa_parse = require('papaparse');
+const fs_extra = require('fs-extra');
 
 const RECORD_BATCH_SIZE = 1000;
 const NEWLINE = '\n';
 const unix_filename_regex = new RegExp(/[^-_.A-Za-z0-9]/);
 const ALASQL_MIDDLEWARE_PARSE_PARAMETERS = 'SELECT * FROM CSV(?, {headers:true, separator:","})';
+const HIGHWATERMARK = 1024*1024*3;
+hdb_utils.promisifyPapaParse();
 
 const p_fs_access = util.promisify(fs.access);
 
@@ -105,24 +109,103 @@ async function csvURLLoad(json_message) {
  * @return err - any errors found during the bulk load
  *
  */
+//TODO: temp to see if works
+let test_json_message;
+let test_validation_results = {
+    attributes: []
+};
+let test_bulk_load_result;
+
 async function csvFileLoad(json_message) {
     let validation_msg = validator.fileObject(json_message);
     if (validation_msg) {
         throw new Error(validation_msg);
     }
 
+    // TODO: this is here because i cant figure out how to get it from validates response to insert.
+    test_json_message = json_message;
+
     let csv_records = [];
     let bulk_load_result = {};
     try {
         // check file exists and have perms to read, throws exception if fails
         await p_fs_access(json_message.file_path, fs.constants.R_OK | fs.constants.F_OK);
-        csv_records = await callMiddleware(ALASQL_MIDDLEWARE_PARSE_PARAMETERS, json_message.file_path);
-        bulk_load_result = await callBulkLoad(csv_records, json_message.schema, json_message.table, json_message.action);
+
+        console.log(`\n\npapa parse called - memory: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
+        bulk_load_result = await callPapaParse(json_message);
+        console.log(`### papa parse finished - memory: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
+
+        // csv_records = await callMiddleware(ALASQL_MIDDLEWARE_PARSE_PARAMETERS, json_message.file_path);
+        // bulk_load_result = await callBulkLoad(csv_records, json_message.schema, json_message.table, json_message.action);
     } catch(e) {
         throw new Error(e);
     }
 
-    return bulk_load_result.message;
+    return test_bulk_load_result.message;
+}
+
+let validate_chunk = async (results, parser) => {
+    let validation_results = {
+        attributes: []
+
+    };
+
+    console.log(`validate chunk length: ${results.data.length}`);
+
+    let write_object = {
+        operation: test_json_message.operation,
+        schema: test_json_message.schema,
+        table: test_json_message.table,
+        records: results.data
+    };
+
+    try {
+        let validation_response = await insert.validation(write_object);
+        test_validation_results.table_schema = validation_response.table_schema;
+        validation_response.attributes.forEach((item) => {
+            if (!(test_validation_results.attributes.includes(item))) {
+                test_validation_results.attributes.push(item);
+            }
+        });
+
+        // TODO: cant figure out how to get it from here to insert chunk
+        // return validation_results;
+
+    } catch(err) {
+        console.log(err);
+        throw new Error(err);
+    }
+};
+
+let insert_chunk = async (results, parser) => {
+    try {
+        console.log(`insert chunk length: ${results.data.length}`);
+        let bulk_load_result = await callBulkLoad(results.data, test_json_message.schema, test_json_message.table, test_json_message.action, test_validation_results);
+        test_bulk_load_result = bulk_load_result;
+        return bulk_load_result;
+    } catch(err) {
+        console.log(err);
+        throw new Error(err);
+    }
+
+};
+
+async function callPapaParse(json_message) {
+    try {
+        let stream = fs_extra.createReadStream(json_message.file_path, {highWaterMark:HIGHWATERMARK});
+        await papa_parse.parsePromise(stream, validate_chunk);
+        console.log(`papa parse validate finished - memory: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
+
+        stream = fs_extra.createReadStream(json_message.file_path, {highWaterMark:HIGHWATERMARK});
+        await papa_parse.parsePromise(stream, insert_chunk);
+        console.log(`papa parse insert chunk finished - memory: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
+
+        return test_bulk_load_result;
+
+    } catch(err) {
+        console.log(err);
+        throw new Error(err);
+    }
 }
 
 /**
@@ -173,10 +256,10 @@ async function callMiddleware(parameter_string, data) {
     }
 }
 
-async function callBulkLoad(csv_records, schema, table, action) {
+async function callBulkLoad(csv_records, schema, table, action, validation = null) {
     let bulk_load_result = {};
     if(csv_records && csv_records.length > 0 && validateColumnNames(csv_records[0])) {
-        bulk_load_result = await bulkLoad(csv_records, schema, table, action);
+        bulk_load_result = await bulkLoad(csv_records, schema, table, action, validation);
     } else {
         bulk_load_result.message = 'No records parsed from csv file.';
         logger.info(bulk_load_result.message);
@@ -208,7 +291,7 @@ function validateColumnNames(created_record) {
  * @param action - Specify either insert or update the specified records
  * @returns {Promise<{message: string}>}
  */
-async function bulkLoad(records, schema, table, action){
+async function bulkLoad(records, schema, table, action, validation){
     if (!action) {
         action = 'insert';
     }
@@ -217,8 +300,16 @@ async function bulkLoad(records, schema, table, action){
         operation: action,
         schema: schema,
         table: table,
-        records: records
+        records: records,
+        table_schema: validation.table_schema,
+        attributes: validation.attributes,
+        bulk_load: true
     };
+
+    if (hdb_utils.isEmptyOrZeroLength(validation)) {
+        target_object.table_schema = validation.table_schema;
+        target_object.attributes = validation.attributes;
+    }
 
     let write_function;
     if (action === 'insert'){

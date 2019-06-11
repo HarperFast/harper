@@ -44,7 +44,8 @@ const INSERT_ACTION = 'inserted';
 
 module.exports = {
     insert: insertData,
-    update: updateData
+    update: updateData,
+    validation
 };
 //this must stay after the export to correct a circular dependency issue
 const global_schema = require('../utility/globalSchema');
@@ -60,6 +61,7 @@ const p_search_by_hash = util.promisify(search.searchByHash);
 async function validation(write_object){
     // Need to validate these outside of the validator as the getTableSchema call will fail with
     // invalid values.
+
     if(h_utils.isEmpty(write_object)) {
         throw new Error('invalid update parameters defined.');
     }
@@ -123,7 +125,10 @@ async function validation(write_object){
  * @param insert_object
  */
 async function insertData(insert_object){
+    console.log(`insert data called on ${insert_object.schema} - memory: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
     let pool = undefined;
+    let table_schema;
+    let attributes;
     try {
         let epoch = Date.now();
 
@@ -131,14 +136,27 @@ async function insertData(insert_object){
             throw new Error('invalid operation, must be insert');
         }
 
-        let {table_schema, attributes} = await validation(insert_object);
+        if (h_utils.isEmptyOrZeroLength(insert_object.bulk_load)) {
+            console.log('This should only on called on validation');
+            let result = await validation(insert_object);
+            table_schema = result.table_schema;
+            attributes = result.attributes;
+        } else {
+            table_schema = insert_object.table_schema;
+            attributes = insert_object.attributes;
+        }
+
+        //console.log(`validation finished - memory: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
 
         let { written_hashes, skipped, ...data_wrapper} = await processRows(insert_object, attributes, table_schema, epoch, null, pool);
         pool = data_wrapper.pool;
+        console.log(`process rows finished - memory: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
 
         await checkForNewAttributes(insert_object.hdb_auth_header, table_schema, attributes);
+        console.log(`checkForNewAttributes finished - memory: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
 
         pool = await processData(data_wrapper, pool);
+        console.log(`process data finished - memory: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
 
         if(pool instanceof HDB_Pool){
             pool.killAll();
