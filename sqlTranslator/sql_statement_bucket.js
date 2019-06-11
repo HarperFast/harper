@@ -58,7 +58,7 @@ class sql_statement_bucket {
      * @returns {Array}
      */
     getTablesBySchemaName(schema_name) {
-        if(!schema_name || !this.affected_attributes) return [];
+        if (!schema_name || !this.affected_attributes) return [];
         return Array.from(this.affected_attributes.get(schema_name).keys());
     }
 
@@ -67,7 +67,7 @@ class sql_statement_bucket {
      * @returns {Array}
      */
     getSchemas() {
-        if(!this.affected_attributes) {
+        if (!this.affected_attributes) {
             return [];
         }
         return Array.from(this.affected_attributes.keys());
@@ -95,17 +95,17 @@ function interpretAST(ast, affected_attributes, table_lookup) {
  * @param {Map} table_lookup - A map that will be filled in.  This map contains alias to table definitions as [alias, table_name].
  */
 function addSchemaTableToMap(record, affected_attributes, table_lookup) {
-    if(!record || !record.databaseid) {
+    if (!record || !record.databaseid) {
         return;
     }
-    if(!affected_attributes.has(record.databaseid)) {
+    if (!affected_attributes.has(record.databaseid)) {
         affected_attributes.set(record.databaseid, new Map());
     }
-    if(!affected_attributes.get(record.databaseid).has(record.tableid)) {
+    if (!affected_attributes.get(record.databaseid).has(record.tableid)) {
         affected_attributes.get(record.databaseid).set(record.tableid, []);
     }
-    if(record.as) {
-        if(!table_lookup.has(record.as)) {
+    if (record.as) {
+        if (!table_lookup.has(record.as)) {
             table_lookup.set(record.as, record.tableid);
         }
     }
@@ -119,13 +119,13 @@ function addSchemaTableToMap(record, affected_attributes, table_lookup) {
  * @param {Map} table_lookup - A map that will be filled in.  This map contains alias to table definitions as [alias, table_name].
  */
 function getRecordAttributesAST(ast, affected_attributes, table_lookup) {
-    if(!ast) {
+    if (!ast) {
         harper_logger.info(`getRecordAttributesAST: invalid SQL syntax tree`);
         return;
     }
     // We can reference any schema/table attributes, so we need to check each possibility
     // affected attributes is a Map of Maps like so [schema, Map[table, [attributes_array]]];
-    if(ast instanceof alasql.yy.Insert) {
+    if (ast instanceof alasql.yy.Insert) {
         getInsertAttributes(ast, affected_attributes, table_lookup);
     } else if (ast instanceof alasql.yy.Select) {
         getSelectAttributes(ast, affected_attributes, table_lookup);
@@ -145,39 +145,39 @@ function getRecordAttributesAST(ast, affected_attributes, table_lookup) {
  * @param table_lookup - A map that will be filled in.  This map contains alias to table definitions as [alias, table_name].
  */
 function getSelectAttributes(ast, affected_attributes, table_lookup) {
-    if(!ast) {
+    if (!ast) {
         harper_logger.info(`getSelectAttributes: invalid SQL syntax tree`);
         return;
     }
-    if(!ast.from || ast.from[0] === undefined) {
+    if (!ast.from || ast.from[0] === undefined) {
         return;
     }
     let schema = ast.from[0].databaseid;
-    if(hdb_utils.isEmptyOrZeroLength(schema)) {
+    if (hdb_utils.isEmptyOrZeroLength(schema)) {
         harper_logger.error('No schema specified');
         return;
     }
-    ast.from.forEach((from)=>{
+    ast.from.forEach(from => {
         addSchemaTableToMap(from, affected_attributes, table_lookup);
     });
-    if(ast.joins){
-        ast.joins.forEach((join)=> {
+    if (ast.joins) {
+        ast.joins.forEach(join => {
             //copying the 'as' to the table rather than on the join allows for a more generic function in addSchemaTableToMap().
             // as it can take a .table as well as a .join record. It's a bit hacky, but I don't think this should cause any problems.
-            if(join.as) {
+            if (join.as) {
                 join.table.as = join.as;
             }
             addSchemaTableToMap(join.table, affected_attributes, table_lookup);
         });
     }
-    ast.columns.forEach((col)=>{
+    ast.columns.forEach(col => {
         let table_name = col.tableid;
-        if(!table_name) {
+        if (!table_name) {
             table_name = ast.from[0].tableid;
         }
 
-        if(!affected_attributes.get(schema).has(table_name)) {
-            if(!table_lookup.has(table_name)) {
+        if (!affected_attributes.get(schema).has(table_name)) {
+            if (!table_lookup.has(table_name)) {
                 harper_logger.info(`table specified as ${table_name} not found.`);
                 return;
             } else {
