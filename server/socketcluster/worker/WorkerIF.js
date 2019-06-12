@@ -70,8 +70,16 @@ class WorkerIF extends SCWorker{
      * @param next - next function to call;
      */
     evalRoomPublishOutRules(req, next) {
-        this.evalRoomRules(req, next, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_OUT);
-        next();
+        this.evalRoomRules(req, next, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_OUT)
+            .then((result) => {
+                if(result) {
+                    return next(result);
+                }
+                return next();
+            })
+            .catch((err) => {
+                return next(types.ERROR_CODES.MIDDLEWARE_ERROR);
+            });
     }
 
     /**
@@ -80,8 +88,16 @@ class WorkerIF extends SCWorker{
      * @param next - next function to call;
      */
     evalRoomPublishInRules(req, next) {
-        this.evalRoomRules(req, next, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_OUT);
-        next();
+        this.evalRoomRules(req, next, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_OUT)
+            .then((result) => {
+                if(result) {
+                    return next(result);
+                }
+                return next();
+            })
+            .catch((err) => {
+                return next(types.ERROR_CODES.MIDDLEWARE_ERROR);
+            });
     }
 
     /**
@@ -92,15 +108,15 @@ class WorkerIF extends SCWorker{
      * @param req - The request
      * @param next - The next function that should be called if this is successful.
      */
-    evalRoomRules(req, next, middleware_type) {
+    async evalRoomRules(req, next, middleware_type) {
         if(!req.hdb_header) {
-            return next(types.ERROR_CODES.MIDDLEWARE_SWALLOW);
+            return types.ERROR_CODES.MIDDLEWARE_SWALLOW;
         }
 
         // get the room
         let room = this.getRoom(req.channel);
         if(!room) {
-            return next(types.ERROR_CODES.MIDDLEWARE_ERROR);
+            return types.ERROR_CODES.MIDDLEWARE_ERROR;
         }
         // eval rules
 
@@ -111,13 +127,13 @@ class WorkerIF extends SCWorker{
             }
             room.evalRules(req, this, connector_type, middleware_type).then(rules_result=>{
                 if(!rules_result) {
-                    return next(types.ERROR_CODES.WORKER_RULE_FAILURE);
+                    return types.ERROR_CODES.WORKER_RULE_FAILURE;
                 }
                 next();
             });
         } catch(err) {
             log.error(err);
-            return next(types.ERROR_CODES.WORKER_RULE_ERROR);
+            return types.ERROR_CODES.WORKER_RULE_ERROR;
         }
     }
 
