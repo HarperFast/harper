@@ -55,22 +55,22 @@ describe('Test CoreDecisionMatrix', function() {
        test_instance = null;
     });
     it('Nominal test with Cluster connector source', async () => {
-        test_instance.addRule(new TestRule(), types.CONNECTOR_TYPE_ENUM.CLUSTER);
+        test_instance.addRule(new TestRule(), types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
         let result = undefined;
         try {
-            result = await test_instance.evalRules(TEST_REQUEST, {}, worker_stub, types.CONNECTOR_TYPE_ENUM.CLUSTER);
+            result = await test_instance.evalRules(TEST_REQUEST, {}, worker_stub, types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
         } catch(err) {
             result = err;
         }
         assert.equal(result, true, 'expected success');
     });
     it('Nominal test with Cluster connector source, multiple rules', async () => {
-        test_instance.addRule(new TestRule(), types.CONNECTOR_TYPE_ENUM.CLUSTER);
-        test_instance.addRule(new TestRule(), types.CONNECTOR_TYPE_ENUM.CLUSTER);
-        test_instance.addRule(new TestRule(), types.CONNECTOR_TYPE_ENUM.CLUSTER);
+        test_instance.addRule(new TestRule(), types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
+        test_instance.addRule(new TestRule(), types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
+        test_instance.addRule(new TestRule(), types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
         let result = undefined;
         try {
-            result = await test_instance.evalRules(TEST_REQUEST, {}, worker_stub, types.CONNECTOR_TYPE_ENUM.CLUSTER);
+            result = await test_instance.evalRules(TEST_REQUEST, {}, worker_stub, types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
         } catch(err) {
             result = err;
         }
@@ -79,37 +79,37 @@ describe('Test CoreDecisionMatrix', function() {
     it('Nominal test with no rules', async () => {
         let result = undefined;
         try {
-            result = await test_instance.evalRules(TEST_REQUEST, {}, worker_stub, types.CONNECTOR_TYPE_ENUM.CLUSTER);
+            result = await test_instance.evalRules(TEST_REQUEST, {}, worker_stub, types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
         } catch(err) {
             result = err;
         }
         assert.equal(result, true, 'expected success');
     });
     it('Nominal test with bad connector source param, expect cluster default', async () => {
-        test_instance.addRule(new TestRule(), types.CONNECTOR_TYPE_ENUM.CLUSTER);
+        test_instance.addRule(new TestRule(), types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
         let result = undefined;
         try {
-            result = await test_instance.evalRules(TEST_REQUEST, {}, worker_stub, null);
+            result = await test_instance.evalRules(TEST_REQUEST, {}, worker_stub, null, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
         } catch(err) {
             result = err;
         }
         assert.equal(result, true, 'expected success');
     });
     it('Nominal test with core source param but no rules, expect cluster success', async () => {
-        test_instance.addRule(new TestRule(), types.CONNECTOR_TYPE_ENUM.CLUSTER);
+        test_instance.addRule(new TestRule(), types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
         let result = undefined;
         try {
-            result = await test_instance.evalRules(TEST_REQUEST, {}, worker_stub, types.CONNECTOR_TYPE_ENUM.CORE);
+            result = await test_instance.evalRules(TEST_REQUEST, {}, worker_stub, types.CONNECTOR_TYPE_ENUM.CORE, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
         } catch(err) {
             result = err;
         }
         assert.equal(result, true, 'expected success');
     });
     it('Test rule failure with Cluster connector source', async () => {
-        test_instance.addRule(new BadTestRule(), types.CONNECTOR_TYPE_ENUM.CLUSTER);
+        test_instance.addRule(new BadTestRule(), types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
         let result = undefined;
         try {
-            result = await test_instance.evalRules(TEST_REQUEST, {}, worker_stub, types.CONNECTOR_TYPE_ENUM.CLUSTER);
+            result = await test_instance.evalRules(TEST_REQUEST, {}, worker_stub, types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
         } catch(err) {
             result = err;
         }
@@ -120,10 +120,10 @@ describe('Test CoreDecisionMatrix', function() {
         await exception_rule.evaluateRule = (req, args, worker) => {
             throw new Error('Rule Exception');
         };
-        test_instance.addRule(exception_rule, types.CONNECTOR_TYPE_ENUM.CLUSTER);
+        test_instance.addRule(exception_rule, types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
         let result = undefined;
         try {
-            result = await test_instance.evalRules(TEST_REQUEST, {}, worker_stub, types.CONNECTOR_TYPE_ENUM.CLUSTER);
+            result = await test_instance.evalRules(TEST_REQUEST, {}, worker_stub, types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
         } catch(err) {
             result = err;
         }

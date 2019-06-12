@@ -65,14 +65,14 @@ class ClusterWorker extends WorkerIF {
         this.exchange_set = promisify(this.exchange.set).bind(this.exchange);
         this.exchange_remove = promisify(this.exchange.remove).bind(this.exchange);
 
-        this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_IN, this.announceInMsg.bind(this));
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_IN, this.checkNewRoom.bind(this));
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_IN, this.messagePrepMiddleware.bind(this));
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_IN, this.evalRoomPublishInMiddleware.bind(this));
-        this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_IN, this.evalRoomRules.bind(this));
+        this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_IN, this.evalRoomPublishInRules.bind(this));
+
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_HANDSHAKE_SC, this.evalRoomHandshakeSCMiddleware.bind(this));
-        this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_OUT, this.announceOutMsg.bind(this));
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_OUT, this.evalRoomPublishOutMiddleware.bind(this));
+        this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_OUT, this.evalRoomPublishOutRules.bind(this));
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_SUBSCRIBE, this.checkNewRoom.bind(this));
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_SUBSCRIBE, this.evalRoomSubscribeMiddleware.bind(this));
         new SCServer(this);
@@ -87,14 +87,74 @@ class ClusterWorker extends WorkerIF {
         }
     }
 
-    announceInMsg(req, next) {
-        log.trace('Processing PUBLISH_IN');
-        next();
+    watchWorkers(workers){
+        if(workers && Array.isArray(workers)) {
+            this.hdb_workers = workers;
+        } else {
+            this.hdb_workers = [];
+        }
     }
 
-    announceOutMsg(req, next) {
-        log.trace('Processing PUBLISH_OUT');
-        next();
+    watchUsers(users){
+        if(users && typeof users === 'object') {
+            this.hdb_users = users;
+        } else {
+            this.hdb_users = {};
+        }
+    }
+
+    internalUserWatchers(){
+        this.exchange.subscribe(terms.INTERNAL_SC_CHANNELS.ADD_USER);
+        this.exchange.subscribe(terms.INTERNAL_SC_CHANNELS.ALTER_USER);
+        this.exchange.subscribe(terms.INTERNAL_SC_CHANNELS.DROP_USER);
+
+        this.exchange.watch(terms.INTERNAL_SC_CHANNELS.ADD_USER, this.addUser.bind(this));
+        this.exchange.watch(terms.INTERNAL_SC_CHANNELS.DROP_USER, this.dropUser.bind(this));
+        this.exchange.watch(terms.INTERNAL_SC_CHANNELS.ALTER_USER, this.dropUser.bind(this));
+    }
+
+    async addUser(user){
+        try {
+            if (this.hdb_users[user.username] === undefined) {
+                this.hdb_users[user.username] = user;
+
+                await this.exchange_set(terms.INTERNAL_SC_CHANNELS.HDB_USERS, this.hdb_users);
+                this.exchange.publish(terms.INTERNAL_SC_CHANNELS.HDB_USERS, this.hdb_users);
+            }
+        }catch(e){
+            log.error(e);
+        }
+    }
+
+    async dropUser(user){
+        try {
+            if (this.hdb_users[user.username] !== undefined) {
+                delete this.hdb_users[user.username];
+
+                await this.exchange_set(terms.INTERNAL_SC_CHANNELS.HDB_USERS, this.hdb_users);
+                this.exchange.publish(terms.INTERNAL_SC_CHANNELS.HDB_USERS, this.hdb_users);
+            }
+        }catch(e){
+            log.error(e);
+        }
+    }
+
+    async alterUser(user){
+        try {
+            let current_user = this.hdb_users[user.username];
+            if (current_user !== undefined) {
+                Object.keys(user).forEach((attribute)=>{
+                    current_user[attribute] = user[attribute];
+                });
+
+                this.hdb_users[user.username] = current_user;
+
+                await this.exchange_set(terms.INTERNAL_SC_CHANNELS.HDB_USERS, this.hdb_users);
+                this.exchange.publish(terms.INTERNAL_SC_CHANNELS.HDB_USERS, this.hdb_users);
+            }
+        }catch(e){
+            log.error(e);
+        }
     }
 
     async processArgs() {
@@ -150,46 +210,6 @@ class ClusterWorker extends WorkerIF {
         }catch(e){
             log.error(e);
         }
-    }
-
-
-    /**
-     * Evaluate room rules via the decision matrix.  Since middleware always has the same parameter, we can't
-     * make this a middlewareIF object, as the rules generally need the worker.
-     *
-     * This should always be called at the end of the middleware chain for a connector.
-     * @param req - The request
-     * @param next - The next function that should be called if this is successful.
-     */
-    evalRoomRules(req, next) {
-        log.trace('evalRoomRules');
-        if(!req.hdb_header) {
-            return next(types.ERROR_CODES.MIDDLEWARE_SWALLOW);
-        }
-
-        // get the room
-        let room = this.getRoom(req.channel);
-        if(!room) {
-            return next(types.ERROR_CODES.MIDDLEWARE_ERROR);
-        }
-        // eval rules
-
-        try {
-            let connector_type = types.CONNECTOR_TYPE_ENUM.CORE;
-            if(req.hdb_header[types.REQUEST_HEADER_ATTRIBUTE_NAMES.DATA_SOURCE]) {
-                connector_type = req.hdb_header[types.REQUEST_HEADER_ATTRIBUTE_NAMES.DATA_SOURCE];
-            }
-            room.evalRules(req, this, connector_type).then(rules_result=>{
-                if(!rules_result) {
-                    return next(types.ERROR_CODES.WORKER_RULE_FAILURE);
-                }
-                next();
-            });
-        } catch(err) {
-            log.error(err);
-            return next(types.ERROR_CODES.WORKER_RULE_ERROR);
-        }
-
     }
 
     /**

@@ -11,7 +11,6 @@ const os = require('os');
 const configure_validator = require('../../validation/clustering/configureValidator');
 const auth = require('../../security/auth');
 const ClusterStatusObject = require('../../server/clustering/ClusterStatusObject');
-const EventPromise = require('../../events/EventPromise');
 const cluster_status_event = require('../../events/ClusterStatusEmitter');
 const children_stopped_event = require('../../events/AllChildrenStoppedEvent');
 const child_process = require('child_process');
