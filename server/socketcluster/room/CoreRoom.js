@@ -21,14 +21,14 @@ class CoreRoom extends RoomIF {
      * @param connector_type_enum - Denotes the source of this request, currently either from HDBCore or a Clustering connector.
      * @returns {boolean}
      */
-    async evalRules(request, worker, connector_type_enum) {
+    async evalRules(request, worker, connector_type_enum, middleware_type) {
         let result = false;
         let cluster_rules_args = {};
         if(!this.decision_matrix) {
             return true;
         }
         try {
-            result = await this.decision_matrix.evalRules(request, cluster_rules_args, worker, connector_type_enum);
+            result = await this.decision_matrix.evalRules(request, cluster_rules_args, worker, connector_type_enum, middleware_type);
         } catch(err) {
             log.error('There was an error evaluating rules');
             log.error(err);

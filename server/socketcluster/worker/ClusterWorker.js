@@ -66,9 +66,11 @@ class ClusterWorker extends WorkerIF {
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_IN, this.checkNewRoom.bind(this));
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_IN, this.messagePrepMiddleware.bind(this));
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_IN, this.evalRoomPublishInMiddleware.bind(this));
-        this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_IN, this.evalRoomRules.bind(this));
+        this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_IN, this.evalRoomRules.bind(this, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN));
+
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_HANDSHAKE_SC, this.evalRoomHandshakeSCMiddleware.bind(this));
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_OUT, this.evalRoomPublishOutMiddleware.bind(this));
+        this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_OUT, this.evalRoomRules.bind(this, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_OUT));
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_SUBSCRIBE, this.checkNewRoom.bind(this));
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_SUBSCRIBE, this.evalRoomSubscribeMiddleware.bind(this));
         new SCServer(this);
@@ -220,8 +222,7 @@ class ClusterWorker extends WorkerIF {
      * @param req - The request
      * @param next - The next function that should be called if this is successful.
      */
-    // TODO: Can middleware be async?
-    evalRoomRules(req, next) {
+    evalRoomRules(req, next, middleware_type) {
         if(!req.hdb_header) {
             return next(types.ERROR_CODES.MIDDLEWARE_SWALLOW);
         }
@@ -238,7 +239,7 @@ class ClusterWorker extends WorkerIF {
             if(req.hdb_header[types.REQUEST_HEADER_ATTRIBUTE_NAMES.DATA_SOURCE]) {
                 connector_type = req.hdb_header[types.REQUEST_HEADER_ATTRIBUTE_NAMES.DATA_SOURCE];
             }
-            room.evalRules(req, this, connector_type).then(rules_result=>{
+            room.evalRules(req, this, connector_type, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN).then(rules_result=>{
                 if(!rules_result) {
                     return next(types.ERROR_CODES.WORKER_RULE_FAILURE);
                 }
