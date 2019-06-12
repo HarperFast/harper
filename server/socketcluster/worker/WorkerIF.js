@@ -65,6 +65,63 @@ class WorkerIF extends SCWorker{
     }
 
     /**
+     * Evaluate the room rules for middleware type PUBLISH_OUT
+     * @param req - The request
+     * @param next - next function to call;
+     */
+    evalRoomPublishOutRules(req, next) {
+        this.evalRoomRules(req, next, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_OUT);
+        next();
+    }
+
+    /**
+     * Evaluate the room rules for middleware type PUBLISH_IN
+     * @param req - The request
+     * @param next - next function to call;
+     */
+    evalRoomPublishInRules(req, next) {
+        this.evalRoomRules(req, next, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_OUT);
+        next();
+    }
+
+    /**
+     * Evaluate room rules via the decision matrix.  Since middleware always has the same parameter, we can't
+     * make this a middlewareIF object, as the rules generally need the worker.
+     *
+     * This should always be called at the end of the middleware chain for a connector.
+     * @param req - The request
+     * @param next - The next function that should be called if this is successful.
+     */
+    evalRoomRules(req, next, middleware_type) {
+        if(!req.hdb_header) {
+            return next(types.ERROR_CODES.MIDDLEWARE_SWALLOW);
+        }
+
+        // get the room
+        let room = this.getRoom(req.channel);
+        if(!room) {
+            return next(types.ERROR_CODES.MIDDLEWARE_ERROR);
+        }
+        // eval rules
+
+        try {
+            let connector_type = types.CONNECTOR_TYPE_ENUM.CORE;
+            if(req.hdb_header[types.REQUEST_HEADER_ATTRIBUTE_NAMES.DATA_SOURCE]) {
+                connector_type = req.hdb_header[types.REQUEST_HEADER_ATTRIBUTE_NAMES.DATA_SOURCE];
+            }
+            room.evalRules(req, this, connector_type, middleware_type).then(rules_result=>{
+                if(!rules_result) {
+                    return next(types.ERROR_CODES.WORKER_RULE_FAILURE);
+                }
+                next();
+            });
+        } catch(err) {
+            log.error(err);
+            return next(types.ERROR_CODES.WORKER_RULE_ERROR);
+        }
+    }
+
+    /**
      * Get and evaluate the middleware for PublishIn.  Will call next middleware if all middleware passes, and swallow
      * the message if it fails.
      * @param req - the request

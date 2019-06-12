@@ -19,6 +19,7 @@ class CoreRoom extends RoomIF {
      * @param request - The request to run rules against.
      * @param worker - The worker instance that needs to act on these rules.
      * @param connector_type_enum - Denotes the source of this request, currently either from HDBCore or a Clustering connector.
+     * @param middleware_type - The middleware this request is being processed in.
      * @returns {boolean}
      */
     async evalRules(request, worker, connector_type_enum, middleware_type) {
