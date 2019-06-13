@@ -6,6 +6,7 @@ const hdb_terms = require('../../../utility/hdbTerms');
 const log = require('../../../utility/logging/harper_logger');
 const RoomMessageObjects = require('./RoomMessageObjects');
 const hdb_utils = require('../../../utility/common_utils');
+const cluster_utils = require('../util/clusterUtils');
 const cluster_status_event = require('../../../events/ClusterStatusEmitter');
 
 const {inspect} = require('util');
@@ -24,6 +25,7 @@ class ClusterStatusBucket {
         this.responses_received = 1;
     }
 }
+
 
 // If we have more than 1 process, we need to get the status from the master process which has that info stored
 // in global.  We subscribe to an event that master will emit once it has gathered the data.  We want to build
@@ -49,9 +51,10 @@ class CoreRoom extends RoomIF {
         this.setTopic(new_topic_string);
     }
 
-    publishToRoom(msg, worker) {
+    publishToRoom(msg, worker, hdb_header) {
         try {
             log.info(`Called publishToRoom in CoreRoom with topic: ${this.topic}.  Not defined.`);
+            msg.hdb_header = hdb_header;
             worker.exchange.publish(this.topic, msg);
         } catch(err) {
             log.error(`Error publishing to channel ${this.topic}.`);
@@ -87,25 +90,25 @@ class CoreRoom extends RoomIF {
                     let cluster_status_response = new RoomMessageObjects.HdbCoreClusterStatusResponseMessage();
                     cluster_status_response.hdb_header = req.hdb_header;
                     // insert the status for this worker
-
+                    cluster_utils.getWorkerStatus(cluster_status_response, worker);
                     if(worker.hdb_workers.length === 1) {
-                        this.publishToRoom(cluster_status_response, worker);
+                        this.publishToRoom(cluster_status_response, worker, req.hdb_header);
                         return;
                     }
                     // Wait for cluster status event to fire then respond to client
                     let result = await Promise.race([event_promise, timeout_promise.promise]);
                     if (result === TIMEOUT_ERR_MSG) {
                         cluster_status_response.error = TIMEOUT_ERR_MSG;
-                        this.publishToRoom(cluster_status_response, worker);
+                        this.publishToRoom(cluster_status_response, worker, req.hdb_header);
                     } else {
                         status_bucket_obj.responses_received++;
                         this.addStatusResponseValues(cluster_status_response, result);
                         if (status_bucket_obj.responses_received === status_bucket_obj.num_expected_responses) {
-                            this.publishToRoom(cluster_status_response, worker);
+                            this.publishToRoom(cluster_status_response, worker, req.hdb_header);
                         }
                     }
                 } catch(err) {
-                    this.publishToRoom({"error": "There was an error getting cluster status."}, worker);
+                    this.publishToRoom({"error": "There was an error getting cluster status."}, worker, req.hdb_header);
                 }
                 break;
             }

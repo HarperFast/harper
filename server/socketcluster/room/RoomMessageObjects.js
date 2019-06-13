@@ -9,9 +9,9 @@ class WorkerStatusMessage {
       this.owning_worker_id = undefined;
       this.type = types.WORKER_ROOM_MSG_TYPE_ENUM.STATUS_RESPONSE;
       this.originator_msg_id = undefined;
-      this.outbound_connections = undefined;
-      this.inbound_connections = undefined;
-      this.bidirectional_connections = undefined;
+      this.outbound_connections = [];
+      this.inbound_connections = [];
+      this.bidirectional_connections = [];
   }
 }
 
@@ -36,9 +36,9 @@ class HdbCoreClusterStatusResponseMessage {
     constructor() {
         this.type = types.CORE_ROOM_MSG_TYPE_ENUM.CLUSTER_STATUS_RESPONSE;
         this.responding_worker_id = undefined;
-        this.outbound_connections = undefined;
-        this.inbound_connections = undefined;
-        this.bidirectional_connections = undefined;
+        this.outbound_connections = [];
+        this.inbound_connections = [];
+        this.bidirectional_connections = [];
         this.error = undefined;
     }
 }
