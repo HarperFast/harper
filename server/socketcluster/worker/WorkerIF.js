@@ -131,7 +131,7 @@ class WorkerIF extends SCWorker{
      * @param next - The next function that should be called if this is successful.
      */
     async evalRoomRules(req, next, middleware_type) {
-        if(!req.hdb_header) {
+        if(!req.hdb_header && !req.data.hdb_header) {
             return types.ERROR_CODES.MIDDLEWARE_SWALLOW;
         }
 
@@ -140,20 +140,21 @@ class WorkerIF extends SCWorker{
         if(!room) {
             return types.ERROR_CODES.MIDDLEWARE_ERROR;
         }
-        // eval rules
 
+        // eval rules
         try {
             let connector_type = types.CONNECTOR_TYPE_ENUM.CORE;
-            if(req.hdb_header[types.REQUEST_HEADER_ATTRIBUTE_NAMES.DATA_SOURCE]) {
+
+            if(req.hdb_header && req.hdb_header[types.REQUEST_HEADER_ATTRIBUTE_NAMES.DATA_SOURCE]) {
                 connector_type = req.hdb_header[types.REQUEST_HEADER_ATTRIBUTE_NAMES.DATA_SOURCE];
+            } else if(req.data.hdb_header && req.data.hdb_header[types.REQUEST_HEADER_ATTRIBUTE_NAMES.DATA_SOURCE]) {
+                connector_type = req.data.hdb_header[types.REQUEST_HEADER_ATTRIBUTE_NAMES.DATA_SOURCE];
             }
-            room.evalRules(req, this, connector_type, middleware_type).then(rules_result=>{
-                if(!rules_result) {
-                    return types.ERROR_CODES.WORKER_RULE_FAILURE;
-                }
-                //next();
-                return;
-            });
+            let rules_result = await room.evalRules(req, this, connector_type, middleware_type);
+            if(!rules_result) {
+                return types.ERROR_CODES.WORKER_RULE_FAILURE;
+            }
+            return;
         } catch(err) {
             log.error(err);
             return types.ERROR_CODES.WORKER_RULE_ERROR;

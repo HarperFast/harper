@@ -21,6 +21,7 @@ const {inspect} = require('util');
 const AssignToHdbChildWorkerRule = require('../decisionMatrix/rules/AssignToHdbChildWorkerRule');
 const WriteToTransactionLogRule = require('../decisionMatrix/rules/WriteToTransactionLogRule');
 const CallRoomMsgHandlerRule = require('../decisionMatrix/rules/CallRoomMsgHandlerRule');
+const StripHdbHeaderRule = require('../decisionMatrix/rules/StripHdbHeaderRule');
 
 /**
  *  The room factory abstracts everything needed to create a room behind the createRoom function. A room constructor
@@ -118,8 +119,8 @@ function configureStandardRoom(created_room) {
     let originator_middleware = middleware_factory.createMiddleware(types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_OUT,
         null,
         new middleware_factory.MiddlewareFactoryOptions(types.PREMADE_MIDDLEWARE_TYPES.ORIGINATOR));
-    //created_room.addMiddleware(originator_middleware, types.CONNECTOR_TYPE_ENUM.CORE);
-    //created_room.addMiddleware(originator_middleware, types.CONNECTOR_TYPE_ENUM.CLUSTER);
+    created_room.addMiddleware(originator_middleware, types.CONNECTOR_TYPE_ENUM.CORE);
+    created_room.addMiddleware(originator_middleware, types.CONNECTOR_TYPE_ENUM.CLUSTER);
 
     let msg_prep_middleware = middleware_factory.createMiddleware(types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN,
         null,
@@ -157,6 +158,10 @@ function configureStandardRoom(created_room) {
     let call_handler = new CallRoomMsgHandlerRule();
     new_decision_matrix.addRule(call_handler, types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
     new_decision_matrix.addRule(call_handler, types.CONNECTOR_TYPE_ENUM.CORE, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
+
+    let stripper = new StripHdbHeaderRule();
+    new_decision_matrix.addRule(stripper, types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_OUT);
+    new_decision_matrix.addRule(stripper, types.CONNECTOR_TYPE_ENUM.CORE, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_OUT);
 
     created_room.setDecisionMatrix(new_decision_matrix);
 }

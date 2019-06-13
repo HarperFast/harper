@@ -10,7 +10,7 @@ const terms = require('../../../../utility/hdbTerms');
 class AssignToHdbChildWorkerRule extends RuleIF {
     constructor() {
         super();
-        this.setRuleOrder(types.COMMAND_EVAL_ORDER_ENUM.VERY_LAST);
+        this.setRuleOrder(types.COMMAND_EVAL_ORDER_ENUM.LOW);
         this.type = types.RULE_TYPE_ENUM.ASSIGN_TO_HDB_WORKER;
     }
     async evaluateRule(req, args, worker) {
