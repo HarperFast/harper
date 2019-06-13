@@ -9,7 +9,7 @@ const NodeConnector = require('../connector/NodeConnector');
 const password_utility = require('../../../utility/password');
 const get_cluster_user = require('../../../utility/common_utils').getClusterUser;
 const terms = require('../../../utility/hdbTerms');
-
+const {inspect} = require('util');
 /**
  * Represents a WorkerIF implementation for socketcluster.
  */
@@ -59,6 +59,7 @@ class ClusterWorker extends WorkerIF {
 
         this.on('masterMessage', this.masterMessageHandler.bind(this));
         this.hdb_workers = [];
+        this.hdb_workers.push(this.id);
         this.hdb_users = {};
 
         this.exchange_get = promisify(this.exchange.get).bind(this.exchange);
@@ -72,7 +73,7 @@ class ClusterWorker extends WorkerIF {
 
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_HANDSHAKE_SC, this.evalRoomHandshakeSCMiddleware.bind(this));
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_OUT, this.evalRoomPublishOutMiddleware.bind(this));
-        this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_OUT, this.evalRoomPublishOutRules.bind(this));
+        //this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_OUT, this.evalRoomPublishOutRules.bind(this));
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_SUBSCRIBE, this.checkNewRoom.bind(this));
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_SUBSCRIBE, this.evalRoomSubscribeMiddleware.bind(this));
         new SCServer(this);

@@ -36,6 +36,10 @@ class HdbCoreClusterStatusResponseMessage {
     constructor() {
         this.type = types.CORE_ROOM_MSG_TYPE_ENUM.CLUSTER_STATUS_RESPONSE;
         this.responding_worker_id = undefined;
+        this.outbound_connections = undefined;
+        this.inbound_connections = undefined;
+        this.bidirectional_connections = undefined;
+        this.error = undefined;
     }
 }
 

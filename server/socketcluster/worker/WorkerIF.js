@@ -51,12 +51,6 @@ class WorkerIF extends SCWorker{
             throw new Error(`Room: ${roomIF_object.topic} already exists.`);
         }
         this.rooms[roomIF_object.topic] = roomIF_object;
-
-        // subscribe and watch topic
-        this.exchange.subscribe(roomIF_object.topic);
-        if (roomIF_object.inboundMsgHandler !== undefined && roomIF_object.inboundMsgHandler !== {}) {
-            this.exchange.watch(roomIF_object.topic, this.getRoom(roomIF_object.topic).inboundMsgHandler.bind(this));
-        }
         log.info(`Worker: ${this.id} subscribed to topic: ${roomIF_object.topic}`);
     }
 
@@ -116,7 +110,7 @@ class WorkerIF extends SCWorker{
      * @param next - next function to call;
      */
     evalRoomPublishInRules(req, next) {
-        this.evalRoomRules(req, next, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_OUT)
+        this.evalRoomRules(req, next, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN)
             .then((result) => {
                 if(result) {
                     return next(result);
@@ -157,7 +151,8 @@ class WorkerIF extends SCWorker{
                 if(!rules_result) {
                     return types.ERROR_CODES.WORKER_RULE_FAILURE;
                 }
-                next();
+                //next();
+                return;
             });
         } catch(err) {
             log.error(err);

@@ -38,6 +38,7 @@ function createRoom(topicName) {
         case types.ROOM_TYPE.WORKER_ROOM: {
             created_room = new WorkerRoom(topicName);
             configureStandardRoom(created_room);
+            configureSingleFunctionRoom(created_room);
             break;
         }
         case hdb_terms.INTERNAL_SC_CHANNELS.HDB_USERS: {
@@ -117,8 +118,8 @@ function configureStandardRoom(created_room) {
     let originator_middleware = middleware_factory.createMiddleware(types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_OUT,
         null,
         new middleware_factory.MiddlewareFactoryOptions(types.PREMADE_MIDDLEWARE_TYPES.ORIGINATOR));
-    created_room.addMiddleware(originator_middleware, types.CONNECTOR_TYPE_ENUM.CORE);
-    created_room.addMiddleware(out_auth_middleware, types.CONNECTOR_TYPE_ENUM.CLUSTER);
+    //created_room.addMiddleware(originator_middleware, types.CONNECTOR_TYPE_ENUM.CORE);
+    //created_room.addMiddleware(originator_middleware, types.CONNECTOR_TYPE_ENUM.CLUSTER);
 
     let msg_prep_middleware = middleware_factory.createMiddleware(types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN,
         null,
