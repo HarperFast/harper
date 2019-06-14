@@ -11,7 +11,6 @@ class WorkerStatusMessage {
       this.originator_msg_id = undefined;
       this.outbound_connections = [];
       this.inbound_connections = [];
-      this.bidirectional_connections = [];
   }
 }
 
@@ -38,7 +37,6 @@ class HdbCoreClusterStatusResponseMessage {
         this.responding_worker_id = undefined;
         this.outbound_connections = [];
         this.inbound_connections = [];
-        this.bidirectional_connections = [];
         this.error = undefined;
     }
 }
