@@ -108,7 +108,7 @@ class CoreRoom extends RoomIF {
                         }
                     }
                 } catch(err) {
-                    this.publishToRoom({"error": "There was an error getting cluster status."}, worker, req.hdb_header);
+                    this.publishToRoom({"error": "There was an error getting cluster status.", type: hdb_terms.CLUSTERING_MESSAGE_TYPES.CLUSTER_STATUS_RESPONSE}, worker, req.hdb_header);
                 }
                 break;
             }
