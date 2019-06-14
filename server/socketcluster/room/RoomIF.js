@@ -157,8 +157,17 @@ class RoomIF {
         return result;
     }
 
-    async publishToRoom(msg) {
-        throw new Error('Not Implemented');
+    async publishToRoom(msg, worker, existing_hdb_header) {
+        if(!msg.hdb_header) {
+            msg.hdb_header = {};
+            msg.hdb_header['worker_originator_id'] = worker.id;
+            if(existing_hdb_header) {
+                let header_keys = Object.keys(existing_hdb_header);
+                for(let i=0; i<header_keys.length; ++i) {
+                    msg.hdb_header[header_keys[i]] = existing_hdb_header[header_keys[i]];
+                }
+            }
+        }
     }
 
     async inboundMsgHandler(input, worker, response) {

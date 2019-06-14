@@ -13,6 +13,7 @@ const {inspect} = require('util');
 
 const STATUS_TIMEOUT_MS = 4000000;
 const TIMEOUT_ERR_MSG = 'Timeout trying to get cluster status.';
+let self = undefined;
 /**
  * This is a standard room that represents a socketcluster channel, as well as the middleware for that channel, and
  * worker rules for that channel.  Rooms should never be instantiated directly, instead the room factory should be used.
@@ -23,6 +24,7 @@ class ClusterStatusBucket {
         this.orig_request_id = request_id;
         this.num_expected_responses = num_expected_responses;
         this.responses_received = 1;
+        self = this;
     }
 }
 
@@ -51,13 +53,13 @@ class CoreRoom extends RoomIF {
         this.setTopic(new_topic_string);
     }
 
-    publishToRoom(msg, worker, hdb_header) {
+    publishToRoom(msg, worker, existing_hdb_header) {
+        self.super(msg, worker, existing_hdb_header);
         try {
-            log.info(`Called publishToRoom in CoreRoom with topic: ${this.topic}.  Not defined.`);
-            msg.hdb_header = hdb_header;
-            worker.exchange.publish(this.topic, msg);
+            log.info(`Called publishToRoom in CoreRoom with topic: ${self.topic}.  Not defined.`);
+            worker.exchange.publish(self.topic, msg);
         } catch(err) {
-            log.error(`Error publishing to channel ${this.topic}.`);
+            log.error(`Error publishing to channel ${self.topic}.`);
             log.error(err);
             return;
         }
@@ -70,12 +72,8 @@ class CoreRoom extends RoomIF {
         if(!req) {
             return;
         }
-        if(!req.data || !req.data.type) {
-            log.info(`Invalid request received from HDB child.`);
-            log.trace(inspect(req));
-            return false;
-        }
-        let msg_type = req.data.type;
+
+        let msg_type = req.type;
         if(!req) {
             log.info('Invalid request sent to core room inboundMsgHandler.');
         }
@@ -98,23 +96,23 @@ class CoreRoom extends RoomIF {
                     // insert the status for this worker
                     cluster_utils.getWorkerStatus(cluster_status_response, worker);
                     if(worker.hdb_workers.length === 1) {
-                        this.publishToRoom(cluster_status_response, worker, req.hdb_header);
+                        self.publishToRoom(cluster_status_response, worker, req.hdb_header);
                         return;
                     }
                     // Wait for cluster status event to fire then respond to client
                     let result = await Promise.race([event_promise, timeout_promise.promise]);
                     if (result === TIMEOUT_ERR_MSG) {
                         cluster_status_response.error = TIMEOUT_ERR_MSG;
-                        this.publishToRoom(cluster_status_response, worker, req.hdb_header);
+                        self.publishToRoom(cluster_status_response, worker, req.hdb_header);
                     } else {
                         status_bucket_obj.responses_received++;
-                        this.addStatusResponseValues(cluster_status_response, result);
+                        self.addStatusResponseValues(cluster_status_response, result);
                         if (status_bucket_obj.responses_received === status_bucket_obj.num_expected_responses) {
-                            this.publishToRoom(cluster_status_response, worker, req.hdb_header);
+                            self.publishToRoom(cluster_status_response, worker, req.hdb_header);
                         }
                     }
                 } catch(err) {
-                    this.publishToRoom({"error": "There was an error getting cluster status.", type: hdb_terms.CLUSTERING_MESSAGE_TYPES.CLUSTER_STATUS_RESPONSE}, worker, req.hdb_header);
+                    self.publishToRoom({"error": "There was an error getting cluster status.", type: hdb_terms.CLUSTERING_MESSAGE_TYPES.CLUSTER_STATUS_RESPONSE}, worker, req.hdb_header);
                 }
                 break;
             }

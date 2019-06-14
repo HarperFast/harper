@@ -36,7 +36,7 @@ const StripHdbHeaderRule = require('../decisionMatrix/rules/StripHdbHeaderRule')
 function createRoom(topicName) {
     let created_room = null;
     switch(topicName) {
-        case types.ROOM_TYPE.WORKER_ROOM: {
+        case hdb_terms.INTERNAL_SC_CHANNELS.WORKER_ROOM: {
             created_room = new WorkerRoom(topicName);
             configureStandardRoom(created_room);
             configureSingleFunctionRoom(created_room);

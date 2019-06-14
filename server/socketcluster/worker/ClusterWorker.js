@@ -84,6 +84,7 @@ class ClusterWorker extends WorkerIF {
 
         this.ensureRoomExists(terms.INTERNAL_SC_CHANNELS.HDB_USERS);
         this.ensureRoomExists(terms.INTERNAL_SC_CHANNELS.HDB_WORKERS);
+        this.ensureRoomExists(terms.INTERNAL_SC_CHANNELS.WORKER_ROOM);
         if(this.isLeader){
             log.trace('Calling processArgs');
             this.processArgs().then(hdb_data=>{

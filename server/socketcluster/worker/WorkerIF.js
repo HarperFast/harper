@@ -38,6 +38,10 @@ class WorkerIF extends SCWorker{
         return created_room;
     }
 
+    /**
+     * Subscribe and watch the specified topic.
+     * @param topic
+     */
     addSubscription(topic) {
         try {
             if (!topic) {
