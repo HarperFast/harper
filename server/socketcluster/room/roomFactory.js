@@ -88,11 +88,11 @@ function createRoom(topicName) {
  */
 function configureSingleFunctionRoom(created_room) {
     // Remove the AssignToHdbChildWorker rule.
-    created_room.decision_matrix.removeRuleByType(types.RULE_TYPE_ENUM.ASSIGN_TO_HDB_WORKER, types.CONNECTOR_TYPE_ENUM.CORE);
-    created_room.decision_matrix.removeRuleByType(types.RULE_TYPE_ENUM.ASSIGN_TO_HDB_WORKER, types.CONNECTOR_TYPE_ENUM.CLUSTER);
+    created_room.decision_matrix.removeRuleByType(types.RULE_TYPE_ENUM.ASSIGN_TO_HDB_WORKER, types.CONNECTOR_TYPE_ENUM.CORE, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
+    created_room.decision_matrix.removeRuleByType(types.RULE_TYPE_ENUM.ASSIGN_TO_HDB_WORKER, types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
 
-    created_room.decision_matrix.removeRuleByType(types.RULE_TYPE_ENUM.WRITE_TO_TRANSACTION_LOG, types.CONNECTOR_TYPE_ENUM.CORE);
-    created_room.decision_matrix.removeRuleByType(types.RULE_TYPE_ENUM.WRITE_TO_TRANSACTION_LOG, types.CONNECTOR_TYPE_ENUM.CLUSTER);
+    created_room.decision_matrix.removeRuleByType(types.RULE_TYPE_ENUM.WRITE_TO_TRANSACTION_LOG, types.CONNECTOR_TYPE_ENUM.CORE, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
+    created_room.decision_matrix.removeRuleByType(types.RULE_TYPE_ENUM.WRITE_TO_TRANSACTION_LOG, types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
 }
 
 /**
@@ -155,9 +155,9 @@ function configureStandardRoom(created_room) {
     new_decision_matrix.addRule(write_transaction_rule, types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
     new_decision_matrix.addRule(write_transaction_rule, types.CONNECTOR_TYPE_ENUM.CORE, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
 
-    let call_handler = new CallRoomMsgHandlerRule();
+    /*let call_handler = new CallRoomMsgHandlerRule();
     new_decision_matrix.addRule(call_handler, types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
-    new_decision_matrix.addRule(call_handler, types.CONNECTOR_TYPE_ENUM.CORE, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
+    new_decision_matrix.addRule(call_handler, types.CONNECTOR_TYPE_ENUM.CORE, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);*/
 
     let stripper = new StripHdbHeaderRule();
     new_decision_matrix.addRule(stripper, types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_OUT);

@@ -64,6 +64,12 @@ class CoreRoom extends RoomIF {
     }
 
     async inboundMsgHandler(req, worker, response) {
+        if(!worker) {
+            worker = this;
+        }
+        if(!req) {
+            return;
+        }
         if(!req.data || !req.data.type) {
             log.info(`Invalid request received from HDB child.`);
             log.trace(inspect(req));

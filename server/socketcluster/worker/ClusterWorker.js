@@ -10,6 +10,9 @@ const password_utility = require('../../../utility/password');
 const get_cluster_user = require('../../../utility/common_utils').getClusterUser;
 const terms = require('../../../utility/hdbTerms');
 const {inspect} = require('util');
+
+let worker_subscriptions = {};
+
 /**
  * Represents a WorkerIF implementation for socketcluster.
  */
@@ -32,22 +35,24 @@ class ClusterWorker extends WorkerIF {
                 log.error('Got an invalid request.');
                 return next('Got an invalid request.');
             }
-            if(!this.getRoom(req.channel)) {
-                // TODO - we will need a way to distinguish from the req if this room is
-                // for a core connection or a cluster connection.
-                log.debug('Creating room: ' + req.channel);
-                let newRoom = this.createRoom(req.channel);
-                if(newRoom) {
-                    this.addRoom(newRoom);
-                }
-                next();
-            } else {
-                next();
-            }
+            this.ensureRoomExists(req.channel);
+            next();
         } catch(err) {
             log.error(`got an error checking for rooms.`);
             log.error(err);
             return next(err);
+        }
+    }
+
+    ensureRoomExists(channel) {
+        if(!this.getRoom(channel)) {
+            // TODO - we will need a way to distinguish from the req if this room is
+            // for a core connection or a cluster connection.
+            log.debug(`Creating room:  ${channel}`);
+            let newRoom = this.createRoom(channel);
+            if (newRoom) {
+                this.addRoom(newRoom);
+            }
         }
     }
 
@@ -59,7 +64,6 @@ class ClusterWorker extends WorkerIF {
 
         this.on('masterMessage', this.masterMessageHandler.bind(this));
         this.hdb_workers = [];
-        this.hdb_workers.push(this.id);
         this.hdb_users = {};
 
         this.exchange_get = promisify(this.exchange.get).bind(this.exchange);
@@ -78,6 +82,8 @@ class ClusterWorker extends WorkerIF {
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_SUBSCRIBE, this.evalRoomSubscribeMiddleware.bind(this));
         new SCServer(this);
 
+        this.ensureRoomExists(terms.INTERNAL_SC_CHANNELS.HDB_USERS);
+        this.ensureRoomExists(terms.INTERNAL_SC_CHANNELS.HDB_WORKERS);
         if(this.isLeader){
             log.trace('Calling processArgs');
             this.processArgs().then(hdb_data=>{
@@ -85,6 +91,9 @@ class ClusterWorker extends WorkerIF {
                     this.node_connector = new NodeConnector(hdb_data.nodes, hdb_data.cluster_user, this);
                 }
             });
+            this.ensureRoomExists(terms.INTERNAL_SC_CHANNELS.ADD_USER);
+            this.ensureRoomExists(terms.INTERNAL_SC_CHANNELS.ALTER_USER);
+            this.ensureRoomExists(terms.INTERNAL_SC_CHANNELS.DROP_USER);
         }
     }
 

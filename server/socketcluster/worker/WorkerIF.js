@@ -5,6 +5,7 @@ const types = require('../types');
 const log = require('../../../utility/logging/harper_logger');
 const terms = require('../../../utility/hdbTerms');
 const room_factory = require('../room/roomFactory');
+const WorkerObjects = require('./WorkerObjects');
 
 /**
  * This is a super class that is used to represent some kind of worker clustering will use for message passing.  Since Javascript doesn't have enforceable interfaces,
@@ -14,7 +15,7 @@ class WorkerIF extends SCWorker{
     constructor() {
         super();
         this.rooms = {};
-        this.subscriptions = [];
+        this.subscriptions = {};
     }
 
     /**
@@ -37,6 +38,36 @@ class WorkerIF extends SCWorker{
         return created_room;
     }
 
+    addSubscription(topic) {
+        try {
+            if (!topic) {
+                log.info('Got invalid subscription handler in addSubscription.');
+                return;
+            }
+            let sub_keys = Object.keys(this.subscriptions);
+            for (let i = 0; i < sub_keys.length; i++) {
+                let sub_topic = this.subscriptions[sub_keys[i]];
+                if (sub_topic.name === topic) {
+                    log.info(`subscription ${topic} has already been added`);
+                    return;
+                }
+            }
+            this.subscriptions[topic] = new WorkerObjects.SubscriptionDefinition(topic, true, true);
+            this.exchange.subscribe(topic);
+            let room = this.getRoom(topic);
+            if(!room) {
+                log.info('No room found.');
+                return;
+             }
+            this.exchange.watch(topic, this.rooms[topic].inboundMsgHandler.bind(this));
+            log.info(`Worker: ${this.pid} subscribed to topic: ${topic}`);
+        } catch(err) {
+            log.error(`Got an error subscribing to topic: ${topic}`);
+            log.error(err);
+        }
+    }
+
+
     /**
      * Add a room to a worker.  Throws an exception if a room already exists.
      * @param roomIF_object - a RoomIF subclass.
@@ -51,7 +82,7 @@ class WorkerIF extends SCWorker{
             throw new Error(`Room: ${roomIF_object.topic} already exists.`);
         }
         this.rooms[roomIF_object.topic] = roomIF_object;
-        log.info(`Worker: ${this.id} subscribed to topic: ${roomIF_object.topic}`);
+        this.addSubscription(roomIF_object.topic);
     }
 
     /**

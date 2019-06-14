@@ -21,8 +21,14 @@ class DropUserRoom extends RoomIF {
     }
 
     async inboundMsgHandler(req, worker, response) {
-        let user = req.data;
         log.trace('DropUser handler');
+        if(!worker) {
+            worker = this;
+        }
+        if(!req) {
+            return;
+        }
+        let user = req.data;
         try {
             if (worker.hdb_users[user.username] !== undefined) {
                 delete worker.hdb_users[user.username];

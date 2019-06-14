@@ -21,6 +21,12 @@ class AddUserRoom extends RoomIF {
     }
 
     async inboundMsgHandler(req, worker, response) {
+        if(!worker) {
+            worker = this;
+        }
+        if(!req) {
+            return;
+        }
         let user = req.data;
         log.trace('AlterUser handler');
         try {

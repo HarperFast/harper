@@ -50,6 +50,12 @@ class WorkerRoom extends RoomIF {
     }
 
     inboundMsgHandler(req, worker, response) {
+        if(!worker) {
+            worker = this;
+        }
+        if(!req) {
+            return;
+        }
         let requesting_channel = req.channel;
         try {
             switch(req.data.type) {
@@ -72,7 +78,7 @@ class WorkerRoom extends RoomIF {
                 }
             }
 
-        }catch(e){
+        } catch(e) {
             log.error(e);
         }
     }
