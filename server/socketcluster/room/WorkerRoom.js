@@ -6,11 +6,14 @@ const hdb_terms = require('../../../utility/hdbTerms');
 const log = require('../../../utility/logging/harper_logger');
 const {inspect} = require('util');
 const RoomMessageObjects = require('./RoomMessageObjects');
+const cluster_status_event = require('../../../events/ClusterStatusEmitter');
 
 /**
  * This is a standard room that represents a socketcluster channel, as well as the middleware for that channel, and
  * worker rules for that channel.  Rooms should never be instantiated directly, instead the room factory should be used.
  */
+
+const STATUS_BUCKET_ATTRIBUTE_NAME = 'status_bucket';
 
 // 'this' is typically stomped by the worker when invoked, so we store 'this' to make this object accessible.
 let self = undefined;
@@ -43,10 +46,12 @@ class WorkerRoom extends RoomIF {
             case types.CORE_ROOM_MSG_TYPE_ENUM.CLUSTER_STATUS_RESPONSE: {
                 built_msg = new RoomMessageObjects.GetClusterStatusMessage();
                 built_msg.worker_request_owner_id = this.id;
+                built_msg.originator_msg_id = msg.request_id;
                 break;
             }
             case types.WORKER_ROOM_MSG_TYPE_ENUM.STATUS_RESPONSE: {
                 built_msg = new RoomMessageObjects.WorkerStatusMessage();
+                built_msg.originator_msg_id = msg.request_id;
                 built_msg.owning_worker_id = this.id;
                 built_msg.inbound_connections = ['Im a connection'].
                 break;
@@ -64,7 +69,7 @@ class WorkerRoom extends RoomIF {
         }
         let requesting_channel = req.channel;
         try {
-            switch(req.type) {
+            switch(req.data.type) {
                 case types.WORKER_ROOM_MSG_TYPE_ENUM.STATUS: {
                     // 'this' worker sent this message, ignore it.
                     if(req.worker_request_owner === this.id) {
@@ -84,6 +89,25 @@ class WorkerRoom extends RoomIF {
                     //Collate responses
 
                     //Respond to HDBChild.
+                    break;
+                }
+                case types.WORKER_ROOM_MSG_TYPE_ENUM.STATUS_RESPONSE: {
+                    if(!req || !req.data) {
+                        log.trace(`Got an invalid CLUSTER_STATUS_RESPONSE message.`);
+                    }
+                    //let stored_status_bucket = self.cluster_status_request_bucket[req.data.cluster_staatus_request_id];
+                    //if(!stored_status_bucket) {
+                    //    log.error('could not find existing status container.');
+                    //}
+                    //req.data[STATUS_BUCKET_ATTRIBUTE_NAME] = stored_status_bucket;
+                    cluster_status_event.clusterEmitter.emit(cluster_status_event.EVENT_NAME, req.data);
+                    break;
+                }
+                case types.CORE_ROOM_MSG_TYPE_ENUM.CLUSTER_STATUS_RESPONSE: {
+                    if(!req || !req.data) {
+                        log.trace(`Got an invalid CLUSTER_STATUS_RESPONSE message.`);
+                    }
+                    cluster_status_event.clusterEmitter.emit(cluster_status_event.EVENT_NAME, req.data);
                     break;
                 }
             }

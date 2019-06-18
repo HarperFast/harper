@@ -78,7 +78,7 @@ class SCServer{
             try {
                 this.worker.exchange_set([terms.INTERNAL_SC_CHANNELS.HDB_WORKERS, socket.id], 1).then(data => {
                     this.worker.exchange_get(terms.INTERNAL_SC_CHANNELS.HDB_WORKERS).then(data => {
-                        this.worker.exchange.publish(terms.INTERNAL_SC_CHANNELS.HDB_WORKERS, Object.keys(data));
+                        this.worker.exchange.publish(terms.INTERNAL_SC_CHANNELS.HDB_WORKERS, {data: Object.keys(data)});
                     });
                 });
             } catch(e){
