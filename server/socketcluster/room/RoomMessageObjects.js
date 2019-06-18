@@ -28,6 +28,7 @@ class HdbCoreClusterStatusRequestMessage {
         this.type = types.CORE_ROOM_MSG_TYPE_ENUM.GET_CLUSTER_STATUS;
         this.requesting_hdb_worker_id = undefined;
         this.requestor_channel = undefined;
+        this.hdb_header = {};
     }
 }
 

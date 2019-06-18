@@ -24,6 +24,7 @@ class RequestDataValidMiddleware extends MiddlewareIF {
             log.debug('Passed request data valid middleware');
         };
         super(middleware_type_enum, eval_function);
+        this.type = types.PREMADE_MIDDLEWARE_TYPES.REQUEST_DATA_VALID;
     }
 }
 

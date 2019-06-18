@@ -31,6 +31,7 @@ class CallRoomMsgHandlerRule extends RuleIF {
                 await room.inboundMsgHandler(req, worker);
             }
         } catch(err) {
+            log.trace('Failed call room msg handler worker rule');
             log.error(err);
             return false;
         }

@@ -24,7 +24,6 @@ class ClusterStatusBucket {
         this.orig_request_id = request_id;
         this.num_expected_responses = num_expected_responses;
         this.responses_received = 1;
-        self = this;
     }
 }
 
@@ -51,10 +50,12 @@ class CoreRoom extends RoomIF {
     constructor(new_topic_string) {
         super();
         this.setTopic(new_topic_string);
+        self = this;
     }
 
     publishToRoom(msg, worker, existing_hdb_header) {
-        self.super(msg, worker, existing_hdb_header);
+        super.publishToRoom(msg, worker, existing_hdb_header);
+        //super.publishToRoom(msg, worker, existing_hdb_header);
         try {
             log.info(`Called publishToRoom in CoreRoom with topic: ${self.topic}.  Not defined.`);
             worker.exchange.publish(self.topic, msg);
@@ -88,7 +89,9 @@ class CoreRoom extends RoomIF {
                     get_cluster_status_msg.requestor_channel = req.channel;
                     get_cluster_status_msg.worker_request_owner = worker.id;
                     get_cluster_status_msg.hdb_header = req.hdb_header;
-                    worker.exchange.publish(hdb_terms.INTERNAL_SC_CHANNELS.WORKER_ROOM, get_cluster_status_msg);
+                    if(worker.hdb_workers.length > 1) {
+                        worker.exchange.publish(hdb_terms.INTERNAL_SC_CHANNELS.WORKER_ROOM, get_cluster_status_msg);
+                    }
 
                     let status_bucket_obj = new ClusterStatusBucket(req.data.id, worker.hdb_workers.length);
                     let cluster_status_response = new RoomMessageObjects.HdbCoreClusterStatusResponseMessage();

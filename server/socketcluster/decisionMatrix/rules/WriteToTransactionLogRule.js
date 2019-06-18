@@ -69,6 +69,7 @@ class WriteToTransactionLogRule extends RuleIF {
                 this.pending_transaction_stream.write(transaction_csv);
             }
         } catch(err) {
+            log.trace('failed write to transaction log rule');
             log.error(err);
             return false;
         }

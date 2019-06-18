@@ -21,7 +21,7 @@ class AddUserRoom extends RoomIF {
     }
 
     async publishToRoom(msg, worker, existing_hdb_header) {
-        self.super(msg, worker, existing_hdb_header);
+        super.publishToRoom(msg, worker, existing_hdb_header);
     }
 
     async inboundMsgHandler(req, worker, response) {

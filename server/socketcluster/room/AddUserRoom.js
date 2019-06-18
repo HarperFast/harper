@@ -21,7 +21,7 @@ class AddUserRoom extends RoomIF {
     }
 
     async publishToRoom(msg, worker, existing_hdb_header) {
-        self.super(msg, worker, existing_hdb_header);
+        super.publishToRoom(msg, worker, existing_hdb_header);
     }
 
     async inboundMsgHandler(req, worker) {
@@ -40,7 +40,7 @@ class AddUserRoom extends RoomIF {
                 let set_result = await worker.exchange_set(hdb_terms.INTERNAL_SC_CHANNELS.HDB_USERS, worker.hdb_users);
                 worker.exchange.publish(hdb_terms.INTERNAL_SC_CHANNELS.HDB_USERS, worker.hdb_users);
             }
-        }catch(e){
+        }catch(e) {
             log.error(e);
         }
     }

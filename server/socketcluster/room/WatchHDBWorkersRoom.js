@@ -18,8 +18,8 @@ class WatchHDBWorkersRoom extends RoomIF {
         self = this;
     }
 
-    publishToRoom(msg) {
-
+    publishToRoom(msg, worker, existing_hdb_header) {
+        super.publishToRoom(msg, worker, existing_hdb_header);
     }
 
     inboundMsgHandler(req, worker, response) {

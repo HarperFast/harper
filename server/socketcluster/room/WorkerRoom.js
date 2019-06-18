@@ -23,7 +23,7 @@ class WorkerRoom extends RoomIF {
     }
 
     publishToRoom(msg, worker, existing_hdb_header) {
-        self.super(msg, worker, existing_hdb_header);
+        super.publishToRoom(msg, worker, existing_hdb_header);
         worker.exchange.publish(hdb_terms.INTERNAL_SC_CHANNELS.WORKER_ROOM, msg);
     }
 

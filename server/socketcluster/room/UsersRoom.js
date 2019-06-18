@@ -19,7 +19,7 @@ class UsersRoom extends RoomIF {
     }
 
     publishToRoom(msg, worker, existing_hdb_header) {
-        self.super(msg, worker, existing_hdb_header);
+        super.publishToRoom(msg, worker, existing_hdb_header);
     }
 
     inboundMsgHandler(req, worker, response) {

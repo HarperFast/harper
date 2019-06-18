@@ -25,6 +25,7 @@ class OriginatorCheckMiddleware extends MiddlewareIF {
             return types.ERROR_CODES.MIDDLEWARE_SWALLOW;
         };
         super(middleware_type_enum, eval_function);
+        this.type = types.PREMADE_MIDDLEWARE_TYPES.ORIGINATOR;
     }
 }
 

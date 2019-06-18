@@ -27,7 +27,7 @@ class AssignToHdbChildWorkerRule extends RuleIF {
                 req.data.table = target[1];
             }
             if(!worker.hdb_workers || worker.hdb_workers.length === 0) {
-                log.error('No hdbChild workers are stored. Cant send this off');
+                log.info('No hdbChild workers are stored. Cant send this off');
                 return false;
             }
             let rand = Math.floor(Math.random() * worker.hdb_workers.length);
@@ -35,6 +35,7 @@ class AssignToHdbChildWorkerRule extends RuleIF {
 
             worker.exchange.publish(random_worker, req.data);
         } catch(err) {
+            log.trace('Failed Assign to Hdb Child worker rule');
             log.error(err);
             return false;
         }

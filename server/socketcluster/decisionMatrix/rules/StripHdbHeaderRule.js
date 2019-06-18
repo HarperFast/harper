@@ -20,6 +20,7 @@ class StripHdbHeaderRule extends RuleIF {
             delete req[types.HDB_HEADER_NAME];
             delete req.data[types.HDB_HEADER_NAME];
         } catch(err) {
+            log.trace('failed strip hdb header handler rule');
             log.error(err);
             return false;
         }

@@ -57,6 +57,7 @@ class RoomIF {
                     log.info('There is no function attached to this middleware.');
                     continue;
                 }
+                let temp = middleware_to_eval[i];
                 let result = middleware_to_eval[i].eval_function(req, next);
                 // a defined result means there was a problem in the middleware.
                 if (result) {
@@ -130,8 +131,19 @@ class RoomIF {
      * @param enum_middleware_type - The type of middleware to remove
      * @param connector_type_enum - The data source the middleware represents.
      */
-    removeMiddleware(enum_middleware_type, connector_type_enum) {
-        throw new Error('Not Implemented');
+    removeMiddleware(enum_middleware_type, premade_middleware_type_enum, connector_type_enum) {
+        try {
+            if(enum_middleware_type) {
+                if(connector_type_enum === types.CONNECTOR_TYPE_ENUM.CORE) {
+                    this.core_middleware[enum_middleware_type].removeCommandsByType(premade_middleware_type_enum);
+                } else {
+                    this.connector_middleware[enum_middleware_type].removeCommandsByType(premade_middleware_type_enum);
+                }
+            }
+        } catch(err) {
+            log.error('There was an error adding middleware');
+            log.error(err);
+        }
     }
 
     /**

@@ -40,6 +40,7 @@ function createRoom(topicName) {
             created_room = new WorkerRoom(topicName);
             configureStandardRoom(created_room);
             configureSingleFunctionRoom(created_room);
+            configureWorkerRoom(created_room);
             break;
         }
         case hdb_terms.INTERNAL_SC_CHANNELS.HDB_USERS: {
@@ -93,6 +94,19 @@ function configureSingleFunctionRoom(created_room) {
 
     created_room.decision_matrix.removeRuleByType(types.RULE_TYPE_ENUM.WRITE_TO_TRANSACTION_LOG, types.CONNECTOR_TYPE_ENUM.CORE, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
     created_room.decision_matrix.removeRuleByType(types.RULE_TYPE_ENUM.WRITE_TO_TRANSACTION_LOG, types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
+}
+
+/**
+ * Meant to be called after configureStandardRoom, this will configure a room that will be used to handle a single type of
+ * message (i.e. addUser).  This removes the transaction rule and the send to HDB worker rule.
+ * @param created_room
+ */
+function configureWorkerRoom(created_room) {
+    // Remove the AssignToHdbChildWorker rule.
+    created_room.removeMiddleware(types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_OUT, types.PREMADE_MIDDLEWARE_TYPES.ORIGINATOR, types.CONNECTOR_TYPE_ENUM.CORE);
+    created_room.removeMiddleware(types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_OUT, types.PREMADE_MIDDLEWARE_TYPES.ORIGINATOR, types.CONNECTOR_TYPE_ENUM.CLUSTER);
+    //created_room.decision_matrix.removeRuleByType(types.RULE_TYPE_ENUM., types.CONNECTOR_TYPE_ENUM.CORE, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_OUT);
+    //created_room.decision_matrix.removeRuleByType(types.RULE_TYPE_ENUM.ASSIGN_TO_HDB_WORKER, types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_OUT);
 }
 
 /**

@@ -127,14 +127,19 @@ class WorkerIF extends SCWorker{
      * @param next - next function to call;
      */
     evalRoomPublishOutRules(req, next) {
+        log.trace(`****evaluating room publish out rules****`);
         this.evalRoomRules(req, next, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_OUT)
             .then((result) => {
                 if(result) {
+                    log.trace(`****failed room publish out rules****`);
                     return next(result);
                 }
+                log.trace(`****pass room publish out rules****`);
                 return next();
             })
             .catch((err) => {
+                log.trace(`****exception in room publish out rules****`);
+                log.info(err);
                 return next(types.ERROR_CODES.MIDDLEWARE_ERROR);
             });
     }
@@ -145,14 +150,19 @@ class WorkerIF extends SCWorker{
      * @param next - next function to call;
      */
     evalRoomPublishInRules(req, next) {
+        log.trace(`****evaluating room publish in rules****`);
         this.evalRoomRules(req, next, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN)
             .then((result) => {
                 if(result) {
+                    log.trace(`****failed room publish in rules****`);
                     return next(result);
                 }
+                log.trace(`****pass room publish in rules****`);
                 return next();
             })
             .catch((err) => {
+                log.trace(`****exception in room publish in rules****`);
+                log.info(err);
                 return next(types.ERROR_CODES.MIDDLEWARE_ERROR);
             });
     }
@@ -167,12 +177,14 @@ class WorkerIF extends SCWorker{
      */
     async evalRoomRules(req, next, middleware_type) {
         if(!req.hdb_header && !req.data.hdb_header) {
+            log.trace('failed hdb_header check');
             return types.ERROR_CODES.MIDDLEWARE_SWALLOW;
         }
 
         // get the room
         let room = this.getRoom(req.channel);
         if(!room) {
+            log.trace('failed rules room check');
             return types.ERROR_CODES.MIDDLEWARE_ERROR;
         }
 
@@ -204,13 +216,15 @@ class WorkerIF extends SCWorker{
      * @returns {*}
      */
     evalRoomPublishInMiddleware(req, next) {
-        log.trace(`evaluating room publish in middleware`);
+        log.trace(`____evaluating room publish in middleware____`);
         let result = this.evalRoomMiddleware(req, next, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
         if(!result) {
+            log.trace(`____passed all publish in middleware____`);
             return next();
         }
         // TODO: There was a problem in the middleware, parse the returned ERROR_CODE and log appropriately.
         log.info(`There was a failure in middleware.`);
+        log.trace(`____finished evaluating room publish in middleware____`);
         return next(`There was a middleware failure. ${result}`);
     }
 
@@ -222,11 +236,13 @@ class WorkerIF extends SCWorker{
      * @returns {*}
      */
     evalRoomPublishOutMiddleware(req, next) {
-        log.trace(`evaluating room publish out middleware`);
+        log.trace(`____evaluating room publish out middleware____`);
         let result = this.evalRoomMiddleware(req, next, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_OUT);
         if(!result) {
+            log.trace(`____passed all publish out middleware____`);
             return next();
         }
+        log.trace(`____finished evaluating room publish out middleware____`);
         // There was a problem in the middleware, parse the returned ERROR_CODE and log appropriately.
         log.info(`There was a failure in middleware.`);
         return next(`There was a middleware failure. ${result}`);
