@@ -73,7 +73,8 @@ const WORKER_ROOM_MSG_TYPE_ENUM = {
 // Message types that will flow through the HDB Child and Cluster Worker room.
 const CORE_ROOM_MSG_TYPE_ENUM = {
     GET_CLUSTER_STATUS: 'GET_CLUSTER_STATUS',
-    CLUSTER_STATUS_RESPONSE: 'CLUSTER_STATUS_RESPONSE'
+    CLUSTER_STATUS_RESPONSE: 'CLUSTER_STATUS_RESPONSE',
+    ERROR_RESPONSE: 'ERROR'
 };
 
 const HDB_HEADER_NAME = 'hdb_header';

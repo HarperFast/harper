@@ -45,17 +45,19 @@ class WorkerRoom extends RoomIF {
                 // that will be sent to an HDB child
             case types.CORE_ROOM_MSG_TYPE_ENUM.CLUSTER_STATUS_RESPONSE: {
                 built_msg = new RoomMessageObjects.GetClusterStatusMessage();
-                built_msg.worker_request_owner_id = this.id;
-                built_msg.originator_msg_id = msg.request_id;
+                built_msg.data.worker_request_owner_id = this.id;
+                built_msg.data.originator_msg_id = msg.request_id;
                 break;
             }
             case types.WORKER_ROOM_MSG_TYPE_ENUM.STATUS_RESPONSE: {
                 built_msg = new RoomMessageObjects.WorkerStatusMessage();
-                built_msg.originator_msg_id = msg.request_id;
-                built_msg.owning_worker_id = this.id;
-                built_msg.inbound_connections = ['Im a connection'].
+                built_msg.data.originator_msg_id = msg.request_id;
+                built_msg.data.owning_worker_id = this.id;
                 break;
             }
+            default:
+                log.info(`Invalid message type ${worker_room_msg_type_enum} passed to buildRoomMsg`);
+                break;
         }
         return built_msg;
     }
@@ -72,34 +74,19 @@ class WorkerRoom extends RoomIF {
             switch(req.data.type) {
                 case types.WORKER_ROOM_MSG_TYPE_ENUM.STATUS: {
                     // 'this' worker sent this message, ignore it.
-                    if(req.worker_request_owner === this.id) {
+                    if(req.data.worker_request_owner === this.id) {
                         return;
                     }
                     let num_workers = 1;
                     let responses_recieved = 0;
                     let response = self.buildRoomMsg('temp', types.CORE_ROOM_MSG_TYPE_ENUM.CLUSTER_STATUS_RESPONSE);
-                    self.publishToRoom(response, this, req.hdb_header);
-                    //worker.exchange.publish(req.channel, response);
-                    // Get self cluster status
-
-                    // If workers > 1, post message to worker room
-
-                    // Wait for responses
-
-                    //Collate responses
-
-                    //Respond to HDBChild.
+                    self.publishToRoom(response, this, req.data.hdb_header);
                     break;
                 }
                 case types.WORKER_ROOM_MSG_TYPE_ENUM.STATUS_RESPONSE: {
                     if(!req || !req.data) {
                         log.trace(`Got an invalid CLUSTER_STATUS_RESPONSE message.`);
                     }
-                    //let stored_status_bucket = self.cluster_status_request_bucket[req.data.cluster_staatus_request_id];
-                    //if(!stored_status_bucket) {
-                    //    log.error('could not find existing status container.');
-                    //}
-                    //req.data[STATUS_BUCKET_ATTRIBUTE_NAME] = stored_status_bucket;
                     cluster_status_event.clusterEmitter.emit(cluster_status_event.EVENT_NAME, req.data);
                     break;
                 }

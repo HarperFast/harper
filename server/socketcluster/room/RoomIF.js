@@ -5,6 +5,11 @@ const types = require('../types');
 const log = require('../../../utility/logging/harper_logger');
 const CommandCollection = require('../decisionMatrix/rules/CommandCollection');
 
+// attributes that should not be copied into the .data portion of a message.
+const DATA_COPY_EXCLUSIONS = {
+    'hdb_header': 'exclude'
+};
+
 /**
  * Represents a socket cluster data channel, as well as any middleware and worker rules that guide what to do with a
  * request on that channel.  Rooms should never be instantiated directly, instead the room factory should be used.
@@ -179,6 +184,22 @@ class RoomIF {
                     msg.hdb_header[header_keys[i]] = existing_hdb_header[header_keys[i]];
                 }
             }
+        }
+        if(!msg.channel) {
+            msg.channel = this.topic;
+        }
+        // This message was incorrectly formed, move attributes into the .data attribute.
+        if(!msg.data) {
+            let keys = Object.keys(msg);
+            msg.data = {};
+            for(let i=0; i<keys.length; i++) {
+                if(DATA_COPY_EXCLUSIONS[keys[i]]) {
+                   continue;
+                }
+                msg.data[keys[i]] = msg[keys[i]];
+                delete msg[keys[i]];
+            }
+            log.warn(`Sending a cluster message with invalid data.`);
         }
     }
 

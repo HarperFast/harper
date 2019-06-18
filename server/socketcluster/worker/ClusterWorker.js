@@ -30,7 +30,6 @@ class ClusterWorker extends WorkerIF {
      */
     checkNewRoom(req, next) {
         log.trace('In checkNewRoom');
-        log.debug(`Processing message: ${inspect(req)}`);
         try {
             if(!req || !req.channel) {
                 log.error('Got an invalid request.');
@@ -96,12 +95,6 @@ class ClusterWorker extends WorkerIF {
             this.ensureRoomExists(terms.INTERNAL_SC_CHANNELS.ADD_USER);
             this.ensureRoomExists(terms.INTERNAL_SC_CHANNELS.ALTER_USER);
             this.ensureRoomExists(terms.INTERNAL_SC_CHANNELS.DROP_USER);
-        }
-    }
-
-    async checkForDataAttribute(req, next) {
-        if(!req.data) {
-            // assume this is a message directly
         }
     }
 

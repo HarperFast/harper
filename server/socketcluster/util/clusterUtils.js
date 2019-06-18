@@ -34,7 +34,7 @@ function getWorkerStatus(status_response_msg, worker) {
                     conn.subscriptions.push(sub);
                 }
             }
-            status_response_msg.outbound_connections.push(conn);
+            status_response_msg.data.outbound_connections.push(conn);
         }
     }
 
@@ -53,7 +53,7 @@ function getWorkerStatus(status_response_msg, worker) {
                     conn.subscriptions.push({"channel": sub.name, "state": sub.state});
                 }
             }
-            status_response_msg.inbound_connections.push(conn);
+            status_response_msg.data.inbound_connections.push(conn);
         }
     }
 }

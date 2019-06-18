@@ -20,14 +20,14 @@ class HDBSocketConnector extends SocketConnector{
     }
 
     // When a response is sent from clustering, it ends up here.
-    hdbWorkerWatcher(data) {
+    hdbWorkerWatcher(req) {
         try {
             // We may need to start assigning message types depending on the amount of data aside from transactions that
             // need to be sent from the cluster to hdb children.
-            if(data.type) {
-                switch(data.type) {
+            if(req.data.type) {
+                switch(req.data.type) {
                     case terms.CLUSTERING_MESSAGE_TYPES.CLUSTER_STATUS_RESPONSE: {
-                        ClusterStatusEmitter.clusterEmitter.emit(ClusterStatusEmitter.EVENT_NAME, data);
+                        ClusterStatusEmitter.clusterEmitter.emit(ClusterStatusEmitter.EVENT_NAME, req);
                         break;
                     }
                     default: {
@@ -36,8 +36,8 @@ class HDBSocketConnector extends SocketConnector{
                     }
                 }
             } else {
-                let {operation_function} = get_operation_function(data);
-                operation_function(data, (err, result) => {
+                let {operation_function} = get_operation_function(req);
+                operation_function(req, (err, result) => {
                     //TODO possibly would be good to have a queue on the SC side holding pending transactions, on error we send back stating a fail.
                     if (err) {
                         log.error(err);
