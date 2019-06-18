@@ -5,9 +5,8 @@ const types = require('../../types');
 const env = require('../../../../utility/environment/environmentManager');
 env.initSync();
 const HDB_QUEUE_PATH = env.getHdbBasePath() + '/schema/system/hdb_queue/';
-
+const csvparse = require('papaparse');
 const fs = require('fs-extra');
-const json_csv_parser = require('json-2-csv');
 
 const LINE_DELIMITER = '\r\n';
 const INSERT_UPDATE_FIELDS = ['__id', 'timestamp', 'operation', 'records'];
@@ -25,6 +24,10 @@ class WriteToTransactionLogRule extends RuleIF {
         this.transaction_stream = undefined;
     }
     async evaluateRule(req, args, worker) {
+        if(req.data.__transacted !== true){
+            return;
+        }
+
         log.trace('Evaluating write to transaction log rule');
         if(!req || !req.channel || !req.data) {
             log.error('Invalid request data, not writing to transaction log.');
@@ -41,23 +44,27 @@ class WriteToTransactionLogRule extends RuleIF {
                 this.transaction_stream = fs.createWriteStream(HDB_QUEUE_PATH + req.channel, {flags:'a'});
             }
 
-            let keys = [];
+            let convert_object = {
+                __id: req.data.__id,
+                timestamp: req.data.timestamp,
+                operation: req.data.operation
+            };
+
             if(req.data.operation === 'insert' || req.data.update === 'insert'){
-                keys = INSERT_UPDATE_FIELDS;
+                convert_object.records = JSON.stringify(req.data.records);
             } else if(req.data.operation === 'delete') {
-                keys = DELETE_FIELDS;
+                convert_object.records = JSON.stringify(req.data.hash_values);
             }
 
-            if(req.data.__transacted === true){
-                let transaction_csv = await json_csv_parser.json2csvAsync(req.data, {prependHeader: false, keys: keys});
-                transaction_csv += LINE_DELIMITER;
-                this.transaction_stream.write(transaction_csv);
-            }
+            let transaction_csv = csvparse.unparse([convert_object], {header:false, columns:['__id', 'timestamp', 'operation', 'records']});
+            transaction_csv += LINE_DELIMITER;
+            this.transaction_stream.write(transaction_csv);
         } catch(err) {
             log.error(err);
             return false;
         }
         return true;
     }
+
 }
 module.exports = WriteToTransactionLogRule;

@@ -33,7 +33,7 @@ class ClusterWorker extends WorkerIF {
                 return next('Got an invalid request.');
             }
             if(!this.getRoom(req.channel)) {
-                // TODO - we will need a way to distinguish from the req if this room is
+                // TODO - we will need a way to distinguish from the req if ths room is
                 // for a core connection or a cluster connection.
                 log.debug('Creating room: ' + req.channel);
                 let newRoom = room_factory.createRoom(req.channel, types.ROOM_TYPE.STANDARD);
