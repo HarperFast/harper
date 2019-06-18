@@ -35,7 +35,7 @@ const {
 
 const MOCK_FS_ARGS_ERROR_MSG = "Null, undefined, and/or empty string argument values not allowed when building mock HDB FS for testing";
 const UNIT_TEST_DIR = __dirname;
-const TEST_FS_DIR_NAME = "test_fs";
+const TEST_FS_DIR = "envDir/test_schema";
 const ATTR_PATH_OBJECT = {
     "files": [],
     "journals": [],
@@ -145,7 +145,7 @@ function cleanUpDirectories(target_path) {
  * @returns String representing the path value to the mock file system directory
  */
 function getMockFSPath() {
-    return path.join(UNIT_TEST_DIR, TEST_FS_DIR_NAME);
+    return path.join(UNIT_TEST_DIR, TEST_FS_DIR);
 }
 
 /**
