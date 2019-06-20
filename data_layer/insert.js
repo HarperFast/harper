@@ -136,17 +136,18 @@ async function insertData(insert_object){
             throw new Error('invalid operation, must be insert');
         }
 
-        if (h_utils.isEmptyOrZeroLength(insert_object.bulk_load)) {
-            console.log('This should only on called on validation');
-            let result = await validation(insert_object);
-            table_schema = result.table_schema;
-            attributes = result.attributes;
-        } else {
-            table_schema = insert_object.table_schema;
-            attributes = insert_object.attributes;
-        }
+        // We decided to leave validate cal as it is, no need ot check this. Okay to run validate twice
+        // if (h_utils.isEmptyOrZeroLength(insert_object.bulk_load)) {
+        //     console.log('This should only on called on validation');
+        //     let result = await validation(insert_object);
+        //     table_schema = result.table_schema;
+        //     attributes = result.attributes;
+        // } else {
+        //     table_schema = insert_object.table_schema;
+        //     attributes = insert_object.attributes;
+        // }
 
-        //console.log(`validation finished - memory: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
+        let {table_schema, attributes} = await validation(insert_object);
 
         let { written_hashes, skipped, ...data_wrapper} = await processRows(insert_object, attributes, table_schema, epoch, null, pool);
         pool = data_wrapper.pool;

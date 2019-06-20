@@ -523,7 +523,9 @@ function promisifyPapaParse(){
                     chunk: chunkFunc,
                     skipEmptyLines: true,
                     dynamicTyping: true,
-                    error: reject,
+                    error: (err) => {
+                        reject(err);
+                        },
                     complete: resolve
                 });
         });

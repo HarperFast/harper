@@ -145,12 +145,8 @@ async function csvFileLoad(json_message) {
 }
 
 let validate_chunk = async (results, parser) => {
-    let validation_results = {
-        attributes: []
-
-    };
-
     console.log(`validate chunk length: ${results.data.length}`);
+    parser.pause();
 
     let write_object = {
         operation: test_json_message.operation,
@@ -160,29 +156,23 @@ let validate_chunk = async (results, parser) => {
     };
 
     try {
-        let validation_response = await insert.validation(write_object);
-        test_validation_results.table_schema = validation_response.table_schema;
-        validation_response.attributes.forEach((item) => {
-            if (!(test_validation_results.attributes.includes(item))) {
-                test_validation_results.attributes.push(item);
-            }
-        });
-
-        // TODO: cant figure out how to get it from here to insert chunk
-        // return validation_results;
-
+        await insert.validation(write_object);
+        parser.resume();
     } catch(err) {
         console.log(err);
         throw new Error(err);
     }
 };
 
-let insert_chunk = async (results, parser) => {
+let insert_chunk = async (insert_results, results, parser) => {
     try {
+        parser.pause();
         console.log(`insert chunk length: ${results.data.length}`);
-        let bulk_load_result = await callBulkLoad(results.data, test_json_message.schema, test_json_message.table, test_json_message.action, test_validation_results);
-        test_bulk_load_result = bulk_load_result;
-        return bulk_load_result;
+        let bulk_load_result = await callBulkLoad(results.data, test_json_message.schema, test_json_message.table, test_json_message.action);
+        insert_results.records += bulk_load_result.records;
+        insert_results.number_written += bulk_load_result.number_written;
+        parser.resume();
+        return insert_results;
     } catch(err) {
         console.log(err);
         throw new Error(err);
@@ -197,7 +187,13 @@ async function callPapaParse(json_message) {
         console.log(`papa parse validate finished - memory: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
 
         stream = fs_extra.createReadStream(json_message.file_path, {highWaterMark:HIGHWATERMARK});
-        await papa_parse.parsePromise(stream, insert_chunk);
+        let insert_results = {
+            records: 0,
+            number_written: 0
+        };
+
+        await papa_parse.parsePromise(stream, insert_chunk.bind(null, insert_results));
+        console.log(`%%%%% insert results RECORDS - ${insert_results.records} WRITTEN - ${insert_results.number_written}`);
         console.log(`papa parse insert chunk finished - memory: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
 
         return test_bulk_load_result;
@@ -256,12 +252,12 @@ async function callMiddleware(parameter_string, data) {
     }
 }
 
-async function callBulkLoad(csv_records, schema, table, action, validation = null) {
+async function callBulkLoad(csv_records, schema, table, action) {
     let bulk_load_result = {};
     if(csv_records && csv_records.length > 0 && validateColumnNames(csv_records[0])) {
-        bulk_load_result = await bulkLoad(csv_records, schema, table, action, validation);
+        bulk_load_result = await bulkLoad(csv_records, schema, table, action);
     } else {
-        bulk_load_result.message = 'No records parsed from csv file.';
+        //bulk_load_result.message = 'No records parsed from csv file.';
         logger.info(bulk_load_result.message);
     }
     return bulk_load_result;
@@ -291,7 +287,7 @@ function validateColumnNames(created_record) {
  * @param action - Specify either insert or update the specified records
  * @returns {Promise<{message: string}>}
  */
-async function bulkLoad(records, schema, table, action, validation){
+async function bulkLoad(records, schema, table, action){
     if (!action) {
         action = 'insert';
     }
@@ -300,16 +296,9 @@ async function bulkLoad(records, schema, table, action, validation){
         operation: action,
         schema: schema,
         table: table,
-        records: records,
-        table_schema: validation.table_schema,
-        attributes: validation.attributes,
-        bulk_load: true
+        records: records
     };
 
-    if (hdb_utils.isEmptyOrZeroLength(validation)) {
-        target_object.table_schema = validation.table_schema;
-        target_object.attributes = validation.attributes;
-    }
 
     let write_function;
     if (action === 'insert'){
@@ -330,7 +319,9 @@ async function bulkLoad(records, schema, table, action, validation){
 
         let number_written = hdb_utils.isEmptyOrZeroLength(modified_hashes) ? 0 : modified_hashes.length;
         let update_status = {
-            message: `successfully loaded ${number_written} of ${records.length} records`
+            //message: `successfully loaded ${number_written} of ${records.length} records`,
+            records: records.length,
+            number_written
         };
 
         return update_status;
