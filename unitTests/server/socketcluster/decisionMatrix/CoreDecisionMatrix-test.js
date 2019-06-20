@@ -26,7 +26,7 @@ class BadTestRule extends RuleIF {
         super();
         this.setRuleOrder(types.COMMAND_EVAL_ORDER_ENUM.VERY_FIRST);
     }
-    evaluateRule() {
+    evaluateRule(req, args, worker) {
         console.log("Test rule");
         return false;
     }
@@ -117,7 +117,7 @@ describe('Test CoreDecisionMatrix', function() {
     });
     it('Test rule failure due to exception with Cluster connector source', async () => {
         let exception_rule = new BadTestRule();
-        await exception_rule.evaluateRule = (req, args, worker) => {
+        exception_rule.evaluateRule = (req, args, worker) => {
             throw new Error('Rule Exception');
         };
         test_instance.addRule(exception_rule, types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);

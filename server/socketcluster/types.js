@@ -55,13 +55,13 @@ const REQUEST_HEADER_ATTRIBUTE_NAMES = {
     ID: 'msg_id'
 };
 
-// Created to make removing certain rules easier
+// Created to make removing certain rules easier.  Note these should be different values from Rules to avoid confusion.
 const RULE_TYPE_ENUM = {
-    BASE_TYPE: 10,
-    ASSIGN_TO_HDB_WORKER: 11,
-    CALL_ROOM_MSG_HANDLER: 12,
-    WRITE_TO_TRANSACTION_LOG: 13,
-    TEST_RULE: 14
+    BASE_TYPE: 100,
+    ASSIGN_TO_HDB_WORKER: 101,
+    CALL_ROOM_MSG_HANDLER: 102,
+    WRITE_TO_TRANSACTION_LOG: 103,
+    TEST_RULE: 104
 };
 
 // Message types that will flow through the Cluster Worker room.

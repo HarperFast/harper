@@ -43,7 +43,7 @@ describe('Test AuthMiddleware', function() {
         let result = undefined;
         let instance = new OriginatorCheckMiddleware(null, () => {});
 
-        assert.equal(instance.type, types.MIDDLEWARE_TYPE.MIDDLEWARE_SUBSCRIBE);
+        assert.equal(instance.type, types.PREMADE_MIDDLEWARE_TYPES.ORIGINATOR);
     });
     it('test eval_function is defined.', () => {
         let result = undefined;

@@ -132,8 +132,9 @@ class RoomIF {
     }
 
     /**
-     * Removes any middleware that matches the middleware type.
+     * Removes the first found middleware that matches the middleware type.
      * @param enum_middleware_type - The type of middleware to remove
+     * @param premade_middleware_type_enum - The kind of middleware that should be removed
      * @param connector_type_enum - The data source the middleware represents.
      */
     removeMiddleware(enum_middleware_type, premade_middleware_type_enum, connector_type_enum) {
