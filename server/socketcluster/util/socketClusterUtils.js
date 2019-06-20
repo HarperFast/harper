@@ -1,6 +1,8 @@
 "use strict";
 
 const hdb_terms = require('../../../utility/hdbTerms');
+const log = require('../../../utility/logging/harper_logger');
+const {inspect} = require('util');
 
 class ConnectionDetails {
     constructor(id, host_address, host_port, state) {
@@ -58,7 +60,25 @@ function getWorkerStatus(status_response_msg, worker) {
     }
 }
 
+function createEventPromise(event_name, event_emitter_object, timeout_promise) {
+    let event_promise = new Promise((resolve) => {
+        event_emitter_object.on(event_name, (msg) => {
+            let curr_timeout_promise = timeout_promise;
+            //timeout_promise = hdb_utils.timeoutPromise(STATUS_TIMEOUT_MS, TIMEOUT_ERR_MSG);
+            log.info(`Got cluster status event response: ${inspect(msg)}`);
+            try {
+                curr_timeout_promise.cancel();
+            } catch(err) {
+                log.error('Error trying to cancel timeout.');
+            }
+            resolve(msg);
+        });
+    });
+    return event_promise;
+}
+
 module.exports = {
     ConnectionDetails,
-    getWorkerStatus
+    getWorkerStatus,
+    createEventPromise
 };

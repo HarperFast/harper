@@ -6,12 +6,13 @@ const hdb_terms = require('../../../utility/hdbTerms');
 const log = require('../../../utility/logging/harper_logger');
 const RoomMessageObjects = require('./RoomMessageObjects');
 const hdb_utils = require('../../../utility/common_utils');
-const cluster_utils = require('../util/clusterUtils');
+const socket_cluster_utils = require('../util/socketClusterUtils');
+const cluster_utils = require('../util/socketClusterUtils');
 const cluster_status_event = require('../../../events/ClusterStatusEmitter');
 
 const {inspect} = require('util');
 
-const STATUS_TIMEOUT_MS = 4000000;
+const STATUS_TIMEOUT_MS = 50000;
 const TIMEOUT_ERR_MSG = 'Timeout trying to get cluster status.';
 const STATUS_BUCKET_ATTRIBUTE_NAME = 'status_bucket';
 let self = undefined;
@@ -21,9 +22,9 @@ let self = undefined;
  */
 
 class ClusterStatusBucket {
-    constructor(request_id, num_expected_responses) {
-        this.orig_request_id = request_id;
+    constructor(num_expected_responses) {
         this.num_expected_responses = num_expected_responses;
+        // Start at one as we assume this worker has already added its status
         this.responses_received = 1;
     }
 }
@@ -31,19 +32,6 @@ class ClusterStatusBucket {
 // If we have more than 1 process, we need to get the status from the master process which has that info stored
 // in global.  We subscribe to an event that master will emit once it has gathered the data.  We want to build
 // in a timeout in case the event never comes.
-const timeout_promise = hdb_utils.timeoutPromise(STATUS_TIMEOUT_MS, TIMEOUT_ERR_MSG);
-const event_promise = new Promise((resolve) => {
-    cluster_status_event.clusterEmitter.on(cluster_status_event.EVENT_NAME, (msg) => {
-        log.info(`Got cluster status event response: ${inspect(msg)}`);
-        try {
-            timeout_promise.cancel();
-        } catch(err) {
-            log.error('Error trying to cancel timeout.');
-        }
-        resolve(msg);
-    });
-});
-
 function addStatusResponseValues(status_obj, response_msg) {
     try {
         if (!status_obj) {
@@ -119,11 +107,11 @@ class CoreRoom extends RoomIF {
         if(!worker) {
             log.info('Invalid worker sent to core room inboundMsgHandler');
         }
+        let cluster_status_response = new RoomMessageObjects.HdbCoreClusterStatusResponseMessage();
         switch(msg_type) {
             case types.CORE_ROOM_MSG_TYPE_ENUM.GET_CLUSTER_STATUS: {
                 try {
                     let get_cluster_status_msg = new RoomMessageObjects.GetClusterStatusMessage();
-                    //get_cluster_status_msg.request_id = req.data.id;
                     get_cluster_status_msg.data.requestor_channel = req.channel;
                     get_cluster_status_msg.data.worker_request_owner = worker.id;
                     if(worker.hdb_workers.length > 1) {
@@ -142,9 +130,8 @@ class CoreRoom extends RoomIF {
                         worker.exchange.publish(hdb_terms.INTERNAL_SC_CHANNELS.WORKER_ROOM, get_cluster_status_msg);
                     }
 
-                    let status_bucket_obj = new ClusterStatusBucket(get_cluster_status_msg.data.request_id, worker.hdb_workers.length);
+                    let status_bucket_obj = new ClusterStatusBucket(worker.hdb_workers.length);
                     self.cluster_status_request_buckets[get_cluster_status_msg.data.request_id] = status_bucket_obj;
-                    let cluster_status_response = new RoomMessageObjects.HdbCoreClusterStatusResponseMessage();
                     cluster_status_response.data.hdb_header = req.data.hdb_header;
                     cluster_status_response.data.cluster_staatus_request_id = req.data.id;
                     // insert the status for this worker
@@ -153,31 +140,43 @@ class CoreRoom extends RoomIF {
                         self.publishToRoom(cluster_status_response, worker, req.hdb_header);
                         return;
                     }
-                    // Wait for cluster status event to fire then respond to client
-                    let result = await Promise.race([event_promise, timeout_promise.promise]);
-                    if (result === TIMEOUT_ERR_MSG) {
-                        cluster_status_response.data.error = TIMEOUT_ERR_MSG;
-                        self.publishToRoom(cluster_status_response, worker, req.hdb_header);
-                    } else {
-                        let stored_bucket = self.cluster_status_request_buckets[result.cluster_status_request_id];
-                        if(!stored_bucket) {
-                            log.error('no stored status bucket found.  Cluster status failure.');
-                            throw new Error(`Error recovering cluster status bucket.`);
-                        }
-                        stored_bucket.responses_received++;
-                        addStatusResponseValues(stored_bucket, result);
-                        if (stored_bucket.responses_received === stored_bucket.num_expected_responses) {
-                            self.publishToRoom(cluster_status_response, worker, req.hdb_header);
-                        }
+                    // create an array of all workers other than this one so we can use as iterable in promise.all() below.
+                    let workers = [];
+                    for(let i=1; i<worker.hdb_workers.length; i++) {
+                        workers.push(worker.hdb_workers[i]);
                     }
+                    await Promise.all(
+                        workers.map(async worker => {
+                            let timeout_promise = hdb_utils.timeoutPromise(STATUS_TIMEOUT_MS, TIMEOUT_ERR_MSG);
+                            let event_promise = socket_cluster_utils.createEventPromise(cluster_status_event.EVENT_NAME, cluster_status_event.clusterEmitter, timeout_promise);
+                            let result = await Promise.race([event_promise, timeout_promise.promise]);
+                            if (result === TIMEOUT_ERR_MSG) {
+                                cluster_status_response.data.error = TIMEOUT_ERR_MSG;
+                                cluster_status_response.data.outbound_connections = [];
+                                cluster_status_response.data.inbound_connections = [];
+                            } else {
+                                let stored_bucket = self.cluster_status_request_buckets[result.cluster_status_request_id];
+                                if(!stored_bucket) {
+                                    log.error('no stored status bucket found.  Cluster status failure.');
+                                    // expect this to be caught locally
+                                    throw new Error(`Error recovering cluster status bucket.`);
+                                }
+                                stored_bucket.responses_received++;
+                                addStatusResponseValues(stored_bucket, result);
+                                if (stored_bucket.responses_received === stored_bucket.num_expected_responses) {
+                                    log.info(`All workers responded to status request, responding to child.`);
+                                }
+                            }
+                        })
+                    );
                 } catch(err) {
                     log.error(`Cluster status error`);
                     log.error(err);
-                    let cluster_status_response = new RoomMessageObjects.HdbCoreClusterStatusResponseMessage();
                     cluster_status_response.data.owning_worker_id = this.id;
                     cluster_status_response.data.error = "There was an error getting cluster status.";
-                    self.publishToRoom(cluster_status_response, worker, req.hdb_header);
                 }
+                log.info(`Posting cluster status response message`);
+                self.publishToRoom(cluster_status_response, worker, req.hdb_header);
                 break;
             }
             default:
