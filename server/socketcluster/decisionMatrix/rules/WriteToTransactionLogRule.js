@@ -50,13 +50,13 @@ class WriteToTransactionLogRule extends RuleIF {
                 operation: req.data.operation
             };
 
-            if(req.data.operation === 'insert' || req.data.update === 'insert'){
+            if(req.data.operation === 'insert' || req.data.operation === 'update'){
                 convert_object.records = JSON.stringify(req.data.records);
             } else if(req.data.operation === 'delete') {
                 convert_object.records = JSON.stringify(req.data.hash_values);
             }
 
-            let transaction_csv = csvparse.unparse([convert_object], {header:false, columns:['__id', 'timestamp', 'operation', 'records']});
+            let transaction_csv = csvparse.unparse([convert_object], {header:false, columns:['timestamp', '__id', 'operation', 'records']});
             transaction_csv += LINE_DELIMITER;
             this.transaction_stream.write(transaction_csv);
         } catch(err) {

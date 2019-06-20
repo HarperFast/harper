@@ -3,7 +3,7 @@
 const log = require('../../../utility/logging/harper_logger');
 
 const promisify = require('util').promisify;
-const FSReadStream = require('../../../utility/fs/FSReadStream');
+const TransactionStream = require('./TransactionStream');
 const CatchupObject = require('../socketClusterObjects').CatchupObject;
 const env = require('../../../utility/environment/environmentManager');
 const path = require('path');
@@ -50,7 +50,7 @@ class ServerSocket{
      */
     catchup(catchup_object, response){
         //TODO validate catchup object
-        let catchup_results = new FSReadStream();
+        let catchup_results = new TransactionStream();
     }
 
     /**
