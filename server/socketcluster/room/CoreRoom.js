@@ -41,27 +41,27 @@ function addStatusResponseValues(status_obj, response_msg) {
             throw new Error('Invalid msg passed to addStatusResponsevalues');
         }
         //status_obj.inbound_connections
-        if (response_msg.inbound_connections && response_msg.inbound_connections.length > 0) {
-            for (let i = 0; i < response_msg.inbound_connections.length; i++) {
-                let conn = response_msg.inbound_connections[i];
+        if (response_msg.data.inbound_connections && response_msg.data.inbound_connections.length > 0) {
+            for (let i = 0; i < response_msg.data.inbound_connections.length; i++) {
+                let conn = response_msg.data.inbound_connections[i];
                 if (conn) {
-                    status_obj.inbound_connections.push(conn);
+                    status_obj.data.inbound_connections.push(conn);
                 }
             }
         }
-        if (response_msg.outbound_connections && response_msg.outbound_connections.length > 0) {
-            for (let i = 0; i < response_msg.outbound_connections.length; i++) {
-                let conn = response_msg.outbound_connections[i];
+        if (response_msg.data.outbound_connections && response_msg.data.outbound_connections.length > 0) {
+            for (let i = 0; i < response_msg.data.outbound_connections.length; i++) {
+                let conn = response_msg.data.outbound_connections[i];
                 if (conn) {
-                    status_obj.outbound_connections.push(conn);
+                    status_obj.data.outbound_connections.push(conn);
                 }
             }
         }
-        if (response_msg.bidirectional_connections && response_msg.bidirectional_connections.length > 0) {
-            for (let i = 0; i < response_msg.bidirectional_connections.length; i++) {
-                let conn = response_msg.bidirectional_connections[i];
+        if (response_msg.data.bidirectional_connections && response_msg.data.bidirectional_connections.length > 0) {
+            for (let i = 0; i < response_msg.data.bidirectional_connections.length; i++) {
+                let conn = response_msg.data.bidirectional_connections[i];
                 if (conn) {
-                    status_obj.bidirectional_connections.push(conn);
+                    status_obj.data.bidirectional_connections.push(conn);
                 }
             }
         }
@@ -162,7 +162,7 @@ class CoreRoom extends RoomIF {
                                     throw new Error(`Error recovering cluster status bucket.`);
                                 }
                                 stored_bucket.responses_received++;
-                                addStatusResponseValues(stored_bucket, result);
+                                addStatusResponseValues(cluster_status_response, result);
                                 if (stored_bucket.responses_received === stored_bucket.num_expected_responses) {
                                     log.info(`All workers responded to status request, responding to child.`);
                                 }
