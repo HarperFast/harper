@@ -13,7 +13,6 @@ const fs = require('fs');
 const papa_parse = require('papaparse');
 const fs_extra = require('fs-extra');
 
-const RECORD_BATCH_SIZE = 1000;
 const NEWLINE = '\n';
 const unix_filename_regex = new RegExp(/[^-_.A-Za-z0-9]/);
 const ALASQL_MIDDLEWARE_PARSE_PARAMETERS = 'SELECT * FROM CSV(?, {headers:true, separator:","})';
@@ -109,49 +108,43 @@ async function csvURLLoad(json_message) {
  * @return err - any errors found during the bulk load
  *
  */
-//TODO: temp to see if works
-let test_json_message;
-let test_validation_results = {
-    attributes: []
-};
-let test_bulk_load_result;
-
 async function csvFileLoad(json_message) {
     let validation_msg = validator.fileObject(json_message);
     if (validation_msg) {
         throw new Error(validation_msg);
     }
 
-    // TODO: this is here because i cant figure out how to get it from validates response to insert.
-    test_json_message = json_message;
-
-    let csv_records = [];
-    let bulk_load_result = {};
     try {
         // check file exists and have perms to read, throws exception if fails
         await p_fs_access(json_message.file_path, fs.constants.R_OK | fs.constants.F_OK);
 
         console.log(`\n\npapa parse called - memory: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
-        bulk_load_result = await callPapaParse(json_message);
+        let bulk_load_result = await callPapaParse(json_message);
         console.log(`### papa parse finished - memory: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
 
-        // csv_records = await callMiddleware(ALASQL_MIDDLEWARE_PARSE_PARAMETERS, json_message.file_path);
-        // bulk_load_result = await callBulkLoad(csv_records, json_message.schema, json_message.table, json_message.action);
-    } catch(e) {
-        throw new Error(e);
-    }
+        console.log(`successfully loaded ${bulk_load_result.number_written} of ${bulk_load_result.records} records`);
+        return `successfully loaded ${bulk_load_result.number_written} of ${bulk_load_result.records} records`;
 
-    return test_bulk_load_result.message;
+    } catch(err) {
+        logger.error(err);
+        throw err;
+    }
 }
 
-let validate_chunk = async (results, parser) => {
-    console.log(`validate chunk length: ${results.data.length}`);
+async function validateChunk(json_message, results, parser) {
+    if (results.data.length === 0) {
+        return;
+    }
+
+    // parser pause and resume prevent the parser from getting ahead of validation.
     parser.pause();
 
+    console.log(`validate chunk length: ${results.data.length}`);
+
     let write_object = {
-        operation: test_json_message.operation,
-        schema: test_json_message.schema,
-        table: test_json_message.table,
+        operation: json_message.operation,
+        schema: json_message.schema,
+        table: json_message.table,
         records: results.data
     };
 
@@ -162,41 +155,46 @@ let validate_chunk = async (results, parser) => {
         console.log(err);
         throw new Error(err);
     }
-};
+}
 
-let insert_chunk = async (insert_results, results, parser) => {
+async function insertChunk(json_message, insert_results, results, parser) {
+    if (results.data.length === 0) {
+        return;
+    }
+
+    // parser pause and resume prevent the parser from getting ahead of validation.
+    parser.pause();
+
     try {
-        parser.pause();
         console.log(`insert chunk length: ${results.data.length}`);
-        let bulk_load_result = await callBulkLoad(results.data, test_json_message.schema, test_json_message.table, test_json_message.action);
-        insert_results.records += bulk_load_result.records;
-        insert_results.number_written += bulk_load_result.number_written;
+        let bulk_load_chunk_result = await callBulkLoad(results.data, json_message.schema, json_message.table, json_message.action);
+        insert_results.records += bulk_load_chunk_result.records;
+        insert_results.number_written += bulk_load_chunk_result.number_written;
         parser.resume();
-        return insert_results;
     } catch(err) {
         console.log(err);
         throw new Error(err);
     }
 
-};
+}
 
 async function callPapaParse(json_message) {
+    // passing object by reference to insert_chunk
+    let insert_results = {
+        records: 0,
+        number_written: 0
+    };
+
     try {
         let stream = fs_extra.createReadStream(json_message.file_path, {highWaterMark:HIGHWATERMARK});
-        await papa_parse.parsePromise(stream, validate_chunk);
+        await papa_parse.parsePromise(stream, validateChunk.bind(null, json_message));
         console.log(`papa parse validate finished - memory: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
 
         stream = fs_extra.createReadStream(json_message.file_path, {highWaterMark:HIGHWATERMARK});
-        let insert_results = {
-            records: 0,
-            number_written: 0
-        };
-
-        await papa_parse.parsePromise(stream, insert_chunk.bind(null, insert_results));
-        console.log(`%%%%% insert results RECORDS - ${insert_results.records} WRITTEN - ${insert_results.number_written}`);
+        await papa_parse.parsePromise(stream, insertChunk.bind(null, json_message, insert_results));
         console.log(`papa parse insert chunk finished - memory: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
 
-        return test_bulk_load_result;
+        return insert_results;
 
     } catch(err) {
         console.log(err);
@@ -257,7 +255,7 @@ async function callBulkLoad(csv_records, schema, table, action) {
     if(csv_records && csv_records.length > 0 && validateColumnNames(csv_records[0])) {
         bulk_load_result = await bulkLoad(csv_records, schema, table, action);
     } else {
-        //bulk_load_result.message = 'No records parsed from csv file.';
+        bulk_load_result.message = 'No records parsed from csv file.';
         logger.info(bulk_load_result.message);
     }
     return bulk_load_result;
@@ -319,7 +317,6 @@ async function bulkLoad(records, schema, table, action){
 
         let number_written = hdb_utils.isEmptyOrZeroLength(modified_hashes) ? 0 : modified_hashes.length;
         let update_status = {
-            //message: `successfully loaded ${number_written} of ${records.length} records`,
             records: records.length,
             number_written
         };

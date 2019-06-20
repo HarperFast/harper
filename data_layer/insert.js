@@ -151,13 +151,12 @@ async function insertData(insert_object){
 
         let { written_hashes, skipped, ...data_wrapper} = await processRows(insert_object, attributes, table_schema, epoch, null, pool);
         pool = data_wrapper.pool;
-        console.log(`process rows finished - memory: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
+        //console.log(`process rows finished - memory: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
 
         await checkForNewAttributes(insert_object.hdb_auth_header, table_schema, attributes);
-        console.log(`checkForNewAttributes finished - memory: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
+        //console.log(`checkForNewAttributes finished - memory: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
 
         pool = await processData(data_wrapper, pool);
-        console.log(`process data finished - memory: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
 
         if(pool instanceof HDB_Pool){
             pool.killAll();
