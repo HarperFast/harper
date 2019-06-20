@@ -6,7 +6,7 @@ const hdb_terms = require('../../../utility/hdbTerms');
 const log = require('../../../utility/logging/harper_logger');
 const {inspect} = require('util');
 const RoomMessageObjects = require('./RoomMessageObjects');
-const cluster_status_event = require('../../../events/ClusterStatusEmitter');
+const socket_cluster_status_event = require('../../../events/SocketClusterStatusEmitter');
 
 /**
  * This is a standard room that represents a socketcluster channel, as well as the middleware for that channel, and
@@ -47,6 +47,7 @@ class WorkerRoom extends RoomIF {
                 built_msg = new RoomMessageObjects.GetClusterStatusMessage();
                 built_msg.data.worker_request_owner_id = this.id;
                 built_msg.data.originator_msg_id = msg.request_id;
+
                 break;
             }
             case types.WORKER_ROOM_MSG_TYPE_ENUM.STATUS_RESPONSE: {
@@ -87,14 +88,14 @@ class WorkerRoom extends RoomIF {
                     if(!req || !req.data) {
                         log.trace(`Got an invalid CLUSTER_STATUS_RESPONSE message.`);
                     }
-                    cluster_status_event.clusterEmitter.emit(cluster_status_event.EVENT_NAME, req.data);
+                    socket_cluster_status_event.clusterEmitter.emit(socket_cluster_status_event.EVENT_NAME, req);
                     break;
                 }
                 case types.CORE_ROOM_MSG_TYPE_ENUM.CLUSTER_STATUS_RESPONSE: {
                     if(!req || !req.data) {
                         log.trace(`Got an invalid CLUSTER_STATUS_RESPONSE message.`);
                     }
-                    cluster_status_event.clusterEmitter.emit(cluster_status_event.EVENT_NAME, req.data);
+                    socket_cluster_status_event.clusterEmitter.emit(socket_cluster_status_event.EVENT_NAME, req);
                     break;
                 }
             }
