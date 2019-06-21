@@ -4,6 +4,16 @@ const types = require('../types');
 const hdb_terms = require('../../../utility/hdbTerms');
 const uuid = require('uuid/v4');
 
+class HdbCoreMessageIF {
+    constructor(core_room_msg_type_enum) {
+        this.data = {};
+        this.data.id = uuid();
+        this.data.type = core_room_msg_type_enum;
+        this.data.hdb_header = {};
+        this.data.operation = undefined;
+    }
+}
+
 class WorkerStatusMessage {
   constructor() {
       this.data = {};
@@ -35,20 +45,18 @@ class GetClusterStatusMessage {
     }
 }
 
-class HdbCoreClusterStatusRequestMessage {
+class HdbCoreClusterStatusRequestMessage extends HdbCoreMessageIF {
     constructor() {
+        super(types.CORE_ROOM_MSG_TYPE_ENUM.GET_CLUSTER_STATUS);
         this.data = {};
-        this.data.type = types.CORE_ROOM_MSG_TYPE_ENUM.GET_CLUSTER_STATUS;
         this.data.requesting_hdb_worker_id = undefined;
         this.data.requestor_channel = undefined;
-        this.data.hdb_header = {};
     }
 }
 
-class HdbCoreClusterStatusResponseMessage {
+class HdbCoreClusterStatusResponseMessage extends HdbCoreMessageIF {
     constructor() {
-        this.data = {};
-        this.data.type = types.CORE_ROOM_MSG_TYPE_ENUM.CLUSTER_STATUS_RESPONSE;
+        super(types.CORE_ROOM_MSG_TYPE_ENUM.CLUSTER_STATUS_RESPONSE);
         this.data.owning_worker_id = undefined;
         this.data.cluster_status_request_id = undefined;
         this.data.outbound_connections = [];
@@ -57,10 +65,58 @@ class HdbCoreClusterStatusResponseMessage {
     }
 }
 
+class HdbCoreClusterAddUserRequestMessage extends HdbCoreMessageIF {
+    constructor() {
+        super(types.CORE_ROOM_MSG_TYPE_ENUM.ADD_USER);
+        this.data.user = undefined;
+    }
+}
+
+class HdbCoreClusterAlterUserRequestMessage extends HdbCoreMessageIF {
+    constructor() {
+        super(types.CORE_ROOM_MSG_TYPE_ENUM.ALTER_USER);
+        this.data.user = undefined;
+    }
+}
+
+class HdbCoreClusterDropUserRequestMessage extends HdbCoreMessageIF {
+    constructor() {
+        super(types.CORE_ROOM_MSG_TYPE_ENUM.DROP_USER);
+        this.data.user = undefined;
+    }
+}
+
+class HdbCoreOperationMessage extends HdbCoreMessageIF {
+    constructor() {
+        super(types.CORE_ROOM_MSG_TYPE_ENUM.HDB_OPERATION);
+        this.data.operation = undefined;
+    }
+}
+
+class HdbCoreAddNodeMessage extends HdbCoreMessageIF {
+    constructor() {
+        super(types.CORE_ROOM_MSG_TYPE_ENUM.ADD_NODE);
+        this.data.node = undefined;
+    }
+}
+
+class HdbCoreRemoveNodeMessage extends HdbCoreMessageIF {
+    constructor() {
+        super(types.CORE_ROOM_MSG_TYPE_ENUM.REMOVE_NODE);
+        this.data.node = undefined;
+    }
+}
+
 module.exports = {
     GetClusterStatusMessage,
     WorkerStatusMessage,
     HdbCoreClusterStatusRequestMessage,
     HdbCoreClusterStatusResponseMessage,
+    HdbCoreClusterAddUserRequestMessage,
+    HdbCoreClusterAlterUserRequestMessage,
+    HdbCoreClusterDropUserRequestMessage,
+    HdbCoreOperationMessage,
+    HdbCoreAddNodeMessage,
+    HdbCoreRemoveNodeMessage,
     ErrorResponseMessage
 };

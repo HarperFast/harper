@@ -13,10 +13,6 @@ const socket_cluster_utils = require('../../../../server/socketcluster/util/sock
 const socket_cluster_status_event = require('../../../../events/SocketClusterStatusEmitter');
 const RoomMessageObjects = require('../../../../server/socketcluster/room/RoomMessageObjects');
 
-const {promisify} = require('util');
-
-const p_set_timeout = promisify(setTimeout);
-
 const ROOM_NAME = 'dev.tester';
 const WORKER_NAME = 'asdfesd';
 const SET_TIMEOUT_TIME_MS = 1000;

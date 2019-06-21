@@ -99,7 +99,9 @@ async function addUser(user){
     });
 
     clean_user.role = search_role[0];
-    hdb_utility.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.ADD_USER, clean_user);
+    let add_user_msg = new terms.ClusterMessageObjects.HdbCoreClusterAddUserRequestMessage();
+    add_user_msg.data.user = clean_user;
+    hdb_utility.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.ADD_USER, add_user_msg);
     signalling.signalUserChange({type: 'user'});
     return `${clean_user.username} successfully added`;
 }
@@ -185,6 +187,8 @@ async function alterUser(json_message) {
         throw err;
     });
 
+    let alter_user_msg = new terms.ClusterMessageObjects.HdbCoreClusterAlterUserRequestMessage();
+    alter_user_msg.data.user = clean_user;
     hdb_utility.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.ALTER_USER, clean_user);
     signalling.signalUserChange({type: 'user'});
     return success;
@@ -229,7 +233,9 @@ async function dropUser(user) {
             throw err;
         });
 
-        hdb_utility.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.DROP_USER, user);
+        let alter_user_msg = new terms.ClusterMessageObjects.HdbCoreClusterDropUserRequestMessage();
+        alter_user_msg.data.user = user;
+        hdb_utility.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.DROP_USER, alter_user_msg);
         signalling.signalUserChange({type: 'user'});
         return `${user.username} successfully deleted`;
     } catch(err) {

@@ -36,6 +36,7 @@ const HDB_FILE_PERMISSIONS = 0o700;
 // Trying to keep socket cluster as modular as possible, so we will create values in here that point to values
 // inside of the socketcluster types module.
 const cluster_types = require('../server/socketcluster/types');
+const ClusterMessageObjects = require('../server/socketcluster/room/RoomMessageObjects');
 
 const INSERT_MODULE_ENUM = {
     HDB_PATH_KEY: 'HDB_INTERNAL_PATH',
@@ -306,11 +307,14 @@ const CLUSTER_EVENTS_DEFS_ENUM = {
     VERSION_MISMATCH: 'version_mismatch',
     DIRECTION_CHANGE: 'direction_change'
 };
-
+/*
 const CLUSTERING_MESSAGE_TYPES = {
     GET_CLUSTER_STATUS: cluster_types.CORE_ROOM_MSG_TYPE_ENUM.GET_CLUSTER_STATUS,
     CLUSTER_STATUS_RESPONSE: cluster_types.CORE_ROOM_MSG_TYPE_ENUM.CLUSTER_STATUS_RESPONSE
-};
+};*/
+const CLUSTERING_MESSAGE_TYPES = cluster_types.CORE_ROOM_MSG_TYPE_ENUM;
+
+const ClusterRoomMessageObjects =
 
 module.exports = {
     LOCAL_HARPERDB_OPERATIONS,
@@ -354,6 +358,8 @@ module.exports = {
     SYSTEM_DEFAULT_ATTRIBUTE_NAMES,
     HDB_INTERNAL_SC_CHANNEL_PREFIX,
     INTERNAL_SC_CHANNELS,
-    CLUSTERING_MESSAGE_TYPES
+    CLUSTERING_MESSAGE_TYPES,
+    // Make the message objects available through hdbTerms to keep clustering as modular as possible.
+    ClusterMessageObjects
 };
 
