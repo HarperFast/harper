@@ -25,6 +25,15 @@ class WorkerStatusMessage {
   }
 }
 
+class WatchHdbWorkersMessage {
+    constructor() {
+        this.data = {};
+        this.data.id = uuid();
+        this.data.type = types.CORE_ROOM_MSG_TYPE_ENUM.HDB_WORKERS;
+        this.data.workers = [];
+    }
+}
+
 class SyncHdbUsersMessage {
     constructor() {
         this.data = {};
@@ -119,6 +128,7 @@ class HdbCoreRemoveNodeMessage extends HdbCoreMessageIF {
 module.exports = {
     GetClusterStatusMessage,
     WorkerStatusMessage,
+    WatchHdbWorkersMessage,
     HdbCoreClusterStatusRequestMessage,
     HdbCoreClusterStatusResponseMessage,
     HdbCoreClusterAddUserRequestMessage,
