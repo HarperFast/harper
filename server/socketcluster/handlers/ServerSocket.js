@@ -3,12 +3,12 @@
 const log = require('../../../utility/logging/harper_logger');
 
 const promisify = require('util').promisify;
-const TransactionStream = require('./TransactionStream');
+const CatchUp = require('./CatchUp');
 const CatchupObject = require('../socketClusterObjects').CatchupObject;
 const env = require('../../../utility/environment/environmentManager');
 const path = require('path');
 const HDB_PATH = env.getHdbBasePath();
-const QUEUE_PATH = path.join(HDB_PATH, 'schema/system/hdb_queue');
+const QUEUE_PATH = path.join(HDB_PATH, 'schema/system/hdb_queue/');
 
 /**
  * This class establishes the handlers for the socket on the server, handling all messaging & state changes related to a connected client
@@ -39,18 +39,19 @@ class ServerSocket{
         this.socket.on('authStateChange', this.authStateChangeHandler);
         this.socket.on('message', this.messageHandler);
 
-        this.socket.on('catchup', ()=>{
-
-        });
+        this.socket.on('catchup', this.catchup);
     }
 
     /**
      *
      * @param {<CatchupObject>} catchup_object
      */
-    catchup(catchup_object, response){
+    async catchup(catchup_object, response){
         //TODO validate catchup object
-        let catchup_results = new TransactionStream();
+        let catchup = new CatchUp(QUEUE_PATH + catchup_object.channel, catchup_object.start_timestamp, catchup_object.end_timestamp);
+        await catchup.run();
+
+        response(null, catchup.results);
     }
 
     /**

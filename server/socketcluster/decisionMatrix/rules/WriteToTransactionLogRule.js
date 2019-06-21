@@ -5,12 +5,9 @@ const types = require('../../types');
 const env = require('../../../../utility/environment/environmentManager');
 env.initSync();
 const HDB_QUEUE_PATH = env.getHdbBasePath() + '/schema/system/hdb_queue/';
-const csvparse = require('papaparse');
 const fs = require('fs-extra');
 
 const LINE_DELIMITER = '\r\n';
-const INSERT_UPDATE_FIELDS = ['__id', 'timestamp', 'operation', 'records'];
-const DELETE_FIELDS = ['__id', 'timestamp', 'operation', 'hash_values'];
 const VALID_OPERATIONS = ['insert', 'update', 'delete'];
 
 /**
@@ -44,19 +41,14 @@ class WriteToTransactionLogRule extends RuleIF {
                 this.transaction_stream = fs.createWriteStream(HDB_QUEUE_PATH + req.channel, {flags:'a'});
             }
 
-            let convert_object = {
-                __id: req.data.__id,
-                timestamp: req.data.timestamp,
-                operation: req.data.operation
-            };
+            let transaction_csv = req.data.timestamp + ',' + req.data.__id + ',' + req.data.operation + ',';
 
             if(req.data.operation === 'insert' || req.data.operation === 'update'){
-                convert_object.records = JSON.stringify(req.data.records);
+                transaction_csv += JSON.stringify(req.data.records, this.escape);
             } else if(req.data.operation === 'delete') {
-                convert_object.records = JSON.stringify(req.data.hash_values);
+                transaction_csv += JSON.stringify(req.data.hash_values, this.escape);
             }
 
-            let transaction_csv = csvparse.unparse([convert_object], {header:false, columns:['timestamp', '__id', 'operation', 'records']});
             transaction_csv += LINE_DELIMITER;
             this.transaction_stream.write(transaction_csv);
         } catch(err) {
@@ -64,6 +56,19 @@ class WriteToTransactionLogRule extends RuleIF {
             return false;
         }
         return true;
+    }
+
+    escape (key, val) {
+        if (typeof(val)!="string") return val;
+        return val
+            .replace(/[\"]/g, '\\"')
+            .replace(/[\\]/g, '\\\\')
+            .replace(/[\/]/g, '\\/')
+            .replace(/[\b]/g, '\\b')
+            .replace(/[\f]/g, '\\f')
+            .replace(/[\n]/g, '\\n')
+            .replace(/[\r]/g, '\\r')
+            .replace(/[\t]/g, '\\t');
     }
 
 }
