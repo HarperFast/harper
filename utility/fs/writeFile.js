@@ -13,6 +13,8 @@ module.exports = writeFiles;
  * @returns {Promise<void>}
  */
 async function writeFiles(files) {
+
+    // TODO: add if statement here to check file size, if under 10000 dont chunk
     let chunks = _.chunk(files, 10000);
 
     for(let chunk of chunks){
