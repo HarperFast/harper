@@ -16,7 +16,7 @@ const fs_extra = require('fs-extra');
 const NEWLINE = '\n';
 const unix_filename_regex = new RegExp(/[^-_.A-Za-z0-9]/);
 const ALASQL_MIDDLEWARE_PARSE_PARAMETERS = 'SELECT * FROM CSV(?, {headers:true, separator:","})';
-const HIGHWATERMARK = 1024*1024*3;
+const HIGHWATERMARK = 1024*1024*5;
 hdb_utils.promisifyPapaParse();
 
 const p_fs_access = util.promisify(fs.access);
@@ -162,7 +162,7 @@ async function insertChunk(json_message, insert_results, results, parser) {
         return;
     }
 
-    // parser pause and resume prevent the parser from getting ahead of validation.
+    // parser pause and resume prevent the parser from getting ahead of insert.
     parser.pause();
 
     try {
