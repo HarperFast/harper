@@ -10,7 +10,7 @@ const WorkerStub = require('../worker/WorkerStub');
 const RoomMessageObjects = require('../../../../server/socketcluster/room/RoomMessageObjects');
 
 const ADD_USER_TOPIC_NAME = 'AddUser';
-const TEST_USER = {
+const TEST_USER_DATA = {
     "role": {
         "id": "cf767e89-702a-4baf-b44c-e52544884889",
         "permission": {
@@ -24,7 +24,7 @@ const TEST_USER = {
     "hash": "4c977a2f51798cf204f651ba3878b0ca471e223820ed871c85cdd9aa5795e6761f0ed8d04f22a340e8635b9d79d6b1999fa4ad3e8ffd63c52442b642208d2976"
 };
 
-describe('Test CoreRoom evalRules', function() {
+describe('Test inboundMsgHandler', function() {
     let test_instance = undefined;
     let sandbox = sinon.createSandbox();
     let worker_stub = undefined;
@@ -43,7 +43,7 @@ describe('Test CoreRoom evalRules', function() {
     });
 
     it('Nominal test for inboundMsgHandler', async () => {
-        message_instance.data.user = TEST_USER;
+        message_instance.data.user = TEST_USER_DATA;
         await test_instance.inboundMsgHandler(message_instance, worker_stub, null);
 
         assert.strictEqual(Object.keys(worker_stub.hdb_users).length, 1, 'Expected worker to have 1 user');
@@ -51,7 +51,7 @@ describe('Test CoreRoom evalRules', function() {
         assert.strictEqual(worker_stub.publish_called, true, 'Expected exchange set to be called.');
     });
     it('Test for inboundMsgHandler with invalid request', async () => {
-        message_instance.data.user = TEST_USER;
+        message_instance.data.user = TEST_USER_DATA;
         message_instance.data = null;
         await test_instance.inboundMsgHandler(message_instance, worker_stub, null);
 
@@ -64,7 +64,7 @@ describe('Test CoreRoom evalRules', function() {
         worker_stub.exchange_set = (topic, data) => {
           throw new Error('This is bad');
         };
-        message_instance.data.user = TEST_USER;
+        message_instance.data.user = TEST_USER_DATA;
         await test_instance.inboundMsgHandler(message_instance, worker_stub, null);
         await test_instance.inboundMsgHandler(message_instance, worker_stub, null);
 
@@ -77,7 +77,7 @@ describe('Test CoreRoom evalRules', function() {
         worker_stub.exchange.publish = (topic, data) => {
             throw new Error('This is bad');
         };
-        message_instance.data.user = TEST_USER;
+        message_instance.data.user = TEST_USER_DATA;
         await test_instance.inboundMsgHandler(message_instance, worker_stub, null);
         await test_instance.inboundMsgHandler(message_instance, worker_stub, null);
 

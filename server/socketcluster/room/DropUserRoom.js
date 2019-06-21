@@ -32,13 +32,17 @@ class DropUserRoom extends RoomIF {
         if(!req) {
             return;
         }
-        let user = req.data;
+        if(!req || !req.data || !req.data.user) {
+            log.info('User not found in alter user request');
+            return;
+        }
+        let user = req.data.user;
         try {
             if (worker.hdb_users[user.username] !== undefined) {
                 delete worker.hdb_users[user.username];
 
-                let set_result = await worker.exchange_set(hdb_terms.INTERNAL_SC_CHANNELS.HDB_USERS, worker.worker.hdb_users);
-                worker.exchange.publish(hdb_terms.INTERNAL_SC_CHANNELS.HDB_USERS, worker.worker.hdb_users);
+                let set_result = await worker.exchange_set(hdb_terms.INTERNAL_SC_CHANNELS.HDB_USERS, worker.hdb_users);
+                worker.exchange.publish(hdb_terms.INTERNAL_SC_CHANNELS.HDB_USERS, worker.hdb_users);
             }
         }catch(e){
             log.error(e);
