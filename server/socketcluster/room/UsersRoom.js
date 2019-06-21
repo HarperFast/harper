@@ -29,17 +29,18 @@ class UsersRoom extends RoomIF {
         if(!req) {
             return;
         }
-        if(!req.data) {
+        if(!req.data || !req.data.users) {
+            log.info('Invalid users in request.');
             return;
         }
         try {
             log.trace('WatchUsers handler');
-            if(req.data.users && typeof req.data.users === 'object') {
+            if(req.data.users && typeof req.data.users === 'object' && !Array.isArray(req.data.users)) {
                 worker.hdb_users = req.data.users;
             } else {
                 worker.hdb_users = {};
             }
-        }catch(e){
+        } catch(e) {
             log.error(e);
         }
     }

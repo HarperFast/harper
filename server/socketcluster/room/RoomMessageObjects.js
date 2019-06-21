@@ -25,6 +25,15 @@ class WorkerStatusMessage {
   }
 }
 
+class SyncHdbUsersMessage {
+    constructor() {
+        this.data = {};
+        this.data.id = uuid();
+        this.data.type = types.CORE_ROOM_MSG_TYPE_ENUM.HDB_USERS_MSG;
+        this.data.users = {};
+    }
+}
+
 class ErrorResponseMessage {
     constructor() {
         this.data = {};
@@ -118,5 +127,6 @@ module.exports = {
     HdbCoreOperationMessage,
     HdbCoreAddNodeMessage,
     HdbCoreRemoveNodeMessage,
+    SyncHdbUsersMessage,
     ErrorResponseMessage
 };

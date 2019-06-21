@@ -44,7 +44,7 @@ class AddUserRoom extends RoomIF {
                 let set_result = await worker.exchange_set(hdb_terms.INTERNAL_SC_CHANNELS.HDB_USERS, worker.hdb_users);
                 worker.exchange.publish(hdb_terms.INTERNAL_SC_CHANNELS.HDB_USERS, worker.hdb_users);
             }
-        }catch(e) {
+        } catch(e) {
             log.error(e);
         }
     }

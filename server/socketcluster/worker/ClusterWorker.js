@@ -10,6 +10,7 @@ const password_utility = require('../../../utility/password');
 const get_cluster_user = require('../../../utility/common_utils').getClusterUser;
 const terms = require('../../../utility/hdbTerms');
 const {inspect} = require('util');
+const RoomMessageObjects = require('../room/RoomMessageObjects');
 
 let worker_subscriptions = {};
 
@@ -141,8 +142,11 @@ class ClusterWorker extends WorkerIF {
                     users[user.username] = user;
                 });
                 this.hdb_users = users;
+                let hdb_users_msg = new RoomMessageObjects.SyncHdbUsersMessage();
+                hdb_users_msg.data.users = users;
+                // Don't post the message to the exchange, just the users.
                 await this.exchange_set(terms.INTERNAL_SC_CHANNELS.HDB_USERS, users);
-                await this.exchange.publish(terms.INTERNAL_SC_CHANNELS.HDB_USERS, users);
+                await this.exchange.publish(terms.INTERNAL_SC_CHANNELS.HDB_USERS, hdb_users_msg);
             }
 
             if (hdb_data.nodes !== undefined) {
