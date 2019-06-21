@@ -514,22 +514,19 @@ function getClusterUser(users, cluster_user_name){
     return cluster_user;
 }
 
-function promisifyPapaParse(){
+function promisifyPapaParse() {
     papa_parse.parsePromise = function (stream, chunkFunc) {
         return new Promise(function (resolve, reject) {
             papa_parse.parse(stream,
                 {
                     header: true,
-                    chunk: chunkFunc,
+                    chunk: chunkFunc.bind(null, reject),
                     skipEmptyLines: true,
                     dynamicTyping: true,
-                    error: (err) => {
-                        console.log(`Error option is being hit`);
-                        reject(err);
-                    },
+                    error: reject,
                     complete: resolve
                 });
-
         });
     };
 }
+

@@ -131,7 +131,7 @@ async function csvFileLoad(json_message) {
     }
 }
 
-async function validateChunk(json_message, results, parser) {
+async function validateChunk(json_message, reject, results, parser) {
     if (results.data.length === 0) {
         return;
     }
@@ -157,7 +157,7 @@ async function validateChunk(json_message, results, parser) {
     }
 }
 
-async function insertChunk(json_message, insert_results, results, parser) {
+async function insertChunk(json_message, insert_results, reject, results, parser) {
     if (results.data.length === 0) {
         return;
     }
@@ -172,8 +172,9 @@ async function insertChunk(json_message, insert_results, results, parser) {
         insert_results.number_written += bulk_load_chunk_result.number_written;
         parser.resume();
     } catch(err) {
-        console.log(err);
-        throw err;
+        // console.log(err);
+        // throw err;
+        reject(err);
     }
 
 }
@@ -198,7 +199,7 @@ async function callPapaParse(json_message) {
 
     } catch(err) {
         console.log(err);
-        throw new Error(err);
+        throw err;
     }
 }
 
@@ -253,7 +254,14 @@ async function callMiddleware(parameter_string, data) {
 async function callBulkLoad(csv_records, schema, table, action) {
     let bulk_load_result = {};
     if(csv_records && csv_records.length > 0 && validateColumnNames(csv_records[0])) {
-        bulk_load_result = await bulkLoad(csv_records, schema, table, action);
+
+        try {
+            bulk_load_result = await bulkLoad(csv_records, schema, table, action);
+        } catch(err) {
+           console.log(err);
+           throw err;
+        }
+        
     } else {
         bulk_load_result.message = 'No records parsed from csv file.';
         logger.info(bulk_load_result.message);
