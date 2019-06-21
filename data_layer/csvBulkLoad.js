@@ -153,7 +153,7 @@ async function validateChunk(json_message, results, parser) {
         parser.resume();
     } catch(err) {
         console.log(err);
-        throw new Error(err);
+        throw err;
     }
 }
 
@@ -173,7 +173,7 @@ async function insertChunk(json_message, insert_results, results, parser) {
         parser.resume();
     } catch(err) {
         console.log(err);
-        throw new Error(err);
+        throw err;
     }
 
 }

@@ -524,10 +524,12 @@ function promisifyPapaParse(){
                     skipEmptyLines: true,
                     dynamicTyping: true,
                     error: (err) => {
+                        console.log(`Error option is being hit`);
                         reject(err);
-                        },
+                    },
                     complete: resolve
                 });
+
         });
     };
 }
