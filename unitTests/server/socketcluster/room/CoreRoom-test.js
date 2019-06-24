@@ -286,10 +286,10 @@ const PROMISE_RESPONSE_MSG = {
 
 function buildWorkerStatusMessage() {
     let worker_status_msg = new RoomMessageObjects.WorkerStatusMessage();
-    worker_status_msg.data.hdb_header =  {};
-    worker_status_msg.data.type = "CLUSTER_STATUS_RESPONSE";
-    worker_status_msg.data.is_enabled = true;
-    worker_status_msg.data.inbound_connections = [
+    worker_status_msg.hdb_header =  {};
+    worker_status_msg.type = "CLUSTER_STATUS_RESPONSE";
+    worker_status_msg.is_enabled = true;
+    worker_status_msg.inbound_connections = [
         {
             "id": "WG44es8-kxiDJRmIAAAA",
             "host_address": "WTH is this?",
@@ -303,7 +303,7 @@ function buildWorkerStatusMessage() {
             ]
         }
     ];
-    worker_status_msg.data.outbound_connections = [
+    worker_status_msg.outbound_connections = [
         {
             "id": "",
             "host_address": "THIS IS CRAP",
@@ -427,15 +427,15 @@ describe('Test CoreRoom inboundMsgHandler', function() {
         // Use the publish stub to set the response message id.  The response messages cluster_status_request_id would normally
         // be set to the original messages id.
         worker_stub.exchange.publish = (hdbChild, req) => {
-            worker_status_msg.data.cluster_status_request_id = req.data.request_id;
+            worker_status_msg.cluster_status_request_id = req.request_id;
             console.log('Called publish');
         };
 
         let response = await test_instance.inboundMsgHandler(INBOUND_MSG_HANDLER_TEST_MSG, worker_stub, null);
         assert.strictEqual(publish_stub.called, true, 'Expected publish to be called');
         assert.strictEqual(worker_status_stub.called, true, 'Expected publish to be called');
-        assert.strictEqual(response.data.inbound_connections.length, 1, 'Expected publish to be called');
-        assert.strictEqual(response.data.outbound_connections.length, 1, 'Expected publish to be called');
+        assert.strictEqual(response.inbound_connections.length, 1, 'Expected publish to be called');
+        assert.strictEqual(response.outbound_connections.length, 1, 'Expected publish to be called');
     });
     it('test inboundMsgHandler with unrecognized type', async () => {
         let response = await test_instance.inboundMsgHandler(INBOUND_MSG_HANDLER_TEST_MSG, worker_stub, null);
@@ -445,9 +445,9 @@ describe('Test CoreRoom inboundMsgHandler', function() {
         worker_status_stub.restore();
         worker_status_stub = new sinon.stub(socket_cluster_utils, 'getWorkerStatus').throws(new Error('This is bad.'));
         let response = await test_instance.inboundMsgHandler(INBOUND_MSG_HANDLER_TEST_MSG, worker_stub, null);
-        assert.notStrictEqual(response.data.error.length, 0, 'Expected error message in response');
-        assert.strictEqual(response.data.inbound_connections.length, 0, 'Expected inbound connections to be reset');
-        assert.strictEqual(response.data.outbound_connections.length, 0, 'Expected outbound connections to be reset');
+        assert.notStrictEqual(response.error.length, 0, 'Expected error message in response');
+        assert.strictEqual(response.inbound_connections.length, 0, 'Expected inbound connections to be reset');
+        assert.strictEqual(response.outbound_connections.length, 0, 'Expected outbound connections to be reset');
     });
     it('test inboundMsgHandler publish to room throws exception', async () => {
         publish_stub.restore();
@@ -466,9 +466,9 @@ describe('Test CoreRoom inboundMsgHandler', function() {
         CoreRoom_rw.__set__('STATUS_TIMEOUT_MS', SET_TIMEOUT_TIME_MS);
         test_instance = new CoreRoom_rw();
         let response = await test_instance.inboundMsgHandler(INBOUND_MSG_HANDLER_TEST_MSG, worker_stub, null);
-        assert.notStrictEqual(response.data.error.length, 0, 'Expected error message in response');
-        assert.strictEqual(response.data.inbound_connections.length, 0, 'Expected inbound connections to be reset');
-        assert.strictEqual(response.data.outbound_connections.length, 0, 'Expected outbound connections to be reset');
+        assert.notStrictEqual(response.error.length, 0, 'Expected error message in response');
+        assert.strictEqual(response.inbound_connections.length, 0, 'Expected inbound connections to be reset');
+        assert.strictEqual(response.outbound_connections.length, 0, 'Expected outbound connections to be reset');
         CoreRoom_rw.__set__('STATUS_TIMEOUT_MS', timeout_orig);
     });
 });
@@ -485,8 +485,8 @@ describe('Test CoreRoom addStatusResponseValues', function() {
         let worker_status_msg = buildWorkerStatusMessage();
         let cluster_status_response = new RoomMessageObjects.HdbCoreClusterStatusResponseMessage();
         addStatusResponseValues(cluster_status_response, worker_status_msg);
-        assert.strictEqual(cluster_status_response.data.inbound_connections.length, 1, 'Expected publish to be called');
-        assert.strictEqual(cluster_status_response.data.outbound_connections.length, 1, 'Expected publish to be called');
+        assert.strictEqual(cluster_status_response.inbound_connections.length, 1, 'Expected publish to be called');
+        assert.strictEqual(cluster_status_response.outbound_connections.length, 1, 'Expected publish to be called');
     });
     it('test addStatusResponseValues null status input', () => {
         let worker_status_msg = buildWorkerStatusMessage();

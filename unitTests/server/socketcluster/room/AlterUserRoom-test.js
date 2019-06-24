@@ -45,7 +45,7 @@ describe('Test inboundMsgHandler', function() {
     it('Nominal test for inboundMsgHandler', async () => {
         let user_copy = test_util.deepClone(TEST_USER_DATA);
         user_copy.password = 'Ive been changed';
-        message_instance.data.user = user_copy;
+        message_instance.user = user_copy;
         worker_stub.hdb_users[TEST_USER_DATA.username] = TEST_USER_DATA;
         await test_instance.inboundMsgHandler(message_instance, worker_stub, null);
 
@@ -55,7 +55,7 @@ describe('Test inboundMsgHandler', function() {
         assert.strictEqual(worker_stub.publish_called, true, 'Expected exchange set to be called.');
     });
     it('Test for inboundMsgHandler with invalid request', async () => {
-        message_instance.data.user = null;
+        message_instance.user = null;
         worker_stub.hdb_users[TEST_USER_DATA.username] = TEST_USER_DATA;
         await test_instance.inboundMsgHandler(message_instance, worker_stub, null);
 
@@ -66,7 +66,7 @@ describe('Test inboundMsgHandler', function() {
     it('Test for inboundMsgHandler with exchange set throwing exception, make sure exception quietly caught.', async () => {
         let user_copy = test_util.deepClone(TEST_USER_DATA);
         user_copy.password = 'Ive been changed';
-        message_instance.data.user = user_copy;
+        message_instance.user = user_copy;
         worker_stub.hdb_users[TEST_USER_DATA.username] = TEST_USER_DATA;
         worker_stub.exchange_set = (topic, data) => {
           throw new Error('This is bad');
@@ -80,7 +80,7 @@ describe('Test inboundMsgHandler', function() {
     it('Test for inboundMsgHandler with publish throwing exception, make sure exception quietly caught.', async () => {
         let user_copy = test_util.deepClone(TEST_USER_DATA);
         user_copy.password = 'Ive been changed';
-        message_instance.data.user = user_copy;
+        message_instance.user = user_copy;
         worker_stub.hdb_users[TEST_USER_DATA.username] = TEST_USER_DATA;
         worker_stub.exchange.publish = (topic, data) => {
             throw new Error('This is bad');
@@ -95,7 +95,7 @@ describe('Test inboundMsgHandler', function() {
         let user_copy = test_util.deepClone(TEST_USER_DATA);
         user_copy.password = 'Ive been changed';
         user_copy.username = 'not in here.'
-        message_instance.data.user = user_copy;
+        message_instance.user = user_copy;
         worker_stub.hdb_users[TEST_USER_DATA.username] = TEST_USER_DATA;
         await test_instance.inboundMsgHandler(message_instance, worker_stub, null);
 

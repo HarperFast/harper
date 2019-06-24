@@ -45,7 +45,7 @@ describe('Test DropUserRoom inboundMsgHandler', function() {
     });
 
     it('Nominal test for inboundMsgHandler', async () => {
-        message_instance.data.user = TEST_USER_DATA;
+        message_instance.user = TEST_USER_DATA;
         worker_stub.hdb_users[TEST_USER_DATA.username] = TEST_USER_DATA;
         await test_instance.inboundMsgHandler(message_instance, worker_stub, null);
 
@@ -54,8 +54,7 @@ describe('Test DropUserRoom inboundMsgHandler', function() {
         assert.strictEqual(worker_stub.publish_called, true, 'Expected exchange set to be called.');
     });
     it('Test for inboundMsgHandler with invalid request', async () => {
-        message_instance.data.user = TEST_USER_DATA;
-        message_instance.data = null;
+        message_instance.user = null;
         worker_stub.hdb_users[TEST_USER_DATA.username] = TEST_USER_DATA;
         await test_instance.inboundMsgHandler(message_instance, worker_stub, null);
 
@@ -68,7 +67,7 @@ describe('Test DropUserRoom inboundMsgHandler', function() {
         worker_stub.exchange_set = (topic, data) => {
             throw new Error('This is bad');
         };
-        message_instance.data.user = TEST_USER_DATA;
+        message_instance.user = TEST_USER_DATA;
         await test_instance.inboundMsgHandler(message_instance, worker_stub, null);
         await test_instance.inboundMsgHandler(message_instance, worker_stub, null);
 
@@ -81,7 +80,7 @@ describe('Test DropUserRoom inboundMsgHandler', function() {
         worker_stub.exchange.publish = (topic, data) => {
             throw new Error('This is bad');
         };
-        message_instance.data.user = TEST_USER_DATA;
+        message_instance.user = TEST_USER_DATA;
         await test_instance.inboundMsgHandler(message_instance, worker_stub, null);
         await test_instance.inboundMsgHandler(message_instance, worker_stub, null);
 
@@ -94,7 +93,7 @@ describe('Test DropUserRoom inboundMsgHandler', function() {
         let user_copy = test_util.deepClone(TEST_USER_DATA);
         user_copy.password = 'Ive been changed';
         user_copy.username = 'not in here.';
-        message_instance.data.user = user_copy;
+        message_instance.user = user_copy;
         worker_stub.hdb_users[TEST_USER_DATA.username] = TEST_USER_DATA;
         await test_instance.inboundMsgHandler(message_instance, worker_stub, null);
 

@@ -29,10 +29,9 @@ class WorkerStatusMessage {
 
 class WatchHdbWorkersMessage {
     constructor() {
-        this.data = {};
-        this.data.id = uuid();
-        this.data.type = types.CORE_ROOM_MSG_TYPE_ENUM.HDB_WORKERS;
-        this.data.workers = [];
+        this.id = uuid();
+        this.type = types.CORE_ROOM_MSG_TYPE_ENUM.HDB_WORKERS;
+        this.workers = [];
     }
 }
 

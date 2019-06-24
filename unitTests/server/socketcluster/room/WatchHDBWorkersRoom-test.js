@@ -28,13 +28,11 @@ const GET_CLUSTER_STATUS_REQUEST = {
     "schema": "qZuyjvAe_gr8TKV7AAAA"
 };
 
-WORKER_CLUSTER_STATUS_MSG = {
-    "data": {
+const WORKER_CLUSTER_STATUS_MSG = {
         "type": "WORKER_ROOM_CLUSTER_STATUS",
         "request_id": "7f66b268-8011-47ef-b9ed-ea7a6ac7c42f",
         "worker_request_owner": 0,
         "__originator": 0
-    }
 };
 
 describe('Test UsersRoom inboundMsgHandler', function() {
@@ -54,13 +52,13 @@ describe('Test UsersRoom inboundMsgHandler', function() {
     });
 
     it('Nominal test for inboundMsgHandler', async () => {
-        message_instance.data.workers = WORKERS_MSG;
+        message_instance.workers = WORKERS_MSG;
         await test_instance.inboundMsgHandler(message_instance, worker_stub, null);
 
         assert.strictEqual(worker_stub.hdb_workers.length, 2, 'Expected worker to have 2 workers');
     });
     it('test for inboundMsgHandler with invalid workers', async () => {
-        message_instance.data.workers = {WORKERS_MSG};
+        message_instance.workers = {WORKERS_MSG};
         await test_instance.inboundMsgHandler(message_instance, worker_stub, null);
 
         assert.strictEqual(worker_stub.hdb_workers.length, 0, 'Expected worker to have 0 workers');

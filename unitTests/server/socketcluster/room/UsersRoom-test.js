@@ -97,13 +97,13 @@ describe('Test UsersRoom inboundMsgHandler', function() {
     });
 
     it('Test Nominal case inboundMsgHandler',async () => {
-        message_instance.data.users = TEST_USERS;
+        message_instance.users = TEST_USERS;
         await test_instance.inboundMsgHandler(message_instance, worker_stub, null);
 
         assert.strictEqual(Object.keys(worker_stub.hdb_users).length, 4, 'Expected worker to have 1 user');
     });
     it('Test inboundMsgHandler with invalid users',async () => {
-        message_instance.data.users = null;
+        message_instance.users = null;
         worker_stub.hdb_users[TEST_USER_DATA.username] = TEST_USER_DATA;
         assert.strictEqual(Object.keys(worker_stub.hdb_users).length, 1, 'Expected worker to have 1 user');
         await test_instance.inboundMsgHandler(message_instance, worker_stub, null);
@@ -111,7 +111,7 @@ describe('Test UsersRoom inboundMsgHandler', function() {
         assert.strictEqual(Object.keys(worker_stub.hdb_users).length, 1, 'Expected worker to have 1 user');
     });
     it('Test inboundMsgHandler with invalid user set',async () => {
-        message_instance.data.users = [TEST_USER_DATA];
+        message_instance.users = [TEST_USER_DATA];
         assert.strictEqual(Object.keys(worker_stub.hdb_users).length, 0, 'Expected worker to have 1 user');
         await test_instance.inboundMsgHandler(message_instance, worker_stub, null);
 

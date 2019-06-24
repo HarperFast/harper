@@ -43,7 +43,7 @@ describe('Test inboundMsgHandler', function() {
     });
 
     it('Nominal test for inboundMsgHandler', async () => {
-        message_instance.data.user = TEST_USER_DATA;
+        message_instance.user = TEST_USER_DATA;
         await test_instance.inboundMsgHandler(message_instance, worker_stub, null);
 
         assert.strictEqual(Object.keys(worker_stub.hdb_users).length, 1, 'Expected worker to have 1 user');
@@ -51,8 +51,7 @@ describe('Test inboundMsgHandler', function() {
         assert.strictEqual(worker_stub.publish_called, true, 'Expected exchange set to be called.');
     });
     it('Test for inboundMsgHandler with invalid request', async () => {
-        message_instance.data.user = TEST_USER_DATA;
-        message_instance.data = null;
+        message_instance.user = null;
         await test_instance.inboundMsgHandler(message_instance, worker_stub, null);
 
         assert.strictEqual(Object.keys(worker_stub.hdb_users).length, 0, 'Expected no workers to be added');
@@ -64,7 +63,7 @@ describe('Test inboundMsgHandler', function() {
         worker_stub.exchange_set = (topic, data) => {
           throw new Error('This is bad');
         };
-        message_instance.data.user = TEST_USER_DATA;
+        message_instance.user = TEST_USER_DATA;
         await test_instance.inboundMsgHandler(message_instance, worker_stub, null);
         await test_instance.inboundMsgHandler(message_instance, worker_stub, null);
 
@@ -77,7 +76,7 @@ describe('Test inboundMsgHandler', function() {
         worker_stub.exchange.publish = (topic, data) => {
             throw new Error('This is bad');
         };
-        message_instance.data.user = TEST_USER_DATA;
+        message_instance.user = TEST_USER_DATA;
         await test_instance.inboundMsgHandler(message_instance, worker_stub, null);
         await test_instance.inboundMsgHandler(message_instance, worker_stub, null);
 
