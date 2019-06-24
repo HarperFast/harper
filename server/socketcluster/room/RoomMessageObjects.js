@@ -54,12 +54,11 @@ class ErrorResponseMessage {
 
 class GetClusterStatusMessage {
     constructor() {
-        this.data = {};
-        this.data.type = types.WORKER_ROOM_MSG_TYPE_ENUM.GET_STATUS;
-        this.data.request_id = uuid();
-        this.data.requestor_channel = undefined;
-        this.data.worker_request_owner_id = undefined;
-        this.data.originator_msg_id = undefined;
+        this.type = types.WORKER_ROOM_MSG_TYPE_ENUM.GET_STATUS;
+        this.request_id = uuid();
+        this.requestor_channel = undefined;
+        this.worker_request_owner_id = undefined;
+        this.originator_msg_id = undefined;
     }
 }
 

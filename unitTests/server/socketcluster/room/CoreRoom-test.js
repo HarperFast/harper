@@ -115,7 +115,6 @@ const GET_WORKER_STATUS_INPUT = {
 };
 
 const CLUSTER_STATUS_RESPONSE_MSG = {
-    "data": {
         "type": "CLUSTER_STATUS_RESPONSE",
         "outbound_connections": [
             {
@@ -173,22 +172,18 @@ const CLUSTER_STATUS_RESPONSE_MSG = {
             }
         ],
         "hdb_header": {}
-    }
 };
 
 const INBOUND_MSG_HANDLER_TEST_MSG = {
-    "data": {
         "type": "GET_CLUSTER_STATUS",
         "requesting_hdb_worker_id": 24064,
         "requestor_channel": "5aWRB1SazNokMXKmAAAA",
-        "hdb_header": {}
-    },
+        "hdb_header": {},
     "timestamp": 1561055789296,
     "__originator": "5aWRB1SazNokMXKmAAAA"
 };
 
 const GET_WORKER_STATUS_EXPECTED_RESPONSE = {
-    "data": {
         "type": "CLUSTER_STATUS_RESPONSE",
         "outbound_connections": [
             {
@@ -238,14 +233,12 @@ const GET_WORKER_STATUS_EXPECTED_RESPONSE = {
             }
         ],
         "hdb_header": {}
-    }
 };
 
 const PROMISE_RESPONSE_MSG = {
     "hdb_header": {},
     "type": "CLUSTER_STATUS_RESPONSE",
     "is_enabled": true,
-    "data": {
         "outbound_connections": [
             {
                 "id": "",
@@ -281,7 +274,6 @@ const PROMISE_RESPONSE_MSG = {
                 ]
             }
         ]
-    },
 };
 
 function buildWorkerStatusMessage() {

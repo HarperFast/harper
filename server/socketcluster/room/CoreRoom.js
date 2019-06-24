@@ -41,25 +41,25 @@ function addStatusResponseValues(status_obj, response_msg) {
             throw new Error('Invalid msg passed to addStatusResponsevalues');
         }
         //status_obj.inbound_connections
-        if (response_msg.data.inbound_connections && response_msg.data.inbound_connections.length > 0) {
-            for (let i = 0; i < response_msg.data.inbound_connections.length; i++) {
-                let conn = response_msg.data.inbound_connections[i];
+        if (response_msg.inbound_connections && response_msg.inbound_connections.length > 0) {
+            for (let i = 0; i < response_msg.inbound_connections.length; i++) {
+                let conn = response_msg.inbound_connections[i];
                 if (conn) {
                     status_obj.inbound_connections.push(conn);
                 }
             }
         }
-        if (response_msg.data.outbound_connections && response_msg.data.outbound_connections.length > 0) {
-            for (let i = 0; i < response_msg.data.outbound_connections.length; i++) {
-                let conn = response_msg.data.outbound_connections[i];
+        if (response_msg.outbound_connections && response_msg.outbound_connections.length > 0) {
+            for (let i = 0; i < response_msg.outbound_connections.length; i++) {
+                let conn = response_msg.outbound_connections[i];
                 if (conn) {
                     status_obj.outbound_connections.push(conn);
                 }
             }
         }
-        if (response_msg.data.bidirectional_connections && response_msg.data.bidirectional_connections.length > 0) {
-            for (let i = 0; i < response_msg.data.bidirectional_connections.length; i++) {
-                let conn = response_msg.data.bidirectional_connections[i];
+        if (response_msg.bidirectional_connections && response_msg.bidirectional_connections.length > 0) {
+            for (let i = 0; i < response_msg.bidirectional_connections.length; i++) {
+                let conn = response_msg.bidirectional_connections[i];
                 if (conn) {
                     status_obj.bidirectional_connections.push(conn);
                 }
@@ -117,18 +117,18 @@ class CoreRoom extends RoomIF {
             case types.CORE_ROOM_MSG_TYPE_ENUM.GET_CLUSTER_STATUS: {
                 try {
                     let get_cluster_status_msg = new RoomMessageObjects.GetClusterStatusMessage();
-                    get_cluster_status_msg.data.requestor_channel = req.channel;
-                    get_cluster_status_msg.data.worker_request_owner = worker.id;
+                    get_cluster_status_msg.requestor_channel = req.channel;
+                    get_cluster_status_msg.worker_request_owner = worker.id;
                     if(worker.hdb_workers.length > 1) {
                         // We are posting to the hdb_workers room to get status from other workers, so we can't use this.publishToRoom.
-                        if(!get_cluster_status_msg.data.hdb_header) {
-                            get_cluster_status_msg.data.hdb_header = {};
-                            get_cluster_status_msg.data.hdb_header['worker_originator_id'] = worker.id;
-                            get_cluster_status_msg.data.__originator = worker.id;
+                        if(!get_cluster_status_msg.hdb_header) {
+                            get_cluster_status_msg.hdb_header = {};
+                            get_cluster_status_msg.hdb_header['worker_originator_id'] = worker.id;
+                            get_cluster_status_msg.__originator = worker.id;
                             if(req.hdb_header) {
                                 let header_keys = Object.keys(req.hdb_header);
                                 for(let i=0; i<header_keys.length; ++i) {
-                                    get_cluster_status_msg.data.hdb_header[header_keys[i]] = req.hdb_header[header_keys[i]];
+                                    get_cluster_status_msg.hdb_header[header_keys[i]] = req.hdb_header[header_keys[i]];
                                 }
                             }
                         }
@@ -136,7 +136,7 @@ class CoreRoom extends RoomIF {
                     }
 
                     let status_bucket_obj = new ClusterStatusBucket(worker.hdb_workers.length);
-                    self.cluster_status_request_buckets[get_cluster_status_msg.data.request_id] = status_bucket_obj;
+                    self.cluster_status_request_buckets[get_cluster_status_msg.request_id] = status_bucket_obj;
                     cluster_status_response.hdb_header = req.hdb_header;
                     cluster_status_response.cluster_staatus_request_id = req.id;
                     // insert the status for this worker
@@ -161,7 +161,7 @@ class CoreRoom extends RoomIF {
                                 cluster_status_response.outbound_connections = [];
                                 cluster_status_response.inbound_connections = [];
                             } else {
-                                let stored_bucket = self.cluster_status_request_buckets[result.data.cluster_status_request_id];
+                                let stored_bucket = self.cluster_status_request_buckets[result.cluster_status_request_id];
                                 if(!stored_bucket) {
                                     log.error('no stored status bucket found.  Cluster status failure.');
                                     // expect this to be caught locally
