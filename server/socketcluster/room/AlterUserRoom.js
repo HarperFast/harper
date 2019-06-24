@@ -5,6 +5,7 @@ const types = require('../types');
 const hdb_terms = require('../../../utility/hdbTerms');
 const log = require('../../../utility/logging/harper_logger');
 const {inspect} = require('util');
+const RoomMessageObjects = require('./RoomMessageObjects');
 
 /**
  * This is a standard room that represents a socketcluster channel, as well as the middleware for that channel, and
@@ -45,9 +46,10 @@ class AddUserRoom extends RoomIF {
                 });
 
                 worker.hdb_users[user.username] = current_user;
-
+                let hdb_users_msg = new RoomMessageObjects.SyncHdbUsersMessage();
+                hdb_users_msg.users = worker.hdb_users;
                 let set_result = await worker.exchange_set(hdb_terms.INTERNAL_SC_CHANNELS.HDB_USERS, worker.hdb_users);
-                worker.exchange.publish(hdb_terms.INTERNAL_SC_CHANNELS.HDB_USERS, worker.hdb_users);
+                worker.exchange.publish(hdb_terms.INTERNAL_SC_CHANNELS.HDB_USERS, hdb_users_msg);
             }
         } catch(e) {
             log.error(e);

@@ -53,10 +53,9 @@ class WatchHdbWorkersMessage {
 
 class SyncHdbUsersMessage {
     constructor() {
-        this.data = {};
-        this.data.id = uuid();
-        this.data.type = types.CORE_ROOM_MSG_TYPE_ENUM.HDB_USERS_MSG;
-        this.data.users = {};
+        this.id = uuid();
+        this.type = types.CORE_ROOM_MSG_TYPE_ENUM.HDB_USERS_MSG;
+        this.users = {};
     }
 }
 
