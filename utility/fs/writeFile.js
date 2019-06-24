@@ -18,40 +18,15 @@ async function writeFiles(files) {
             await work(files);
         } else {
             let chunks = _.chunk(files, CHUNK_SIZE);
-            let x = 0;
 
             for(let chunk of chunks){
-                x++;
                 await work(chunk);
-                const used = process.memoryUsage().heapUsed / 1024 / 1024;
-                console.log(`writeFile call: ${x}, current memory usage: ${Math.round(used * 100) / 100} MB`);
             }
         }
     } catch(err) {
         throw err;
     }
 }
-
-// async function writeFiles(files) {
-//     let chunk;
-//     let x = 0;
-//     let chunk_start = 0;
-//     let chunk_finish;
-//     do {
-//         chunk = [];
-//         chunk_finish = files.length > chunk_start + CHUNK_SIZE ? chunk_start + CHUNK_SIZE: files.length;
-//
-//         chunk = files.slice(chunk_start, chunk_finish);
-//
-//         await work(chunk);
-//
-//         chunk_start = chunk_finish;
-//
-//         x++;
-//         const used = process.memoryUsage().heapUsed / 1024 / 1024;
-//         console.log(`writeFile call: ${x}, current memory usage: ${Math.round(used * 100) / 100} MB`);
-//     } while (files.length > chunk_finish);
-// }
 
 async function work(files){
     await Promise.all(

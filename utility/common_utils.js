@@ -514,13 +514,19 @@ function getClusterUser(users, cluster_user_name){
     return cluster_user;
 }
 
+/**
+ * Promisify csv parser papaparse. Once function is promisified it can be called with:
+ * papa_parse.parsePromise(<reject-promise-obj>, <read-stream>, <chunking-function>)
+ * In the case of an error reject promise object must be called from chunking-function, it will bubble up
+ * through bind to this function.
+ */
 function promisifyPapaParse() {
-    papa_parse.parsePromise = function (stream, chunkFunc) {
+    papa_parse.parsePromise = function (stream, chunk_func) {
         return new Promise(function (resolve, reject) {
             papa_parse.parse(stream,
                 {
                     header: true,
-                    chunk: chunkFunc.bind(null, reject),
+                    chunk: chunk_func.bind(null, reject),
                     skipEmptyLines: true,
                     dynamicTyping: true,
                     error: reject,

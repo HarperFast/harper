@@ -117,20 +117,24 @@ async function csvFileLoad(json_message) {
     try {
         // check file exists and have perms to read, throws exception if fails
         await p_fs_access(json_message.file_path, fs.constants.R_OK | fs.constants.F_OK);
-
-        console.log(`\n\npapa parse called - memory: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
         let bulk_load_result = await callPapaParse(json_message);
-        console.log(`### papa parse finished - memory: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
 
-        console.log(`successfully loaded ${bulk_load_result.number_written} of ${bulk_load_result.records} records`);
         return `successfully loaded ${bulk_load_result.number_written} of ${bulk_load_result.records} records`;
-
     } catch(err) {
         logger.error(err);
         throw err;
     }
 }
 
+/**
+ * Passed to papaparse to validate chunks of csv data from a read stream.
+ *
+ * @param json_message - An object representing the CSV file.
+ * @param reject - A promise object bound to function through hdb_utils.promisifyPapaParse()
+ * @param results - An object returned by papaparse containing parsed csv data, errors and meta.
+ * @param parser - An  object returned by papaparse contains abort, pause and resume.
+ * @returns if validation error found returns Promise<error>, if no error nothing is returned.
+ */
 async function validateChunk(json_message, reject, results, parser) {
     if (results.data.length === 0) {
         return;
@@ -138,8 +142,6 @@ async function validateChunk(json_message, reject, results, parser) {
 
     // parser pause and resume prevent the parser from getting ahead of validation.
     parser.pause();
-
-    console.log(`validate chunk length: ${results.data.length}`);
 
     let write_object = {
         operation: json_message.operation,
@@ -152,11 +154,23 @@ async function validateChunk(json_message, reject, results, parser) {
         await insert.validation(write_object);
         parser.resume();
     } catch(err) {
-        console.log(err);
-        throw err;
+        logger.error(err);
+        // reject is a promise object bound to chunk function through hdb_utils.promisifyPapaParse(). In the case of an error
+        // reject will bubble up to hdb_utils.promisifyPapaParse() and return a reject promise object with given error.
+        reject(err);
     }
 }
 
+/**
+ * Passed to papaparse to insert chunks of csv data from a read stream.
+ *
+ * @param json_message - An object representing the CSV file.
+ * @param insert_results - An object passed by reference used to accumulate results from insert or update function.
+ * @param reject - A promise object bound to function through hdb_utils.promisifyPapaParse().
+ * @param results - An object returned by papaparse containing parsed csv data, errors and meta.
+ * @param parser - An  object returned by papaparse contains abort, pause and resume.
+ * @returns if validation error found returns Promise<error>, if no error nothing is returned.
+ */
 async function insertChunk(json_message, insert_results, reject, results, parser) {
     if (results.data.length === 0) {
         return;
@@ -166,21 +180,30 @@ async function insertChunk(json_message, insert_results, reject, results, parser
     parser.pause();
 
     try {
-        console.log(`insert chunk length: ${results.data.length}`);
         let bulk_load_chunk_result = await callBulkLoad(results.data, json_message.schema, json_message.table, json_message.action);
         insert_results.records += bulk_load_chunk_result.records;
         insert_results.number_written += bulk_load_chunk_result.number_written;
         parser.resume();
     } catch(err) {
-        // console.log(err);
-        // throw err;
+        logger.error(err);
+        // reject is a promise object bound to chunk function through hdb_utils.promisifyPapaParse(). In the case of an error
+        // reject will bubble up to hdb_utils.promisifyPapaParse() and return a reject promise object with given error.
         reject(err);
     }
-
 }
 
+
+/**
+ * Handles two asynchronous calls to csv parser papaparse.
+ * First call validates the full read stream from csv file by calling papaparse with validateChunk function. The entire
+ * stream is consumed by validate because all rows must be validated before calling insert.
+ * Second call inserts a new csv file read stream by calling papaparse with insertChunk function.
+ *
+ * @param json_message - An object representing the CSV file.
+ * @returns {Promise<{records: number, number_written: number}>}
+ */
 async function callPapaParse(json_message) {
-    // passing object by reference to insert_chunk
+    // passing insert_results object by reference to insertChunk function where it accumulate values from bulk load results.
     let insert_results = {
         records: 0,
         number_written: 0
@@ -189,16 +212,13 @@ async function callPapaParse(json_message) {
     try {
         let stream = fs_extra.createReadStream(json_message.file_path, {highWaterMark:HIGHWATERMARK});
         await papa_parse.parsePromise(stream, validateChunk.bind(null, json_message));
-        console.log(`papa parse validate finished - memory: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
 
         stream = fs_extra.createReadStream(json_message.file_path, {highWaterMark:HIGHWATERMARK});
         await papa_parse.parsePromise(stream, insertChunk.bind(null, json_message, insert_results));
-        console.log(`papa parse insert chunk finished - memory: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
 
         return insert_results;
-
     } catch(err) {
-        console.log(err);
+        logger.error(err);
         throw err;
     }
 }

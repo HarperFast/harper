@@ -125,7 +125,6 @@ async function validation(write_object){
  * @param insert_object
  */
 async function insertData(insert_object){
-    console.log(`insert data called on ${insert_object.schema} - memory: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
     let pool = undefined;
 
     try {
@@ -139,10 +138,8 @@ async function insertData(insert_object){
 
         let { written_hashes, skipped, ...data_wrapper} = await processRows(insert_object, attributes, table_schema, epoch, null, pool);
         pool = data_wrapper.pool;
-        //console.log(`process rows finished - memory: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
 
         await checkForNewAttributes(insert_object.hdb_auth_header, table_schema, attributes);
-        //console.log(`checkForNewAttributes finished - memory: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
 
         pool = await processData(data_wrapper, pool);
 
