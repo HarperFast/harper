@@ -526,6 +526,7 @@ function promisifyPapaParse() {
             papa_parse.parse(stream,
                 {
                     header: true,
+                    transformHeader: removeBOM,
                     chunk: chunk_func.bind(null, reject),
                     skipEmptyLines: true,
                     dynamicTyping: true,
@@ -534,5 +535,22 @@ function promisifyPapaParse() {
                 });
         });
     };
+}
+
+/**
+ * Removes the byte order mark from a string
+ * @param string
+ * @returns a string minus any byte order marks
+ */
+function removeBOM(string) {
+    if (typeof string !== 'string') {
+        throw new TypeError(`Expected a string, got ${typeof string}`);
+    }
+
+    if (string.charCodeAt(0) === 0xFEFF) {
+        return string.slice(1);
+    }
+
+    return string;
 }
 

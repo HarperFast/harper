@@ -211,9 +211,11 @@ async function callPapaParse(json_message) {
 
     try {
         let stream = fs_extra.createReadStream(json_message.file_path, {highWaterMark:HIGHWATERMARK});
+        stream.setEncoding('utf8');
         await papa_parse.parsePromise(stream, validateChunk.bind(null, json_message));
 
         stream = fs_extra.createReadStream(json_message.file_path, {highWaterMark:HIGHWATERMARK});
+        stream.setEncoding('utf8');
         await papa_parse.parsePromise(stream, insertChunk.bind(null, json_message, insert_results));
 
         return insert_results;
