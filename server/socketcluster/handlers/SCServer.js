@@ -80,7 +80,7 @@ class SCServer{
                 this.worker.exchange_set([terms.INTERNAL_SC_CHANNELS.HDB_WORKERS, socket.id], 1).then(data => {
                     this.worker.exchange_get(terms.INTERNAL_SC_CHANNELS.HDB_WORKERS).then(data => {
                         let room_msg = new RoomMessageObjects.WatchHdbWorkersMessage();
-                        room_msg.data.workers = Object.keys(data);
+                        room_msg.workers = Object.keys(data);
                         this.worker.exchange.publish(terms.INTERNAL_SC_CHANNELS.HDB_WORKERS, room_msg);
                     });
                 });
@@ -101,7 +101,7 @@ class SCServer{
             this.worker.exchange_remove([terms.INTERNAL_SC_CHANNELS.HDB_WORKERS, socket.id]).then(data => {
                 this.worker.exchange_get(terms.INTERNAL_SC_CHANNELS.HDB_WORKERS).then(data=> {
                     let room_msg = new RoomMessageObjects.WatchHdbWorkersMessage();
-                    room_msg.data.workers = Object.keys(data);
+                    room_msg.workers = Object.keys(data);
                     this.worker.exchange.publish(terms.INTERNAL_SC_CHANNELS.HDB_WORKERS, room_msg);
                 });
             });

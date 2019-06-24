@@ -17,28 +17,13 @@ class HdbCoreBaseMessageIF {
     }
 }
 
-/**
- * Messages not sent through a socket do not have the .data field created, so in order to create parity with socket messages,
- * we create a .data field.
- */
-class IntraRoomMessageBaseIF {
-    constructor(core_room_msg_type_enum) {
-        this.data = {};
-        this.data.id = uuid();
-        this.data.type = core_room_msg_type_enum;
-        this.data.hdb_header = {};
-        this.data.operation = undefined;
-    }
-}
-
 class WorkerStatusMessage {
   constructor() {
-      this.data = {};
-      this.data.owning_worker_id = undefined;
-      this.data.type = types.WORKER_ROOM_MSG_TYPE_ENUM.STATUS_RESPONSE;
-      this.data.originator_msg_id = undefined;
-      this.data.outbound_connections = [];
-      this.data.inbound_connections = [];
+      this.owning_worker_id = undefined;
+      this.type = types.WORKER_ROOM_MSG_TYPE_ENUM.STATUS_RESPONSE;
+      this.originator_msg_id = undefined;
+      this.outbound_connections = [];
+      this.inbound_connections = [];
   }
 }
 

@@ -52,8 +52,8 @@ class WorkerRoom extends RoomIF {
             }
             case types.WORKER_ROOM_MSG_TYPE_ENUM.STATUS_RESPONSE: {
                 built_msg = new RoomMessageObjects.WorkerStatusMessage();
-                built_msg.data.originator_msg_id = msg.request_id;
-                built_msg.data.owning_worker_id = this.id;
+                built_msg.originator_msg_id = msg.request_id;
+                built_msg.owning_worker_id = this.id;
                 break;
             }
             default:
