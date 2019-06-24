@@ -12,14 +12,13 @@ const logger = require('../utility/logging/harper_logger');
 const fs = require('fs');
 const papa_parse = require('papaparse');
 const fs_extra = require('fs-extra');
+hdb_utils.promisifyPapaParse();
+const p_fs_access = util.promisify(fs.access);
 
 const NEWLINE = '\n';
 const unix_filename_regex = new RegExp(/[^-_.A-Za-z0-9]/);
 const ALASQL_MIDDLEWARE_PARSE_PARAMETERS = 'SELECT * FROM CSV(?, {headers:true, separator:","})';
 const HIGHWATERMARK = 1024*1024*5;
-hdb_utils.promisifyPapaParse();
-
-const p_fs_access = util.promisify(fs.access);
 
 module.exports = {
     csvDataLoad: csvDataLoad,
@@ -275,20 +274,20 @@ async function callMiddleware(parameter_string, data) {
 
 async function callBulkLoad(csv_records, schema, table, action) {
     let bulk_load_result = {};
-    if(csv_records && csv_records.length > 0 && validateColumnNames(csv_records[0])) {
 
-        try {
+    try {
+        if(csv_records && csv_records.length > 0 && validateColumnNames(csv_records[0])) {
             bulk_load_result = await bulkLoad(csv_records, schema, table, action);
-        } catch(err) {
-           console.log(err);
-           throw err;
+        } else {
+            bulk_load_result.message = 'No records parsed from csv file.';
+            logger.info(bulk_load_result.message);
         }
-        
-    } else {
-        bulk_load_result.message = 'No records parsed from csv file.';
-        logger.info(bulk_load_result.message);
+
+        return bulk_load_result;
+    } catch(err) {
+        logger.error(err);
+        throw err;
     }
-    return bulk_load_result;
 }
 
 /**
