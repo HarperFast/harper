@@ -1,13 +1,13 @@
 const EventEmitter = require('events');
 
-const EVENT_NAME = 'status';
+const EVENT_NAME = 'socketClusterStatus';
 
 class SocketClusterStatusEmitter extends EventEmitter {}
 
 let socketClusterEmitter = new SocketClusterStatusEmitter();
 
 module.exports = {
-    clusterEmitter: socketClusterEmitter,
+    socketClusterEmitter,
     EVENT_NAME,
     ClusterStatusEmitter: SocketClusterStatusEmitter
 };

@@ -24,8 +24,8 @@ class HDBSocketConnector extends SocketConnector{
         try {
             // We may need to start assigning message types depending on the amount of data aside from transactions that
             // need to be sent from the cluster to hdb children.
-            if(req.data.type) {
-                switch(req.data.type) {
+            if(req.type) {
+                switch(req.type) {
                     case terms.CLUSTERING_MESSAGE_TYPES.CLUSTER_STATUS_RESPONSE: {
                         ClusterStatusEmitter.clusterEmitter.emit(ClusterStatusEmitter.EVENT_NAME, req);
                         break;

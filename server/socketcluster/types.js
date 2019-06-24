@@ -66,7 +66,7 @@ const RULE_TYPE_ENUM = {
 
 // Message types that will flow through the Cluster Worker room.
 const WORKER_ROOM_MSG_TYPE_ENUM = {
-    STATUS: 'WORKER_ROOM_CLUSTER_STATUS',
+    GET_STATUS: 'WORKER_ROOM_GET_CLUSTER_STATUS_REQUEST',
     STATUS_RESPONSE: 'WORKER_ROOM_STATUS_RESPONSE'
 };
 

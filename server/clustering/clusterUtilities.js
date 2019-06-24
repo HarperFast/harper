@@ -233,9 +233,9 @@ async function clusterStatus(cluster_status_json) {
             log.error('Error building a cluster status message');
             return;
         }
-        cluster_status_msg.data.requesting_hdb_worker_id = process.pid;
-        cluster_status_msg.data.requestor_channel = global.hdb_socket_client.socket.id;
-        hdb_utils.sendTransactionToSocketCluster( cluster_status_msg.data.requestor_channel, cluster_status_msg);
+        cluster_status_msg.requesting_hdb_worker_id = process.pid;
+        cluster_status_msg.requestor_channel = global.hdb_socket_client.socket.id;
+        hdb_utils.sendTransactionToSocketCluster( cluster_status_msg.requestor_channel, cluster_status_msg);
         // Wait for cluster status event to fire then respond to client
         let result = await Promise.race([event_promise, timeout_promise.promise]);
         log.trace(`cluster status result: ${util.inspect(result)}`);

@@ -31,10 +31,10 @@ class WatchHDBWorkersRoom extends RoomIF {
             return;
         }
         try {
-            if(req.data && req.data.workers && Array.isArray(req.data.workers)) {
-                for(let i=0; i<req.data.workers.length; i++) {
-                    if(!worker.hdb_workers.includes(req.data.workers[i])) {
-                        worker.hdb_workers.push(req.data.workers[i]);
+            if(req && req.workers && Array.isArray(req.workers)) {
+                for(let i=0; i<req.workers.length; i++) {
+                    if(!worker.hdb_workers.includes(req.workers[i])) {
+                        worker.hdb_workers.push(req.workers[i]);
                     }
                 }
             } else {

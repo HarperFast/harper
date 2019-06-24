@@ -421,7 +421,7 @@ describe('Test CoreRoom inboundMsgHandler', function() {
         worker_stub.hdb_workers.push('AnotherWorker');
         // Simulate another worker sending a message through the worker room.
         setTimeout(() => {
-            socket_cluster_status_event.clusterEmitter.emit(socket_cluster_status_event.EVENT_NAME, worker_status_msg);
+            socket_cluster_status_event.socketClusterEmitter.emit(socket_cluster_status_event.EVENT_NAME, worker_status_msg);
         }, SET_TIMEOUT_TIME_MS);
 
         // Use the publish stub to set the response message id.  The response messages cluster_status_request_id would normally

@@ -12,7 +12,7 @@ const socket_cluster_status_event = require('../../../events/SocketClusterStatus
 
 const {inspect} = require('util');
 
-const STATUS_TIMEOUT_MS = 10000;
+const STATUS_TIMEOUT_MS = 1000000;
 const TIMEOUT_ERR_MSG = 'Timeout trying to get cluster status.';
 const STATUS_BUCKET_ATTRIBUTE_NAME = 'status_bucket';
 let self = undefined;
@@ -45,7 +45,7 @@ function addStatusResponseValues(status_obj, response_msg) {
             for (let i = 0; i < response_msg.data.inbound_connections.length; i++) {
                 let conn = response_msg.data.inbound_connections[i];
                 if (conn) {
-                    status_obj.data.inbound_connections.push(conn);
+                    status_obj.inbound_connections.push(conn);
                 }
             }
         }
@@ -53,7 +53,7 @@ function addStatusResponseValues(status_obj, response_msg) {
             for (let i = 0; i < response_msg.data.outbound_connections.length; i++) {
                 let conn = response_msg.data.outbound_connections[i];
                 if (conn) {
-                    status_obj.data.outbound_connections.push(conn);
+                    status_obj.outbound_connections.push(conn);
                 }
             }
         }
@@ -61,7 +61,7 @@ function addStatusResponseValues(status_obj, response_msg) {
             for (let i = 0; i < response_msg.data.bidirectional_connections.length; i++) {
                 let conn = response_msg.data.bidirectional_connections[i];
                 if (conn) {
-                    status_obj.data.bidirectional_connections.push(conn);
+                    status_obj.bidirectional_connections.push(conn);
                 }
             }
         }
@@ -84,6 +84,10 @@ class CoreRoom extends RoomIF {
         try {
             super.publishToRoom(msg, worker, existing_hdb_header);
             log.info(`Called publishToRoom in CoreRoom with topic: ${self.topic}.`);
+            // strip the originator header so we can get this to the worker
+            if(this.__originator) {
+                delete this.__originator;
+            }
             worker.exchange.publish(self.topic, msg);
         } catch(err) {
             log.error(`Error publishing to channel ${self.topic}.`);
@@ -97,15 +101,13 @@ class CoreRoom extends RoomIF {
             worker = this;
         }
         if(!req) {
-            return;
-        }
-        if(!req.data) {
-            return;
-        }
-        let msg_type = req.data.type;
-        if(!req) {
             log.info('Invalid request sent to core room inboundMsgHandler.');
+            return;
         }
+        //if(!req.data) {
+        //    return;
+        //}
+        let msg_type = req.type;
         if(!worker) {
             log.info('Invalid worker sent to core room inboundMsgHandler');
         }
@@ -119,14 +121,14 @@ class CoreRoom extends RoomIF {
                     get_cluster_status_msg.data.worker_request_owner = worker.id;
                     if(worker.hdb_workers.length > 1) {
                         // We are posting to the hdb_workers room to get status from other workers, so we can't use this.publishToRoom.
-                        if(!get_cluster_status_msg.hdb_header) {
-                            get_cluster_status_msg.hdb_header = {};
-                            get_cluster_status_msg.hdb_header['worker_originator_id'] = worker.id;
+                        if(!get_cluster_status_msg.data.hdb_header) {
+                            get_cluster_status_msg.data.hdb_header = {};
+                            get_cluster_status_msg.data.hdb_header['worker_originator_id'] = worker.id;
                             get_cluster_status_msg.data.__originator = worker.id;
                             if(req.hdb_header) {
                                 let header_keys = Object.keys(req.hdb_header);
                                 for(let i=0; i<header_keys.length; ++i) {
-                                    get_cluster_status_msg.hdb_header[header_keys[i]] = req.hdb_header[header_keys[i]];
+                                    get_cluster_status_msg.data.hdb_header[header_keys[i]] = req.hdb_header[header_keys[i]];
                                 }
                             }
                         }
@@ -135,8 +137,8 @@ class CoreRoom extends RoomIF {
 
                     let status_bucket_obj = new ClusterStatusBucket(worker.hdb_workers.length);
                     self.cluster_status_request_buckets[get_cluster_status_msg.data.request_id] = status_bucket_obj;
-                    cluster_status_response.data.hdb_header = req.data.hdb_header;
-                    cluster_status_response.data.cluster_staatus_request_id = req.data.id;
+                    cluster_status_response.hdb_header = req.hdb_header;
+                    cluster_status_response.cluster_staatus_request_id = req.id;
                     // insert the status for this worker
                     cluster_utils.getWorkerStatus(cluster_status_response, worker);
                     if(worker.hdb_workers.length === 1) {
@@ -152,12 +154,12 @@ class CoreRoom extends RoomIF {
                     await Promise.all(
                         workers.map(async worker => {
                             let timeout_promise = hdb_utils.timeoutPromise(STATUS_TIMEOUT_MS, TIMEOUT_ERR_MSG);
-                            let event_promise = socket_cluster_utils.createEventPromise(socket_cluster_status_event.EVENT_NAME, socket_cluster_status_event.clusterEmitter, timeout_promise);
+                            let event_promise = socket_cluster_utils.createEventPromise(socket_cluster_status_event.EVENT_NAME, socket_cluster_status_event.socketClusterEmitter, timeout_promise);
                             let result = await Promise.race([event_promise, timeout_promise.promise]);
                             if (result === TIMEOUT_ERR_MSG) {
-                                cluster_status_response.data.error = TIMEOUT_ERR_MSG;
-                                cluster_status_response.data.outbound_connections = [];
-                                cluster_status_response.data.inbound_connections = [];
+                                cluster_status_response.error = TIMEOUT_ERR_MSG;
+                                cluster_status_response.outbound_connections = [];
+                                cluster_status_response.inbound_connections = [];
                             } else {
                                 let stored_bucket = self.cluster_status_request_buckets[result.data.cluster_status_request_id];
                                 if(!stored_bucket) {
@@ -176,10 +178,10 @@ class CoreRoom extends RoomIF {
                 } catch(err) {
                     log.error(`Cluster status error`);
                     log.error(err);
-                    cluster_status_response.data.owning_worker_id = this.id;
-                    cluster_status_response.data.outbound_connections = [];
-                    cluster_status_response.data.inbound_connections = [];
-                    cluster_status_response.data.error = "There was an error getting cluster status.";
+                    cluster_status_response.owning_worker_id = this.id;
+                    cluster_status_response.outbound_connections = [];
+                    cluster_status_response.inbound_connections = [];
+                    cluster_status_response.error = "There was an error getting cluster status.";
                 }
                 log.info(`Posting cluster status response message`);
                 try {

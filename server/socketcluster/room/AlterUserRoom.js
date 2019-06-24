@@ -31,7 +31,7 @@ class AddUserRoom extends RoomIF {
         if(!req) {
             return;
         }
-        let user = req.data.user;
+        let user = req.user;
         if(!user) {
             log.info('User not found in alter user request');
             return;

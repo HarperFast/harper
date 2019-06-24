@@ -176,6 +176,15 @@ class WorkerIF extends SCWorker{
      * @param next - The next function that should be called if this is successful.
      */
     async evalRoomRules(req, next, middleware_type) {
+        if(req.data.data) {
+            let data_keys = Object.keys(req.data.data);
+            for(let i=0; i<data_keys.length; i++) {
+                if(data_keys[i] === 'data') {
+                    continue;
+                }
+                req.data[data_keys[i]] = req.data.data[data_keys[i]];
+            }
+        }
         if(!req.hdb_header && !req.data.hdb_header) {
             log.trace('failed hdb_header check');
             return types.ERROR_CODES.MIDDLEWARE_SWALLOW;

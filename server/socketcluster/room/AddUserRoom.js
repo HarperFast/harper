@@ -31,11 +31,11 @@ class AddUserRoom extends RoomIF {
         if(!req) {
             return;
         }
-        if(!req || !req.data || !req.data.user) {
+        if(!req || !req.user) {
             log.info('User not found in alter user request');
             return;
         }
-        let user = req.data.user;
+        let user = req.user;
         try {
             log.trace('AddUser handler');
             if (worker.hdb_users[user.username] === undefined) {

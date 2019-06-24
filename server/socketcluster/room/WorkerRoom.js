@@ -72,30 +72,29 @@ class WorkerRoom extends RoomIF {
         }
         let requesting_channel = req.channel;
         try {
-            switch(req.data.type) {
-                case types.WORKER_ROOM_MSG_TYPE_ENUM.STATUS: {
+            switch(req.type) {
+                // The worker room got a 'GET_CLUSTER_STATUS message, if this worker isn't the requestor, respond.
+                case types.WORKER_ROOM_MSG_TYPE_ENUM.GET_STATUS: {
                     // 'this' worker sent this message, ignore it.
-                    if(req.data.worker_request_owner === this.id) {
+                    if(req.worker_request_owner === this.id) {
                         return;
                     }
-                    let num_workers = 1;
-                    let responses_recieved = 0;
                     let response = self.buildRoomMsg('temp', types.CORE_ROOM_MSG_TYPE_ENUM.CLUSTER_STATUS_RESPONSE);
-                    self.publishToRoom(response, this, req.data.hdb_header);
+                    self.publishToRoom(response, this, req.hdb_header);
                     break;
                 }
                 case types.WORKER_ROOM_MSG_TYPE_ENUM.STATUS_RESPONSE: {
-                    if(!req || !req.data) {
+                    if(!req) {
                         log.trace(`Got an invalid CLUSTER_STATUS_RESPONSE message.`);
                     }
-                    socket_cluster_status_event.clusterEmitter.emit(socket_cluster_status_event.EVENT_NAME, req);
+                    socket_cluster_status_event.socketClusterEmitter.emit(socket_cluster_status_event.EVENT_NAME, req);
                     break;
                 }
                 case types.CORE_ROOM_MSG_TYPE_ENUM.CLUSTER_STATUS_RESPONSE: {
-                    if(!req || !req.data) {
+                    if(!req) {
                         log.trace(`Got an invalid CLUSTER_STATUS_RESPONSE message.`);
                     }
-                    socket_cluster_status_event.clusterEmitter.emit(socket_cluster_status_event.EVENT_NAME, req);
+                    socket_cluster_status_event.socketClusterEmitter.emit(socket_cluster_status_event.EVENT_NAME, req);
                     break;
                 }
             }

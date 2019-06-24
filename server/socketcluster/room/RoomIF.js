@@ -190,7 +190,7 @@ class RoomIF {
             msg.channel = this.topic;
         }
         // This message was incorrectly formed, move attributes into the .data attribute.
-        if(!msg.data) {
+        /*if(!msg.data) {
             let keys = Object.keys(msg);
             msg.data = {};
             for(let i=0; i<keys.length; i++) {
@@ -201,7 +201,7 @@ class RoomIF {
                 delete msg[keys[i]];
             }
             log.warn(`Sending a cluster message with invalid data.`);
-        }
+        }*/
     }
 
     async inboundMsgHandler(input, worker, response) {

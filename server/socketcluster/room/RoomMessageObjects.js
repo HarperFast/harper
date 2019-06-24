@@ -4,7 +4,24 @@ const types = require('../types');
 const hdb_terms = require('../../../utility/hdbTerms');
 const uuid = require('uuid/v4');
 
-class HdbCoreMessageIF {
+/**
+    Messages sent through a socket automatically have the contained values put into the .data field by the exchange
+    itself, so we don't create a data field like we do in RoomMessageBaseIF.
+ */
+class HdbCoreBaseMessageIF {
+    constructor(core_room_msg_type_enum) {
+        this.id = uuid();
+        this.type = core_room_msg_type_enum;
+        this.hdb_header = {};
+        this.operation = undefined;
+    }
+}
+
+/**
+ * Messages not sent through a socket do not have the .data field created, so in order to create parity with socket messages,
+ * we create a .data field.
+ */
+class IntraRoomMessageBaseIF {
     constructor(core_room_msg_type_enum) {
         this.data = {};
         this.data.id = uuid();
@@ -55,7 +72,7 @@ class ErrorResponseMessage {
 class GetClusterStatusMessage {
     constructor() {
         this.data = {};
-        this.data.type = types.WORKER_ROOM_MSG_TYPE_ENUM.STATUS;
+        this.data.type = types.WORKER_ROOM_MSG_TYPE_ENUM.GET_STATUS;
         this.data.request_id = uuid();
         this.data.requestor_channel = undefined;
         this.data.worker_request_owner_id = undefined;
@@ -63,65 +80,64 @@ class GetClusterStatusMessage {
     }
 }
 
-class HdbCoreClusterStatusRequestMessage extends HdbCoreMessageIF {
+class HdbCoreClusterStatusRequestMessage extends HdbCoreBaseMessageIF {
     constructor() {
         super(types.CORE_ROOM_MSG_TYPE_ENUM.GET_CLUSTER_STATUS);
-        this.data = {};
-        this.data.requesting_hdb_worker_id = undefined;
-        this.data.requestor_channel = undefined;
+        this.requesting_hdb_worker_id = undefined;
+        this.requestor_channel = undefined;
     }
 }
 
-class HdbCoreClusterStatusResponseMessage extends HdbCoreMessageIF {
+class HdbCoreClusterStatusResponseMessage extends HdbCoreBaseMessageIF {
     constructor() {
         super(types.CORE_ROOM_MSG_TYPE_ENUM.CLUSTER_STATUS_RESPONSE);
-        this.data.owning_worker_id = undefined;
-        this.data.cluster_status_request_id = undefined;
-        this.data.outbound_connections = [];
-        this.data.inbound_connections = [];
-        this.data.error = undefined;
+        this.owning_worker_id = undefined;
+        this.cluster_status_request_id = undefined;
+        this.outbound_connections = [];
+        this.inbound_connections = [];
+        this.error = undefined;
     }
 }
 
-class HdbCoreClusterAddUserRequestMessage extends HdbCoreMessageIF {
+class HdbCoreClusterAddUserRequestMessage extends HdbCoreBaseMessageIF {
     constructor() {
         super(types.CORE_ROOM_MSG_TYPE_ENUM.ADD_USER);
-        this.data.user = undefined;
+        this.user = undefined;
     }
 }
 
-class HdbCoreClusterAlterUserRequestMessage extends HdbCoreMessageIF {
+class HdbCoreClusterAlterUserRequestMessage extends HdbCoreBaseMessageIF {
     constructor() {
         super(types.CORE_ROOM_MSG_TYPE_ENUM.ALTER_USER);
-        this.data.user = undefined;
+        this.user = undefined;
     }
 }
 
-class HdbCoreClusterDropUserRequestMessage extends HdbCoreMessageIF {
+class HdbCoreClusterDropUserRequestMessage extends HdbCoreBaseMessageIF {
     constructor() {
         super(types.CORE_ROOM_MSG_TYPE_ENUM.DROP_USER);
-        this.data.user = undefined;
+        this.user = undefined;
     }
 }
 
-class HdbCoreOperationMessage extends HdbCoreMessageIF {
+class HdbCoreOperationMessage extends HdbCoreBaseMessageIF {
     constructor() {
         super(types.CORE_ROOM_MSG_TYPE_ENUM.HDB_OPERATION);
-        this.data.operation = undefined;
+        this.operation = undefined;
     }
 }
 
-class HdbCoreAddNodeMessage extends HdbCoreMessageIF {
+class HdbCoreAddNodeMessage extends HdbCoreBaseMessageIF {
     constructor() {
         super(types.CORE_ROOM_MSG_TYPE_ENUM.ADD_NODE);
-        this.data.node = undefined;
+        this.node = undefined;
     }
 }
 
-class HdbCoreRemoveNodeMessage extends HdbCoreMessageIF {
+class HdbCoreRemoveNodeMessage extends HdbCoreBaseMessageIF {
     constructor() {
         super(types.CORE_ROOM_MSG_TYPE_ENUM.REMOVE_NODE);
-        this.data.node = undefined;
+        this.node = undefined;
     }
 }
 
