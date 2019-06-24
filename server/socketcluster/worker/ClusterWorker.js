@@ -66,9 +66,11 @@ class ClusterWorker extends WorkerIF {
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_IN, this.checkNewRoom.bind(this));
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_IN, this.messagePrepMiddleware.bind(this));
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_IN, this.evalRoomPublishInMiddleware.bind(this));
-        this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_IN, this.evalRoomRules.bind(this));
+        this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_IN, this.evalRoomPublishInRules.bind(this));
+
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_HANDSHAKE_SC, this.evalRoomHandshakeSCMiddleware.bind(this));
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_OUT, this.evalRoomPublishOutMiddleware.bind(this));
+        this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_OUT, this.evalRoomPublishOutRules.bind(this));
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_SUBSCRIBE, this.checkNewRoom.bind(this));
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_SUBSCRIBE, this.evalRoomSubscribeMiddleware.bind(this));
         new SCServer(this);
@@ -209,46 +211,6 @@ class ClusterWorker extends WorkerIF {
         }catch(e){
             log.error(e);
         }
-    }
-
-
-    /**
-     * Evaluate room rules via the decision matrix.  Since middleware always has the same parameter, we can't
-     * make this a middlewareIF object, as the rules generally need the worker.
-     *
-     * This should always be called at the end of the middleware chain for a connector.
-     * @param req - The request
-     * @param next - The next function that should be called if this is successful.
-     */
-    // TODO: Can middleware be async?
-    evalRoomRules(req, next) {
-        if(!req.hdb_header) {
-            return next(types.ERROR_CODES.MIDDLEWARE_SWALLOW);
-        }
-
-        // get the room
-        let room = this.getRoom(req.channel);
-        if(!room) {
-            return next(types.ERROR_CODES.MIDDLEWARE_ERROR);
-        }
-        // eval rules
-
-        try {
-            let connector_type = types.CONNECTOR_TYPE_ENUM.CORE;
-            if(req.hdb_header[types.REQUEST_HEADER_ATTRIBUTE_NAMES.DATA_SOURCE]) {
-                connector_type = req.hdb_header[types.REQUEST_HEADER_ATTRIBUTE_NAMES.DATA_SOURCE];
-            }
-            room.evalRules(req, this, connector_type).then(rules_result=>{
-                if(!rules_result) {
-                    return next(types.ERROR_CODES.WORKER_RULE_FAILURE);
-                }
-                next();
-            });
-        } catch(err) {
-            log.error(err);
-            return next(types.ERROR_CODES.WORKER_RULE_ERROR);
-        }
-
     }
 
     /**
