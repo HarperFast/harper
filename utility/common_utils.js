@@ -517,7 +517,7 @@ function getClusterUser(users, cluster_user_name){
 /**
  * Promisify csv parser papaparse. Once function is promisified it can be called with:
  * papa_parse.parsePromise(<reject-promise-obj>, <read-stream>, <chunking-function>)
- * In the case of an error reject promise object must be called from chunking-function, it will bubble up
+ * In the case of an error, reject promise object must be called from chunking-function, it will bubble up
  * through bind to this function.
  */
 function promisifyPapaParse() {
@@ -553,4 +553,3 @@ function removeBOM(string) {
 
     return string;
 }
-
