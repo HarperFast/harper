@@ -25,7 +25,6 @@ const terms = require('../utility/hdbTerms');
 const RestartEventObject = require('./RestartEventObject');
 const util = require('util');
 const promisify = util.promisify;
-const {inspect} = require('util');
 
 const p_schema_to_global = promisify(global_schema.setSchemaDataToGlobal);
 const p_users_to_global = promisify(user_schema.setUsersToGlobal);
@@ -230,14 +229,14 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                 forked.on('message', cluster_utilities.clusterMessageHandler);
                 forked.on('error', (err) => {
                    harper_logger.fatal('There was an error starting the HDB Child process.');
-                   harper_logger.fatal('err');
-                });
-                forked.on('disconnect', (err) => {
-                   harper_logger.fatal('Cluster worker has been disconnected.');
                    harper_logger.fatal(err);
                 });
+                forked.on('disconnect', (err) => {
+                   harper_logger.error('Cluster worker has been disconnected.');
+                   harper_logger.error(err);
+                });
                 forked.on('listening', (address) => {
-                    harper_logger.info(`HDB child process is listening on ${inspect(address)}`);
+                    harper_logger.info(`HDB child process is listening`);
                 });
                 forked.on('online', (address) => {
                     harper_logger.info(`HDB child process is online.`);
@@ -370,10 +369,6 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                 }).catch(function isError(e) {
                     harper_logger.error(e);
                 });
-                break;
-            case terms.CLUSTER_MESSAGE_TYPE_ENUM.CLUSTER_STATUS:
-                //QZZQ: REMOVE THIS, SIGNALING, ETC.
-
                 break;
             case terms.CLUSTER_MESSAGE_TYPE_ENUM.RESTART:
                 harper_logger.info(`Server close event received for process ${process.pid}`);

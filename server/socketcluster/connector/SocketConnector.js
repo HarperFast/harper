@@ -23,8 +23,8 @@ class SocketConnector{
         }
 
         this.socket.on('error', err =>{
-            //log.error('ERROR on HDB Client socket');
-            //log.error(err);
+            log.error('ERROR on HDB Client socket');
+            log.error(err);
         });
 
         this.socket.on('connect', status =>{
@@ -40,7 +40,6 @@ class SocketConnector{
 
         this.socket.on('login', (data, res)=>{
             log.debug('logging in');
-            log.debug(`login data: ${inspect(credentials)}`);
             res(null, credentials);
         });
     }

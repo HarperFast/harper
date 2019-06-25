@@ -22,8 +22,7 @@ class HDBSocketConnector extends SocketConnector{
     // When a response is sent from clustering, it ends up here.
     hdbWorkerWatcher(req) {
         try {
-            // We may need to start assigning message types depending on the amount of data aside from transactions that
-            // need to be sent from the cluster to hdb children.
+            // Assume the message contains an operation, but in the case of cluster status we need to act a little differently.
             if(req.type) {
                 switch(req.type) {
                     case terms.CLUSTERING_MESSAGE_TYPES.CLUSTER_STATUS_RESPONSE: {

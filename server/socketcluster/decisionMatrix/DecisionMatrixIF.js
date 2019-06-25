@@ -69,6 +69,7 @@ class DecisionMatrixIF {
      * @throws
      * @param rule_id - The id of the affected rule
      * @param connector_type_enum - Used to decide which rules collection to look in.
+     * @param middleware_type_enum - The type of middleware that should be removed.
      */
     removeRule(rule_id, connector_type_enum, middleware_type_enum) {
         if(!rule_id) {

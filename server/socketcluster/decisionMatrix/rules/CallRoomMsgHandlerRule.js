@@ -5,7 +5,9 @@ const types = require('../../types');
 const terms = require('../../../../utility/hdbTerms');
 
 /**
- * This worker rule sends a request via socketcluster to an HDBChild for processing in core.
+ * This worker rule calls the inboundMsgHandler on its room.  Note this is typically done as part of the
+ * standard flow, as a room's inboundMsgHandler is bound to the .watch during creation. However, we may
+ * want to act on a request even if it fails middleware or rules, so this exists.
  */
 class CallRoomMsgHandlerRule extends RuleIF {
     constructor() {
@@ -13,6 +15,14 @@ class CallRoomMsgHandlerRule extends RuleIF {
         this.setRuleOrder(types.COMMAND_EVAL_ORDER_ENUM.LOW);
         this.type = types.RULE_TYPE_ENUM.CALL_ROOM_MSG_HANDLER;
     }
+
+    /**
+     * Evaluate the request against this rule.  Return true if the request passes the rule, false if it does not.
+     * @param req - the request
+     * @param args - any arguments that are needed during rule evaluation, can be null.
+     * @param worker - the worker this rule belongs to.
+     * @returns {Promise<boolean>}
+     */
     async evaluateRule(req, args, worker) {
         log.trace('Evaluating call handler rule');
         if(!worker) {

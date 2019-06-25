@@ -4,20 +4,15 @@ const hdb_terms = require('../../../utility/hdbTerms');
 const log = require('../../../utility/logging/harper_logger');
 const {inspect} = require('util');
 
-class ConnectionDetails {
-    constructor(id, host_address, host_port, state) {
-        this.id = id;
-        this.host_address = host_address;
-        this.host_port = host_port;
-        this.state = state;
-        this.node_name = undefined;
-        this.subscriptions = [];
-    }
-}
-
+/**
+ * Gets the status from the worker parameter and crams it into the status response message parameter.
+ * @param status_response_msg - A status response message that will have the status added to.
+ * @param worker - the worker to get status from.
+ * @returns null
+ */
 function getWorkerStatus(status_response_msg, worker) {
     if(!worker.node_connector) {
-        return [];
+        return;
     }
 
     if(worker.node_connector.connections && worker.node_connector.connections.clients) {
@@ -60,6 +55,14 @@ function getWorkerStatus(status_response_msg, worker) {
     }
 }
 
+/**
+ * Creates a promise around an expected event and a timeout around that event.  If the event happens, the timeout will be
+ * cancelled.  If it times out, we still send a resolve with the timeout message.
+ * @param event_name - The name of the event we expect to get
+ * @param event_emitter_object - The EventEmitter object to listen for the event on.
+ * @param timeout_promise - A timeout promise object, which can be constructed with a function in common_utils.js.
+ * @returns {Promise<any>}
+ */
 function createEventPromise(event_name, event_emitter_object, timeout_promise) {
     let event_promise = new Promise((resolve) => {
         event_emitter_object.on(event_name, (msg) => {
@@ -78,7 +81,6 @@ function createEventPromise(event_name, event_emitter_object, timeout_promise) {
 }
 
 module.exports = {
-    ConnectionDetails,
     getWorkerStatus,
     createEventPromise
 };

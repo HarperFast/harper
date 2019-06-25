@@ -27,7 +27,7 @@ const started_forks = {};
 let is_enterprise = false;
 let child_event_count = 0;
 
-const STATUS_TIMEOUT_MS = 400000;
+const STATUS_TIMEOUT_MS = 4000;
 const DUPLICATE_ERR_MSG = 'Cannot add a node that matches the hosts clustering config.';
 
 const SUBSCRIPTIONS_MUST_BE_ARRAY = 'add_node subscriptions must be an array';
@@ -140,7 +140,7 @@ async function addNode(new_node) {
 
     try {
         let add_node_msg = terms.ClusterMessageObjects.HdbCoreAddNodeMessage();
-        add_node_msg.data.node = new_node;
+        add_node_msg.node = new_node;
         hdb_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.HDB_NODES, add_node_msg);
     } catch(e){
         throw new Error(e);
@@ -179,7 +179,7 @@ async function removeNode(remove_json_message) {
         return `Node '${remove_json_message.name}' was not found.`;
     }
     let remove_node_msg = terms.ClusterMessageObjects.HdbCoreRemoveNodeMessage();
-    remove_node_msg.data.node = remove_json_message;
+    remove_node_msg.node = remove_json_message;
     hdb_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.HDB_NODES, remove_node_msg);
     return `successfully removed ${remove_json_message.name} from manifest`;
 }
@@ -208,14 +208,14 @@ async function configureCluster(enable_cluster_json) {
 }
 
 /**
- * Get the status of this hosts clustering configuration and connections.
+ * Get the status of this hosts clustering configuration and connections.  This will send a message to a socket cluster worker,
+ * who will request status from all other workers.  Once all workers have reported status, the worker will respond to the
+ * HDB Child via the ClusterStatusEmitter.
  * @param cluster_status_json - Inbound message json.
  * @returns {Promise<void>}
  */
 async function clusterStatus(cluster_status_json) {
-    // QZZQ SHOULD GO HERE.
-
-    log.debug(`getting cluster status`);
+    log.trace(`getting cluster status`);
     let response = {};
     try {
         let clustering_enabled = env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY);
@@ -364,17 +364,15 @@ function clusterMessageHandler(msg) {
                     log.warn(`Got a duplicate child started event for pid ${msg.pid}`);
                 } else {
                     child_event_count++;
-                    kickOffEnterprise().then(() => {
-                        log.info('clustering initialized');
-                    });
                     log.info(`Received ${child_event_count} child started event(s).`);
                     started_forks[msg.pid] = true;
                     if(Object.keys(started_forks).length === global.forks.length) {
                         //all children are started, kick off enterprise.
                         child_event_count = 0;
                         try {
-                            //TODO: Restore kickoffenterprise here
-
+                            kickOffEnterprise().then(() => {
+                                log.info('clustering initialized');
+                            });
                         } catch(e){
                             log.error('clustering failed to start: ' + e);
                         }

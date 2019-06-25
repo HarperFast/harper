@@ -5,13 +5,8 @@ const types = require('../types');
 const log = require('../../../utility/logging/harper_logger');
 const CommandCollection = require('../decisionMatrix/rules/CommandCollection');
 
-// attributes that should not be copied into the .data portion of a message.
-const DATA_COPY_EXCLUSIONS = {
-    'hdb_header': 'exclude'
-};
-
 /**
- * Represents a socket cluster data channel, as well as any middleware and worker rules that guide what to do with a
+ * Superclass/interface that represents a socket cluster data channel, as well as any middleware and worker rules that guide what to do with a
  * request on that channel.  Rooms should never be instantiated directly, instead the room factory should be used.
  */
 class RoomIF {
@@ -62,7 +57,6 @@ class RoomIF {
                     log.info('There is no function attached to this middleware.');
                     continue;
                 }
-                let temp = middleware_to_eval[i];
                 let result = middleware_to_eval[i].eval_function(req, next);
                 // a defined result means there was a problem in the middleware.
                 if (result) {
@@ -175,6 +169,14 @@ class RoomIF {
         return result;
     }
 
+    /**
+     * Publish to to channel this room represents.  The super call will assign all values in the existing_hdb_header parameter into
+     * the message before it is published.
+     * @param msg - The message that will be posted to the channel
+     * @param worker - The worker that owns this room
+     * @param existing_hdb_header - an existing hdb header which will have its keys appended to msg.
+     * @returns {Promise<void>}
+     */
     async publishToRoom(msg, worker, existing_hdb_header) {
         if(!msg.hdb_header) {
             msg.hdb_header = {};
@@ -189,22 +191,18 @@ class RoomIF {
         if(!msg.channel) {
             msg.channel = this.topic;
         }
-        // This message was incorrectly formed, move attributes into the .data attribute.
-        /*if(!msg.data) {
-            let keys = Object.keys(msg);
-            msg.data = {};
-            for(let i=0; i<keys.length; i++) {
-                if(DATA_COPY_EXCLUSIONS[keys[i]]) {
-                   continue;
-                }
-                msg.data[keys[i]] = msg[keys[i]];
-                delete msg[keys[i]];
-            }
-            log.warn(`Sending a cluster message with invalid data.`);
-        }*/
     }
 
-    async inboundMsgHandler(input, worker, response) {
+    /**
+     * This function is bound to the watcher for this channel.  Since it is bound, 'this' will be replaced by the binder
+     * (typically the Worker).  We accept a worker as a parameter in case this function needs to be called in another
+     * case.
+     * @param req - The inbound request on this topic/channel
+     * @param worker - The worker that owns this room.
+     * @param response - a function that can be called as part of the response.
+     * @returns {Promise<void>}
+     */
+    async inboundMsgHandler(req, worker, response) {
         throw new Error('Not Implemented');
     }
 }

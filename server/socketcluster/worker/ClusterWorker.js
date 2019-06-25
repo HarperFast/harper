@@ -45,10 +45,12 @@ class ClusterWorker extends WorkerIF {
         }
     }
 
+    /**
+     * If a room does not yet exist for the specified channel, create one.  Will also subscribe to and watch the channel.
+     * @param channel - the name of the channel to watch.
+     */
     ensureRoomExists(channel) {
         if(!this.getRoom(channel)) {
-            // TODO - we will need a way to distinguish from the req if this room is
-            // for a core connection or a cluster connection.
             log.debug(`Creating room:  ${channel}`);
             let newRoom = this.createRoom(channel);
             if (newRoom) {
@@ -83,6 +85,7 @@ class ClusterWorker extends WorkerIF {
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_SUBSCRIBE, this.evalRoomSubscribeMiddleware.bind(this));
         new SCServer(this);
 
+        // Create a room for and subscribe to internal hdb channels.
         this.ensureRoomExists(terms.INTERNAL_SC_CHANNELS.HDB_USERS);
         this.ensureRoomExists(terms.INTERNAL_SC_CHANNELS.HDB_WORKERS);
         this.ensureRoomExists(terms.INTERNAL_SC_CHANNELS.WORKER_ROOM);
@@ -143,7 +146,7 @@ class ClusterWorker extends WorkerIF {
                 });
                 this.hdb_users = users;
                 let hdb_users_msg = new RoomMessageObjects.SyncHdbUsersMessage();
-                hdb_users_msg.data.users = users;
+                hdb_users_msg.users = users;
                 // Don't post the message to the exchange, just the users.
                 await this.exchange_set(terms.INTERNAL_SC_CHANNELS.HDB_USERS, users);
                 await this.exchange.publish(terms.INTERNAL_SC_CHANNELS.HDB_USERS, hdb_users_msg);

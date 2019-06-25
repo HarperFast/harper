@@ -5,7 +5,7 @@ const types = require('../../types');
 const terms = require('../../../../utility/hdbTerms');
 
 /**
- * This worker rule sends a request via socketcluster to an HDBChild for processing in core.
+ * This worker rule strips the internal hdb_header from the request before it is sent on.
  */
 class StripHdbHeaderRule extends RuleIF {
     constructor() {
@@ -14,6 +14,13 @@ class StripHdbHeaderRule extends RuleIF {
         this.type = types.RULE_TYPE_ENUM.CALL_ROOM_MSG_HANDLER;
     }
 
+    /**
+     * Evaluate the request against this rule.  Return true if the request passes the rule, false if it does not.
+     * @param req - the request
+     * @param args - any arguments that are needed during rule evaluation, can be null.
+     * @param worker - the worker this rule belongs to.
+     * @returns {Promise<boolean>}
+     */
     async evaluateRule(req, args, worker) {
         log.trace('Evaluating strip hdb header handler rule');
         try {

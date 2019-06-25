@@ -127,11 +127,11 @@ class WorkerIF extends SCWorker{
      * @param next - next function to call;
      */
     evalRoomPublishOutRules(req, next) {
-        log.trace(`****evaluating room publish out rules****`);
+        log.trace(`****evaluating room publish out rules on message type: ${req.type}****`);
         this.evalRoomRules(req, next, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_OUT)
             .then((result) => {
                 if(result) {
-                    log.trace(`****failed room publish out rules****`);
+                    log.trace(`****issue in room publish out rules****`);
                     return next(result);
                 }
                 log.trace(`****pass room publish out rules****`);
@@ -150,11 +150,11 @@ class WorkerIF extends SCWorker{
      * @param next - next function to call;
      */
     evalRoomPublishInRules(req, next) {
-        log.trace(`****evaluating room publish in rules****`);
+        log.trace(`****evaluating room publish in rules on message type: ${req.type}****`);
         this.evalRoomRules(req, next, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN)
             .then((result) => {
                 if(result) {
-                    log.trace(`****failed room publish in rules****`);
+                    log.trace(`****issue in room publish in rules****`);
                     return next(result);
                 }
                 log.trace(`****pass room publish in rules****`);
@@ -190,7 +190,6 @@ class WorkerIF extends SCWorker{
             return types.ERROR_CODES.MIDDLEWARE_SWALLOW;
         }
 
-        // get the room
         let room = this.getRoom(req.channel);
         if(!room) {
             log.trace('failed rules room check');
@@ -200,7 +199,6 @@ class WorkerIF extends SCWorker{
         // eval rules
         try {
             let connector_type = types.CONNECTOR_TYPE_ENUM.CORE;
-
             if(req.hdb_header && req.hdb_header[types.REQUEST_HEADER_ATTRIBUTE_NAMES.DATA_SOURCE]) {
                 connector_type = req.hdb_header[types.REQUEST_HEADER_ATTRIBUTE_NAMES.DATA_SOURCE];
             } else if(req.data.hdb_header && req.data.hdb_header[types.REQUEST_HEADER_ATTRIBUTE_NAMES.DATA_SOURCE]) {
@@ -225,7 +223,7 @@ class WorkerIF extends SCWorker{
      * @returns {*}
      */
     evalRoomPublishInMiddleware(req, next) {
-        log.trace(`____evaluating room publish in middleware____`);
+        log.trace(`____evaluating room publish in middleware on message type: ${req.type}____`);
         let result = this.evalRoomMiddleware(req, next, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
         if(!result) {
             log.trace(`____passed all publish in middleware____`);
@@ -245,7 +243,7 @@ class WorkerIF extends SCWorker{
      * @returns {*}
      */
     evalRoomPublishOutMiddleware(req, next) {
-        log.trace(`____evaluating room publish out middleware____`);
+        log.trace(`____evaluating room publish out middleware on message type: ${req.type}____`);
         let result = this.evalRoomMiddleware(req, next, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_OUT);
         if(!result) {
             log.trace(`____passed all publish out middleware____`);

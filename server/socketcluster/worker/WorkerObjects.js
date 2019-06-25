@@ -1,5 +1,12 @@
 "use strict";
 
+/**
+ *  Here we defined objects related to the worker that may need to be passed around various modules
+ */
+
+/**
+ * Defines how a subscription is stored in the worker.
+ */
 class SubscriptionDefinition {
     constructor(topic, is_subscribed, is_watching) {
         this.topic = topic;

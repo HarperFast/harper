@@ -90,15 +90,14 @@ try {
     });
 
     let p_send_to_worker = promisify(socketCluster.sendToWorker).bind(socketCluster);
-    log.trace('Registering Server handlers');
     registerHandlers();
-    log.trace('Done registering server handlers');
 } catch(err) {
     log.fatal('There was a fatal error starting clustering.  Please check the logs and try again.');
     log.fatal(err);
 }
 
-function registerHandlers(){
+function registerHandlers() {
+    log.trace('Registering Server handlers');
     socketCluster.on('fail', failHandler);
     socketCluster.on('warning', warningHandler);
     socketCluster.on('workerStart', workerStartHandler);

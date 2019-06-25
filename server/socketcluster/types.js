@@ -21,8 +21,8 @@ const ROOM_TYPE = {
 };
 
 const CONNECTOR_TYPE_ENUM = {
-    CORE: 10,
-    CLUSTER: 11
+    CORE: 5,
+    CLUSTER: 6
 };
 
 const ERROR_CODES = {
@@ -70,7 +70,7 @@ const WORKER_ROOM_MSG_TYPE_ENUM = {
     STATUS_RESPONSE: 'WORKER_ROOM_STATUS_RESPONSE'
 };
 
-// Message types that will flow through the HDB Child and Cluster Worker room.
+// Message types that will flow through the HDB Child and Cluster rooms.
 const CORE_ROOM_MSG_TYPE_ENUM = {
     GET_CLUSTER_STATUS: 'GET_CLUSTER_STATUS',
     CLUSTER_STATUS_RESPONSE: 'CLUSTER_STATUS_RESPONSE',
