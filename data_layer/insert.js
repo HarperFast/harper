@@ -155,19 +155,19 @@ async function insertData(insert_object){
     }
 }
 
-function convertOperationToTransaction(operation, written_hashes, hash_attribute){
-    if(global.hdb_socket_client !== undefined && operation.schema !== 'system' && Array.isArray(written_hashes) && written_hashes.length > 0){
+function convertOperationToTransaction(write_object, written_hashes, hash_attribute){
+    if(global.hdb_socket_client !== undefined && write_object.schema !== 'system' && Array.isArray(written_hashes) && written_hashes.length > 0){
         let transaction = {
-            operation: "insert",
+            operation: write_object.operation,
             records:[]
         };
 
-        operation.records.forEach(record =>{
+        write_object.records.forEach(record =>{
             if(written_hashes.indexOf(h_utils.autoCast(record[hash_attribute])) >= 0) {
                 transaction.records.push(record);
             }
         });
-        h_utils.sendTransactionToSocketCluster(`${operation.schema}:${operation.table}`, transaction);
+        h_utils.sendTransactionToSocketCluster(`${write_object.schema}:${write_object.table}`, transaction);
     }
 }
 
