@@ -15,7 +15,7 @@ class WorkerStub {
            console.log('Called worker exchange_set');
             this.exchange_set_called = true;
         };
-        this.id = WORKER_NAME;
+        this.id = 0;
         this.hdb_workers = [WORKER_NAME];
         this.hdb_users = {};
         this.scServer = {

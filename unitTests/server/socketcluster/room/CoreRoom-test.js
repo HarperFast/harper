@@ -235,47 +235,6 @@ const GET_WORKER_STATUS_EXPECTED_RESPONSE = {
         "hdb_header": {}
 };
 
-const PROMISE_RESPONSE_MSG = {
-    "hdb_header": {},
-    "type": "CLUSTER_STATUS_RESPONSE",
-    "is_enabled": true,
-        "outbound_connections": [
-            {
-                "id": "",
-                "host_address": "THIS IS CRAP",
-                "host_port": 16666,
-                "state": "WHAT STATE?",
-                "node_name": "SOME_TRUCK",
-                "subscriptions": [
-                    {
-                        "channel": "dev:kittywitty",
-                        "publish": true,
-                        "subscribe": true
-                    },
-                    {
-                        "channel": "dev:birdy",
-                        "publish": false,
-                        "subscribe": true
-                    }
-                ]
-            }
-        ],
-        "inbound_connections": [
-            {
-                "id": "WG44es8-kxiDJRmIAAAA",
-                "host_address": "WTH is this?",
-                "host_port": 56512,
-                "state": "open",
-                "subscriptions": [
-                    {
-                        "channel": "dev:dammitbobby",
-                        "state": "NOT subscribed."
-                    }
-                ]
-            }
-        ]
-};
-
 function buildWorkerStatusMessage() {
     let worker_status_msg = new RoomMessageObjects.WorkerStatusMessage();
     worker_status_msg.hdb_header =  {};

@@ -9,5 +9,5 @@ let socketClusterEmitter = new SocketClusterStatusEmitter();
 module.exports = {
     socketClusterEmitter,
     EVENT_NAME,
-    ClusterStatusEmitter: SocketClusterStatusEmitter
+    SocketClusterStatusEmitter
 };

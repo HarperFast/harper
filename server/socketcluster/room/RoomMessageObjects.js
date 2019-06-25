@@ -4,10 +4,6 @@ const types = require('../types');
 const hdb_terms = require('../../../utility/hdbTerms');
 const uuid = require('uuid/v4');
 
-/**
-    Messages sent through a socket automatically have the contained values put into the .data field by the exchange
-    itself, so we don't create a data field like we do in RoomMessageBaseIF.
- */
 class HdbCoreBaseMessageIF {
     constructor(core_room_msg_type_enum) {
         this.id = uuid();
@@ -45,10 +41,9 @@ class SyncHdbUsersMessage {
 
 class ErrorResponseMessage {
     constructor() {
-        this.data = {};
-        this.data.owning_worker_id = undefined;
-        this.data.type = types.CORE_ROOM_MSG_TYPE_ENUM.ERROR_RESPONSE;
-        this.data.error = undefined;
+        this.owning_worker_id = undefined;
+        this.type = types.CORE_ROOM_MSG_TYPE_ENUM.ERROR_RESPONSE;
+        this.error = undefined;
     }
 }
 
