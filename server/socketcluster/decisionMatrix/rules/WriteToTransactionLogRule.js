@@ -22,7 +22,7 @@ class WriteToTransactionLogRule extends RuleIF {
     }
     async evaluateRule(req, args, worker) {
         if(req.data.__transacted !== true){
-            return;
+            return true;
         }
 
         log.trace('Evaluating write to transaction log rule');
