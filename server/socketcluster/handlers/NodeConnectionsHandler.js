@@ -1,6 +1,6 @@
 "use strict";
 
-const SocketConnector = require('./SocketConnector');
+const SocketConnector = require('../connector/SocketConnector');
 const socket_client = require('socketcluster-client');
 const sc_objects = require('../socketClusterObjects');
 const AssignToHdbChildWorkerRule = require('../decisionMatrix/rules/AssignToHdbChildWorkerRule');
@@ -11,7 +11,12 @@ const NodeObject = sc_objects.NodeObject;
 const promisify = require('util').promisify;
 const terms = require('../../../utility/hdbTerms');
 
-class NodeConnector {
+const env = require('../../../utility/environment/environmentManager');
+env.initSync();
+const hdb_config_path = env.getHdbBasePath() + '/config/connections.json';
+const fs = require('fs-extra');
+
+class NodeConnectionsHandler {
     constructor(nodes, cluster_user, worker){
         if(!cluster_user){
             log.warn('no cluster_user, cannot connect to other nodes');
@@ -52,6 +57,50 @@ class NodeConnector {
                 this.removeNode(data.remove_node);
             }
         });
+
+        this.connection_timestamps = {};
+
+        fs.readFile(hdb_config_path).then((data)=>{
+            this.connection_timestamps = JSON.parse(data.toString());
+        }).catch(e=>{
+            if(e.code === 'ENOENT') {
+                fs.writeFile(hdb_config_path, '{}');
+            } else{
+                log.error(e);
+            }
+        });
+
+        setInterval(this.recordConnectionTimestamp.bind(this), 10000);
+    }
+
+    recordConnectionTimestamp(){
+        if(this.connections === undefined ||this.connections.clients === undefined){
+            return;
+        }
+
+        let state_changed = false;
+        Object.keys(this.connections.clients).forEach((connection_key)=>{
+            let connection = this.connections.clients[connection_key];
+            if(connection.state === connection.OPEN && connection.authState === connection.AUTHENTICATED){
+                let additional_info = connection.additional_info;
+                additional_info.connected_timestamp = Date.now();
+                this.connection_timestamps[connection_key] = additional_info.connected_timestamp;
+
+                state_changed = true;
+            }
+        });
+
+        if(state_changed === false){
+            return;
+        }
+
+        try {
+            fs.writeFile(hdb_config_path, JSON.stringify(this.connection_timestamps)).then(() => {
+                console.log('logged');
+            });
+        } catch(e){
+            log.error(e);
+        }
     }
 
     /**
@@ -165,4 +214,4 @@ class NodeConnector {
 
 }
 
-module.exports = NodeConnector;
+module.exports = NodeConnectionsHandler;

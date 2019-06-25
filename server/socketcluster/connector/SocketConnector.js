@@ -23,7 +23,7 @@ class SocketConnector{
         }
 
         this.socket.on('error', err =>{
-            log.error('ERROR on HDB Client socket');
+            log.error('ERROR on HDB Client socket: ' + err);
             log.error(err);
         });
 
