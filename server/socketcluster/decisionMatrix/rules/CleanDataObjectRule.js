@@ -16,7 +16,7 @@ class TestRule extends RuleIF {
         }
 
         delete req.data.__id;
-        delete req.data.__transacted;
+        //delete req.data.__transacted;
         return true;
     }
 }
