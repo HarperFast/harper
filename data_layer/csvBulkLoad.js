@@ -6,14 +6,11 @@ const validator = require('../validation/csvLoadValidator');
 const request_promise = require('request-promise-native');
 const hdb_terms = require('../utility/hdbTerms');
 const hdb_utils = require('../utility/common_utils');
-const util = require('util');
 const {promise} = require('alasql');
 const logger = require('../utility/logging/harper_logger');
-const fs = require('fs');
 const papa_parse = require('papaparse');
-const fs_extra = require('fs-extra');
+const fs = require('fs-extra');
 hdb_utils.promisifyPapaParse();
-const p_fs_access = util.promisify(fs.access);
 
 const NEWLINE = '\n';
 const unix_filename_regex = new RegExp(/[^-_.A-Za-z0-9]/);
@@ -115,7 +112,7 @@ async function csvFileLoad(json_message) {
 
     try {
         // check file exists and have perms to read, throws exception if fails
-        await p_fs_access(json_message.file_path, fs.constants.R_OK | fs.constants.F_OK);
+        await fs.access(json_message.file_path, fs.constants.R_OK | fs.constants.F_OK);
         let bulk_load_result = await callPapaParse(json_message);
 
         return `successfully loaded ${bulk_load_result.number_written} of ${bulk_load_result.records} records`;
@@ -209,13 +206,14 @@ async function callPapaParse(json_message) {
     };
 
     try {
-        let stream = fs_extra.createReadStream(json_message.file_path, {highWaterMark:HIGHWATERMARK});
+        let stream = fs.createReadStream(json_message.file_path, {highWaterMark:HIGHWATERMARK});
         stream.setEncoding('utf8');
         await papa_parse.parsePromise(stream, validateChunk.bind(null, json_message));
 
-        stream = fs_extra.createReadStream(json_message.file_path, {highWaterMark:HIGHWATERMARK});
+        stream = fs.createReadStream(json_message.file_path, {highWaterMark:HIGHWATERMARK});
         stream.setEncoding('utf8');
         await papa_parse.parsePromise(stream, insertChunk.bind(null, json_message, insert_results));
+        stream.destroy();
 
         return insert_results;
     } catch(err) {
@@ -276,7 +274,7 @@ async function callBulkLoad(csv_records, schema, table, action) {
     let bulk_load_result = {};
 
     try {
-        if(csv_records && csv_records.length > 0 && validateColumnNames(csv_records[0])) {
+        if (csv_records && csv_records.length > 0 && validateColumnNames(csv_records[0])) {
             bulk_load_result = await bulkLoad(csv_records, schema, table, action);
         } else {
             bulk_load_result.message = 'No records parsed from csv file.';
@@ -325,7 +323,6 @@ async function bulkLoad(records, schema, table, action){
         table: table,
         records: records
     };
-
 
     let write_function;
     if (action === 'insert'){

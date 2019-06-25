@@ -542,14 +542,14 @@ function promisifyPapaParse() {
  * @param string
  * @returns a string minus any byte order marks
  */
-function removeBOM(string) {
-    if (typeof string !== 'string') {
-        throw new TypeError(`Expected a string, got ${typeof string}`);
+function removeBOM(data_string) {
+    if (typeof data_string !== 'string') {
+        throw new TypeError(`Expected a string, got ${typeof data_string}`);
     }
 
-    if (string.charCodeAt(0) === 0xFEFF) {
-        return string.slice(1);
+    if (data_string.charCodeAt(0) === 0xFEFF) {
+        return data_string.slice(1);
     }
 
-    return string;
+    return data_string;
 }
