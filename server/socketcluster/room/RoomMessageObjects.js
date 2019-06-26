@@ -16,7 +16,7 @@ class HdbCoreBaseMessageIF {
         this.id = uuid();
         this.type = core_room_msg_type_enum;
         this.hdb_header = {};
-        this.operation = undefined;
+        this.transaction = undefined;
     }
 }
 
@@ -154,6 +154,15 @@ class HdbCoreRemoveNodeMessage extends HdbCoreBaseMessageIF {
     }
 }
 
+/**
+ * A message that is sent by an HDB Child when a node is removed in HDB Core
+ */
+class HdbCoreTransactionMessage extends HdbCoreBaseMessageIF {
+    constructor() {
+        super(types.CORE_ROOM_MSG_TYPE_ENUM.HDB_TRANSACTION);
+    }
+}
+
 module.exports = {
     GetClusterStatusMessage,
     WorkerStatusMessage,
@@ -163,6 +172,7 @@ module.exports = {
     HdbCoreClusterAddUserRequestMessage,
     HdbCoreClusterAlterUserRequestMessage,
     HdbCoreClusterDropUserRequestMessage,
+    HdbCoreTransactionMessage,
     HdbCoreOperationMessage,
     HdbCoreAddNodeMessage,
     HdbCoreRemoveNodeMessage,

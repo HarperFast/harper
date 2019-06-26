@@ -212,6 +212,12 @@ class CoreRoom extends RoomIF {
                 result = cluster_status_response;
                 break;
             }
+            case types.CORE_ROOM_MSG_TYPE_ENUM.HDB_TRANSACTION: {
+                // This is where we will send transactions to the cluster.
+                log.info(`Sending transaction to cluster.`);
+                break;
+            }
+
             default:
                 log.info(`Got unrecognized core room message type ${msg_type}`);
                 break;

@@ -23,13 +23,6 @@ const AUTOCAST_COMMON_STRINGS = {
     'NaN': NaN
 };
 
-const SCHEMA_TRANSACTIONS = [
-    'create_schema',
-    'create_table',
-    'create_attribute'
-];
-
-
 module.exports = {
     isEmpty:isEmpty,
     isEmptyOrZeroLength:isEmptyOrZeroLength,
@@ -524,6 +517,10 @@ function getClusterMessage(cluster_msg_type_enum) {
     switch(cluster_msg_type_enum) {
         case terms.CLUSTERING_MESSAGE_TYPES.GET_CLUSTER_STATUS: {
             built_msg = new cluster_messages.HdbCoreClusterStatusRequestMessage();
+            break;
+        }
+        case terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION: {
+            built_msg = new cluster_messages.HdbCoreTransactionMessage();
             break;
         }
         default:

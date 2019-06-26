@@ -43,7 +43,7 @@ class WriteToTransactionLogRule extends RuleIF {
 
         delete req.data.__transacted;
 
-        if(VALID_OPERATIONS.indexOf(req.data.operation) < 0){
+        if(VALID_OPERATIONS.indexOf(req.data.transaction.operation) < 0){
             log.debug('Invalid operation, not writing to transaction log.');
             return true;
         }
@@ -59,9 +59,9 @@ class WriteToTransactionLogRule extends RuleIF {
 
 
             let keys = [];
-            if(req.data.operation === 'insert' || req.data.update === 'insert'){
+            if(req.data.transaction.operation === 'insert' || req.data.transaction.update === 'insert'){
                 keys = INSERT_UPDATE_FIELDS;
-            } else if(req.data.operation === 'delete') {
+            } else if(req.data.transaction.operation === 'delete') {
                 keys = DELETE_FIELDS;
             }
 
