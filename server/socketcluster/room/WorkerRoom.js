@@ -7,6 +7,7 @@ const log = require('../../../utility/logging/harper_logger');
 const {inspect} = require('util');
 const RoomMessageObjects = require('./RoomMessageObjects');
 const socket_cluster_status_event = require('../../../events/SocketClusterStatusEmitter');
+const socket_cluster_utils = require('../util/socketClusterUtils');
 
 /**
  * This is a room that facilitates communication between socketcluster workers.  Rooms should not be instantiated directly, instead the room factory should be used.
@@ -55,26 +56,28 @@ class WorkerRoom extends RoomIF {
         try {
             switch(req.type) {
                 // The worker room got a 'GET_CLUSTER_STATUS message, if this worker isn't the requestor, respond.
-                case types.WORKER_ROOM_MSG_TYPE_ENUM.GET_STATUS: {
+                case types.WORKER_ROOM_MSG_TYPE_ENUM.WORKER_ROOM_GET_STATUS: {
                     // 'this' worker sent this message, ignore it.
                     if(req.worker_request_owner === worker.id) {
                         return;
                     }
-                    let response = new RoomMessageObjects.GetClusterStatusMessage();
+                    let response = new RoomMessageObjects.WorkerStatusMessage();
                     response.worker_request_owner_id = this.id;
                     response.originator_msg_id = req.request_id;
+                    socket_cluster_utils.getWorkerStatus(response, worker);
                     self.publishToRoom(response, worker, req.hdb_header);
                     break;
                 }
-                case types.CORE_ROOM_MSG_TYPE_ENUM.CLUSTER_STATUS_RESPONSE: {
+                case types.WORKER_ROOM_MSG_TYPE_ENUM.WORKER_ROOM_STATUS_RESPONSE: {
                     if(!req) {
-                        log.trace(`Got an invalid CLUSTER_STATUS_RESPONSE message.`);
+                        log.trace(`Got an invalid CLUSTER_STATUS_RESPONSE message. ${inspect(req)}`);
                     }
+                    log.trace(`Worker room got a cluster status response message, emitting.`);
                     socket_cluster_status_event.socketClusterEmitter.emit(socket_cluster_status_event.EVENT_NAME, req);
                     break;
                 }
                 default:
-                    log.info('Got worker room message with invalid type.');
+                    log.info(`Got worker room message with invalid type: ${req.type}.`);
                     break;
             }
         } catch(e) {

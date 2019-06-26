@@ -66,8 +66,8 @@ const RULE_TYPE_ENUM = {
 
 // Message types that will flow through the Cluster Worker room.
 const WORKER_ROOM_MSG_TYPE_ENUM = {
-    GET_STATUS: 'WORKER_ROOM_GET_CLUSTER_STATUS_REQUEST',
-    STATUS_RESPONSE: 'WORKER_ROOM_STATUS_RESPONSE'
+    WORKER_ROOM_GET_STATUS: 'WORKER_ROOM_GET_CLUSTER_STATUS_REQUEST',
+    WORKER_ROOM_STATUS_RESPONSE: 'WORKER_ROOM_STATUS_RESPONSE'
 };
 
 // Message types that will flow through the HDB Child and Cluster rooms.

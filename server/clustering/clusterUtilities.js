@@ -27,7 +27,7 @@ const started_forks = {};
 let is_enterprise = false;
 let child_event_count = 0;
 
-const STATUS_TIMEOUT_MS = 4000;
+const STATUS_TIMEOUT_MS = 10000;
 const DUPLICATE_ERR_MSG = 'Cannot add a node that matches the hosts clustering config.';
 
 const SUBSCRIPTIONS_MUST_BE_ARRAY = 'add_node subscriptions must be an array';

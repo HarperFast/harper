@@ -31,6 +31,7 @@ class ClusterStatusBucket {
         this.num_expected_responses = num_expected_responses;
         // Start at one as we assume this worker has already added its status
         this.responses_received = 1;
+        this.response_msg = undefined;
     }
 }
 
@@ -40,6 +41,7 @@ class ClusterStatusBucket {
  * @param response_msg
  */
 function addStatusResponseValues(cluster_status_response_message, response_msg) {
+    log.trace(`addStatusResponseValues`);
     try {
         if (!cluster_status_response_message) {
             log.info('Invalid object passed to addStatusResponseValues.');
@@ -153,12 +155,13 @@ class CoreRoom extends RoomIF {
                         worker.exchange.publish(hdb_terms.INTERNAL_SC_CHANNELS.WORKER_ROOM, get_cluster_status_msg);
                     }
 
-                    let status_bucket_obj = new ClusterStatusBucket(worker.hdb_workers.length);
-                    self.cluster_status_request_buckets[get_cluster_status_msg.request_id] = status_bucket_obj;
                     cluster_status_response.hdb_header = req.hdb_header;
                     cluster_status_response.cluster_staatus_request_id = req.id;
                     // insert the status for this worker
                     cluster_utils.getWorkerStatus(cluster_status_response, worker);
+                    let status_bucket_obj = new ClusterStatusBucket(worker.hdb_workers.length);
+                    status_bucket_obj.response_msg = cluster_status_response;
+                    self.cluster_status_request_buckets[get_cluster_status_msg.request_id] = status_bucket_obj;
                     if(worker.hdb_workers.length === 1) {
                         self.publishToRoom(cluster_status_response, worker, req.hdb_header);
                         result = cluster_status_response;
@@ -182,14 +185,14 @@ class CoreRoom extends RoomIF {
                                 cluster_status_response.outbound_connections = [];
                                 cluster_status_response.inbound_connections = [];
                             } else {
-                                let stored_bucket = self.cluster_status_request_buckets[result.cluster_status_request_id];
+                                let stored_bucket = self.cluster_status_request_buckets[result.originator_msg_id];
                                 if(!stored_bucket) {
                                     log.error('no stored status bucket found.  Cluster status failure.');
                                     // expect this to be caught locally
                                     throw new Error(`Error recovering cluster status bucket.`);
                                 }
                                 stored_bucket.responses_received++;
-                                addStatusResponseValues(cluster_status_response, result);
+                                addStatusResponseValues(self.cluster_status_request_buckets[result.originator_msg_id].response_msg, result);
                                 if (stored_bucket.responses_received === stored_bucket.num_expected_responses) {
                                     log.info(`All workers responded to status request, responding to child.`);
                                 }

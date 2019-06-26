@@ -21,12 +21,12 @@ class HdbCoreBaseMessageIF {
 }
 
 /**
- * A message sent to the worker room as a response to a GET_STATUS message.
+ * A message sent to the worker room as a response to a WORKER_ROOM_GET_STATUS message.
  */
 class WorkerStatusMessage {
   constructor() {
       this.owning_worker_id = undefined;
-      this.type = types.WORKER_ROOM_MSG_TYPE_ENUM.STATUS_RESPONSE;
+      this.type = types.WORKER_ROOM_MSG_TYPE_ENUM.WORKER_ROOM_STATUS_RESPONSE;
       this.originator_msg_id = undefined;
       this.outbound_connections = [];
       this.inbound_connections = [];
@@ -60,7 +60,7 @@ class SyncHdbUsersMessage {
  */
 class GetClusterStatusMessage {
     constructor() {
-        this.type = types.WORKER_ROOM_MSG_TYPE_ENUM.GET_STATUS;
+        this.type = types.WORKER_ROOM_MSG_TYPE_ENUM.WORKER_ROOM_GET_STATUS;
         this.request_id = uuid();
         this.requestor_channel = undefined;
         this.worker_request_owner_id = undefined;
