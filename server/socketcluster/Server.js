@@ -20,7 +20,7 @@ try {
     log.trace('Starting Cluster Server');
     socketCluster = new SocketCluster({
         // Number of worker processes, this will be config based
-        workers: 2,
+        workers: 1,
 
         // Number of broker processes
         brokers: 1,
