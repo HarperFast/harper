@@ -10,7 +10,7 @@ class SocketConnector{
      * @param credentials
      */
     constructor(socket_client, additional_info, options, credentials){
-        this.additional_info = additional_info;
+        this.additional_info = additional_info === undefined ? {} : additional_info;
         this.init(socket_client, options, credentials);
         this.disconnect_timestamp = null;
     }

@@ -38,7 +38,9 @@ class ReverseFileRead{
         }catch(e){
             console.error(e);
         } finally {
-            await fs.close(this.fd);
+            if(this.fd) {
+                await fs.close(this.fd);
+            }
         }
     }
 

@@ -1,9 +1,8 @@
 "use strict";
 
-const SocketConnector = require('../connector/SocketConnector');
+const SocketConnector = require('../connector/InterNodeSocketConnector');
 const socket_client = require('socketcluster-client');
 const sc_objects = require('../socketClusterObjects');
-const AssignToHdbChildWorkerRule = require('../decisionMatrix/rules/AssignToHdbChildWorkerRule');
 const log = require('../../../utility/logging/harper_logger');
 const crypto_hash = require('../../../security/cryptoHash');
 const SubscriptionObject = sc_objects.SubscriptionObject;
@@ -25,6 +24,7 @@ class NodeConnectionsHandler {
 
         //spawn local connection
         this.worker = worker;
+        this.nodes = nodes;
 
         if(this.worker === undefined || this.worker === null){
             throw new Error('worker is undefined, cannot spawn connections to other nodes');
@@ -36,18 +36,11 @@ class NodeConnectionsHandler {
             password: crypto_hash.decrypt(cluster_user.hash)
         };
 
-        this.worker.scServer._middleware.publishIn.forEach(middleware_function=>{
+        this.connection_timestamps = {};
+
+        this.worker.scServer._middleware.publishIn.forEach(middleware_function => {
             this.publishin_promises.push(promisify(middleware_function).bind(this.worker.scServer));
         });
-
-        //used to auto pub/sub the hdb_schema channel across the cluster
-        this.HDB_Schema_Subscription = new SubscriptionObject(terms.INTERNAL_SC_CHANNELS.CREATE_SCHEMA, true, true);
-        this.HDB_Table_Subscription = new SubscriptionObject(terms.INTERNAL_SC_CHANNELS.CREATE_TABLE, true, true);
-        this.HDB_Attribute_Subscription = new SubscriptionObject(terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, true, true);
-
-        this.AssignToHdbChildWorkerRule = new AssignToHdbChildWorkerRule();
-        this.connections = socket_client;
-        this.spawnRemoteConnections(nodes);
 
         //get nodes & spwan them, watch for node changes
         this.worker.exchange.subscribe(terms.INTERNAL_SC_CHANNELS.HDB_NODES).watch(data=>{
@@ -58,31 +51,46 @@ class NodeConnectionsHandler {
             }
         });
 
-        this.connection_timestamps = {};
+        //used to auto pub/sub the hdb_schema channel across the cluster
+        this.HDB_Schema_Subscription = new SubscriptionObject(terms.INTERNAL_SC_CHANNELS.CREATE_SCHEMA, true, true);
+        this.HDB_Table_Subscription = new SubscriptionObject(terms.INTERNAL_SC_CHANNELS.CREATE_TABLE, true, true);
+        this.HDB_Attribute_Subscription = new SubscriptionObject(terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, true, true);
+        this.connections = socket_client;
+    }
 
-        fs.readFile(hdb_config_path).then((data)=>{
+    async initialize(){
+        await this.initializeConnectionTimestamps();
+        this.spawnRemoteConnections(this.nodes);
+
+        setInterval(await this.recordConnectionTimestamp.bind(this), 10000);
+    }
+
+    /**
+     * This reads the connections json file to find the last time the servers were connected in order for them to ask for
+     */
+    async initializeConnectionTimestamps(){
+        try {
+            let data = await fs.readFile(hdb_config_path);
             this.connection_timestamps = JSON.parse(data.toString());
-        }).catch(e=>{
+        } catch(e){
             if(e.code === 'ENOENT') {
                 fs.writeFile(hdb_config_path, '{}');
             } else{
                 log.error(e);
             }
-        });
-
-        setInterval(this.recordConnectionTimestamp.bind(this), 10000);
+        }
     }
 
-    recordConnectionTimestamp(){
-        if(this.connections === undefined ||this.connections.clients === undefined){
+    async recordConnectionTimestamp(){
+        if(this.connections === undefined || this.connections.clients === undefined){
             return;
         }
 
         let state_changed = false;
         Object.keys(this.connections.clients).forEach((connection_key)=>{
             let connection = this.connections.clients[connection_key];
+            let additional_info = connection.additional_info;
             if(connection.state === connection.OPEN && connection.authState === connection.AUTHENTICATED){
-                let additional_info = connection.additional_info;
                 additional_info.connected_timestamp = Date.now();
                 this.connection_timestamps[connection_key] = additional_info.connected_timestamp;
 
@@ -95,9 +103,7 @@ class NodeConnectionsHandler {
         }
 
         try {
-            fs.writeFile(hdb_config_path, JSON.stringify(this.connection_timestamps)).then(() => {
-                console.log('logged');
-            });
+            await fs.writeFile(hdb_config_path, JSON.stringify(this.connection_timestamps));
         } catch(e){
             log.error(e);
         }
@@ -119,9 +125,10 @@ class NodeConnectionsHandler {
         options.port = node.port;
         let additional_info = {
             name: node.name,
-            subscriptions: node.subscriptions
+            subscriptions: node.subscriptions,
+            connected_timestamp: null
         };
-        let connection = new SocketConnector(socket_client, additional_info,options, this.creds);
+        let connection = new SocketConnector(socket_client, additional_info,options, this.creds, this.connection_timestamps);
 
         if(node.subscriptions){
             node.subscriptions.push(this.HDB_Schema_Subscription);
@@ -197,9 +204,7 @@ class NodeConnectionsHandler {
             socket: socket
         };
 
-        this.runMiddleware(req).then(()=>{
-
-        });
+        await this.runMiddleware(req);
     }
 
     async runMiddleware(request){

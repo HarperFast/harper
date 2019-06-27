@@ -1,31 +1,41 @@
 const SocketConnector = require('./SocketConnector');
-const fs = require('fs-extra');
+const CatchUp = require('../handlers/CatchUp');
 const env = require('../../../utility/environment/environmentManager');
+const hdb_terms = require('../../../utility/hdbTerms');
 env.initSync();
-const hdb_config_path = env.getHdbBasePath() + '/config/';
+const hdb_queue_path = env.getHdbBasePath() + '/schema/system/hdb_queue/';
 
 class InterNodeSocketConnector extends SocketConnector{
-    constructor(socket_client, additional_info, options, credentials){
+    constructor(socket_client, additional_info, options, credentials, connection_timestamps){
         super(socket_client, additional_info, options, credentials);
+        this.socket.additional_info.connected_timestamp = connection_timestamps[this.socket.clientId];
         this.addEventListener('connect', this.connectHandler.bind(this));
 
-        this.connection_timestamp = 0;
-
-        setInterval(this.recordConnection.bind(this), 10000);
-    }
-
-    recordConnection(){
-        if(this.socket.state === this.socket.OPEN && this.socket.authState === this.socket.AUTHENTICATED){
-            this.connection_timestamp = Date.now();
-            fs.writeFile(hdb_config_path + this.socket.additional_info.name, this.connection_timestamp).then(()=>{
-                console.log('logged');
-            });
-        }
     }
 
     connectHandler(status){
-        //TODO perform catchup call here
-        this.recordConnection();
+        if(this.socket.additional_info && this.socket.additional_info.connected_timestamp){
+            //check subscriptions so we can locally fetch catchup and ask for remote catchup
+            this.additional_info.subscriptions.forEach(async (subscription) => {
+                if (subscription.publish === true) {
+                    let catchup = new CatchUp(hdb_queue_path + subscription.channel, this.socket.additional_info.connected_timestamp);
+                    await catchup.run();
+
+                    if(Array.isArray(catchup.results) && catchup.results.length > 0) {
+                        let catchup_response = {
+                            channel: subscription.channel,
+                            operation:'catchup',
+                            transactions: catchup.results,
+                            __transacted: true
+                        };
+
+                        this.socket.publish(hdb_terms.INTERNAL_SC_CHANNELS.CATCHUP, catchup_response);
+                    }
+                } else if(subscription.subscribe === true){
+                    this.socket.emit('catchup', {channel: subscription.channel, milis_since_connected: Date.now() - this.socket.additional_info.connected_timestamp});
+                }
+            });
+        }
     }
 
 }
