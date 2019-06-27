@@ -558,7 +558,7 @@ function createSettingsFile(mount_status, callback) {
             `CLUSTERING_PORT = 12345\n` +
             `   ;The name of this node in your HarperDB cluster topology.  This must be a value unique from the rest of your cluster node names.\n` +
             `NODE_NAME=${node_name}\n` +
-            `   ;The user used to connect to other instances of HarperDB, this user must have a role of cluster_user` +
+            `   ;The user used to connect to other instances of HarperDB, this user must have a role of cluster_user. \n` +
             `CLUSTERING_USER=`;
 
         winston.info('info', `hdb_props_value ${JSON.stringify(hdb_props_value)}`);
