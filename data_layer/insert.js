@@ -159,7 +159,8 @@ function convertOperationToTransaction(write_object, written_hashes, hash_attrib
     if(global.hdb_socket_client !== undefined && write_object.schema !== 'system' && Array.isArray(written_hashes) && written_hashes.length > 0){
         let transaction = {
             operation: write_object.operation,
-            records:[]
+            records:[],
+            __originator: write_object.__originator
         };
 
         write_object.records.forEach(record =>{

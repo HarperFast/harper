@@ -186,8 +186,10 @@ class NodeConnectionsHandler {
             //we need to observe the channel locally and push the data remotely.
             let sub_channel = this.worker.exchange.subscribe(subscription.channel);
             sub_channel.watch(data=>{
-                console.log('sending out');
-                connection.publish(subscription.channel, data);
+                if(connection.socket.state === connection.socket.OPEN && connection.socket.authState === connection.socket.AUTHENTICATED) {
+                    console.log('sending out');
+                    connection.publish(subscription.channel, data);
+                }
             });
         }
 
