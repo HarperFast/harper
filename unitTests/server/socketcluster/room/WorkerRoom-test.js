@@ -59,7 +59,7 @@ describe('Test CoreRoom evalRules', function() {
     it('Test nominal path of inboundMsgHandler with cluster status response', async () => {
         // Use the rewired version with a stubbed event emitter.
 
-        request_message = new RoomMessageObjects.HdbCoreClusterStatusResponseMessage();
+        request_message = new RoomMessageObjects.WorkerStatusMessage();
         request_message.worker_request_owner = 11;
         let res = await test_instance_rw.inboundMsgHandler(request_message, worker_stub, null);
         assert.strictEqual(emitter_called, true, 'expected emitter emit to be called');

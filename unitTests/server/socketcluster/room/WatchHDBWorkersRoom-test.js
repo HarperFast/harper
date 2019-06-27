@@ -55,7 +55,7 @@ describe('Test UsersRoom inboundMsgHandler', function() {
         message_instance.workers = WORKERS_MSG;
         await test_instance.inboundMsgHandler(message_instance, worker_stub, null);
 
-        assert.strictEqual(worker_stub.hdb_workers.length, 2, 'Expected worker to have 2 workers');
+        assert.strictEqual(worker_stub.hdb_workers.length, 1, 'Expected worker to have 2 workers');
     });
     it('test for inboundMsgHandler with invalid workers', async () => {
         message_instance.workers = {WORKERS_MSG};

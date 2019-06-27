@@ -45,11 +45,11 @@ function addStatusResponseValues(cluster_status_response_message, response_msg) 
     try {
         if (!cluster_status_response_message) {
             log.info('Invalid object passed to addStatusResponseValues.');
-            return;
+            return null;
         }
         if (!response_msg) {
             log.info('Invalid msg passed to addStatusResponseValues');
-            return;
+            return null;
         }
         if (response_msg.inbound_connections && response_msg.inbound_connections.length > 0) {
             for (let i = 0; i < response_msg.inbound_connections.length; i++) {

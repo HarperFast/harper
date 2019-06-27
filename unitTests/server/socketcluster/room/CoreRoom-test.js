@@ -12,11 +12,13 @@ const types = require('../../../../server/socketcluster/types');
 const socket_cluster_utils = require('../../../../server/socketcluster/util/socketClusterUtils');
 const socket_cluster_status_event = require('../../../../events/SocketClusterStatusEmitter');
 const RoomMessageObjects = require('../../../../server/socketcluster/room/RoomMessageObjects');
+const WorkerStub = require('../worker/WorkerStub');
 
 const ROOM_NAME = 'dev.tester';
 const WORKER_NAME = 'asdfesd';
 const SET_TIMEOUT_TIME_MS = 1000;
 
+/*
 class WorkerStub {
     constructor() {
         this['exchange'] = {};
@@ -90,7 +92,7 @@ class WorkerStub {
         };
     }
 };
-
+*/
 class DecisionMatrixStub {
     evalRules(request, args, worker, connector_type_enum) {
         console.log('calling evalRules on decision matrix');
@@ -180,7 +182,8 @@ const INBOUND_MSG_HANDLER_TEST_MSG = {
         "requestor_channel": "5aWRB1SazNokMXKmAAAA",
         "hdb_header": {},
     "timestamp": 1561055789296,
-    "__originator": "5aWRB1SazNokMXKmAAAA"
+    "__originator": "5aWRB1SazNokMXKmAAAA",
+    "request_id": "a;klsdjf;laskdjf"
 };
 
 const GET_WORKER_STATUS_EXPECTED_RESPONSE = {
@@ -287,7 +290,7 @@ describe('Test CoreRoom evalRules', function() {
     let worker_status_stub = undefined;
     beforeEach(() => {
         test_instance = new CoreRoom(ROOM_NAME);
-        worker_stub = new WorkerStub();
+        worker_stub = new WorkerStub.WorkerStub();
         matrix_stub = new DecisionMatrixStub();
         publish_stub = new sandbox.stub(test_instance, "publishToRoom").returns("");
         worker_status_stub = new sandbox.stub(socket_cluster_utils, 'getWorkerStatus').returns(GET_WORKER_STATUS_EXPECTED_RESPONSE);
@@ -350,7 +353,7 @@ describe('Test CoreRoom inboundMsgHandler', function() {
     let worker_status_stub = undefined;
     beforeEach(() => {
         test_instance = new CoreRoom(ROOM_NAME);
-        worker_stub = new WorkerStub();
+        worker_stub = new WorkerStub.WorkerStub();
         matrix_stub = new DecisionMatrixStub();
         publish_stub = new sandbox.stub(test_instance, "publishToRoom").returns('');
         worker_status_stub = new sandbox.stub(socket_cluster_utils, 'getWorkerStatus').returns(GET_WORKER_STATUS_EXPECTED_RESPONSE);
@@ -368,10 +371,12 @@ describe('Test CoreRoom inboundMsgHandler', function() {
         assert.strictEqual(worker_status_stub.called, true, 'Expected publish to be called');
     });
     it('test inboundMsgHandler nominal path, 2 workers', async () => {
+        let get_status_request_id = undefined;
         let worker_status_msg = buildWorkerStatusMessage();
         worker_stub.hdb_workers.push('AnotherWorker');
         // Simulate another worker sending a message through the worker room.
         setTimeout(() => {
+            worker_status_msg.originator_msg_id = get_status_request_id;
             socket_cluster_status_event.socketClusterEmitter.emit(socket_cluster_status_event.EVENT_NAME, worker_status_msg);
         }, SET_TIMEOUT_TIME_MS);
 
@@ -379,14 +384,16 @@ describe('Test CoreRoom inboundMsgHandler', function() {
         // be set to the original messages id.
         worker_stub.exchange.publish = (hdbChild, req) => {
             worker_status_msg.cluster_status_request_id = req.request_id;
+            get_status_request_id = req.request_id;
             console.log('Called publish');
+            worker_stub.publish_called = true;
         };
 
         let response = await test_instance.inboundMsgHandler(INBOUND_MSG_HANDLER_TEST_MSG, worker_stub, null);
-        assert.strictEqual(publish_stub.called, true, 'Expected publish to be called');
+        assert.strictEqual(worker_stub.publish_called, true, 'Expected publish to be called');
         assert.strictEqual(worker_status_stub.called, true, 'Expected publish to be called');
-        assert.strictEqual(response.inbound_connections.length, 1, 'Expected publish to be called');
-        assert.strictEqual(response.outbound_connections.length, 1, 'Expected publish to be called');
+        assert.strictEqual(response.inbound_connections.length, 1, 'Expected inbound connections to have data');
+        assert.strictEqual(response.outbound_connections.length, 1, 'Expected outbound connections to have data');
     });
     it('test inboundMsgHandler with unrecognized type', async () => {
         let response = await test_instance.inboundMsgHandler(INBOUND_MSG_HANDLER_TEST_MSG, worker_stub, null);
@@ -448,7 +455,7 @@ describe('Test CoreRoom addStatusResponseValues', function() {
         } catch(err) {
             result = err;
         }
-        assert.strictEqual(result instanceof Error, true, 'Expected exception to be thrown.');
+        assert.strictEqual(result , null, 'Expected null return.');
     });
     it('test addStatusResponseValues null worker status', () => {
         let worker_status_msg = buildWorkerStatusMessage();
@@ -458,7 +465,7 @@ describe('Test CoreRoom addStatusResponseValues', function() {
         } catch(err) {
             result = err;
         }
-        assert.strictEqual(result instanceof Error, true, 'Expected exception to be thrown.');
+        assert.strictEqual(result , null, 'Expected null return.');
     });
 });
 
@@ -468,7 +475,7 @@ describe('Test CoreRoom publish to room', function() {
     let worker_stub = undefined;
     beforeEach(() => {
         test_instance = new CoreRoom(ROOM_NAME);
-        worker_stub = new WorkerStub();
+        worker_stub = new WorkerStub.WorkerStub();
     });
     afterEach(() => {
         test_instance = undefined;
