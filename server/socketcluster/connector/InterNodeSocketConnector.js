@@ -25,8 +25,7 @@ class InterNodeSocketConnector extends SocketConnector{
                         let catchup_response = {
                             channel: subscription.channel,
                             operation:'catchup',
-                            transactions: catchup.results,
-                            __transacted: true
+                            transactions: catchup.results
                         };
 
                         this.socket.publish(hdb_terms.INTERNAL_SC_CHANNELS.CATCHUP, catchup_response);

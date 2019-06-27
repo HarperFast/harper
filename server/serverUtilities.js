@@ -324,11 +324,12 @@ async function catchup(catchup_object) {
 
     let schema = split_channel[0];
     let table = split_channel[1];
-
+    let originator = catchup_object.__originator;
     for (let transaction of catchup_object.transactions) {
         try {
             transaction.schema = schema;
             transaction.table = table;
+            transaction.__originator = originator;
             switch (transaction.operation) {
                 case terms.OPERATIONS_ENUM.INSERT:
                     await insert.insert(transaction);
