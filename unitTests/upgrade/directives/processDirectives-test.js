@@ -58,8 +58,8 @@ describe('test processDirectives', function() {
     });
 });
 
-describe('test createDirectories', function() {
-    let createDirectories = process_directive_rw.__get__('createDirectories');
+describe('test createRelativeDirectories', function() {
+    let createRelativeDirectories = process_directive_rw.__get__('createRelativeDirectories');
     let ver1_1_module = undefined;
     process_directive_rw.__set__('settings_file_path', BASE + '/testsettings.js');
     beforeEach( function() {
@@ -94,19 +94,19 @@ describe('test createDirectories', function() {
             'test1',
             'test2'
         ];
-        createDirectories(dirs_to_create);
+        createRelativeDirectories(dirs_to_create);
         assert.equal(fs.existsSync(DIR_PATH_BASE), true);
         assert.equal(fs.existsSync(DIR_PATH_BASE + 'test1'), true);
         assert.equal(fs.existsSync(DIR_PATH_BASE + 'test2'), true);
     });
     it('test empty directory array', () => {
         let dirs_to_create = [];
-        createDirectories(dirs_to_create);
+        createRelativeDirectories(dirs_to_create);
         assert.equal(fs.existsSync(DIR_PATH_BASE), false);
     });
     it('test null directory array', () => {
         let dirs_to_create = null;
-        createDirectories(dirs_to_create);
+        createRelativeDirectories(dirs_to_create);
         assert.equal(fs.existsSync(DIR_PATH_BASE), false);
     });
 });

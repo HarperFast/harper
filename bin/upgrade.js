@@ -210,12 +210,12 @@ async function startUpgrade() {
         throw err;
     }
 
-    /*try {
+    try {
         backupCurrInstall();
     } catch(err) {
         // Error logging happens in backup.
         throw err;
-    }*/
+    }
 
     let upgrade_result = undefined;
     try {
