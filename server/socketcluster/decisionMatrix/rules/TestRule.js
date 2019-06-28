@@ -9,7 +9,6 @@ class TestRule extends RuleIF {
         super();
     }
     evaluateRule(req, args, worker) {
-        console.log("Test rule");
         return true;
     }
 }
