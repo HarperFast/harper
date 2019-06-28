@@ -111,6 +111,59 @@ describe('test createRelativeDirectories', function() {
     });
 });
 
+describe('test createExplicitDirectories', function() {
+    let createExplicitDirectories = process_directive_rw.__get__('createExplicitDirectories');
+    let ver1_1_module = undefined;
+    process_directive_rw.__set__('settings_file_path', BASE + '/testsettings.js');
+    beforeEach( function() {
+        try {
+            let mod_path = path.join(process.cwd(), '../unitTests/upgrade/directives/testDirectives/1-1-0');
+            process_directive_rw.__set__('hdb_base', BASE + '/processDirectivesTest/');
+            ver1_1_module = require(mod_path);
+        } catch(e) {
+            console.error(e);
+            throw e;
+        }
+    });
+
+    afterEach( function () {
+        try {
+            test_util.cleanUpDirectories(BASE + '/processDirectivesTest/');
+        } catch(e) {
+            console.error(e);
+        }
+    });
+    after( function() {
+        try {
+            fs.unlinkSync(BASE + '/testsettings.js');
+        } catch(e) {
+            //no-op
+        }
+    });
+    it('test creating 3 directories', () => {
+
+        let dirs_to_create = [
+            BASE + '/processDirectivesTest/test0',
+            BASE + '/processDirectivesTest/test1',
+            BASE + '/processDirectivesTest/test2'
+        ];
+        createExplicitDirectories(dirs_to_create);
+        assert.equal(fs.existsSync(DIR_PATH_BASE), true);
+        assert.equal(fs.existsSync(DIR_PATH_BASE + 'test1'), true);
+        assert.equal(fs.existsSync(DIR_PATH_BASE + 'test2'), true);
+    });
+    it('test empty directory array', () => {
+        let dirs_to_create = [];
+        createExplicitDirectories(dirs_to_create);
+        assert.equal(fs.existsSync(DIR_PATH_BASE), false);
+    });
+    it('test null directory array', () => {
+        let dirs_to_create = null;
+        createExplicitDirectories(dirs_to_create);
+        assert.equal(fs.existsSync(DIR_PATH_BASE), false);
+    });
+});
+
 describe('test updateEnvironmentVariable', function() {
     let updateEnvironmentVariable = process_directive_rw.__get__('updateEnvironmentVariable');
     it('test adding new variable', () => {
