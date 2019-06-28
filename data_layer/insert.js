@@ -137,11 +137,14 @@ async function insertData(insert_object){
         let {table_schema, attributes} = await validation(insert_object);
 
         let { written_hashes, skipped, ...data_wrapper} = await processRows(insert_object, attributes, table_schema, epoch, null, pool);
+        console.log(`processRows finish: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
         pool = data_wrapper.pool;
 
         await checkForNewAttributes(insert_object.hdb_auth_header, table_schema, attributes);
 
+        console.log(`processData start: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
         pool = await processData(data_wrapper, pool);
+        console.log(`processData finish: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
 
         if(pool instanceof HDB_Pool){
             pool.killAll();
@@ -367,8 +370,12 @@ async function unlinkFiles(unlink_paths, pool) {
  * @param pool
  */
 async function processData(data_wrapper, pool) {
+    console.log(`createFolders start: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
     pool = await createFolders(data_wrapper.folders, pool);
+    console.log(`createFolders finish: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
+    console.log(`writeRawDataFiles start: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
     pool = await writeRawDataFiles(data_wrapper.raw_data, pool);
+    console.log(`writeRawDataFiles finish: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
 
     return pool;
 }
