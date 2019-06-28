@@ -65,14 +65,23 @@ function generateLicense(license_object) {
 }
 
 async function validateLicense(license_key, company) {
-    let decipher = crypto.createDecipher('aes192', 'a password');
     let license_validation_object = {};
+    if(!license_key) {
+        log.error(`empty license key passed to validate.`);
+        license_validation_object.valid_license = false;
+        return license_validation_object;
+        return;
+    }
+    let decipher = crypto.createDecipher('aes192', 'a password');
+
     license_validation_object.valid_date = true;
     license_validation_object.valid_license = true;
     license_validation_object.valid_machine = true;
     let license_tokens = null;
     let decrypted = null;
     try {
+        log.error(`tracing validateLicense.`);
+        log.error(`license key is: ${license_key}`);
         license_tokens = license_key.split(LICENSE_KEY_DELIMITER);
         decrypted = decipher.update(license_tokens[0], 'hex', 'utf8');
         decrypted.trim();
