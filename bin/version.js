@@ -1,9 +1,8 @@
-//let pjson = require('../package.json');
 let fs = require('fs-extra');
 
 module.exports = {
-   version: version,
-    printVersion: printVersion,
+   version,
+    printVersion,
     refresh
 };
 
