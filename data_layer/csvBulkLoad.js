@@ -111,13 +111,9 @@ async function csvFileLoad(json_message) {
     }
 
     try {
-        console.time('someFunction');
         // check file exists and have perms to read, throws exception if fails
         await fs.access(json_message.file_path, fs.constants.R_OK | fs.constants.F_OK);
-        console.log(`\n\n## papa parse called: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
         let bulk_load_result = await callPapaParse(json_message);
-        console.log(`%% papa parse finished: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB\n\n`);
-        console.timeEnd('someFunction');
 
         return `successfully loaded ${bulk_load_result.number_written} of ${bulk_load_result.records} records`;
     } catch(err) {
@@ -136,7 +132,6 @@ async function csvFileLoad(json_message) {
  * @returns if validation error found returns Promise<error>, if no error nothing is returned.
  */
 async function validateChunk(json_message, reject, results, parser) {
-    console.log(`validateChunk start: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
     if (results.data.length === 0) {
         return;
     }
@@ -153,7 +148,6 @@ async function validateChunk(json_message, reject, results, parser) {
 
     try {
         await insert.validation(write_object);
-        console.log(`validateChunk finish: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
         parser.resume();
     } catch(err) {
         logger.error(err);
@@ -174,7 +168,6 @@ async function validateChunk(json_message, reject, results, parser) {
  * @returns if validation error found returns Promise<error>, if no error nothing is returned.
  */
 async function insertChunk(json_message, insert_results, reject, results, parser) {
-    console.log(`insertChunk start: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
     if (results.data.length === 0) {
         return;
     }

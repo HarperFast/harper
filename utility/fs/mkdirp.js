@@ -20,9 +20,7 @@ async function makeDirectories(folders, permissions_object) {
         if (folders.length < CHUNK_SIZE) {
             await writeDirectories(folders, permissions_object);
         } else {
-            //console.log(`writeDirs - before chunk: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
             let chunks = _.chunk(folders, CHUNK_SIZE);
-            //console.log(`writeDirs - after chunk: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
 
             for (let chunk of chunks) {
 
@@ -33,9 +31,7 @@ async function makeDirectories(folders, permissions_object) {
                     minBefore = valBefore;
                 }
 
-                //console.log(`makeDirs start: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
                 await writeDirectories(chunk, permissions_object);
-                //console.log(`makeDirs finish: ${Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100} MB`);
 
                 let valAfter = Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100;
                 if (valAfter > maxAfter) {
