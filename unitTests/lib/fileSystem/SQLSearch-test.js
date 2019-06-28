@@ -343,7 +343,7 @@ function setClassMethodSpies() {
     _stripFileExtension_spy = sandbox.spy(FileSearch.prototype, '_stripFileExtension');
 }
 
-function setupDefaultData() {
+function setupBasicTestData() {
     const test_data_dog = deepClone(TEST_DATA_DOG);
     const test_data_cat = deepClone(TEST_DATA_CAT);
 
@@ -399,7 +399,7 @@ function sortTestResults(test_results) {
 describe('Test FileSystem Class', () => {
     before(() => {
         tearDownMockFS();
-        setupDefaultData();
+        setupBasicTestData();
         setClassMethodSpies();
     });
 
@@ -437,11 +437,11 @@ describe('Test FileSystem Class', () => {
         });
     });
 
-    describe('search() - SELECT', () => {
+    describe('search()', () => {
         it('should return all rows when there is no WHERE clause', mochaAsyncWrapper(async () => {
             let search_results;
-
             setupTestInstance();
+
             try {
                 search_results = await test_instance.search();
             } catch(e) {
@@ -497,7 +497,7 @@ describe('Test FileSystem Class', () => {
                 console.log(e);
             }
 
-            expect(search_results).to.be.an('array').that.is.empty;;
+            expect(search_results).to.be.an('array').that.has.lengthOf(0);
         }));
 
         it('should return the result of a operation with only a calculation', mochaAsyncWrapper(async() => {
@@ -522,7 +522,8 @@ describe('Test FileSystem Class', () => {
         }));
     });
 
-    describe('search() - Integration Test Scripts', () => {
+    // Note: These SELECT statements scenarios were developed from the SQL integration tests scenarios
+    describe('search() - testing variety of SQL statements', () => {
         before(() => {
             setupSqlData();
         });
@@ -793,7 +794,7 @@ describe('Test FileSystem Class', () => {
         it('should return the top 10 products by unitprice based on limit and order by', mochaAsyncWrapper(async () => {
             let search_results;
             const test_limit = 10;
-            const test_data = deepClone(sql_integration_data.products.data);
+            const test_data = [...sql_integration_data.products.data];
             const expected_results = sortDesc(test_data, 'unitprice');
             expected_results.splice(test_limit);
 
@@ -806,6 +807,7 @@ describe('Test FileSystem Class', () => {
                 console.log(e);
             }
 
+            expect(search_results.length).to.equal(test_limit)
             expect(sortTestResults(search_results)).to.deep.equal(sortTestResults(expected_results));
         }));
 
@@ -842,8 +844,6 @@ describe('Test FileSystem Class', () => {
         }));
 
         it('should return rounded unit price and group by calculated value', mochaAsyncWrapper(async () => {
-            // "name": "select round unit price using alias",
-            // "SELECT ROUND(unitprice) AS Price FROM dev.products GROUP BY ROUND(unitprice)"
             let search_results;
             const test_alias = "Price";
             const { data } = sql_integration_data.products;
@@ -868,6 +868,7 @@ describe('Test FileSystem Class', () => {
             expect(search_results.length).to.equal(expected_result.length);
             search_results.forEach(val => {
                 const price_val = val[test_alias];
+                expect(Object.keys(val).length).to.equal(1);
                 expect(expected_result.includes(price_val)).to.equal(true);
             });
         }));
@@ -937,41 +938,274 @@ describe('Test FileSystem Class', () => {
         }));
     });
 
+    describe('_getColumns()', () => {
+        it('should collect column data from the statement and set it to column property on class', () => {
+            const test_sql_statement = "SELECT * FROM dev.dog";
+            setupTestInstance(test_sql_statement);
+
+            test_instance.columns = {};
+            const test_AST_statememt = generateMockAST(test_sql_statement).statement;
+            test_instance.statement = test_AST_statememt;
+            test_instance._getColumns();
+
+            const { columns } = test_instance.columns;
+            const expected_columns = Object.keys(TEST_DATA_DOG[0]);
+            expected_columns.push("*");
+            expect(columns.length).to.equal(expected_columns.length);
+            columns.forEach(col => {
+                expect(expected_columns.includes(col.columnid)).to.equal(true);
+                if (col.columnid !== "*") {
+                    expect(col.tableid).to.equal(TEST_TABLE_DOG);
+                }
+            });
+        });
+
+        it('should collect column data from statement columns, joins, and order by and set to columns property', () => {
+            const test_sql_statement = "SELECT d.id, d.name, d.breed, c.age FROM dev.dog d JOIN dev.cat c ON d.id = c.id ORDER BY d.id";
+            setupTestInstance(test_sql_statement);
+
+            test_instance.columns = {};
+            const test_AST_statememt = generateMockAST(test_sql_statement).statement;
+            test_instance.statement = test_AST_statememt;
+            test_instance._getColumns();
+
+            const column_data = test_instance.columns;
+            const { columns, joins, order } = column_data;
+            const expected_columns = { id: "d", name: "d", breed: "d", age: "c" };
+
+            expect(Object.keys(column_data).length).to.equal(3);
+            expect(columns.length).to.equal(4);
+            expect(joins.length).to.equal(2);
+            expect(order.length).to.equal(1);
+            columns.forEach(col => {
+                expect(col.tableid).to.equal(expected_columns[col.columnid]);
+            });
+            expect(joins[0].columnid).to.equal("id");
+            expect(joins[0].tableid).to.equal("d");
+            expect(joins[1].columnid).to.equal("id");
+            expect(joins[1].tableid).to.equal("c");
+            expect(order[0].columnid).to.equal("id");
+            expect(order[0].tableid).to.equal("d");
+        });
+
+        it('should search for ORDER BY element and replace the column alias with the expression from SELECT', () => {
+            const test_sql_statement = "SELECT d.id AS id, d.name, d.breed, c.age FROM dev.dog d JOIN dev.cat c ON d.id = c.id ORDER BY id";
+            setupTestInstance(test_sql_statement);
+
+            test_instance.columns = {};
+            const test_AST_statememt = generateMockAST(test_sql_statement).statement;
+            test_instance.statement = test_AST_statememt;
+            test_instance._getColumns();
+
+            const { columns } = test_instance.columns;
+            expect(columns[0].columnid).to.equal("id");
+            expect(columns[0].tableid).to.equal("d");
+            expect(columns[0].as).to.equal("id");
+
+            const { columnid, tableid } = test_instance.statement.order[0].expression;
+            expect(columnid).to.equal("id");
+            expect(tableid).to.equal("d");
+        });
+    });
+
     describe('_getTables()', () => {
+        const dog_schema_table_id = `${TEST_SCHEMA}_${TEST_TABLE_DOG}`
+        const cat_schema_table_id = `${TEST_SCHEMA}_${TEST_TABLE_CAT}`
+
+        function checkTestInstanceData(data, table_id, hash_name, has_hash, merged_data) {
+            const test_table_obj = data[table_id];
+            const { __hash_name, __has_hash, __merged_data } = test_table_obj;
+
+            const exp_hash_name = hash_name ? hash_name : 'id';
+            const exp_has_hash = has_hash ? has_hash : false;
+            const exp_merged_data = merged_data ? merged_data : {};
+
+            expect(test_table_obj).to.be.an('object');
+            expect(__hash_name).to.equal(exp_hash_name);
+            expect(__has_hash).to.equal(exp_has_hash);
+            expect(__merged_data).to.deep.equal(exp_merged_data);
+        }
+
         it('test multiple attributes from ONE table sets one table in this.data and gets hash_name from global.schema', () => {
-            //TODO: write test
+            setupTestInstance();
+            test_instance.data = {};
+            test_instance.tables = [];
+
+            test_instance._getTables();
+            const { data, tables } = test_instance;
+
+            checkTestInstanceData(data, dog_schema_table_id);
+            expect(tables[0].databaseid).to.equal(TEST_SCHEMA);
+            expect(tables[0].tableid).to.equal(TEST_TABLE_DOG);
         });
 
         it('test multiple attributes from multiple table sets multiple tables in this.data and gets hash_name from global.schema', () => {
-            //TODO: write test
-        });
-    });
+            const test_sql_statement = "SELECT d.id, d.name, d.breed, c.age FROM dev.dog d JOIN dev.cat c ON d.id = c.id";
 
-    describe('_getColumns()', () => {
-        it('', () => {
+            setupTestInstance(test_sql_statement);
+            test_instance.data = {};
+            test_instance.tables = [];
 
-        });
-    });
+            test_instance._getTables();
+            const { data, tables } = test_instance;
 
-    describe('_findColumn()', () => {
-        it('', () => {
-
-        });
-    });
-
-    describe('_addFetchColumns()', () => {
-        it('', () => {
-
+            checkTestInstanceData(data, dog_schema_table_id);
+            checkTestInstanceData(data, cat_schema_table_id);
+            expect(tables[0].databaseid).to.equal(TEST_SCHEMA);
+            expect(tables[0].tableid).to.equal(TEST_TABLE_DOG);
+            expect(tables[1].databaseid).to.equal(TEST_SCHEMA);
+            expect(tables[1].tableid).to.equal(TEST_TABLE_CAT);
         });
     });
 
     describe('_conditionsToFetchAttributeValues()', () => {
-        it('', () => {
+        it('should NOT set exact_search_values property when there is no WHERE clause', () => {
+            const test_sql_statement = sql_basic_dog_select;
+            setupTestInstance(test_sql_statement);
 
+            test_instance.exact_search_values = {};
+            const test_AST_statememt = generateMockAST(test_sql_statement).statement;
+            test_instance.statement = test_AST_statememt;
+            test_instance._conditionsToFetchAttributeValues();
+
+            const test_result = test_instance.exact_search_values;
+            expect(test_result).to.deep.equal({});
+        });
+
+        it('should set exact_search_values property with data from WHERE clause', () => {
+            const test_hash_val = "1";
+            const test_sql_statement = sql_basic_dog_select + ` WHERE ${HASH_ATTRIBUTE} = ${test_hash_val}`;
+            setupTestInstance(test_sql_statement);
+
+            test_instance.exact_search_values = {};
+            const test_AST_statememt = generateMockAST(test_sql_statement).statement;
+            test_instance.statement = test_AST_statememt;
+            test_instance._conditionsToFetchAttributeValues();
+
+            const test_attr_path = `${TEST_SCHEMA}/${TEST_TABLE_DOG}/${HASH_ATTRIBUTE}`;
+            const test_result = test_instance.exact_search_values;
+
+            expect(test_result[test_attr_path]).to.be.a('object');
+            expect(test_result[test_attr_path].ignore).to.equal(false);
+            test_result[test_attr_path].values.forEach(val => {
+                expect(val).to.equal(test_hash_val);
+            });
+        });
+
+        it('should set multiple values to exact_search_values property with data from WHERE IN clause', () => {
+            const test_hash_vals = "1,2";
+            const test_sql_statement = sql_basic_dog_select + ` WHERE ${HASH_ATTRIBUTE} IN (${test_hash_vals})`;
+            setupTestInstance(test_sql_statement);
+
+            test_instance.exact_search_values = {};
+            const test_AST_statememt = generateMockAST(test_sql_statement).statement;
+            test_instance.statement = test_AST_statememt;
+            test_instance._conditionsToFetchAttributeValues();
+
+            const test_attr_path = `${TEST_SCHEMA}/${TEST_TABLE_DOG}/${HASH_ATTRIBUTE}`;
+            const test_result = test_instance.exact_search_values;
+
+            expect(test_result[test_attr_path]).to.be.a('object');
+            expect(test_result[test_attr_path].ignore).to.equal(false);
+            test_result[test_attr_path].values.forEach(val => {
+                expect(["1","2"].includes(val)).to.equal(true);
+            });
         });
     });
 
     describe('_backtickAllSchemaItems()', () => {
+        function backtickString(string_val) {
+          return `\`${string_val}\``;
+        };
+
+        it('should add backticks to all schema elements in statement property', () => {
+            const test_sql_statement = "SELECT d.id AS id, d.name, d.breed, c.age FROM dev.dog d JOIN dev.cat c ON d.id = c.id ORDER BY id";
+            setupTestInstance(test_sql_statement);
+
+            const test_AST_statememt = generateMockAST(test_sql_statement).statement;
+            const expected_results = deepClone(test_AST_statememt);
+            test_instance.statement = test_AST_statememt;
+            test_instance._backtickAllSchemaItems();
+
+            const test_statement_keys = Object.keys(test_AST_statememt);
+            test_statement_keys.forEach(key => {
+               test_instance.statement[key].forEach((item_vals, i) => {
+                   const initial_val = expected_results[key][i];
+                   switch (key) {
+                       case 'columns':
+                           expect(item_vals.columnid).to.equal(backtickString(initial_val.columnid));
+                           expect(item_vals.tableid).to.equal(backtickString(initial_val.tableid));
+                           expect(item_vals.columnid_orig).to.equal(initial_val.columnid);
+                           expect(item_vals.tableid_orig).to.equal(initial_val.tableid);
+                           break;
+                       case 'from':
+                           expect(item_vals.databaseid).to.equal(backtickString(initial_val.databaseid));
+                           expect(item_vals.tableid).to.equal(backtickString(initial_val.tableid));
+                           expect(item_vals.databaseid_orig).to.equal(initial_val.databaseid);
+                           expect(item_vals.tableid_orig).to.equal(initial_val.tableid);
+                           break;
+                       case 'joins':
+                           expect(item_vals.on.left.columnid).to.equal(backtickString(initial_val.on.left.columnid));
+                           expect(item_vals.on.left.tableid).to.equal(backtickString(initial_val.on.left.tableid));
+                           expect(item_vals.on.right.columnid).to.equal(backtickString(initial_val.on.right.columnid));
+                           expect(item_vals.on.right.tableid).to.equal(backtickString(initial_val.on.right.tableid));
+                           expect(item_vals.table.databaseid).to.equal(backtickString(initial_val.table.databaseid));
+                           expect(item_vals.table.tableid).to.equal(backtickString(initial_val.table.tableid));
+                           expect(item_vals.on.left.columnid_orig).to.equal(initial_val.on.left.columnid);
+                           expect(item_vals.on.left.tableid_orig).to.equal(initial_val.on.left.tableid);
+                           expect(item_vals.on.right.columnid_orig).to.equal(initial_val.on.right.columnid);
+                           expect(item_vals.on.right.tableid_orig).to.equal(initial_val.on.right.tableid);
+                           expect(item_vals.table.databaseid_orig).to.equal(initial_val.table.databaseid);
+                           expect(item_vals.table.tableid_orig).to.equal(initial_val.table.tableid);
+                           break;
+                       case 'order':
+                           expect(item_vals.expression.columnid).to.equal(backtickString(initial_val.expression.columnid));
+                           expect(item_vals.expression.columnid_orig).to.equal(initial_val.expression.columnid);
+                           break;
+                       default:
+                           break;
+                   }
+               });
+            });
+        });
+    });
+
+    describe('_findColumn()', () => {
+        it('should return full column data for existing column', () => {
+            const test_sql_statement = "SELECT * FROM dev.dog";
+            setupTestInstance(test_sql_statement);
+
+            const test_column = {columnid: 'id', tableid: 'dog'};
+            const test_result = test_instance._findColumn(test_column);
+            expect(test_result.attribute).to.equal(test_column.columnid);
+            expect(test_result.table.databaseid).to.equal(TEST_SCHEMA);
+            expect(test_result.table.tableid).to.equal(test_column.tableid);
+        });
+
+        it('should return column data for alias', () => {
+            const test_alias = 'dogname';
+            const test_sql_statement = `SELECT d.id AS id, d.name AS ${test_alias}, d.breed, c.age FROM dev.dog d JOIN dev.cat c ON d.id = c.id ORDER BY id`;
+
+            setupTestInstance(test_sql_statement);
+            const test_column = {columnid: test_alias};
+            const test_result = test_instance._findColumn(test_column);
+
+            expect(test_result.as).to.equal(test_alias);
+            expect(test_result.columnid).to.equal('name');
+            expect(test_result.tableid).to.equal('d');
+        });
+
+        it('should NOT return data for column that does not exist', () => {
+            const test_column = {columnid: 'snoopdog'};
+
+            setupTestInstance();
+            const test_result = test_instance._findColumn(test_column);
+
+            expect(test_result).to.equal(undefined);
+        });
+    });
+
+    describe('_addFetchColumns()', () => {
         it('', () => {
 
         });
