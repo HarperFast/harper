@@ -70,7 +70,6 @@ async function validateLicense(license_key, company) {
         log.error(`empty license key passed to validate.`);
         license_validation_object.valid_license = false;
         return license_validation_object;
-        return;
     }
     let decipher = crypto.createDecipher('aes192', 'a password');
 
@@ -80,8 +79,6 @@ async function validateLicense(license_key, company) {
     let license_tokens = null;
     let decrypted = null;
     try {
-        log.error(`tracing validateLicense.`);
-        log.error(`license key is: ${license_key}`);
         license_tokens = license_key.split(LICENSE_KEY_DELIMITER);
         decrypted = decipher.update(license_tokens[0], 'hex', 'utf8');
         decrypted.trim();
