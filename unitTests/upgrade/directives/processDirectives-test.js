@@ -19,6 +19,8 @@ const directive_manager_stub = require('./testDirectives/directiveManagerStub');
 const BASE = process.cwd();
 let DIR_PATH_BASE = BASE + '/processDirectivesTest/';
 
+//TODO: Move the files created in these tests to the new test harness.
+
 //Use the manager stub in order to control the tests.
 process_directive_rw.__set__('directive_manager', directive_manager_stub.directive_manager_rw);
 
@@ -129,6 +131,9 @@ describe('test createExplicitDirectories', function() {
     afterEach( function () {
         try {
             test_util.cleanUpDirectories(BASE + '/processDirectivesTest/');
+            test_util.cleanUpDirectories(BASE + '/processDirectivesTest/test0');
+            test_util.cleanUpDirectories(BASE + '/processDirectivesTest/test1');
+            test_util.cleanUpDirectories(BASE + '/processDirectivesTest/test2');
         } catch(e) {
             console.error(e);
         }
