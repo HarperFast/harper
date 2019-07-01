@@ -78,7 +78,6 @@ function createRoom(topicName) {
             created_room = new CoreRoom(topicName);
             configureStandardRoom(created_room);
     }
-    log.debug(`Created room: ${inspect(created_room)}`);
     return created_room;
 }
 
