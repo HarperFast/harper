@@ -9,12 +9,14 @@ const CHUNK_SIZE = 5000;
 
 module.exports = makeDirectories;
 
-async function makeDirectories(folders, permissions_object) {
+/**
+ * If folders length greater than CHUNK_SIZ, await writeDirectories is called sequentially.
+ * @param folders
+ * @param permissions_object
+ * @returns {Promise<void>}
+ */
 
-    let maxBefore = 0;
-    let minBefore = 100000;
-    let maxAfter = 0;
-    let minAfter = 100000;
+async function makeDirectories(folders, permissions_object) {
 
     try {
         if (folders.length < CHUNK_SIZE) {
@@ -23,33 +25,13 @@ async function makeDirectories(folders, permissions_object) {
             let chunks = _.chunk(folders, CHUNK_SIZE);
 
             for (let chunk of chunks) {
-
-                let valBefore = Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100;
-                if (valBefore > maxBefore) {
-                    maxBefore = valBefore;
-                } else if (valBefore < minBefore) {
-                    minBefore = valBefore;
-                }
-
                 await writeDirectories(chunk, permissions_object);
-
-                let valAfter = Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) / 100;
-                if (valAfter > maxAfter) {
-                    maxAfter = valAfter;
-                } else if (valBefore < minAfter) {
-                    minAfter = valAfter;
-                }
             }
-            console.log(`writeDir max before: ${maxBefore} MB`);
-            console.log(`writeDir min before: ${minBefore} MB`);
-            console.log(`writeDir max after: ${maxAfter} MB`);
-            console.log(`writeDir min after: ${minAfter} MB`);
         }
     } catch(err) {
     throw err;
     }
 }
-
 
 /**
  * creates folders
@@ -59,7 +41,7 @@ async function makeDirectories(folders, permissions_object) {
  */
 async function writeDirectories(folders, permissions_object) {
     await Promise.all(
-        folders.map(async (folder, index) => {
+        folders.map(async (folder) => {
             try {
                 if(!permissions_object || !permissions_object.mode) {
                     permissions_object['mode'] = terms.HDB_FILE_PERMISSIONS;
@@ -68,11 +50,7 @@ async function writeDirectories(folders, permissions_object) {
             } catch (err) {
                 logger.error(err);
             }
-            // finally {
-            //     folder[index] = null;
-            // }
         })
     );
     folders = null;
 }
-

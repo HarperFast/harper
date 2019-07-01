@@ -9,8 +9,8 @@ const CHUNK_SIZE = 5000;
 module.exports = writeFiles;
 
 /**
- * writes files to the file system & if the file has a link also writes the link
- * @param {Array.<./FileObject>} files
+ * If files length greater than CHUNK_SIZ, await work is called sequentially.
+ * @param files
  * @returns {Promise<void>}
  */
 async function writeFiles(files) {
@@ -30,6 +30,11 @@ async function writeFiles(files) {
     }
 }
 
+/**
+ * Writes files to the file system & if the file has a link also writes the link
+ * @param files
+ * @returns {Promise<void>}
+ */
 async function work(files){
     await Promise.all(
         files.map(async (file) => {
