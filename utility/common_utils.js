@@ -55,7 +55,8 @@ module.exports = {
     checkGlobalSchemaTable: checkGlobalSchemaTable,
     getHomeDir: getHomeDir,
     getPropsFilePath: getPropsFilePath,
-    promisifyPapaParse
+    promisifyPapaParse,
+    removeBOM
 };
 
 /**

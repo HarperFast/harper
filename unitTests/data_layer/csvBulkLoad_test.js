@@ -67,10 +67,10 @@ describe('Test csvBulkLoad.js', () => {
 
     let parser_fake = {
         pause: () => {
-            console.log('parser pause');
+            console.info('parser pause');
         },
         resume: () => {
-            console.log('parser resume');
+            console.info('parser resume');
         }
     };
 
@@ -276,7 +276,7 @@ describe('Test csvBulkLoad.js', () => {
     describe('Test csvFileLoad function', () => {
         let validation_msg_stub;
         let fs_access_stub;
-        let logger_error_stub;
+        let logger_error_spy;
         let sandbox = sinon.createSandbox();
         let bulk_load_result_fake = {
             records: 10,
@@ -291,7 +291,7 @@ describe('Test csvBulkLoad.js', () => {
         beforeEach(() => {
             validation_msg_stub = sandbox.stub(validator, 'fileObject').returns('');
             fs_access_stub = sandbox.stub(fs, 'access');
-            logger_error_stub = sandbox.stub(logger, 'error');
+            logger_error_spy = sandbox.spy(logger, 'error');
         });
 
         afterEach(() => {
@@ -351,15 +351,15 @@ describe('Test csvBulkLoad.js', () => {
 
             expect(error).to.be.instanceof(Error);
             expect(error.message).to.equal('Papa parse error');
-            expect(logger_error_stub).to.have.been.calledOnce;
+            expect(logger_error_spy).to.have.been.calledOnce;
         });
     });
 
     describe('Test validateChunk function', () => {
         let sandbox = sinon.createSandbox();
         let insert_validation_stub;
-        let logger_error_stub;
-        let console_log_stub;
+        let logger_error_spy;
+        let console_info_spy;
         let validate_chunk_rewire;
 
         let write_object_fake = {
@@ -370,10 +370,14 @@ describe('Test csvBulkLoad.js', () => {
         };
 
         before(() => {
+            //sinon.reset();
+            //sinon.restore();
+            sandbox.restore();
+            //sandbox.reset();
             validate_chunk_rewire = csv_rewire.__get__('validateChunk');
             insert_validation_stub = sandbox.stub(insert, 'validation').resolves();
-            console_log_stub = sandbox.stub(console, 'log');
-            logger_error_stub = sandbox.stub(logger, 'error');
+            console_info_spy = sandbox.spy(console, 'info');
+            logger_error_spy = sandbox.spy(logger, 'error');
         });
 
         after(() => {
@@ -384,7 +388,7 @@ describe('Test csvBulkLoad.js', () => {
         it('Test validation function returns if no data', async () => {
            await validate_chunk_rewire(json_message_fake, reject_fake, results_fake, parser_fake);
 
-            expect(console_log_stub).to.have.not.been.calledWith('parser pause');
+            expect(console_info_spy).to.have.not.been.calledWith('parser pause');
             expect(insert_validation_stub).to.not.have.been.calledWith(write_object_fake);
         });
 
@@ -393,8 +397,8 @@ describe('Test csvBulkLoad.js', () => {
 
             await validate_chunk_rewire(json_message_fake, reject_fake, results_fake, parser_fake);
 
-            expect(console_log_stub).to.have.been.calledWith('parser pause');
-            expect(console_log_stub).to.have.been.calledWith('parser resume');
+            expect(console_info_spy).to.have.been.calledWith('parser pause');
+            expect(console_info_spy).to.have.been.calledWith('parser resume');
             expect(insert_validation_stub).to.have.been.calledWith(write_object_fake);
         });
 
@@ -410,7 +414,7 @@ describe('Test csvBulkLoad.js', () => {
 
             expect(error).to.be.instanceof(Error);
             expect(error.message).to.equal('Insert error');
-            expect(logger_error_stub).to.have.been.calledOnce;
+            expect(logger_error_spy).to.have.been.calledOnce;
         });
     });
 
@@ -419,8 +423,8 @@ describe('Test csvBulkLoad.js', () => {
         let insert_chunk_rewire;
         let call_bulk_load_rewire;
         let call_bulk_load_stub;
-        let console_log_stub;
-        let logger_error_stub;
+        let console_info_spy;
+        let logger_error_spy;
         let bulk_load_result_fake = {
             records: 7,
             number_written: 6
@@ -430,8 +434,8 @@ describe('Test csvBulkLoad.js', () => {
             call_bulk_load_stub = sandbox.stub().resolves(bulk_load_result_fake);
             insert_chunk_rewire = csv_rewire.__get__('insertChunk');
             call_bulk_load_rewire = csv_rewire.__set__('callBulkLoad', call_bulk_load_stub);
-            console_log_stub = sandbox.stub(console, 'log');
-            logger_error_stub = sandbox.stub(logger, 'error');
+            console_info_spy = sandbox.spy(console, 'info');
+            logger_error_spy = sandbox.spy(logger, 'error');
         });
 
         after(() => {
@@ -442,7 +446,7 @@ describe('Test csvBulkLoad.js', () => {
         it('Test validation function returns if no data', async () => {
             await insert_chunk_rewire(json_message_fake, insert_results_fake, reject_fake, results_fake, parser_fake);
 
-            expect(console_log_stub).to.have.not.been.calledWith('parser pause');
+            expect(console_info_spy).to.have.not.been.calledWith('parser pause');
             expect(call_bulk_load_stub).to.have.not.been.calledWith('parser pause');
         });
 
@@ -450,8 +454,8 @@ describe('Test csvBulkLoad.js', () => {
             results_fake.data = data_array_fake;
             await insert_chunk_rewire(json_message_fake, insert_results_fake, reject_fake, results_fake, parser_fake);
 
-            expect(console_log_stub).to.have.been.calledWith('parser pause');
-            expect(console_log_stub).to.have.been.calledWith('parser resume');
+            expect(console_info_spy).to.have.been.calledWith('parser pause');
+            expect(console_info_spy).to.have.been.calledWith('parser resume');
             expect(call_bulk_load_stub).to.have.been.calledOnce;
             expect(insert_results_fake.records).to.equal(17);
             expect(insert_results_fake.number_written).to.equal(16);
@@ -469,7 +473,7 @@ describe('Test csvBulkLoad.js', () => {
 
             expect(error).to.be.instanceof(Error);
             expect(error.message).to.equal('Bulk load error');
-            expect(logger_error_stub).to.have.been.calledOnce;
+            expect(logger_error_spy).to.have.been.calledOnce;
         });
     });
 
@@ -477,7 +481,7 @@ describe('Test csvBulkLoad.js', () => {
         let sandbox = sinon.createSandbox();
         let fs_create_read_stream_stub;
         let papaparse_parse_stub;
-        let logger_error_stub;
+        //let logger_error_stub;
         let parse_results_fake = {
             records: 0,
             number_written: 0
@@ -490,7 +494,7 @@ describe('Test csvBulkLoad.js', () => {
         before(() => {
             fs_create_read_stream_stub = sandbox.stub(fs, 'createReadStream').returns(stream_fake);
             papaparse_parse_stub = sandbox.stub(papa_parse, 'parsePromise');
-            logger_error_stub = sandbox.stub(logger, 'error');
+            //logger_error_stub = sandbox.stub(logger, 'error');
             call_papaparse_rewire = csv_rewire.__get__('callPapaParse');
         });
 
@@ -518,7 +522,7 @@ describe('Test csvBulkLoad.js', () => {
 
             expect(error.message).to.equal('Argh im broken');
             expect(error).to.be.instanceof(Error);
-            expect(logger_error_stub).to.have.been.calledOnce;
+            //expect(logger_error_stub).to.have.been.calledOnce;
         });
     });
 

@@ -8,6 +8,8 @@ const chai = require('chai');
 const { spawn } = require('child_process');
 const cu = require('../../utility/common_utils');
 const test_utils = require('../test_utils');
+const stream = require('stream');
+const papa_parse = require('papaparse');
 // try to move to /bin directory so our properties reader doesn't explode.
 test_utils.changeProcessToBinDir();
 
@@ -547,6 +549,62 @@ describe('Test getClusterUser', function() {
     });
     it('Test no users', function() {
         assert.equal(cu.getClusterUser(null, CLUSTER_USER_NAME), undefined, 'Expected undefined result');
+    });
+});
+
+describe('Test promisifyPapaParse', () => {
+    let a_csv_string = 'shipperid,companyname,phone\n' +
+        '1,Speedy Express,(503) 555-9831\n' +
+        '2,United Package,(503) 555-3199\n' +
+        '3,Federal Shipping,(503) 555-9931';
+
+    let expected_result = [ [ { shipperid: 1,
+        companyname: 'Speedy Express',
+        phone: '(503) 555-9831' },
+        { shipperid: 2,
+            companyname: 'United Package',
+            phone: '(503) 555-3199' } ],
+        [ { shipperid: 3,
+            companyname: 'Federal Shipping',
+            phone: '(503) 555-9931' } ] ];
+
+    let string_stream = new stream.Readable();
+    string_stream.push(a_csv_string);
+    string_stream.push(null);
+    cu.promisifyPapaParse();
+    let parsed_result = [];
+
+    let chunk_function = (reject, results, parser) => {
+        parsed_result.push(results.data);
+    };
+
+    it('Test csv stream is parsed as expected', async () => {
+        await papa_parse.parsePromise(string_stream, chunk_function);
+        expect(parsed_result).to.eql(expected_result);
+    });
+});
+
+describe('Test removeBOM function', () => {
+    let string_with_bom = '\ufeffHey, I am a string used for a unit test.';
+    let string_without_bom = 'Hey, I am a string used for a unit test.';
+    let not_a_string = true;
+
+    it('Test that the BOM is removed', () => {
+        let result = cu.removeBOM(string_with_bom);
+        expect(result).to.equal(string_without_bom);
+    });
+
+    it('Test if parameter not string error thrown', () => {
+        let error;
+
+        try {
+            cu.removeBOM(not_a_string);
+        } catch(err) {
+            error = err;
+        }
+
+        expect(error.message).to.equal('Expected a string, got boolean');
+        expect(error).to.be.instanceof(Error);
     });
 });
 
