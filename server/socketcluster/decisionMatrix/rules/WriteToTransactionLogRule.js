@@ -22,9 +22,18 @@ class WriteToTransactionLogRule extends RuleIF {
     constructor() {
         super();
         this.setRuleOrder(types.COMMAND_EVAL_ORDER_ENUM.LOW);
+        this.type = types.RULE_TYPE_ENUM.WRITE_TO_TRANSACTION_LOG;
         this.pending_transaction_stream = undefined;
         this.transaction_stream = undefined;
     }
+
+    /**
+     * Evaluate the request against this rule.  Return true if the request passes the rule, false if it does not.
+     * @param req - the request
+     * @param args - any arguments that are needed during rule evaluation, can be null.
+     * @param worker - the worker this rule belongs to.
+     * @returns {Promise<boolean>}
+     */
     async evaluateRule(req, args, worker) {
         log.trace('Evaluating write to transaction log rule');
         if(!req || !req.channel || !req.data) {
@@ -34,7 +43,7 @@ class WriteToTransactionLogRule extends RuleIF {
 
         delete req.data.__transacted;
 
-        if(VALID_OPERATIONS.indexOf(req.data.operation) < 0){
+        if(VALID_OPERATIONS.indexOf(req.data.transaction.operation) < 0){
             log.debug('Invalid operation, not writing to transaction log.');
             return true;
         }
@@ -50,9 +59,9 @@ class WriteToTransactionLogRule extends RuleIF {
 
 
             let keys = [];
-            if(req.data.operation === 'insert' || req.data.update === 'insert'){
+            if(req.data.transaction.operation === 'insert' || req.data.transaction.update === 'insert'){
                 keys = INSERT_UPDATE_FIELDS;
-            } else if(req.data.operation === 'delete') {
+            } else if(req.data.transaction.operation === 'delete') {
                 keys = DELETE_FIELDS;
             }
 
@@ -68,6 +77,7 @@ class WriteToTransactionLogRule extends RuleIF {
                 this.pending_transaction_stream.write(transaction_csv);
             }
         } catch(err) {
+            log.trace('failed write to transaction log rule');
             log.error(err);
             return false;
         }

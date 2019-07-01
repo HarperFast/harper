@@ -34,7 +34,7 @@ class CoreDecisionMatrix extends DecisionMatrixIF {
                 let rule = rules[i];
                 let rule_result = await rule.evaluateRule(request, args, worker);
                 if (!rule_result) {
-                    log.debug(`failed rule: ${rule.id}`);
+                    log.debug(`failed rule: ${rule.id} -- name: ${rule.constructor.name}`);
                     return false;
                 }
             }

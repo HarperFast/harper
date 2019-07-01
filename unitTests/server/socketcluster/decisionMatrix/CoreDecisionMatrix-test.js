@@ -26,7 +26,7 @@ class BadTestRule extends RuleIF {
         super();
         this.setRuleOrder(types.COMMAND_EVAL_ORDER_ENUM.VERY_FIRST);
     }
-    evaluateRule() {
+    evaluateRule(req, args, worker) {
         console.log("Test rule");
         return false;
     }
