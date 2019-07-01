@@ -13,7 +13,7 @@ const RoomMessageObjects = require('./RoomMessageObjects');
 
 // 'this' is typically stomped by the worker when invoked, so we store 'this' to make this object accessible.
 let self = undefined;
-class AddUserRoom extends RoomIF {
+class AlterUserRoom extends RoomIF {
     constructor(new_topic_string) {
         super();
         this.setTopic(new_topic_string);
@@ -71,4 +71,4 @@ class AddUserRoom extends RoomIF {
     }
 }
 
-module.exports = AddUserRoom;
+module.exports = AlterUserRoom;

@@ -1,6 +1,6 @@
 "use strict";
 const log = require('../../../utility/logging/harper_logger');
-const {inspect} = require('util');
+
 class SocketConnector{
     /**
      *
