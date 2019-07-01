@@ -46,9 +46,6 @@ async function work(files){
             } catch(e){
                 logger.error(e);
             }
-            finally {
-                files.shift();
-            }
         })
     );
 
