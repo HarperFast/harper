@@ -130,7 +130,7 @@ class NodeConnector {
             //we need to observe the channel locally and push the data remotely.
             let sub_channel = this.worker.exchange.subscribe(subscription.channel);
             sub_channel.watch(data=>{
-                console.log('sending out');
+                log.trace('sending out');
                 connection.publish(subscription.channel, data);
             });
         }
@@ -158,7 +158,7 @@ class NodeConnector {
             try {
                 await this.publishin_promises[x](request);
             } catch(e){
-                console.error(e);
+                log.error(e);
             }
         }
     }

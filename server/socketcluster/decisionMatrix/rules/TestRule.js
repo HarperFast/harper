@@ -9,8 +9,7 @@ class TestRule extends RuleIF {
         super();
         this.type = types.RULE_TYPE_ENUM.TEST_RULE;
     }
-    async evaluateRule(req, args, worker) {
-        console.log("Test rule");
+    evaluateRule(req, args, worker) {
         return true;
     }
 }

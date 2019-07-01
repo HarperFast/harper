@@ -135,7 +135,7 @@ function warningHandler(warning){
  * @param workerInfo
  */
 function workerStartHandler(worker_info){
-    console.log('worker start', worker_info);
+    log.trace('worker start', worker_info);
 }
 
 /**
@@ -167,8 +167,7 @@ function workerMessageHandler(worker_id, data, callback){
  * @param workerClusterInfo
  */
 function workerClusterStartHandler(worker_cluster_info){
-    console.log('worker cluster start');
-    log.trace('Worker Cluster started.');
+    log.trace('worker cluster start');
 }
 
 /**
@@ -178,8 +177,7 @@ function workerClusterStartHandler(worker_cluster_info){
  * @param worker_cluster_info
  */
 function workerClusterReadyHandler(worker_cluster_info){
-    console.log('worker cluster ready');
-    log.trace('Worker Cluster Ready.');
+    log.trace('worker cluster ready');
 }
 
 /**
@@ -199,8 +197,8 @@ function workerClusterExitHandler(worker_cluster_info){
  * @param broker_info
  */
 function brokerStartHandler(broker_info){
-    console.log('broker start', broker_info);
-    log.trace('Broker Started.');
+    log.trace('broker start', broker_info);
+    log.notify('The message broker has started.');
 }
 
 /**
@@ -209,7 +207,7 @@ function brokerStartHandler(broker_info){
  * @param broker_info
  */
 function brokerExitHandler(broker_info){
-    log.trace('Broker Exited.');
+    log.notify('The message broker has stopped.');
 }
 
 /**

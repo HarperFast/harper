@@ -6,6 +6,9 @@ const validation = require('../../validation/registration/license_key_object.js'
 const moment = require('moment');
 const uuidV4 = require('uuid/v4');
 const log = require('../logging/harper_logger');
+const path = require('path');
+const hdb_utils = require('../common_utils');
+const terms = require('../hdbTerms');
 
 const LICENSE_HASH_PREFIX = '061183';
 const LICENSE_KEY_DELIMITER = 'mofi25';
@@ -13,7 +16,11 @@ const env = require('../../utility/environment/environmentManager');
 
 let FINGER_PRINT_FILE = undefined;
 try {
-    FINGER_PRINT_FILE = `${env.get('PROJECT_DIR')}/utility/keys/060493.ks`;
+    FINGER_PRINT_FILE = `${env.get('PROJECT_DIR')}/utility/keys/${terms.REG_KEY_FILE_NAME}`;
+    if(!fs.existsSync(FINGER_PRINT_FILE)) {
+        // As of version 2.0, we store the reg keys in ~/.harperdb.
+        FINGER_PRINT_FILE = path.join(hdb_utils.getHomeDir(), terms.HDB_HOME_DIR_NAME, terms.LICENSE_KEY_DIR_NAME, terms.REG_KEY_FILE_NAME);
+    }
 } catch(err) {
     // no-op, this should only fail during installation as the
 }
@@ -58,8 +65,14 @@ function generateLicense(license_object) {
 }
 
 async function validateLicense(license_key, company) {
-    let decipher = crypto.createDecipher('aes192', 'a password');
     let license_validation_object = {};
+    if(!license_key) {
+        log.error(`empty license key passed to validate.`);
+        license_validation_object.valid_license = false;
+        return license_validation_object;
+    }
+    let decipher = crypto.createDecipher('aes192', 'a password');
+
     license_validation_object.valid_date = true;
     license_validation_object.valid_license = true;
     license_validation_object.valid_machine = true;
