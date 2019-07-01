@@ -2,7 +2,7 @@
 const ServerSocket = require('./ServerSocket');
 const log = require('../../../utility/logging/harper_logger');
 const terms = require('../../../utility/hdbTerms');
-
+const {inspect} = require('util');
 class SCServer{
     constructor(worker){
         this.worker = worker;
@@ -35,7 +35,8 @@ class SCServer{
      * @param error
      */
     errorHandler(error){
-
+        log.error(`Error in socket cluster server`);
+        log.error(error);
     }
 
     /**
@@ -43,7 +44,8 @@ class SCServer{
      * @param notice
      */
     noticeHandler(notice){
-
+        log.info(`Socket cluster server is on notice.`);
+        log.info(inspect(notice));
     }
 
     /**
@@ -82,7 +84,7 @@ class SCServer{
                     });
                 });
             } catch(e){
-                console.error(e);
+                log.error(e);
             }
         }
     }
@@ -175,7 +177,7 @@ class SCServer{
      * Emitted when the server is ready to accept connections.
      */
     readyHandler(){
-
+        log.notify('The socket cluster server is ready.');
     }
 }
 
