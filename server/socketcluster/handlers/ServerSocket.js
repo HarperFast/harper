@@ -59,7 +59,7 @@ class ServerSocket{
      * @param error
      */
     errorHandler(error){
-        console.error(error);
+        log.error(error);
     }
 
     /**
@@ -112,7 +112,7 @@ class ServerSocket{
      * @param channel
      */
     subscribeHandler(channel){
-        console.log(this.socket.id + ' subscribed to channel ' + channel);
+        log.debug(this.socket.id + ' subscribed to channel ' + channel);
     }
 
     /**
@@ -120,7 +120,7 @@ class ServerSocket{
      * @param channel
      */
     unsubscribeHandler(channel){
-        console.log('unsubscribed from channel ' + channel);
+        log.debug('unsubscribed from channel ' + channel);
     }
 
     /**
@@ -152,7 +152,6 @@ class ServerSocket{
      * @param message
      */
     messageHandler(message){
-        // console.log('message received: ', message );
     }
 }
 

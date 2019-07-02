@@ -11,7 +11,6 @@ const os = require('os');
 const configure_validator = require('../../validation/clustering/configureValidator');
 const auth = require('../../security/auth');
 const ClusterStatusObject = require('../../server/clustering/ClusterStatusObject');
-const signalling = require('../../utility/signalling');
 const cluster_status_event = require('../../events/ClusterStatusEmitter');
 const children_stopped_event = require('../../events/AllChildrenStoppedEvent');
 const child_process = require('child_process');
@@ -28,7 +27,7 @@ const started_forks = {};
 let is_enterprise = false;
 let child_event_count = 0;
 
-const STATUS_TIMEOUT_MS = 4000;
+const STATUS_TIMEOUT_MS = 10000;
 const DUPLICATE_ERR_MSG = 'Cannot add a node that matches the hosts clustering config.';
 
 const SUBSCRIPTIONS_MUST_BE_ARRAY = 'add_node subscriptions must be an array';
@@ -67,6 +66,7 @@ function setEnterprise(enterprise) {
  * @returns {Promise<void>}
  */
 async function kickOffEnterprise() {
+    log.trace('clusterUtilities kickOffEnterprise');
     try {
         if(global.clustering_on === true) {
             const enterprise_util = require('../../utility/enterpriseInitialization');
@@ -139,7 +139,9 @@ async function addNode(new_node) {
     }
 
     try {
-        hdb_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.HDB_NODES, {add_node: new_node});
+        let add_node_msg = new terms.ClusterMessageObjects.HdbCoreAddNodeMessage();
+        add_node_msg.node = new_node;
+        hdb_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.HDB_NODES, add_node_msg);
     } catch(e){
         throw new Error(e);
     }
@@ -176,8 +178,9 @@ async function removeNode(remove_json_message) {
         log.info(`Node '${remove_json_message.name}' was not found. Operation aborted.`);
         return `Node '${remove_json_message.name}' was not found.`;
     }
-
-    hdb_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.HDB_NODES, {remove_node: remove_json_message});
+    let remove_node_msg = new terms.ClusterMessageObjects.HdbCoreRemoveNodeMessage();
+    remove_node_msg.node = remove_json_message;
+    hdb_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.HDB_NODES, remove_node_msg);
     return `successfully removed ${remove_json_message.name} from manifest`;
 }
 
@@ -205,12 +208,14 @@ async function configureCluster(enable_cluster_json) {
 }
 
 /**
- * Get the status of this hosts clustering configuration and connections.
+ * Get the status of this hosts clustering configuration and connections.  This will send a message to a socket cluster worker,
+ * who will request status from all other workers.  Once all workers have reported status, the worker will respond to the
+ * HDB Child via the ClusterStatusEmitter.
  * @param cluster_status_json - Inbound message json.
  * @returns {Promise<void>}
  */
 async function clusterStatus(cluster_status_json) {
-    log.debug(`getting cluster status`);
+    log.trace(`getting cluster status`);
     let response = {};
     try {
         let clustering_enabled = env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY);
@@ -218,17 +223,23 @@ async function clusterStatus(cluster_status_json) {
         if (!clustering_enabled) {
             return response;
         }
-        // we only have 1 process, call get status directly
-        if (process.send === undefined) {
-            response["status"] = JSON.stringify(getClusterStatus());
-            return response;
-        }
 
-        // send a signal to master to gather cluster data.
-        signalling.signalClusterStatus();
-        // use race to incorporate the timeout.  There is no way to cancel the event_promise, but at least we can
-        // keep this code from waiting indefinitely.
-        response["status"] = await Promise.race([event_promise, timeout_promise.promise]);
+        if(!global.hdb_socket_client || !global.hdb_socket_client.socket.id) {
+            log.error('Cannot request cluster status.  Disconnected from clustering.');
+            return;
+        }
+        let cluster_status_msg = hdb_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.GET_CLUSTER_STATUS);
+        if(!cluster_status_msg) {
+            log.error('Error building a cluster status message');
+            return;
+        }
+        cluster_status_msg.requesting_hdb_worker_id = process.pid;
+        cluster_status_msg.requestor_channel = global.hdb_socket_client.socket.id;
+        hdb_utils.sendTransactionToSocketCluster( cluster_status_msg.requestor_channel, cluster_status_msg);
+        // Wait for cluster status event to fire then respond to client
+        let result = await Promise.race([event_promise, timeout_promise.promise]);
+        log.trace(`cluster status result: ${util.inspect(result)}`);
+        response["status"] = result;
     } catch(err) {
         log.error(`Got an error getting cluster status ${err}`);
     }
@@ -472,7 +483,7 @@ module.exports = {
     addNode: addNode,
     // The reference to the callback functions can be removed once processLocalTransaction has been refactored
     configureCluster: configureCluster,
-    clusterStatus: clusterStatus,
+    clusterStatus,
     removeNode: removeNode,
     clusterMessageHandler: clusterMessageHandler,
     authHeaderToUser: authHeaderToUser,

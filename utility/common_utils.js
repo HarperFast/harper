@@ -7,6 +7,7 @@ const truncate = require('truncate-utf8-bytes');
 const os = require('os');
 const terms = require('./hdbTerms');
 const ps_list = require('./psList');
+const cluster_messages = require('../server/socketcluster/room/RoomMessageObjects');
 
 const EMPTY_STRING = '';
 const FILE_EXTENSION_LENGTH = 4;
@@ -21,13 +22,6 @@ const AUTOCAST_COMMON_STRINGS = {
     'null': null,
     'NaN': NaN
 };
-
-const SCHEMA_TRANSACTIONS = [
-    'create_schema',
-    'create_table',
-    'create_attribute'
-];
-
 
 module.exports = {
     isEmpty:isEmpty,
@@ -50,10 +44,11 @@ module.exports = {
     isHarperRunning: isHarperRunning,
     isClusterOperation: isClusterOperation,
     getClusterUser: getClusterUser,
-    sendTransactionToSocketCluster: sendTransactionToSocketCluster,
+    sendTransactionToSocketCluster,
     checkGlobalSchemaTable: checkGlobalSchemaTable,
     getHomeDir: getHomeDir,
     getPropsFilePath: getPropsFilePath,
+    getClusterMessage
 };
 
 /**
@@ -456,8 +451,9 @@ function isClusterOperation(operation_name) {
  * @param channel
  * @param transaction
  */
-function sendTransactionToSocketCluster(channel, transaction){
-    if(global.hdb_socket_client !== undefined){
+function sendTransactionToSocketCluster(channel, transaction) {
+    log.trace(`Sending transaction to channel: ${channel}`);
+    if(global.hdb_socket_client !== undefined) {
         transaction.__transacted = true;
         let {hdb_user, hdb_auth_header, ...data} = transaction;
         global.hdb_socket_client.publish(channel, data);
@@ -510,4 +506,26 @@ function getClusterUser(users, cluster_user_name){
     }
 
     return cluster_user;
+}
+
+function getClusterMessage(cluster_msg_type_enum) {
+    if(!cluster_msg_type_enum) {
+        log.info('Invalid clustering message type passed to getClusterMessage.');
+        return null;
+    }
+    let built_msg = undefined;
+    switch(cluster_msg_type_enum) {
+        case terms.CLUSTERING_MESSAGE_TYPES.GET_CLUSTER_STATUS: {
+            built_msg = new cluster_messages.HdbCoreClusterStatusRequestMessage();
+            break;
+        }
+        case terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION: {
+            built_msg = new cluster_messages.HdbCoreTransactionMessage();
+            break;
+        }
+        default:
+            log.info('Invalid cluster message type sent to getClusterMessage');
+            break;
+    }
+    return built_msg;
 }

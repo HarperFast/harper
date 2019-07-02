@@ -558,7 +558,7 @@ function createSettingsFile(mount_status, callback) {
             `CLUSTERING_PORT = 12345\n` +
             `   ;The name of this node in your HarperDB cluster topology.  This must be a value unique from the rest of your cluster node names.\n` +
             `NODE_NAME=${node_name}\n` +
-            `   ;The user used to connect to other instances of HarperDB, this user must have a role of cluster_user` +
+            `   ;The user used to connect to other instances of HarperDB, this user must have a role of cluster_user. \n` +
             `CLUSTERING_USER=`;
 
         winston.info('info', `hdb_props_value ${JSON.stringify(hdb_props_value)}`);
@@ -740,8 +740,10 @@ function createBootPropertiesFile(settings_path, callback) {
 
     let home_dir = comm.getHomeDir();
     let home_dir_path = path.join(home_dir, hdb_terms.HDB_HOME_DIR_NAME);
+    let home_dir_keys_dir_path = path.join(home_dir_path, hdb_terms.LICENSE_KEY_DIR_NAME);
     try {
         fs.mkdirpSync(home_dir_path, {mode: hdb_terms.HDB_FILE_PERMISSIONS});
+        fs.mkdirpSync(home_dir_keys_dir_path, {mode: hdb_terms.HDB_FILE_PERMISSIONS});
     } catch(err) {
         console.log(`Could not make settings directory ${hdb_terms.HDB_HOME_DIR_NAME} in home directory.  Please check your permissions and try again.`);
     }

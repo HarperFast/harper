@@ -19,13 +19,14 @@ class CoreDecisionMatrix extends DecisionMatrixIF {
      * @param args - any args for the rules collection
      * @param worker - the worker processing these rules
      * @param connector_type_enum - the source of the inbound request.
+     * @param middleware_type - the middleware type to evaluate rules
      * @returns {Promise<boolean>}
      */
-    async evalRules(request, args, worker, connector_type_enum) {
+    async evalRules(request, args, worker, connector_type_enum, middleware_type) {
         log.trace('evaluating matrix rules.');
         let rules = [];
         try {
-            rules = (connector_type_enum === types.CONNECTOR_TYPE_ENUM.CORE ? this.core_rules.getCommands() : this.cluster_rules.getCommands());
+            rules = (connector_type_enum === types.CONNECTOR_TYPE_ENUM.CORE ? this.core_rules[middleware_type].getCommands() : this.cluster_rules[middleware_type].getCommands());
             if (!rules || rules.length === 0) {
                 return true;
             }
@@ -33,7 +34,7 @@ class CoreDecisionMatrix extends DecisionMatrixIF {
                 let rule = rules[i];
                 let rule_result = await rule.evaluateRule(request, args, worker);
                 if (!rule_result) {
-                    log.debug(`failed rule: ${rule.id}`);
+                    log.debug(`failed rule: ${rule.id} -- name: ${rule.constructor.name}`);
                     return false;
                 }
             }

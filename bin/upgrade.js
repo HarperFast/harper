@@ -96,11 +96,20 @@ function callUpgradeOnNew() {
 
 async function upgradeFromFilePath(file_path) {
     // Extract the tar file, use the 'finish' event to kick off the upgrade process.
+    if(!fs.existsSync(file_path)) {
+        printToLogAndConsole(`Upgrade tar file at path ${file_path} not found.  Stopping upgrade.`);
+        throw new Error(`Upgrade file not found.`);
+    }
     let tarball = await fs.createReadStream(file_path, {mode: hdb_terms.HDB_FILE_PERMISSIONS}).pipe(tar.extract(UPGRADE_DIR_PATH));
     tarball.on('finish', async function () {
         printToLogAndConsole(`Finished extracting tar file at path: ${file_path}`);
         await copyUpgradeExecutable();
         startUpgrade();
+    });
+    tarball.on('error', (err) => {
+        printToLogAndConsole(`There was an error extracting the upgrade tar file at path: ${file_path}`);
+        log.error(err);
+        throw new Error(`Error unpacking upgrade file.`);
     });
 }
 
@@ -234,6 +243,7 @@ async function startUpgrade() {
 
     // Logging and exception handling occurs in postInstallCleanUp.
     postInstallCleanUp();
+    version.refresh();
     try {
         await hdbInfoController.updateHdbInfo(version.version());
     } catch(err) {

@@ -1,6 +1,7 @@
 'use strict';
 
 const SCBroker = require('socketcluster/scbroker');
+const log = require('../../utility/logging/harper_logger');
 
 class Broker extends SCBroker {
     run() {
@@ -22,7 +23,7 @@ class Broker extends SCBroker {
      * @param channel
      */
     subscribeHandler(channel){
-        console.log('broker channel subscribed ' + channel);
+        log.trace('broker channel subscribed ' + channel);
     }
 
     /**
@@ -34,7 +35,7 @@ class Broker extends SCBroker {
      * @param channel
      */
     unsubscribeHandler(channel){
-        console.log('broker channel unsubscribed ' + channel);
+        log.trace('broker channel unsubscribed ' + channel);
     }
 
     /**
@@ -46,11 +47,11 @@ class Broker extends SCBroker {
      * @param data
      */
     publishHandler(channel, data){
-        console.log(`broker received data on channel '${channel}': `, data);
+        log.trace(`broker received data on channel '${channel}': `, data);
     }
 
     masterMessageHandler(data, callback){
-        console.log('data from master: ', data);
+        log.trace('data from master: ', data);
     }
 }
 

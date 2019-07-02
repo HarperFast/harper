@@ -10,7 +10,6 @@ try {
     process.exit(0);
 }
 const user_schema = require('../utility/user_schema');
-const async = require('async');
 const os = require('os');
 const job_runner = require('./jobRunner');
 const hdb_util = require('../utility/common_utils');
@@ -19,7 +18,6 @@ const guidePath = require('path');
 const global_schema = require('../utility/globalSchema');
 const fs = require('fs');
 const cluster_utilities = require('./clustering/clusterUtilities');
-const cluster_event = require('../events/ClusterStatusEmitter');
 const all_children_stopped_event = require('../events/AllChildrenStoppedEvent');
 const sio_server_stopped_event = require('../events/SioServerStoppedEvent');
 const signalling = require('../utility/signalling');
@@ -229,18 +227,30 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                 let forked = cluster.fork({enterprise:this.enterprise, clustering:clustering});
                 // assign handler for messages expected from child processes.
                 forked.on('message', cluster_utilities.clusterMessageHandler);
+                forked.on('error', (err) => {
+                   harper_logger.fatal('There was an error starting the HDB Child process.');
+                   harper_logger.fatal(err);
+                });
+                forked.on('disconnect', (err) => {
+                   harper_logger.error('Cluster worker has been disconnected.');
+                   harper_logger.error(err);
+                });
+                forked.on('listening', (address) => {
+                    harper_logger.info(`HDB child process is listening`);
+                });
+                forked.on('online', (address) => {
+                    harper_logger.info(`HDB child process is online.`);
+                });
+
                 harper_logger.debug(`kicked off fork.`);
                 forks.push(forked);
             } catch (e) {
                 harper_logger.fatal(`Had trouble kicking off new HDB processes.  ${e}`);
             }
         }
-
         global.forks = forks;
     }
 } else {
-
-
     harper_logger.info('In express' + process.cwd());
     harper_logger.info(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
     const express = require('express');
@@ -359,10 +369,6 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                 }).catch(function isError(e) {
                     harper_logger.error(e);
                 });
-                break;
-            case terms.CLUSTER_MESSAGE_TYPE_ENUM.CLUSTER_STATUS:
-                harper_logger.info('Got cluster status message via IPC');
-                cluster_event.clusterEmitter.emit(cluster_event.EVENT_NAME, msg.status);
                 break;
             case terms.CLUSTER_MESSAGE_TYPE_ENUM.RESTART:
                 harper_logger.info(`Server close event received for process ${process.pid}`);

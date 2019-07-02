@@ -55,44 +55,44 @@ describe('Test addRule', function() {
     it('Nominal test with Cluster connector source', () => {
         let result = undefined;
         try {
-            test_instance.addRule(new TestRule(), types.CONNECTOR_TYPE_ENUM.CLUSTER);
+            test_instance.addRule(new TestRule(), types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
         } catch(err) {
             result = err;
         }
-        assert.equal(test_instance.listRules(types.CONNECTOR_TYPE_ENUM.CLUSTER).length, 1, 'expected 1 rule');
-        assert.equal(test_instance.listRules(types.CONNECTOR_TYPE_ENUM.CORE).length, 0, 'expected 0 rules');
+        assert.equal(test_instance.listRules(types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN).length, 1, 'expected 1 rule');
+        assert.equal(test_instance.listRules(types.CONNECTOR_TYPE_ENUM.CORE, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN).length, 0, 'expected 0 rules');
     });
     it('Nominal test with Core connector source', () => {
         let result = undefined;
         try {
-            test_instance.addRule(new TestRule(), types.CONNECTOR_TYPE_ENUM.CORE);
+            test_instance.addRule(new TestRule(), types.CONNECTOR_TYPE_ENUM.CORE, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
         } catch(err) {
             result = err;
         }
-        assert.equal(test_instance.listRules(types.CONNECTOR_TYPE_ENUM.CLUSTER).length, 0, 'expected 0 rules');
-        assert.equal(test_instance.listRules(types.CONNECTOR_TYPE_ENUM.CORE).length, 1, 'expected 1 rule');
+        assert.equal(test_instance.listRules(types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN).length, 0, 'expected 0 rules');
+        assert.equal(test_instance.listRules(types.CONNECTOR_TYPE_ENUM.CORE, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN).length, 1, 'expected 1 rule');
     });
     it(' test with null connector source', () => {
         let result = undefined;
         try {
-            test_instance.addRule(new TestRule(), null);
+            test_instance.addRule(new TestRule(), null, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
         } catch(err) {
             result = err;
         }
         assert.equal((result instanceof Error), true, 'expected error');
-        assert.equal(test_instance.listRules(types.CONNECTOR_TYPE_ENUM.CLUSTER).length, 0, 'expected 1 rule');
-        assert.equal(test_instance.listRules(types.CONNECTOR_TYPE_ENUM.CORE).length, 0, 'expected 0 rules');
+        assert.equal(test_instance.listRules(types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN).length, 0, 'expected 1 rule');
+        assert.equal(test_instance.listRules(types.CONNECTOR_TYPE_ENUM.CORE, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN).length, 0, 'expected 0 rules');
     });
     it(' test with null rule', () => {
         let result = undefined;
         try {
-            test_instance.addRule(null, types.CONNECTOR_TYPE_ENUM.CLUSTER);
+            test_instance.addRule(null, types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
         } catch(err) {
             result = err;
         }
         assert.equal((result instanceof Error), true, 'expected error');
-        assert.equal(test_instance.listRules(types.CONNECTOR_TYPE_ENUM.CLUSTER).length, 0, 'expected 1 rule');
-        assert.equal(test_instance.listRules(types.CONNECTOR_TYPE_ENUM.CORE).length, 0, 'expected 0 rules');
+        assert.equal(test_instance.listRules(types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN).length, 0, 'expected 1 rule');
+        assert.equal(test_instance.listRules(types.CONNECTOR_TYPE_ENUM.CORE, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN).length, 0, 'expected 0 rules');
     });
 });
 
@@ -125,61 +125,61 @@ describe('Test removeRule', function() {
     });
     it('nominal, remove rule with cluster data source', async () => {
         let test_rule = new TestRule();
-        test_instance.addRule(test_rule, types.CONNECTOR_TYPE_ENUM.CLUSTER);
+        test_instance.addRule(test_rule, types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
         let result = undefined;
         try {
-            test_instance.removeRule(test_rule.id, types.CONNECTOR_TYPE_ENUM.CLUSTER);
+            test_instance.removeRule(test_rule.id, types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
         } catch(err) {
             result = err;
         }
-        assert.equal(test_instance.listRules(types.CONNECTOR_TYPE_ENUM.CORE).length, 0, 'expected 0 rules');
+        assert.equal(test_instance.listRules(types.CONNECTOR_TYPE_ENUM.CORE, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN).length, 0, 'expected 0 rules');
     });
     it('nominal, remove rule with core data source', async () => {
         let test_rule = new TestRule();
-        test_instance.addRule(test_rule, types.CONNECTOR_TYPE_ENUM.CORE);
-        assert.equal(test_instance.listRules(types.CONNECTOR_TYPE_ENUM.CORE).length, 1, 'expected 1 rules');
+        test_instance.addRule(test_rule, types.CONNECTOR_TYPE_ENUM.CORE, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
+        assert.equal(test_instance.listRules(types.CONNECTOR_TYPE_ENUM.CORE, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN).length, 1, 'expected 1 rules');
         let result = undefined;
         try {
-            test_instance.removeRule(test_rule.id, types.CONNECTOR_TYPE_ENUM.CORE);
+            test_instance.removeRule(test_rule.id, types.CONNECTOR_TYPE_ENUM.CORE, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
         } catch(err) {
             result = err;
         }
-        assert.equal(test_instance.listRules(types.CONNECTOR_TYPE_ENUM.CORE).length, 0, 'expected 0 rules');
+        assert.equal(test_instance.listRules(types.CONNECTOR_TYPE_ENUM.CORE, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN).length, 0, 'expected 0 rules');
     });
     it('remove rule with invalid connector', async () => {
         let test_rule = new TestRule();
-        test_instance.addRule(test_rule, types.CONNECTOR_TYPE_ENUM.CLUSTER);
+        test_instance.addRule(test_rule, types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
         let result = undefined;
         try {
-            test_instance.removeRule(test_rule.id, null);
+            test_instance.removeRule(test_rule.id, null, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
         } catch(err) {
             result = err;
         }
         assert.equal((result instanceof Error), true, 'expected error');
-        assert.equal(test_instance.listRules(types.CONNECTOR_TYPE_ENUM.CLUSTER).length, 1, 'expected 1 rules');
+        assert.equal(test_instance.listRules(types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN).length, 1, 'expected 1 rules');
     });
     it('remove rule with invalid rule id', async () => {
         let test_rule = new TestRule();
-        test_instance.addRule(test_rule, types.CONNECTOR_TYPE_ENUM.CLUSTER);
+        test_instance.addRule(test_rule, types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
         let result = undefined;
         try {
-            test_instance.removeRule(null, types.CONNECTOR_TYPE_ENUM.CLUSTER);
+            test_instance.removeRule(null, types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
         } catch(err) {
             result = err;
         }
         assert.equal((result instanceof Error), true, 'expected error');
-        assert.equal(test_instance.listRules(types.CONNECTOR_TYPE_ENUM.CLUSTER).length, 1, 'expected 1 rules');
+        assert.equal(test_instance.listRules(types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN).length, 1, 'expected 1 rules');
     });
     it('remove rule with invalid rule id', async () => {
         let test_rule = new TestRule();
-        test_instance.addRule(test_rule, types.CONNECTOR_TYPE_ENUM.CLUSTER);
+        test_instance.addRule(test_rule, types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
         let result = undefined;
         try {
-            test_instance.removeRule(null, types.CONNECTOR_TYPE_ENUM.CLUSTER);
+            test_instance.removeRule(null, types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
         } catch(err) {
             result = err;
         }
         assert.equal((result instanceof Error), true, 'expected error');
-        assert.equal(test_instance.listRules(types.CONNECTOR_TYPE_ENUM.CLUSTER).length, 1, 'expected 1 rules');
+        assert.equal(test_instance.listRules(types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN).length, 1, 'expected 1 rules');
     });
 });

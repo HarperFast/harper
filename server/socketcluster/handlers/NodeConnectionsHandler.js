@@ -187,7 +187,7 @@ class NodeConnectionsHandler {
             let sub_channel = this.worker.exchange.subscribe(subscription.channel);
             sub_channel.watch(data=>{
                 if(connection.socket.state === connection.socket.OPEN && connection.socket.authState === connection.socket.AUTHENTICATED) {
-                    console.log('sending out');
+                    log.trace('sending out');
                     connection.publish(subscription.channel, data);
                 }
             });
@@ -214,7 +214,7 @@ class NodeConnectionsHandler {
             try {
                 await this.publishin_promises[x](request);
             } catch(e){
-                console.error(e);
+                log.error(e);
             }
         }
     }

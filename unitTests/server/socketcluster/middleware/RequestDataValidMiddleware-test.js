@@ -42,8 +42,7 @@ describe('Test AuthMiddleware', function() {
     it('test constructor missing type', () => {
         let result = undefined;
         let instance = new RequestDataValidMiddleware(null, () => {});
-
-        assert.equal(instance.middleware_type, types.MIDDLEWARE_TYPE.MIDDLEWARE_SUBSCRIBE);
+        assert.equal(instance.type, types.PREMADE_MIDDLEWARE_TYPES.REQUEST_DATA_VALID);
     });
     it('test eval_function is defined.', () => {
         let result = undefined;
