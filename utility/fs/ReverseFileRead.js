@@ -1,4 +1,5 @@
 const fs = require('fs-extra');
+const log = require('../logging/harper_logger');
 
 class ReverseFileRead{
     constructor(file_path, delimiter, read_byte_size){
@@ -36,7 +37,7 @@ class ReverseFileRead{
                 }
             }while(resume);
         }catch(e){
-            console.error(e);
+            log.error(e);
         } finally {
             if(this.fd) {
                 await fs.close(this.fd);
