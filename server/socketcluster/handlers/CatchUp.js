@@ -1,4 +1,5 @@
 const ReverseFileRead = require('../../../utility/fs/ReverseFileRead');
+const hdb_utils = require('../../../utility/common_utils')
 const CHUNK_SIZE = 1024 *1024 * 5;
 const LINE_DELIMITER = '\r\n';
 
@@ -6,7 +7,7 @@ class CatchUp extends ReverseFileRead{
     constructor(file_path, start_timestamp, end_timestamp){
         super(file_path, LINE_DELIMITER, CHUNK_SIZE);
         this.start_timestamp = start_timestamp;
-        this.end_timestamp = isNaN(end_timestamp) === true ? Date.now(): end_timestamp;
+        this.end_timestamp = hdb_utils.isEmpty(end_timestamp) === true ? Date.now(): end_timestamp;
 
         this.results = [];
     }

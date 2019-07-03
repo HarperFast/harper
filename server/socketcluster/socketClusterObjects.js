@@ -36,13 +36,11 @@ class CatchupObject{
     /**
      *
      * @param {string} channel
-     * @param {Boolean} start_timestamp
-     * @param {Boolean} end_timestamp
+     * @param {Number} milis_since_connected
      */
-    constructor(channel, start_timestamp, end_timestamp){
+    constructor(channel, milis_since_connected){
         this.channel = channel;
-        this.start_timestamp = start_timestamp;
-        this.end_timestamp = end_timestamp;
+        this.milis_since_connected = milis_since_connected;
     }
 }
 

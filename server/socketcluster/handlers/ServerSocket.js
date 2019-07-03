@@ -9,6 +9,7 @@ const env = require('../../../utility/environment/environmentManager');
 const path = require('path');
 const HDB_PATH = env.getHdbBasePath();
 const QUEUE_PATH = path.join(HDB_PATH, 'schema/system/hdb_queue/');
+const sc_util = require('../util/socketClusterUtils');
 
 /**
  * This class establishes the handlers for the socket on the server, handling all messaging & state changes related to a connected client
@@ -48,10 +49,11 @@ class ServerSocket{
      */
     async catchup(catchup_object, response){
         //TODO validate catchup object
-        let catchup = new CatchUp(QUEUE_PATH + catchup_object.channel, catchup_object.start_timestamp, catchup_object.end_timestamp);
-        await catchup.run();
-
-        response(null, catchup.results);
+        try{
+            await sc_util.catchupHandler(catchup_object.channel, Date.now() - catchup_object.milis_since_connected, null, this.socket);
+        } catch(e){
+            log.error(e);
+        }
     }
 
     /**
