@@ -5,10 +5,11 @@ const types = require('../../types');
 /**
  * This rule is used in the RulesCollection unit tests.  It should probably exist in unitTests, but could serve as documentation so I left it here.
  */
-class TestRule extends RuleIF {
+class CleanDataObjectRule extends RuleIF {
     constructor() {
         super();
         this.setRuleOrder(types.COMMAND_EVAL_ORDER_ENUM.LOW);
+        this.type = types.RULE_TYPE_ENUM.CLEAN_DATA_OBJECT;
     }
     evaluateRule(req, args, worker) {
         if(!req || !req.data || typeof req.data !== 'object'){
@@ -20,4 +21,4 @@ class TestRule extends RuleIF {
         return true;
     }
 }
-module.exports = TestRule;
+module.exports = CleanDataObjectRule;

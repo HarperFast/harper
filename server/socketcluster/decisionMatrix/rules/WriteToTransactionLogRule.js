@@ -53,7 +53,7 @@ class WriteToTransactionLogRule extends RuleIF {
                 this.transaction_stream = fs.createWriteStream(HDB_QUEUE_PATH + req.channel, {flags:'a'});
             }
 
-            let transaction_csv = req.data.timestamp + ',' + req.data.__id + ',' + req.data.operation + ',';
+            let transaction_csv = req.data.timestamp + ',' + req.data.__id + ',' + req.data.transaction.operation + ',';
 
             if(req.data.transaction.operation === 'insert' || req.data.transaction.operation === 'update'){
                 transaction_csv += JSON.stringify(req.data.transaction.records, this.escape);
