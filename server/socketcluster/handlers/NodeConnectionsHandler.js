@@ -12,7 +12,7 @@ const terms = require('../../../utility/hdbTerms');
 
 const env = require('../../../utility/environment/environmentManager');
 env.initSync();
-const hdb_config_path = env.getHdbBasePath() + '/config/connections.json';
+const hdb_config_path = env.getHdbBasePath() + '/clustering/connections.json';
 const fs = require('fs-extra');
 
 class NodeConnectionsHandler {

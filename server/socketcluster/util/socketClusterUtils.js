@@ -6,7 +6,7 @@ const {inspect} = require('util');
 const CatchUp = require('../handlers/CatchUp');
 const env = require('../../../utility/environment/environmentManager');
 env.initSync();
-const hdb_queue_path = env.getHdbBasePath() + '/schema/system/hdb_queue/';
+const hdb_queue_path = env.getHdbBasePath() + '/clustering/transaction_log/';
 
 class ConnectionDetails {
     constructor(id, host_address, host_port, state) {

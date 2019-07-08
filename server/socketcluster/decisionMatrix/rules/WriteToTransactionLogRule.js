@@ -4,7 +4,7 @@ const log = require('../../../../utility/logging/harper_logger');
 const types = require('../../types');
 const env = require('../../../../utility/environment/environmentManager');
 env.initSync();
-const HDB_QUEUE_PATH = env.getHdbBasePath() + '/schema/system/hdb_queue/';
+const HDB_QUEUE_PATH = env.getHdbBasePath() + '/clustering/transaction_log/';
 const fs = require('fs-extra');
 
 const LINE_DELIMITER = '\r\n';

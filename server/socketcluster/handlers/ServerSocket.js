@@ -3,12 +3,8 @@
 const log = require('../../../utility/logging/harper_logger');
 
 const promisify = require('util').promisify;
-const CatchUp = require('./CatchUp');
 const CatchupObject = require('../socketClusterObjects').CatchupObject;
-const env = require('../../../utility/environment/environmentManager');
-const path = require('path');
-const HDB_PATH = env.getHdbBasePath();
-const QUEUE_PATH = path.join(HDB_PATH, 'schema/system/hdb_queue/');
+
 const sc_util = require('../util/socketClusterUtils');
 
 /**
