@@ -319,7 +319,8 @@ function getOperationFunction(json){
     };
 }
 
-async function catchup(catchup_object) {
+async function catchup(catchup_object_msg) {
+    let catchup_object = catchup_object_msg.transaction;
     let split_channel = catchup_object.channel.split(':');
 
     let schema = split_channel[0];

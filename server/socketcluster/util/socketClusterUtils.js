@@ -7,6 +7,7 @@ const CatchUp = require('../handlers/CatchUp');
 const env = require('../../../utility/environment/environmentManager');
 env.initSync();
 const hdb_queue_path = env.getHdbBasePath() + '/clustering/transaction_log/';
+const utils = require('../../../utility/common_utils');
 
 class ConnectionDetails {
     constructor(id, host_address, host_port, state) {
@@ -116,7 +117,10 @@ async function catchupHandler(channel, start_timestamp, end_timestamp, socket){
             transactions: catchup.results
         };
 
-        socket.publish(hdb_terms.INTERNAL_SC_CHANNELS.CATCHUP, catchup_response);
+        let catch_up_msg = utils.getClusterMessage(hdb_terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
+        catch_up_msg.transaction = catchup_response;
+
+        socket.publish(hdb_terms.INTERNAL_SC_CHANNELS.CATCHUP, catch_up_msg);
     }
 }
 
