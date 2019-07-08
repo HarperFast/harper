@@ -34,7 +34,6 @@ class HDBSocketConnector extends SocketConnector{
                         log.trace(`Received transaction message with operation: ${req.operation}`);
                         log.trace(`request: ${inspect(req)}`);
                         let {operation_function} = get_operation_function(req.transaction);
-                        req.transaction.__originator = req.__originator;
                         operation_function(req.transaction, (err, result) => {
                             //TODO possibly would be good to have a queue on the SC side holding pending transactions, on error we send back stating a fail.
                             if (err) {

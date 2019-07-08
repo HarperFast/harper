@@ -170,9 +170,6 @@ function convertOperationToTransaction(write_object, written_hashes, hash_attrib
         });
         let insert_msg = h_utils.getClusterMessage(hdb_terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
         insert_msg.transaction = transaction;
-        if(write_object.__originator !== undefined) {
-            insert_msg.__originator = write_object.__originator;
-        }
         h_utils.sendTransactionToSocketCluster(`${write_object.schema}:${write_object.table}`, insert_msg);
     }
 }
