@@ -19,6 +19,8 @@ const directive_manager_stub = require('./testDirectives/directiveManagerStub');
 const BASE = process.cwd();
 let DIR_PATH_BASE = BASE + '/processDirectivesTest/';
 
+//TODO: Move the files created in these tests to the new test harness.
+
 //Use the manager stub in order to control the tests.
 process_directive_rw.__set__('directive_manager', directive_manager_stub.directive_manager_rw);
 
@@ -58,8 +60,8 @@ describe('test processDirectives', function() {
     });
 });
 
-describe('test createDirectories', function() {
-    let createDirectories = process_directive_rw.__get__('createDirectories');
+describe('test createRelativeDirectories', function() {
+    let createRelativeDirectories = process_directive_rw.__get__('createRelativeDirectories');
     let ver1_1_module = undefined;
     process_directive_rw.__set__('settings_file_path', BASE + '/testsettings.js');
     beforeEach( function() {
@@ -94,19 +96,75 @@ describe('test createDirectories', function() {
             'test1',
             'test2'
         ];
-        createDirectories(dirs_to_create);
+        createRelativeDirectories(dirs_to_create);
         assert.equal(fs.existsSync(DIR_PATH_BASE), true);
         assert.equal(fs.existsSync(DIR_PATH_BASE + 'test1'), true);
         assert.equal(fs.existsSync(DIR_PATH_BASE + 'test2'), true);
     });
     it('test empty directory array', () => {
         let dirs_to_create = [];
-        createDirectories(dirs_to_create);
+        createRelativeDirectories(dirs_to_create);
         assert.equal(fs.existsSync(DIR_PATH_BASE), false);
     });
     it('test null directory array', () => {
         let dirs_to_create = null;
-        createDirectories(dirs_to_create);
+        createRelativeDirectories(dirs_to_create);
+        assert.equal(fs.existsSync(DIR_PATH_BASE), false);
+    });
+});
+
+describe('test createExplicitDirectories', function() {
+    let createExplicitDirectories = process_directive_rw.__get__('createExplicitDirectories');
+    let ver1_1_module = undefined;
+    process_directive_rw.__set__('settings_file_path', BASE + '/testsettings.js');
+    beforeEach( function() {
+        try {
+            let mod_path = path.join(process.cwd(), '../unitTests/upgrade/directives/testDirectives/1-1-0');
+            process_directive_rw.__set__('hdb_base', BASE + '/processDirectivesTest/');
+            ver1_1_module = require(mod_path);
+        } catch(e) {
+            console.error(e);
+            throw e;
+        }
+    });
+
+    afterEach( function () {
+        try {
+            test_util.cleanUpDirectories(BASE + '/processDirectivesTest/');
+            test_util.cleanUpDirectories(BASE + '/processDirectivesTest/test0');
+            test_util.cleanUpDirectories(BASE + '/processDirectivesTest/test1');
+            test_util.cleanUpDirectories(BASE + '/processDirectivesTest/test2');
+        } catch(e) {
+            console.error(e);
+        }
+    });
+    after( function() {
+        try {
+            fs.unlinkSync(BASE + '/testsettings.js');
+        } catch(e) {
+            //no-op
+        }
+    });
+    it('test creating 3 directories', () => {
+
+        let dirs_to_create = [
+            BASE + '/processDirectivesTest/test0',
+            BASE + '/processDirectivesTest/test1',
+            BASE + '/processDirectivesTest/test2'
+        ];
+        createExplicitDirectories(dirs_to_create);
+        assert.equal(fs.existsSync(DIR_PATH_BASE), true);
+        assert.equal(fs.existsSync(DIR_PATH_BASE + 'test1'), true);
+        assert.equal(fs.existsSync(DIR_PATH_BASE + 'test2'), true);
+    });
+    it('test empty directory array', () => {
+        let dirs_to_create = [];
+        createExplicitDirectories(dirs_to_create);
+        assert.equal(fs.existsSync(DIR_PATH_BASE), false);
+    });
+    it('test null directory array', () => {
+        let dirs_to_create = null;
+        createExplicitDirectories(dirs_to_create);
         assert.equal(fs.existsSync(DIR_PATH_BASE), false);
     });
 });

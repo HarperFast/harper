@@ -13,12 +13,10 @@ const delete_ = require('../data_layer/delete');
 const schema_describe = require('./schemaDescribe');
 const env = require('../utility/environment/environmentManager');
 const clone = require('clone');
-const _ = require('underscore');
 const signalling = require('../utility/signalling');
 const util = require('util');
 const hdb_util = require('../utility/common_utils');
 const terms = require('../utility/hdbTerms');
-const common = require('../utility/common_utils');
 
 // Promisified functions
 let p_search_search_by_value = util.promisify(search.searchByValue);
@@ -58,8 +56,9 @@ module.exports = {
 async function createSchema(schema_create_object) {
     try {
         let schema_structure = await createSchemaStructure(schema_create_object);
-
-        hdb_util.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_SCHEMA, schema_create_object);
+        let create_schema_msg = hdb_util.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
+        create_schema_msg.transaction = schema_create_object;
+        hdb_util.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_SCHEMA, create_schema_msg);
         signalling.signalSchemaChange({type: 'schema'});
 
         return schema_structure;
@@ -110,8 +109,9 @@ async function createSchemaStructure(schema_create_object) {
 async function createTable(create_table_object) {
     try {
         let create_table_structure = await createTableStructure(create_table_object);
-
-        hdb_util.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_TABLE, create_table_object);
+        let create_table_msg = hdb_util.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
+        create_table_msg.transaction = create_table_object;
+        hdb_util.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_TABLE, create_table_msg);
         signalling.signalSchemaChange({type: 'schema'});
 
         return create_table_structure;
@@ -671,18 +671,18 @@ async function createAttribute(create_attribute_object) {
                 "body": create_attribute_object
             };
 
-            common.callProcessSend(payload);
-            signalling.signalSchemaChange({type: 'schema'});
-
-            return attribute_structure;
-        } else {
-            attribute_structure = await createAttributeStructure(create_attribute_object);
-
-            hdb_util.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, create_attribute_object);
+            hdb_util.callProcessSend(payload);
             signalling.signalSchemaChange({type: 'schema'});
 
             return attribute_structure;
         }
+        attribute_structure = await createAttributeStructure(create_attribute_object);
+        let create_att_msg = hdb_util.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
+        create_att_msg.transaction = create_attribute_object;
+        hdb_util.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, create_att_msg);
+        signalling.signalSchemaChange({type: 'schema'});
+
+        return attribute_structure;
     } catch(err) {
         logger.error(err);
         throw err;

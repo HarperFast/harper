@@ -20,14 +20,6 @@ class RestartSignalObject {
     }
 }
 
-class ClusterStatusSignalObject {
-    constructor() {
-        this.type = terms.CLUSTER_MESSAGE_TYPE_ENUM.CLUSTER_STATUS;
-        // For now we want to target the creating process to send the response to this message.
-        this.target_process_id = process.pid;
-    }
-}
-
 class ChildStartedSignalObject {
     constructor(pid) {
         this.type = terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STARTED;
@@ -86,19 +78,6 @@ function signalJobAdded(job_added_signal_object){
     }
 }
 
-function signalClusterStatus(){
-    try {
-        // if process.send is undefined we are running a single instance of the process.
-        if (process.send !== undefined && !global.isMaster) {
-            process.send(new ClusterStatusSignalObject());
-        } else {
-            harper_logger.warn('Only 1 process is running, but a signal has been invoked.  Signals will be ignored when only 1 process is running.');
-        }
-    } catch(e){
-        harper_logger.error(e);
-    }
-}
-
 function signalChildStarted() {
     harper_logger.debug(`Sending child started signal from process ${process.pid}`);
     try {
@@ -140,7 +119,6 @@ module.exports = {
     signalSchemaChange,
     signalUserChange,
     signalJobAdded: signalJobAdded,
-    signalClusterStatus: signalClusterStatus,
     JobAddedSignalObject: JobAddedSignalObject,
     signalChildStarted: signalChildStarted,
     signalRestart: signalRestart

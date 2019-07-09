@@ -24,6 +24,7 @@ class AuthMiddleware extends MiddlewareIF {
             log.debug('Passed auth middleware');
         };
         super(middleware_type_enum, eval_function);
+        this.type = types.PREMADE_MIDDLEWARE_TYPES.AUTH;
     }
 }
 

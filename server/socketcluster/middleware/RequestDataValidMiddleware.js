@@ -12,7 +12,7 @@ class RequestDataValidMiddleware extends MiddlewareIF {
         eval_function = (req, next) => {
             try {
                 log.trace('Evaluating request data validation middleware');
-                if (typeof req.data !== 'object' || Array.isArray(req.data)) {
+                if(typeof req.data !== 'object') {
                     log.error('Request Data Valid Middleware failure: data must be an object');
                     return types.ERROR_CODES.MIDDLEWARE_SWALLOW;
                 }
@@ -24,6 +24,7 @@ class RequestDataValidMiddleware extends MiddlewareIF {
             log.debug('Passed request data valid middleware');
         };
         super(middleware_type_enum, eval_function);
+        this.type = types.PREMADE_MIDDLEWARE_TYPES.REQUEST_DATA_VALID;
     }
 }
 

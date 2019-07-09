@@ -6,7 +6,7 @@ const log = require('../../../utility/logging/harper_logger');
 const CommandCollection = require('../decisionMatrix/rules/CommandCollection');
 
 /**
- * Represents a socket cluster data channel, as well as any middleware and worker rules that guide what to do with a
+ * Superclass/interface that represents a socket cluster data channel, as well as any middleware and worker rules that guide what to do with a
  * request on that channel.  Rooms should never be instantiated directly, instead the room factory should be used.
  */
 class RoomIF {
@@ -126,11 +126,83 @@ class RoomIF {
     }
 
     /**
-     * Removes any middleware that matches the middleware type.
+     * Removes the first found middleware that matches the middleware type.
      * @param enum_middleware_type - The type of middleware to remove
+     * @param premade_middleware_type_enum - The kind of middleware that should be removed
      * @param connector_type_enum - The data source the middleware represents.
      */
-    removeMiddleware(enum_middleware_type, connector_type_enum) {
+    removeMiddleware(enum_middleware_type, premade_middleware_type_enum, connector_type_enum) {
+        try {
+            if(enum_middleware_type) {
+                if(connector_type_enum === types.CONNECTOR_TYPE_ENUM.CORE) {
+                    this.core_middleware[enum_middleware_type].removeCommandsByType(premade_middleware_type_enum);
+                } else {
+                    this.connector_middleware[enum_middleware_type].removeCommandsByType(premade_middleware_type_enum);
+                }
+            }
+        } catch(err) {
+            log.error('There was an error adding middleware');
+            log.error(err);
+        }
+    }
+
+    /**
+     * Evaluate the rules for this channel.  Will return true if all rules pass, false when a rule fails.
+     * @param request - The request to run rules against.
+     * @param worker - The worker instance that needs to act on these rules.
+     * @param connector_type_enum - Denotes the source of this request, currently either from HDBCore or a Clustering connector.
+     * @returns {boolean}
+     */
+    async evalRules(request, worker, connector_type_enum, middleware_type) {
+        let result = false;
+        let cluster_rules_args = {};
+        if(!this.decision_matrix) {
+            return true;
+        }
+        try {
+            result = await this.decision_matrix.evalRules(request, cluster_rules_args, worker, connector_type_enum, middleware_type);
+        } catch(err) {
+            log.error('There was an error evaluating rules');
+            log.error(err);
+            return false;
+        }
+        return result;
+    }
+
+    /**
+     * Publish to to channel this room represents.  The super call will assign all values in the existing_hdb_header parameter into
+     * the message before it is published.
+     * @param msg - The message that will be posted to the channel
+     * @param worker - The worker that owns this room
+     * @param existing_hdb_header - an existing hdb header which will have its keys appended to msg.
+     * @returns {Promise<void>}
+     */
+    async publishToRoom(msg, worker, existing_hdb_header) {
+        if(!msg.hdb_header) {
+            msg.hdb_header = {};
+            msg.hdb_header['worker_originator_id'] = worker.id;
+            if(existing_hdb_header) {
+                let header_keys = Object.keys(existing_hdb_header);
+                for(let i=0; i<header_keys.length; ++i) {
+                    msg.hdb_header[header_keys[i]] = existing_hdb_header[header_keys[i]];
+                }
+            }
+        }
+        if(!msg.channel) {
+            msg.channel = this.topic;
+        }
+    }
+
+    /**
+     * This function is bound to the watcher for this channel.  Since it is bound, 'this' will be replaced by the binder
+     * (typically the Worker).  We accept a worker as a parameter in case this function needs to be called in another
+     * case.
+     * @param req - The inbound request on this topic/channel
+     * @param worker - The worker that owns this room.
+     * @param response - a function that can be called as part of the response.
+     * @returns {Promise<void>}
+     */
+    async inboundMsgHandler(req, worker, response) {
         throw new Error('Not Implemented');
     }
 }

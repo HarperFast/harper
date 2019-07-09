@@ -16,6 +16,7 @@ class MessagePrepMiddleware extends MiddlewareIF {
             req.hdb_header[types.REQUEST_HEADER_ATTRIBUTE_NAMES.ID] = uuidV4();
         };
         super(middleware_type_enum, eval_function);
+        this.type = types.PREMADE_MIDDLEWARE_TYPES.MSG_PREP;
     }
 }
 
