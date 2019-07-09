@@ -128,7 +128,7 @@ class NodeConnectionsHandler {
             subscriptions: node.subscriptions,
             connected_timestamp: null
         };
-        let connection = new SocketConnector(socket_client, additional_info,options, this.creds, this.connection_timestamps);
+        let connection = new SocketConnector(socket_client, this.worker, additional_info,options, this.creds, this.connection_timestamps);
 
         if(node.subscriptions){
             node.subscriptions.push(this.HDB_Schema_Subscription);

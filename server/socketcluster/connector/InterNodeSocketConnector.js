@@ -1,13 +1,17 @@
 const SocketConnector = require('./SocketConnector');
 const sc_util = require('../util/socketClusterUtils');
 const log = require('../../../utility/logging/harper_logger');
+const AssignToHdbChild = require('../decisionMatrix/rules/AssignToHdbChildWorkerRule');
+const terms = require('../../../utility/hdbTerms');
+
 
 class InterNodeSocketConnector extends SocketConnector{
-    constructor(socket_client, additional_info, options, credentials, connection_timestamps){
+    constructor(socket_client, worker, additional_info, options, credentials, connection_timestamps){
         super(socket_client, additional_info, options, credentials);
+        this.worker = worker;
         this.socket.additional_info.connected_timestamp = connection_timestamps[this.socket.clientId];
         this.addEventListener('connect', this.connectHandler.bind(this));
-
+        this.addEventListener('catchup_response', this.catchupResponseHandler.bind(this));
     }
 
     connectHandler(status){
@@ -25,6 +29,16 @@ class InterNodeSocketConnector extends SocketConnector{
                     this.socket.emit('catchup', {channel: subscription.channel, milis_since_connected: Date.now() - this.socket.additional_info.connected_timestamp});
                 }
             });
+        }
+    }
+
+    async catchupResponseHandler(catchup_msg){
+        try {
+            catchup_msg.channel = terms.INTERNAL_SC_CHANNELS.CATCHUP;
+            let assign = new AssignToHdbChild();
+            await assign.evaluateRule(catchup_msg, null, this.worker);
+        } catch (e) {
+            log.error(e);
         }
     }
 
