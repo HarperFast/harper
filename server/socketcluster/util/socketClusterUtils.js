@@ -106,7 +106,7 @@ function createEventPromise(event_name, event_emitter_object, timeout_promise) {
  * @param socket
  * @returns {Promise<void>}
  */
-async function catchupHandler(channel, start_timestamp, end_timestamp, socket){
+async function catchupHandler(channel, start_timestamp, end_timestamp){
     let catchup = new CatchUp(hdb_queue_path + channel, start_timestamp, end_timestamp);
     await catchup.run();
 
@@ -120,7 +120,7 @@ async function catchupHandler(channel, start_timestamp, end_timestamp, socket){
         let catch_up_msg = utils.getClusterMessage(hdb_terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
         catch_up_msg.transaction = catchup_response;
 
-        socket.publish(hdb_terms.INTERNAL_SC_CHANNELS.CATCHUP, catch_up_msg);
+        return catch_up_msg;
     }
 }
 

@@ -46,9 +46,11 @@ class ServerSocket{
     async catchup(catchup_object, response){
         //TODO validate catchup object
         try{
-            await sc_util.catchupHandler(catchup_object.channel, Date.now() - catchup_object.milis_since_connected, null, this);
+            let catchup_msg = await sc_util.catchupHandler(catchup_object.channel, Date.now() - catchup_object.milis_since_connected, null);
+            response(null, catchup_msg);
         } catch(e){
             log.error(e);
+            response(e);
         }
     }
 
