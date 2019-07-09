@@ -168,7 +168,9 @@ function convertOperationToTransaction(operation, written_hashes, hash_attribute
                 transaction.records.push(record);
             }
         });
-        h_utils.sendTransactionToSocketCluster(`${operation.schema}:${operation.table}`, transaction);
+        let insert_msg = h_utils.getClusterMessage(hdb_terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
+        insert_msg.transaction = transaction;
+        h_utils.sendTransactionToSocketCluster(`${operation.schema}:${operation.table}`, insert_msg);
     }
 }
 

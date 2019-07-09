@@ -55,6 +55,7 @@ async function kickOffEnterprise() {
 
         try {
             fork(path.join(__dirname, '../server/socketcluster/Server.js'), [JSON.stringify(sc_data_payload)]);
+            log.debug('Started Clustering server.');
         } catch(err) {
             log.error(err);
         }
@@ -63,5 +64,5 @@ async function kickOffEnterprise() {
 
 
 module.exports = {
-    kickOffEnterprise: kickOffEnterprise
+    kickOffEnterprise
 };

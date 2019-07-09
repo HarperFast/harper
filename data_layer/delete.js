@@ -12,6 +12,7 @@ const path = require('path');
 const moment = require('moment');
 const harper_logger = require('../utility/logging/harper_logger');
 const { promisify } = require('util');
+const terms = require('../utility/hdbTerms');
 
 const slash_regex = /\//g;
 const BASE_PATH = common_utils.buildFolderPath(env.get('HDB_ROOT'), "schema");
@@ -394,7 +395,9 @@ function deleteRecord(delete_object, callback){
             }
 
             if(delete_object.schema !== 'system') {
-                common_utils.sendTransactionToSocketCluster(`${delete_object.schema}:${delete_object.table}`, delete_object);
+                let delete_msg = common_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
+                delete_msg.transaction = delete_object;
+                common_utils.sendTransactionToSocketCluster(`${delete_object.schema}:${delete_object.table}`, delete_msg);
             }
 
             return callback(null, SUCCESS_MESSAGE);

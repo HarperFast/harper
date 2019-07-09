@@ -21,10 +21,11 @@ class OriginatorCheckMiddleware extends MiddlewareIF {
                 log.error(err);
                 return types.ERROR_CODES.MIDDLEWARE_ERROR;
             }
-            log.debug('Failed Originator Middleware check');
+            log.debug(`Failed Originator Middleware check on channel: ${req.channel} for request type: ${req.data.type} and originator id: ${req.data.__originator}`);
             return types.ERROR_CODES.MIDDLEWARE_SWALLOW;
         };
         super(middleware_type_enum, eval_function);
+        this.type = types.PREMADE_MIDDLEWARE_TYPES.ORIGINATOR;
     }
 }
 

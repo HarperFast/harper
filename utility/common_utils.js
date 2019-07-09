@@ -23,13 +23,6 @@ const AUTOCAST_COMMON_STRINGS = {
     'NaN': NaN
 };
 
-const SCHEMA_TRANSACTIONS = [
-    'create_schema',
-    'create_table',
-    'create_attribute'
-];
-
-
 module.exports = {
     isEmpty:isEmpty,
     isEmptyOrZeroLength:isEmptyOrZeroLength,
@@ -51,12 +44,13 @@ module.exports = {
     isHarperRunning: isHarperRunning,
     isClusterOperation: isClusterOperation,
     getClusterUser: getClusterUser,
-    sendTransactionToSocketCluster: sendTransactionToSocketCluster,
+    sendTransactionToSocketCluster,
     checkGlobalSchemaTable: checkGlobalSchemaTable,
     getHomeDir: getHomeDir,
     getPropsFilePath: getPropsFilePath,
     promisifyPapaParse,
     removeBOM
+    getClusterMessage
 };
 
 /**
@@ -459,8 +453,9 @@ function isClusterOperation(operation_name) {
  * @param channel
  * @param transaction
  */
-function sendTransactionToSocketCluster(channel, transaction){
-    if(global.hdb_socket_client !== undefined){
+function sendTransactionToSocketCluster(channel, transaction) {
+    log.trace(`Sending transaction to channel: ${channel}`);
+    if(global.hdb_socket_client !== undefined) {
         transaction.__transacted = true;
         let {hdb_user, hdb_auth_header, ...data} = transaction;
         global.hdb_socket_client.publish(channel, data);
@@ -553,4 +548,26 @@ function removeBOM(data_string) {
     }
 
     return data_string;
+}
+
+function getClusterMessage(cluster_msg_type_enum) {
+    if(!cluster_msg_type_enum) {
+        log.info('Invalid clustering message type passed to getClusterMessage.');
+        return null;
+    }
+    let built_msg = undefined;
+    switch(cluster_msg_type_enum) {
+        case terms.CLUSTERING_MESSAGE_TYPES.GET_CLUSTER_STATUS: {
+            built_msg = new cluster_messages.HdbCoreClusterStatusRequestMessage();
+            break;
+        }
+        case terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION: {
+            built_msg = new cluster_messages.HdbCoreTransactionMessage();
+            break;
+        }
+        default:
+            log.info('Invalid cluster message type sent to getClusterMessage');
+            break;
+    }
+    return built_msg;
 }

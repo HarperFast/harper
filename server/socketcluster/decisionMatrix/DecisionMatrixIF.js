@@ -69,6 +69,7 @@ class DecisionMatrixIF {
      * @throws
      * @param rule_id - The id of the affected rule
      * @param connector_type_enum - Used to decide which rules collection to look in.
+     * @param middleware_type_enum - The type of middleware that should be removed.
      */
     removeRule(rule_id, connector_type_enum, middleware_type_enum) {
         if(!rule_id) {
@@ -84,6 +85,32 @@ class DecisionMatrixIF {
             return this.searchAndRemoveRule(this.cluster_rules[middleware_type_enum], rule_id);
         } catch(err) {
             log.error(`There was an error removing rule with id: ${rule_id}`);
+            log.error(err);
+            return false;
+        }
+    }
+
+    /**
+     * Removes the rule matching the rule_id parameter.  returns true on success, false on failure or if rule is not found.
+     * @returns boolean
+     * @throws
+     * @param rule_id - The id of the affected rule
+     * @param connector_type_enum - Used to decide which rules collection to look in.
+     */
+    removeRuleByType(rule_type_enum, connector_type_enum, middleware_type_enum) {
+        if(!rule_type_enum) {
+            throw new Error('Invalid parameter passed to removeRule');
+        }
+        if(connector_type_enum === null || connector_type_enum=== undefined) {
+            throw new Error('Invalid connector source');
+        }
+        try {
+            if (connector_type_enum === types.CONNECTOR_TYPE_ENUM.CORE) {
+                return this.core_rules[middleware_type_enum].removeCommandsByType(rule_type_enum);
+            }
+            return this.cluster_rules[middleware_type_enum].removeCommandsByType(rule_type_enum);
+        } catch(err) {
+            log.error(`There was an error removing rule with type: ${rule_type_enum}`);
             log.error(err);
             return false;
         }

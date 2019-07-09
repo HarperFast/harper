@@ -1,7 +1,6 @@
 "use strict";
 
 const WorkerIF = require('./WorkerIF');
-const room_factory = require('../room/roomFactory');
 const SCServer = require('../handlers/SCServer');
 const types = require('../types');
 const {promisify} = require('util');
@@ -10,6 +9,10 @@ const NodeConnector = require('../connector/NodeConnector');
 const password_utility = require('../../../utility/password');
 const get_cluster_user = require('../../../utility/common_utils').getClusterUser;
 const terms = require('../../../utility/hdbTerms');
+const {inspect} = require('util');
+const RoomMessageObjects = require('../room/RoomMessageObjects');
+
+let worker_subscriptions = {};
 
 /**
  * Represents a WorkerIF implementation for socketcluster.
@@ -27,25 +30,32 @@ class ClusterWorker extends WorkerIF {
      * @returns {*}
      */
     checkNewRoom(req, next) {
+        log.trace('In checkNewRoom');
         try {
             if(!req || !req.channel) {
                 log.error('Got an invalid request.');
                 return next('Got an invalid request.');
             }
-            if(!this.getRoom(req.channel)) {
-                // TODO - we will need a way to distinguish from the req if this room is
-                // for a core connection or a cluster connection.
-                log.debug('Creating room: ' + req.channel);
-                let newRoom = room_factory.createRoom(req.channel, types.ROOM_TYPE.STANDARD);
-                this.addRoom(newRoom);
-                next();
-            } else {
-                next();
-            }
+            this.ensureRoomExists(req.channel);
+            next();
         } catch(err) {
             log.error(`got an error checking for rooms.`);
             log.error(err);
             return next(err);
+        }
+    }
+
+    /**
+     * If a room does not yet exist for the specified channel, create one.  Will also subscribe to and watch the channel.
+     * @param channel - the name of the channel to watch.
+     */
+    ensureRoomExists(channel) {
+        if(!this.getRoom(channel)) {
+            log.debug(`Creating room:  ${channel}`);
+            let newRoom = this.createRoom(channel);
+            if (newRoom) {
+                this.addRoom(newRoom);
+            }
         }
     }
 
@@ -75,94 +85,25 @@ class ClusterWorker extends WorkerIF {
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_SUBSCRIBE, this.evalRoomSubscribeMiddleware.bind(this));
         new SCServer(this);
 
-        this.createWatchers();
+        // Create a room for and subscribe to internal hdb channels.
+        this.ensureRoomExists(terms.INTERNAL_SC_CHANNELS.HDB_USERS);
+        this.ensureRoomExists(terms.INTERNAL_SC_CHANNELS.HDB_WORKERS);
+        this.ensureRoomExists(terms.INTERNAL_SC_CHANNELS.WORKER_ROOM);
         if(this.isLeader){
+            log.trace('Calling processArgs');
             this.processArgs().then(hdb_data=>{
-                this.node_connector = new NodeConnector(hdb_data.nodes, hdb_data.cluster_user, this);
+                if(hdb_data && hdb_data.nodes && hdb_data.cluster_user) {
+                    this.node_connector = new NodeConnector(hdb_data.nodes, hdb_data.cluster_user, this);
+                }
             });
-
-            this.internalUserWatchers();
+            this.ensureRoomExists(terms.INTERNAL_SC_CHANNELS.ADD_USER);
+            this.ensureRoomExists(terms.INTERNAL_SC_CHANNELS.ALTER_USER);
+            this.ensureRoomExists(terms.INTERNAL_SC_CHANNELS.DROP_USER);
         }
     }
 
-    createWatchers(){
-        this.exchange.subscribe(terms.INTERNAL_SC_CHANNELS.HDB_USERS);
-        this.exchange.subscribe(terms.INTERNAL_SC_CHANNELS.HDB_WORKERS);
-        this.exchange.watch(terms.INTERNAL_SC_CHANNELS.HDB_USERS, this.watchUsers.bind(this));
-        this.exchange.watch(terms.INTERNAL_SC_CHANNELS.HDB_WORKERS, this.watchWorkers.bind(this));
-    }
-
-    watchWorkers(workers){
-        if(workers && Array.isArray(workers)) {
-            this.hdb_workers = workers;
-        } else {
-            this.hdb_workers = [];
-        }
-    }
-
-    watchUsers(users){
-        if(users && typeof users === 'object') {
-            this.hdb_users = users;
-        } else {
-            this.hdb_users = {};
-        }
-    }
-
-    internalUserWatchers(){
-        this.exchange.subscribe(terms.INTERNAL_SC_CHANNELS.ADD_USER);
-        this.exchange.subscribe(terms.INTERNAL_SC_CHANNELS.ALTER_USER);
-        this.exchange.subscribe(terms.INTERNAL_SC_CHANNELS.DROP_USER);
-
-        this.exchange.watch(terms.INTERNAL_SC_CHANNELS.ADD_USER, this.addUser.bind(this));
-        this.exchange.watch(terms.INTERNAL_SC_CHANNELS.DROP_USER, this.dropUser.bind(this));
-        this.exchange.watch(terms.INTERNAL_SC_CHANNELS.ALTER_USER, this.dropUser.bind(this));
-    }
-
-    async addUser(user){
-        try {
-            if (this.hdb_users[user.username] === undefined) {
-                this.hdb_users[user.username] = user;
-
-                await this.exchange_set(terms.INTERNAL_SC_CHANNELS.HDB_USERS, this.hdb_users);
-                this.exchange.publish(terms.INTERNAL_SC_CHANNELS.HDB_USERS, this.hdb_users);
-            }
-        }catch(e){
-            log.error(e);
-        }
-    }
-
-    async dropUser(user){
-        try {
-            if (this.hdb_users[user.username] !== undefined) {
-                delete this.hdb_users[user.username];
-
-                await this.exchange_set(terms.INTERNAL_SC_CHANNELS.HDB_USERS, this.hdb_users);
-                this.exchange.publish(terms.INTERNAL_SC_CHANNELS.HDB_USERS, this.hdb_users);
-            }
-        }catch(e){
-            log.error(e);
-        }
-    }
-
-    async alterUser(user){
-        try {
-            let current_user = this.hdb_users[user.username];
-            if (current_user !== undefined) {
-                Object.keys(user).forEach((attribute)=>{
-                    current_user[attribute] = user[attribute];
-                });
-
-                this.hdb_users[user.username] = current_user;
-
-                await this.exchange_set(terms.INTERNAL_SC_CHANNELS.HDB_USERS, this.hdb_users);
-                this.exchange.publish(terms.INTERNAL_SC_CHANNELS.HDB_USERS, this.hdb_users);
-            }
-        }catch(e){
-            log.error(e);
-        }
-    }
-
-    async processArgs(){
+    async processArgs() {
+        log.trace('processArgs');
         try{
             let data = process.argv[2];
             let hdb_data = JSON.parse(data);
@@ -176,7 +117,8 @@ class ClusterWorker extends WorkerIF {
         }
     }
 
-    masterMessageHandler(data, respond){
+    masterMessageHandler(data, respond) {
+        log.trace('masterMessageHandler.');
         try {
             if (data.hdb_data !== undefined) {
                 this.setHDBDatatoExchange(data.hdb_data).then(() => {
@@ -189,7 +131,8 @@ class ClusterWorker extends WorkerIF {
         }
     }
 
-    async setHDBDatatoExchange(hdb_data){
+    async setHDBDatatoExchange(hdb_data) {
+        log.trace('setHDBDatatoExchange');
         try {
             if (hdb_data.schema !== undefined) {
                 await this.exchange_set('hdb_schema', hdb_data.schema);
@@ -201,8 +144,12 @@ class ClusterWorker extends WorkerIF {
                 hdb_data.users.forEach((user) => {
                     users[user.username] = user;
                 });
+                this.hdb_users = users;
+                let hdb_users_msg = new RoomMessageObjects.SyncHdbUsersMessage();
+                hdb_users_msg.users = users;
+                // Don't post the message to the exchange, just the users.
                 await this.exchange_set(terms.INTERNAL_SC_CHANNELS.HDB_USERS, users);
-                await this.exchange.publish(terms.INTERNAL_SC_CHANNELS.HDB_USERS, users);
+                await this.exchange.publish(terms.INTERNAL_SC_CHANNELS.HDB_USERS, hdb_users_msg);
             }
 
             if (hdb_data.nodes !== undefined) {
@@ -261,7 +208,8 @@ class ClusterWorker extends WorkerIF {
         next();
     }
 
-    async handleLoginResponse(req, credentials){
+    async handleLoginResponse(req, credentials) {
+        log.trace('handleLoginResponse');
         try {
             let users = Object.values(this.hdb_users);
             let found_user = get_cluster_user(users, credentials.username);
