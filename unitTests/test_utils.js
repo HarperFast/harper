@@ -1,20 +1,19 @@
 "use strict";
 const path = require('path');
 const fs = require('fs');
-
-const uuid = require('uuid/v4');
 const moment = require('moment');
-const env = require('../utility/environment/environmentManager');
-const terms = require('../utility/hdbTerms');
 const sinon = require('sinon');
+const Papa = require('papaparse');
+const uuid = require('uuid/v4');
 
 const sql = require('../sqlTranslator/index');
 const SelectValidator = require('../sqlTranslator/SelectValidator');
-const Papa = require('papaparse');
+
+const env = require('../utility/environment/environmentManager');
+const terms = require('../utility/hdbTerms');
 const common_utils = require('../utility/common_utils');
 
 let env_mgr_init_sync_stub = undefined;
-
 const {
     JOB_TABLE_NAME,
     NODE_TABLE_NAME,
