@@ -8,6 +8,7 @@ const os = require('os');
 const terms = require('./hdbTerms');
 const ps_list = require('./psList');
 const papa_parse = require('papaparse');
+const cluster_messages = require('../server/socketcluster/room/RoomMessageObjects');
 
 const EMPTY_STRING = '';
 const FILE_EXTENSION_LENGTH = 4;
@@ -49,7 +50,7 @@ module.exports = {
     getHomeDir: getHomeDir,
     getPropsFilePath: getPropsFilePath,
     promisifyPapaParse,
-    removeBOM
+    removeBOM,
     getClusterMessage
 };
 
