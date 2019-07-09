@@ -3,6 +3,7 @@ const get_operation_function = require('../../serverUtilities').getOperationFunc
 const log = require('../../../utility/logging/harper_logger');
 const terms = require('../../../utility/hdbTerms');
 const ClusterStatusEmitter = require('../../../events/ClusterStatusEmitter');
+const {inspect} = require('util');
 
 class HDBSocketConnector extends SocketConnector{
     constructor(socket_client, additional_info, options, credentials){
@@ -27,6 +28,20 @@ class HDBSocketConnector extends SocketConnector{
                 switch(req.type) {
                     case terms.CLUSTERING_MESSAGE_TYPES.CLUSTER_STATUS_RESPONSE: {
                         ClusterStatusEmitter.clusterEmitter.emit(ClusterStatusEmitter.EVENT_NAME, req);
+                        break;
+                    }
+                    case terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION: {
+                        log.trace(`Received transaction message with operation: ${req.operation}`);
+                        log.trace(`request: ${inspect(req)}`);
+                        let {operation_function} = get_operation_function(req.transaction);
+                        operation_function(req.transaction, (err, result) => {
+                            //TODO possibly would be good to have a queue on the SC side holding pending transactions, on error we send back stating a fail.
+                            if (err) {
+                                log.error(err);
+                            } else {
+                                log.debug(result);
+                            }
+                        });
                         break;
                     }
                     default: {

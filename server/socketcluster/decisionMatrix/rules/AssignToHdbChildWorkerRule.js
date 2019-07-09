@@ -38,10 +38,14 @@ class AssignToHdbChildWorkerRule extends RuleIF {
                 log.info('No hdbChild workers are stored. Cant send this off');
                 return false;
             }
-            let rand = Math.floor(Math.random() * worker.hdb_workers.length);
-            let random_worker = worker.hdb_workers[rand];
 
-            worker.exchange.publish(random_worker, req.data);
+            if(!req.hdb_header.__transacted && !req.data.__transacted) {
+                let rand = Math.floor(Math.random() * worker.hdb_workers.length);
+                let random_worker = worker.hdb_workers[rand];
+                worker.exchange.publish(random_worker, req.data);
+                log.debug(`Transacted flag not found, swallowing message.`);
+                return(true);
+            }
         } catch(err) {
             log.trace('Failed Assign to Hdb Child worker rule');
             log.error(err);
