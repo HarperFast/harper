@@ -3,7 +3,6 @@ const path = require('path');
 const fs = require('fs');
 const moment = require('moment');
 const sinon = require('sinon');
-const Papa = require('papaparse');
 const uuid = require('uuid/v4');
 
 const sql = require('../sqlTranslator/index');
@@ -654,65 +653,75 @@ function generateMockAST(sql_statement) {
     }
 }
 
-const integration_test_data_hash_values = {
-    // Categories: "categoryid",
-    Customers: "customerid",
-    // EmployeeTerritories: "employeeid",
-    Employees: "employeeid",
-    InvalidAttributes: "id",
-    Orderdetails: "orderdetailid",
-    Orders: "orderid",
-    Products: "productid",
-    // Region: "regionid",
-    // Shippers: "shipperid",
-    // Suppliers: "supplierid",
-    // Territories: "territoryid"
-};
+// const integration_test_data_hash_values = {
+//     Customers: "customerid",
+//     Employees: "employeeid",
+//     InvalidAttributes: "id",
+//     Orderdetails: "orderdetailid",
+//     Orders: "orderid",
+//     Products: "productid"
+// };
+//
+// function parseCsvFilesToObjArr(file_paths) {
+//     const result = [];
+//     file_paths.forEach(file => {
+//         const file_name = path.basename(file, '.csv');
+//         if (integration_test_data_hash_values[file_name]) {
+//             const content = fs.readFileSync(file, "utf8");
+//             Papa.parse(content, {
+//                 header: true,
+//                 transformHeader: header => header.trim(),
+//                 dynamicTyping: true,
+//                 skipEmptyLines: true,
+//                 complete: (obj) => {
+//                     result.push({
+//                         name: file_name,
+//                         data: obj.data
+//                     });
+//                 }
+//             });
+//         }
+//     });
+//     return result;
+// }
+//
+// function getDirFilePaths(dir_path) {
+//     const file_names = fs.readdirSync(dir_path);
+//     return file_names.map(file => path.join(dir_path, file));
+// }
+//
+// function getFormattedIntegrationTestCsvData() {
+//     const csv_paths = getDirFilePaths('/Users/samj/code/harperdb/test/data/integrationTestsCsvs');
+//     const parsed_data = parseCsvFilesToObjArr(csv_paths);
+//
+//     return parsed_data.map(obj => {
+//         obj.data.forEach(datr => {
+//             if (datr.__parsed_extra) {
+//                 delete datr.__parsed_extra;
+//             }
+//         });
+//         obj.hash = integration_test_data_hash_values[obj.name];
+//         obj.schema = obj.name === "InvalidAttributes" ? "dev" : "northnwd";
+//         obj.name = obj.name.toLowerCase();
+//         delete Object.assign(obj, {["table"]: obj["name"] })["name"];
+//         return obj;
+//     });
+// }
 
-function parseCsvFilesToObjArr(file_paths) {
-    const result = [];
-    file_paths.forEach(file => {
-        const file_name = path.basename(file, '.csv');
-        if (integration_test_data_hash_values[file_name]) {
-            const content = fs.readFileSync(file, "utf8");
-            Papa.parse(content, {
-                header: true,
-                transformHeader: header => header.trim(),
-                dynamicTyping: true,
-                skipEmptyLines: true,
-                complete: (obj) => {
-                    result.push({
-                        name: file_name,
-                        data: obj.data
-                    });
-                }
-            });
-        }
-    });
-    return result;
+function sortDesc(data, sort_by) {
+    if (sort_by) {
+        return data.sort((a, b) => b[sort_by] - a[sort_by]);
+    }
+
+    return data.sort((a, b) => b - a);
 }
 
-function getDirFilePaths(dir_path) {
-    const file_names = fs.readdirSync(dir_path);
-    return file_names.map(file => path.join(dir_path, file));
-}
+function sortAsc(data, sort_by) {
+    if (sort_by) {
+        return data.sort((a, b) => a[sort_by] - b[sort_by]);
+    }
 
-function getFormattedIntegrationTestCsvData() {
-    const csv_paths = getDirFilePaths('/Users/samj/code/harperdb/test/data/integrationTestsCsvs');
-    const parsed_data = parseCsvFilesToObjArr(csv_paths);
-
-    return parsed_data.map(obj => {
-        obj.data.forEach(datr => {
-            if (datr.__parsed_extra) {
-                delete datr.__parsed_extra;
-            }
-        });
-        obj.hash = integration_test_data_hash_values[obj.name];
-        obj.schema = obj.name === "InvalidAttributes" ? "dev" : "northnwd";
-        obj.name = obj.name.toLowerCase();
-        delete Object.assign(obj, {["table"]: obj["name"] })["name"];
-        return obj;
-    });
+    return data.sort((a, b) => a - b);
 }
 
 module.exports = {
@@ -726,5 +735,6 @@ module.exports = {
     makeTheDir,
     getMockFSPath,
     generateMockAST,
-    getFormattedIntegrationTestCsvData
+    sortAsc,
+    sortDesc
 };
