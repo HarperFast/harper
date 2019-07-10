@@ -641,7 +641,11 @@ function setGlobalSchema(hash_attribute, schema, table, table_id, attributes_key
     }
 }
 
-//TODO: Add code comments
+/**
+ * Converts a sql statement into an AST object for an alasql operation
+ * @param sql_statement
+ * @returns {SelectValidator}
+ */
 function generateMockAST(sql_statement) {
     try {
         const test_ast = sql.convertSQLToAST(sql_statement);
@@ -652,61 +656,6 @@ function generateMockAST(sql_statement) {
         console.log(e);
     }
 }
-
-// const integration_test_data_hash_values = {
-//     Customers: "customerid",
-//     Employees: "employeeid",
-//     InvalidAttributes: "id",
-//     Orderdetails: "orderdetailid",
-//     Orders: "orderid",
-//     Products: "productid"
-// };
-//
-// function parseCsvFilesToObjArr(file_paths) {
-//     const result = [];
-//     file_paths.forEach(file => {
-//         const file_name = path.basename(file, '.csv');
-//         if (integration_test_data_hash_values[file_name]) {
-//             const content = fs.readFileSync(file, "utf8");
-//             Papa.parse(content, {
-//                 header: true,
-//                 transformHeader: header => header.trim(),
-//                 dynamicTyping: true,
-//                 skipEmptyLines: true,
-//                 complete: (obj) => {
-//                     result.push({
-//                         name: file_name,
-//                         data: obj.data
-//                     });
-//                 }
-//             });
-//         }
-//     });
-//     return result;
-// }
-//
-// function getDirFilePaths(dir_path) {
-//     const file_names = fs.readdirSync(dir_path);
-//     return file_names.map(file => path.join(dir_path, file));
-// }
-//
-// function getFormattedIntegrationTestCsvData() {
-//     const csv_paths = getDirFilePaths('/Users/samj/code/harperdb/test/data/integrationTestsCsvs');
-//     const parsed_data = parseCsvFilesToObjArr(csv_paths);
-//
-//     return parsed_data.map(obj => {
-//         obj.data.forEach(datr => {
-//             if (datr.__parsed_extra) {
-//                 delete datr.__parsed_extra;
-//             }
-//         });
-//         obj.hash = integration_test_data_hash_values[obj.name];
-//         obj.schema = obj.name === "InvalidAttributes" ? "dev" : "northnwd";
-//         obj.name = obj.name.toLowerCase();
-//         delete Object.assign(obj, {["table"]: obj["name"] })["name"];
-//         return obj;
-//     });
-// }
 
 function sortDesc(data, sort_by) {
     if (sort_by) {
