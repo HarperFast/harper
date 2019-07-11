@@ -13,6 +13,7 @@ const {autoCast} = require('../utility/common_utils');
 const math = require('mathjs');
 const system_schema = require('../json/systemSchema.json');
 const SelectValidator = require('../sqlTranslator/SelectValidator');
+const hdbTerms = require('../utility/hdbTerms');
 
 //let base_path = env.get('HDB_ROOT') + "/schema/";
 // Search is used in the installer, and the base path may be undefined when search is instantiated.  Dynamically
@@ -92,7 +93,7 @@ function searchByValue (search_object, callback) {
         condition[operation] = [search_object.search_attribute, search_object.search_value];
 
         let hash_attribute = null;
-        if (search_object.schema === 'system') {
+        if (search_object.schema === hdbTerms.SYSTEM_SCHEMA_NAME) {
             hash_attribute = system_schema[search_object.table].hash_attribute;
         } else {
             hash_attribute = global.hdb_schema[search_object.schema][search_object.table].hash_attribute;
@@ -332,8 +333,12 @@ function readAttributeFiles(table_path, attribute, hash_files, callback) {
     });
 }
 
+//TODO: we're iterating through the get_attributes parameter 2 times below, once to detect if there is a star attribute, and the second time when a star exists we iterate to remove it.
+// This is (O)n^2, and not needed - update during next performance pass.
 function evaluateTableAttributes(get_attributes, table_info, callback) {
-    let star_attribute =  _.filter(get_attributes, attribute => attribute === '*' || attribute.attribute === '*');
+    let star_attribute =  _.filter(get_attributes, attribute => {
+        return attribute === '*' || attribute.attribute === '*';
+    });
 
     if (star_attribute && star_attribute.length > 0) {
         getAllAttributeNames(table_info, (err, attributes) => {
@@ -341,7 +346,9 @@ function evaluateTableAttributes(get_attributes, table_info, callback) {
                 callback(err);
                 return;
             }
-            get_attributes = _.filter(get_attributes, attribute => attribute !== '*' && attribute.attribute !== '*');
+            get_attributes = _.filter(get_attributes, attribute => {
+                return attribute !== '*' && attribute.attribute !== '*';
+            });
 
             attributes.forEach(attribute => {
                 get_attributes.push(attribute);
