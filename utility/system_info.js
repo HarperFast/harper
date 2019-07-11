@@ -1,4 +1,4 @@
-const pjson = require('../package.json');
+const pjson = require(`${__dirname}/../package.json`);
 
 module.exports = {
     systemInfo:systemInfo
