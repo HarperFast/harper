@@ -6,7 +6,7 @@ const log = require('../utility/logging/harper_logger');
 const fs = require('fs');
 
 // Maximum file size in bytes
-const MAX_CSV_FILE_SIZE = 1000000;
+const MAX_CSV_FILE_SIZE = 1000000000;
 
 const actions = ["update", "insert"];
 const constraints = {

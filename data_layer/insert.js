@@ -44,7 +44,8 @@ const INSERT_ACTION = 'inserted';
 
 module.exports = {
     insert: insertData,
-    update: updateData
+    update: updateData,
+    validation
 };
 //this must stay after the export to correct a circular dependency issue
 const global_schema = require('../utility/globalSchema');
@@ -60,6 +61,7 @@ const p_search_by_hash = util.promisify(search.searchByHash);
 async function validation(write_object){
     // Need to validate these outside of the validator as the getTableSchema call will fail with
     // invalid values.
+
     if(h_utils.isEmpty(write_object)) {
         throw new Error('invalid update parameters defined.');
     }
@@ -124,9 +126,9 @@ async function validation(write_object){
  */
 async function insertData(insert_object){
     let pool = undefined;
+
     try {
         let epoch = Date.now();
-
         if (insert_object.operation !== 'insert') {
             throw new Error('invalid operation, must be insert');
         }
@@ -139,7 +141,6 @@ async function insertData(insert_object){
         await checkForNewAttributes(insert_object.hdb_auth_header, table_schema, attributes);
 
         pool = await processData(data_wrapper, pool);
-
         if(pool instanceof HDB_Pool){
             pool.killAll();
         }
