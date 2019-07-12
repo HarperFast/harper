@@ -257,7 +257,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     const bodyParser = require('body-parser');
     const auth = require('../security/auth');
     const passport = require('passport');
-    const pjson = require('../package.json');
+    const pjson = require(`${__dirname}/../package.json`);
     const server_utilities = require('./serverUtilities');
     const cors = require('cors');
 

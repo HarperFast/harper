@@ -187,7 +187,7 @@ async function upgrade() {
  */
 async function startUpgrade() {
     try {
-        let curr_version_path = path.join(process.cwd(), '../', 'package.json');
+        let curr_version_path = path.join(__dirname, '../', 'package.json');
         let curr_package_json = fs.readFileSync(curr_version_path, 'utf8');
         CURRENT_VERSION_NUM = JSON.parse(curr_package_json).version;
     } catch(e) {
