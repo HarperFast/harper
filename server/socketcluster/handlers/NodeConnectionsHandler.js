@@ -6,14 +6,12 @@ const sc_objects = require('../socketClusterObjects');
 const log = require('../../../utility/logging/harper_logger');
 const crypto_hash = require('../../../security/cryptoHash');
 const SubscriptionObject = sc_objects.SubscriptionObject;
+// eslint-disable-next-line no-unused-vars
 const NodeObject = sc_objects.NodeObject;
 const promisify = require('util').promisify;
 const terms = require('../../../utility/hdbTerms');
 
-const env = require('../../../utility/environment/environmentManager');
-env.initSync();
-const hdb_config_path = env.getHdbBasePath() + '/clustering/connections.json';
-const fs = require('fs-extra');
+
 
 class NodeConnectionsHandler {
     constructor(nodes, cluster_user, worker){
@@ -59,67 +57,21 @@ class NodeConnectionsHandler {
     }
 
     async initialize(){
-        await this.initializeConnectionTimestamps();
-        this.spawnRemoteConnections(this.nodes);
-
-        setInterval(await this.recordConnectionTimestamp.bind(this), 10000);
-    }
-
-    /**
-     * This reads the connections json file to find the last time the servers were connected in order for them to ask for
-     */
-    async initializeConnectionTimestamps(){
-        try {
-            let data = await fs.readFile(hdb_config_path);
-            this.connection_timestamps = JSON.parse(data.toString());
-        } catch(e){
-            if(e.code === 'ENOENT') {
-                fs.writeFile(hdb_config_path, '{}');
-            } else{
-                log.error(e);
-            }
-        }
-    }
-
-    async recordConnectionTimestamp(){
-        if(this.connections === undefined || this.connections.clients === undefined){
-            return;
-        }
-
-        let state_changed = false;
-        Object.keys(this.connections.clients).forEach((connection_key)=>{
-            let connection = this.connections.clients[connection_key];
-            let additional_info = connection.additional_info;
-            if(connection.state === connection.OPEN && connection.authState === connection.AUTHENTICATED){
-                additional_info.connected_timestamp = Date.now();
-                this.connection_timestamps[connection_key] = additional_info.connected_timestamp;
-
-                state_changed = true;
-            }
-        });
-
-        if(state_changed === false){
-            return;
-        }
-
-        try {
-            await fs.writeFile(hdb_config_path, JSON.stringify(this.connection_timestamps));
-        } catch(e){
-            log.error(e);
-        }
+        await this.spawnRemoteConnections(this.nodes);
     }
 
     /**
      *
      * @param  {Array.<NodeObject>} nodes
      */
-    spawnRemoteConnections(nodes){
-        nodes.forEach(node =>{
-            this.createNewConnection(node);
+    async spawnRemoteConnections(nodes){
+        await nodes.forEach(async node => {
+            await this.createNewConnection(node);
         });
     }
 
-    createNewConnection(node){
+    async createNewConnection(node){
+        // eslint-disable-next-line global-require
         let options = require('../../../json/connectorOptions');
         options.hostname = node.host;
         options.port = node.port;
@@ -129,7 +81,7 @@ class NodeConnectionsHandler {
             connected_timestamp: null
         };
         let connection = new SocketConnector(socket_client, this.worker, additional_info,options, this.creds, this.connection_timestamps);
-
+        await connection.initialize();
         if(node.subscriptions){
             node.subscriptions.push(this.HDB_Schema_Subscription);
             node.subscriptions.push(this.HDB_Table_Subscription);
