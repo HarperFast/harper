@@ -14,15 +14,28 @@
 #Install private npm @harperdb/harperdb_ci_test@0.0.1
 #echo "npm install @harperdb/harperdb_ci_test@0.0.1"
 #sudo -E npm install -g @harperdb/harperdb_ci_test@0.0.1
+pkgJsonName=$(npm version | grep harperdb | awk '{print $2}' | tr -d \:)
+pkgJsonVersion=$(npm version | grep harperdb | awk '{print $3}' | tr -d \'\,)
+installME=$(ls harperdb-*)
+#"$pkgJsonName-$pkgJsonVersion.tgz"
+pwd
+
+echo "NPM INstall $installME"
+sudo -E npm remove -g harperdb
+npm -f pack
+sudo -E npm install -g ./$installME
+
 
 #Version check
 echo "HarperDB version check"
 harperdb version
 
-rm /home/ubuntu/ci_test
+rm -rf /home/ubuntu/ci_test
+rm -rf $(pwd)/hdb
+
 mkdir /home/ubuntu/ci_test
 cd /home/ubuntu/ci_test
-harperdb install --TC_AGREEMENT yes --HDB_ROOT $(pwd)/../hdb --HTTP_PORT 9925 --HTTPS_PORT 31283 --HDB_ADMIN_USERNAME admin --HDB_ADMIN_PASSWORD "Abc1234!"
+harperdb install --TC_AGREEMENT yes --HDB_ROOT $(pwd)/hdb --HTTP_PORT 9925 --HTTPS_PORT 31283 --HDB_ADMIN_USERNAME admin --HDB_ADMIN_PASSWORD "Abc1234!"
 
    sleep 3s
 
