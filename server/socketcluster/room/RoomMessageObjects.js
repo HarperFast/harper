@@ -3,7 +3,6 @@
 const types = require('../types');
 const hdb_terms = require('../../../utility/hdbTerms');
 const uuid = require('uuid/v4');
-const env = require('../../../utility/environment/environmentManager');
 
 /**
  * This collection of classes defines how messages should look when being passed around the various rooms.
@@ -18,8 +17,6 @@ class HdbCoreBaseMessageIF {
         this.type = core_room_msg_type_enum;
         this.hdb_header = {};
         this.transaction = undefined;
-        this.__originator = {};
-        this.__originator[env.getProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)] = '';
     }
 }
 
@@ -33,8 +30,6 @@ class WorkerStatusMessage {
       this.originator_msg_id = undefined;
       this.outbound_connections = [];
       this.inbound_connections = [];
-      this.__originator = {};
-      this.__originator[env.getProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)] = '';
   }
 }
 
@@ -46,8 +41,6 @@ class WatchHdbWorkersMessage {
         this.id = uuid();
         this.type = types.CORE_ROOM_MSG_TYPE_ENUM.HDB_WORKERS;
         this.workers = [];
-        this.__originator = {};
-        this.__originator[env.getProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)] = '';
     }
 }
 
@@ -59,8 +52,6 @@ class SyncHdbUsersMessage {
         this.id = uuid();
         this.type = types.CORE_ROOM_MSG_TYPE_ENUM.HDB_USERS_MSG;
         this.users = {};
-        this.__originator = {};
-        this.__originator[env.getProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)] = '';
     }
 }
 
@@ -74,8 +65,6 @@ class GetClusterStatusMessage {
         this.requestor_channel = undefined;
         this.worker_request_owner_id = undefined;
         this.originator_msg_id = undefined;
-        this.__originator = {};
-        this.__originator[env.getProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)] = '';
     }
 }
 

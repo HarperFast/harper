@@ -155,7 +155,7 @@ function configureStandardRoom(created_room) {
     created_room.addMiddleware(un_auth_middleware, types.CONNECTOR_TYPE_ENUM.CORE);
     created_room.addMiddleware(un_auth_middleware, types.CONNECTOR_TYPE_ENUM.CLUSTER);
 
-    let stamp_middleware = middleware_factory.createMiddleware(types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_OUT,
+    let stamp_middleware = middleware_factory.createMiddleware(types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN,
         null,
         new middleware_factory.MiddlewareFactoryOptions(types.PREMADE_MIDDLEWARE_TYPES.STAMP_REQUEST));
     created_room.addMiddleware(stamp_middleware, types.CONNECTOR_TYPE_ENUM.CORE);
