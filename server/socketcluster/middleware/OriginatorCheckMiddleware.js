@@ -12,7 +12,7 @@ class OriginatorCheckMiddleware extends MiddlewareIF {
         eval_function = (req, next) => {
             try {
                 log.trace('Evaluating originator check middleware');
-                if (req.data.__originator !== req.socket.id) {
+                if (req.data.__originator[req.socket.id] === undefined) {
                     log.debug('Passed Originator Middleware');
                     return;
                 }
@@ -21,7 +21,7 @@ class OriginatorCheckMiddleware extends MiddlewareIF {
                 log.error(err);
                 return types.ERROR_CODES.MIDDLEWARE_ERROR;
             }
-            log.debug(`Failed Originator Middleware check on channel: ${req.channel} for request type: ${req.data.type} and originator id: ${req.data.__originator}`);
+            log.debug(`Failed Originator Middleware check on channel: ${req.channel} for request type: ${req.data.type} and originator id: ${req.data.__originator[req.socket.id]}`);
             return types.ERROR_CODES.MIDDLEWARE_SWALLOW;
         };
         super(middleware_type_enum, eval_function);

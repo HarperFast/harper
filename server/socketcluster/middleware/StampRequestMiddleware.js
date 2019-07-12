@@ -14,11 +14,12 @@ class StampRequestMiddleware extends MiddlewareIF {
             if(!req.data) {
                 return;
             }
-            //add / change tghe timestamp
+            //add / change the timestamp
             req.data.timestamp = Date.now();
 
             //the __originator attribute is added so we can filter out sending back the same object to the sender
-            req.data.__originator = req.socket.id;
+            req.data.__originator = {};
+            req.data.__originator[req.socket.id] = '';
             log.debug('Stamped request with unique info.');
         };
         super(middleware_type_enum, eval_function);

@@ -139,7 +139,7 @@ class CoreRoom extends RoomIF {
                         if(!get_cluster_status_msg.hdb_header) {
                             get_cluster_status_msg.hdb_header = {};
                             get_cluster_status_msg.hdb_header['worker_originator_id'] = worker.id;
-                            get_cluster_status_msg.__originator = worker.id;
+                            get_cluster_status_msg.__originator[worker.id] = '';
                             // copy the hdb_header since we can't use publishToRoom()
                             if(req.hdb_header) {
                                 let header_keys = Object.keys(req.hdb_header);
