@@ -3,6 +3,8 @@
 const MiddlewareIF = require('./MiddlewareIF');
 const log = require('../../../utility/logging/harper_logger');
 const types = require('../types');
+const env = require('../../../utility/environment/environmentManager');
+const hdb_terms = require('../../../utility/hdbTerms');
 
 /**
  * This middleware stamps a request with the time and originator of the message.
@@ -21,7 +23,7 @@ class StampRequestMiddleware extends MiddlewareIF {
             if(!req.data.__originator) {
                 req.data.__originator = {};
             }
-            req.data.__originator[req.socket.id] = '';
+            req.data.__originator[env.getProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)] = '';
             log.debug('Stamped request with unique info.');
         };
         super(middleware_type_enum, eval_function);

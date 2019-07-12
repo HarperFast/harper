@@ -9,6 +9,7 @@ const hdb_utils = require('../../../utility/common_utils');
 const socket_cluster_utils = require('../util/socketClusterUtils');
 const cluster_utils = require('../util/socketClusterUtils');
 const socket_cluster_status_event = require('../../../events/SocketClusterStatusEmitter');
+const env = require('../../../utility/environment/environmentManager');
 
 const {inspect} = require('util');
 
@@ -139,7 +140,7 @@ class CoreRoom extends RoomIF {
                         if(!get_cluster_status_msg.hdb_header) {
                             get_cluster_status_msg.hdb_header = {};
                             get_cluster_status_msg.hdb_header['worker_originator_id'] = worker.id;
-                            get_cluster_status_msg.__originator[worker.id] = '';
+                            get_cluster_status_msg.__originator[env.getProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)] = '';
                             // copy the hdb_header since we can't use publishToRoom()
                             if(req.hdb_header) {
                                 let header_keys = Object.keys(req.hdb_header);
