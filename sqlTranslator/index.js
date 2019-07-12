@@ -50,8 +50,8 @@ function evaluateSQL(json_message, callback) {
     if(!(statement instanceof alasql.yy.Select) && hdb_utils.isEmptyOrZeroLength(schema)) {
         return callback('No schema specified', null);
     }
-    processAST(json_message, parsed_sql, (error, results)=>{
-        if(error){
+    processAST(json_message, parsed_sql, (error, results) => {
+        if (error) {
             return callback(error);
         }
 
@@ -72,7 +72,7 @@ function checkASTPermissions(json_message, parsed_sql_object) {
     } catch(e) {
         throw e;
     }
-    if(!verify_result) {
+    if (!verify_result) {
         parsed_sql_object.permissions_checked = true;
         return false;
     }
@@ -81,7 +81,7 @@ function checkASTPermissions(json_message, parsed_sql_object) {
 
 function convertSQLToAST(sql) {
     let ast_response = new ParsedSQLObject();
-    if(!sql) {
+    if (!sql) {
         throw new Error('sql parameter is missing');
     }
     try {
@@ -98,12 +98,12 @@ function convertSQLToAST(sql) {
     return ast_response;
 }
 
-function processAST(json_message, parsed_sql_object, callback){
+function processAST(json_message, parsed_sql_object, callback) {
     try {
         let sql_function = nullFunction;
 
-        if(!parsed_sql_object.permissions_checked) {
-            if(!checkASTPermissions(json_message, parsed_sql_object)) {
+        if (!parsed_sql_object.permissions_checked) {
+            if (!checkASTPermissions(json_message, parsed_sql_object)) {
                 return callback(UNAUTHORIZED_RESPONSE, null);
             }
         }
@@ -172,15 +172,15 @@ function convertInsert(statement, callback) {
 }
 
 function createDataObjects(columns, values) {
-    let records = values.map((value_objects)=>{
-        //compare number of values to number of columns, if no matchie throw error
-        if(columns.length !== value_objects.length){
+    let records = values.map(value_objects => {
+        //compare number of values to number of columns, if no match throw error
+        if (columns.length !== value_objects.length) {
             throw "number of values do not match number of columns in insert";
         }
         let record = {};
         //make sure none of the value entries have a columnid
-        value_objects.forEach((value, x)=>{
-            if(value.columnid){
+        value_objects.forEach((value, x) => {
+            if (value.columnid) {
                 throw "cannot use a column in insert value";
             }
 
