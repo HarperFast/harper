@@ -178,9 +178,6 @@
       },
       {
         "attribute":"port"
-      },
-      {
-        "attribute": "connect_timestamp"
       }
     ]
   },
