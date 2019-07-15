@@ -1,5 +1,5 @@
 const ReverseFileRead = require('../../../utility/fs/ReverseFileRead');
-const hdb_utils = require('../../../utility/common_utils')
+const hdb_utils = require('../../../utility/common_utils');
 const CHUNK_SIZE = 1024 *1024 * 5;
 const LINE_DELIMITER = '\r\n';
 

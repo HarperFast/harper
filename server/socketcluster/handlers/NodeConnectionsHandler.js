@@ -11,8 +11,6 @@ const NodeObject = sc_objects.NodeObject;
 const promisify = require('util').promisify;
 const terms = require('../../../utility/hdbTerms');
 
-
-
 class NodeConnectionsHandler {
     constructor(nodes, cluster_user, worker){
         if(!cluster_user){
