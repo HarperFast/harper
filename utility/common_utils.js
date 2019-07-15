@@ -7,6 +7,7 @@ const truncate = require('truncate-utf8-bytes');
 const os = require('os');
 const terms = require('./hdbTerms');
 const ps_list = require('./psList');
+const papa_parse = require('papaparse');
 const cluster_messages = require('../server/socketcluster/room/RoomMessageObjects');
 
 const EMPTY_STRING = '';
@@ -48,6 +49,8 @@ module.exports = {
     checkGlobalSchemaTable: checkGlobalSchemaTable,
     getHomeDir: getHomeDir,
     getPropsFilePath: getPropsFilePath,
+    promisifyPapaParse,
+    removeBOM,
     getClusterMessage
 };
 
@@ -506,6 +509,46 @@ function getClusterUser(users, cluster_user_name){
     }
 
     return cluster_user;
+}
+
+/**
+ * Promisify csv parser papaparse. Once function is promisified it can be called with:
+ * papa_parse.parsePromise(<reject-promise-obj>, <read-stream>, <chunking-function>)
+ * In the case of an error, reject promise object must be called from chunking-function, it will bubble up
+ * through bind to this function.
+ */
+function promisifyPapaParse() {
+    papa_parse.parsePromise = function (stream, chunk_func) {
+        return new Promise(function (resolve, reject) {
+            papa_parse.parse(stream,
+                {
+                    header: true,
+                    transformHeader: removeBOM,
+                    chunk: chunk_func.bind(null, reject),
+                    skipEmptyLines: true,
+                    dynamicTyping: true,
+                    error: reject,
+                    complete: resolve
+                });
+        });
+    };
+}
+
+/**
+ * Removes the byte order mark from a string
+ * @param string
+ * @returns a string minus any byte order marks
+ */
+function removeBOM(data_string) {
+    if (typeof data_string !== 'string') {
+        throw new TypeError(`Expected a string, got ${typeof data_string}`);
+    }
+
+    if (data_string.charCodeAt(0) === 0xFEFF) {
+        return data_string.slice(1);
+    }
+
+    return data_string;
 }
 
 function getClusterMessage(cluster_msg_type_enum) {
