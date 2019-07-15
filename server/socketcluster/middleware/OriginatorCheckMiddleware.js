@@ -22,7 +22,7 @@ class OriginatorCheckMiddleware extends MiddlewareIF {
                 log.error(err);
                 return types.ERROR_CODES.MIDDLEWARE_ERROR;
             }
-            log.debug(`Failed Originator Middleware check on channel: ${req.channel} for request type: ${req.data.type} and originator id: ${req.data.__originator[req.socket.id]}`);
+            log.debug(`Failed Originator Middleware check on channel: ${req.channel} for request type: ${req.data.type} and originator id: ${env.getProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)}`);
             return types.ERROR_CODES.MIDDLEWARE_SWALLOW;
         };
         super(middleware_type_enum, eval_function);
