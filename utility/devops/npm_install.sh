@@ -14,12 +14,12 @@
 #Install private npm @harperdb/harperdb_ci_test@0.0.1
 #echo "npm install @harperdb/harperdb_ci_test@0.0.1"
 #sudo -E npm install -g @harperdb/harperdb_ci_test@0.0.1
+
 pkgJsonName=$(npm version | grep harperdb | awk '{print $2}' | tr -d \:)
 pkgJsonVersion=$(npm version | grep harperdb | awk '{print $3}' | tr -d \'\,)
 installME=$(ls harperdb-*)
 #"$pkgJsonName-$pkgJsonVersion.tgz"
 pwd
-
 echo "NPM INstall $installME"
 sudo -E npm remove -g harperdb
 npm -f pack
