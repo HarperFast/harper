@@ -160,6 +160,8 @@ function convertOperationToTransaction(operation, written_hashes, hash_attribute
     if(global.hdb_socket_client !== undefined && operation.schema !== 'system' && Array.isArray(written_hashes) && written_hashes.length > 0){
         let transaction = {
             operation: "insert",
+            schema: operation.schema,
+            table: operation.table,
             records:[]
         };
 
