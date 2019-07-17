@@ -3,7 +3,7 @@ const RuleIF = require('./RulesIF');
 const types = require('../../types');
 
 /**
- * This rule is used in the RulesCollection unit tests.  It should probably exist in unitTests, but could serve as documentation so I left it here.
+ * This rule is used to remove the __id & __transacted  flags from the data so that they do not pollute the data on publish out.
  */
 class CleanDataObjectRule extends RuleIF {
     constructor() {
