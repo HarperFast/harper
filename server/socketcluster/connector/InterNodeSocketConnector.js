@@ -42,7 +42,7 @@ class InterNodeSocketConnector extends SocketConnector{
                         log.error(e);
                     }
                 } else if(subscription.subscribe === true){
-                    //TODO discuss with eli how to handle this in a room rather than an emit
+                    //TODO correct the emits with CORE-402
                     this.socket.emit('catchup', {channel: subscription.channel, milis_since_connected: Date.now() - this.connected_timestamp}, this.catchupResponseHandler.bind(this));
                 }
             });
