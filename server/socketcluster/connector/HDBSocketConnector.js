@@ -31,7 +31,7 @@ class HDBSocketConnector extends SocketConnector{
                         break;
                     }
                     case terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION: {
-                        log.trace(`Received transaction message with operation: ${req.operation}`);
+                        log.trace(`Received transaction message with operation: ${req.transaction.operation}`);
                         log.trace(`request: ${inspect(req)}`);
                         let {operation_function} = get_operation_function(req.transaction);
                         operation_function(req.transaction, (err, result) => {
