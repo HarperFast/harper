@@ -108,20 +108,7 @@ async function addNode(new_node) {
         throw new Error(validation);
     }
 
-    if(!hdb_utils.isEmptyOrZeroLength(new_node.subscriptions) && !Array.isArray(new_node.subscriptions)){
-        log.error(`${SUBSCRIPTIONS_MUST_BE_ARRAY}: ${new_node.subscriptions}`);
-        throw new Error(SUBSCRIPTIONS_MUST_BE_ARRAY);
-    }
-
-    let subscription_validation = undefined;
-    if(!hdb_utils.isEmptyOrZeroLength(new_node.subscriptions)){
-        for(let b = 0; b < new_node.subscriptions.length; b++){
-            subscription_validation = node_subscription_validator(new_node.subscriptions[b]);
-            if(subscription_validation){
-                throw new Error(subscription_validation);
-            }
-        }
-    }
+    subscriptionsValidation(new_node);
 
     let new_node_insert = new InsertObject("insert", "system", "hdb_nodes", null, [new_node]);
 
@@ -147,6 +134,65 @@ async function addNode(new_node) {
     }
 
     return `successfully added ${new_node.name} to manifest`;
+}
+
+/**
+ *
+ * @param {./NodeObject} node_object
+ */
+function subscriptionsValidation(node_object){
+    if(!hdb_utils.isEmptyOrZeroLength(node_object.subscriptions) && !Array.isArray(node_object.subscriptions)){
+        log.error(`${SUBSCRIPTIONS_MUST_BE_ARRAY}: ${node_object.subscriptions}`);
+        throw new Error(SUBSCRIPTIONS_MUST_BE_ARRAY);
+    }
+
+    let subscription_validation = undefined;
+    if(!hdb_utils.isEmptyOrZeroLength(node_object.subscriptions)){
+        for(let b = 0; b < node_object.subscriptions.length; b++){
+            subscription_validation = node_subscription_validator(node_object.subscriptions[b]);
+            if(subscription_validation){
+                throw new Error(subscription_validation);
+            }
+        }
+    }
+}
+
+/**
+ *
+ * @param {./NodeObject} update_node
+ * @returns {string}
+ */
+async function updateNode(update_node){
+    if(hdb_utils.isEmpty(update_node.name)){
+        throw new Error('name is required');
+    }
+
+    subscriptionsValidation(update_node);
+
+    let update_node_object = new InsertObject("update", "system", "hdb_nodes", null, [update_node]);
+
+    let results = undefined;
+    try {
+        results = await insert.update(update_node_object);
+    } catch(err) {
+        log.error(`Error adding new cluster node ${update_node_object}.  ${err}`);
+        throw new Error(err);
+    }
+
+    if (!hdb_utils.isEmptyOrZeroLength(results.skipped_hashes)) {
+        log.info(`Node '${update_node.name}' does not exist. Operation aborted.`);
+        throw new Error(`Node '${update_node.name}' does not exist. Operation aborted.`);
+    }
+
+    try {
+        let update_node_msg = new terms.ClusterMessageObjects.HdbCoreUdateNodeMessage();
+        update_node_msg.node = update_node;
+        hdb_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.HDB_NODES, update_node_msg);
+    } catch(e){
+        throw new Error(e);
+    }
+
+    return `successfully added ${update_node.name} to manifest`;
 }
 
 /**
@@ -481,6 +527,7 @@ function restartHDB() {
 
 module.exports = {
     addNode: addNode,
+    updateNode: updateNode,
     // The reference to the callback functions can be removed once processLocalTransaction has been refactored
     configureCluster: configureCluster,
     clusterStatus,

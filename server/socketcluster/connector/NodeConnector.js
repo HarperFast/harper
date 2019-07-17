@@ -105,6 +105,10 @@ class NodeConnector {
         }
     }
 
+    updateNode(update_node){
+
+    }
+
     removeNode(remove_node){
         try {
             let connect_keys = Object.keys(this.connections.clients);
