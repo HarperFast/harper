@@ -21,7 +21,7 @@ const reg = require('../utility/registration/registrationHandler');
 const stop = require('../bin/stop');
 const util = require('util');
 const insert = require('../data_layer/insert');
-const operation_function_caller = require(`utility/OperationFunctionCaller`);
+const operation_function_caller = require(`../utility/OperationFunctionCaller`);
 
 /**
  * Callback functions are still heavily relied on.
