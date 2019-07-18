@@ -223,7 +223,7 @@ class WorkerIF extends SCWorker{
      * @returns {*}
      */
     evalRoomPublishInMiddleware(req, next) {
-        log.trace(`____evaluating room publish in middleware on message type: ${req.type}____`);
+        log.debug(`____evaluating room publish in middleware on message type: ${req.type}____`);
         let result = this.evalRoomMiddleware(req, next, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
         if(!result) {
             log.trace(`____passed all publish in middleware____`);
@@ -231,7 +231,7 @@ class WorkerIF extends SCWorker{
         }
         // TODO: There was a problem in the middleware, parse the returned ERROR_CODE and log appropriately.
         log.info(`There was a failure in middleware.`);
-        log.trace(`____finished evaluating room publish in middleware____`);
+        log.debug(`____finished evaluating room publish in middleware____`);
         return next(`There was a middleware failure. ${result}`);
     }
 
@@ -243,13 +243,13 @@ class WorkerIF extends SCWorker{
      * @returns {*}
      */
     evalRoomPublishOutMiddleware(req, next) {
-        log.trace(`____evaluating room publish out middleware on message type: ${req.type}____`);
+        log.debug(`____evaluating room publish out middleware on message type: ${req.type}____`);
         let result = this.evalRoomMiddleware(req, next, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_OUT);
         if(!result) {
             log.trace(`____passed all publish out middleware____`);
             return next();
         }
-        log.trace(`____finished evaluating room publish out middleware____`);
+        log.debug(`____finished evaluating room publish out middleware____`);
         // There was a problem in the middleware, parse the returned ERROR_CODE and log appropriately.
         log.info(`There was a failure in middleware.`);
         return next(`There was a middleware failure. ${result}`);

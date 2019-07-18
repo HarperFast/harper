@@ -93,9 +93,7 @@ class HDBSocketConnector extends SocketConnector{
                 //do nothing
                 break;
         }
-
     }
-
 }
 
 module.exports = HDBSocketConnector;

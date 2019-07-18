@@ -20,7 +20,7 @@ async function callOperationFunction(operation_function_as_callback, function_in
         //TODO: followup_async_func is meant to be a function that would prep a response for clustering, but may not be
         // necessary.
         if(followup_async_func) {
-            return await followup_async_func(result);
+            return await followup_async_func(function_input, result, result);
         }
         return result;
     } catch(err) {
