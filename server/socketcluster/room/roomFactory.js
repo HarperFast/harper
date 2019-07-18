@@ -106,8 +106,9 @@ function configureWorkerRoom(created_room) {
     created_room.removeMiddleware(types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_OUT, types.PREMADE_MIDDLEWARE_TYPES.ORIGINATOR, types.CONNECTOR_TYPE_ENUM.CLUSTER);
 
     let stripper = new StripHdbHeaderRule();
-    created_room.removeMiddleware(stripper, types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_OUT);
-    created_room.removeMiddleware(stripper, types.CONNECTOR_TYPE_ENUM.CORE, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_OUT);
+    //rule_if_object, connector_type_enum, middleware_type_enum
+   // created_room.decision_matrix.addRule(stripper, types.CONNECTOR_TYPE_ENUM.CLUSTER, types.PREMADE_MIDDLEWARE_TYPES.ORIGINATOR);
+    //created_room.decision_matrix.addRule(stripper, types.CONNECTOR_TYPE_ENUM.CORE, types.PREMADE_MIDDLEWARE_TYPES.ORIGINATOR);
 }
 
 /**
