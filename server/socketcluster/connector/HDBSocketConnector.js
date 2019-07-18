@@ -66,27 +66,28 @@ class HDBSocketConnector extends SocketConnector{
             log.error(e);
         }
     }
-    postOperationHandler(operation, written_hashes, hash_attribute) {
-        switch(operation) {
+    postOperationHandler(request_body, result) {
+        switch(request_body.operation) {
             case terms.OPERATIONS_ENUM.INSERT:
-                if(global.hdb_socket_client !== undefined && operation.schema !== 'system' && Array.isArray(written_hashes) && written_hashes.length > 0){
+                if(global.hdb_socket_client !== undefined && request_body.schema !== 'system' && Array.isArray(result.inserted_hashes) && result.inserted_hashes.length > 0){
                     let transaction = {
                         operation: "insert",
-                        schema: operation.schema,
-                        table: operation.table,
+                        schema: request_body.schema,
+                        table: request_body.table,
                         records:[]
                     };
 
-                    operation.records.forEach(record =>{
-                        if(written_hashes.indexOf(common_utils.autoCast(record[hash_attribute])) >= 0) {
-                            transaction.records.push(record);
-                        }
+                    result.inserted_hashes.forEach(record =>{
+                        //if(result.written_hashes.indexOf(common_utils.autoCast(record[hash_attribute])) >= 0) {
+                        transaction.records.push(record);
+                        //}
                     });
                     let insert_msg = common_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
                     insert_msg.transaction = transaction;
                     insert_msg.__originator[env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)] = '';
                     insert_msg.__transacted = true;
-                    common_utils.sendTransactionToSocketCluster(`${operation.schema}:${operation.table}`, insert_msg);
+                    common_utils.sendTransactionToSocketCluster(`${request_body.schema}:${request_body.table}`, insert_msg);
+                    return result;
                 }
                 break;
             default:
