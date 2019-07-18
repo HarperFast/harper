@@ -26,7 +26,7 @@ async function callOperationFunction(operation_function_as_callback, function_in
     } catch(err) {
         log.error(`Error calling operation ${operation_function_as_callback}`);
         log.error(err);
-        return null;
+        throw err;
     }
 }
 
