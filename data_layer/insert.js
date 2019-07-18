@@ -145,7 +145,7 @@ async function insertData(insert_object){
             pool.killAll();
         }
 
-        convertOperationToTransaction(insert_object, written_hashes, table_schema.hash_attribute);
+        //convertOperationToTransaction(insert_object, written_hashes, table_schema.hash_attribute);
 
         return returnObject(INSERT_ACTION, written_hashes, insert_object, skipped);
     } catch(e){

@@ -21,6 +21,7 @@ const reg = require('../utility/registration/registrationHandler');
 const stop = require('../bin/stop');
 const util = require('util');
 const insert = require('../data_layer/insert');
+const operation_function_caller = require(`utility/OperationFunctionCaller`);
 
 /**
  * Callback functions are still heavily relied on.
@@ -90,8 +91,16 @@ function processLocalTransaction(req, res, operation_function, callback) {
         setResponseStatus(res, terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, e);
     }
 
-    operation_function(req.body, (error, data) => {
-        if (error) {
+    //operation_function(req.body, (error, data) => {
+    operation_function_caller.callOperationFunction(operation_function, req.body, null)
+        .then((data) => {
+            if (typeof data !== 'object') {
+                data = {"message": data};
+            }
+            setResponseStatus(res, terms.HTTP_STATUS_CODES.OK, data);
+            return callback(null, data);
+        })
+        .catch((error) => {
             harper_logger.info(error);
             if(error === UNAUTH_RESPONSE) {
                 setResponseStatus(res, terms.HTTP_STATUS_CODES.FORBIDDEN, {error: UNAUTHORIZED_TEXT});
@@ -102,12 +111,7 @@ function processLocalTransaction(req, res, operation_function, callback) {
             }
             setResponseStatus(res, terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, {error: (error.message ? error.message : error.error)});
             return callback(error);
-        }
-        if (typeof data !== 'object')
-            data = {"message": data};
-        setResponseStatus(res, terms.HTTP_STATUS_CODES.OK, data);
-        return callback(null, data);
-    });
+        });
 }
 
 /**
