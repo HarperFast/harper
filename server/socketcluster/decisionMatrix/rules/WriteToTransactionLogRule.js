@@ -50,10 +50,17 @@ class WriteToTransactionLogRule extends RuleIF {
 
         try {
             if(this.transaction_stream === undefined){
-                this.transaction_stream = new FileWriteStream(HDB_QUEUE_PATH + req.channel, {flags: a, mode: terms.HDB_FILE_PERMISSIONS});
+                this.transaction_stream = new FileWriteStream(HDB_QUEUE_PATH + req.channel, {flags: 'a', mode: terms.HDB_FILE_PERMISSIONS});
             }
+        }catch(e){
+            log.trace('unable to create transaction stream: ' + HDB_QUEUE_PATH + req.channel);
+            log.error(e);
+            return true;
+        }
 
-            let transaction_csv = req.data.timestamp + ',' + req.data.__id + ',' + req.data.transaction.operation + ',';
+        try {
+            let timestamp = (req.data && req.data.hdb_header && req.data.hdb_header.timestamp) ? req.data.hdb_header.timestamp : Date.now();
+            let transaction_csv = timestamp + ',' + req.data.transaction.operation + ',';
 
             if(req.data.transaction.operation === terms.OPERATIONS_ENUM.INSERT || req.data.transaction.operation === terms.OPERATIONS_ENUM.UPDATE){
                 transaction_csv += JSON.stringify(req.data.transaction.records, this.escape);
@@ -64,7 +71,7 @@ class WriteToTransactionLogRule extends RuleIF {
             transaction_csv += LINE_DELIMITER;
             this.transaction_stream.write(transaction_csv);
         } catch(err) {
-            log.trace('failed write to transaction log rule');
+            log.trace('failed write to transaction log: ' + req.channel);
             log.error(err);
             return false;
         }
