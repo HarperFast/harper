@@ -44,7 +44,7 @@ class ServerSocket{
      * @param {<CatchupObject>} catchup_object
      */
     async catchup(catchup_object, response){
-        //TODO validate catchup object
+        //TODO validate catchup object https://harperdb.atlassian.net/browse/CORE-409
         try{
             let catchup_msg = await sc_util.catchupHandler(catchup_object.channel, Date.now() - catchup_object.milis_since_connected, null);
             response(null, catchup_msg);
