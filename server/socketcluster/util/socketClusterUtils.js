@@ -5,6 +5,7 @@ const log = require('../../../utility/logging/harper_logger');
 const {inspect} = require('util');
 const CatchUp = require('../handlers/CatchUp');
 const env = require('../../../utility/environment/environmentManager');
+env.initSync();
 const hdb_queue_path = env.getHdbBasePath() + '/clustering/transaction_log/';
 const utils = require('../../../utility/common_utils');
 
