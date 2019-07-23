@@ -3,8 +3,6 @@
 const log = require('../../../utility/logging/harper_logger');
 
 const promisify = require('util').promisify;
-const CatchupObject = require('../socketClusterObjects').CatchupObject;
-
 const sc_util = require('../util/socketClusterUtils');
 
 /**

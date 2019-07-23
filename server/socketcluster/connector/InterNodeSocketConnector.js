@@ -19,7 +19,7 @@ class InterNodeSocketConnector extends SocketConnector{
 
     async initialize(){
         try {
-            this.connected_timestamp = await fs.readFile(this.connection_path);
+            this.connected_timestamp = (await fs.readFile(this.connection_path)).toString();
         } catch(e){
             if(e.code !== 'ENOENT') {
                 log.error(e);
@@ -75,6 +75,10 @@ class InterNodeSocketConnector extends SocketConnector{
             return;
         }
 
+        if(!catchup_msg){
+            return;
+        }
+
         while(this.worker.hdb_workers.length === 0){
             await p_settimeout(1000);
         }
@@ -82,7 +86,8 @@ class InterNodeSocketConnector extends SocketConnector{
         try {
             let req = {
                 channel: hdb_terms.INTERNAL_SC_CHANNELS.CATCHUP,
-                data: catchup_msg
+                data: catchup_msg,
+                hdb_header: {}
             };
 
             let assign = new AssignToHdbChild();
