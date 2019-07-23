@@ -1,20 +1,5 @@
 #!/usr/bin/env bash
 
-#Prepare package.json for publishing.
-#sed -i 's/\"name\":.*/\"name\": \"@harperdb\/testing\"/' package.json
-#sed -i 's/\"version\":.*/\"version\": \"0.0.1\"/' package.json
-
-#Publish to npm, ci server uses global /usr/etc/npmrc file for login
-#npm publish ./ --access restricted
-
-#Remove existing possible installs.
-#echo "npm remove private package @harperdb/harperdb_ci_test"
-#sudo npm remove @harperdb/harperdb_ci_test
-
-#Install private npm @harperdb/harperdb_ci_test@0.0.1
-#echo "npm install @harperdb/harperdb_ci_test@0.0.1"
-#sudo -E npm install -g @harperdb/harperdb_ci_test@0.0.1
-
 pkgJsonName=$(npm version | grep harperdb | awk '{print $2}' | tr -d \:)
 pkgJsonVersion=$(npm version | grep harperdb | awk '{print $3}' | tr -d \'\,)
 installME=$(ls harperdb-*)
