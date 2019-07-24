@@ -86,6 +86,7 @@ class WriteToTransactionLogRule extends RuleIF {
      * @param val
      * @returns {string|*}
      */
+    //TODO per https://harperdb.atlassian.net/browse/CORE-412 find a better way to do this escaping
     escape (key, val) {
         if (typeof(val)!="string") return val;
         return val
