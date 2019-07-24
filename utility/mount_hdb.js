@@ -60,6 +60,7 @@ module.exports = function (logger, hdb_path, callback) {
     makeDirectory(path.join(hdb_path, "schema/system/hdb_job"));
     makeDirectory(path.join(hdb_path, "clustering"));
     makeDirectory(path.join(hdb_path, "clustering", "transaction_log"));
+    makeDirectory(path.join(hdb_path, "clustering", "connections"));
     callback(null, 'complete');
 };
 

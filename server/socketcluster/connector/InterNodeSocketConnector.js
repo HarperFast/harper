@@ -5,7 +5,7 @@ const AssignToHdbChild = require('../decisionMatrix/rules/AssignToHdbChildWorker
 const hdb_terms = require('../../../utility/hdbTerms');
 const env = require('../../../utility/environment/environmentManager');
 env.initSync();
-const hdb_clustering_path = env.getHdbBasePath() + '/clustering/';
+const hdb_clustering_connections_path = env.getHdbBasePath() + '/clustering/connections/';
 const fs = require('fs-extra');
 const promisify = require('util').promisify;
 const p_settimeout = promisify(setTimeout);
@@ -13,7 +13,8 @@ const p_settimeout = promisify(setTimeout);
 class InterNodeSocketConnector extends SocketConnector{
     constructor(socket_client, worker, additional_info, options, credentials){
         super(socket_client, additional_info, options, credentials);
-        this.connection_path = hdb_clustering_path + this.socket.options.hostname + ':' + this.socket.options.port;
+        //TODO possibly change this to the node name, rather hostname / port?
+        this.connection_path = hdb_clustering_connections_path + this.socket.options.hostname + ':' + this.socket.options.port;
         this.worker = worker;
     }
 
