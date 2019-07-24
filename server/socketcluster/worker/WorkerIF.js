@@ -245,7 +245,7 @@ class WorkerIF extends SCWorker{
     evalRoomPublishOutMiddleware(req, next) {
         log.trace(`____evaluating room publish out middleware on message type: ${req.type}____`);
         let result = this.evalRoomMiddleware(req, next, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_OUT);
-        if(!result) {
+        if(!result && req.data.__originator !== req.socket.id) {
             log.trace(`____passed all publish out middleware____`);
             return next();
         }

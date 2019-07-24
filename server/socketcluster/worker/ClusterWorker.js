@@ -5,7 +5,7 @@ const SCServer = require('../handlers/SCServer');
 const types = require('../types');
 const {promisify} = require('util');
 const log = require('../../../utility/logging/harper_logger');
-const NodeConnector = require('../connector/NodeConnector');
+const NodeConnector = require('../handlers/NodeConnectionsHandler');
 const password_utility = require('../../../utility/password');
 const get_cluster_user = require('../../../utility/common_utils').getClusterUser;
 const terms = require('../../../utility/hdbTerms');
@@ -94,6 +94,7 @@ class ClusterWorker extends WorkerIF {
             this.processArgs().then(hdb_data=>{
                 if(hdb_data && hdb_data.nodes && hdb_data.cluster_user) {
                     this.node_connector = new NodeConnector(hdb_data.nodes, hdb_data.cluster_user, this);
+                    this.node_connector.initialize().then(()=>{});
                 }
             });
             this.ensureRoomExists(terms.INTERNAL_SC_CHANNELS.ADD_USER);

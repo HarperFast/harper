@@ -3,6 +3,11 @@
 const hdb_terms = require('../../../utility/hdbTerms');
 const log = require('../../../utility/logging/harper_logger');
 const {inspect} = require('util');
+const CatchUp = require('../handlers/CatchUp');
+const env = require('../../../utility/environment/environmentManager');
+env.initSync();
+const hdb_queue_path = env.getHdbBasePath() + '/clustering/transaction_log/';
+const utils = require('../../../utility/common_utils');
 
 class ConnectionDetails {
     constructor(id, host_address, host_port, state) {
@@ -92,7 +97,35 @@ function createEventPromise(event_name, event_emitter_object, timeout_promise) {
     return event_promise;
 }
 
+/**
+ * Calls the Catchup class to read a specific transaction log with a time range.
+ * Creates a catchup payload based on the results from Catchup and publishes to a socket
+ * @param channel
+ * @param start_timestamp
+ * @param end_timestamp
+ * @param socket
+ * @returns {Promise<void>}
+ */
+async function catchupHandler(channel, start_timestamp, end_timestamp){
+    let catchup = new CatchUp(hdb_queue_path + channel, start_timestamp, end_timestamp);
+    await catchup.run();
+
+    if(Array.isArray(catchup.results) && catchup.results.length > 0) {
+        let catchup_response = {
+            channel: channel,
+            operation:'catchup',
+            transactions: catchup.results
+        };
+
+        let catch_up_msg = utils.getClusterMessage(hdb_terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
+        catch_up_msg.transaction = catchup_response;
+
+        return catch_up_msg;
+    }
+}
+
 module.exports = {
     getWorkerStatus,
-    createEventPromise
+    createEventPromise,
+    catchupHandler
 };
