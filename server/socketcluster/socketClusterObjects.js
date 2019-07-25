@@ -32,7 +32,20 @@ class SubscriptionObject{
     }
 }
 
+class CatchupObject{
+    /**
+     *
+     * @param {string} channel
+     * @param {Number} milis_since_connected
+     */
+    constructor(channel, milis_since_connected){
+        this.channel = channel;
+        this.milis_since_connected = milis_since_connected;
+    }
+}
+
 module.exports = {
     NodeObject,
-    SubscriptionObject
+    SubscriptionObject,
+    CatchupObject
 };

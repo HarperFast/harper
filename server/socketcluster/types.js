@@ -61,7 +61,8 @@ const RULE_TYPE_ENUM = {
     ASSIGN_TO_HDB_WORKER: 101,
     CALL_ROOM_MSG_HANDLER: 102,
     WRITE_TO_TRANSACTION_LOG: 103,
-    TEST_RULE: 104
+    TEST_RULE: 104,
+    CLEAN_DATA_OBJECT: 105
 };
 
 // Message types that will flow through the Cluster Worker room.

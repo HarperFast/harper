@@ -22,6 +22,7 @@ const AssignToHdbChildWorkerRule = require('../decisionMatrix/rules/AssignToHdbC
 const WriteToTransactionLogRule = require('../decisionMatrix/rules/WriteToTransactionLogRule');
 const CallRoomMsgHandlerRule = require('../decisionMatrix/rules/CallRoomMsgHandlerRule');
 const StripHdbHeaderRule = require('../decisionMatrix/rules/StripHdbHeaderRule');
+const CleanDataObjectRule = require('../decisionMatrix/rules/CleanDataObjectRule');
 
 /**
  *  The room factory abstracts everything needed to create a room behind the createRoom function. A room constructor
@@ -106,8 +107,8 @@ function configureWorkerRoom(created_room) {
     created_room.removeMiddleware(types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_OUT, types.PREMADE_MIDDLEWARE_TYPES.ORIGINATOR, types.CONNECTOR_TYPE_ENUM.CLUSTER);
 
     let stripper = new StripHdbHeaderRule();
-    created_room.removeMiddleware(stripper, types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_OUT);
-    created_room.removeMiddleware(stripper, types.CONNECTOR_TYPE_ENUM.CORE, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_OUT);
+    created_room.decision_matrix.addRule(stripper, types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
+    created_room.decision_matrix.addRule(stripper, types.CONNECTOR_TYPE_ENUM.CORE, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
 }
 
 /**
@@ -155,7 +156,7 @@ function configureStandardRoom(created_room) {
     created_room.addMiddleware(un_auth_middleware, types.CONNECTOR_TYPE_ENUM.CORE);
     created_room.addMiddleware(un_auth_middleware, types.CONNECTOR_TYPE_ENUM.CLUSTER);
 
-    let stamp_middleware = middleware_factory.createMiddleware(types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN,
+    let stamp_middleware = middleware_factory.createMiddleware(types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_OUT,
         null,
         new middleware_factory.MiddlewareFactoryOptions(types.PREMADE_MIDDLEWARE_TYPES.STAMP_REQUEST));
     created_room.addMiddleware(stamp_middleware, types.CONNECTOR_TYPE_ENUM.CORE);
@@ -169,6 +170,10 @@ function configureStandardRoom(created_room) {
     let write_transaction_rule = new WriteToTransactionLogRule();
     new_decision_matrix.addRule(write_transaction_rule, types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
     new_decision_matrix.addRule(write_transaction_rule, types.CONNECTOR_TYPE_ENUM.CORE, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
+
+    let clean_data_object_rule = new CleanDataObjectRule();
+    new_decision_matrix.addRule(clean_data_object_rule, types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
+    new_decision_matrix.addRule(clean_data_object_rule, types.CONNECTOR_TYPE_ENUM.CORE, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
 
     created_room.setDecisionMatrix(new_decision_matrix);
 }

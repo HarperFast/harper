@@ -1,17 +1,17 @@
 "use strict";
 
-const SocketConnector = require('./SocketConnector');
+const SocketConnector = require('../connector/InterNodeSocketConnector');
 const socket_client = require('socketcluster-client');
 const sc_objects = require('../socketClusterObjects');
-const AssignToHdbChildWorkerRule = require('../decisionMatrix/rules/AssignToHdbChildWorkerRule');
 const log = require('../../../utility/logging/harper_logger');
 const crypto_hash = require('../../../security/cryptoHash');
 const SubscriptionObject = sc_objects.SubscriptionObject;
+// eslint-disable-next-line no-unused-vars
 const NodeObject = sc_objects.NodeObject;
 const promisify = require('util').promisify;
 const terms = require('../../../utility/hdbTerms');
 
-class NodeConnector {
+class NodeConnectionsHandler {
     constructor(nodes, cluster_user, worker){
         if(!cluster_user){
             log.warn('no cluster_user, cannot connect to other nodes');
@@ -20,6 +20,7 @@ class NodeConnector {
 
         //spawn local connection
         this.worker = worker;
+        this.nodes = nodes;
 
         if(this.worker === undefined || this.worker === null){
             throw new Error('worker is undefined, cannot spawn connections to other nodes');
@@ -31,18 +32,11 @@ class NodeConnector {
             password: crypto_hash.decrypt(cluster_user.hash)
         };
 
-        this.worker.scServer._middleware.publishIn.forEach(middleware_function=>{
+        this.connection_timestamps = {};
+
+        this.worker.scServer._middleware.publishIn.forEach(middleware_function => {
             this.publishin_promises.push(promisify(middleware_function).bind(this.worker.scServer));
         });
-
-        //used to auto pub/sub the hdb_schema channel across the cluster
-        this.HDB_Schema_Subscription = new SubscriptionObject(terms.INTERNAL_SC_CHANNELS.CREATE_SCHEMA, true, true);
-        this.HDB_Table_Subscription = new SubscriptionObject(terms.INTERNAL_SC_CHANNELS.CREATE_TABLE, true, true);
-        this.HDB_Attribute_Subscription = new SubscriptionObject(terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, true, true);
-
-        this.AssignToHdbChildWorkerRule = new AssignToHdbChildWorkerRule();
-        this.connections = socket_client;
-        this.spawnRemoteConnections(nodes);
 
         //get nodes & spwan them, watch for node changes
         this.worker.exchange.subscribe(terms.INTERNAL_SC_CHANNELS.HDB_NODES).watch(data=>{
@@ -52,28 +46,40 @@ class NodeConnector {
                 this.removeNode(data.remove_node);
             }
         });
+
+        //used to auto pub/sub the hdb_schema channel across the cluster
+        this.HDB_Schema_Subscription = new SubscriptionObject(terms.INTERNAL_SC_CHANNELS.CREATE_SCHEMA, true, true);
+        this.HDB_Table_Subscription = new SubscriptionObject(terms.INTERNAL_SC_CHANNELS.CREATE_TABLE, true, true);
+        this.HDB_Attribute_Subscription = new SubscriptionObject(terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, true, true);
+        this.connections = socket_client;
+    }
+
+    async initialize(){
+        await this.spawnRemoteConnections(this.nodes);
     }
 
     /**
      *
      * @param  {Array.<NodeObject>} nodes
      */
-    spawnRemoteConnections(nodes){
-        nodes.forEach(node =>{
-            this.createNewConnection(node);
+    async spawnRemoteConnections(nodes){
+        await nodes.forEach(async node => {
+            await this.createNewConnection(node);
         });
     }
 
-    createNewConnection(node){
+    async createNewConnection(node){
+        // eslint-disable-next-line global-require
         let options = require('../../../json/connectorOptions');
         options.hostname = node.host;
         options.port = node.port;
         let additional_info = {
             name: node.name,
-            subscriptions: node.subscriptions
+            subscriptions: node.subscriptions,
+            connected_timestamp: null
         };
-        let connection = new SocketConnector(socket_client, additional_info,options, this.creds);
-
+        let connection = new SocketConnector(socket_client, this.worker, additional_info,options, this.creds, this.connection_timestamps);
+        await connection.initialize();
         if(node.subscriptions){
             node.subscriptions.push(this.HDB_Schema_Subscription);
             node.subscriptions.push(this.HDB_Table_Subscription);
@@ -134,8 +140,10 @@ class NodeConnector {
             //we need to observe the channel locally and push the data remotely.
             let sub_channel = this.worker.exchange.subscribe(subscription.channel);
             sub_channel.watch(data=>{
-                log.trace('sending out');
-                connection.publish(subscription.channel, data);
+                if(connection.socket.state === connection.socket.OPEN && connection.socket.authState === connection.socket.AUTHENTICATED) {
+                    log.trace('sending out');
+                    connection.publish(subscription.channel, data);
+                }
             });
         }
 
@@ -152,9 +160,7 @@ class NodeConnector {
             socket: socket
         };
 
-        this.runMiddleware(req).then(()=>{
-
-        });
+        await this.runMiddleware(req);
     }
 
     async runMiddleware(request){
@@ -169,4 +175,4 @@ class NodeConnector {
 
 }
 
-module.exports = NodeConnector;
+module.exports = NodeConnectionsHandler;

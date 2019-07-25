@@ -60,7 +60,7 @@ try {
         // In milliseconds, the timeout for calling res(err, data) when
         // your emit() call expects an ACK response from the other side
         // (when callback is provided to emit)
-        ackTimeout: 10000,
+        ackTimeout: 60000,
 
         // will always be https
         protocol: 'https',
