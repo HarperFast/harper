@@ -30,6 +30,7 @@ const SYSTEM_SCHEMA_NAME = 'system';
 const HASH_FOLDER_NAME = '__hdb_hash';
 const CLUSTERING_VERSION_HEADER_NAME = 'hdb_version';
 const HDB_HOME_DIR_NAME = '.harperdb';
+const LICENSE_KEY_DIR_NAME = 'keys';
 const BOOT_PROPS_FILE_NAME = 'hdb_boot_properties.file';
 const UPDATE_FILE_NAME = '.updateConfig.json';
 const HDB_INFO_TABLE_NAME = 'hdb_info';
@@ -38,6 +39,11 @@ const RESTART_CODE = 'SIGTSTP';
 const RESTART_CODE_NUM = 24;
 const RESTART_TIMEOUT_MS = 60000;
 const HDB_FILE_PERMISSIONS = 0o700;
+
+// Trying to keep socket cluster as modular as possible, so we will create values in here that point to values
+// inside of the socketcluster types module.
+const cluster_types = require('../server/socketcluster/types');
+const ClusterMessageObjects = require('../server/socketcluster/room/RoomMessageObjects');
 
 const INSERT_MODULE_ENUM = {
     HDB_PATH_KEY: 'HDB_INTERNAL_PATH',
@@ -76,6 +82,8 @@ const INTERNAL_SC_CHANNELS = {
     HDB_NODES: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'hdb_nodes',
     HDB_USERS: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'hdb_users',
     HDB_WORKERS: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'hdb_workers',
+    CATCHUP: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'catchup',
+    WORKER_ROOM: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'cluster_workers'
 };
 
 const SYSTEM_DEFAULT_ATTRIBUTE_NAMES = {
@@ -169,7 +177,8 @@ const OPERATIONS_ENUM = {
     CLUSTER_STATUS: 'cluster_status',
     DROP_ATTRIBUTE: 'drop_attribute',
     REMOVE_NODE: 'remove_node',
-    RESTART: 'restart'
+    RESTART: 'restart',
+    CATCHUP: 'catchup'
 };
 
 // Defines operations that should be propagated to the cluster.
@@ -313,6 +322,8 @@ const CLUSTER_EVENTS_DEFS_ENUM = {
     DIRECTION_CHANGE: 'direction_change'
 };
 
+const CLUSTERING_MESSAGE_TYPES = cluster_types.CORE_ROOM_MSG_TYPE_ENUM;
+
 module.exports = {
     LOCAL_HARPERDB_OPERATIONS,
     HDB_SUPPORT_ADDRESS,
@@ -328,6 +339,7 @@ module.exports = {
     HASH_FOLDER_NAME,
     HDB_HOME_DIR_NAME,
     UPDATE_FILE_NAME,
+    LICENSE_KEY_DIR_NAME,
     CLUSTERING_VERSION_HEADER_NAME,
     BOOT_PROPS_FILE_NAME,
     JOB_TYPE_ENUM,
@@ -360,6 +372,9 @@ module.exports = {
     CLUSTER_OPERATIONS,
     SYSTEM_DEFAULT_ATTRIBUTE_NAMES,
     HDB_INTERNAL_SC_CHANNEL_PREFIX,
-    INTERNAL_SC_CHANNELS
+    INTERNAL_SC_CHANNELS,
+    CLUSTERING_MESSAGE_TYPES,
+    // Make the message objects available through hdbTerms to keep clustering as modular as possible.
+    ClusterMessageObjects
 };
 

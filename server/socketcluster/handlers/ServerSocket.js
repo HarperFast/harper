@@ -3,7 +3,7 @@
 const log = require('../../../utility/logging/harper_logger');
 
 const promisify = require('util').promisify;
-const FSReadStream = require('../../../utility/fs/FSReadStream');
+const sc_util = require('../util/socketClusterUtils');
 
 /**
  * This class establishes the handlers for the socket on the server, handling all messaging & state changes related to a connected client
@@ -34,9 +34,22 @@ class ServerSocket{
         this.socket.on('authStateChange', this.authStateChangeHandler);
         this.socket.on('message', this.messageHandler);
 
-        this.socket.on('catchup', (channel, range)=>{
+        this.socket.on('catchup', this.catchup);
+    }
 
-        });
+    /**
+     *
+     * @param {<CatchupObject>} catchup_object
+     */
+    async catchup(catchup_object, response){
+        //TODO validate catchup object https://harperdb.atlassian.net/browse/CORE-409
+        try{
+            let catchup_msg = await sc_util.catchupHandler(catchup_object.channel, Date.now() - catchup_object.milis_since_connected, null);
+            response(null, catchup_msg);
+        } catch(e){
+            log.error(e);
+            response(e);
+        }
     }
 
     /**
@@ -44,7 +57,7 @@ class ServerSocket{
      * @param error
      */
     errorHandler(error){
-        console.error(error);
+        log.error(error);
     }
 
     /**
@@ -97,7 +110,7 @@ class ServerSocket{
      * @param channel
      */
     subscribeHandler(channel){
-        console.log(this.socket.id + ' subscribed to channel ' + channel);
+        log.debug(this.socket.id + ' subscribed to channel ' + channel);
     }
 
     /**
@@ -105,7 +118,7 @@ class ServerSocket{
      * @param channel
      */
     unsubscribeHandler(channel){
-        console.log('unsubscribed from channel ' + channel);
+        log.debug('unsubscribed from channel ' + channel);
     }
 
     /**
@@ -137,7 +150,6 @@ class ServerSocket{
      * @param message
      */
     messageHandler(message){
-        // console.log('message received: ', message );
     }
 }
 

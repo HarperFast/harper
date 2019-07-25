@@ -11,6 +11,8 @@ class UpgradeDirective {
         this.version = version_number;
         // paths relative to HDB_ROOT that need to be created can be added into this.
         this.relative_directory_paths = [];
+        // explicit paths that need to be created can be added into this.
+        this.explicit_directory_paths = [];
         // Any environment variables which need to be created can be added into here.  Each should be of type
         // environmentVaraible
         this.environment_variables = [];

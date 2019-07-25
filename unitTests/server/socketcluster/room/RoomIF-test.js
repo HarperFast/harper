@@ -37,7 +37,7 @@ const TEST_REQUEST = {
     socket: {}
 };
 
-describe('Test RoomIF evalMiddleware', function() {
+describe('Test RoomIF addMiddleware', function() {
     let test_instance = undefined;
     let matrix_stub = undefined;
     let sandbox = sinon.createSandbox();
@@ -266,5 +266,68 @@ describe('Test RoomIF evalMiddleware', function() {
         }
 
         assert.equal(result, null, 'Expected success');
+    });
+});
+
+describe('Test RoomIF removeMiddleware', function() {
+    let test_instance = undefined;
+    let matrix_stub = undefined;
+    let sandbox = sinon.createSandbox();
+    let worker_stub = undefined;
+    beforeEach(() => {
+        test_instance = new RoomIF(ROOM_NAME);
+        worker_stub = new WorkerStub();
+        matrix_stub = new DecisionMatrixStub();
+    });
+    afterEach(() => {
+        test_instance = undefined;
+        worker_stub = null;
+        matrix_stub = null;
+        sandbox.restore();
+    });
+
+    it('test removeMiddleware', () => {
+        test_instance.addMiddleware(new GenericMiddleware(types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN, () => {return true;}), types.CONNECTOR_TYPE_ENUM.CLUSTER);
+        test_instance.addMiddleware(new GenericMiddleware(types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN, () => {return true;}), types.CONNECTOR_TYPE_ENUM.CORE);
+        // check add worked properly
+        assert.equal(test_instance.core_middleware[types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN].getCommands().length, 1, 'expected 1 middleware to be added');
+        assert.equal(test_instance.connector_middleware[types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN].getCommands().length, 1, 'expected 1 middleware to be added');
+
+        //enum_middleware_type, premade_middleware_type_enum, connector_type_enum) {
+        test_instance.removeMiddleware(types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN, types.PREMADE_MIDDLEWARE_TYPES.GENERIC, types.CONNECTOR_TYPE_ENUM.CLUSTER);
+        test_instance.removeMiddleware(types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN, types.PREMADE_MIDDLEWARE_TYPES.GENERIC, types.CONNECTOR_TYPE_ENUM.CORE);
+
+        assert.equal(test_instance.core_middleware[types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN].getCommands().length, 0, 'expected 0 middleware left');
+        assert.equal(test_instance.connector_middleware[types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN].getCommands().length, 0, 'expected 0 middleware left');
+    });
+
+    it('test remove middleware that doesnt exist, should remain unchanged.', () => {
+        test_instance.addMiddleware(new GenericMiddleware(types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN, () => {return true;}), types.CONNECTOR_TYPE_ENUM.CLUSTER);
+        test_instance.addMiddleware(new GenericMiddleware(types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN, () => {return true;}), types.CONNECTOR_TYPE_ENUM.CORE);
+        // check add worked properly
+        assert.equal(test_instance.core_middleware[types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN].getCommands().length, 1, 'expected 1 middleware to be added');
+        assert.equal(test_instance.connector_middleware[types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN].getCommands().length, 1, 'expected 1 middleware to be added');
+
+        //enum_middleware_type, premade_middleware_type_enum, connector_type_enum) {
+        test_instance.removeMiddleware(types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN, types.PREMADE_MIDDLEWARE_TYPES.AUTH, types.CONNECTOR_TYPE_ENUM.CLUSTER);
+        test_instance.removeMiddleware(types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN, types.PREMADE_MIDDLEWARE_TYPES.AUTH, types.CONNECTOR_TYPE_ENUM.CORE);
+
+        assert.equal(test_instance.core_middleware[types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN].getCommands().length, 1, 'expected 1 middleware to be added');
+        assert.equal(test_instance.connector_middleware[types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN].getCommands().length, 1, 'expected 1 middleware to be added');
+    });
+
+    it('test add with empty connector type, no default support so remain unchanged.', () => {
+        test_instance.addMiddleware(new GenericMiddleware(types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN, () => {return true;}), types.CONNECTOR_TYPE_ENUM.CLUSTER);
+        test_instance.addMiddleware(new GenericMiddleware(types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN, () => {return true;}), types.CONNECTOR_TYPE_ENUM.CORE);
+        // check add worked properly
+        assert.equal(test_instance.core_middleware[types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN].getCommands().length, 1, 'expected 1 middleware to be added');
+        assert.equal(test_instance.connector_middleware[types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN].getCommands().length, 1, 'expected 1 middleware to be added');
+
+        //enum_middleware_type, premade_middleware_type_enum, connector_type_enum) {
+        test_instance.removeMiddleware(types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN, types.PREMADE_MIDDLEWARE_TYPES.AUTH, null);
+        test_instance.removeMiddleware(types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN, types.PREMADE_MIDDLEWARE_TYPES.AUTH, null);
+
+        assert.equal(test_instance.core_middleware[types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN].getCommands().length, 1, 'expected 1 middleware to be added');
+        assert.equal(test_instance.connector_middleware[types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN].getCommands().length, 1, 'expected 1 middleware to be added');
     });
 });

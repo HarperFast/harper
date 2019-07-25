@@ -6,17 +6,16 @@ const validator = require('../validation/csvLoadValidator');
 const request_promise = require('request-promise-native');
 const hdb_terms = require('../utility/hdbTerms');
 const hdb_utils = require('../utility/common_utils');
-const util = require('util');
 const {promise} = require('alasql');
 const logger = require('../utility/logging/harper_logger');
-const fs = require('fs');
+const papa_parse = require('papaparse');
+const fs = require('fs-extra');
+hdb_utils.promisifyPapaParse();
 
-const RECORD_BATCH_SIZE = 1000;
 const NEWLINE = '\n';
 const unix_filename_regex = new RegExp(/[^-_.A-Za-z0-9]/);
 const ALASQL_MIDDLEWARE_PARSE_PARAMETERS = 'SELECT * FROM CSV(?, {headers:true, separator:","})';
-
-const p_fs_access = util.promisify(fs.access);
+const HIGHWATERMARK = 1024*1024*5;
 
 module.exports = {
     csvDataLoad: csvDataLoad,
@@ -111,18 +110,116 @@ async function csvFileLoad(json_message) {
         throw new Error(validation_msg);
     }
 
-    let csv_records = [];
-    let bulk_load_result = {};
     try {
         // check file exists and have perms to read, throws exception if fails
-        await p_fs_access(json_message.file_path, fs.constants.R_OK | fs.constants.F_OK);
-        csv_records = await callMiddleware(ALASQL_MIDDLEWARE_PARSE_PARAMETERS, json_message.file_path);
-        bulk_load_result = await callBulkLoad(csv_records, json_message.schema, json_message.table, json_message.action);
-    } catch(e) {
-        throw new Error(e);
+        await fs.access(json_message.file_path, fs.constants.R_OK | fs.constants.F_OK);
+        let bulk_load_result = await callPapaParse(json_message);
+
+        return `successfully loaded ${bulk_load_result.number_written} of ${bulk_load_result.records} records`;
+    } catch(err) {
+        logger.error(err);
+        throw err;
+    }
+}
+
+/**
+ * Passed to papaparse to validate chunks of csv data from a read stream.
+ *
+ * @param json_message - An object representing the CSV file.
+ * @param reject - A promise object bound to function through hdb_utils.promisifyPapaParse()
+ * @param results - An object returned by papaparse containing parsed csv data, errors and meta.
+ * @param parser - An  object returned by papaparse contains abort, pause and resume.
+ * @returns if validation error found returns Promise<error>, if no error nothing is returned.
+ */
+async function validateChunk(json_message, reject, results, parser) {
+    if (results.data.length === 0) {
+        return;
     }
 
-    return bulk_load_result.message;
+    // parser pause and resume prevent the parser from getting ahead of validation.
+    parser.pause();
+
+    let write_object = {
+        operation: json_message.operation,
+        schema: json_message.schema,
+        table: json_message.table,
+        records: results.data
+    };
+
+    try {
+        await insert.validation(write_object);
+        parser.resume();
+    } catch(err) {
+        logger.error(err);
+        // reject is a promise object bound to chunk function through hdb_utils.promisifyPapaParse(). In the case of an error
+        // reject will bubble up to hdb_utils.promisifyPapaParse() and return a reject promise object with given error.
+        reject(err);
+    }
+}
+
+/**
+ * Passed to papaparse to insert chunks of csv data from a read stream.
+ *
+ * @param json_message - An object representing the CSV file.
+ * @param insert_results - An object passed by reference used to accumulate results from insert or update function.
+ * @param reject - A promise object bound to function through hdb_utils.promisifyPapaParse().
+ * @param results - An object returned by papaparse containing parsed csv data, errors and meta.
+ * @param parser - An  object returned by papaparse contains abort, pause and resume.
+ * @returns if validation error found returns Promise<error>, if no error nothing is returned.
+ */
+async function insertChunk(json_message, insert_results, reject, results, parser) {
+    if (results.data.length === 0) {
+        return;
+    }
+
+    // parser pause and resume prevent the parser from getting ahead of insert.
+    parser.pause();
+
+    try {
+        let bulk_load_chunk_result = await callBulkLoad(results.data, json_message.schema, json_message.table, json_message.action);
+        insert_results.records += bulk_load_chunk_result.records;
+        insert_results.number_written += bulk_load_chunk_result.number_written;
+        parser.resume();
+    } catch(err) {
+        logger.error(err);
+        // reject is a promise object bound to chunk function through hdb_utils.promisifyPapaParse(). In the case of an error
+        // reject will bubble up to hdb_utils.promisifyPapaParse() and return a reject promise object with given error.
+        reject(err);
+    }
+}
+
+
+/**
+ * Handles two asynchronous calls to csv parser papaparse.
+ * First call validates the full read stream from csv file by calling papaparse with validateChunk function. The entire
+ * stream is consumed by validate because all rows must be validated before calling insert.
+ * Second call inserts a new csv file read stream by calling papaparse with insertChunk function.
+ *
+ * @param json_message - An object representing the CSV file.
+ * @returns {Promise<{records: number, number_written: number}>}
+ */
+async function callPapaParse(json_message) {
+    // passing insert_results object by reference to insertChunk function where it accumulate values from bulk load results.
+    let insert_results = {
+        records: 0,
+        number_written: 0
+    };
+
+    try {
+        let stream = fs.createReadStream(json_message.file_path, {highWaterMark:HIGHWATERMARK});
+        stream.setEncoding('utf8');
+        await papa_parse.parsePromise(stream, validateChunk.bind(null, json_message));
+
+        stream = fs.createReadStream(json_message.file_path, {highWaterMark:HIGHWATERMARK});
+        stream.setEncoding('utf8');
+        await papa_parse.parsePromise(stream, insertChunk.bind(null, json_message, insert_results));
+        stream.destroy();
+
+        return insert_results;
+    } catch(err) {
+        logger.error(err);
+        throw err;
+    }
 }
 
 /**
@@ -175,13 +272,20 @@ async function callMiddleware(parameter_string, data) {
 
 async function callBulkLoad(csv_records, schema, table, action) {
     let bulk_load_result = {};
-    if(csv_records && csv_records.length > 0 && validateColumnNames(csv_records[0])) {
-        bulk_load_result = await bulkLoad(csv_records, schema, table, action);
-    } else {
-        bulk_load_result.message = 'No records parsed from csv file.';
-        logger.info(bulk_load_result.message);
+
+    try {
+        if (csv_records && csv_records.length > 0 && validateColumnNames(csv_records[0])) {
+            bulk_load_result = await bulkLoad(csv_records, schema, table, action);
+        } else {
+            bulk_load_result.message = 'No records parsed from csv file.';
+            logger.info(bulk_load_result.message);
+        }
+
+        return bulk_load_result;
+    } catch(err) {
+        logger.error(err);
+        throw err;
     }
-    return bulk_load_result;
 }
 
 /**
@@ -239,7 +343,8 @@ async function bulkLoad(records, schema, table, action){
 
         let number_written = hdb_utils.isEmptyOrZeroLength(modified_hashes) ? 0 : modified_hashes.length;
         let update_status = {
-            message: `successfully loaded ${number_written} of ${records.length} records`
+            records: records.length,
+            number_written
         };
 
         return update_status;

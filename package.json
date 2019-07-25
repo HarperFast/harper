@@ -1,6 +1,6 @@
 {
-  "name": "@harperdb/harperdb_js_test",
-  "version": "2.0.12",
+  "name": "harperdb",
+  "version": "2.0.000",
   "description": "",
   "main": "harperdb.js",
   "bin": {
@@ -49,13 +49,13 @@
     "fill-range": "^4.0.0",
     "fs-extra": "^7.0.1",
     "graceful-fs": "^4.1.15",
-    "json-2-csv": "^3.5.3",
     "lodash": "^4.17.11",
     "mathjs": "^4.4.1",
     "mkdirp": "^0.5.1",
     "moment": "^2.23.0",
     "node-forge": "^0.7.6",
     "optimist": "^0.6.1",
+    "papaparse": "^5.0.0",
     "passport": "^0.3.2",
     "passport-http": "^0.3.0",
     "passport-local": "^1.0.0",
@@ -113,6 +113,7 @@
     "newman-reporter-html": "^1.0.2",
     "newman-reporter-teamcity": "^0.1.11",
     "nyc": "^13.3.0",
+    "papaparse": "^5.0.0",
     "rewire": "^4.0.1",
     "sinon": "^5.1.1",
     "sinon-chai": "^3.3.0"

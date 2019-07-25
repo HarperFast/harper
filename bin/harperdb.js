@@ -1,3 +1,5 @@
+#!/usr/bin/env node
+'use strict';
 const run = require('./run');
 const install = require('./install');
 const stop = require('./stop');

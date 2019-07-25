@@ -99,6 +99,34 @@ class CommandCollection {
     }
 
     /**
+     * Remove all rules of a given type.
+     * @param rule_type_enum
+     * @returns {boolean}
+     */
+    removeCommandsByType(rule_type_enum) {
+        if(!rule_type_enum) {
+            log.error('invalid id passed to removeCommand');
+            return false;
+        }
+        if(rule_type_enum === this.base.type) {
+            log.error('cannot remove the linked list base');
+            return false;
+        }
+        let curr = this.base;
+        let prev = null;
+        while(curr != null) {
+            if(curr && curr.data && curr.data.type === rule_type_enum) {
+                prev.next = curr.next;
+                return true;
+            }
+            if(curr) {
+                prev = curr;
+            }
+            curr = curr.next;
+        }
+    }
+
+    /**
      * Remove a command from this collection that matches the id parameter.
      * @param command_id
      * @returns {boolean}

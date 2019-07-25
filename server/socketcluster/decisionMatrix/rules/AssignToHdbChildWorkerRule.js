@@ -10,9 +10,18 @@ const terms = require('../../../../utility/hdbTerms');
 class AssignToHdbChildWorkerRule extends RuleIF {
     constructor() {
         super();
-        this.setRuleOrder(types.COMMAND_EVAL_ORDER_ENUM.VERY_LAST);
+        this.setRuleOrder(types.COMMAND_EVAL_ORDER_ENUM.LOW);
+        this.type = types.RULE_TYPE_ENUM.ASSIGN_TO_HDB_WORKER;
     }
-    evaluateRule(req, args, worker) {
+
+    /**
+     * Evaluate the request against this rule.  Return true if the request passes the rule, false if it does not.
+     * @param req - the request
+     * @param args - any arguments that are needed during rule evaluation, can be null.
+     * @param worker - the worker this rule belongs to.
+     * @returns {Promise<boolean>}
+     */
+    async evaluateRule(req, args, worker) {
         log.trace('Evaluating Assign to Hdb Child worker rule');
         if(!worker) {
             log.error('invalid worker sent to AssignToHdbChildWorkerRule.');
@@ -26,14 +35,19 @@ class AssignToHdbChildWorkerRule extends RuleIF {
                 req.data.table = target[1];
             }
             if(!worker.hdb_workers || worker.hdb_workers.length === 0) {
-                log.error('No hdbChild workers are stored. Cant send this off');
+                log.info('No hdbChild workers are stored. Cant send this off');
                 return false;
             }
-            let rand = Math.floor(Math.random() * worker.hdb_workers.length);
-            let random_worker = worker.hdb_workers[rand];
 
-            worker.exchange.publish(random_worker, req.data);
+            if(!req.hdb_header.__transacted && !req.data.__transacted) {
+                let rand = Math.floor(Math.random() * worker.hdb_workers.length);
+                let random_worker = worker.hdb_workers[rand];
+                worker.exchange.publish(random_worker, req.data);
+                log.debug(`Transacted flag not found, swallowing message.`);
+                return(true);
+            }
         } catch(err) {
+            log.trace('Failed Assign to Hdb Child worker rule');
             log.error(err);
             return false;
         }

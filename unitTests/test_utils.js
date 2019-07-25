@@ -1,14 +1,18 @@
 "use strict";
 const path = require('path');
 const fs = require('fs');
-const uuid = require('uuid/v4');
 const moment = require('moment');
+const sinon = require('sinon');
+const uuid = require('uuid/v4');
+
+const sql = require('../sqlTranslator/index');
+const SelectValidator = require('../sqlTranslator/SelectValidator');
+
 const env = require('../utility/environment/environmentManager');
 const terms = require('../utility/hdbTerms');
-const sinon = require('sinon');
+const common_utils = require('../utility/common_utils');
 
 let env_mgr_init_sync_stub = undefined;
-
 const {
     JOB_TABLE_NAME,
     NODE_TABLE_NAME,
@@ -35,7 +39,7 @@ const {
 
 const MOCK_FS_ARGS_ERROR_MSG = "Null, undefined, and/or empty string argument values not allowed when building mock HDB FS for testing";
 const UNIT_TEST_DIR = __dirname;
-const TEST_FS_DIR_NAME = "test_fs";
+const TEST_FS_DIR = "envDir/test_schema";
 const ATTR_PATH_OBJECT = {
     "files": [],
     "journals": [],
@@ -145,7 +149,7 @@ function cleanUpDirectories(target_path) {
  * @returns String representing the path value to the mock file system directory
  */
 function getMockFSPath() {
-    return path.join(UNIT_TEST_DIR, TEST_FS_DIR_NAME);
+    return path.join(UNIT_TEST_DIR, TEST_FS_DIR);
 }
 
 /**
@@ -208,19 +212,25 @@ function createMockFS(hash_attribute, schema, table, test_data) {
             const test_record_paths = deepClone(ATTR_PATH_OBJECT);
             const keys = Object.keys(data).filter(key => (key !== 'table' && key !== 'schema'));
             for (let i=0; i < keys.length; i++) {
-                const curr_attribute = keys[i];
+                const curr_attribute = keys[i].trim();
                 if (attribute_names.indexOf(curr_attribute) < 0) {
                     attribute_names.push(curr_attribute);
                 }
-                const is_hash = curr_attribute === hash_attribute;
+                const is_hash = hash_attribute === curr_attribute;
                 const hash_dir_path = path.join(table_path, terms.HASH_FOLDER_NAME, curr_attribute);
                 makeTheDir(hash_dir_path);
                 const attribute_dir_path = path.join(table_path, curr_attribute);
                 makeTheDir(attribute_dir_path);
-                const attribute_instance_dir_path = path.join(attribute_dir_path, `${data[curr_attribute]}`);
+                const attr_values = common_utils.valueConverter(data[curr_attribute]);
+                if (attr_values.value_path.endsWith('/blob')) {
+                    const attr_dir_for_blob = attr_values.value_path.replace("/blob", "");
+                    const dir_for_blob = path.join(attribute_dir_path, attr_dir_for_blob);
+                    makeTheDir(dir_for_blob);
+                }
+                const attribute_instance_dir_path = path.join(attribute_dir_path, attr_values.value_path);
                 makeTheDir(attribute_instance_dir_path);
                 // make the hash file
-                let hash_file_path = path.join(hash_dir_path, data[hash_attribute] + '.hdb');
+                let hash_file_path = path.join(hash_dir_path, `${data[hash_attribute]}.hdb`);
                 fs.writeFileSync(hash_file_path, data[curr_attribute]);
                 test_record_paths.files.push(hash_file_path);
                 if (!is_hash) {
@@ -503,7 +513,7 @@ function createMockSystemSchema(hash_attribute, schema, table, attributes_keys) 
  * This method is used in `createMockFS()` to update global.hdb_schema based on the mocked FS structure created.
  */
 function setGlobalSchema(hash_attribute, schema, table, table_id, attributes_keys) {
-    const attributes = attributes_keys.map(attr_key => ({ "attributes": attr_key }));
+    const attributes = attributes_keys.map(attr_key => ({ "attribute": attr_key }));
 
     if (global.hdb_schema === undefined) {
         global.hdb_schema = {
@@ -609,24 +619,71 @@ function setGlobalSchema(hash_attribute, schema, table, table_id, attributes_key
             }
         };
     } else {
-        global.hdb_schema[schema][table] = {
-            "hash_attribute": `${hash_attribute}`,
-            "id": `${table_id}`,
-            "name": `${table}`,
-            "schema": `${schema}`,
-            "attributes": attributes
-        };
+        if (!global.hdb_schema[schema]) {
+            global.hdb_schema[schema] = {
+                [table]: {
+                    "hash_attribute": `${hash_attribute}`,
+                    "id": `${table_id}`,
+                    "name": `${table}`,
+                    "schema": `${schema}`,
+                    "attributes": attributes
+                }
+            };
+        } else {
+            global.hdb_schema[schema][table] = {
+                "hash_attribute": `${hash_attribute}`,
+                "id": `${table_id}`,
+                "name": `${table}`,
+                "schema": `${schema}`,
+                "attributes": attributes
+            };
+        }
     }
 }
 
+/**
+ * Converts a sql statement into an AST object for an alasql operation
+ * @param sql_statement
+ * @returns {SelectValidator}
+ */
+function generateMockAST(sql_statement) {
+    try {
+        const test_ast = sql.convertSQLToAST(sql_statement);
+        const validated_ast = new SelectValidator(test_ast.ast.statements[0]);
+        validated_ast.validate();
+        return validated_ast;
+    } catch(e) {
+        console.log(e);
+    }
+}
+
+function sortDesc(data, sort_by) {
+    if (sort_by) {
+        return data.sort((a, b) => b[sort_by] - a[sort_by]);
+    }
+
+    return data.sort((a, b) => b - a);
+}
+
+function sortAsc(data, sort_by) {
+    if (sort_by) {
+        return data.sort((a, b) => a[sort_by] - b[sort_by]);
+    }
+
+    return data.sort((a, b) => a - b);
+}
+
 module.exports = {
-    changeProcessToBinDir:changeProcessToBinDir,
-    deepClone:deepClone,
-    mochaAsyncWrapper:mochaAsyncWrapper,
-    preTestPrep:preTestPrep,
-    cleanUpDirectories:cleanUpDirectories,
-    createMockFS:createMockFS,
-    tearDownMockFS:tearDownMockFS,
-    makeTheDir:makeTheDir,
-    getMockFSPath:getMockFSPath
+    changeProcessToBinDir,
+    deepClone,
+    mochaAsyncWrapper,
+    preTestPrep,
+    cleanUpDirectories,
+    createMockFS,
+    tearDownMockFS,
+    makeTheDir,
+    getMockFSPath,
+    generateMockAST,
+    sortAsc,
+    sortDesc
 };

@@ -88,8 +88,10 @@ function processDirectives(curr_version, upgrade_version) {
         console.log(notify_msg);
         // Create Directories
         let directories_to_create = vers.relative_directory_paths;
+        let explicit_directories_to_create = vers.explicit_directory_paths;
         try {
-            createDirectories(directories_to_create);
+            createRelativeDirectories(directories_to_create);
+            createExplicitDirectories(explicit_directories_to_create);
         } catch(e) {
             log.error('Error creating directories in process Directives' + e);
             throw e;
@@ -125,7 +127,7 @@ function processDirectives(curr_version, upgrade_version) {
  * Creates all directories specified in a directive file.
  * @param directive_paths
  */
-function createDirectories(directive_paths) {
+function createRelativeDirectories(directive_paths) {
     if(hdb_util.isEmptyOrZeroLength(directive_paths)) {
         log.info('No upgrade directories to create.');
         return;
@@ -135,6 +137,24 @@ function createDirectories(directive_paths) {
         let new_dir_path = path.join(hdb_base, dir_path);
         log.info(`Creating directory ${new_dir_path}`);
         makeDirectory(new_dir_path);
+    }
+}
+
+function createExplicitDirectories(directive_paths) {
+    if(hdb_util.isEmptyOrZeroLength(directive_paths)) {
+        log.info('No upgrade directories to create.');
+        return;
+    }
+    for(let dir_path of directive_paths) {
+        // This is synchronous
+        try {
+            log.info(`Creating directory ${dir_path}`);
+            makeDirectory(dir_path);
+        } catch(err) {
+            log.error(`Error Creating path ${dir_path}.`);
+            log.error(err);
+            continue;
+        }
     }
 }
 

@@ -2,6 +2,8 @@
 const ServerSocket = require('./ServerSocket');
 const log = require('../../../utility/logging/harper_logger');
 const terms = require('../../../utility/hdbTerms');
+const RoomMessageObjects = require('../room/RoomMessageObjects');
+const {inspect} = require('util');
 
 class SCServer{
     constructor(worker){
@@ -35,7 +37,8 @@ class SCServer{
      * @param error
      */
     errorHandler(error){
-
+        log.error(`Error in socket cluster server`);
+        log.error(error);
     }
 
     /**
@@ -43,7 +46,8 @@ class SCServer{
      * @param notice
      */
     noticeHandler(notice){
-
+        log.info(`Socket cluster server is on notice.`);
+        log.info(inspect(notice));
     }
 
     /**
@@ -78,11 +82,13 @@ class SCServer{
             try {
                 this.worker.exchange_set([terms.INTERNAL_SC_CHANNELS.HDB_WORKERS, socket.id], 1).then(data => {
                     this.worker.exchange_get(terms.INTERNAL_SC_CHANNELS.HDB_WORKERS).then(data => {
-                        this.worker.exchange.publish(terms.INTERNAL_SC_CHANNELS.HDB_WORKERS, Object.keys(data));
+                        let room_msg = new RoomMessageObjects.WatchHdbWorkersMessage();
+                        room_msg.workers = Object.keys(data);
+                        this.worker.exchange.publish(terms.INTERNAL_SC_CHANNELS.HDB_WORKERS, room_msg);
                     });
                 });
             } catch(e){
-                console.error(e);
+                log.error(e);
             }
         }
     }
@@ -96,8 +102,10 @@ class SCServer{
         //add logic for unsubscribe to hdb_worker channel
         if(socket.request.url === '/socketcluster/?hdb_worker=1'){
             this.worker.exchange_remove([terms.INTERNAL_SC_CHANNELS.HDB_WORKERS, socket.id]).then(data => {
-                this.worker.exchange_get(terms.INTERNAL_SC_CHANNELS.HDB_WORKERS).then(data=>{
-                    this.worker.exchange.publish(terms.INTERNAL_SC_CHANNELS.HDB_WORKERS, Object.keys(data));
+                this.worker.exchange_get(terms.INTERNAL_SC_CHANNELS.HDB_WORKERS).then(data=> {
+                    let room_msg = new RoomMessageObjects.WatchHdbWorkersMessage();
+                    room_msg.workers = Object.keys(data);
+                    this.worker.exchange.publish(terms.INTERNAL_SC_CHANNELS.HDB_WORKERS, room_msg);
                 });
             });
         }
@@ -175,7 +183,7 @@ class SCServer{
      * Emitted when the server is ready to accept connections.
      */
     readyHandler(){
-
+        log.notify('The socket cluster server is ready.');
     }
 }
 

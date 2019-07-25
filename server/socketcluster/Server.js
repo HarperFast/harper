@@ -15,81 +15,89 @@ const PORT = env.get('CLUSTERING_PORT');
 const DEFAULT_PORT = 12345;
 
 //initializes a new socket cluster all options can be seen here: https://socketcluster.io/#!/docs/api-socketcluster
-let socketCluster = new SocketCluster({
-    // Number of worker processes, this will be config based
-    workers: 1,
+let socketCluster = undefined;
+try {
+    log.trace('Starting Cluster Server');
+    socketCluster = new SocketCluster({
+        // Number of worker processes, this will be config based
+        workers: 1,
 
-    // Number of broker processes
-    brokers: 1,
+        // Number of broker processes
+        brokers: 1,
 
-    // The port number on which your server should listen, this is config based
-    port: PORT ? PORT : DEFAULT_PORT,
+        // The port number on which your server should listen, this is config based
+        port: PORT ? PORT : DEFAULT_PORT,
 
-    appName: 'socket_server',
+        appName: 'socket_server',
 
-    // The default expiry for auth tokens in seconds
-    authDefaultExpiry: 604800,
+        // The default expiry for auth tokens in seconds
+        authDefaultExpiry: 604800,
 
-    environment:'prod',
+        environment: 'prod',
 
-    // The algorithm to use to sign and verify JWT tokens.
-    authAlgorithm: 'HS256',
+        // The algorithm to use to sign and verify JWT tokens.
+        authAlgorithm: 'HS256',
 
-    // The interval in milliseconds on which to
-    // send a ping to the client to check that
-    // it is still alive
-    pingInterval: 8000,
+        // The interval in milliseconds on which to
+        // send a ping to the client to check that
+        // it is still alive
+        pingInterval: 8000,
 
-    // How many milliseconds to wait without receiving a ping
-    // before closing the socket
-    pingTimeout: 20000,
+        // How many milliseconds to wait without receiving a ping
+        // before closing the socket
+        pingTimeout: 20000,
 
-    // In milliseconds, how long a client has to connect to SC before timing out
-    connectTimeout: 10000,
+        // In milliseconds, how long a client has to connect to SC before timing out
+        connectTimeout: 10000,
 
-    // In milliseconds - If the socket handshake hasn't been completed before
-    // this timeout is reached, the new connection attempt will be terminated.
-    handshakeTimeout: 10000,
+        // In milliseconds - If the socket handshake hasn't been completed before
+        // this timeout is reached, the new connection attempt will be terminated.
+        handshakeTimeout: 10000,
 
-    // Origins which are allowed to connect to the real-time scServer
-    origins: '*:*',
+        // Origins which are allowed to connect to the real-time scServer
+        origins: '*:*',
 
-    // In milliseconds, the timeout for calling res(err, data) when
-    // your emit() call expects an ACK response from the other side
-    // (when callback is provided to emit)
-    ackTimeout: 10000,
+        // In milliseconds, the timeout for calling res(err, data) when
+        // your emit() call expects an ACK response from the other side
+        // (when callback is provided to emit)
+        ackTimeout: 60000,
 
-    // will always be https
-    protocol: 'https',
+        // will always be https
+        protocol: 'https',
 
-    protocolOptions: {key: fs.readFileSync(`${PRIVATE_KEY}`), cert: fs.readFileSync(`${CERTIFICATE}`)},
+        protocolOptions: {key: fs.readFileSync(`${PRIVATE_KEY}`), cert: fs.readFileSync(`${CERTIFICATE}`)},
 
-    /* A JS file which you can use to configure each of your
-     * workers/servers - This is where most of your backend code should go
-     */
-    workerController: __dirname + '/worker/ClusterWorker.js',
+        /* A JS file which you can use to configure each of your
+         * workers/servers - This is where most of your backend code should go
+         */
+        workerController: __dirname + '/worker/ClusterWorker.js',
 
-    /* JS file which you can use to configure each of your
-     * brokers - Useful for scaling horizontally across multiple machines (optional)
-     */
-    brokerController: __dirname + '/broker.js',
+        /* JS file which you can use to configure each of your
+         * brokers - Useful for scaling horizontally across multiple machines (optional)
+         */
+        brokerController: __dirname + '/broker.js',
 
-    // Whether or not to reboot the worker in case it crashes (defaults to true)
-    rebootWorkerOnCrash: true,
+        // Whether or not to reboot the worker in case it crashes (defaults to true)
+        rebootWorkerOnCrash: true,
 
 
-    middlewareEmitWarnings: false,
+        middlewareEmitWarnings: false,
 
-    // This can be the name of an npm module or a path to a Node.js module
-    // to use as the WebSocket server engine.
-    // You can now set this to 'sc-uws' for a speedup.
-    wsEngine: 'ws'
-});
+        // This can be the name of an npm module or a path to a Node.js module
+        // to use as the WebSocket server engine.
+        // You can now set this to 'sc-uws' for a speedup.
+        wsEngine: 'ws'
+    });
 
-let p_send_to_worker = promisify(socketCluster.sendToWorker).bind(socketCluster);
-registerHandlers();
+    let p_send_to_worker = promisify(socketCluster.sendToWorker).bind(socketCluster);
+    registerHandlers();
+} catch(err) {
+    log.fatal('There was a fatal error starting clustering.  Please check the logs and try again.');
+    log.fatal(err);
+}
 
-function registerHandlers(){
+function registerHandlers() {
+    log.trace('Registering Server handlers');
     socketCluster.on('fail', failHandler);
     socketCluster.on('warning', warningHandler);
     socketCluster.on('workerStart', workerStartHandler);
@@ -127,7 +135,7 @@ function warningHandler(warning){
  * @param workerInfo
  */
 function workerStartHandler(worker_info){
-    console.log('worker start', worker_info);
+    log.trace('worker start', worker_info);
 }
 
 /**
@@ -159,7 +167,7 @@ function workerMessageHandler(worker_id, data, callback){
  * @param workerClusterInfo
  */
 function workerClusterStartHandler(worker_cluster_info){
-    console.log('worker cluster start');
+    log.trace('worker cluster start');
 }
 
 /**
@@ -169,7 +177,7 @@ function workerClusterStartHandler(worker_cluster_info){
  * @param worker_cluster_info
  */
 function workerClusterReadyHandler(worker_cluster_info){
-    console.log('worker cluster ready');
+    log.trace('worker cluster ready');
 }
 
 /**
@@ -179,7 +187,7 @@ function workerClusterReadyHandler(worker_cluster_info){
  * @param worker_cluster_info
  */
 function workerClusterExitHandler(worker_cluster_info){
-
+    log.trace('Worker Cluster Exited.');
 }
 
 /**
@@ -189,7 +197,8 @@ function workerClusterExitHandler(worker_cluster_info){
  * @param broker_info
  */
 function brokerStartHandler(broker_info){
-    console.log('broker start', broker_info);
+    log.trace('broker start', broker_info);
+    log.notify('The message broker has started.');
 }
 
 /**
@@ -198,7 +207,7 @@ function brokerStartHandler(broker_info){
  * @param broker_info
  */
 function brokerExitHandler(broker_info){
-
+    log.notify('The message broker has stopped.');
 }
 
 /**

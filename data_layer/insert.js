@@ -44,7 +44,8 @@ const INSERT_ACTION = 'inserted';
 
 module.exports = {
     insert: insertData,
-    update: updateData
+    update: updateData,
+    validation
 };
 //this must stay after the export to correct a circular dependency issue
 const global_schema = require('../utility/globalSchema');
@@ -60,6 +61,7 @@ const p_search_by_hash = util.promisify(search.searchByHash);
 async function validation(write_object){
     // Need to validate these outside of the validator as the getTableSchema call will fail with
     // invalid values.
+
     if(h_utils.isEmpty(write_object)) {
         throw new Error('invalid update parameters defined.');
     }
@@ -124,9 +126,9 @@ async function validation(write_object){
  */
 async function insertData(insert_object){
     let pool = undefined;
+
     try {
         let epoch = Date.now();
-
         if (insert_object.operation !== 'insert') {
             throw new Error('invalid operation, must be insert');
         }
@@ -139,7 +141,6 @@ async function insertData(insert_object){
         await checkForNewAttributes(insert_object.hdb_auth_header, table_schema, attributes);
 
         pool = await processData(data_wrapper, pool);
-
         if(pool instanceof HDB_Pool){
             pool.killAll();
         }
@@ -155,19 +156,23 @@ async function insertData(insert_object){
     }
 }
 
-function convertOperationToTransaction(operation, written_hashes, hash_attribute){
-    if(global.hdb_socket_client !== undefined && operation.schema !== 'system' && Array.isArray(written_hashes) && written_hashes.length > 0){
+function convertOperationToTransaction(write_object, written_hashes, hash_attribute){
+    if(global.hdb_socket_client !== undefined && write_object.schema !== 'system' && Array.isArray(written_hashes) && written_hashes.length > 0){
         let transaction = {
-            operation: "insert",
+            operation: write_object.operation,
+            schema: write_object.schema,
+            table: write_object.table,
             records:[]
         };
 
-        operation.records.forEach(record =>{
+        write_object.records.forEach(record =>{
             if(written_hashes.indexOf(h_utils.autoCast(record[hash_attribute])) >= 0) {
                 transaction.records.push(record);
             }
         });
-        h_utils.sendTransactionToSocketCluster(`${operation.schema}:${operation.table}`, transaction);
+        let insert_msg = h_utils.getClusterMessage(hdb_terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
+        insert_msg.transaction = transaction;
+        h_utils.sendTransactionToSocketCluster(`${write_object.schema}:${write_object.table}`, insert_msg);
     }
 }
 

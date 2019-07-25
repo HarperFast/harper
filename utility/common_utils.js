@@ -7,6 +7,8 @@ const truncate = require('truncate-utf8-bytes');
 const os = require('os');
 const terms = require('./hdbTerms');
 const ps_list = require('./psList');
+const papa_parse = require('papaparse');
+const cluster_messages = require('../server/socketcluster/room/RoomMessageObjects');
 
 const EMPTY_STRING = '';
 const FILE_EXTENSION_LENGTH = 4;
@@ -21,13 +23,6 @@ const AUTOCAST_COMMON_STRINGS = {
     'null': null,
     'NaN': NaN
 };
-
-const SCHEMA_TRANSACTIONS = [
-    'create_schema',
-    'create_table',
-    'create_attribute'
-];
-
 
 module.exports = {
     isEmpty:isEmpty,
@@ -50,10 +45,13 @@ module.exports = {
     isHarperRunning: isHarperRunning,
     isClusterOperation: isClusterOperation,
     getClusterUser: getClusterUser,
-    sendTransactionToSocketCluster: sendTransactionToSocketCluster,
+    sendTransactionToSocketCluster,
     checkGlobalSchemaTable: checkGlobalSchemaTable,
     getHomeDir: getHomeDir,
     getPropsFilePath: getPropsFilePath,
+    promisifyPapaParse,
+    removeBOM,
+    getClusterMessage
 };
 
 /**
@@ -457,8 +455,9 @@ function isClusterOperation(operation_name) {
  * @param channel
  * @param transaction
  */
-function sendTransactionToSocketCluster(channel, transaction){
-    if(global.hdb_socket_client !== undefined){
+function sendTransactionToSocketCluster(channel, transaction) {
+    log.trace(`Sending transaction to channel: ${channel}`);
+    if(global.hdb_socket_client !== undefined) {
         transaction.__transacted = true;
         let {hdb_user, hdb_auth_header, ...data} = transaction;
         global.hdb_socket_client.publish(channel, data);
@@ -511,4 +510,66 @@ function getClusterUser(users, cluster_user_name){
     }
 
     return cluster_user;
+}
+
+/**
+ * Promisify csv parser papaparse. Once function is promisified it can be called with:
+ * papa_parse.parsePromise(<reject-promise-obj>, <read-stream>, <chunking-function>)
+ * In the case of an error, reject promise object must be called from chunking-function, it will bubble up
+ * through bind to this function.
+ */
+function promisifyPapaParse() {
+    papa_parse.parsePromise = function (stream, chunk_func) {
+        return new Promise(function (resolve, reject) {
+            papa_parse.parse(stream,
+                {
+                    header: true,
+                    transformHeader: removeBOM,
+                    chunk: chunk_func.bind(null, reject),
+                    skipEmptyLines: true,
+                    dynamicTyping: true,
+                    error: reject,
+                    complete: resolve
+                });
+        });
+    };
+}
+
+/**
+ * Removes the byte order mark from a string
+ * @param string
+ * @returns a string minus any byte order marks
+ */
+function removeBOM(data_string) {
+    if (typeof data_string !== 'string') {
+        throw new TypeError(`Expected a string, got ${typeof data_string}`);
+    }
+
+    if (data_string.charCodeAt(0) === 0xFEFF) {
+        return data_string.slice(1);
+    }
+
+    return data_string;
+}
+
+function getClusterMessage(cluster_msg_type_enum) {
+    if(!cluster_msg_type_enum) {
+        log.info('Invalid clustering message type passed to getClusterMessage.');
+        return null;
+    }
+    let built_msg = undefined;
+    switch(cluster_msg_type_enum) {
+        case terms.CLUSTERING_MESSAGE_TYPES.GET_CLUSTER_STATUS: {
+            built_msg = new cluster_messages.HdbCoreClusterStatusRequestMessage();
+            break;
+        }
+        case terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION: {
+            built_msg = new cluster_messages.HdbCoreTransactionMessage();
+            break;
+        }
+        default:
+            log.info('Invalid cluster message type sent to getClusterMessage');
+            break;
+    }
+    return built_msg;
 }

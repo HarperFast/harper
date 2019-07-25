@@ -306,6 +306,9 @@ function getOperationFunction(json){
             let restart_cb = util.callbackify(stop.restartProcesses);
             operation_function = restart_cb;
             break;
+        case terms.OPERATIONS_ENUM.CATCHUP:
+            operation_function = catchup;
+            break;
         default:
             break;
     }
@@ -314,6 +317,37 @@ function getOperationFunction(json){
         operation_function: operation_function,
         job_operation_function: job_operation_function
     };
+}
+
+async function catchup(catchup_object) {
+    let split_channel = catchup_object.channel.split(':');
+
+    let schema = split_channel[0];
+    let table = split_channel[1];
+    let originator = catchup_object.__originator;
+    for (let transaction of catchup_object.transactions) {
+        try {
+            transaction.schema = schema;
+            transaction.table = table;
+            transaction.__originator = originator;
+            switch (transaction.operation) {
+                case terms.OPERATIONS_ENUM.INSERT:
+                    await insert.insert(transaction);
+                    break;
+                case terms.OPERATIONS_ENUM.UPDATE:
+                    await insert.update(transaction);
+                    break;
+                case terms.OPERATIONS_ENUM.DELETE:
+                    await delete_.delete(transaction);
+                    break;
+                default:
+                    harper_logger.warn('invalid operation in catchup');
+                    break;
+            }
+        }catch(e){
+            harper_logger.error(e);
+        }
+    }
 }
 
 function nullOperation(json, callback) {
