@@ -9,6 +9,11 @@ const sc_util = require('../util/socketClusterUtils');
  * This class establishes the handlers for the socket on the server, handling all messaging & state changes related to a connected client
  */
 class ServerSocket{
+    /**
+     *
+     * @param {../worker/ClusterWorker} worker
+     * @param socket
+     */
     constructor(worker, socket){
         this.worker = worker;
         this.socket = socket;
@@ -131,10 +136,11 @@ class ServerSocket{
 
     /**
      * Triggers whenever the client becomes unauthenticated. The listener will receive the socket's old authToken object as argument (just before the deauthentication took place).
+     * when a connection deauthenticates it can be due to the JWT expiring so we ask the connection to reauthenticate
      * @param oldAuthToken
      */
     deauthenticateHandler(oldAuthToken){
-
+        sc_util.requestAndHandleLogin(this.socket, this.worker.hdb_users);
     }
 
     /**
