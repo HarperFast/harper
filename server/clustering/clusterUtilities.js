@@ -192,7 +192,7 @@ async function updateNode(update_node){
         throw new Error(e);
     }
 
-    return `successfully added ${update_node.name} to manifest`;
+    return `successfully updated ${update_node.name}`;
 }
 
 /**
