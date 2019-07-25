@@ -112,7 +112,22 @@ class NodeConnectionsHandler {
     }
 
     updateNode(update_node){
+        let connect_keys = Object.keys(this.connections.clients);
+        let found_connection;
+        //find the existing connection
+        for (let x = 0; x < connect_keys.length; x++) {
+            let key = connect_keys[x];
+            let socket = this.connections.clients[key];
+            if (socket.host === update_node.host && socket.port === update_node.port) {
+                found_connection = socket;
+                return;
+            }
+        }
 
+        //compare subscriptions
+        if(found_connection){
+
+        }
     }
 
     removeNode(remove_node){
