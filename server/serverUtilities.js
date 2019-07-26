@@ -141,7 +141,7 @@ function postOperationHandler(request_body, result) {
             break;
         default:
             //do nothing
-            break;
+            return result;
     }
 }
 
