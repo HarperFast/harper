@@ -178,6 +178,9 @@
       },
       {
         "attribute":"port"
+      },
+      {
+        "attribute":"subscriptions"
       }
     ]
   },
