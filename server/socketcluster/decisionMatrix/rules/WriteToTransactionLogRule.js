@@ -4,14 +4,11 @@ const log = require('../../../../utility/logging/harper_logger');
 const types = require('../../types');
 const env = require('../../../../utility/environment/environmentManager');
 env.initSync();
-const HDB_QUEUE_PATH = env.getHdbBasePath() + '/schema/system/hdb_queue/';
-
-const fs = require('fs-extra');
-const json_csv_parser = require('json-2-csv');
+const HDB_QUEUE_PATH = env.getHdbBasePath() + '/clustering/transaction_log/';
+const FileWriteStream = require('../../../../utility/fs/FileWriteStream');
+const terms = require('../../../../utility/hdbTerms');
 
 const LINE_DELIMITER = '\r\n';
-const INSERT_UPDATE_FIELDS = ['__id', 'timestamp', 'operation', 'schema', 'table', 'records'];
-const DELETE_FIELDS = ['__id', 'timestamp', 'operation', 'schema', 'table', 'hash_values'];
 const VALID_OPERATIONS = ['insert', 'update', 'delete'];
 
 /**
@@ -23,7 +20,6 @@ class WriteToTransactionLogRule extends RuleIF {
         super();
         this.setRuleOrder(types.COMMAND_EVAL_ORDER_ENUM.LOW);
         this.type = types.RULE_TYPE_ENUM.WRITE_TO_TRANSACTION_LOG;
-        this.pending_transaction_stream = undefined;
         this.transaction_stream = undefined;
     }
 
@@ -35,6 +31,10 @@ class WriteToTransactionLogRule extends RuleIF {
      * @returns {Promise<boolean>}
      */
     async evaluateRule(req, args, worker) {
+        if(req.data.__transacted !== true){
+            return true;
+        }
+
         log.trace('Evaluating write to transaction log rule');
         if(!req || !req.channel || !req.data) {
             log.error('Invalid request data, not writing to transaction log.');
@@ -49,39 +49,56 @@ class WriteToTransactionLogRule extends RuleIF {
         }
 
         try {
-            if(this.pending_transaction_stream === undefined){
-                this.pending_transaction_stream = fs.createWriteStream(HDB_QUEUE_PATH + 'pending:' + req.channel, {flags:'a'});
-            }
-
             if(this.transaction_stream === undefined){
-                this.transaction_stream = fs.createWriteStream(HDB_QUEUE_PATH + req.channel, {flags:'a'});
+                this.transaction_stream = new FileWriteStream(HDB_QUEUE_PATH + req.channel, {flags: 'a', mode: terms.HDB_FILE_PERMISSIONS});
+            }
+        }catch(e){
+            log.trace('unable to create transaction stream: ' + HDB_QUEUE_PATH + req.channel);
+            log.error(e);
+            return true;
+        }
+
+        try {
+            let timestamp = (req.data && req.data.hdb_header && req.data.hdb_header.timestamp) ? req.data.hdb_header.timestamp : Date.now();
+            let transaction_csv = timestamp + ',' + req.data.transaction.operation + ',';
+
+            if(req.data.transaction.operation === terms.OPERATIONS_ENUM.INSERT || req.data.transaction.operation === terms.OPERATIONS_ENUM.UPDATE){
+                transaction_csv += JSON.stringify(req.data.transaction.records, this.escape);
+            } else if(req.data.transaction.operation === terms.OPERATIONS_ENUM.DELETE) {
+                transaction_csv += JSON.stringify(req.data.transaction.hash_values, this.escape);
             }
 
-
-            let keys = [];
-            if(req.data.transaction.operation === 'insert' || req.data.transaction.update === 'insert'){
-                keys = INSERT_UPDATE_FIELDS;
-            } else if(req.data.transaction.operation === 'delete') {
-                keys = DELETE_FIELDS;
-            }
-
-            if(req.data.__transacted === true){
-                let transaction_csv = await json_csv_parser.json2csvAsync(req.data, {prependHeader: false, keys: keys});
-                transaction_csv += LINE_DELIMITER;
-                this.transaction_stream.write(transaction_csv);
-
-            } else {
-                keys.push('error', 'status');
-                let transaction_csv = await json_csv_parser.json2csvAsync(req.data, {prependHeader: false, keys: keys});
-                transaction_csv += LINE_DELIMITER;
-                this.pending_transaction_stream.write(transaction_csv);
-            }
+            transaction_csv += LINE_DELIMITER;
+            this.transaction_stream.write(transaction_csv);
         } catch(err) {
-            log.trace('failed write to transaction log rule');
+            log.trace('failed write to transaction log: ' + req.channel);
             log.error(err);
             return false;
         }
         return true;
     }
+
+    /**
+     * this function escapes special characters in a stringified json object.
+     * in testing i found that when a json object has these special characters and is read from a file the JSON.parse fails because say \n
+     * is a literal new line rather than the string version of it
+     * @param key
+     * @param val
+     * @returns {string|*}
+     */
+    //TODO per https://harperdb.atlassian.net/browse/CORE-412 find a better way to do this escaping
+    escape (key, val) {
+        if (typeof(val)!="string") return val;
+        return val
+            .replace(/[\"]/g, '\\"')
+            .replace(/[\\]/g, '\\\\')
+            .replace(/[\/]/g, '\\/')
+            .replace(/[\b]/g, '\\b')
+            .replace(/[\f]/g, '\\f')
+            .replace(/[\n]/g, '\\n')
+            .replace(/[\r]/g, '\\r')
+            .replace(/[\t]/g, '\\t');
+    }
+
 }
 module.exports = WriteToTransactionLogRule;

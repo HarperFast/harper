@@ -71,6 +71,7 @@ const INTERNAL_SC_CHANNELS = {
     HDB_NODES: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'hdb_nodes',
     HDB_USERS: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'hdb_users',
     HDB_WORKERS: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'hdb_workers',
+    CATCHUP: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'catchup',
     WORKER_ROOM: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'cluster_workers'
 };
 
@@ -165,7 +166,8 @@ const OPERATIONS_ENUM = {
     CLUSTER_STATUS: 'cluster_status',
     DROP_ATTRIBUTE: 'drop_attribute',
     REMOVE_NODE: 'remove_node',
-    RESTART: 'restart'
+    RESTART: 'restart',
+    CATCHUP: 'catchup'
 };
 
 // Defines operations that should be propagated to the cluster.

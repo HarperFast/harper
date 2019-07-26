@@ -3,6 +3,15 @@
 const hdb_terms = require('../../../utility/hdbTerms');
 const log = require('../../../utility/logging/harper_logger');
 const {inspect} = require('util');
+const CatchUp = require('../handlers/CatchUp');
+const env = require('../../../utility/environment/environmentManager');
+env.initSync();
+const hdb_queue_path = env.getHdbBasePath() + '/clustering/transaction_log/';
+const utils = require('../../../utility/common_utils');
+const get_cluster_user = require('../../../utility/common_utils').getClusterUser;
+const password_utility = require('../../../utility/password');
+
+const SC_TOKEN_EXPIRATION = '1d';
 
 class ConnectionDetails {
     constructor(id, host_address, host_port, state) {
@@ -92,7 +101,82 @@ function createEventPromise(event_name, event_emitter_object, timeout_promise) {
     return event_promise;
 }
 
+/**
+ * Calls the Catchup class to read a specific transaction log with a time range.
+ * Creates a catchup payload based on the results from Catchup and publishes to a socket
+ * @param channel
+ * @param start_timestamp
+ * @param end_timestamp
+ * @param socket
+ * @returns {Promise<void>}
+ */
+async function catchupHandler(channel, start_timestamp, end_timestamp){
+    let catchup = new CatchUp(hdb_queue_path + channel, start_timestamp, end_timestamp);
+    await catchup.run();
+
+    if(Array.isArray(catchup.results) && catchup.results.length > 0) {
+        let catchup_response = {
+            channel: channel,
+            operation:'catchup',
+            transactions: catchup.results
+        };
+
+        let catch_up_msg = utils.getClusterMessage(hdb_terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
+        catch_up_msg.transaction = catchup_response;
+
+        return catch_up_msg;
+    }
+}
+
+/**
+ * send the socket a request to login, validate and process
+ * @param socket
+ * @param hdb_users
+ */
+function requestAndHandleLogin(socket, hdb_users){
+    socket.emit('login', 'send login credentials', (error, credentials)=>{
+        if(error){
+            console.error(error);
+            return false;
+        }
+
+        if(!credentials || !credentials.username || !credentials.password){
+            console.error('Invalid credentials');
+            return false;
+        }
+
+        handleLoginResponse(socket, credentials, hdb_users);
+        log.info('socket successfully authenticated');
+    });
+}
+
+/**
+ *  Take the socket & it's credentials and match to the hdb_users
+ * @param socket
+ * @param credentials
+ * @param hdb_users
+ */
+function handleLoginResponse(socket, credentials, hdb_users) {
+    log.trace('handleLoginResponse');
+    try {
+        let users = Object.values(hdb_users);
+        let found_user = get_cluster_user(users, credentials.username);
+
+        if (found_user === undefined || !password_utility.validate(found_user.password, credentials.password)) {
+            socket.destroy();
+            return log.error('invalid user, access denied');
+        }
+
+        //set the JWT to expire in 1 day
+        socket.setAuthToken({username: credentials.username}, {expiresIn: SC_TOKEN_EXPIRATION});
+    } catch(e){
+        log.error(e);
+    }
+}
+
 module.exports = {
     getWorkerStatus,
-    createEventPromise
+    createEventPromise,
+    catchupHandler,
+    requestAndHandleLogin
 };

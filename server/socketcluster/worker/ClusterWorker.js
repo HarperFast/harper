@@ -5,9 +5,8 @@ const SCServer = require('../handlers/SCServer');
 const types = require('../types');
 const {promisify} = require('util');
 const log = require('../../../utility/logging/harper_logger');
-const NodeConnector = require('../connector/NodeConnector');
-const password_utility = require('../../../utility/password');
-const get_cluster_user = require('../../../utility/common_utils').getClusterUser;
+const NodeConnector = require('../handlers/NodeConnectionsHandler');
+const sc_utils = require('../util/socketClusterUtils');
 const terms = require('../../../utility/hdbTerms');
 const {inspect} = require('util');
 const RoomMessageObjects = require('../room/RoomMessageObjects');
@@ -94,6 +93,7 @@ class ClusterWorker extends WorkerIF {
             this.processArgs().then(hdb_data=>{
                 if(hdb_data && hdb_data.nodes && hdb_data.cluster_user) {
                     this.node_connector = new NodeConnector(hdb_data.nodes, hdb_data.cluster_user, this);
+                    this.node_connector.initialize().then(()=>{});
                 }
             });
             this.ensureRoomExists(terms.INTERNAL_SC_CHANNELS.ADD_USER);
@@ -189,42 +189,9 @@ class ClusterWorker extends WorkerIF {
         // TODO: We should be able to make this a premade middleware.
         log.trace('starting evalRoomHandshakeSCMiddleware');
 
-        req.socket.emit('login', 'send login credentials', (error, credentials)=>{
-            if(error){
-                console.error(error);
-                return false;
-            }
-
-            if(!credentials || !credentials.username || !credentials.password){
-                console.error('Invalid credentials');
-                return false;
-            }
-
-            this.handleLoginResponse(req, credentials).then(()=>{
-                log.info('socket successfully authenticated');
-            });
-        });
+        sc_utils.requestAndHandleLogin(req.socket, this.hdb_users);
 
         next();
-    }
-
-    async handleLoginResponse(req, credentials) {
-        log.trace('handleLoginResponse');
-        try {
-            let users = Object.values(this.hdb_users);
-            let found_user = get_cluster_user(users, credentials.username);
-
-            if (found_user === undefined || !password_utility.validate(found_user.password, credentials.password)) {
-                req.socket.destroy();
-                return log.error('invalid user, access denied');
-            }
-
-            //we may need to handle this scenario: https://github.com/SocketCluster/socketcluster/issues/343
-            //set the JWT to expire in 1 day
-            req.socket.setAuthToken({username: credentials.username}, {expiresIn: '1d'});
-        } catch(e){
-            log.error(e);
-        }
     }
 }
 new ClusterWorker();

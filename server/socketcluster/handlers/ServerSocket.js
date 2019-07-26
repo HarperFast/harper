@@ -3,12 +3,17 @@
 const log = require('../../../utility/logging/harper_logger');
 
 const promisify = require('util').promisify;
-const FSReadStream = require('../../../utility/fs/FSReadStream');
+const sc_util = require('../util/socketClusterUtils');
 
 /**
  * This class establishes the handlers for the socket on the server, handling all messaging & state changes related to a connected client
  */
 class ServerSocket{
+    /**
+     *
+     * @param {../worker/ClusterWorker} worker
+     * @param socket
+     */
     constructor(worker, socket){
         this.worker = worker;
         this.socket = socket;
@@ -34,9 +39,22 @@ class ServerSocket{
         this.socket.on('authStateChange', this.authStateChangeHandler);
         this.socket.on('message', this.messageHandler);
 
-        this.socket.on('catchup', (channel, range)=>{
+        this.socket.on('catchup', this.catchup);
+    }
 
-        });
+    /**
+     *
+     * @param {<CatchupObject>} catchup_object
+     */
+    async catchup(catchup_object, response){
+        //TODO validate catchup object https://harperdb.atlassian.net/browse/CORE-409
+        try{
+            let catchup_msg = await sc_util.catchupHandler(catchup_object.channel, Date.now() - catchup_object.milis_since_connected, null);
+            response(null, catchup_msg);
+        } catch(e){
+            log.error(e);
+            response(e);
+        }
     }
 
     /**
@@ -118,10 +136,11 @@ class ServerSocket{
 
     /**
      * Triggers whenever the client becomes unauthenticated. The listener will receive the socket's old authToken object as argument (just before the deauthentication took place).
+     * when a connection deauthenticates it can be due to the JWT expiring so we ask the connection to reauthenticate
      * @param oldAuthToken
      */
     deauthenticateHandler(oldAuthToken){
-
+        sc_util.requestAndHandleLogin(this.socket, this.worker.hdb_users);
     }
 
     /**
