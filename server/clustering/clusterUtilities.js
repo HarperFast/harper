@@ -140,7 +140,7 @@ async function addNode(new_node) {
 
     try {
         let add_node_msg = new terms.ClusterMessageObjects.HdbCoreAddNodeMessage();
-        add_node_msg.node = new_node;
+        add_node_msg.add_node = new_node;
         hdb_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.HDB_NODES, add_node_msg);
     } catch(e){
         throw new Error(e);
@@ -179,7 +179,7 @@ async function removeNode(remove_json_message) {
         return `Node '${remove_json_message.name}' was not found.`;
     }
     let remove_node_msg = new terms.ClusterMessageObjects.HdbCoreRemoveNodeMessage();
-    remove_node_msg.node = remove_json_message;
+    remove_node_msg.remove_node = remove_json_message;
     hdb_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.HDB_NODES, remove_node_msg);
     return `successfully removed ${remove_json_message.name} from manifest`;
 }
