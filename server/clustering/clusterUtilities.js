@@ -17,6 +17,8 @@ const child_process = require('child_process');
 const path = require('path');
 const InsertObject = require('../../data_layer/DataLayerObjects').InsertObject;
 
+const CLUSTER_PORT = env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY);
+
 //Promisified functions
 const p_delete_delete = util.promisify(del.delete);
 const p_auth_authorize = util.promisify(auth.authorize);
@@ -80,18 +82,15 @@ async function kickOffEnterprise() {
 async function addNode(new_node) {
     // need to clean up new node as it hads operation and user on it
     let validation = node_validator(new_node);
-    let cluster_port = undefined;
     let new_port = undefined;
     try {
-        // This should move up as a const once https://harperdb.atlassian.net/browse/HDB-640 is done.
-        cluster_port = env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY);
         new_port = parseInt(new_node.port);
     } catch(err) {
         throw new Error(`Invalid port: ${new_node.port} specified`);
     }
 
     //TODO: We may need to expand this depending on what is decided in https://harperdb.atlassian.net/browse/HDB-638
-    if(new_port === cluster_port) {
+    if(new_port === CLUSTER_PORT) {
         if((new_node.host === 'localhost' || new_node.host === '127.0.0.1')) {
             throw new Error(DUPLICATE_ERR_MSG);
         }
@@ -117,7 +116,7 @@ async function addNode(new_node) {
         results = await insert.insert(new_node_insert);
     } catch(err) {
         log.error(`Error adding new cluster node ${new_node_insert}.  ${err}`);
-        throw new Error(err);
+        throw err;
     }
 
     if (!hdb_utils.isEmptyOrZeroLength(results.skipped_hashes)) {
