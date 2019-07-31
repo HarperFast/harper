@@ -17,6 +17,7 @@ const signalling = require('../utility/signalling');
 const util = require('util');
 const hdb_util = require('../utility/common_utils');
 const terms = require('../utility/hdbTerms');
+//const hdb_bridge = require('../data_layer/harperBridge');
 
 // Promisified functions
 let p_search_search_by_value = util.promisify(search.searchByValue);
@@ -74,34 +75,16 @@ async function createSchemaStructure(schema_create_object) {
         throw validation_error;
     }
 
+    let schema_table = global.hdb_schema[schema_create_object.schema][schema_create_object.table];
+    if (schema_table && schema_table.length > 0) {
+        throw new Error(`Schema ${schema_create_object.schema} already exists`);
+    }
+
     try {
-        let schema_search = await searchForSchema(schema_create_object.schema);
-
-        if (schema_search && schema_search.length > 0) {
-            throw new Error(`Schema ${schema_create_object.schema} already exists`);
-        }
-
-        let insert_object = {
-            operation: 'insert',
-            schema: 'system',
-            table: 'hdb_schema',
-            records: [
-                {
-                    name: schema_create_object.schema,
-                    createddate: '' + Date.now()
-                }
-            ]
-        };
-
-        await insert.insert(insert_object);
-        let schema_object = schema_create_object.schema;
-        await fs.mkdir(env.get('HDB_ROOT') + '/schema/' + schema_object, {mode: terms.HDB_FILE_PERMISSIONS});
+        //await hdb_bridge.createSchema(schema_create_object, terms.HDB_FILE_PERMISSIONS, env.get('HDB_ROOT')); // TODO: call to the bridge
 
         return `schema ${schema_create_object.schema} successfully created`;
     } catch(err) {
-        if (err.errno === -17) {
-            throw new Error('schema already exists');
-        }
         throw err;
     }
 }

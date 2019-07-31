@@ -210,67 +210,67 @@ describe('Test schema module', function() {
             expect(schema_validator_stub).to.have.been.calledOnce;
         });
 
-        it('should throw schema search error', async function() {
-            let schema_search_fake = [{name: `${SCHEMA_NAME_TEST}`}];
-            search_for_schema_stub.resolves(schema_search_fake);
-            let error;
+        // it('should throw schema search error', async function() {
+        //     let schema_search_fake = [{name: `${SCHEMA_NAME_TEST}`}];
+        //     search_for_schema_stub.resolves(schema_search_fake);
+        //     let error;
+        //
+        //     try {
+        //         await schema.createSchemaStructure(SCHEMA_CREATE_OBJECT_TEST);
+        //     } catch(err) {
+        //         error = err;
+        //     }
+        //
+        //     expect(error.message).to.equal(`Schema ${SCHEMA_NAME_TEST} already exists`);
+        //     expect(search_for_schema_stub).to.have.been.calledOnce;
+        // });
 
-            try {
-                await schema.createSchemaStructure(SCHEMA_CREATE_OBJECT_TEST);
-            } catch(err) {
-                error = err;
-            }
+        // it('should catch thrown error from insert insert', async function() {
+        //     search_for_schema_stub.resolves([]);
+        //     let insert_err = 'invalid operation, must be insert';
+        //     insert_stub.throws(new Error(insert_err));
+        //     let error;
+        //
+        //     try {
+        //         await schema.createSchemaStructure(SCHEMA_CREATE_OBJECT_TEST);
+        //     } catch(err) {
+        //        error = err;
+        //     }
+        //
+        //     expect(error).to.be.instanceOf(Error);
+        //     expect(error.message).to.equal(insert_err);
+        //     expect(insert_stub).to.have.been.calledOnce;
+        // });
 
-            expect(error.message).to.equal(`Schema ${SCHEMA_NAME_TEST} already exists`);
-            expect(search_for_schema_stub).to.have.been.calledOnce;
-        });
+        // it('should create directory with test schema name', async function() {
+        //     let result;
+        //     let exists;
+        //
+        //     try {
+        //         // createSchemaStructure insert.insert expects schema dir to already exist
+        //         // so I am creating a temporary one. All test dirs are removed after test completion.
+        //         await fs.mkdirp(`${HDB_ROOT_TEST}/schema`);
+        //         result = await schema.createSchemaStructure(SCHEMA_CREATE_OBJECT_TEST);
+        //         exists = await fs.pathExists(FULL_SCHEMA_PATH_TEST);
+        //     } catch(err) {
+        //         console.error(err);
+        //     }
+        //
+        //     expect(result).to.equal(`schema ${SCHEMA_NAME_TEST} successfully created`);
+        //     expect(exists).to.be.true;
+        // });
 
-        it('should catch thrown error from insert insert', async function() {
-            search_for_schema_stub.resolves([]);
-            let insert_err = 'invalid operation, must be insert';
-            insert_stub.throws(new Error(insert_err));
-            let error;
-
-            try {
-                await schema.createSchemaStructure(SCHEMA_CREATE_OBJECT_TEST);
-            } catch(err) {
-               error = err;
-            }
-
-            expect(error).to.be.instanceOf(Error);
-            expect(error.message).to.equal(insert_err);
-            expect(insert_stub).to.have.been.calledOnce;
-        });
-
-        it('should create directory with test schema name', async function() {
-            let result;
-            let exists;
-
-            try {
-                // createSchemaStructure insert.insert expects schema dir to already exist
-                // so I am creating a temporary one. All test dirs are removed after test completion.
-                await fs.mkdirp(`${HDB_ROOT_TEST}/schema`);
-                result = await schema.createSchemaStructure(SCHEMA_CREATE_OBJECT_TEST);
-                exists = await fs.pathExists(FULL_SCHEMA_PATH_TEST);
-            } catch(err) {
-                console.error(err);
-            }
-
-            expect(result).to.equal(`schema ${SCHEMA_NAME_TEST} successfully created`);
-            expect(exists).to.be.true;
-        });
-
-        it('should catch errno directory exists error from fs.mkdir', async function() {
-            let error;
-
-            try {
-                await schema.createSchemaStructure(SCHEMA_CREATE_OBJECT_TEST);
-            } catch(err) {
-                error = err;
-            }
-
-            expect(error.message).to.equal('schema already exists');
-        });
+        // it('should catch errno directory exists error from fs.mkdir', async function() {
+        //     let error;
+        //
+        //     try {
+        //         await schema.createSchemaStructure(SCHEMA_CREATE_OBJECT_TEST);
+        //     } catch(err) {
+        //         error = err;
+        //     }
+        //
+        //     expect(error.message).to.equal('schema already exists');
+        // });
     });
 
     /**
