@@ -18,12 +18,10 @@ const hdb_terms = require('../utility/hdbTerms');
 const mkdirp = require('../utility/fs/mkdirp');
 const write_file = require('../utility/fs/writeFile');
 const unlink = require('../utility/fs/unlink');
-const pool_handler = require('../utility/threads/poolHandler');
 const exploder = require('./dataWriteProcessor');
 const util = require('util');
 const ExplodedObject = require('./ExplodedObject');
 const WriteProcessorObject = require('./WriteProcessorObject');
-const HDB_Pool = require('threads').Pool;
 
 // Search is used in the installer, and the base path may be undefined when search is instantiated.  Dynamically
 // get the base path from the environment manager before using it.
@@ -125,33 +123,21 @@ async function validation(write_object){
  * @param insert_object
  */
 async function insertData(insert_object){
-    let pool = undefined;
-
     try {
         let epoch = Date.now();
+
         if (insert_object.operation !== 'insert') {
             throw new Error('invalid operation, must be insert');
         }
 
         let {table_schema, attributes} = await validation(insert_object);
-
-        let { written_hashes, skipped, ...data_wrapper} = await processRows(insert_object, attributes, table_schema, epoch, null, pool);
-        pool = data_wrapper.pool;
-
+        let { written_hashes, skipped, ...data_wrapper} = await processRows(insert_object, attributes, table_schema, epoch, null);
         await checkForNewAttributes(insert_object.hdb_auth_header, table_schema, attributes);
-
-        pool = await processData(data_wrapper, pool);
-        if(pool instanceof HDB_Pool){
-            pool.killAll();
-        }
-
+        await processData(data_wrapper);
         convertOperationToTransaction(insert_object, written_hashes, table_schema.hash_attribute);
 
         return returnObject(INSERT_ACTION, written_hashes, insert_object, skipped);
     } catch(e){
-        if(pool instanceof HDB_Pool){
-            pool.killAll();
-        }
         throw (e);
     }
 }
@@ -181,7 +167,6 @@ function convertOperationToTransaction(write_object, written_hashes, hash_attrib
  * @param update_object - The data that will be updated in the database
  */
 async function updateData(update_object){
-    let pool = undefined;
     try {
         let epoch = Date.now();
 
@@ -190,7 +175,6 @@ async function updateData(update_object){
         }
 
         let {table_schema, hashes, attributes} = await validation(update_object);
-
         let existing_rows = await getExistingRows(table_schema, hashes, attributes);
 
         // If no hashes are existing skip update attempts
@@ -198,30 +182,18 @@ async function updateData(update_object){
             return returnObject(UPDATE_ACTION, [], update_object, hashes);
         }
 
-        let existing_map =  _.keyBy(existing_rows, function(record) {
+        let existing_map = _.keyBy(existing_rows, function(record) {
             return record[table_schema.hash_attribute];
         });
 
-        let { written_hashes, skipped, unlinks, ...data_wrapper} = await processRows(update_object, attributes, table_schema, epoch, existing_map, pool);
-        pool = data_wrapper.pool;
-
+        let { written_hashes, skipped, unlinks, ...data_wrapper} = await processRows(update_object, attributes, table_schema, epoch, existing_map);
         await checkForNewAttributes(update_object.hdb_auth_header, table_schema, attributes);
-
-        pool = await unlinkFiles(unlinks, pool);
-
-        pool = await processData(data_wrapper, pool);
-
-        if(pool instanceof HDB_Pool){
-            pool.killAll();
-        }
-
+        await unlinkFiles(unlinks);
+        await processData(data_wrapper);
         convertOperationToTransaction(update_object, written_hashes, table_schema.hash_attribute);
 
         return returnObject(UPDATE_ACTION, written_hashes, update_object, skipped);
     } catch(e){
-        if(pool instanceof HDB_Pool){
-            pool.killAll();
-        }
         throw (e);
     }
 }
@@ -279,85 +251,28 @@ async function getExistingRows(table_schema, hashes, attributes){
 }
 
 /**
- * wrapper function which orchestrates the multi-process pool, if needed, or calls the function directly
+ * Prepares data for writing to storage
  * @param insert_object
  * @param attributes
  * @param table_schema
  * @param epoch
  * @param existing_rows
- * @param pool
- * @returns {Promise<ExplodedObject|ExplodedObject>}
+ * @returns {Promise<ExplodedObject>}
  */
-async function processRows(insert_object, attributes, table_schema, epoch, existing_rows, pool){
-    let data_wrapper;
-    if(ENABLE_THREADING === true && insert_object.records.length > CHUNK_SIZE){
-        if(!(pool instanceof HDB_Pool)){
-            pool = new HDB_Pool();
-        }
+async function processRows(insert_object, attributes, table_schema, epoch, existing_rows){
+    let exploder_object = new WriteProcessorObject(hdb_path(), insert_object.operation, insert_object.records, table_schema, attributes, epoch, existing_rows);
+    let data_wrapper = await exploder(exploder_object);
 
-        let chunks = _.chunk(insert_object.records, CHUNK_SIZE);
-        let folders = new Set();
-        let raw_data = [];
-        let skipped = [];
-        let written_hashes = [];
-        let unlinks = [];
-
-        await Promise.all(
-            chunks.map(async chunk => {
-                try {
-                    let exploder_object = new WriteProcessorObject(hdb_path(), insert_object.operation, chunk, table_schema, attributes, epoch, existing_rows);
-
-                    let result = await pool.run('../data_layer/dataWriteProcessor').send(exploder_object).promise();
-                    //each process returns an instance of its data we need to consolidate each result
-                    if (result) {
-                        result.folders.forEach((folder) => {
-                            folders.add(folder);
-                        });
-                        result.raw_data.forEach((data) => {
-                            raw_data.push(data);
-                        });
-                        result.skipped.forEach((data) => {
-                            skipped.push(data);
-                        });
-                        result.written_hashes.forEach((data) => {
-                            written_hashes.push(data);
-                        });
-                        result.unlinks.forEach((data) => {
-                            unlinks.push(data);
-                        });
-                    }
-                } catch(e) {
-                    logger.error(e);
-                }
-            })
-        );
-        chunks = undefined;
-        data_wrapper = new ExplodedObject(written_hashes, skipped, Array.from(folders), raw_data, unlinks);
-    } else{
-        let exploder_object = new WriteProcessorObject(hdb_path(), insert_object.operation, insert_object.records, table_schema, attributes, epoch, existing_rows);
-        data_wrapper = await exploder(exploder_object);
-    }
-    data_wrapper.pool = pool;
     return data_wrapper;
 }
 
 /**
- *deletes files in bulk
+ * deletes files in bulk
  * @param unlink_paths
- * @param pool
  */
-async function unlinkFiles(unlink_paths, pool) {
+async function unlinkFiles(unlink_paths) {
     try {
-        if (ENABLE_THREADING === true && unlink_paths.length > CHUNK_SIZE) {
-            if(!(pool instanceof HDB_Pool)){
-                pool = new HDB_Pool();
-            }
-            await pool_handler(pool, unlink_paths, CHUNK_SIZE, '../utility/fs/unlink');
-        } else {
-            await unlink(unlink_paths);
-        }
-
-        return pool;
+        await unlink(unlink_paths);
     } catch(e) {
         logger.error(e);
     }
@@ -366,32 +281,23 @@ async function unlinkFiles(unlink_paths, pool) {
 /**
  * wrapper function that orchestrates the record creation on disk
  * @param data_wrapper
- * @param pool
  */
-async function processData(data_wrapper, pool) {
-    pool = await createFolders(data_wrapper.folders, pool);
-    pool = await writeRawDataFiles(data_wrapper.raw_data, pool);
-
-    return pool;
+async function processData(data_wrapper) {
+    try {
+        await createFolders(data_wrapper.folders);
+        await writeRawDataFiles(data_wrapper.raw_data);
+    } catch(err) {
+        throw err;
+    }
 }
 
 /**
  * writes the raw data files to disk
  * @param data
- * @param pool
  */
-async function writeRawDataFiles(data, pool) {
+async function writeRawDataFiles(data) {
     try {
-        if (ENABLE_THREADING === true && data.length > CHUNK_SIZE) {
-            if(!(pool instanceof HDB_Pool)){
-                pool = new HDB_Pool();
-            }
-            await pool_handler(pool, data, CHUNK_SIZE, '../utility/fs/writeFile');
-        } else {
-            await write_file(data);
-        }
-
-        return pool;
+        await write_file(data);
     } catch(e) {
         logger.error(e);
     }
@@ -400,20 +306,10 @@ async function writeRawDataFiles(data, pool) {
 /**
  * creates all of the folders necessary to hold the raw files and hard links
  * @param folders
- * @param pool
  */
-async function createFolders(folders, pool) {
+async function createFolders(folders) {
     try {
-        if (ENABLE_THREADING === true && folders.length > CHUNK_SIZE) {
-            if(!(pool instanceof HDB_Pool)){
-                pool = new HDB_Pool();
-            }
-            await pool_handler(pool, folders, CHUNK_SIZE, '../utility/fs/mkdirp');
-        } else {
-            await mkdirp(folders, {mode:  hdb_terms.HDB_FILE_PERMISSIONS});
-        }
-
-        return pool;
+        await mkdirp(folders, {mode:  hdb_terms.HDB_FILE_PERMISSIONS});
     } catch (e) {
         logger.error(e);
     }
