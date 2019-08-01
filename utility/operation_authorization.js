@@ -80,6 +80,7 @@ required_permissions.set(role.dropRole.name, new permission(true, []));
 required_permissions.set(user.userInfo.name, new permission(false, []));
 required_permissions.set(harper_logger.readLog.name, new permission(true, []));
 required_permissions.set(cluster_utilities.addNode.name, new permission(true, []));
+required_permissions.set(cluster_utilities.updateNode.name, new permission(true, []));
 required_permissions.set(cluster_utilities.removeNode.name, new permission(true, []));
 required_permissions.set(cluster_utilities.configureCluster.name, new permission(true, []));
 required_permissions.set(cluster_utilities.clusterStatus.name, new permission(true, []));
