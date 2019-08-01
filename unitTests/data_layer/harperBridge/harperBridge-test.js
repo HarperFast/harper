@@ -21,11 +21,15 @@ const returnHelium = () => terms.HDB_DATA_STORE_TYPES.HELIUM;
 const returnUndefined = () => undefined;
 
 describe('Test harperBridge', () => {
-    beforeEach(() => {
+    before(() => {
         harperBridge_rw = rewire('../../../data_layer/harperBridge/harperBridge');
         getBridge_rw = harperBridge_rw.__get__('getBridge');
         getDataStoreType_rw = harperBridge_rw.__get__('getDataStoreType');
     });
+
+    after(() => {
+        rewire('../../../data_layer/harperBridge/harperBridge');
+    })
 
     //High level tests for harperBridge will get updated as we have a dynamic mechanism for determining the correct store to enable
     it("should export the correct instantiated bridge methods class based on the enabled data store", () => {
@@ -63,5 +67,4 @@ describe('Test harperBridge', () => {
             expect(enabled_data_store).to.equal(terms.HDB_DATA_STORE_TYPES.FILE_SYSTEM);
         });
     });
-
 });
