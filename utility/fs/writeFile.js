@@ -3,6 +3,8 @@
 const fs = require('fs-extra');
 const logger = require('../logging/harper_logger');
 const _ = require('lodash');
+const path = require('path');
+const terms = require('../hdbTerms');
 
 const CHUNK_SIZE = 5000;
 
@@ -39,10 +41,8 @@ async function work(files){
     await Promise.all(
         files.map(async (file) => {
             try {
-                await fs.writeFile(file.path, file.value);
-                if (file.link_path) {
-                    await fs.link(file.path, file.link_path);
-                }
+                await writeFile(file);
+                await writeLink(file);
             } catch(e){
                 logger.error(e);
             }
@@ -50,4 +50,42 @@ async function work(files){
     );
 
     files = null;
+}
+
+async function writeFile(file){
+    try {
+        await fs.writeFile(file.path, file.value);
+
+    } catch(e){
+        if(e.code === 'ENOENT'){
+            await createMissingFolder(file.path);
+        }else {
+            logger.error(e);
+        }
+
+    }
+}
+
+async function writeLink(file){
+    if (file.link_path) {
+        try {
+            await fs.link(file.path, file.link_path);
+        } catch(e){
+            if(e.code === 'ENOENT'){
+                await createMissingFolder(file.path);
+            } else {
+                logger.error(e);
+            }
+        }
+    }
+}
+
+async function createMissingFolder(file_path){
+    try {
+        let folder_path = path.dirname(file_path);
+        await fs.mkdirp(folder_path, {mode: terms.HDB_FILE_PERMISSIONS});
+    } catch(err) {
+        logger.error(`Failed to create the trash directory.`);
+        throw err;
+    }
 }
