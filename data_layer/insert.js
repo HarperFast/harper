@@ -131,12 +131,7 @@ async function insertData(insert_object){
 
     try {
         let {schema_table, attributes} = await validation(insert_object);
-
         let hdb_bridge_result = await hdb_bridge.createRecords(insert_object, attributes, schema_table);
-
-        //let { written_hashes, skipped, ...data_wrapper} = await processRows(insert_object, attributes, schema_table, epoch, null);
-        //await checkForNewAttributes(insert_object.hdb_auth_header, schema_table, attributes);
-        //await processData(data_wrapper);
         convertOperationToTransaction(insert_object, hdb_bridge_result.written_hashes, schema_table.hash_attribute);
 
         return returnObject(INSERT_ACTION, hdb_bridge_result.written_hashes, insert_object, hdb_bridge_result.skipped_hashes);
@@ -177,8 +172,8 @@ async function updateData(update_object){
             throw new Error('invalid operation, must be update');
         }
 
-        let {table_schema, hashes, attributes} = await validation(update_object);
-        let existing_rows = await getExistingRows(table_schema, hashes, attributes);
+        let {schema_table, hashes, attributes} = await validation(update_object);
+        let existing_rows = await getExistingRows(schema_table, hashes, attributes);
 
         // If no hashes are existing skip update attempts
         if(h_utils.isEmptyOrZeroLength(existing_rows)){
@@ -186,14 +181,14 @@ async function updateData(update_object){
         }
 
         let existing_map = _.keyBy(existing_rows, function(record) {
-            return record[table_schema.hash_attribute];
+            return record[schema_table.hash_attribute];
         });
 
-        let { written_hashes, skipped, unlinks, ...data_wrapper} = await processRows(update_object, attributes, table_schema, epoch, existing_map);
-        await checkForNewAttributes(update_object.hdb_auth_header, table_schema, attributes);
+        let { written_hashes, skipped, unlinks, ...data_wrapper} = await processRows(update_object, attributes, schema_table, epoch, existing_map);
+        await checkForNewAttributes(update_object.hdb_auth_header, schema_table, attributes);
         await unlinkFiles(unlinks);
         await processData(data_wrapper);
-        convertOperationToTransaction(update_object, written_hashes, table_schema.hash_attribute);
+        convertOperationToTransaction(update_object, written_hashes, schema_table.hash_attribute);
 
         return returnObject(UPDATE_ACTION, written_hashes, update_object, skipped);
     } catch(e){
@@ -253,21 +248,21 @@ async function getExistingRows(table_schema, hashes, attributes){
     }
 }
 
-// /**
-//  * Prepares data for writing to storage
-//  * @param insert_object
-//  * @param attributes
-//  * @param table_schema
-//  * @param epoch
-//  * @param existing_rows
-//  * @returns {Promise<ExplodedObject>}
-//  */
-// async function processRows(insert_object, attributes, table_schema, epoch, existing_rows){
-//     let exploder_object = new WriteProcessorObject(hdb_path(), insert_object.operation, insert_object.records, table_schema, attributes, epoch, existing_rows);
-//     let data_wrapper = await exploder(exploder_object);
-//
-//     return data_wrapper;
-// }
+/**
+ * Prepares data for writing to storage
+ * @param insert_object
+ * @param attributes
+ * @param table_schema
+ * @param epoch
+ * @param existing_rows
+ * @returns {Promise<ExplodedObject>}
+ */
+async function processRows(insert_object, attributes, table_schema, epoch, existing_rows){
+    let exploder_object = new WriteProcessorObject(hdb_path(), insert_object.operation, insert_object.records, table_schema, attributes, epoch, existing_rows);
+    let data_wrapper = await exploder(exploder_object);
+
+    return data_wrapper;
+}
 
 /**
  * deletes files in bulk
@@ -281,30 +276,30 @@ async function unlinkFiles(unlink_paths) {
     }
 }
 
-// /**
-//  * wrapper function that orchestrates the record creation on disk
-//  * @param data_wrapper
-//  */
-// async function processData(data_wrapper) {
-//     try {
-//         await createFolders(data_wrapper.folders);
-//         await writeRawDataFiles(data_wrapper.raw_data);
-//     } catch(err) {
-//         throw err;
-//     }
-// }
+/**
+ * wrapper function that orchestrates the record creation on disk
+ * @param data_wrapper
+ */
+async function processData(data_wrapper) {
+    try {
+        await createFolders(data_wrapper.folders);
+        await writeRawDataFiles(data_wrapper.raw_data);
+    } catch(err) {
+        throw err;
+    }
+}
 
-// /**
-//  * writes the raw data files to disk
-//  * @param data
-//  */
-// async function writeRawDataFiles(data) {
-//     try {
-//         await write_file(data);
-//     } catch(e) {
-//         logger.error(e);
-//     }
-// }
+/**
+ * writes the raw data files to disk
+ * @param data
+ */
+async function writeRawDataFiles(data) {
+    try {
+        await write_file(data);
+    } catch(e) {
+        logger.error(e);
+    }
+}
 
 /**
  * creates all of the folders necessary to hold the raw files and hard links

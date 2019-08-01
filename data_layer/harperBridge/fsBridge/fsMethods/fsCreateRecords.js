@@ -13,10 +13,15 @@ let hdb_path = function() {
     return `${env.getHdbBasePath()}/schema/`;
 };
 
-module.exports = {
-    createRecords
-};
+module.exports = createRecords;
 
+/**
+ * Calls all the functions specifically responsible for writing data to the file system
+ * @param insert_obj
+ * @param attributes
+ * @param schema_table
+ * @returns {Promise<{skipped_hashes, written_hashes}>}
+ */
 async function createRecords(insert_obj, attributes, schema_table) {
     try {
         let data_wrapper = await processRows(insert_obj, attributes, schema_table);
@@ -24,7 +29,7 @@ async function createRecords(insert_obj, attributes, schema_table) {
         await processData(data_wrapper);
 
         let return_obj = {
-            written_hashes: data_wrapper.hashes,
+            written_hashes: data_wrapper.written_hashes, // change to this to a key that doesnt exist and you will get error returned by api
             skipped_hashes: data_wrapper.skipped
         };
 
@@ -34,16 +39,24 @@ async function createRecords(insert_obj, attributes, schema_table) {
     }
 }
 
+/**
+ * Prepares data using HDB file system model in preparation for writing to storage
+ * @param insert_obj
+ * @param attributes
+ * @param table_schema
+ * @param existing_rows
+ * @returns {Promise<ExplodedObject>}
+ */
 async function processRows(insert_obj, attributes, table_schema, existing_rows){
     let epoch = Date.now();
     let exploder_object = new WriteProcessorObject(hdb_path(), insert_obj.operation, insert_obj.records, table_schema, attributes, epoch, existing_rows);
-    let data_wrapper = await data_write_processor.processData(exploder_object);
+    let data_wrapper = await data_write_processor(exploder_object);
 
     return data_wrapper;
 }
 
 /**
- * wrapper function that orchestrates the record creation on disk
+ * Wrapper function that orchestrates the record creation on disk
  * @param data_wrapper
  */
 async function processData(data_wrapper) {
