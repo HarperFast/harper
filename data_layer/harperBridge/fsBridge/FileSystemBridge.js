@@ -1,7 +1,9 @@
 "use strict";
 
+const BridgeMethods = require("../BridgeMethods.js");
 
-class FileSystemBridge {
+
+class FileSystemBridge extends BridgeMethods {
 
     //add bridge methods here
 
