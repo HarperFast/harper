@@ -1,0 +1,80 @@
+'use strict';
+
+const WriteProcessorObject = require('../../../WriteProcessorObject'); // do we bring this file down into a fsBridge folder?
+const data_write_processor = require('../../../dataWriteProcessor'); // do we bring this file down into a fsBridge folder?
+const mkdirp = require('../../../../utility/fs/mkdirp');
+const insert = require('../../../insert');
+const hdb_terms = require('../../../../utility/hdbTerms');
+const log = require('../../../../utility/logging/harper_logger');
+const env = require('../../../../utility/environment/environmentManager');
+const write_file = require('../../../../utility/fs/writeFile');
+
+let hdb_path = function() {
+    return `${env.getHdbBasePath()}/schema/`;
+};
+
+module.exports = {
+    createRecords
+};
+
+async function createRecords(insert_obj, attributes, schema_table) {
+    try {
+        let data_wrapper = await processRows(insert_obj, attributes, schema_table);
+        await insert.checkForNewAttributes(insert_obj.hdb_auth_header, schema_table, attributes);
+        await processData(data_wrapper);
+
+        let return_obj = {
+            written_hashes: data_wrapper.hashes,
+            skipped_hashes: data_wrapper.skipped
+        };
+
+        return return_obj;
+    } catch(err) {
+        throw err;
+    }
+}
+
+async function processRows(insert_obj, attributes, table_schema, existing_rows){
+    let epoch = Date.now();
+    let exploder_object = new WriteProcessorObject(hdb_path(), insert_obj.operation, insert_obj.records, table_schema, attributes, epoch, existing_rows);
+    let data_wrapper = await data_write_processor.processData(exploder_object);
+
+    return data_wrapper;
+}
+
+/**
+ * wrapper function that orchestrates the record creation on disk
+ * @param data_wrapper
+ */
+async function processData(data_wrapper) {
+    try {
+        await createFolders(data_wrapper.folders);
+        await writeRawDataFiles(data_wrapper.raw_data);
+    } catch(err) {
+        throw err;
+    }
+}
+
+/**
+ * creates all of the folders necessary to hold the raw files and hard links
+ * @param folders
+ */
+async function createFolders(folders) {
+    try {
+        await mkdirp(folders, {mode:  hdb_terms.HDB_FILE_PERMISSIONS});
+    } catch (err) {
+        log.error(err);
+    }
+}
+
+/**
+  * writes the raw data files to disk
+  * @param data
+  */
+async function writeRawDataFiles(data) {
+    try {
+        await write_file(data);
+    } catch(err) {
+        log.error(err);
+    }
+}

@@ -22,6 +22,7 @@ const exploder = require('./dataWriteProcessor');
 const util = require('util');
 const ExplodedObject = require('./ExplodedObject');
 const WriteProcessorObject = require('./WriteProcessorObject');
+const hdb_bridge = require('./harperBridge/harperBridge');
 
 // Search is used in the installer, and the base path may be undefined when search is instantiated.  Dynamically
 // get the base path from the environment manager before using it.
@@ -43,7 +44,8 @@ const INSERT_ACTION = 'inserted';
 module.exports = {
     insert: insertData,
     update: updateData,
-    validation
+    validation,
+    checkForNewAttributes // There is jira out to see if we can remove this circular dependency CORE-440
 };
 //this must stay after the export to correct a circular dependency issue
 const global_schema = require('../utility/globalSchema');
@@ -70,7 +72,7 @@ async function validation(write_object){
         throw new Error('invalid table specified.');
     }
 
-    let table_schema = await p_global_schema(write_object.schema, write_object.table);
+    let schema_table = await p_global_schema(write_object.schema, write_object.table);
 
     //validate insert_object for required attributes
     let validator = insert_validator(write_object);
@@ -82,7 +84,7 @@ async function validation(write_object){
         throw new Error('records must be an array');
     }
 
-    let hash_attribute = table_schema.hash_attribute;
+    let hash_attribute = schema_table.hash_attribute;
     let dups = new Set();
     let attributes = {};
 
@@ -112,7 +114,7 @@ async function validation(write_object){
     attributes[hash_attribute] = 1;
 
     return {
-        table_schema: table_schema,
+        schema_table: schema_table,
         hashes: Array.from(dups),
         attributes: Object.keys(attributes)
     };
@@ -123,20 +125,21 @@ async function validation(write_object){
  * @param insert_object
  */
 async function insertData(insert_object){
+    if (insert_object.operation !== 'insert') {
+        throw new Error('invalid operation, must be insert');
+    }
+
     try {
-        let epoch = Date.now();
+        let {schema_table, attributes} = await validation(insert_object);
 
-        if (insert_object.operation !== 'insert') {
-            throw new Error('invalid operation, must be insert');
-        }
+        let hdb_bridge_result = await hdb_bridge.createRecords(insert_object, attributes, schema_table);
 
-        let {table_schema, attributes} = await validation(insert_object);
-        let { written_hashes, skipped, ...data_wrapper} = await processRows(insert_object, attributes, table_schema, epoch, null);
-        await checkForNewAttributes(insert_object.hdb_auth_header, table_schema, attributes);
-        await processData(data_wrapper);
-        convertOperationToTransaction(insert_object, written_hashes, table_schema.hash_attribute);
+        //let { written_hashes, skipped, ...data_wrapper} = await processRows(insert_object, attributes, schema_table, epoch, null);
+        //await checkForNewAttributes(insert_object.hdb_auth_header, schema_table, attributes);
+        //await processData(data_wrapper);
+        convertOperationToTransaction(insert_object, hdb_bridge_result.written_hashes, schema_table.hash_attribute);
 
-        return returnObject(INSERT_ACTION, written_hashes, insert_object, skipped);
+        return returnObject(INSERT_ACTION, hdb_bridge_result.written_hashes, insert_object, hdb_bridge_result.skipped_hashes);
     } catch(e){
         throw (e);
     }
@@ -250,21 +253,21 @@ async function getExistingRows(table_schema, hashes, attributes){
     }
 }
 
-/**
- * Prepares data for writing to storage
- * @param insert_object
- * @param attributes
- * @param table_schema
- * @param epoch
- * @param existing_rows
- * @returns {Promise<ExplodedObject>}
- */
-async function processRows(insert_object, attributes, table_schema, epoch, existing_rows){
-    let exploder_object = new WriteProcessorObject(hdb_path(), insert_object.operation, insert_object.records, table_schema, attributes, epoch, existing_rows);
-    let data_wrapper = await exploder(exploder_object);
-
-    return data_wrapper;
-}
+// /**
+//  * Prepares data for writing to storage
+//  * @param insert_object
+//  * @param attributes
+//  * @param table_schema
+//  * @param epoch
+//  * @param existing_rows
+//  * @returns {Promise<ExplodedObject>}
+//  */
+// async function processRows(insert_object, attributes, table_schema, epoch, existing_rows){
+//     let exploder_object = new WriteProcessorObject(hdb_path(), insert_object.operation, insert_object.records, table_schema, attributes, epoch, existing_rows);
+//     let data_wrapper = await exploder(exploder_object);
+//
+//     return data_wrapper;
+// }
 
 /**
  * deletes files in bulk
@@ -278,30 +281,30 @@ async function unlinkFiles(unlink_paths) {
     }
 }
 
-/**
- * wrapper function that orchestrates the record creation on disk
- * @param data_wrapper
- */
-async function processData(data_wrapper) {
-    try {
-        await createFolders(data_wrapper.folders);
-        await writeRawDataFiles(data_wrapper.raw_data);
-    } catch(err) {
-        throw err;
-    }
-}
+// /**
+//  * wrapper function that orchestrates the record creation on disk
+//  * @param data_wrapper
+//  */
+// async function processData(data_wrapper) {
+//     try {
+//         await createFolders(data_wrapper.folders);
+//         await writeRawDataFiles(data_wrapper.raw_data);
+//     } catch(err) {
+//         throw err;
+//     }
+// }
 
-/**
- * writes the raw data files to disk
- * @param data
- */
-async function writeRawDataFiles(data) {
-    try {
-        await write_file(data);
-    } catch(e) {
-        logger.error(e);
-    }
-}
+// /**
+//  * writes the raw data files to disk
+//  * @param data
+//  */
+// async function writeRawDataFiles(data) {
+//     try {
+//         await write_file(data);
+//     } catch(e) {
+//         logger.error(e);
+//     }
+// }
 
 /**
  * creates all of the folders necessary to hold the raw files and hard links
