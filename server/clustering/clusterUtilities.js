@@ -17,6 +17,8 @@ const child_process = require('child_process');
 const path = require('path');
 const InsertObject = require('../../data_layer/DataLayerObjects').InsertObject;
 
+const CLUSTER_PORT = env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY);
+
 //Promisified functions
 const p_delete_delete = util.promisify(del.delete);
 const p_auth_authorize = util.promisify(auth.authorize);
@@ -80,18 +82,15 @@ async function kickOffEnterprise() {
 async function addNode(new_node) {
     // need to clean up new node as it hads operation and user on it
     let validation = node_validator(new_node);
-    let cluster_port = undefined;
     let new_port = undefined;
     try {
-        // This should move up as a const once https://harperdb.atlassian.net/browse/HDB-640 is done.
-        cluster_port = env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY);
         new_port = parseInt(new_node.port);
     } catch(err) {
         throw new Error(`Invalid port: ${new_node.port} specified`);
     }
 
     //TODO: We may need to expand this depending on what is decided in https://harperdb.atlassian.net/browse/HDB-638
-    if(new_port === cluster_port) {
+    if(new_port === CLUSTER_PORT) {
         if((new_node.host === 'localhost' || new_node.host === '127.0.0.1')) {
             throw new Error(DUPLICATE_ERR_MSG);
         }
@@ -108,20 +107,7 @@ async function addNode(new_node) {
         throw new Error(validation);
     }
 
-    if(!hdb_utils.isEmptyOrZeroLength(new_node.subscriptions) && !Array.isArray(new_node.subscriptions)){
-        log.error(`${SUBSCRIPTIONS_MUST_BE_ARRAY}: ${new_node.subscriptions}`);
-        throw new Error(SUBSCRIPTIONS_MUST_BE_ARRAY);
-    }
-
-    let subscription_validation = undefined;
-    if(!hdb_utils.isEmptyOrZeroLength(new_node.subscriptions)){
-        for(let b = 0; b < new_node.subscriptions.length; b++){
-            subscription_validation = node_subscription_validator(new_node.subscriptions[b]);
-            if(subscription_validation){
-                throw new Error(subscription_validation);
-            }
-        }
-    }
+    subscriptionsValidation(new_node);
 
     let new_node_insert = new InsertObject("insert", "system", "hdb_nodes", null, [new_node]);
 
@@ -130,7 +116,7 @@ async function addNode(new_node) {
         results = await insert.insert(new_node_insert);
     } catch(err) {
         log.error(`Error adding new cluster node ${new_node_insert}.  ${err}`);
-        throw new Error(err);
+        throw err;
     }
 
     if (!hdb_utils.isEmptyOrZeroLength(results.skipped_hashes)) {
@@ -147,6 +133,65 @@ async function addNode(new_node) {
     }
 
     return `successfully added ${new_node.name} to manifest`;
+}
+
+/**
+ *
+ * @param {./NodeObject} node_object
+ */
+function subscriptionsValidation(node_object){
+    if(!hdb_utils.isEmptyOrZeroLength(node_object.subscriptions) && !Array.isArray(node_object.subscriptions)){
+        log.error(`${SUBSCRIPTIONS_MUST_BE_ARRAY}: ${node_object.subscriptions}`);
+        throw new Error(SUBSCRIPTIONS_MUST_BE_ARRAY);
+    }
+
+    let subscription_validation = undefined;
+    if(!hdb_utils.isEmptyOrZeroLength(node_object.subscriptions)){
+        for(let b = 0; b < node_object.subscriptions.length; b++){
+            subscription_validation = node_subscription_validator(node_object.subscriptions[b]);
+            if(subscription_validation){
+                throw new Error(subscription_validation);
+            }
+        }
+    }
+}
+
+/**
+ *
+ * @param {./NodeObject} update_node
+ * @returns {string}
+ */
+async function updateNode(update_node){
+    if(hdb_utils.isEmpty(update_node.name)){
+        throw new Error('name is required');
+    }
+
+    subscriptionsValidation(update_node);
+
+    let update_node_object = new InsertObject("update", "system", "hdb_nodes", null, [update_node]);
+
+    let results = undefined;
+    try {
+        results = await insert.update(update_node_object);
+    } catch(err) {
+        log.error(`Error adding new cluster node ${update_node_object}.  ${err}`);
+        throw new Error(err);
+    }
+
+    if (!hdb_utils.isEmptyOrZeroLength(results.skipped_hashes)) {
+        log.info(`Node '${update_node.name}' does not exist. Operation aborted.`);
+        throw new Error(`Node '${update_node.name}' does not exist. Operation aborted.`);
+    }
+
+    try {
+        let update_node_msg = new terms.ClusterMessageObjects.HdbCoreUdateNodeMessage();
+        update_node_msg.node = update_node;
+        hdb_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.HDB_NODES, update_node_msg);
+    } catch(e){
+        throw new Error(e);
+    }
+
+    return `successfully updated ${update_node.name}`;
 }
 
 /**
@@ -481,6 +526,7 @@ function restartHDB() {
 
 module.exports = {
     addNode: addNode,
+    updateNode: updateNode,
     // The reference to the callback functions can be removed once processLocalTransaction has been refactored
     configureCluster: configureCluster,
     clusterStatus,
