@@ -153,6 +153,7 @@ const OPERATIONS_ENUM = {
     USER_INFO: 'user_info',
     READ_LOG: 'read_log',
     ADD_NODE: 'add_node',
+    UPDATE_NODE: 'update_node',
     EXPORT_TO_S3: 'export_to_s3',
     DELETE_FILES_BEFORE: 'delete_files_before',
     EXPORT_LOCAL: 'export_local',
@@ -209,6 +210,11 @@ const GEO_CONVERSION_ENUM = {
     multiPoint: 'multiPoint',
     multiPolygon: 'multiPolygon',
     polygon: 'polygon'
+};
+
+const HDB_DATA_STORE_TYPES = {
+    FILE_SYSTEM: 'FILE_SYSTEM',
+    HELIUM: 'HELIUM'
 };
 
 const HDB_SETTINGS_NAMES = {
@@ -332,6 +338,7 @@ module.exports = {
     OPERATIONS_ENUM,
     HTTP_STATUS_CODES,
     GEO_CONVERSION_ENUM,
+    HDB_DATA_STORE_TYPES,
     HDB_SETTINGS_NAMES,
     HDB_SETTINGS_DEFAULT_VALUES,
     SERVICE_ACTIONS_ENUM,

@@ -977,7 +977,7 @@ describe("Test read_log ", () => {
             expect(queryResults.file.length).to.equal(2);
 
             const winston_options = winston_query_spy.args[0][0];
-            expect(getMomentDate(winston_options.from).date()).to.equal(current_date.date()-1);
+            expect(getMomentDate(winston_options.from).date()).to.equal(moment().subtract(1, 'day').date());
             expect(moment(winston_options.until).isSame(current_date, 'day')).to.equal(true);
         }));
 
