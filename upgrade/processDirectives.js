@@ -14,7 +14,8 @@ const terms = require('../utility/hdbTerms');
 
 module.exports = {
     writeEnvVariables,
-    processDirectives
+    processDirectives,
+    getDirectiveChangeDescriptions
 };
 
 let hdb_boot_properties = undefined;
@@ -40,6 +41,30 @@ try {
 }
 
 /**
+ * Create an object containing change descriptor objects.
+ * @param curr_version
+ * @param upgrade_version
+ */
+function getDirectiveChangeDescriptions(curr_version, upgrade_version) {
+    let change_descriptions = [];
+    let loaded_directives = directive_manager.filterInvalidVersions(curr_version);
+    let upgrade_directives = getVersionsToInstall(curr_version, loaded_directives);
+    for(let vers of upgrade_directives) {
+        let new_description = {};
+        if(vers.change_description) {
+            new_description['change_description'] = vers.change_description;
+        }
+        if(vers.affected_file_paths.length > 0) {
+            new_description['affected_paths'] = vers.affected_file_paths;
+        }
+        if(Object.keys(new_description).length > 0) {
+            change_descriptions.push(new_description);
+        }
+    }
+    return change_descriptions;
+}
+
+/**
  * Iterates through the directives files to find uninstalled updates and runs the files.
  * @param curr_version - The version of HDB at this point.
  * @param upgrade_version - The desired upgrade version
@@ -48,11 +73,6 @@ function processDirectives(curr_version, upgrade_version) {
     // Currently we only support upgrading to latest which will be the largest version in the directive manager.  We
     // could support upgrading to a specific version later by allowing the filter function to accept a specific version;
     let loaded_directives = directive_manager.filterInvalidVersions(curr_version);
-    if(hdb_util.isEmptyOrZeroLength(loaded_directives)) {
-        console.error('No directive files found.  Exiting.');
-        log.error('No directive files found.  Exiting.');
-        process.exit(1);
-    }
     if(hdb_util.isEmptyOrZeroLength(curr_version)) {
         log.info('Invalid value for curr_version');
     }
@@ -63,7 +83,9 @@ function processDirectives(curr_version, upgrade_version) {
     let variable_comments = undefined;
     let func_responses = [];
     for(let vers of upgrade_directives) {
-        log.info(`Starting upgrade to version ${vers.version}`);
+        let notify_msg = `Starting upgrade to version ${vers.version}`;
+        log.notify(notify_msg);
+        console.log(notify_msg);
         // Create Directories
         let directories_to_create = vers.relative_directory_paths;
         let explicit_directories_to_create = vers.explicit_directory_paths;

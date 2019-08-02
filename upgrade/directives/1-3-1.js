@@ -17,6 +17,9 @@ directive.environment_variables.push(
     new env_variable(`MAX_HDB_PROCESSES`, `${num_cores}`, ["Set the max number of processes HarperDB will kick off.  This can also be limited by number of cores and licenses."])
 );
 
+directive.change_description = `Adds new Environment variable MAX_HDB_PROCESSES`;
+directive.affected_file_paths.push('config/settings.js');
+
 module.exports = directive;
 
 

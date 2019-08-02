@@ -14,7 +14,7 @@ ver1_1_0_directive.relative_directory_paths.push(`schema${sep}system${sep}hdb_no
 /*ver1_1_0_directive.environment_variables.push(
     new env_variable(`PROJECT_DIR`, ``, [])
 ); */
-
+directive.change_description = `Version 1.0`;
 
 module.exports = directive;
 

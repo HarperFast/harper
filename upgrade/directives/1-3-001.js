@@ -9,4 +9,7 @@ directive.environment_variables.push(
     new env_variable(`ALLOW_SELF_SIGNED_SSL_CERTS`, `false`, [])
 );
 
+directive.change_description = `Adds new Environment variable ALLOW_SELF_SIGNED_SSL_CERTS`;
+directive.affected_file_paths.push('config/settings.js');
+
 module.exports = directive;
