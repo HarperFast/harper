@@ -136,13 +136,13 @@ function postOperationHandler(request_body, result) {
                 insert_msg.__originator[env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)] = '';
                 insert_msg.__transacted = true;
                 common_utils.sendTransactionToSocketCluster(`${request_body.schema}:${request_body.table}`, insert_msg);
-                return result;
             }
             break;
         default:
             //do nothing
-            return result;
+            break;
     }
+    return result;
 }
 
 /**
