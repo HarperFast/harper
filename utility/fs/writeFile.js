@@ -60,7 +60,6 @@ async function work(files){
 async function writeFile(file){
     try {
         await fs.writeFile(file.path, file.value);
-
     } catch(e){
         if(e.code === 'ENOENT'){
             await createMissingFolder(file.path);
@@ -68,7 +67,6 @@ async function writeFile(file){
         }else {
             logger.error(e);
         }
-
     }
 }
 
@@ -83,7 +81,7 @@ async function writeLink(file){
             await fs.link(file.path, file.link_path);
         } catch(e){
             if(e.code === 'ENOENT'){
-                await createMissingFolder(file.path);
+                await createMissingFolder(file.link_path);
                 await writeLink(file);
             } else {
                 logger.error(e);
