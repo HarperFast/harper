@@ -14,6 +14,7 @@ const math = require('mathjs');
 const system_schema = require('../json/systemSchema.json');
 const SelectValidator = require('../sqlTranslator/SelectValidator');
 const hdbTerms = require('../utility/hdbTerms');
+const harperBridge = require('./harperBridge/harperBridge');
 
 //let base_path = env.get('HDB_ROOT') + "/schema/";
 // Search is used in the installer, and the base path may be undefined when search is instantiated.  Dynamically
@@ -42,30 +43,19 @@ function searchByHash(search_object, callback){
             callback(validation_error, null);
             return;
         }
-        
-        let table_path = `${base_path()}${search_object.schema}/${search_object.table}/`;
-        evaluateTableAttributes(search_object.get_attributes, search_object, (error, attributes) => {
+
+        // harperBridge.getDataByHash(search_object, (error, data) => {
+        harperBridge.searchByHash(search_object, (error, data) => {
             if (error) {
                 callback(error);
                 return;
             }
 
-            let table_info = global.hdb_schema[search_object.schema][search_object.table];
-            attributes = removeTableFromAttributeAlias(attributes, search_object.table);
-            async.waterfall([
-                getAttributeFiles.bind(null, attributes, table_path, search_object.hash_values),
-                consolidateData.bind(null, table_info.hash_attribute)
-            ], (error, data) => {
-                if (error) {
-                    callback(error);
-                    return;
-                }
-
-                callback(null, data);
-            });
+            callback(null, data);
         });
-    } catch(e){
-        callback(e);
+
+    } catch(e) {
+        return callback(e);
     }
 }
 
