@@ -33,7 +33,6 @@ async function unlink(paths) {
                 if(e.code !== 'ENOTEMPTY'){
                     logger.error(e);
                 }
-                console.log(e);
             }
         })
     );

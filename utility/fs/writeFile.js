@@ -52,6 +52,11 @@ async function work(files){
     files = null;
 }
 
+/**
+ * writes the file, if the parent folder does not exist we catch the ENOENT exception, create the folder and write the file
+ * @param file
+ * @returns {Promise<void>}
+ */
 async function writeFile(file){
     try {
         await fs.writeFile(file.path, file.value);
@@ -59,6 +64,7 @@ async function writeFile(file){
     } catch(e){
         if(e.code === 'ENOENT'){
             await createMissingFolder(file.path);
+            await writeFile(file);
         }else {
             logger.error(e);
         }
@@ -66,6 +72,11 @@ async function writeFile(file){
     }
 }
 
+/**
+ * writes the link, if the parent folder does not exist we catch the ENOENT exception, create the folder and write the link
+ * @param file
+ * @returns {Promise<void>}
+ */
 async function writeLink(file){
     if (file.link_path) {
         try {
@@ -73,6 +84,7 @@ async function writeLink(file){
         } catch(e){
             if(e.code === 'ENOENT'){
                 await createMissingFolder(file.path);
+                await writeLink(file);
             } else {
                 logger.error(e);
             }
@@ -80,12 +92,17 @@ async function writeLink(file){
     }
 }
 
+/**
+ * extracts the parent folder from the file path and creates the directory
+ * @param file_path
+ * @returns {Promise<void>}
+ */
 async function createMissingFolder(file_path){
     try {
         let folder_path = path.dirname(file_path);
         await fs.mkdirp(folder_path, {mode: terms.HDB_FILE_PERMISSIONS});
     } catch(err) {
-        logger.error(`Failed to create the trash directory.`);
+        logger.error(`Failed to create the directory.`);
         throw err;
     }
 }
