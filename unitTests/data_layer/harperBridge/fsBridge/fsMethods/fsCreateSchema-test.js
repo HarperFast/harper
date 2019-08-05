@@ -4,7 +4,9 @@ const test_utils = require('../../../../test_utils');
 test_utils.preTestPrep();
 
 const create_schema = require('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsCreateSchema');
-const create_records = require('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsCreateRecords');
+const hdb_core_insert = require('../../../../../data_layer/insert');
+const terms = require('../../../../../utility/hdbTerms');
+const env = require('../../../../../utility/environment/environmentManager');
 const fs = require('fs-extra');
 const chai = require('chai');
 const sinon = require('sinon');
@@ -18,11 +20,11 @@ const SCHEMA_ROOT_TEST = '/hdb/schema';
 
 describe('Test file system module fsCreateSchema', () => {
     let sandbox = sinon.createSandbox();
-    let create_records_stub;
+    let hdb_core_insert_stub;
     let fs_mkdir_stub;
 
     before(() => {
-        create_records_stub = sandbox.stub(create_records, 'fsCreateRecords');
+        hdb_core_insert_stub = sandbox.stub(hdb_core_insert, 'insert');
         fs_mkdir_stub = sandbox.stub(fs, 'mkdir');
     });
 
@@ -32,10 +34,10 @@ describe('Test file system module fsCreateSchema', () => {
 
     it('test createRecords and fs.mkdir are called as expected', async () => {
         try {
-            await create_schema.createSchema(SCHEMA_CREATE_OBJECT_TEST, HDB_FILE_PERMISSIONS_TEST, SCHEMA_ROOT_TEST);
+            await create_schema.createSchema(SCHEMA_CREATE_OBJECT_TEST);
 
-            expect(create_records_stub).to.have.been.calledOnce;
-            expect(fs_mkdir_stub).to.have.been.calledWith(`${SCHEMA_ROOT_TEST}/schema/${SCHEMA_CREATE_OBJECT_TEST.schema}`, {mode: HDB_FILE_PERMISSIONS_TEST});
+            expect(hdb_core_insert_stub).to.have.been.calledOnce;
+            expect(fs_mkdir_stub).to.have.been.calledWith(env.get('HDB_ROOT') + '/schema/' + SCHEMA_CREATE_OBJECT_TEST.schema, {mode: terms.HDB_FILE_PERMISSIONS});
         } catch(err) {
             console.error(err);
         }

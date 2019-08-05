@@ -1,13 +1,16 @@
 'use strict';
 
 const fs = require('fs-extra');
-const create_records = require('./fsCreateRecords');
+const env = require('../../../../utility/environment/environmentManager');
+const terms = require('../../../../utility/hdbTerms');
 
 module.exports = {
     createSchema
 };
 
-async function createSchema(schema_create_obj, permissions, hdb_root) {
+async function createSchema(schema_create_obj) {
+    // This is here due to circular dependencies in insert
+    const hdb_core_insert = require('../../../insert');
 
     let insert_object = {
         operation: 'insert',
@@ -22,8 +25,8 @@ async function createSchema(schema_create_obj, permissions, hdb_root) {
     };
 
     try {
-        await create_records.fsCreateRecords(insert_object); // TODO: Need to build this
-        await fs.mkdir(`${hdb_root}/schema/${schema_create_obj.schema}`, {mode: permissions});
+        await hdb_core_insert.insert(insert_object);
+        await fs.mkdir(env.get('HDB_ROOT') + '/schema/' + schema_create_obj.schema, {mode: terms.HDB_FILE_PERMISSIONS});
     } catch(err) {
         if (err.errno === -17) {
             throw new Error('schema already exists');

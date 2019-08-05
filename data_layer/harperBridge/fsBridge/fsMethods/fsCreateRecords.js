@@ -3,7 +3,6 @@
 const WriteProcessorObject = require('../../../WriteProcessorObject'); // do we bring this file down into a fsBridge folder?
 const data_write_processor = require('../../../dataWriteProcessor'); // do we bring this file down into a fsBridge folder?
 const mkdirp = require('../../../../utility/fs/mkdirp');
-const insert = require('../../../insert');
 const hdb_terms = require('../../../../utility/hdbTerms');
 const log = require('../../../../utility/logging/harper_logger');
 const env = require('../../../../utility/environment/environmentManager');
@@ -23,9 +22,12 @@ module.exports = createRecords;
  * @returns {Promise<{skipped_hashes, written_hashes}>}
  */
 async function createRecords(insert_obj, attributes, schema_table) {
+    // This is here due to circular dependencies in insert
+    const hdb_core_insert = require('../../../../data_layer/insert');
     try {
+
         let data_wrapper = await processRows(insert_obj, attributes, schema_table);
-        await insert.checkForNewAttributes(insert_obj.hdb_auth_header, schema_table, attributes);
+        await hdb_core_insert.checkForNewAttributes(insert_obj.hdb_auth_header, schema_table, attributes);
         await processData(data_wrapper);
 
         let return_obj = {
@@ -91,3 +93,4 @@ async function writeRawDataFiles(data) {
         log.error(err);
     }
 }
+

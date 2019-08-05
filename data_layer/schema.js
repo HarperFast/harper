@@ -17,7 +17,7 @@ const signalling = require('../utility/signalling');
 const util = require('util');
 const hdb_util = require('../utility/common_utils');
 const terms = require('../utility/hdbTerms');
-//const hdb_bridge = require('../data_layer/harperBridge');
+const hdb_bridge = require('./harperBridge/harperBridge');
 
 // Promisified functions
 let p_search_search_by_value = util.promisify(search.searchByValue);
@@ -52,6 +52,9 @@ module.exports = {
     dropAttribute: dropAttribute
 };
 
+const global_schema = require('../utility/globalSchema');
+const p_global_schema = util.promisify(global_schema.getTableSchema);
+
 /** EXPORTED FUNCTIONS **/
 
 async function createSchema(schema_create_object) {
@@ -75,13 +78,12 @@ async function createSchemaStructure(schema_create_object) {
         throw validation_error;
     }
 
-    let schema_table = global.hdb_schema[schema_create_object.schema][schema_create_object.table];
-    if (schema_table && schema_table.length > 0) {
+    if (global.hdb_schema[schema_create_object.schema]) {
         throw new Error(`Schema ${schema_create_object.schema} already exists`);
     }
 
     try {
-        //await hdb_bridge.createSchema(schema_create_object, terms.HDB_FILE_PERMISSIONS, env.get('HDB_ROOT')); // TODO: call to the bridge
+        await hdb_bridge.createSchema(schema_create_object);
 
         return `schema ${schema_create_object.schema} successfully created`;
     } catch(err) {
