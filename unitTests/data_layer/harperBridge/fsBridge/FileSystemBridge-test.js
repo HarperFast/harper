@@ -67,13 +67,16 @@ describe('Tests for the file system bridge class', () => {
     });
 
     after(() => {
+        sandbox.restore();
         FileSystemBridge = rewire('../../../../data_layer/harperBridge/fsBridge/FileSystemBridge');
     });
 
     context('Test createRecords method', () => {
         let fs_create_records_stub = sandbox.stub();
+        let fs_create_records_rw;
 
         before(() => {
+            fs_create_records_rw = FileSystemBridge.__set__('fsCreateRecords', fs_create_records_stub);
             file_system_bridge_rw = FileSystemBridge.__set__('fs_create_records', fs_create_records_stub);
         });
 
@@ -120,6 +123,5 @@ describe('Tests for the file system bridge class', () => {
 
             expect(log_error_spy).to.have.been.calledOnce;
         });
-
     });
 });

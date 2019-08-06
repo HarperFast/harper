@@ -1,12 +1,12 @@
 'use strict';
 
-const WriteProcessorObject = require('../../../WriteProcessorObject'); // do we bring this file down into a fsBridge folder?
-const data_write_processor = require('../../../dataWriteProcessor'); // do we bring this file down into a fsBridge folder?
+const WriteProcessorObject = require('../../../WriteProcessorObject');
+const dataWriteProcessor = require('../../../dataWriteProcessor');
 const mkdirp = require('../../../../utility/fs/mkdirp');
 const hdb_terms = require('../../../../utility/hdbTerms');
 const log = require('../../../../utility/logging/harper_logger');
 const env = require('../../../../utility/environment/environmentManager');
-const write_file = require('../../../../utility/fs/writeFile');
+const writeFile = require('../../../../utility/fs/writeFile');
 
 let hdb_path = function() {
     return `${env.getHdbBasePath()}/schema/`;
@@ -58,7 +58,7 @@ async function processRows(insert_obj, attributes, schema_table, existing_rows){
 
     try {
         let exploder_object = new WriteProcessorObject(hdb_path(), insert_obj.operation, insert_obj.records, schema_table, attributes, epoch, existing_rows);
-        let data_wrapper = await data_write_processor(exploder_object);
+        let data_wrapper = await dataWriteProcessor(exploder_object);
 
         return data_wrapper;
     } catch(err) {
@@ -87,7 +87,6 @@ async function createFolders(folders) {
     try {
         await mkdirp(folders, {mode:  hdb_terms.HDB_FILE_PERMISSIONS});
     } catch (err) {
-        log.error(err);
         throw err;
     }
 }
@@ -98,9 +97,8 @@ async function createFolders(folders) {
   */
 async function writeRawDataFiles(data) {
     try {
-        await write_file(data);
+        await writeFile(data);
     } catch(err) {
-        log.error(err);
         throw err;
     }
 }
