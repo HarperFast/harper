@@ -68,11 +68,11 @@ const FOLDERS_TEST = [
     "/Users/david/hdb/schema/dev/dog/__hdb_hash/breed",
 ];
 
-const DATA_FAKE = [
+const WRITE_FILES_DATA_TEST = [
     {
-        "path": "/Users/davidcockerill/hdb/schema//dev/dog/__hdb_hash/name/12.hdb",
-        "value": "Harper",
-        "link_path": "/Users/davidcockerill/hdb/schema//dev/dog/name/Harper/12.hdb"
+        path: "/Users/davidcockerill/hdb/schema//dev/dog/__hdb_hash/name/12.hdb",
+        value: "Harper",
+        link_path: "/Users/davidcockerill/hdb/schema//dev/dog/name/Harper/12.hdb"
     }];
 
 describe('Tests for file system module fsCreateRecords', () => {
@@ -109,7 +109,7 @@ describe('Tests for file system module fsCreateRecords', () => {
             process_data_rw();
         });
         
-        it('Test createRecords calls functions as expected and object returned is correct', async () => {
+        it('Test createRecords calls processRows, checkAttr, processData as expected', async () => {
             process_rows_stub.resolves(DATA_WRAPPER_TEST);
             let expected_result = {
                 "written_hashes": [
@@ -139,7 +139,7 @@ describe('Tests for file system module fsCreateRecords', () => {
         let existing_rows = undefined;
         
         before(() => {
-            data_write_processor_rw = fs_create_records.__set__('data_write_processor', data_write_processor_stub);
+            data_write_processor_rw = fs_create_records.__set__('dataWriteProcessor', data_write_processor_stub);
             process_rows_rw = fs_create_records.__get__('processRows');
         });
         
@@ -148,7 +148,7 @@ describe('Tests for file system module fsCreateRecords', () => {
             data_write_processor_rw();
         });
         
-        it('Test processRows calls functions as expected and data wrapper returned is correct', async () => {
+        it('Test processRows calls WriteProcessorObject and dataWriteProcessor as expected', async () => {
             let result = await process_rows_rw(INSERT_OBJ_TEST, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST, existing_rows);
 
             expect(result).to.eql(DATA_WRAPPER_TEST);
@@ -177,7 +177,7 @@ describe('Tests for file system module fsCreateRecords', () => {
             sandbox.restore();
         });
 
-        it('Test processData calls its functions as expected', async () => {
+        it('Test processData calls createFolders and writeRawDataFiles as expected', async () => {
             await process_data_rw(DATA_WRAPPER_TEST);
 
             expect(create_folders_stub).to.have.been.calledWith(DATA_WRAPPER_TEST.folders);
@@ -219,24 +219,23 @@ describe('Tests for file system module fsCreateRecords', () => {
 
         before(() => {
             write_raw_data_rw = fs_create_records.__get__('writeRawDataFiles');
-            write_file_rw = fs_create_records.__set__('write_file', write_raw_data_stub);
+            write_file_rw = fs_create_records.__set__('writeFile', write_raw_data_stub);
         });
 
         after(() => {
            sandbox.restore();
+           write_file_rw();
         });
 
         it('Test writeRawDataFiles calls write_file as expected', async () => {
-            await write_raw_data_rw(DATA_FAKE);
+            await write_raw_data_rw(WRITE_FILES_DATA_TEST);
 
-            expect(write_raw_data_stub).to.have.calledWith(DATA_FAKE);
+            expect(write_raw_data_stub).to.have.calledWith(WRITE_FILES_DATA_TEST);
         });
 
         it('Test error is caught and thrown', async () => {
             write_raw_data_stub.throws(new Error('Error writing raw date'));
-            await test_utils.testForError(write_raw_data_rw(DATA_FAKE), 'Error writing raw date');
-
-            expect(log_error_spy).to.have.been.calledOnce;
+            await test_utils.testForError(write_raw_data_rw(WRITE_FILES_DATA_TEST), 'Error writing raw date');
         });
     });
 });

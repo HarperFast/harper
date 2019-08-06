@@ -48,7 +48,7 @@ module.exports = {
 };
 
 // These requires must stay after export to prevent issues with circular dependencies
-const hdb_bridge = require('./harperBridge/harperBridge');
+const harperBridge = require('./harperBridge/harperBridge');
 const global_schema = require('../utility/globalSchema');
 
 const p_global_schema = util.promisify(global_schema.getTableSchema);
@@ -132,7 +132,7 @@ async function insertData(insert_object){
 
     try {
         let {schema_table, attributes} = await validation(insert_object);
-        let hdb_bridge_result = await hdb_bridge.createRecords(insert_object, attributes, schema_table);
+        let hdb_bridge_result = await harperBridge.createRecords(insert_object, attributes, schema_table);
         convertOperationToTransaction(insert_object, hdb_bridge_result.written_hashes, schema_table.hash_attribute);
 
         return returnObject(INSERT_ACTION, hdb_bridge_result.written_hashes, insert_object, hdb_bridge_result.skipped_hashes);

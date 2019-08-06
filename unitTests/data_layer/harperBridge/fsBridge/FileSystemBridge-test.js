@@ -70,7 +70,7 @@ describe('Tests for the file system bridge class', () => {
         let fs_create_records_rw;
 
         before(() => {
-            fs_create_records_rw = FileSystemBridge.__set__('fs_create_records', fs_create_records_stub);
+            fs_create_records_rw = FileSystemBridge.__set__('fsCreateRecords', fs_create_records_stub);
         });
 
         after(() => {
