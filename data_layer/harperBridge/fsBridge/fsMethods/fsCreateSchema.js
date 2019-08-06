@@ -4,14 +4,17 @@ const fs = require('fs-extra');
 const env = require('../../../../utility/environment/environmentManager');
 const terms = require('../../../../utility/hdbTerms');
 
-module.exports = {
-    createSchema
-};
+module.exports = createSchema;
 
+// This must be after export to prevent issues with circular dependencies related to insert.checkForNewAttributes.
+const hdb_core_insert = require('../../../insert');
+
+/**
+ * Calls HDB core insert to add schema to system schema then mkdirp to create folder in file system.
+ * @param schema_create_obj
+ * @returns {Promise<void>}
+ */
 async function createSchema(schema_create_obj) {
-    // This is here due to circular dependencies in insert
-    const hdb_core_insert = require('../../../insert');
-
     let insert_object = {
         operation: 'insert',
         schema: 'system',

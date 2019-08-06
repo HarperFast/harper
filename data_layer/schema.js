@@ -1,7 +1,7 @@
 'use strict';
 
 const fs = require('fs-extra');
-const insert = require('./insert.js');
+
 const validation = require('../validation/schema_validator.js');
 const search = require('./search.js');
 const logger = require('../utility/logging/harper_logger');
@@ -52,6 +52,8 @@ module.exports = {
     dropAttribute: dropAttribute
 };
 
+// This must be after export to prevent issues with circular dependencies
+const insert = require('./insert.js');
 const global_schema = require('../utility/globalSchema');
 const p_global_schema = util.promisify(global_schema.getTableSchema);
 
