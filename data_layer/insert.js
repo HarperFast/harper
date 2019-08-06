@@ -22,7 +22,6 @@ const exploder = require('./dataWriteProcessor');
 const util = require('util');
 const ExplodedObject = require('./ExplodedObject');
 const WriteProcessorObject = require('./WriteProcessorObject');
-const hdb_bridge = require('./harperBridge/harperBridge');
 
 // Search is used in the installer, and the base path may be undefined when search is instantiated.  Dynamically
 // get the base path from the environment manager before using it.
@@ -45,9 +44,11 @@ module.exports = {
     insert: insertData,
     update: updateData,
     validation,
-    checkForNewAttributes // There is jira out to see if we can remove this circular dependency CORE-440
+    checkForNewAttributes
 };
-//this must stay after the export to correct a circular dependency issue
+
+// These requires must stay after export to prevent issues with circular dependencies
+const hdb_bridge = require('./harperBridge/harperBridge');
 const global_schema = require('../utility/globalSchema');
 
 const p_global_schema = util.promisify(global_schema.getTableSchema);
