@@ -15,7 +15,7 @@ let hdb_path = function() {
 module.exports = createRecords;
 
 // This must be here to prevent issues with circular dependencies related to insert.checkForNewAttributes
-const insert = require('../../../insert');
+const hdb_core_insert = require('../../../../data_layer/insert');
 
 /**
  * Calls all the functions specifically responsible for writing data to the file system
@@ -25,10 +25,7 @@ const insert = require('../../../insert');
  * @returns {Promise<{skipped_hashes, written_hashes}>}
  */
 async function createRecords(insert_obj, attributes, schema_table) {
-    // This is here due to circular dependencies in insert
-    const hdb_core_insert = require('../../../../data_layer/insert');
     try {
-
         let data_wrapper = await processRows(insert_obj, attributes, schema_table);
         await hdb_core_insert.checkForNewAttributes(insert_obj.hdb_auth_header, schema_table, attributes);
         await processData(data_wrapper);

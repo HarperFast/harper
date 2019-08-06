@@ -58,9 +58,9 @@ const SCHEMA_OBJ_TEST = {
 
 describe('Tests for the file system bridge class', () => {
     let sandbox = sinon.createSandbox();
-    let fs_bridge = new FileSystemBridge();
-    let file_system_bridge_rw;
+    let fsBridge = new FileSystemBridge();
     let log_error_spy;
+
 
     before(() => {
         log_error_spy = sandbox.spy(log, 'error');
@@ -77,16 +77,16 @@ describe('Tests for the file system bridge class', () => {
 
         before(() => {
             fs_create_records_rw = FileSystemBridge.__set__('fsCreateRecords', fs_create_records_stub);
-            file_system_bridge_rw = FileSystemBridge.__set__('fs_create_records', fs_create_records_stub);
         });
 
         after(() => {
             sandbox.restore();
+            fs_create_records_rw();
         });
 
         it('Test createRecords method is called and result is as expected', async () => {
             fs_create_records_stub.resolves(RESULT_TEST);
-            let result = await fs_bridge.createRecords(INSERT_OBJ_TEST, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST);
+            let result = await fsBridge.createRecords(INSERT_OBJ_TEST, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST);
 
             expect(result).to.equal(RESULT_TEST);
             expect(fs_create_records_stub).to.have.been.calledWith(INSERT_OBJ_TEST, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST);
@@ -94,7 +94,7 @@ describe('Tests for the file system bridge class', () => {
 
         it('Test that error is caught, thrown and logged', async () => {
             fs_create_records_stub.throws(new Error('Error creating records'));
-            await test_utils.testForError(fs_bridge.createRecords(INSERT_OBJ_TEST, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST), 'Error creating records');
+            await test_utils.testForError(fsBridge.createRecords(INSERT_OBJ_TEST, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST), 'Error creating records');
 
             expect(log_error_spy).to.have.been.calledOnce;
         });
@@ -102,24 +102,26 @@ describe('Tests for the file system bridge class', () => {
 
     context('Test createSchema method', () => {
         let fs_create_schema_stub = sandbox.stub();
+        let fs_create_schema_rw;
 
         before(() => {
-            file_system_bridge_rw = FileSystemBridge.__set__('fs_create_schema', fs_create_schema_stub);
+            fs_create_schema_rw = FileSystemBridge.__set__('fsCreateSchema', fs_create_schema_stub);
         });
 
         after(() => {
             sandbox.restore();
+            fs_create_schema_rw();
         });
 
         it('Test createSchema method is called and result is as expected', async () => {
-            await fs_bridge.createSchema(SCHEMA_OBJ_TEST);
+            await fsBridge.createSchema(SCHEMA_OBJ_TEST);
 
             expect(fs_create_schema_stub).to.have.been.calledWith(SCHEMA_OBJ_TEST);
         });
 
         it('Test that error is caught, thrown and logged', async () => {
             fs_create_schema_stub.throws(new Error('Error creating schema'));
-            await test_utils.testForError(fs_bridge.createSchema(SCHEMA_OBJ_TEST), 'Error creating schema');
+            await test_utils.testForError(fsBridge.createSchema(SCHEMA_OBJ_TEST), 'Error creating schema');
 
             expect(log_error_spy).to.have.been.calledOnce;
         });

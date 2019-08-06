@@ -3,7 +3,7 @@
 const test_utils = require('../../../../test_utils');
 test_utils.preTestPrep();
 
-const fs_create_schema = require('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsCreateSchema');
+const fsCreateSchema = require('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsCreateSchema');
 const hdb_core_insert = require('../../../../../data_layer/insert');
 const terms = require('../../../../../utility/hdbTerms');
 const env = require('../../../../../utility/environment/environmentManager');
@@ -34,7 +34,7 @@ describe('Test file system module fsCreateSchema', () => {
 
     it('test createRecords and fs.mkdir are called as expected', async () => {
         try {
-            await fs_create_schema(SCHEMA_CREATE_OBJECT_TEST);
+            await fsCreateSchema(SCHEMA_CREATE_OBJECT_TEST);
 
             expect(hdb_core_insert_stub).to.have.been.calledOnce;
             expect(fs_mkdir_stub).to.have.been.calledWith(env.get('HDB_ROOT') + '/schema/' + SCHEMA_CREATE_OBJECT_TEST.schema, {mode: terms.HDB_FILE_PERMISSIONS});
@@ -45,6 +45,6 @@ describe('Test file system module fsCreateSchema', () => {
 
     it('test error from fs.mkdir is caught', async () => {
         fs_mkdir_stub.throws(new Error('Error creating directory'));
-        await test_utils.testForError(fs_create_schema(SCHEMA_CREATE_OBJECT_TEST, HDB_FILE_PERMISSIONS_TEST, SCHEMA_ROOT_TEST), 'Error creating directory');
+        await test_utils.testForError(fsCreateSchema(SCHEMA_CREATE_OBJECT_TEST, HDB_FILE_PERMISSIONS_TEST, SCHEMA_ROOT_TEST), 'Error creating directory');
     });
 });

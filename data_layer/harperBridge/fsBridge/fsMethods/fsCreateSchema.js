@@ -10,7 +10,7 @@ module.exports = createSchema;
 const hdb_core_insert = require('../../../insert');
 
 /**
- * Calls HDB core insert to add schema to system schema then mkdirp to create folder in file system.
+ * Calls HDB core insert to first add schema to system schema then mkdirp to create folder in file system.
  * @param schema_create_obj
  * @returns {Promise<void>}
  */
