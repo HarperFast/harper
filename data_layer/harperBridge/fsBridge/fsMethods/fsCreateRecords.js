@@ -14,6 +14,9 @@ let hdb_path = function() {
 
 module.exports = createRecords;
 
+// This must be here to prevent issues with circular dependencies related to insert.checkForNewAttributes
+const insert = require('../../../insert');
+
 /**
  * Calls all the functions specifically responsible for writing data to the file system
  * @param insert_obj
@@ -31,12 +34,13 @@ async function createRecords(insert_obj, attributes, schema_table) {
         await processData(data_wrapper);
 
         let return_obj = {
-            written_hashes: data_wrapper.written_hashes, // change to this to a key that doesnt exist and you will get error returned by api
+            written_hashes: data_wrapper.written_hashes,
             skipped_hashes: data_wrapper.skipped
         };
 
         return return_obj;
     } catch(err) {
+        log.error(err);
         throw err;
     }
 }
@@ -49,12 +53,17 @@ async function createRecords(insert_obj, attributes, schema_table) {
  * @param existing_rows
  * @returns {Promise<ExplodedObject>}
  */
-async function processRows(insert_obj, attributes, table_schema, existing_rows){
+async function processRows(insert_obj, attributes, schema_table, existing_rows){
     let epoch = Date.now();
-    let exploder_object = new WriteProcessorObject(hdb_path(), insert_obj.operation, insert_obj.records, table_schema, attributes, epoch, existing_rows);
-    let data_wrapper = await data_write_processor(exploder_object);
 
-    return data_wrapper;
+    try {
+        let exploder_object = new WriteProcessorObject(hdb_path(), insert_obj.operation, insert_obj.records, schema_table, attributes, epoch, existing_rows);
+        let data_wrapper = await data_write_processor(exploder_object);
+
+        return data_wrapper;
+    } catch(err) {
+        throw err;
+    }
 }
 
 /**
@@ -79,6 +88,7 @@ async function createFolders(folders) {
         await mkdirp(folders, {mode:  hdb_terms.HDB_FILE_PERMISSIONS});
     } catch (err) {
         log.error(err);
+        throw err;
     }
 }
 
@@ -91,6 +101,7 @@ async function writeRawDataFiles(data) {
         await write_file(data);
     } catch(err) {
         log.error(err);
+        throw err;
     }
 }
 

@@ -4,6 +4,8 @@ const fs = require('fs');
 const moment = require('moment');
 const sinon = require('sinon');
 const uuid = require('uuid/v4');
+const chai = require('chai');
+const { expect } = chai;
 
 const sql = require('../sqlTranslator/index');
 const SelectValidator = require('../sqlTranslator/SelectValidator');
@@ -673,6 +675,24 @@ function sortAsc(data, sort_by) {
     return data.sort((a, b) => a - b);
 }
 
+/**
+ * Helper function that tests for correct error instance and their message.
+ * @param test_func - function you are testing
+ * @param error_msg - error message expected to be returned
+ * @returns {Promise<void>}
+ */
+async function testForError(test_func, error_msg) {
+    let error;
+    try {
+        await test_func;
+    } catch(err) {
+        error = err;
+    }
+
+    expect(error).to.be.instanceOf(Error);
+    expect(error.message).to.equal(error_msg);
+}
+
 module.exports = {
     changeProcessToBinDir,
     deepClone,
@@ -685,5 +705,6 @@ module.exports = {
     getMockFSPath,
     generateMockAST,
     sortAsc,
-    sortDesc
+    sortDesc,
+    testForError
 };

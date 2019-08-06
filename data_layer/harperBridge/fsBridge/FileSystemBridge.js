@@ -1,7 +1,9 @@
 "use strict";
 
 const create_schema = require('./fsMethods/fsCreateSchema');
+const log = require('../../../utility/logging/harper_logger');
 const BridgeMethods = require("../BridgeMethods.js");
+const fs_create_records = require('./fsMethods/fsCreateRecords');
 
 class FileSystemBridge extends BridgeMethods {
 
@@ -12,10 +14,12 @@ class FileSystemBridge extends BridgeMethods {
     }
 
     async createRecords(insert_obj, attributes, schema_table) {
-        // This is here due to circular dependencies in insert
-        const fs_create_records = require('./fsMethods/fsCreateRecords');
-
-        return await fs_create_records(insert_obj, attributes, schema_table);
+        try {
+            return await fs_create_records(insert_obj, attributes, schema_table);;
+        } catch(err) {
+            log.error(err);
+            throw err;
+        }
     }
 
 }
