@@ -11,7 +11,7 @@ const writeFile = require('../../../../utility/fs/writeFile');
 module.exports = createRecords;
 
 // This must be here to prevent issues with circular dependencies related to insert.checkForNewAttributes
-const hdb_core_insert = require('../../../../data_layer/insert');
+const hdb_core_insert = require('../../../insert');
 
 /**
  * Calls all the functions specifically responsible for writing data to the file system
@@ -96,3 +96,4 @@ async function writeRawDataFiles(data) {
         throw err;
     }
 }
+
