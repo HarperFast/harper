@@ -17,7 +17,7 @@ const signalling = require('../utility/signalling');
 const util = require('util');
 const hdb_util = require('../utility/common_utils');
 const terms = require('../utility/hdbTerms');
-const hdb_bridge = require('./harperBridge/harperBridge');
+const harperBridge = require('./harperBridge/harperBridge');
 
 // Promisified functions
 let p_search_search_by_value = util.promisify(search.searchByValue);
@@ -85,7 +85,7 @@ async function createSchemaStructure(schema_create_object) {
     }
 
     try {
-        await hdb_bridge.createSchema(schema_create_object);
+        await harperBridge.createSchema(schema_create_object);
 
         return `schema ${schema_create_object.schema} successfully created`;
     } catch(err) {
@@ -138,12 +138,12 @@ async function createTableStructure(create_table_object) {
         if(create_table_object.residence) {
             if(global.clustering_on) {
                 table.residence = create_table_object.residence;
-                await insertTable(table, create_table_object);
+                await harperBridge.createTable(table, create_table_object);
             } else {
                 throw new Error(`Clustering does not appear to be enabled. Cannot insert table with property 'residence'.`);
             }
         } else {
-            await insertTable(table, create_table_object);
+            await harperBridge.createTable(table, create_table_object);
         }
 
         return `table ${create_table_object.schema}.${create_table_object.table} successfully created.`;
@@ -152,28 +152,28 @@ async function createTableStructure(create_table_object) {
     }
 }
 
-async function insertTable(table, create_table_object) {
-    let insertObject = {
-        operation: 'insert',
-        schema: 'system',
-        table: 'hdb_table',
-        hash_attribute: 'id',
-        records: [table]
-    };
-
-    try {
-        await insert.insert(insertObject);
-        await fs.mkdir(env.get('HDB_ROOT') + '/schema/' + create_table_object.schema + '/' + create_table_object.table, {mode: terms.HDB_FILE_PERMISSIONS});
-    } catch(err) {
-        if (err.errno === -2) {
-            throw new Error('schema does not exist');
-        }
-        if (err.errno === -17) {
-            throw new Error('table already exists');
-        }
-        throw err;
-    }
-}
+// async function insertTable(table, create_table_object) {
+//     let insertObject = {
+//         operation: 'insert',
+//         schema: 'system',
+//         table: 'hdb_table',
+//         hash_attribute: 'id',
+//         records: [table]
+//     };
+//
+//     try {
+//         await insert.insert(insertObject);
+//         await fs.mkdir(env.get('HDB_ROOT') + '/schema/' + create_table_object.schema + '/' + create_table_object.table, {mode: terms.HDB_FILE_PERMISSIONS});
+//     } catch(err) {
+//         if (err.errno === -2) {
+//             throw new Error('schema does not exist');
+//         }
+//         if (err.errno === -17) {
+//             throw new Error('table already exists');
+//         }
+//         throw err;
+//     }
+// }
 
 async function dropSchema(drop_schema_object) {
     try {
