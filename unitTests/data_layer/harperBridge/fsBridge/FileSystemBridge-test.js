@@ -87,8 +87,9 @@ describe('Tests for the file system bridge class', () => {
 
         it('Test that error is caught, thrown and logged', async () => {
             fs_create_records_stub.throws(new Error('Error creating records'));
-            await test_utils.testForError(fs_bridge.createRecords(INSERT_OBJ_TEST, ATTRIBUTES_TEST, SCHEMA_TABLE), 'Error creating records');
+            let test_error_result = await test_utils.testError(fs_bridge.createRecords(INSERT_OBJ_TEST, ATTRIBUTES_TEST, SCHEMA_TABLE), 'Error creating records');
 
+            expect(test_error_result).to.be.true;
             expect(log_error_spy).to.have.been.calledOnce;
         });
     });
