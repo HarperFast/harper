@@ -8,10 +8,6 @@ const log = require('../../../../utility/logging/harper_logger');
 const env = require('../../../../utility/environment/environmentManager');
 const writeFile = require('../../../../utility/fs/writeFile');
 
-let hdb_path = function() {
-    return `${env.getHdbBasePath()}/schema/`;
-};
-
 module.exports = createRecords;
 
 // This must be here to prevent issues with circular dependencies related to insert.checkForNewAttributes
@@ -52,9 +48,10 @@ async function createRecords(insert_obj, attributes, schema_table) {
  */
 async function processRows(insert_obj, attributes, schema_table, existing_rows){
     let epoch = Date.now();
+    let hdb_path = `${env.getHdbBasePath()}/schema/`;
 
     try {
-        let exploder_object = new WriteProcessorObject(hdb_path(), insert_obj.operation, insert_obj.records, schema_table, attributes, epoch, existing_rows);
+        let exploder_object = new WriteProcessorObject(hdb_path, insert_obj.operation, insert_obj.records, schema_table, attributes, epoch, existing_rows);
         let data_wrapper = await dataWriteProcessor(exploder_object);
 
         return data_wrapper;
@@ -99,4 +96,3 @@ async function writeRawDataFiles(data) {
         throw err;
     }
 }
-
