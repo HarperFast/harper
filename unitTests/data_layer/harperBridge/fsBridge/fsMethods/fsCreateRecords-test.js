@@ -127,8 +127,9 @@ describe('Tests for file system module fsCreateRecords', () => {
 
         it('Test error is caught and thrown', async () => {
             insert_check_new_attr_stub.throws(new Error('Insert error'));
-            await test_utils.testForError(fs_create_records(INSERT_OBJ_TEST, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST), 'Insert error');
+            let test_error_response = await test_utils.testError(fs_create_records(INSERT_OBJ_TEST, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST), 'Insert error');
 
+            expect(test_error_response).to.be.true;
             expect(log_error_spy).to.have.been.calledOnce;
         });
     });
@@ -157,7 +158,9 @@ describe('Tests for file system module fsCreateRecords', () => {
 
         it('Test error is caught and thrown', async () => {
             data_write_processor_stub.throws(new Error('Data write error'));
-            await test_utils.testForError(process_rows_rw(INSERT_OBJ_TEST, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST, existing_rows), 'Data write error');
+            let test_error_response = await test_utils.testError(process_rows_rw(INSERT_OBJ_TEST, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST, existing_rows), 'Data write error');
+
+            expect(test_error_response).to.be.true;
         });
     });
 
@@ -186,7 +189,9 @@ describe('Tests for file system module fsCreateRecords', () => {
 
         it('Test error is caught and thrown', async () => {
             create_folders_stub.throws(new Error('Error creating folder'));
-            await test_utils.testForError(process_data_rw(DATA_WRAPPER_TEST), 'Error creating folder');
+            let test_error_response = await test_utils.testError(process_data_rw(DATA_WRAPPER_TEST), 'Error creating folder');
+
+            expect(test_error_response).to.be.true;
         });
     });
 
@@ -235,7 +240,10 @@ describe('Tests for file system module fsCreateRecords', () => {
 
         it('Test error is caught and thrown', async () => {
             write_raw_data_stub.throws(new Error('Error writing raw date'));
-            await test_utils.testForError(write_raw_data_rw(WRITE_FILES_DATA_TEST), 'Error writing raw date');
+            let test_error_result = await test_utils.testError(write_raw_data_rw(WRITE_FILES_DATA_TEST), 'Error writing raw date');
+
+            expect(test_error_result).to.be.true;
+
         });
     });
 });
