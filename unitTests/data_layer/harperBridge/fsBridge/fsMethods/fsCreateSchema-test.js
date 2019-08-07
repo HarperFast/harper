@@ -45,6 +45,8 @@ describe('Test file system module fsCreateSchema', () => {
 
     it('test error from fs.mkdir is caught', async () => {
         fs_mkdir_stub.throws(new Error('Error creating directory'));
-        await test_utils.testForError(fsCreateSchema(SCHEMA_CREATE_OBJECT_TEST, HDB_FILE_PERMISSIONS_TEST, SCHEMA_ROOT_TEST), 'Error creating directory');
+        let test_error_result = await test_utils.testError(fsCreateSchema(SCHEMA_CREATE_OBJECT_TEST, HDB_FILE_PERMISSIONS_TEST, SCHEMA_ROOT_TEST), 'Error creating directory');
+
+        expect(test_error_result).to.be.true;
     });
 });
