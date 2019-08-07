@@ -9,13 +9,13 @@ module.exports = createTable;
 // This must be after export to prevent issues with circular dependencies related to insert.checkForNewAttributes.
 const hdb_core_insert = require('../../../insert');
 
-async function createTable(table, create_table_obj) {
+async function createTable(table_system_data, create_table_obj) {
     let insert_object = {
         operation: 'insert',
         schema: 'system',
         table: 'hdb_table',
         hash_attribute: 'id',
-        records: [table]
+        records: [table_system_data]
     };
 
     try {

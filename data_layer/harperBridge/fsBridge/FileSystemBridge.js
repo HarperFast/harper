@@ -17,9 +17,9 @@ class FileSystemBridge extends BridgeMethods {
         }
     }
 
-    async createTable(table_create_obj) {
+    async createTable(table, table_create_obj) {
         try {
-            return await fsCreateTable(table_create_obj)
+            return await fsCreateTable(table, table_create_obj);
         } catch(err) {
             log.error(err);
             throw err;
