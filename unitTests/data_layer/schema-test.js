@@ -24,6 +24,7 @@ const common = require('../../utility/common_utils');
 const schema_validator = require('../../validation/schema_validator');
 const util = require('util');
 const clonedeep = require('lodash.clonedeep');
+const harperBridge = require('../../data_layer/harperBridge/harperBridge');
 
 // Rewire is used at times as stubbing alone doesn't work when stubbing a function
 // being called inside another function declared within the same file.
@@ -37,6 +38,7 @@ const FULL_SCHEMA_PATH_TEST = env.get('HDB_ROOT') + '/schema/' + SCHEMA_NAME_TES
 const TRASH_PATH_TEST = `${HDB_ROOT_TEST}/trash`;
 const FULL_TABLE_PATH_TEST = FULL_SCHEMA_PATH_TEST + '/' + TABLE_NAME_TEST;
 const SCHEMA_CREATE_OBJECT_TEST = {operation: 'create_schema', schema: SCHEMA_NAME_TEST};
+const SCHEMA_CREATE_OBJECT_TEST2 = {operation: 'create_schema', schema: 'dogsrule2'};
 const CREATE_TABLE_OBJECT_TEST = {operation: 'create_table', schema: SCHEMA_NAME_TEST, table: TABLE_NAME_TEST, hash_attribute: HASH_ATT_TEST, residence: ''};
 const TABLE_TEST = {name: CREATE_TABLE_OBJECT_TEST.table, schema: CREATE_TABLE_OBJECT_TEST.schema, id: uuidV4(), hash_attribute: CREATE_TABLE_OBJECT_TEST.hash_attribute};
 const INSERT_OBJECT_TEST = {operation: 'insert', schema: 'system', table: 'hdb_table', hash_attribute: 'id', records: [TABLE_TEST]};
@@ -48,6 +50,13 @@ const DATE_SUBSTR_LENGTH = 19;
 const GLOBAL_SCHEMA_FAKE = {
     'dogsrule': {
         'catsdrool': {
+            'hash_attribute': 'id'
+        }
+    }
+};
+const GLOBAL_SCHEMA_FAKE2 = {
+    'dogsrule2': {
+        'catsdrool3': {
             'hash_attribute': 'id'
         }
     }
@@ -87,12 +96,12 @@ describe('Test schema module', function() {
     let signal_schema_change_stub;
     let insert_stub;
     let search_by_conditions_stub = sinon.stub();
-    let search_for_schema_stub = sinon.stub();
-    let search_for_schema_rewire;
-    let search_for_table_stub = sinon.stub();
-    let search_for_table_rewire;
-    let insert_table_stub = sinon.stub();
-    let insert_table_rewire;
+    // let search_for_schema_stub = sinon.stub();
+    // let search_for_schema_rewire;
+    // let search_for_table_stub = sinon.stub();
+    // let search_for_table_rewire;
+    // let insert_table_stub = sinon.stub();
+    // let insert_table_rewire;
     let logger_error_stub;
     let logger_info_stub;
     let schema_validator_stub;
@@ -113,18 +122,20 @@ describe('Test schema module', function() {
     let move_attr_to_trash_rewire;
     let move_folder_to_trash_stub = sinon.stub();
     let move_folder_to_trash_rewire;
-    let global_hdb_schema_stub = sinon.stub();
-    let global_hdb_schema_rewire;
+    let harper_bridge_stub;
+    global.hdb_schema = {};
+    // let global_hdb_schema_stub = sinon.stub();
+    // let global_hdb_schema_rewire;
 
     before(function() {
         env.setProperty('HDB_ROOT', HDB_ROOT_TEST);
-        global_hdb_schema_rewire = schema.__set__('global.hdb_schema', global_hdb_schema_stub);
+        // global_hdb_schema_rewire = schema.__set__('global.hdb_schema', global_hdb_schema_stub);
         insert_stub = sinon.stub(insert, 'insert');
         signal_schema_change_stub = sinon.stub(signalling, 'signalSchemaChange');
         schema.__set__('p_search_by_conditions', search_by_conditions_stub);
-        search_for_schema_rewire = schema.__set__('searchForSchema', search_for_schema_stub);
-        search_for_table_rewire = schema.__set__('searchForTable', search_for_table_stub);
-        insert_table_rewire = schema.__set__('insertTable', insert_table_stub);
+        //search_for_schema_rewire = schema.__set__('searchForSchema', search_for_schema_stub);
+        //search_for_table_rewire = schema.__set__('searchForTable', search_for_table_stub);
+        //insert_table_rewire = schema.__set__('insertTable', insert_table_stub);
         logger_error_stub = sinon.stub(logger, 'error');
         logger_info_stub = sinon.stub(logger, 'info');
         schema_validator_stub = sinon.stub(schema_validator, 'schema_object');
@@ -153,7 +164,7 @@ describe('Test schema module', function() {
         deleteSchemaTableStruc();
         env.setProperty('HDB_ROOT', HDB_ROOT_ORIGINAL);
         global.schema = global_schema_original;
-        global_hdb_schema_rewire();
+        //global_hdb_schema_rewire();
         search_by_value_rewire();
         delete_delete_rewire();
         delete_attr_struct_rewire();
@@ -236,7 +247,16 @@ describe('Test schema module', function() {
         });
 
         it('should throw schema already exists error', async function() {
+            let error;
+            global.hdb_schema = GLOBAL_SCHEMA_FAKE2;
 
+            try {
+                await schema.createSchemaStructure(SCHEMA_CREATE_OBJECT_TEST2);
+            } catch(err) {
+                error = err;
+            }
+
+            expect(error).to.equal(`schema ${SCHEMA_CREATE_OBJECT_TEST2.schema} already exists`)
         });
 
         it('should catch errno directory exists error from fs.mkdir', async function() {
@@ -295,6 +315,11 @@ describe('Test schema module', function() {
         let create_table_validator_stub = sinon.stub(schema_validator, 'create_table_object');
         let residence_validator_stub = sinon.stub(schema_validator, 'validateTableResidence');
 
+        before(() => {
+            harper_bridge_stub = sinon.stub(harperBridge, 'createTable');
+        });
+
+
         after(function() {
             CREATE_TABLE_OBJECT_TEST.residence = '';
         });
@@ -302,7 +327,6 @@ describe('Test schema module', function() {
         afterEach(function () {
             global.clustering_on = true;
             create_table_validator_stub.returns();
-            search_for_table_stub.resolves([]);
         });
 
         it('should catch thrown error from validation.create_table_object', async function() {
@@ -322,7 +346,6 @@ describe('Test schema module', function() {
         });
 
         it('should throw schema does not exist error message', async function() {
-            search_for_schema_stub.resolves([]);
             let error;
 
             try {
@@ -331,15 +354,14 @@ describe('Test schema module', function() {
                error = err;
             }
 
-            expect(error.message).to.equal(`schema ${CREATE_TABLE_OBJECT_TEST.schema} does not exist`);
+            expect(error).to.equal(`schema ${CREATE_TABLE_OBJECT_TEST.schema} does not exist`);
             expect(create_table_validator_stub).to.have.been.calledOnce;
             expect(residence_validator_stub).to.have.been.calledOnce;
         });
 
-        it('should throw table does not exist error message', async function() {
-            search_for_schema_stub.resolves([{SCHEMA_NAME_TEST}]);
-            search_for_table_stub.resolves([{TABLE_NAME_TEST}]);
+        it('should throw table already exists error message', async function() {
             let error;
+            global.hdb_schema = clonedeep(GLOBAL_SCHEMA_FAKE);
 
             try {
                 await schema.createTableStructure(CREATE_TABLE_OBJECT_TEST);
@@ -347,10 +369,10 @@ describe('Test schema module', function() {
                 error = err;
             }
 
-            expect(error.message).to.equal(`table ${CREATE_TABLE_OBJECT_TEST.table} already exists in schema ${CREATE_TABLE_OBJECT_TEST.schema}`);
-            expect(search_for_schema_stub).to.have.been.calledOnce;
+            expect(error).to.equal(`table ${CREATE_TABLE_OBJECT_TEST.table} already exists in schema ${CREATE_TABLE_OBJECT_TEST.schema}`);
             expect(create_table_validator_stub).to.have.been.calledOnce;
             expect(residence_validator_stub).to.have.been.calledOnce;
+            global.hdb_schema.dogsrule = {};
         });
 
         it('should check that table has been inserted with clustering on', async function () {
@@ -358,7 +380,6 @@ describe('Test schema module', function() {
             global.clustering_on = true;
             let result = await schema.createTableStructure(CREATE_TABLE_OBJECT_TEST);
 
-            expect(insert_table_stub).to.have.been.calledOnce;
             expect(result).to.equal(`table ${CREATE_TABLE_OBJECT_TEST.schema}.${CREATE_TABLE_OBJECT_TEST.table} successfully created.`);
         });
 
@@ -373,8 +394,6 @@ describe('Test schema module', function() {
             }
 
             expect(error.message).to.equal(`Clustering does not appear to be enabled. Cannot insert table with property 'residence'.`);
-            expect(search_for_schema_stub).to.have.been.calledOnce;
-            expect(search_for_table_stub).to.have.been.calledOnce;
             expect(create_table_validator_stub).to.have.been.calledOnce;
             expect(residence_validator_stub).to.have.been.calledOnce;
         });
@@ -383,11 +402,8 @@ describe('Test schema module', function() {
             let result = await schema.createTableStructure(CREATE_TABLE_OBJECT_TEST);
 
             expect(result).to.equal(`table ${CREATE_TABLE_OBJECT_TEST.schema}.${CREATE_TABLE_OBJECT_TEST.table} successfully created.`);
-            expect(search_for_schema_stub).to.have.been.calledOnce;
-            expect(search_for_table_stub).to.have.been.calledOnce;
             expect(create_table_validator_stub).to.have.been.calledOnce;
             expect(residence_validator_stub).to.have.been.calledOnce;
-            expect(insert_table_stub).to.have.been.calledOnce;
         });
 
         it('should call insertTable without setting table.residence', async function () {
@@ -395,18 +411,15 @@ describe('Test schema module', function() {
             let result = await schema.createTableStructure(CREATE_TABLE_OBJECT_TEST);
 
             expect(result).to.equal(`table ${CREATE_TABLE_OBJECT_TEST.schema}.${CREATE_TABLE_OBJECT_TEST.table} successfully created.`);
-            expect(search_for_schema_stub).to.have.been.calledOnce;
-            expect(search_for_table_stub).to.have.been.calledOnce;
             expect(create_table_validator_stub).to.have.been.calledOnce;
             expect(residence_validator_stub).to.have.been.calledOnce;
-            expect(insert_table_stub).to.have.been.calledOnce;
         });
     });
 
     /**
      * Tests for insertTable function.
      */
-    describe('Insert table', function() {
+   /* describe('Insert table', function() {
         let insert_table;
         let fs_mkdir_stub;
 
@@ -482,7 +495,7 @@ describe('Test schema module', function() {
             expect(error).to.be.instanceOf(Error);
             expect(error.message).to.equal(insert_err);
         });
-    });
+    });*/
 
     /**
      * Tests for dropSchema function.
@@ -492,7 +505,6 @@ describe('Test schema module', function() {
         let move_schema_trash_rewire = schema.__set__('moveSchemaStructureToTrash', move_schema_trash_stub);
 
         after(function() {
-            global_hdb_schema_rewire();
             move_schema_trash_rewire();
         });
 
@@ -743,7 +755,7 @@ describe('Test schema module', function() {
 
         it('should throw cannot drop a hash attribute error', async function() {
             attr_validator_stub.returns();
-            global.hdb_schema = GLOBAL_SCHEMA_FAKE;
+            global.hdb_schema = clonedeep(GLOBAL_SCHEMA_FAKE);
             let error;
 
             try {
@@ -759,6 +771,7 @@ describe('Test schema module', function() {
 
         it('should throw and log error from moveAttributeToTrash', async function() {
             // Set global schema hash_attribute to something different than test schema const after last test.
+            global.hdb_schema = GLOBAL_SCHEMA_FAKE;
             global.hdb_schema.dogsrule.catsdrool.hash_attribute = 'notid';
             let move_attr_trash_err = 'There was problem moving attribute to trash';
             move_attr_to_trash_stub.throws(new Error(move_attr_trash_err));
@@ -1184,7 +1197,6 @@ describe('Test schema module', function() {
         let search_for_schema;
 
         before(function() {
-            search_for_schema_rewire();
             search_for_schema = schema.__get__('searchForSchema');
         });
 
@@ -1221,7 +1233,6 @@ describe('Test schema module', function() {
         let search_for_table;
 
         before(function() {
-            search_for_table_rewire();
             search_for_table = schema.__get__('searchForTable');
         });
 
