@@ -43,9 +43,12 @@ const INSERT_ACTION = 'inserted';
 module.exports = {
     insert: insertData,
     update: updateData,
-    validation
+    validation,
+    checkForNewAttributes
 };
-//this must stay after the export to correct a circular dependency issue
+
+// These requires must stay after export to prevent issues with circular dependencies
+const harperBridge = require('./harperBridge/harperBridge');
 const global_schema = require('../utility/globalSchema');
 
 const p_global_schema = util.promisify(global_schema.getTableSchema);
@@ -70,7 +73,7 @@ async function validation(write_object){
         throw new Error('invalid table specified.');
     }
 
-    let table_schema = await p_global_schema(write_object.schema, write_object.table);
+    let schema_table = await p_global_schema(write_object.schema, write_object.table);
 
     //validate insert_object for required attributes
     let validator = insert_validator(write_object);
@@ -82,7 +85,7 @@ async function validation(write_object){
         throw new Error('records must be an array');
     }
 
-    let hash_attribute = table_schema.hash_attribute;
+    let hash_attribute = schema_table.hash_attribute;
     let dups = new Set();
     let attributes = {};
 
@@ -112,7 +115,7 @@ async function validation(write_object){
     attributes[hash_attribute] = 1;
 
     return {
-        table_schema: table_schema,
+        schema_table: schema_table,
         hashes: Array.from(dups),
         attributes: Object.keys(attributes)
     };
@@ -123,20 +126,16 @@ async function validation(write_object){
  * @param insert_object
  */
 async function insertData(insert_object){
+    if (insert_object.operation !== 'insert') {
+        throw new Error('invalid operation, must be insert');
+    }
+
     try {
-        let epoch = Date.now();
+        let {schema_table, attributes} = await validation(insert_object);
+        let hdb_bridge_result = await harperBridge.createRecords(insert_object, attributes, schema_table);
+        convertOperationToTransaction(insert_object, hdb_bridge_result.written_hashes, schema_table.hash_attribute);
 
-        if (insert_object.operation !== 'insert') {
-            throw new Error('invalid operation, must be insert');
-        }
-
-        let {table_schema, attributes} = await validation(insert_object);
-        let { written_hashes, skipped, ...data_wrapper} = await processRows(insert_object, attributes, table_schema, epoch, null);
-        await checkForNewAttributes(insert_object.hdb_auth_header, table_schema, attributes);
-        await processData(data_wrapper);
-        convertOperationToTransaction(insert_object, written_hashes, table_schema.hash_attribute);
-
-        return returnObject(INSERT_ACTION, written_hashes, insert_object, skipped);
+        return returnObject(INSERT_ACTION, hdb_bridge_result.written_hashes, insert_object, hdb_bridge_result.skipped_hashes);
     } catch(e){
         throw (e);
     }
@@ -174,8 +173,8 @@ async function updateData(update_object){
             throw new Error('invalid operation, must be update');
         }
 
-        let {table_schema, hashes, attributes} = await validation(update_object);
-        let existing_rows = await getExistingRows(table_schema, hashes, attributes);
+        let {schema_table, hashes, attributes} = await validation(update_object);
+        let existing_rows = await getExistingRows(schema_table, hashes, attributes);
 
         // If no hashes are existing skip update attempts
         if(h_utils.isEmptyOrZeroLength(existing_rows)){
@@ -183,14 +182,14 @@ async function updateData(update_object){
         }
 
         let existing_map = _.keyBy(existing_rows, function(record) {
-            return record[table_schema.hash_attribute];
+            return record[schema_table.hash_attribute];
         });
 
-        let { written_hashes, skipped, unlinks, ...data_wrapper} = await processRows(update_object, attributes, table_schema, epoch, existing_map);
-        await checkForNewAttributes(update_object.hdb_auth_header, table_schema, attributes);
+        let { written_hashes, skipped, unlinks, ...data_wrapper} = await processRows(update_object, attributes, schema_table, epoch, existing_map);
+        await checkForNewAttributes(update_object.hdb_auth_header, schema_table, attributes);
         await unlinkFiles(unlinks);
         await processData(data_wrapper);
-        convertOperationToTransaction(update_object, written_hashes, table_schema.hash_attribute);
+        convertOperationToTransaction(update_object, written_hashes, schema_table.hash_attribute);
 
         return returnObject(UPDATE_ACTION, written_hashes, update_object, skipped);
     } catch(e){
