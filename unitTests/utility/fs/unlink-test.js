@@ -4,8 +4,9 @@ const unlink = require('../../../utility/fs/unlink');
 const fs = require('fs-extra');
 const assert = require('assert');
 const path = require('path');
+const test_utils = require('../../test_utils');
 
-const BASE_TEST_PATH = path.join(__dirname, '../../../test/unlinkTest/');
+const BASE_TEST_PATH = path.join(test_utils.getMockFSPath(), 'unlinkTest');
 const FOLDER_1_FILE_PATH = path.join(BASE_TEST_PATH, 'folder_1_file/');
 const FILE_IN_FOLDER_1_FILE_PATH = path.join(FOLDER_1_FILE_PATH, 'tmp1.txt');
 const FOLDER_2_FILES_PATH = path.join(BASE_TEST_PATH, 'folder_2_files/');
@@ -27,6 +28,7 @@ describe('Test unlink module', ()=>{
     after(async ()=>{
         await fs.emptyDir(BASE_TEST_PATH);
         await fs.rmdir(BASE_TEST_PATH);
+        test_utils.tearDownMockFS();
     });
 
     it('test deleting lone file in folder, verify file & parent dir is deleted', async ()=>{

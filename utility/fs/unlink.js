@@ -3,6 +3,7 @@
 const fs_unlink = require('fs-extra').unlink;
 const fs_rmdir = require('fs-extra').rmdir;
 const logger = require('../logging/harper_logger');
+const hdb_terms = require('../hdbTerms');
 const path = require('path');
 
 module.exports = unlink;
@@ -26,7 +27,7 @@ async function unlink(paths) {
             try {
                 //attempt to remove the folder that contains the file
                 let folder = path.dirname(file_path);
-                if(folder.indexOf('__hdb_hash') < 0) {
+                if(folder.indexOf(hdb_terms.HASH_FOLDER_NAME) < 0) {
                     await fs_rmdir(folder);
                 }
             }catch(e){
