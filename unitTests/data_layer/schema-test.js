@@ -227,24 +227,26 @@ describe('Test schema module', function() {
             expect(error.message).to.equal(validation_err);
             expect(schema_validator_stub).to.have.been.calledOnce;
         });
+
+        // This needs to be updated. We cannot have test the utilize the file systme here.
         
-        it('should create directory with test schema name', async function() {
-            let result;
-            let exists;
-
-            try {
-                // createSchemaStructure insert.insert expects schema dir to already exist
-                // so I am creating a temporary one. All test dirs are removed after test completion.
-                await fs.mkdirp(`${HDB_ROOT_TEST}/schema`);
-                result = await schema.createSchemaStructure(SCHEMA_CREATE_OBJECT_TEST);
-                exists = await fs.pathExists(FULL_SCHEMA_PATH_TEST);
-            } catch(err) {
-                console.error(err);
-            }
-
-            expect(result).to.equal(`schema ${SCHEMA_NAME_TEST} successfully created`);
-            expect(exists).to.be.true;
-        });
+        // it('should create directory with test schema name', async function() {
+        //     let result;
+        //     let exists;
+        //
+        //     try {
+        //         // createSchemaStructure insert.insert expects schema dir to already exist
+        //         // so I am creating a temporary one. All test dirs are removed after test completion.
+        //         await fs.mkdirp(`${HDB_ROOT_TEST}/schema`);
+        //         result = await schema.createSchemaStructure(SCHEMA_CREATE_OBJECT_TEST);
+        //         exists = await fs.pathExists(FULL_SCHEMA_PATH_TEST);
+        //     } catch(err) {
+        //         console.error(err);
+        //     }
+        //
+        //     expect(result).to.equal(`schema ${SCHEMA_NAME_TEST} successfully created`);
+        //     expect(exists).to.be.true;
+        // });
 
         it('should throw schema already exists error', async function() {
             let error;
@@ -256,20 +258,22 @@ describe('Test schema module', function() {
                 error = err;
             }
 
-            expect(error).to.equal(`schema ${SCHEMA_CREATE_OBJECT_TEST2.schema} already exists`)
+            expect(error).to.equal(`schema ${SCHEMA_CREATE_OBJECT_TEST2.schema} already exists`);
         });
 
-        it('should catch errno directory exists error from fs.mkdir', async function() {
-            let error;
+        // This also needs to be pulled out as it's related to the file system
 
-            try {
-                await schema.createSchemaStructure(SCHEMA_CREATE_OBJECT_TEST);
-            } catch(err) {
-                error = err;
-            }
-
-            expect(error.message).to.equal('schema already exists');
-        });
+        // it('should catch errno directory exists error from fs.mkdir', async function() {
+        //     let error;
+        //
+        //     try {
+        //         await schema.createSchemaStructure(SCHEMA_CREATE_OBJECT_TEST);
+        //     } catch(err) {
+        //         error = err;
+        //     }
+        //
+        //     expect(error.message).to.equal('schema already exists');
+        // });
     });
 
     /**
@@ -406,7 +410,7 @@ describe('Test schema module', function() {
             expect(residence_validator_stub).to.have.been.calledOnce;
         });
 
-        it('should call insertTable without setting table.residence', async function () {
+        it('should call createTable without setting table.residence', async function () {
             CREATE_TABLE_OBJECT_TEST.residence = null;
             let result = await schema.createTableStructure(CREATE_TABLE_OBJECT_TEST);
 
@@ -803,24 +807,22 @@ describe('Test schema module', function() {
         });
     });
 
+
+    // These tests need to be update when we come to building the drop schema bridge module
+
     /**
      * Tests for moveSchemaToTrash function.
      */
     describe('Move schema to trash', function() {
         let move_schema_to_trash;
-        let insert_table;
         let tables = [{id: '123456'}];
 
         before(function() {
             move_schema_to_trash_rewire();
             move_schema_to_trash = schema.__get__('moveSchemaToTrash');
-            insert_table = schema.__get__('insertTable');
             move_folder_to_trash_rewire();
         });
 
-        after(function() {
-            deleteSchemaTableStruc();
-        });
 
         it('should throw tables parameter was null error ', async function () {
             let error;
@@ -835,49 +837,6 @@ describe('Test schema module', function() {
         });
 
 
-        // Test is failing, not going to fix it on this task because it will be removed when I build out drop schema.
-
-        // it('should make trash dir and move test schema to it', async function () {
-        //     search_for_schema_stub.resolves();
-        //     let destination_name = `${DROP_SCHEMA_OBJECT_TEST.schema}-${current_date}`;
-        //     let delete_table_object_fake = {
-        //         table: "hdb_table",
-        //         schema: "system",
-        //         hash_values: ['123456']
-        //     };
-        //     let exists_in_trash;
-        //     let doesnt_exist_in_schema;
-        //
-        //     try {
-        //         // Make a temporary schema and table setup in unit test dir then move it to trash.
-        //
-        //         await buildSchemaTableStruc();
-        //         await move_schema_to_trash(DROP_SCHEMA_OBJECT_TEST, tables);
-        //         // Test that temp setup has been moved to test trash dir and doesnt exist in test schema dir
-        //         exists_in_trash = await fs.pathExists(`${TRASH_PATH_TEST}/${destination_name}`);
-        //         doesnt_exist_in_schema = await fs.pathExists(FULL_SCHEMA_PATH_TEST);
-        //     } catch(err) {
-        //         console.error(err);
-        //     }
-        //
-        //     expect(exists_in_trash).to.be.true;
-        //     expect(doesnt_exist_in_schema).to.be.false;
-        //     expect(delete_delete_stub).to.have.been.calledOnce;
-        //     expect(delete_delete_stub).to.have.been.calledWith(delete_table_object_fake);
-        // });
-
-        it('should catch thrown error', async function() {
-            let error;
-
-            try {
-                await move_schema_to_trash(DROP_SCHEMA_OBJECT_TEST, tables);
-            } catch(err) {
-              error = err;
-            }
-
-            expect(error).to.be.instanceOf(Error);
-            expect(error.message).to.include('no such file or directory');
-        });
     });
 
     /**
@@ -938,7 +897,7 @@ describe('Test schema module', function() {
             deleteSchemaTableStruc();
         });
 
-        // Test is failing, not going to fix it on this task because it will be removed when I build out drop schema.
+        // Test is failing, not going to fix it on this task because it will be removed when I build out drop table.
 
         // it('should make trash dir and move test table to it', async function() {
         //     let destination_name = `${DROP_TABLE_OBJECT_TEST.schema}-${DROP_TABLE_OBJECT_TEST.table}-${current_date}`;
@@ -1187,78 +1146,6 @@ describe('Test schema module', function() {
             expect(fs_mkdirp_stub).to.have.been.calledOnce;
             expect(fs_move_stub).to.have.been.calledOnce;
             expect(result).to.be.true;
-        });
-    });
-
-    /**
-     * Tests for searchForSchema function.
-     */
-    describe('Search for schema', function() {
-        let search_for_schema;
-
-        before(function() {
-            search_for_schema = schema.__get__('searchForSchema');
-        });
-
-        it('should return valid stub from searchByConditions', async function() {
-            let search_by_conditions_fake = [{SCHEMA_NAME_TEST}];
-            search_by_conditions_stub.resolves(search_by_conditions_fake);
-            let result = await search_for_schema(SCHEMA_NAME_TEST);
-
-            expect(result).to.equal(search_by_conditions_fake);
-            expect(search_by_conditions_stub).to.have.been.calledOnce;
-        });
-
-        it('should catch thrown error from searchByConditions', async function() {
-            let search_by_conditions_err = `${SCHEMA_NAME_TEST} does not exist`;
-            search_by_conditions_stub.throws(new Error(search_by_conditions_err));
-            let error;
-
-            try {
-                await search_for_schema(SCHEMA_NAME_TEST);
-            } catch(err) {
-              error = err;
-            }
-
-            expect(error).to.be.instanceOf(Error);
-            expect(error.message).to.equal(search_by_conditions_err);
-            expect(search_by_conditions_stub).to.have.been.calledOnce;
-        });
-    });
-
-    /**
-     * Tests for searchForTable function.
-     */
-    describe('Search for table', function() {
-        let search_for_table;
-
-        before(function() {
-            search_for_table = schema.__get__('searchForTable');
-        });
-
-        it('should return valid stub from searchByConditions', async function() {
-            let search_by_conditions_fake = [{TABLE_NAME_TEST}];
-            search_by_conditions_stub.resolves(search_by_conditions_fake);
-            let result = await search_for_table(TABLE_NAME_TEST);
-
-            expect(result).to.equal(search_by_conditions_fake);
-            expect(search_by_conditions_stub).to.have.been.calledOnce;
-        });
-
-        it('should catch thrown error from searchByConditions', async function() {
-            let search_by_conditions_err = `${TABLE_NAME_TEST} does not exist`;
-            search_by_conditions_stub.throws(new Error(search_by_conditions_err));
-            let error;
-
-            try {
-                await search_for_table(TABLE_NAME_TEST);
-            } catch(err) {
-                error = err;
-            }
-
-            expect(error).to.be.instanceOf(Error);
-            expect(error.message).to.equal(search_by_conditions_err);
-            expect(search_by_conditions_stub).to.have.been.calledOnce;
         });
     });
 
