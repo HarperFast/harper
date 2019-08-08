@@ -20,7 +20,7 @@ const TABLE_SYSTEM_DATA_TEST = {
     schema: CREATE_TABLE_OBJ_TEST.schema,
     id: uuidV4(),
     hash_attribute: CREATE_TABLE_OBJ_TEST.hash_attribute
-};
+    };
 
 let current_dir = `${process.cwd()}/unitTests/data_layer/harperBridge/fsBridge/fsMethods`;
 const FULL_TABLE_PATH_TEST = `${current_dir}/schema/${CREATE_TABLE_OBJ_TEST.schema}/${CREATE_TABLE_OBJ_TEST.table}`;
