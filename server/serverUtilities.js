@@ -93,7 +93,7 @@ function processLocalTransaction(req, res, operation_function, callback) {
         setResponseStatus(res, terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, e);
     }
 
-    operation_function_caller.callOperationFunction(operation_function, req.body, postOperationHandler)
+    operation_function_caller.callOperationFunctionAsCallback(operation_function, req.body, postOperationHandler)
         .then((data) => {
             if (typeof data !== 'object') {
                 data = {"message": data};
