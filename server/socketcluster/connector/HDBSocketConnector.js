@@ -78,9 +78,7 @@ class HDBSocketConnector extends SocketConnector{
                     };
 
                     result.inserted_hashes.forEach(record =>{
-                        //if(result.written_hashes.indexOf(common_utils.autoCast(record[hash_attribute])) >= 0) {
                         transaction.records.push(record);
-                        //}
                     });
                     let insert_msg = common_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
                     insert_msg.transaction = transaction;
