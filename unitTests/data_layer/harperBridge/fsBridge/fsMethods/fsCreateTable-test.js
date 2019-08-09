@@ -26,18 +26,17 @@ let current_dir = `${process.cwd()}/unitTests/data_layer/harperBridge/fsBridge/f
 const FULL_TABLE_PATH_TEST = `${current_dir}/schema/${CREATE_TABLE_OBJ_TEST.schema}/${CREATE_TABLE_OBJ_TEST.table}`;
 
 describe('Test file system module fsCreateTable', () => {
-    let root_orignial;
+    let root_original;
 
     before(() => {
-        root_orignial = env.get('HDB_ROOT');
+        root_original = env.get('HDB_ROOT');
         env.setProperty('HDB_ROOT', current_dir);
     });
 
     after(() => {
-        env.setProperty('HDB_ROOT', root_orignial);
+        env.setProperty('HDB_ROOT', root_original);
         test_utils.cleanUpDirectories(`${current_dir}/schema`);
     });
-
 
     it('Test that createTable returns an error when the schema does not exist', async () => {
         let error;
@@ -70,7 +69,7 @@ describe('Test file system module fsCreateTable', () => {
         try {
             await fsCreateTable(TABLE_SYSTEM_DATA_TEST, CREATE_TABLE_OBJ_TEST);
         } catch(err) {
-            error = err
+            error = err;
         }
 
         expect(error).to.be.an.instanceOf(Error);

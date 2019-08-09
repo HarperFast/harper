@@ -58,21 +58,6 @@ let current_date = new Date().toISOString().substr(0, DATE_SUBSTR_LENGTH);
 let global_schema_original = clonedeep(global.hdb_schema);
 
 /**
- * Builds a schema and table directory structure that can be used for testing delete functions. This may become
- * redundant once CRUD test harness is built.
- */
-async function buildSchemaTableStruc(){
-    let insert_table = schema.__get__('insertTable');
-    try {
-        await fs.mkdirp(`${HDB_ROOT_TEST}/schema`);
-        await schema.createSchemaStructure(SCHEMA_CREATE_OBJECT_TEST);
-        await insert_table(TABLE_TEST, CREATE_TABLE_OBJECT_TEST);
-    } catch(err) {
-        console.error(err);
-    }
-}
-
-/**
  * Cleans up any leftover structure built by buildSchemaTableStruc.
  */
 function deleteSchemaTableStruc() {
@@ -88,12 +73,6 @@ describe('Test schema module', function() {
     let signal_schema_change_stub;
     let insert_stub;
     let search_by_conditions_stub = sinon.stub();
-    // let search_for_schema_stub = sinon.stub();
-    // let search_for_schema_rewire;
-    // let search_for_table_stub = sinon.stub();
-    // let search_for_table_rewire;
-    // let insert_table_stub = sinon.stub();
-    // let insert_table_rewire;
     let logger_error_stub;
     let logger_info_stub;
     let schema_validator_stub;
@@ -116,18 +95,12 @@ describe('Test schema module', function() {
     let move_folder_to_trash_rewire;
     let harper_bridge_stub;
     global.hdb_schema = {};
-    // let global_hdb_schema_stub = sinon.stub();
-    // let global_hdb_schema_rewire;
 
     before(function() {
         env.setProperty('HDB_ROOT', HDB_ROOT_TEST);
-        // global_hdb_schema_rewire = schema.__set__('global.hdb_schema', global_hdb_schema_stub);
         insert_stub = sinon.stub(insert, 'insert');
         signal_schema_change_stub = sinon.stub(signalling, 'signalSchemaChange');
         schema.__set__('p_search_by_conditions', search_by_conditions_stub);
-        //search_for_schema_rewire = schema.__set__('searchForSchema', search_for_schema_stub);
-        //search_for_table_rewire = schema.__set__('searchForTable', search_for_table_stub);
-        //insert_table_rewire = schema.__set__('insertTable', insert_table_stub);
         logger_error_stub = sinon.stub(logger, 'error');
         logger_info_stub = sinon.stub(logger, 'info');
         schema_validator_stub = sinon.stub(schema_validator, 'schema_object');
@@ -156,7 +129,6 @@ describe('Test schema module', function() {
         deleteSchemaTableStruc();
         env.setProperty('HDB_ROOT', HDB_ROOT_ORIGINAL);
         global.schema = global_schema_original;
-        //global_hdb_schema_rewire();
         search_by_value_rewire();
         delete_delete_rewire();
         delete_attr_struct_rewire();
@@ -221,14 +193,6 @@ describe('Test schema module', function() {
             expect(schema_validator_stub).to.have.been.calledOnce;
         });
 
-        it('should call bridge and return success message', async () => {
-            let result = await schema.createSchemaStructure(SCHEMA_CREATE_OBJECT_TEST);
-
-            expect(create_schema_stub).to.have.been.calledWith(SCHEMA_CREATE_OBJECT_TEST);
-            expect(result).to.equal(`schema ${SCHEMA_CREATE_OBJECT_TEST.schema} successfully created`)
-        });
-
-
         it('should throw schema already exists error', async function() {
             global.hdb_schema = clonedeep(GLOBAL_SCHEMA_FAKE);
             let error;
@@ -239,13 +203,16 @@ describe('Test schema module', function() {
                 error = err;
             }
 
-            expect(error).to.be.instanceOf(Error);
-            expect(error.message).to.equal(`Schema ${SCHEMA_CREATE_OBJECT_TEST.schema} already exists`);
-
-
+            expect(error).to.equal(`schema ${SCHEMA_CREATE_OBJECT_TEST.schema} already exists`);
         });
 
+        it('should call bridge and return success message', async () => {
+            global.hdb_schema = {schema: 'notDogs'};
+            let result = await schema.createSchemaStructure(SCHEMA_CREATE_OBJECT_TEST);
 
+            expect(create_schema_stub).to.have.been.calledWith(SCHEMA_CREATE_OBJECT_TEST);
+            expect(result).to.equal(`schema ${SCHEMA_CREATE_OBJECT_TEST.schema} successfully created`)
+        });
     });
 
     /**
@@ -291,8 +258,10 @@ describe('Test schema module', function() {
         let create_table_validator_stub = sinon.stub(schema_validator, 'create_table_object');
         let residence_validator_stub = sinon.stub(schema_validator, 'validateTableResidence');
 
+
         before(() => {
             harper_bridge_stub = sinon.stub(harperBridge, 'createTable');
+            global.hdb_schema = {};
         });
 
 
@@ -303,7 +272,6 @@ describe('Test schema module', function() {
         afterEach(function () {
             global.clustering_on = true;
             create_table_validator_stub.returns();
-            search_for_table_stub.resolves([]);
         });
 
         it('should catch thrown error from validation.create_table_object', async function() {
@@ -392,43 +360,6 @@ describe('Test schema module', function() {
             expect(residence_validator_stub).to.have.been.calledOnce;
         });
     });
-
-    /**
-     * Tests for insertTable function.
-     */
-   /* describe('Insert table', function() {
-        let insert_table;
-        let fs_mkdir_stub;
-
-        before(function() {
-            insert_table_rewire();
-            insert_table = schema.__get__('insertTable');
-            fs_mkdir_stub = sinon.stub(fs, 'mkdir');
-        });
-
-        it('should call insert.insert with insertObject', async function() {
-            await insert_table(TABLE_TEST, CREATE_TABLE_OBJECT_TEST);
-
-            expect(insert_stub).to.have.been.calledWith(INSERT_OBJECT_TEST);
-            expect(fs_mkdir_stub).to.have.been.calledOnce;
-
-        });
-
-        it('should catch thrown error from insert', async function() {
-            let insert_err = 'invalid operation';
-            insert_stub.throws(new Error(insert_err));
-            let error;
-
-            try {
-                await insert_table(TABLE_TEST, CREATE_TABLE_OBJECT_TEST);
-            } catch(err) {
-              error = err;
-            }
-
-            expect(error).to.be.instanceOf(Error);
-            expect(error.message).to.equal(insert_err);
-        });
-    });*/
 
     /**
      * Tests for dropSchema function.
@@ -536,7 +467,6 @@ describe('Test schema module', function() {
             expect(delete_attr_struct_stub).to.have.been.calledOnce;
             expect(delete_attr_struct_stub).to.have.been.calledWith(DROP_SCHEMA_OBJECT_TEST);
             expect(result).to.equal(`successfully deleted schema ${DROP_SCHEMA_OBJECT_TEST.schema}`)
-
         });
     });
 
@@ -764,8 +694,6 @@ describe('Test schema module', function() {
 
             expect(error.message).to.equal('tables parameter was null.');
         });
-
-
     });
 
     /**

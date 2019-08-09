@@ -167,7 +167,6 @@ describe('Tests for the file system bridge class', () => {
                 expect(test_error_result).to.be.true;
                 expect(log_error_spy).to.have.been.calledOnce;
             });
-
         });
     });
 });
