@@ -10,6 +10,9 @@ const fs = require('fs-extra');
 const promisify = require('util').promisify;
 const p_settimeout = promisify(setTimeout);
 
+const CATCHUP_INTERVAL = 10000;
+const WORKER_RESPONSE_HANDLER = 1000;
+
 class InterNodeSocketConnector extends SocketConnector{
     constructor(socket_client, worker, additional_info, options, credentials){
         super(socket_client, additional_info, options, credentials);
@@ -35,7 +38,7 @@ class InterNodeSocketConnector extends SocketConnector{
         if(this.additional_info && this.connected_timestamp){
             //check subscriptions so we can locally fetch catchup and ask for remote catchup
             this.additional_info.subscriptions.forEach(async (subscription) => {
-                if (subscription.publish === true) {
+                if(subscription.publish === true) {
                     try{
                         let catch_up_msg = await sc_util.catchupHandler(subscription.channel, this.connected_timestamp, null);
                         if(catch_up_msg) {
@@ -44,14 +47,14 @@ class InterNodeSocketConnector extends SocketConnector{
                     } catch(e){
                         log.error(e);
                     }
-                } else if(subscription.subscribe === true){
+                } if(subscription.subscribe === true) {
                     //TODO correct the emits with CORE-402
                     this.socket.emit('catchup', {channel: subscription.channel, milis_since_connected: Date.now() - this.connected_timestamp}, this.catchupResponseHandler.bind(this));
                 }
             });
         }
 
-        this.interval_id = setInterval(this.recordConnectionTimestamp.bind(this), 10000);
+        this.interval_id = setInterval(this.recordConnectionTimestamp.bind(this), CATCHUP_INTERVAL);
     }
 
     disconnectHandler(){
@@ -83,7 +86,7 @@ class InterNodeSocketConnector extends SocketConnector{
         }
 
         while(this.worker.hdb_workers.length === 0){
-            await p_settimeout(1000);
+            await p_settimeout(WORKER_RESPONSE_HANDLER);
         }
 
         try {

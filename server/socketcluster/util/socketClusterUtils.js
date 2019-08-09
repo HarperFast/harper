@@ -120,7 +120,8 @@ async function catchupHandler(channel, start_timestamp, end_timestamp){
             operation:'catchup',
             transactions: catchup.results
         };
-
+        //TODO: This temp should be removed
+        let temp = global.hdb_schema;
         let catch_up_msg = utils.getClusterMessage(hdb_terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
         catch_up_msg.transaction = catchup_response;
 
