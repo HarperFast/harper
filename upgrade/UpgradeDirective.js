@@ -24,6 +24,8 @@ class UpgradeDirective {
         this.functions = [];
         // Schemas to create.  TODO: Define this as a data type?
         this.schemas = [];
+        this.change_description = "";
+        this.affected_file_paths = [];
     }
 }
 

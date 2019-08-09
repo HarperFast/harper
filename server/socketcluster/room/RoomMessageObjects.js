@@ -141,6 +141,16 @@ class HdbCoreOperationMessage extends HdbCoreBaseMessageIF {
 class HdbCoreAddNodeMessage extends HdbCoreBaseMessageIF {
     constructor() {
         super(types.CORE_ROOM_MSG_TYPE_ENUM.ADD_NODE);
+        this.add_node = undefined;
+    }
+}
+
+/**
+ * A message that is sent by an HDB Child when a node is added in HDB Core
+ */
+class HdbCoreUpdateNodeMessage extends HdbCoreBaseMessageIF {
+    constructor() {
+        super(types.CORE_ROOM_MSG_TYPE_ENUM.UPDATE_NODE);
         this.node = undefined;
     }
 }
@@ -151,7 +161,7 @@ class HdbCoreAddNodeMessage extends HdbCoreBaseMessageIF {
 class HdbCoreRemoveNodeMessage extends HdbCoreBaseMessageIF {
     constructor() {
         super(types.CORE_ROOM_MSG_TYPE_ENUM.REMOVE_NODE);
-        this.node = undefined;
+        this.remove_node = undefined;
     }
 }
 
@@ -177,6 +187,7 @@ module.exports = {
     HdbCoreTransactionMessage,
     HdbCoreOperationMessage,
     HdbCoreAddNodeMessage,
+    HdbCoreUdateNodeMessage: HdbCoreUpdateNodeMessage,
     HdbCoreRemoveNodeMessage,
     SyncHdbUsersMessage
 };
