@@ -10,8 +10,12 @@ const hdb_queue_path = env.getHdbBasePath() + '/clustering/transaction_log/';
 const utils = require('../../../utility/common_utils');
 const get_cluster_user = require('../../../utility/common_utils').getClusterUser;
 const password_utility = require('../../../utility/password');
+const global_schema = require('../../../utility/globalSchema');
+const {promisify} = require('util');
 
 const SC_TOKEN_EXPIRATION = '1d';
+
+const p_set_schema_to_global = promisify(global_schema.setSchemaDataToGlobal);
 
 class ConnectionDetails {
     constructor(id, host_address, host_port, state) {
@@ -120,10 +124,18 @@ async function catchupHandler(channel, start_timestamp, end_timestamp){
             operation:'catchup',
             transactions: catchup.results
         };
-        //TODO: This temp should be removed
-        let temp = global.hdb_schema;
+
+        if(!global.hdb_schema) {
+            try {
+                await p_set_schema_to_global();
+            } catch (err) {
+                log.error(`Error settings schema to global.`);
+                log.error(err);
+            }
+        }
         let catch_up_msg = utils.getClusterMessage(hdb_terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
         catch_up_msg.transaction = catchup_response;
+        catch_up_msg.schema = global.hdb_schema;
 
         return catch_up_msg;
     }

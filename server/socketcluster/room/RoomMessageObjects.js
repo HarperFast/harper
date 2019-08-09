@@ -172,6 +172,7 @@ class HdbCoreTransactionMessage extends HdbCoreBaseMessageIF {
     constructor() {
         super(types.CORE_ROOM_MSG_TYPE_ENUM.HDB_TRANSACTION);
         this.hdb_header.timestamp = Date.now();
+        this.schema = undefined;
     }
 }
 
