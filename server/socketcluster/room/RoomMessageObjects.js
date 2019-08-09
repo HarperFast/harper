@@ -65,6 +65,7 @@ class GetClusterStatusMessage {
         this.requestor_channel = undefined;
         this.worker_request_owner_id = undefined;
         this.originator_msg_id = undefined;
+        this.__originator = {};
     }
 }
 
