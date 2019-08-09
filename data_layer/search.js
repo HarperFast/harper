@@ -16,7 +16,6 @@ const SelectValidator = require('../sqlTranslator/SelectValidator');
 const hdbTerms = require('../utility/hdbTerms');
 const harperBridge = require('./harperBridge/harperBridge');
 
-//let base_path = env.get('HDB_ROOT') + "/schema/";
 // Search is used in the installer, and the base path may be undefined when search is instantiated.  Dynamically
 // get the base path from the environment manager before using it.
 let base_path = function() {
@@ -36,26 +35,16 @@ module.exports = {
     multiConditionSearch: multiConditionSearch
 };
 
-function searchByHash(search_object, callback){
+async function searchByHash(search_object, callback){
     try {
-        let validation_error = search_validator(search_object, 'hashes');
+        const validation_error = search_validator(search_object, 'hashes');
         if (validation_error) {
-            callback(validation_error, null);
-            return;
+            throw new Error(validation_error);
         }
-
-        // harperBridge.getDataByHash(search_object, (error, data) => {
-        harperBridge.searchByHash(search_object, (error, data) => {
-            if (error) {
-                callback(error);
-                return;
-            }
-
-            callback(null, data);
-        });
-
-    } catch(e) {
-        return callback(e);
+        const results = await harperBridge.searchByHash(search_object);
+        return callback(null, results);
+    } catch(err) {
+        return callback(err);
     }
 }
 

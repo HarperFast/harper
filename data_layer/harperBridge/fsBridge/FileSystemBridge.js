@@ -5,23 +5,25 @@ const fsGetDataByHash = require("./fsMethods/fsGetDataByHash");
 
 class FileSystemBridge extends BridgeMethods {
 
-    getDataByHash(search_object, callback) {
-        return fsGetDataByHash(search_object, callback);
+    async getDataByHash(search_object) {
+        try {
+            return await fsGetDataByHash(search_object);
+        } catch(err) {
+            throw err;
+        }
     }
 
-    searchByHash(search_object, callback) {
-        fsGetDataByHash(search_object, (error, data) => {
-            if (error) {
-                callback(error);
-                return;
-            }
+    async searchByHash(search_object) {
+        try {
+            const result_data = await fsGetDataByHash(search_object);
+            const search_results = Object.values(result_data);
 
-            const search_results = Object.values(data);
-            callback(null, search_results);
-        });
+            return search_results;
+        } catch(err) {
+            throw err;
+        }
     }
 
 }
-
 
 module.exports = FileSystemBridge;

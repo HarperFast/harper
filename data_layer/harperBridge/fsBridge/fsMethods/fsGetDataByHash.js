@@ -1,6 +1,6 @@
 "use strict";
 
-const fs = require('graceful-fs');
+const fs = require('fs-extra');
 const _ = require('lodash');
 const async = require('async');
 
@@ -15,20 +15,19 @@ const { autoCast } = require('../../../../utility/common_utils');
 //   get_attributes:Array // attributes to return with search result
 // }
 
-function fsGetDataByHash(search_object, callback) {
-    let table_info = global.hdb_schema[search_object.schema][search_object.table];
-    let final_get_attrs = evaluateTableAttributes(search_object.get_attributes, table_info.attributes);
+async function fsGetDataByHash(search_object) {
+    try {
+        // NOTE: this is replacing the getAllAttributeNames() method that was finding attributes w/ file_search.findDirectoriesByRegex()
+        let table_info = global.hdb_schema[search_object.schema][search_object.table];
+        let final_get_attrs = evaluateTableAttributes(search_object.get_attributes, table_info.attributes);
 
-    async.waterfall([
-        getAttributeFiles.bind(null, final_get_attrs, search_object),
-        consolidateData.bind(null, table_info.hash_attribute)
-    ], (error, data) => {
-        if (error) {
-            callback(error);
-            return;
-        }
-        callback(null, data);
-    });
+        const attributes_data = await getAttributeFiles(final_get_attrs, search_object);
+        const final_results = consolidateData(table_info.hash_attribute, attributes_data);
+
+        return final_results;
+    } catch(err) {
+        throw err;
+    }
 }
 
 //TODO: we're iterating through the get_attributes parameter 2 times below, once to detect if there is a star attribute, and the second time when a star exists we iterate to remove it.
@@ -53,89 +52,69 @@ function evaluateTableAttributes(get_attributes, table_attributes) {
     return get_attributes;
 }
 
-// function getAllAttributeNames(table_info, callback){
-//     let search_path = `${base_path()}${table_info.schema}/${table_info.table}/__hdb_hash/`;
-//
-//     file_search.findDirectoriesByRegex(search_path, /.*/, (err, folders) => {
-//         if (err) {
-//             callback(err);
-//             return;
-//         }
-//
-//         let attributes = [];
-//         folders.forEach(folder => {
-//             attributes.push({
-//                 attribute:folder,
-//                 alias: folder,
-//                 table:table_info.table,
-//                 table_alias:table_info.alias ? table_info.alias : table_info.table
-//             });
-//         });
-//
-//         callback(null, attributes);
-//     });
+// async function getAttributeValuePromises(attribute, table_path, hash_values, attributes_data) {
+//     //evaluate if an array of strings or objects has been passed in and assign values accordingly
+//     let attribute_name = (typeof attribute === 'string') ? attribute : attribute.attribute;
+//     attributes_data[attribute_name] = await readAttributeFiles(table_path, attribute_name, hash_values);
 // }
 
-function getAttributeFiles(get_attributes, search_object, callback) {
-    const { hash_values, schema, table } = search_object;
-    let table_path = `${getBasePath()}${schema}/${table}`;
+// TODO: this method and the one below seem to be less performance than the async.each/eachLimit - investigate
+async function getAttributeFiles(get_attributes, search_object) {
+    try {
+        const { hash_values, schema, table } = search_object;
+        let table_path = `${getBasePath()}${schema}/${table}`;
+        let attributes_data = {};
 
-    let attributes_data = {};
-    async.each(get_attributes, (attribute, caller) => {
-        //evaluate if an array of strings or objects has been passed in and assign values accordingly
-        let attribute_name = (typeof attribute === 'string') ? attribute : attribute.attribute;
-        readAttributeFiles(table_path, attribute_name, hash_values, (err, results) => {
-            if (err){
-                caller(err);
-                return;
-            }
-
-            attributes_data[attribute_name] = results;
-            caller();
-        });
-    }, error => {
-        if (error) {
-            callback(error);
-            return;
-        }
-        callback(null, attributes_data);
-    });
-}
-
-function readAttributeFiles(table_path, attribute, hash_files, callback) {
-    let attribute_data = {};
-    async.eachLimit(hash_files, 1000, (file, caller) => {
-        fs.readFile(`${table_path}/__hdb_hash/${attribute}/${file}.hdb`, 'utf-8', (error, data) => {
-            if(error) {
-                if(error.code === 'ENOENT') {
-                    caller(null, null);
-                } else {
-                    caller(error);
-                }
-                return;
-            }
-
-            let value = autoCast(data.toString());
-
-            attribute_data[file] = value;
-            caller();
-        });
-    }, err => {
-        if (err) {
-            callback(err);
-            return;
+            // const attributeValueLookupOps = [];
+        for (const attribute of get_attributes) {
+            //evaluate if an array of strings or objects has been passed in and assign values accordingly
+            let attribute_name = (typeof attribute === 'string') ? attribute : attribute.attribute;
+            attributes_data[attribute_name] = await readAttributeFiles(table_path, attribute_name, hash_values);
+            // attributeValueLookupOps.push(getAttributeValuePromises(attribute, table_path, hash_values, attributes_data));
         }
 
-        callback(null, attribute_data);
-    });
+        // await Promise.all(attributeValueLookupOps);
+        return attributes_data;
+    } catch(err) {
+        throw err;
+    }
 }
 
-function consolidateData(hash_attribute, attributes_data, callback) {
+async function getAttributeFilePromise(table_path, attribute, file, attribute_data) {
+    try {
+        const data = await fs.readFile(`${table_path}/__hdb_hash/${attribute}/${file}.hdb`, 'utf-8');
+        attribute_data[file] = autoCast(data.toString());
+    } catch(err) {
+        throw(err);
+    }
+}
+
+async function readAttributeFiles(table_path, attribute, hash_files) {
+    try {
+        let attribute_data = {};
+
+        const readFileOps = [];
+        for (const file of hash_files) {
+            // const data = await fs.readFile(`${table_path}/__hdb_hash/${attribute}/${file}.hdb`, 'utf-8');
+            // attribute_data[file] = autoCast(data.toString());
+            readFileOps.push(getAttributeFilePromise(table_path, attribute, file, attribute_data));
+        }
+
+        await Promise.all(readFileOps);
+        return attribute_data;
+    } catch(err) {
+        if(err.code !== 'ENOENT') {
+            throw err;
+        }
+    }
+}
+
+function consolidateData(hash_attribute, attributes_data) {
     let results_object = {};
     let data_keys = Object.keys(attributes_data);
 
     if (!attributes_data || data_keys.length === 0) {
-        return callback(null, results_object);
+        return results_object;
     }
 
     let ids;
@@ -154,16 +133,15 @@ function consolidateData(hash_attribute, attributes_data, callback) {
         ids = Object.keys(attributes_data[Object.keys(attributes_data)[0]]);
     }
 
-    ids.forEach(function(key) {
+    for (let id_key of ids) {
         const row_object = {};
+        for (let attribute of data_keys) {
+            row_object[attribute] = attributes_data[attribute][id_key];
+        }
+        results_object[id_key] = row_object;
+    }
 
-        data_keys.forEach(function(attribute) {
-            row_object[attribute] = attributes_data[attribute][key];
-        });
-        results_object[key] = row_object;
-    });
-
-    callback(null, results_object);
+    return results_object;
 }
 
 module.exports = fsGetDataByHash;
