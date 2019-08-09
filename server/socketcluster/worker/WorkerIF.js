@@ -6,6 +6,7 @@ const log = require('../../../utility/logging/harper_logger');
 const terms = require('../../../utility/hdbTerms');
 const room_factory = require('../room/roomFactory');
 const WorkerObjects = require('./WorkerObjects');
+const env = require('../../../utility/environment/environmentManager');
 
 /**
  * This is a super class that is used to represent some kind of worker clustering will use for message passing.  Since Javascript doesn't have enforceable interfaces,
@@ -245,7 +246,7 @@ class WorkerIF extends SCWorker{
     evalRoomPublishOutMiddleware(req, next) {
         log.debug(`____evaluating room publish out middleware on message type: ${req.type}____`);
         let result = this.evalRoomMiddleware(req, next, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_OUT);
-        if(!result && req.data.__originator !== req.socket.id) {
+        if(!result) {
             log.trace(`____passed all publish out middleware____`);
             return next();
         }

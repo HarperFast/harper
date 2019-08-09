@@ -8,12 +8,14 @@ const rewire = require('rewire');
 const assert = require('assert');
 const OriginatorCheckMiddleware = require('../../../../server/socketcluster/middleware/OriginatorCheckMiddleware');
 const types = require('../../../../server/socketcluster/types');
+const env = require('../../../../utility/environment/environmentManager');
+const terms = require('../../../../utility/hdbTerms');
 
 const ROOM_NAME = 'dev.tester';
 const WORKER_NAME = 'asdfesd';
 const INTERNAL_ROOM_NAME = `internal:${WORKER_NAME}`;
 
-const ORIGINATOR = 'ItsFromMe!';
+const ORIGINATOR = 'test_node';
 const ORIGINATOR_NAME = '__originator';
 
 const TEST_REQUEST = {
@@ -76,7 +78,8 @@ describe('Test AuthMiddleware eval_function', function() {
    });
     it('Test evalFunction match originator', () => {
         let request = test_util.deepClone(TEST_REQUEST);
-        request.data[ORIGINATOR_NAME] = ORIGINATOR;
+        request.data[ORIGINATOR_NAME] = {};
+        request.data[ORIGINATOR_NAME][env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)] = true;
         request.socket.id = ORIGINATOR;
         let result = test_instance.eval_function(request, next_stub);
         assert.notEqual(next_stub.calledOnce, true, 'next should never be called by MiddlewareIF types');
