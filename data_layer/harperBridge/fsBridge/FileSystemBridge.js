@@ -3,10 +3,18 @@
 const log = require('../../../utility/logging/harper_logger');
 const BridgeMethods = require("../BridgeMethods.js");
 const fsCreateRecords = require('./fsMethods/fsCreateRecords');
+const fsCreateSchema = require('./fsMethods/fsCreateSchema');
 
 class FileSystemBridge extends BridgeMethods {
 
-    //add bridge methods here
+    async createSchema(schema_create_obj) {
+        try {
+            return await fsCreateSchema(schema_create_obj);
+        } catch(err) {
+            log.error(err);
+            throw err;
+        }
+    }
 
     async createRecords(insert_obj, attributes, schema_table) {
         try {
