@@ -24,6 +24,7 @@ const common = require('../../utility/common_utils');
 const schema_validator = require('../../validation/schema_validator');
 const util = require('util');
 const clonedeep = require('lodash.clonedeep');
+const harperBridge = require('../../data_layer/harperBridge/harperBridge');
 
 // Rewire is used at times as stubbing alone doesn't work when stubbing a function
 // being called inside another function declared within the same file.
@@ -200,6 +201,7 @@ describe('Test schema module', function() {
      * Tests for createSchemaStructure function.
      */
     describe('Create schema structure',function() {
+        let create_schema_stub = sinon.stub(harperBridge, 'createSchema');
 
         it('should throw a validation error', async function() {
             let validation_err = 'Schema is required';
@@ -216,30 +218,17 @@ describe('Test schema module', function() {
             expect(error.message).to.equal(validation_err);
             expect(schema_validator_stub).to.have.been.calledOnce;
         });
-        
-        it('should create directory with test schema name', async function() {
-            let result;
-            let exists;
 
-            try {
-                // createSchemaStructure insert.insert expects schema dir to already exist
-                // so I am creating a temporary one. All test dirs are removed after test completion.
-                await fs.mkdirp(`${HDB_ROOT_TEST}/schema`);
-                result = await schema.createSchemaStructure(SCHEMA_CREATE_OBJECT_TEST);
-                exists = await fs.pathExists(FULL_SCHEMA_PATH_TEST);
-            } catch(err) {
-                console.error(err);
-            }
+        it('should call bridge and return success message', async () => {
+            let result = await schema.createSchemaStructure(SCHEMA_CREATE_OBJECT_TEST);
 
-            expect(result).to.equal(`schema ${SCHEMA_NAME_TEST} successfully created`);
-            expect(exists).to.be.true;
+            expect(create_schema_stub).to.have.been.calledWith(SCHEMA_CREATE_OBJECT_TEST);
+            expect(result).to.equal(`schema ${SCHEMA_CREATE_OBJECT_TEST.schema} successfully created`)
         });
+
 
         it('should throw schema already exists error', async function() {
-
-        });
-
-        it('should catch errno directory exists error from fs.mkdir', async function() {
+            global.hdb_schema = clonedeep(GLOBAL_SCHEMA_FAKE);
             let error;
 
             try {
@@ -248,8 +237,13 @@ describe('Test schema module', function() {
                 error = err;
             }
 
-            expect(error.message).to.equal('schema already exists');
+            expect(error).to.be.instanceOf(Error);
+            expect(error.message).to.equal(`Schema ${SCHEMA_CREATE_OBJECT_TEST.schema} already exists`);
+
+
         });
+
+
     });
 
     /**
@@ -422,50 +416,6 @@ describe('Test schema module', function() {
             expect(insert_stub).to.have.been.calledWith(INSERT_OBJECT_TEST);
             expect(fs_mkdir_stub).to.have.been.calledOnce;
 
-        });
-
-        it('should create directory with test table name', async function() {
-            fs_mkdir_stub.restore();
-
-            try {
-                await insert_table(TABLE_TEST, CREATE_TABLE_OBJECT_TEST);
-            } catch(err) {
-                console.error(err);
-            }
-
-            let exists = await fs.pathExists(FULL_TABLE_PATH_TEST);
-            expect(insert_stub).to.have.been.calledWith(INSERT_OBJECT_TEST);
-            expect(exists).to.be.true;
-        });
-
-        it('should catch errno table directory already exists error from fs.mkdir', async function() {
-            let error;
-
-            try {
-                await insert_table(TABLE_TEST, CREATE_TABLE_OBJECT_TEST);
-            } catch(err) {
-               error = err;
-            }
-
-            expect(error.message).to.equal('table already exists');
-            expect(insert_stub).to.have.been.calledWith(INSERT_OBJECT_TEST);
-        });
-
-        it('should catch errno schema does not exist error from fs.mkdir', async function() {
-            // Putting this here as well as at start of file because when running npm test root was not being updated.
-            const HDB_ROOT_TEST = '../unitTests/data_layer';
-            env.setProperty('HDB_ROOT', HDB_ROOT_TEST);
-            let error;
-
-            try {
-                test_util.cleanUpDirectories(`${HDB_ROOT_TEST}/schema`);
-                await insert_table(TABLE_TEST, CREATE_TABLE_OBJECT_TEST);
-            } catch(err) {
-               error = err;
-            }
-
-            expect(error.message).to.equal('schema does not exist');
-            expect(insert_stub).to.have.been.calledWith(INSERT_OBJECT_TEST);
         });
 
         it('should catch thrown error from insert', async function() {

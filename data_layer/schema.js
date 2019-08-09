@@ -17,7 +17,7 @@ const signalling = require('../utility/signalling');
 const util = require('util');
 const hdb_util = require('../utility/common_utils');
 const terms = require('../utility/hdbTerms');
-const hdb_bridge = require('./harperBridge/harperBridge');
+const harperBridge = require('./harperBridge/harperBridge');
 
 // Promisified functions
 let p_search_search_by_value = util.promisify(search.searchByValue);
@@ -85,7 +85,7 @@ async function createSchemaStructure(schema_create_object) {
     }
 
     try {
-        await hdb_bridge.createSchema(schema_create_object);
+        await harperBridge.createSchema(schema_create_object);
 
         return `schema ${schema_create_object.schema} successfully created`;
     } catch(err) {
