@@ -38,7 +38,6 @@ const FULL_SCHEMA_PATH_TEST = env.get('HDB_ROOT') + '/schema/' + SCHEMA_NAME_TES
 const TRASH_PATH_TEST = `${HDB_ROOT_TEST}/trash`;
 const FULL_TABLE_PATH_TEST = FULL_SCHEMA_PATH_TEST + '/' + TABLE_NAME_TEST;
 const SCHEMA_CREATE_OBJECT_TEST = {operation: 'create_schema', schema: SCHEMA_NAME_TEST};
-const SCHEMA_CREATE_OBJECT_TEST2 = {operation: 'create_schema', schema: 'dogsrule2'};
 const CREATE_TABLE_OBJECT_TEST = {operation: 'create_table', schema: SCHEMA_NAME_TEST, table: TABLE_NAME_TEST, hash_attribute: HASH_ATT_TEST, residence: ''};
 const TABLE_TEST = {name: CREATE_TABLE_OBJECT_TEST.table, schema: CREATE_TABLE_OBJECT_TEST.schema, id: uuidV4(), hash_attribute: CREATE_TABLE_OBJECT_TEST.hash_attribute};
 const INSERT_OBJECT_TEST = {operation: 'insert', schema: 'system', table: 'hdb_table', hash_attribute: 'id', records: [TABLE_TEST]};
@@ -50,13 +49,6 @@ const DATE_SUBSTR_LENGTH = 19;
 const GLOBAL_SCHEMA_FAKE = {
     'dogsrule': {
         'catsdrool': {
-            'hash_attribute': 'id'
-        }
-    }
-};
-const GLOBAL_SCHEMA_FAKE2 = {
-    'dogsrule2': {
-        'catsdrool3': {
             'hash_attribute': 'id'
         }
     }
@@ -211,6 +203,7 @@ describe('Test schema module', function() {
      * Tests for createSchemaStructure function.
      */
     describe('Create schema structure',function() {
+        let create_schema_stub = sinon.stub(harperBridge, 'createSchema');
 
         it('should throw a validation error', async function() {
             let validation_err = 'Schema is required';
@@ -228,52 +221,31 @@ describe('Test schema module', function() {
             expect(schema_validator_stub).to.have.been.calledOnce;
         });
 
-        // This needs to be updated. We cannot have test the utilize the file systme here.
-        
-        // it('should create directory with test schema name', async function() {
-        //     let result;
-        //     let exists;
-        //
-        //     try {
-        //         // createSchemaStructure insert.insert expects schema dir to already exist
-        //         // so I am creating a temporary one. All test dirs are removed after test completion.
-        //         await fs.mkdirp(`${HDB_ROOT_TEST}/schema`);
-        //         result = await schema.createSchemaStructure(SCHEMA_CREATE_OBJECT_TEST);
-        //         exists = await fs.pathExists(FULL_SCHEMA_PATH_TEST);
-        //     } catch(err) {
-        //         console.error(err);
-        //     }
-        //
-        //     expect(result).to.equal(`schema ${SCHEMA_NAME_TEST} successfully created`);
-        //     expect(exists).to.be.true;
-        // });
+        it('should call bridge and return success message', async () => {
+            let result = await schema.createSchemaStructure(SCHEMA_CREATE_OBJECT_TEST);
+
+            expect(create_schema_stub).to.have.been.calledWith(SCHEMA_CREATE_OBJECT_TEST);
+            expect(result).to.equal(`schema ${SCHEMA_CREATE_OBJECT_TEST.schema} successfully created`)
+        });
+
 
         it('should throw schema already exists error', async function() {
+            global.hdb_schema = clonedeep(GLOBAL_SCHEMA_FAKE);
             let error;
-            global.hdb_schema = GLOBAL_SCHEMA_FAKE2;
 
             try {
-                await schema.createSchemaStructure(SCHEMA_CREATE_OBJECT_TEST2);
+                await schema.createSchemaStructure(SCHEMA_CREATE_OBJECT_TEST);
             } catch(err) {
                 error = err;
             }
 
-            expect(error).to.equal(`schema ${SCHEMA_CREATE_OBJECT_TEST2.schema} already exists`);
+            expect(error).to.be.instanceOf(Error);
+            expect(error.message).to.equal(`Schema ${SCHEMA_CREATE_OBJECT_TEST.schema} already exists`);
+
+
         });
 
-        // This also needs to be pulled out as it's related to the file system
 
-        // it('should catch errno directory exists error from fs.mkdir', async function() {
-        //     let error;
-        //
-        //     try {
-        //         await schema.createSchemaStructure(SCHEMA_CREATE_OBJECT_TEST);
-        //     } catch(err) {
-        //         error = err;
-        //     }
-        //
-        //     expect(error.message).to.equal('schema already exists');
-        // });
     });
 
     /**
@@ -331,6 +303,7 @@ describe('Test schema module', function() {
         afterEach(function () {
             global.clustering_on = true;
             create_table_validator_stub.returns();
+            search_for_table_stub.resolves([]);
         });
 
         it('should catch thrown error from validation.create_table_object', async function() {
@@ -439,50 +412,6 @@ describe('Test schema module', function() {
             expect(insert_stub).to.have.been.calledWith(INSERT_OBJECT_TEST);
             expect(fs_mkdir_stub).to.have.been.calledOnce;
 
-        });
-
-        it('should create directory with test table name', async function() {
-            fs_mkdir_stub.restore();
-
-            try {
-                await insert_table(TABLE_TEST, CREATE_TABLE_OBJECT_TEST);
-            } catch(err) {
-                console.error(err);
-            }
-
-            let exists = await fs.pathExists(FULL_TABLE_PATH_TEST);
-            expect(insert_stub).to.have.been.calledWith(INSERT_OBJECT_TEST);
-            expect(exists).to.be.true;
-        });
-
-        it('should catch errno table directory already exists error from fs.mkdir', async function() {
-            let error;
-
-            try {
-                await insert_table(TABLE_TEST, CREATE_TABLE_OBJECT_TEST);
-            } catch(err) {
-               error = err;
-            }
-
-            expect(error.message).to.equal('table already exists');
-            expect(insert_stub).to.have.been.calledWith(INSERT_OBJECT_TEST);
-        });
-
-        it('should catch errno schema does not exist error from fs.mkdir', async function() {
-            // Putting this here as well as at start of file because when running npm test root was not being updated.
-            const HDB_ROOT_TEST = '../unitTests/data_layer';
-            env.setProperty('HDB_ROOT', HDB_ROOT_TEST);
-            let error;
-
-            try {
-                test_util.cleanUpDirectories(`${HDB_ROOT_TEST}/schema`);
-                await insert_table(TABLE_TEST, CREATE_TABLE_OBJECT_TEST);
-            } catch(err) {
-               error = err;
-            }
-
-            expect(error.message).to.equal('schema does not exist');
-            expect(insert_stub).to.have.been.calledWith(INSERT_OBJECT_TEST);
         });
 
         it('should catch thrown error from insert', async function() {
@@ -897,7 +826,7 @@ describe('Test schema module', function() {
             deleteSchemaTableStruc();
         });
 
-        // Test is failing, not going to fix it on this task because it will be removed when I build out drop table.
+        // Test is failing, not going to fix it on this task because it will be removed when I build out drop schema.
 
         // it('should make trash dir and move test table to it', async function() {
         //     let destination_name = `${DROP_TABLE_OBJECT_TEST.schema}-${DROP_TABLE_OBJECT_TEST.table}-${current_date}`;
