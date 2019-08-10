@@ -153,6 +153,7 @@ const OPERATIONS_ENUM = {
     USER_INFO: 'user_info',
     READ_LOG: 'read_log',
     ADD_NODE: 'add_node',
+    UPDATE_NODE: 'update_node',
     EXPORT_TO_S3: 'export_to_s3',
     DELETE_FILES_BEFORE: 'delete_files_before',
     EXPORT_LOCAL: 'export_local',

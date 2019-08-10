@@ -315,7 +315,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         if(!req.body || Object.keys(req.body).length === 0) {
             return res.status(terms.HTTP_STATUS_CODES.BAD_REQUEST).send({error: "Invalid JSON."});
         }
-        let enterprise_operations = ['add_node'];
+        let enterprise_operations = [terms.OPERATIONS_ENUM.ADD_NODE, terms.OPERATIONS_ENUM.UPDATE_NODE, terms.OPERATIONS_ENUM.REMOVE_NODE, terms.OPERATIONS_ENUM.CLUSTER_STATUS];
         if ((req.headers.harperdb_connection || enterprise_operations.indexOf(req.body.operation) > -1) && !enterprise) {
             return res.status(terms.HTTP_STATUS_CODES.UNAUTHORIZED).json({"error": "This feature requires an enterprise license.  Please register or contact us at hello@harperdb.io for more info."});
         }
