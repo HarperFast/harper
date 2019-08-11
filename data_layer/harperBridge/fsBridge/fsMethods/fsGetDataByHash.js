@@ -83,9 +83,12 @@ async function getAttributeFiles(get_attributes, search_object) {
 async function getAttributeFilePromise(table_path, attribute, file, attribute_data) {
     try {
         const data = await fs.readFile(`${table_path}/__hdb_hash/${attribute}/${file}.hdb`, 'utf-8');
-        attribute_data[file] = autoCast(data.toString());
+        const value = autoCast(data.toString());
+        attribute_data[file] = value;
     } catch(err) {
-        throw(err);
+        if (!err.code === 'ENOENT') {
+            throw(err);
+        }
     }
 }
 
@@ -103,9 +106,7 @@ async function readAttributeFiles(table_path, attribute, hash_files) {
         await Promise.all(readFileOps);
         return attribute_data;
     } catch(err) {
-        if(err.code !== 'ENOENT') {
-            throw err;
-        }
+        throw err;
     }
 }
 
