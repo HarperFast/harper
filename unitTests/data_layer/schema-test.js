@@ -203,7 +203,7 @@ describe('Test schema module', function() {
                 error = err;
             }
 
-            expect(error).to.equal(`schema ${SCHEMA_CREATE_OBJECT_TEST.schema} already exists`);
+            expect(error.message).to.equal(`schema ${SCHEMA_CREATE_OBJECT_TEST.schema} already exists`);
         });
 
         it('should call bridge and return success message', async () => {
@@ -299,7 +299,7 @@ describe('Test schema module', function() {
                error = err;
             }
 
-            expect(error).to.equal(`schema ${CREATE_TABLE_OBJECT_TEST.schema} does not exist`);
+            expect(error.message).to.equal(`schema ${CREATE_TABLE_OBJECT_TEST.schema} does not exist`);
             expect(create_table_validator_stub).to.have.been.calledOnce;
             expect(residence_validator_stub).to.have.been.calledOnce;
         });
@@ -314,7 +314,7 @@ describe('Test schema module', function() {
                 error = err;
             }
 
-            expect(error).to.equal(`table ${CREATE_TABLE_OBJECT_TEST.table} already exists in schema ${CREATE_TABLE_OBJECT_TEST.schema}`);
+            expect(error.message).to.equal(`table ${CREATE_TABLE_OBJECT_TEST.table} already exists in schema ${CREATE_TABLE_OBJECT_TEST.schema}`);
             expect(create_table_validator_stub).to.have.been.calledOnce;
             expect(residence_validator_stub).to.have.been.calledOnce;
             global.hdb_schema.dogsrule = {};
