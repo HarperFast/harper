@@ -53,9 +53,11 @@ let Spinner = CLI.Spinner;
 let countdown = new Spinner(`Upgrading HarperDB `, ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷']);
 
 module.exports = {
-    upgrade: upgrade,
-    startUpgrade: startUpgrade,
-    upgradeFromFilePath:upgradeFromFilePath
+    upgrade,
+    startUpgrade,
+    upgradeFromFilePath,
+    startUpgradeDirectives,
+    listDirectiveChanges
 };
 
 let UPGRADE_VERSION_NUM = undefined;
@@ -378,7 +380,8 @@ async function copyUpgradeExecutable() {
 }
 
 /**
- *
+ * Run the upgrade directives between the old version and the new version.  This should only be called directly after
+ * a package manager (e.g. NPM) has updated the binary.
  * @param old_version_number - The currently installed version number of HDB.
  * @param new_version_number - The latest version being upgraded to.
  * @returns {Array}
@@ -391,6 +394,22 @@ function startUpgradeDirectives(old_version_number, new_version_number) {
         throw e;
     }
     return directive_results;
+}
+
+/**
+ * List the change descriptions for all directives between the old version and the new one.
+ * @param old_version_number - The version being replaced
+ * @param new_version_number - The new version
+ * @returns {Array}
+ */
+function listDirectiveChanges(old_version_number, new_version_number) {
+    let directive_change_descriptions = [];
+    try {
+        directive_change_descriptions = process_directives.getDirectiveChangeDescriptions(old_version_number, new_version_number);
+    } catch(e) {
+        throw e;
+    }
+    return directive_change_descriptions;
 }
 
 /**

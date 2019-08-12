@@ -10,6 +10,18 @@ class InsertObject {
     }
 }
 
+class NoSQLSeachObject {
+    constructor(schema_string, table_string, search_attribute_string, hash_attribute_string, get_attributes_string_array, search_value_string) {
+        this.schema = schema_string;
+        this.table = table_string;
+        this.search_attribute = search_attribute_string;
+        this.hash_attribute = hash_attribute_string;
+        this.get_attributes= get_attributes_string_array;
+        this.search_value = search_value_string;
+    }
+}
+
 module.exports = {
-    InsertObject
+    InsertObject,
+    NoSQLSeachObject
 };

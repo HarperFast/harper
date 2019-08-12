@@ -65,6 +65,7 @@ class GetClusterStatusMessage {
         this.requestor_channel = undefined;
         this.worker_request_owner_id = undefined;
         this.originator_msg_id = undefined;
+        this.__originator = {};
     }
 }
 
@@ -140,7 +141,7 @@ class HdbCoreOperationMessage extends HdbCoreBaseMessageIF {
 class HdbCoreAddNodeMessage extends HdbCoreBaseMessageIF {
     constructor() {
         super(types.CORE_ROOM_MSG_TYPE_ENUM.ADD_NODE);
-        this.node = undefined;
+        this.add_node = undefined;
     }
 }
 
@@ -160,7 +161,7 @@ class HdbCoreUpdateNodeMessage extends HdbCoreBaseMessageIF {
 class HdbCoreRemoveNodeMessage extends HdbCoreBaseMessageIF {
     constructor() {
         super(types.CORE_ROOM_MSG_TYPE_ENUM.REMOVE_NODE);
-        this.node = undefined;
+        this.remove_node = undefined;
     }
 }
 

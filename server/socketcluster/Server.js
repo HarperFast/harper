@@ -41,11 +41,11 @@ try {
         // The interval in milliseconds on which to
         // send a ping to the client to check that
         // it is still alive
-        pingInterval: 8000,
+        pingInterval: 10000,
 
         // How many milliseconds to wait without receiving a ping
         // before closing the socket
-        pingTimeout: 20000,
+        pingTimeout: 60000,
 
         // In milliseconds, how long a client has to connect to SC before timing out
         connectTimeout: 10000,

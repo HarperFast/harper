@@ -39,8 +39,12 @@ class SocketConnector{
         });
 
         this.socket.on('login', (data, res)=>{
-            log.debug('logging in');
-            res(null, credentials);
+            try {
+                log.debug('logging in');
+                res(null, credentials);
+            } catch(e) {
+                log.error(e);
+            }
         });
     }
 
