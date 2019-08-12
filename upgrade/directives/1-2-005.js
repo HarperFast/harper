@@ -7,6 +7,8 @@ const upgrade_directive = require('../UpgradeDirective');
 let sep = path.sep;
 let directive = new upgrade_directive('1.2.005');
 
+directive.change_description = ``;
+
 module.exports = directive;
 
 

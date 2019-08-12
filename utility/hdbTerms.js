@@ -12,6 +12,10 @@ const SC_PROC_NAME = 'Server.js';
 const HDB_PROC_DESCRIPTOR = 'HarperDB';
 const SC_PROC_DESCRIPTOR = 'Cluster Server';
 
+const HDB_SUPPORT_ADDRESS = 'support@harperdb.io';
+const HDB_SUPPORT_URL = 'https://harperdbhelp.zendesk.com/hc/en-us';
+const SUPPORT_HELP_MSG = `For support, please submit a support request at ${HDB_SUPPORT_URL} or contact ${HDB_SUPPORT_ADDRESS}`;
+
 const PERIOD_REGEX = /^\.$/;
 const DOUBLE_PERIOD_REGEX = /^\.\.$/;
 const UNICODE_PERIOD = 'U+002E';
@@ -28,7 +32,9 @@ const CLUSTERING_VERSION_HEADER_NAME = 'hdb_version';
 const HDB_HOME_DIR_NAME = '.harperdb';
 const LICENSE_KEY_DIR_NAME = 'keys';
 const BOOT_PROPS_FILE_NAME = 'hdb_boot_properties.file';
+const UPDATE_FILE_NAME = '.updateConfig.json';
 const HDB_INFO_TABLE_NAME = 'hdb_info';
+const HDB_INTO_TABLE_HASH_ATTRIBUTE = 'id';
 const RESTART_CODE = 'SIGTSTP';
 const RESTART_CODE_NUM = 24;
 const RESTART_TIMEOUT_MS = 60000;
@@ -45,6 +51,11 @@ const INSERT_MODULE_ENUM = {
     HDB_USER_DATA_KEY: 'hdb_user',
     CHUNK_SIZE: 1000,
     MAX_CHARACTER_SIZE: 250
+};
+
+const UPGRADE_JSON_FIELD_NAMES_ENUM = {
+    CURRENT_VERSION: 'currentVersion',
+    UPGRADE_VERSION: 'upgradeVersion'
 };
 
 const SYSTEM_TABLE_NAMES = {
@@ -321,14 +332,19 @@ const CLUSTERING_MESSAGE_TYPES = cluster_types.CORE_ROOM_MSG_TYPE_ENUM;
 
 module.exports = {
     LOCAL_HARPERDB_OPERATIONS,
+    HDB_SUPPORT_ADDRESS,
+    HDB_SUPPORT_URL,
+    SUPPORT_HELP_MSG,
     HDB_PROC_NAME,
     HDB_PROC_DESCRIPTOR,
     SC_PROC_NAME,
     SC_PROC_DESCRIPTOR,
     SYSTEM_SCHEMA_NAME,
     HDB_INFO_TABLE_NAME,
+    HDB_INTO_TABLE_HASH_ATTRIBUTE,
     HASH_FOLDER_NAME,
     HDB_HOME_DIR_NAME,
+    UPDATE_FILE_NAME,
     LICENSE_KEY_DIR_NAME,
     CLUSTERING_VERSION_HEADER_NAME,
     BOOT_PROPS_FILE_NAME,
@@ -357,6 +373,7 @@ module.exports = {
     RESTART_TIMEOUT_MS,
     HDB_FILE_PERMISSIONS,
     INSERT_MODULE_ENUM,
+    UPGRADE_JSON_FIELD_NAMES_ENUM,
     RESTART_CODE,
     RESTART_CODE_NUM,
     CLUSTER_OPERATIONS,

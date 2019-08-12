@@ -9,6 +9,7 @@ const WatchHDBWorkersRoom = require('./WatchHDBWorkersRoom');
 const AddUserRoom = require('./AddUserRoom');
 const AlterUserRoom = require('./AlterUserRoom');
 const DropUserRoom = require('./DropUserRoom');
+const HDBNodeRoom = require('./HDBNodeRoom');
 
 const types = require('../types');
 const hdb_terms = require('../../../utility/hdbTerms');
@@ -52,6 +53,12 @@ function createRoom(topicName) {
         }
         case hdb_terms.INTERNAL_SC_CHANNELS.HDB_WORKERS: {
             created_room = new WatchHDBWorkersRoom(topicName);
+            configureStandardRoom(created_room);
+            configureSingleFunctionRoom(created_room);
+            break;
+        }
+        case hdb_terms.INTERNAL_SC_CHANNELS.HDB_NODES: {
+            created_room = new HDBNodeRoom(topicName);
             configureStandardRoom(created_room);
             configureSingleFunctionRoom(created_room);
             break;

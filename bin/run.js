@@ -13,8 +13,12 @@ let checkPermissions = require('../utility/check_permissions');
 const { isHarperRunning } = require('../utility/common_utils');
 const { promisify } = require('util');
 const stop = require('./stop');
+const os = require('os');
+const upgrade_prompt = require('../utility/userInterface/upgradePrompt');
+const upgrade = require('./upgrade');
+const version = require('./version');
 
-// These may change to match unit return codes (i.e. 0, 1)
+// These may change to match unix return codes (i.e. 0, 1)
 const SUCCESS_CODE = 'success';
 const FAILURE_CODE = 'failed';
 const FOREGROUND_ARG = 'foreground';
@@ -44,7 +48,23 @@ async function run() {
         logger.info(run_err);
         return;
     }
+
     try {
+        // Check to see if an upgrade file exists in $HOME/.harperdb.  If it exists, we need to force the user to upgrade.
+        let home_hdb_path = path.join(os.homedir(), terms.HDB_HOME_DIR_NAME, terms.UPDATE_FILE_NAME);
+        if(fs.existsSync(home_hdb_path)) {
+            try {
+                let update_json = JSON.parse(fs.readFileSync(home_hdb_path), 'utf8');
+                let upgrade_result = await forceUpdate(update_json);
+                if(upgrade_result) {
+                    fs.unlinkSync(home_hdb_path);
+                }
+            } catch(err) {
+                console.error(`Got an error trying to read ${home_hdb_path}, please check the file is readable and try again.  Exiting HarperDB.`);
+                process.exit(1);
+            }
+        }
+        console.log('Upgrade complete.  Starting HarperDB.');
         let is_in_use = await arePortsInUse();
         if(!is_in_use) {
             await startHarper();
@@ -55,6 +75,46 @@ async function run() {
         console.log(err);
         logger.info(err);
         return;
+    }
+}
+
+/**
+ * Force the user to perform an upgrade by running the upgrade scripts.  If they cancel, process will term.
+ * @param update_json - JSON read in from the .harperdb/.updateConfig.json file.
+ * @returns {Promise<boolean>}
+ */
+async function forceUpdate(update_json) {
+    let old_version = update_json[terms.UPGRADE_JSON_FIELD_NAMES_ENUM.CURRENT_VERSION];
+    let new_version = update_json[terms.UPGRADE_JSON_FIELD_NAMES_ENUM.UPGRADE_VERSION];
+    if(!old_version) {
+        console.log('Current Version field missing from the config file.  Cannot continue with upgrade.  Please contact support@harperdb.io');
+        logger.notify('Missing current version field from upgradeconfig');
+        process.exit(1);
+    }
+    if(!new_version) {
+        new_version = version.version();
+        if(!new_version) {
+            console.log('Current Version field missing from the config file.  Cannot continue with upgrade.  Please contact support@harperdb.io');
+            logger.notify('Missing new version field from upgradeconfig');
+            process.exit(1);
+        }
+    }
+    let start_upgrade = await upgrade_prompt.forceUpdatePrompt(old_version, new_version);
+    if(!start_upgrade) {
+        console.log('Cancelled upgrade, closing HarperDB');
+        process.exit(1);
+    }
+    try {
+        let upgrade_result = await upgrade.startUpgradeDirectives(old_version, new_version);
+        upgrade_result.forEach((result) => {
+           logger.info(result);
+        });
+        // success, remove the upgrade file.
+        return true;
+    } catch(err) {
+        console.log('There was an error during the data upgrade.  Please check the logs.');
+        logger.error(err);
+        return false;
     }
 }
 
@@ -117,7 +177,7 @@ async function arePortsInUse() {
  * @param callback - Callback, returns (err, true/false)
  */
 function isPortTaken(port) {
-    if(!port){
+    if(!port) {
         throw new Error(`Invalid port passed as parameter`);
     }
 

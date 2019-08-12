@@ -11,7 +11,9 @@ const truncate = require('truncate-utf8-bytes');
 const path = require('path');
 const moment = require('moment');
 const harper_logger = require('../utility/logging/harper_logger');
-const { promisify } = require('util');
+const { promisify, callbackify } = require('util');
+const unlink = require('../utility/fs/unlink');
+const c_unlink = callbackify(unlink);
 const terms = require('../utility/hdbTerms');
 
 const slash_regex = /\//g;
@@ -469,19 +471,7 @@ function deleteRecords(schema, table, records, callback){
         });
     });
 
-    async.each(paths, (path, caller)=>{
-        fs.unlink(path, (err)=>{
-            if(err){
-                if(err.code === ENOENT_ERROR_CODE){
-                    return caller();
-                }
-                harper_logger.error(err);
-                return caller(common_utils.errorizeMessage(err));
-            }
-
-            return caller();
-        });
-    }, (err)=>{
+    c_unlink(paths, (err)=>{
         if(err){
             return callback(common_utils.errorizeMessage(err));
         }
