@@ -43,7 +43,6 @@ const cb_delete_record = callbackify(deleteRecord);
 module.exports = {
     delete: cb_delete_record,
     conditionalDelete: conditionalDelete,
-    //deleteRecords: deleteRecords,
     deleteFilesBefore: deleteFilesBefore
 };
 
@@ -444,40 +443,3 @@ function conditionalDelete(delete_object, callback){
         callback(e);
     }
 }
-
-/*
-function deleteRecords(schema, table, records, callback){
-    if(common_utils.isEmptyOrZeroLength(records)){
-        return callback(common_utils.errorizeMessage("Item not found!"));
-    }
-    let hash_attribute = null;
-    try {
-        hash_attribute = global.hdb_schema[schema][table].hash_attribute;
-    } catch (e) {
-        harper_logger.error(`could not retrieve hash attribute for schema:${schema} and table ${table}`);
-        return callback(common_utils.errorizeMessage(`hash attribute not found`));
-    }
-    let paths = [];
-    let table_path = common_utils.buildFolderPath(BASE_PATH, schema, table);
-
-    //generate the paths for each file to delete
-    records.forEach((record)=>{
-        Object.keys(record).forEach((attribute)=>{
-            let hash_value = record[hash_attribute];
-            if(!common_utils.isEmptyOrZeroLength(hash_value)) {
-                paths.push(common_utils.buildFolderPath(table_path, HDB_HASH_FOLDER_NAME, attribute, `${hash_value}${HDB_FILE_SUFFIX}`));
-                let stripped_value = String(record[attribute]).replace(slash_regex, '');
-                stripped_value = stripped_value.length > MAX_BYTES ? common_utils.buildFolderPath(truncate(stripped_value, MAX_BYTES), BLOB_FOLDER_NAME) : stripped_value;
-                paths.push(common_utils.buildFolderPath(table_path, attribute, stripped_value, `${hash_value}${HDB_FILE_SUFFIX}`));
-            }
-        });
-    });
-
-    c_unlink(paths, (err)=>{
-        if(err){
-            return callback(common_utils.errorizeMessage(err));
-        }
-
-        return callback();
-    });
-}*/
