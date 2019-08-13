@@ -16,9 +16,9 @@ const BLOB_FOLDER_NAME = 'blob';
 module.exports = deleteRecords;
 
 async function deleteRecords(delete_obj){
-    if (common_utils.isEmptyOrZeroLength(delete_obj.records)){
-        throw new Error('Item not found');
-    }
+    // if (common_utils.isEmptyOrZeroLength(delete_obj.records)){
+    //     throw new Error('Item not found');
+    // }
 
     let hash_attribute = null;
     try {

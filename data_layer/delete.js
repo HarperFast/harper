@@ -32,7 +32,6 @@ const SYSTEM_SCHEMA_NAME = 'system';
 const p_fs_stat = promisify(fs.stat);
 const p_fs_readdir = promisify(fs.readdir);
 const p_fs_unlink = promisify(fs.unlink);
-const p_delete_record = promisify(deleteRecord);
 const p_fs_rmdir = promisify(fs.rmdir);
 const p_global_schema = promisify(global_schema.getTableSchema);
 const p_search_by_hash = promisify(search.searchByHash);
@@ -172,7 +171,7 @@ async function removeFiles(schema, table, hash_attribute, ids_to_remove) {
     };
 
     try {
-        await p_delete_record(records_to_remove);
+        await deleteRecord(records_to_remove);
         await removeIDFiles(schema, table, hash_attribute, ids_to_remove);
     } catch (e) {
         harper_logger.info(`There was a problem deleting records: ${e}`);
@@ -389,11 +388,6 @@ async function deleteRecord(delete_object){
                 get_attributes: ['*']
             };
         delete_object.records = await p_search_by_hash(search_object);
-
-        if (common_utils.isEmptyOrZeroLength(delete_object.records)){
-            return common_utils.errorizeMessage("Item not found!");
-        }
-
         await harperBridge.deleteRecords(delete_object);
 
         if (delete_object.schema !== 'system') {
