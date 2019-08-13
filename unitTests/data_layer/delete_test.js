@@ -21,6 +21,8 @@ const fs_delete_records_rw = rewire('../../data_layer/harperBridge/fsBridge/fsMe
 const fs = require('graceful-fs');
 const moment = require('moment');
 const global_schema = require('../../utility/globalSchema');
+const env = require('../../utility/environment/environmentManager');
+const common_utils = require('../../utility/common_utils');
 const search = require('../../data_layer/search');
 
 const DELETE_MOD_BASE_PATH_NAME = 'BASE_PATH';
@@ -93,15 +95,20 @@ function setup() {
 }
 
 describe('Test DELETE', () => {
+    //let imastub = sinon.stub().returns('Hello world');
+
     before(() => {
         search_stub.yields(null, TEST_DATA_DOG);
-        fs_delete_records_rw.__set__(DELETE_MOD_BASE_PATH_NAME, TEST_FS_DIR);
+
+
         delete_rewire.__set__('p_search_by_hash', p_search_by_hash_stub);
         tearDownMockFS();
+
     });
 
     after(() => {
         rewire('../../data_layer/delete');
+        rewire('../../data_layer/harperBridge/fsBridge/fsMethods/fsDeleteRecords');
         search_stub.reset();
     })
 
@@ -112,6 +119,7 @@ describe('Test DELETE', () => {
 
         before(() => {
             deleteFilesInPath = delete_rewire.__get__('deleteFilesInPath');
+            sinon.stub(common_utils, 'buildFolderPath').onFirstCall().returns('work already');
         });
 
         beforeEach(() => {
