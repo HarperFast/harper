@@ -15,6 +15,7 @@ const { promisify, callbackify } = require('util');
 const unlink = require('../utility/fs/unlink');
 const c_unlink = callbackify(unlink);
 const terms = require('../utility/hdbTerms');
+const harperBridge = require('./harperBridge/harperBridge');
 
 const slash_regex = /\//g;
 const BASE_PATH = common_utils.buildFolderPath(env.get('HDB_ROOT'), "schema");
@@ -33,11 +34,16 @@ const p_fs_readdir = promisify(fs.readdir);
 const p_fs_unlink = promisify(fs.unlink);
 const p_delete_record = promisify(deleteRecord);
 const p_fs_rmdir = promisify(fs.rmdir);
+const p_global_schema = promisify(global_schema.getTableSchema);
+const p_search_by_hash = promisify(search.searchByHash);
+
+// Callbackified functions
+const cb_delete_record = callbackify(deleteRecord);
 
 module.exports = {
-    delete: deleteRecord,
+    delete: cb_delete_record,
     conditionalDelete: conditionalDelete,
-    deleteRecords: deleteRecords,
+    //deleteRecords: deleteRecords,
     deleteFilesBefore: deleteFilesBefore
 };
 
@@ -367,45 +373,40 @@ async function getDirectoriesInPath(dirPath, found_dirs, date_unix_ms) {
 /**
  * Delete a record and unlink all attributes associated with that record.
  * @param delete_object
- * @param callback
+ * @returns {Promise<string>}
  */
-function deleteRecord(delete_object, callback){
-    try {
-        let validation = bulk_delete_validator(delete_object);
-        if (validation) {
-            return callback(validation);
-        }
+async function deleteRecord(delete_object){
+    let validation = bulk_delete_validator(delete_object);
+    if (validation) {
+        throw validation;
+    }
 
-        let search_obj =
-            {
+    try {
+        await p_global_schema(delete_object.schema, delete_object.table);
+        let search_object = {
                 schema: delete_object.schema,
                 table: delete_object.table,
                 hash_values: delete_object.hash_values,
                 get_attributes: ['*']
             };
+        delete_object.records = await p_search_by_hash(search_object);
 
-        async.waterfall([
-            global_schema.getTableSchema.bind(null, delete_object.schema, delete_object.table),
-            (table_info, callback) => {
-                callback();
-            },
-            search.searchByHash.bind(null, search_obj),
-            deleteRecords.bind(null, delete_object.schema, delete_object.table)
-        ], (err) => {
-            if (err) {
-                return callback(err);
-            }
+        if (common_utils.isEmptyOrZeroLength(delete_object.records)){
+            return common_utils.errorizeMessage("Item not found!");
+        }
 
-            if(delete_object.schema !== 'system') {
-                let delete_msg = common_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
-                delete_msg.transaction = delete_object;
-                common_utils.sendTransactionToSocketCluster(`${delete_object.schema}:${delete_object.table}`, delete_msg);
-            }
+        await harperBridge.deleteRecords(delete_object);
 
-            return callback(null, SUCCESS_MESSAGE);
-        });
-    } catch(e){
-        return callback(e);
+        if (delete_object.schema !== 'system') {
+            let delete_msg = common_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
+            delete_msg.transaction = delete_object;
+            common_utils.sendTransactionToSocketCluster(`${delete_object.schema}:${delete_object.table}`, delete_msg);
+        }
+
+        return SUCCESS_MESSAGE;
+    } catch(err){
+        harper_logger.error(err);
+        throw err;
     }
 }
 
@@ -444,6 +445,7 @@ function conditionalDelete(delete_object, callback){
     }
 }
 
+/*
 function deleteRecords(schema, table, records, callback){
     if(common_utils.isEmptyOrZeroLength(records)){
         return callback(common_utils.errorizeMessage("Item not found!"));
@@ -478,4 +480,4 @@ function deleteRecords(schema, table, records, callback){
 
         return callback();
     });
-}
+}*/
