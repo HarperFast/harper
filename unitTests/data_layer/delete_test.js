@@ -74,6 +74,7 @@ const JSON_OBJECT_DELETE = {
 };
 
 let search_stub = sinon.stub(search, 'searchByHash');
+let p_search_by_hash_stub = sinon.stub();
 
 function setup() {
     const test_data_clone_dog = deepClone(TEST_DATA_DOG);
@@ -94,6 +95,7 @@ describe('Test DELETE', () => {
     before(() => {
         search_stub.yields(null, TEST_DATA_DOG);
         delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, TEST_FS_DIR);
+        delete_rewire.__set__('p_search_by_hash', p_search_by_hash_stub);
         tearDownMockFS();
     });
 
@@ -115,12 +117,14 @@ describe('Test DELETE', () => {
             test_data = setup();
             files_to_check = [...test_data[TEST_TABLE_DOG][0].paths.files, ...test_data[TEST_TABLE_DOG][1].paths.files ];
             search_stub.yields(null, TEST_DATA_DOG);
+            p_search_by_hash_stub.resolves(TEST_DATA_DOG);
         });
 
         afterEach(() => {
             test_data = undefined;
             files_to_check = undefined;
             search_stub.reset();
+            p_search_by_hash_stub.reset();
             tearDownMockFS();
         });
 
