@@ -24,6 +24,7 @@ const ESCAPED_DOUBLE_PERIOD_REGEX = /^U\+002EU\+002E$/;
 // Name of the System schema
 const SYSTEM_SCHEMA_NAME = 'system';
 const HASH_FOLDER_NAME = '__hdb_hash';
+const SYSTEM_TABLE_HASH = 'id';
 const CLUSTERING_VERSION_HEADER_NAME = 'hdb_version';
 const HDB_HOME_DIR_NAME = '.harperdb';
 const LICENSE_KEY_DIR_NAME = 'keys';
@@ -33,6 +34,8 @@ const RESTART_CODE = 'SIGTSTP';
 const RESTART_CODE_NUM = 24;
 const RESTART_TIMEOUT_MS = 60000;
 const HDB_FILE_PERMISSIONS = 0o700;
+const HDB_SCHEMA_DIR = 'schema';
+
 
 // Trying to keep socket cluster as modular as possible, so we will create values in here that point to values
 // inside of the socketcluster types module.
@@ -326,6 +329,7 @@ module.exports = {
     SC_PROC_NAME,
     SC_PROC_DESCRIPTOR,
     SYSTEM_SCHEMA_NAME,
+    SYSTEM_TABLE_HASH,
     HDB_INFO_TABLE_NAME,
     HASH_FOLDER_NAME,
     HDB_HOME_DIR_NAME,
@@ -364,6 +368,7 @@ module.exports = {
     HDB_INTERNAL_SC_CHANNEL_PREFIX,
     INTERNAL_SC_CHANNELS,
     CLUSTERING_MESSAGE_TYPES,
+    HDB_SCHEMA_DIR,
     // Make the message objects available through hdbTerms to keep clustering as modular as possible.
     ClusterMessageObjects
 };
