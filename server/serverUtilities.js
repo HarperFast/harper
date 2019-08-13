@@ -57,9 +57,9 @@ const UNAUTHORIZED_TEXT = 'You are not authorized to perform the operation speci
 let OPERATION_PARAM_ERROR_MSG = `operation parameter is undefined`;
 
 module.exports = {
-    chooseOperation: chooseOperation,
-    getOperationFunction: getOperationFunction,
-    processLocalTransaction: processLocalTransaction,
+    chooseOperation,
+    getOperationFunction,
+    processLocalTransaction,
     UNAUTH_RESPONSE,
     UNAUTHORIZED_TEXT
 };

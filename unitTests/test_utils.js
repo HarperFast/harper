@@ -47,6 +47,27 @@ const ATTR_PATH_OBJECT = {
 };
 
 /**
+ * Used in the createMockGlobalSchema function to generate a global.hdb_schema in the test harness.
+ */
+class MockSchemaObject {
+    constructor() {
+        this.schema = {};
+    }
+
+    addSchema(schema_name_string) {
+        this.schema[schema_name_string] = {};
+    }
+
+    addTable(schema_name_string, table_name_string) {
+        this.schema[schema_name_string][table_name_string] = {};
+    }
+
+    addAttribute(schema_name_string, table_name_string, att_name_string) {
+        this.schema[schema_name_string][table_name_string][att_name_string] = {};
+    }
+}
+
+/**
  * This needs to be called near the top of our unit tests.  Most will fail when loading harper modules due to the
  * properties reader trying to look in bin.  We can iterate on this to make it smarter if needed, for now this works.
  */
@@ -274,8 +295,16 @@ function tearDownMockFS() {
 }
 
 /**
+ * Accepts a
+ * @param system_schema_object
+ */
+function createMockSystemSchema(system_schema_object) {
+
+}
+
+/**
  * This method is used in `createMockFS()` to create the mock FS structure for the schema > system directory
- * TODO: Right now, this method does not return paths to specific directories or files being created.  This functionalty
+ * TODO: Right now, this method does not return paths to specific directories or files being created.  This functionality
  ** should be added as when needed in future tests in the `system` array value returned from `createMockFS()`.
  */
 
@@ -673,6 +702,22 @@ function sortAsc(data, sort_by) {
     return data.sort((a, b) => a - b);
 }
 
+function generateAPIMessage(msg_type_enum) {
+    let generated_msg = undefined;
+    switch(msg_type_enum) {
+        case terms.OPERATIONS_ENUM.CREATE_SCHEMA:
+            break;
+        case terms.OPERATIONS_ENUM.CREATE_TABLE:
+            break;
+        case terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE:
+            break;
+
+        default:
+            break;
+    }
+    return generated_msg;
+}
+
 module.exports = {
     changeProcessToBinDir,
     deepClone,
@@ -680,10 +725,13 @@ module.exports = {
     preTestPrep,
     cleanUpDirectories,
     createMockFS,
+    createMockSystemSchema,
+    setGlobalSchema,
     tearDownMockFS,
     makeTheDir,
     getMockFSPath,
     generateMockAST,
     sortAsc,
-    sortDesc
+    sortDesc,
+    generateAPIMessage
 };
