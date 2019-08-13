@@ -17,6 +17,7 @@ const assert = require('assert');
 const sinon = require('sinon');
 const rewire = require('rewire');
 const delete_rewire = rewire('../../data_layer/delete');
+const fs_delete_records_rw = rewire('../../data_layer/harperBridge/fsBridge/fsMethods/fsDeleteRecords');
 const fs = require('graceful-fs');
 const moment = require('moment');
 const global_schema = require('../../utility/globalSchema');
@@ -94,7 +95,7 @@ function setup() {
 describe('Test DELETE', () => {
     before(() => {
         search_stub.yields(null, TEST_DATA_DOG);
-        delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, TEST_FS_DIR);
+        fs_delete_records_rw.__set__(DELETE_MOD_BASE_PATH_NAME, TEST_FS_DIR);
         delete_rewire.__set__('p_search_by_hash', p_search_by_hash_stub);
         tearDownMockFS();
     });
