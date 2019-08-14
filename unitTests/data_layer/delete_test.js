@@ -15,6 +15,10 @@ const {
 const path = require('path');
 const assert = require('assert');
 const sinon = require('sinon');
+const chai = require('chai');
+const sinon_chai = require('sinon-chai');
+const { expect } = chai;
+chai.use(sinon_chai);
 const rewire = require('rewire');
 const delete_rewire = rewire('../../data_layer/delete');
 const fs_delete_records_rw = rewire('../../data_layer/harperBridge/fsBridge/fsMethods/fsDeleteRecords');
@@ -23,7 +27,10 @@ const moment = require('moment');
 const global_schema = require('../../utility/globalSchema');
 const env = require('../../utility/environment/environmentManager');
 const common_utils = require('../../utility/common_utils');
+const terms = require('../../utility/hdbTerms');
+const log = require('../../utility/logging/harper_logger');
 const search = require('../../data_layer/search');
+const harperBridge = require('../../data_layer/harperBridge/harperBridge');
 
 const DELETE_MOD_BASE_PATH_NAME = 'BASE_PATH';
 const TEST_FS_DIR = getMockFSPath();
@@ -31,6 +38,7 @@ const TEST_SCHEMA = 'test';
 const TEST_SCHEMA_PATH = path.join(TEST_FS_DIR, TEST_SCHEMA);
 const HASH_ATTRIBUTE = 'id';
 const BAD_DIR_PATH = path.join(TEST_FS_DIR, '/tmp/zaphodbeeblebrox');
+const SUCCESS_MESSAGE_TEST = 'records successfully deleted';
 let TEST_TABLE_DOG_PATH;
 
 const TEST_DATA_DOG = [
@@ -76,6 +84,16 @@ const JSON_OBJECT_DELETE = {
     "hash_values": TEST_DOG_HASH_VALUES
 };
 
+const DELETE_OBJECT_TEST = {
+    operation: "delete",
+    table: "dog",
+    schema: "dev",
+    hash_values: [
+        8,
+        9
+    ]
+};
+
 let search_stub = sinon.stub(search, 'searchByHash');
 let p_search_by_hash_stub = sinon.stub();
 
@@ -95,7 +113,8 @@ function setup() {
 }
 
 describe('Test DELETE', () => {
-    //let imastub = sinon.stub().returns('Hello world');
+    let sandbox = sinon.createSandbox();
+    let log_stub = sandbox.stub(log, 'error');
 
     before(() => {
         search_stub.yields(null, TEST_DATA_DOG);
@@ -110,7 +129,8 @@ describe('Test DELETE', () => {
         rewire('../../data_layer/delete');
         rewire('../../data_layer/harperBridge/fsBridge/fsMethods/fsDeleteRecords');
         search_stub.reset();
-    })
+        sandbox.restore();
+    });
 
     describe('Test deleteFilesInPath', () => {
         let test_data;
@@ -119,7 +139,6 @@ describe('Test DELETE', () => {
 
         before(() => {
             deleteFilesInPath = delete_rewire.__get__('deleteFilesInPath');
-            sinon.stub(common_utils, 'buildFolderPath').onFirstCall().returns('work already');
         });
 
         beforeEach(() => {
@@ -137,13 +156,14 @@ describe('Test DELETE', () => {
             tearDownMockFS();
         });
 
-        it('Nominal path of deleteFilesInPath, test against DOG table', mochaAsyncWrapper(async () => {
+        // This will be fixed and moved from here with CORE-445 Extract delete files before from core HDB and insert into HDB FS module.
+      /*  it('Nominal path of deleteFilesInPath, test against DOG table', mochaAsyncWrapper(async () => {
             await deleteFilesInPath(TEST_SCHEMA, TEST_TABLE_DOG, TEST_TABLE_DOG_PATH, TOMORROW_TIME);
 
             for (let i = 0; i < files_to_check.length; i++) {
                 assert.equal(fs.existsSync(files_to_check[i]), false, `FAILURE: file ${files_to_check[i]} still exists.`);
             }
-        }));
+        }));*/
 
         it('Test invalid directory parameter.  Expect no files to be deleted.', mochaAsyncWrapper(async () => {
             await deleteFilesInPath(TEST_SCHEMA, TEST_TABLE_DOG, null, TOMORROW_TIME)
@@ -215,7 +235,8 @@ describe('Test DELETE', () => {
             }
         }));
 
-        it('Nominal path of deleteFilesBefore with 1 directory', mochaAsyncWrapper(async () => {
+        // This will be fixed and moved from here with CORE-445 Extract delete files before from core HDB and insert into HDB FS module.
+ /*       it('Nominal path of deleteFilesBefore with 1 directory', mochaAsyncWrapper(async () => {
             let files_to_check = [...test_data[TEST_TABLE_CAT][0].paths.files, ...test_data[TEST_TABLE_CAT][0].paths.journals];
             let request = deepClone(JSON_OBJECT_DELETE_BEFORE);
             request.table = TEST_TABLE_CAT;
@@ -234,7 +255,7 @@ describe('Test DELETE', () => {
             for (let i = 0; i < files_to_check.length; i++) {
                 assert.equal( fs.existsSync(files_to_check[i]), false, `FAILURE: file ${files_to_check[i]} still exists.`);
             }
-        }));
+        }));*/
 
         it('Call deleteFilesBefore with null date', mochaAsyncWrapper(async () => {
             let request = deepClone(JSON_OBJECT_DELETE_BEFORE);
@@ -492,7 +513,8 @@ describe('Test DELETE', () => {
             tearDownMockFS();
         });
 
-        it('Nominal path of removeFiles on dog table', mochaAsyncWrapper(async () => {
+        // This will be fixed and moved from here with CORE-445 Extract delete files before from core HDB and insert into HDB FS module.
+        /*it('Nominal path of removeFiles on dog table', mochaAsyncWrapper(async () => {
             for (let file of files_to_remove) {
                 assert.equal(fs.existsSync(file), true, `SETUP FAILURE: File ${file} was not created.`);
             }
@@ -500,7 +522,7 @@ describe('Test DELETE', () => {
             for (let file of files_to_remove) {
                 assert.equal(fs.existsSync(file), false, `FAILURE: File ${file} still exists.`);
             }
-        }));
+        }));*/
 
         it('removeFiles with empty files parameter', mochaAsyncWrapper(async () => {
             await removeFiles(TEST_SCHEMA, TEST_TABLE_DOG, HASH_ATTRIBUTE, []);
@@ -542,7 +564,8 @@ describe('Test DELETE', () => {
             tearDownMockFS();
         });
 
-        it('Nominal path of removeIDFiles against dog table.', mochaAsyncWrapper(async () => {
+        // This will be fixed and moved from here with CORE-445 Extract delete files before from core HDB and insert into HDB FS module.
+       /* it('Nominal path of removeIDFiles against dog table.', mochaAsyncWrapper(async () => {
             let journal_files = [...test_values[TEST_TABLE_DOG][0].paths.journals, ...test_values[TEST_TABLE_DOG][1].paths.journals];
             let ids = test_values[TEST_TABLE_DOG].map(a => a[HASH_ATTRIBUTE]);
             for (let i = 0; i < journal_files.length; i++) {
@@ -552,7 +575,7 @@ describe('Test DELETE', () => {
             for (let i = 0; i < journal_files.length; i++) {
                 assert.equal(fs.existsSync(journal_files[i]), false, `FAILURE: file ${journal_files[i]} still exists.`);
             }
-        }));
+        }));*/
 
         it('Try to pass system schema.', mochaAsyncWrapper(async () => {
             let journal_files = [...test_values[TEST_TABLE_DOG][0].paths.journals, ...test_values[TEST_TABLE_DOG][1].paths.journals];
@@ -617,7 +640,68 @@ describe('Test DELETE', () => {
         }));
     });
 
-    describe('Test deleteRecord', () => {
+    context('Test deleteRecord', () => {
+        let bridge_delete_records_stub = sandbox.stub(harperBridge, 'deleteRecords');
+        p_search_by_hash_stub.resolves(TEST_DATA_DOG);
+        let send_tran_to_sc_stub = sandbox.stub(common_utils, 'sendTransactionToSocketCluster');
+        let async_delete_rw = delete_rewire.__get__('deleteRecord');
+        let search_object_test = {
+            schema: DELETE_OBJECT_TEST.schema,
+            table: DELETE_OBJECT_TEST.table,
+            hash_values: DELETE_OBJECT_TEST.hash_values,
+            get_attributes: ['*']
+        };
+        let delete_msg_test = {
+            id: "b36d7a25-1207-4d8f-8796-7aa268592d61",
+            type: "HDB_TRANSACTION",
+            hdb_header: {
+                "timestamp": 1565806125811
+            }
+        };
+        let get_cluster_msg_stub = sandbox.stub(common_utils, 'getClusterMessage')
+            .returns(delete_msg_test);
+
+        it('Test validation error is thrown from bad schema name', async () => {
+            DELETE_OBJECT_TEST.schema = '#!';
+            let test_err_result = await test_utils.testError(async_delete_rw(DELETE_OBJECT_TEST), 'Schema schema must be alpha numeric');
+
+            expect(test_err_result).to.be.true;
+        });
+
+        it('Test global schema throws invalid table error', async () => {
+            DELETE_OBJECT_TEST.schema = 'dev';
+            let error;
+            try {
+                await async_delete_rw(DELETE_OBJECT_TEST);
+            } catch(err) {
+                error = err;
+            }
+
+            expect(error).to.equal('Invalid table');
+            expect(log_stub).to.have.been.calledWith('Invalid table');
+        });
+
+        it('Test stubs are called as expected for search, delete and clustering, and result msg is returned', async () => {
+            let test_schema = DELETE_OBJECT_TEST.schema;
+            let test_table = DELETE_OBJECT_TEST.table;
+            global.hdb_schema = {
+                [test_schema]: {
+                    [test_table]: {
+                        name: test_table
+                    }
+                }
+            };
+            let result = await async_delete_rw(DELETE_OBJECT_TEST);
+
+            expect(p_search_by_hash_stub).to.have.been.calledWith(search_object_test);
+            expect(bridge_delete_records_stub).to.have.been.calledWith(DELETE_OBJECT_TEST);
+            expect(get_cluster_msg_stub).to.have.been.calledWith(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
+            expect(send_tran_to_sc_stub).to.have.been.calledWith(`${DELETE_OBJECT_TEST.schema}:${DELETE_OBJECT_TEST.table}`, delete_msg_test);
+            expect(result).to.equal(SUCCESS_MESSAGE_TEST);
+        });
+    });
+
+   /* describe('Test deleteRecord', () => {
         let err;
         let global_schema_stub;
         let test_data;
@@ -689,13 +773,13 @@ describe('Test DELETE', () => {
             assert.ok(err.message.length > 0);
         });
     });
-
+*/
     describe('Test conditionalDelete', () => {
         // TODO: We dont currently use conditionalDelete so I'm not writing unit tests for it.  If we start using it, we need
         // to add tests.
     });
 
-    describe('Test deleteRecords', () => {
+   /* describe('Test deleteRecords', () => {
         let err;
         let files_to_check;
         let test_data;
@@ -743,6 +827,6 @@ describe('Test DELETE', () => {
             assert.ok(err.message.length > 0);
             assert.equal(err.message, "Item not found!");
         });
-    });
+    });*/
 
 });
