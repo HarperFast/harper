@@ -1,6 +1,7 @@
 "use strict";
 
 const test_utils = require(`../../../test_utils`);
+test_utils.preTestPrep();
 const sinon = require('sinon');
 const assert = require('assert');
 const rewire = require('rewire');
@@ -11,6 +12,19 @@ const SocketConnector = require('../../../../server/socketcluster/connector/Sock
 const schema = require('../../../../data_layer/schema');
 const server_utils = require('../../../../server/serverUtilities');
 const terms = require('../../../../utility/hdbTerms');
+
+const TEST_DATA_DOG = [
+    {
+        "name":"Frank",
+        "id":"1",
+        "age":5
+    },
+    {
+        "name":"Bill",
+        "id":"2",
+        "age":4
+    }
+];
 
 const ID_HASH_NAME = 'id';
 
@@ -234,6 +248,85 @@ describe('Test compareAttributeKeys', () => {
         test_message[SCHEMA_1_NAME][SCHEMA_1_TABLE_1_NAME].attributes.push({attribute: `${att_3}`});
         test_message[SCHEMA_1_NAME][SCHEMA_1_TABLE_1_NAME].attributes.push({attribute: `${att_4}`});
 
+        let result = undefined;
+        try {
+            result = await connector.compareAttributeKeys(test_message[SCHEMA_1_NAME][SCHEMA_1_TABLE_1_NAME], SCHEMA_1_NAME, SCHEMA_1_TABLE_1_NAME);
+        } catch(err) {
+            result = err;
+        }
+        assert.strictEqual(global.hdb_schema[SCHEMA_1_NAME][SCHEMA_1_TABLE_1_NAME].attributes.length, 4, 'Expected new attribute in global schema');
+    });
+    it('Test with bad schema, expect exception', async () => {
+        let test_message = test_utils.deepClone(global.hdb_schema);
+        let bad_schema = `badbad`;
+        let result = undefined;
+        try {
+            result = await connector.compareAttributeKeys(test_message[bad_schema][SCHEMA_1_TABLE_1_NAME], SCHEMA_1_NAME, SCHEMA_1_TABLE_1_NAME);
+        } catch(err) {
+            result = err;
+        }
+        assert.strictEqual((result instanceof Error), true,'Expected new attribute in global schema');
+    });
+
+    it('Test with bad table, expect exception', async () => {
+        let test_message = test_utils.deepClone(global.hdb_schema);
+        let bad_table = `badbad`;
+        let result = undefined;
+        try {
+            result = await connector.compareAttributeKeys(test_message[SCHEMA_1_NAME][bad_table], SCHEMA_1_NAME, SCHEMA_1_TABLE_1_NAME);
+        } catch(err) {
+            result = err;
+        }
+        assert.strictEqual((result instanceof Error), true,'Expected new attribute in global schema');
+    });
+
+    it('Test against new table with no attributes created yet, expect 1 attribute', async () => {
+        //reset attributes in a table (simulate newly created table) and test adding new attribute
+        global.hdb_schema[SCHEMA_1_NAME][SCHEMA_1_TABLE_1_NAME].attributes = [];
+        let test_message = test_utils.deepClone(global.hdb_schema);
+        test_message[SCHEMA_1_NAME][SCHEMA_1_TABLE_1_NAME].attributes.push({attribute: `${SCHEMA_1_TABLE_1_ATT_1_NAME}`});
+        let result = undefined;
+        try {
+            result = await connector.compareAttributeKeys(null, SCHEMA_1_NAME, SCHEMA_1_TABLE_1_NAME);
+        } catch(err) {
+            result = err;
+        }
+        assert.strictEqual((result instanceof Error), true,'Expected new attribute in global schema');
+    });
+});
+
+describe('Test compareAttributeKeys with filesystem', () => {
+    let sandbox = sinon.createSandbox();
+    let SocketConnector_stub = undefined;
+    let AddEventListener_stub = undefined;
+
+    let connector = undefined;
+
+    beforeEach(async () => {
+        //setupGlobalSchema();
+        let dog_data = test_utils.deepClone(TEST_DATA_DOG);
+        test_utils.createMockFS(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_1_NAME, dog_data);
+        test_utils.createMockFS(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_2_NAME, dog_data);
+        test_utils.createMockFS(ID_HASH_NAME, SCHEMA_2_NAME, SCHEMA_2_TABLE_1_NAME, dog_data);
+        SocketConnector_stub = sandbox.stub(SocketConnector.prototype, `init`).resolves(``);
+        AddEventListener_stub = sandbox.stub(HDBSocketConnector.prototype, 'addEventListener').resolves(``);
+        connector = new HDBSocketConnector(null, null, null, null);
+
+    });
+    afterEach(async () => {
+        //resetGlobalSchema();
+        test_utils.tearDownMockFS();
+    });
+
+    after(async () => {
+        test_utils.tearDownMockFS();
+    });
+
+    it('Nominal test for compareAttributeKeys, 1 new attributes', async () => {
+        let test_message = test_utils.deepClone(global.hdb_schema);
+        let att_3 = 'att_3';
+        test_message[SCHEMA_1_NAME][SCHEMA_1_TABLE_1_NAME].attributes.push({attribute: `${att_3}`});
+        assert.strictEqual(global.hdb_schema[SCHEMA_1_NAME][SCHEMA_1_TABLE_1_NAME].attributes.length, 3, 'Expected only 3 attributes in starting schema');
         let result = undefined;
         try {
             result = await connector.compareAttributeKeys(test_message[SCHEMA_1_NAME][SCHEMA_1_TABLE_1_NAME], SCHEMA_1_NAME, SCHEMA_1_TABLE_1_NAME);

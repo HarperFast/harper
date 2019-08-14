@@ -122,19 +122,42 @@ class HDBSocketConnector extends SocketConnector{
         }
     }
 
+    /**
+     * Compares the attributes with a table passed in with the matching table in global.hdb_schema.  If there are
+     * additional attributes in the passed table object, each new attribute will be created.
+     * @param table_object - A table description object
+     * @param schema_name - The schema the specified table should reside in
+     * @param table_name - The name of the table being compared.
+     * @returns {Promise<void>}
+     */
     async compareAttributeKeys(table_object, schema_name, table_name) {
+        if(!table_object || !schema_name || !table_name) {
+            throw new Error('Invalid parameter passed to compareAttributeKeys');
+        }
+
+        if(!global.hdb_schema[schema_name] || !global.hdb_schema[schema_name][table_name]) {
+            throw new Error(`Schema:${schema_name} or table: ${table_name} not found in compareAttributeKeys`);
+        }
         try {
             for(let i=0; i< table_object.attributes.length; i++) {
                 let curr_attribute_name = table_object.attributes[i].attribute;
                 // Attributes may not yet exist if this is a new table. If so,create the first one and then iterate in the
                 // else statement for all the rest of the attributes
                 if(!global.hdb_schema[schema_name][table_name].attributes) {
-                    let msg = this.generateOperationFunctionCall(ENTITY_TYPE_ENUM.ATTRIBUTE, table_object, schema_name, table_object[curr_attribute_name]);
+                    let msg = this.generateOperationFunctionCall(ENTITY_TYPE_ENUM.ATTRIBUTE, table_object.attributes[i], schema_name, table_name);
                     let {operation_function} = server_utilities.getOperationFunction(msg);
+                    if(!msg || !operation_function) {
+                        // OK to be caught locally, just want to exit processing.
+                        throw new Error('Invalid operation function in compareAttributeKeys.');
+                    }
                     const async_func = promisify(operation_function);
                     let result = await async_func(msg);
                 } else {
                     let create_attribute = true;
+                    if(!global.hdb_schema[schema_name][table_name].attributes) {
+                        // should never get here, but log an error if we do
+                        throw new Error(`attributes for schema: ${schema_name} and table: ${table_name} do not exist in compareAttributeKeys.`);
+                    }
                     for(let i=0; i<global.hdb_schema[schema_name][table_name].attributes.length; i++) {
                         if(global.hdb_schema[schema_name][table_name].attributes[i].attribute === curr_attribute_name) {
                             // this attribute already exists, break out of the loop and move onto the next attribute.
@@ -143,6 +166,7 @@ class HDBSocketConnector extends SocketConnector{
                         }
                     }
                     if(create_attribute) {
+                        log.trace(`compareAttributeKeys Creating attribute: ${table_object.attributes[i].attribute}`);
                         let msg = this.generateOperationFunctionCall(ENTITY_TYPE_ENUM.ATTRIBUTE, table_object.attributes[i], schema_name, table_name);
                         let {operation_function} = server_utilities.getOperationFunction(msg);
                         const async_func = promisify(operation_function);
@@ -151,6 +175,7 @@ class HDBSocketConnector extends SocketConnector{
                 }
             }
         } catch(err) {
+            log.error(`Failed to create attribute in table: ${table_name}`);
             log.error(err);
         }
     }
@@ -161,6 +186,7 @@ class HDBSocketConnector extends SocketConnector{
         use the api as it stands.
      **/
     generateOperationFunctionCall(entity_type_enum, new_entity_object, target_schema_name, target_table_name) {
+        log.trace(`Processing generateOperationFunctionCall`);
         if(!entity_type_enum || !new_entity_object) {
             log.info(`Invalid parameter for getOperationFunctionCall`);
             return null;
@@ -170,18 +196,21 @@ class HDBSocketConnector extends SocketConnector{
             case ENTITY_TYPE_ENUM.SCHEMA:
                 api_msg.operation = terms.OPERATIONS_ENUM.CREATE_SCHEMA;
                 api_msg.schema = new_entity_object.name;
+                log.trace(`Generated create schema call`);
                 break;
             case ENTITY_TYPE_ENUM.TABLE:
                 api_msg.operation = terms.OPERATIONS_ENUM.CREATE_TABLE;
                 api_msg.schema = target_schema_name;
                 api_msg.table = new_entity_object.name;
                 api_msg.hash_attribute = new_entity_object.hash_attribute;
+                log.trace(`Generated create table call`);
                 break;
             case ENTITY_TYPE_ENUM.ATTRIBUTE:
                 api_msg.operation = terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE;
                 api_msg.schema = target_schema_name;
                 api_msg.table = target_table_name;
                 api_msg.attribute = new_entity_object.attribute;
+                log.trace(`Generated create attribute call`);
                 break;
             default:
                 break;
