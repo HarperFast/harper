@@ -7,24 +7,16 @@ const common_utils = require('../utility/common_utils');
 const async = require('async');
 const fs = require('graceful-fs');
 const global_schema = require('../utility/globalSchema');
-const truncate = require('truncate-utf8-bytes');
 const path = require('path');
 const moment = require('moment');
 const harper_logger = require('../utility/logging/harper_logger');
 const { promisify, callbackify } = require('util');
-const unlink = require('../utility/fs/unlink');
-const c_unlink = callbackify(unlink);
 const terms = require('../utility/hdbTerms');
 const harperBridge = require('./harperBridge/harperBridge');
 
-const slash_regex = /\//g;
 const BASE_PATH = common_utils.buildFolderPath(env.get('HDB_ROOT'), "schema");
 const HDB_HASH_FOLDER_NAME = '__hdb_hash';
-const BLOB_FOLDER_NAME = 'blob';
-const MAX_BYTES = '255';
-const ENOENT_ERROR_CODE = 'ENOENT';
 const SUCCESS_MESSAGE = 'records successfully deleted';
-const HDB_FILE_SUFFIX = '.hdb';
 const MOMENT_UNIX_TIMESTAMP_FLAG = 'x';
 const SYSTEM_SCHEMA_NAME = 'system';
 
@@ -369,7 +361,7 @@ async function getDirectoriesInPath(dirPath, found_dirs, date_unix_ms) {
 }
 
 /**
- * Delete a record and unlink all attributes associated with that record.
+ * Calls the harper bridge to delete records.
  * @param delete_object
  * @returns {Promise<string>}
  */
