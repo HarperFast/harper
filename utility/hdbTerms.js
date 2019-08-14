@@ -36,7 +36,6 @@ const RESTART_TIMEOUT_MS = 60000;
 const HDB_FILE_PERMISSIONS = 0o700;
 const HDB_SCHEMA_DIR = 'schema';
 
-
 // Trying to keep socket cluster as modular as possible, so we will create values in here that point to values
 // inside of the socketcluster types module.
 const cluster_types = require('../server/socketcluster/types');

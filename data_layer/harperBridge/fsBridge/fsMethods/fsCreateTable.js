@@ -20,7 +20,7 @@ async function createTable(table_system_data, create_table_obj) {
 
     try {
         await hdb_core_insert.insert(insert_object);
-        await fs.mkdir(`${env.get('HDB_ROOT')}/${terms.HDB_SCHEMA_DIR}/${create_table_obj.schema}/${create_table_obj.table}`, {mode: terms.HDB_FILE_PERMISSIONS});
+        await fs.mkdir(`${env.get(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY)}/${terms.HDB_SCHEMA_DIR}/${create_table_obj.schema}/${create_table_obj.table}`, {mode: terms.HDB_FILE_PERMISSIONS});
     } catch(err) {
         if (err.errno === -2) {
             throw new Error('schema does not exist');
