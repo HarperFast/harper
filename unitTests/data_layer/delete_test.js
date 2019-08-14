@@ -114,15 +114,13 @@ function setup() {
 
 describe('Test DELETE', () => {
     let sandbox = sinon.createSandbox();
-    let log_stub = sandbox.stub(log, 'error');
+    let log_error_stub;
 
     before(() => {
         search_stub.yields(null, TEST_DATA_DOG);
-
-
         delete_rewire.__set__('p_search_by_hash', p_search_by_hash_stub);
         tearDownMockFS();
-
+        log_error_stub = sandbox.stub(log, 'error');
     });
 
     after(() => {
@@ -641,10 +639,10 @@ describe('Test DELETE', () => {
     });
 
     context('Test deleteRecord', () => {
-        let bridge_delete_records_stub = sandbox.stub(harperBridge, 'deleteRecords');
-        p_search_by_hash_stub.resolves(TEST_DATA_DOG);
-        let send_tran_to_sc_stub = sandbox.stub(common_utils, 'sendTransactionToSocketCluster');
-        let async_delete_rw = delete_rewire.__get__('deleteRecord');
+        let bridge_delete_records_stub;
+        let get_cluster_msg_stub;
+        let send_tran_to_sc_stub;
+        let async_delete_rw;
         let search_object_test = {
             schema: DELETE_OBJECT_TEST.schema,
             table: DELETE_OBJECT_TEST.table,
@@ -658,8 +656,19 @@ describe('Test DELETE', () => {
                 "timestamp": 1565806125811
             }
         };
-        let get_cluster_msg_stub = sandbox.stub(common_utils, 'getClusterMessage')
-            .returns(delete_msg_test);
+
+        before(() => {
+            async_delete_rw = delete_rewire.__get__('deleteRecord');
+            p_search_by_hash_stub.resolves(TEST_DATA_DOG);
+            bridge_delete_records_stub = sandbox.stub(harperBridge, 'deleteRecords');
+            send_tran_to_sc_stub = sandbox.stub(common_utils, 'sendTransactionToSocketCluster');
+            get_cluster_msg_stub = sandbox.stub(common_utils, 'getClusterMessage')
+                .returns(delete_msg_test);
+        });
+
+        after(() => {
+            delete global.hdb_schema[DELETE_OBJECT_TEST.schema];
+        });
 
         it('Test validation error is thrown from bad schema name', async () => {
             DELETE_OBJECT_TEST.schema = '#!';
@@ -678,7 +687,7 @@ describe('Test DELETE', () => {
             }
 
             expect(error).to.equal('Invalid table');
-            expect(log_stub).to.have.been.calledWith('Invalid table');
+            expect(log_error_stub).to.have.been.calledWith('Invalid table');
         });
 
         it('Test stubs are called as expected for search, delete and clustering, and result msg is returned', async () => {
@@ -701,132 +710,8 @@ describe('Test DELETE', () => {
         });
     });
 
-   /* describe('Test deleteRecord', () => {
-        let err;
-        let global_schema_stub;
-        let test_data;
-
-        before(() => {
-            global_schema_stub = sinon.stub(global_schema, "getTableSchema");
-        });
-
-        beforeEach(() => {
-            global_schema_stub.yields("", null);
-            search_stub.yields(null, [TEST_DATA_DOG[0]]);
-            test_data = setup();
-        });
-
-        afterEach(() => {
-            err = undefined;
-            global_schema_stub.reset();
-            search_stub.reset();
-            tearDownMockFS();
-        });
-
-        it('Nominal path for delete Record', () => {
-            const files_to_check = [...test_data[TEST_TABLE_DOG][0].paths.files];
-            const request = deepClone(JSON_OBJECT_DELETE);
-            request.hash_values = [TEST_DOG_HASH_VALUES[0]];
-            for (let i = 0; i < files_to_check.length; i++) {
-                assert.equal(fs.existsSync(files_to_check[i]), true, `SETUP FAILURE: file ${files_to_check[i]} was not created.`);
-            }
-            delete_rewire.delete(request, () => {
-                for (let i = 0; i < files_to_check.length; i++) {
-                    assert.equal(fs.existsSync(files_to_check[i]), false, `FAILURE: file ${files_to_check[i]} still exists.`);
-                }
-            });
-        });
-
-        it('test deleteRecord with bad deleteObject parameter', () => {
-            delete_rewire.delete(null, (e) => {
-                err = e;
-            });
-            assert.ok(err.message.length > 0);
-        });
-
-        it('test deleteRecord with bad schema in deleteObject parameter', () => {
-            let del_obj = deepClone(JSON_OBJECT_DELETE);
-            del_obj.schema = 'hootiehoo';
-            delete_rewire.delete(del_obj, (e) => {
-                err = e;
-            });
-            assert.ok(err.message.length > 0);
-            assert.equal(err.message, "hash attribute not found");
-        });
-
-        it('test deleteRecord with bad table in deleteObject parameter', () => {
-            let del_obj = deepClone(JSON_OBJECT_DELETE);
-            del_obj.table = 'hootiehoo';
-            delete_rewire.delete(del_obj, (e) => {
-                err = e;
-            });
-            assert.ok(err.message.length > 0);
-            assert.equal(err.message, "hash attribute not found");
-        });
-
-        it('test deleteRecord with search returning no results', () => {
-            search_stub.yields(null, []);
-            delete_rewire.delete(JSON_OBJECT_DELETE, (e) => {
-                err = e;
-            });
-            assert.equal(err.message, "Item not found!");
-            assert.ok(err.message.length > 0);
-        });
-    });
-*/
     describe('Test conditionalDelete', () => {
         // TODO: We dont currently use conditionalDelete so I'm not writing unit tests for it.  If we start using it, we need
         // to add tests.
     });
-
-   /* describe('Test deleteRecords', () => {
-        let err;
-        let files_to_check;
-        let test_data;
-
-        beforeEach(() => {
-            search_stub.yields(null, TEST_DATA_DOG);
-            test_data = setup();
-            files_to_check = [...test_data[TEST_TABLE_DOG][0].paths.files, ...test_data[TEST_TABLE_DOG][1].paths.files ];
-        });
-
-        afterEach(() => {
-            err = undefined;
-            test_data = undefined;
-            tearDownMockFS();
-        });
-
-        it('Nominal path for deleteRecords', () => {
-            delete_rewire.deleteRecords(TEST_SCHEMA, TEST_TABLE_DOG, TEST_DATA_DOG, () => {
-                for (let i = 0; i < files_to_check.length; i++) {
-                    assert.equal(fs.existsSync(files_to_check[i]), false, `FAILURE: file ${files_to_check[i]} still exists.`);
-                }
-            });
-        });
-
-        it('deleteRecords with invalid schema', () => {
-            delete_rewire.deleteRecords(null, TEST_TABLE_DOG, TEST_DATA_DOG, (e) => {
-                err = e;
-            });
-            assert.ok(err.message.length > 0);
-            assert.equal(err.message, "hash attribute not found");
-        });
-
-        it('deleteRecords with invalid table', () => {
-            delete_rewire.deleteRecords(TEST_SCHEMA, null, TEST_DATA_DOG, (e) => {
-                err = e;
-            });
-            assert.ok(err.message.length > 0);
-            assert.equal(err.message, "hash attribute not found");
-        });
-
-        it('deleteRecords with empty records', () => {
-            delete_rewire.deleteRecords(TEST_SCHEMA, TEST_TABLE_DOG, [], (e) => {
-                err = e;
-            });
-            assert.ok(err.message.length > 0);
-            assert.equal(err.message, "Item not found!");
-        });
-    });*/
-
 });
