@@ -39,8 +39,6 @@ module.exports = {
     deleteFilesBefore: deleteFilesBefore
 };
 
-
-
 /**
  * Deletes files that have a system date before the date parameter.  Note this does not technically delete the values from the database,
  * so if clustering is enabled values added will still remain in a parent node.  This serves only to remove files for

@@ -1,5 +1,6 @@
 'use strict';
 
+const fsDeleteRecords = require('./fsDeleteRecords');
 const moveFolderToTrash = require('../fsUtility/moveFolderToTrash');
 const deleteAttrStructure = require('../fsUtility/deleteAttrStructure');
 const env = require('../../../../utility/environment/environmentManager');
@@ -17,9 +18,6 @@ const search_by_value = require('../../../search').searchByValue;
 let p_search_by_value = (util.promisify(search_by_value));
 
 module.exports = dropSchema;
-
-const _delete = require('../../../delete');
-
 
 async function dropSchema(drop_schema_obj) {
     let schema = drop_schema_obj.schema;
@@ -39,7 +37,7 @@ async function dropSchema(drop_schema_obj) {
     };
 
     try {
-        await _delete.deleteRecord(delete_schema_obj);
+        await fsDeleteRecords(delete_schema_obj);
         let search_result = await p_search_by_value(search_obj);
         await moveSchemaToTrash(drop_schema_obj, search_result);
         await deleteAttrStructure(drop_schema_obj);
@@ -82,7 +80,7 @@ async function moveSchemaToTrash(drop_schema_obj, tables) {
         }
 
         if( delete_table_obj.hash_values && delete_table_obj.hash_values.length > 0 ) {
-            await _delete.deleteRecord(delete_table_obj);
+            await fsDeleteRecords(delete_table_obj);
         }
     } catch(err) {
         throw err;
