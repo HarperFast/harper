@@ -5,6 +5,7 @@ const BridgeMethods = require("../BridgeMethods.js");
 const fsCreateRecords = require('./fsMethods/fsCreateRecords');
 const fsCreateSchema = require('./fsMethods/fsCreateSchema');
 const fsCreateTable = require('./fsMethods/fsCreateTable');
+const fsDeleteRecords = require('./fsMethods/fsDeleteRecords');
 
 class FileSystemBridge extends BridgeMethods {
 
@@ -29,6 +30,15 @@ class FileSystemBridge extends BridgeMethods {
     async createRecords(insert_obj, attributes, schema_table) {
         try {
             return await fsCreateRecords(insert_obj, attributes, schema_table);
+        } catch(err) {
+            log.error(err);
+            throw err;
+        }
+    }
+
+    async deleteRecords(delete_obj) {
+        try {
+            return await fsDeleteRecords(delete_obj);
         } catch(err) {
             log.error(err);
             throw err;

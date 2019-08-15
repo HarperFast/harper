@@ -7,23 +7,16 @@ const common_utils = require('../utility/common_utils');
 const async = require('async');
 const fs = require('graceful-fs');
 const global_schema = require('../utility/globalSchema');
-const truncate = require('truncate-utf8-bytes');
 const path = require('path');
 const moment = require('moment');
 const harper_logger = require('../utility/logging/harper_logger');
 const { promisify, callbackify } = require('util');
-const unlink = require('../utility/fs/unlink');
-const c_unlink = callbackify(unlink);
 const terms = require('../utility/hdbTerms');
+const harperBridge = require('./harperBridge/harperBridge');
 
-const slash_regex = /\//g;
 const BASE_PATH = common_utils.buildFolderPath(env.get('HDB_ROOT'), "schema");
 const HDB_HASH_FOLDER_NAME = '__hdb_hash';
-const BLOB_FOLDER_NAME = 'blob';
-const MAX_BYTES = '255';
-const ENOENT_ERROR_CODE = 'ENOENT';
 const SUCCESS_MESSAGE = 'records successfully deleted';
-const HDB_FILE_SUFFIX = '.hdb';
 const MOMENT_UNIX_TIMESTAMP_FLAG = 'x';
 const SYSTEM_SCHEMA_NAME = 'system';
 
@@ -31,13 +24,16 @@ const SYSTEM_SCHEMA_NAME = 'system';
 const p_fs_stat = promisify(fs.stat);
 const p_fs_readdir = promisify(fs.readdir);
 const p_fs_unlink = promisify(fs.unlink);
-const p_delete_record = promisify(deleteRecord);
 const p_fs_rmdir = promisify(fs.rmdir);
+const p_global_schema = promisify(global_schema.getTableSchema);
+
+// Callbackified functions
+const cb_delete_record = callbackify(deleteRecord);
 
 module.exports = {
-    delete: deleteRecord,
+    delete: cb_delete_record,
+    deleteRecord,
     conditionalDelete: conditionalDelete,
-    deleteRecords: deleteRecords,
     deleteFilesBefore: deleteFilesBefore
 };
 
@@ -167,7 +163,7 @@ async function removeFiles(schema, table, hash_attribute, ids_to_remove) {
     };
 
     try {
-        await p_delete_record(records_to_remove);
+        await deleteRecord(records_to_remove);
         await removeIDFiles(schema, table, hash_attribute, ids_to_remove);
     } catch (e) {
         harper_logger.info(`There was a problem deleting records: ${e}`);
@@ -365,47 +361,30 @@ async function getDirectoriesInPath(dirPath, found_dirs, date_unix_ms) {
 }
 
 /**
- * Delete a record and unlink all attributes associated with that record.
+ * Calls the harper bridge to delete records.
  * @param delete_object
- * @param callback
+ * @returns {Promise<string>}
  */
-function deleteRecord(delete_object, callback){
+async function deleteRecord(delete_object){
+    let validation = bulk_delete_validator(delete_object);
+    if (validation) {
+        throw validation;
+    }
+
     try {
-        let validation = bulk_delete_validator(delete_object);
-        if (validation) {
-            return callback(validation);
+        await p_global_schema(delete_object.schema, delete_object.table);
+        await harperBridge.deleteRecords(delete_object);
+
+        if (delete_object.schema !== terms.SYSTEM_SCHEMA_NAME) {
+            let delete_msg = common_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
+            delete_msg.transaction = delete_object;
+            common_utils.sendTransactionToSocketCluster(`${delete_object.schema}:${delete_object.table}`, delete_msg);
         }
 
-        let search_obj =
-            {
-                schema: delete_object.schema,
-                table: delete_object.table,
-                hash_values: delete_object.hash_values,
-                get_attributes: ['*']
-            };
-
-        async.waterfall([
-            global_schema.getTableSchema.bind(null, delete_object.schema, delete_object.table),
-            (table_info, callback) => {
-                callback();
-            },
-            search.searchByHash.bind(null, search_obj),
-            deleteRecords.bind(null, delete_object.schema, delete_object.table)
-        ], (err) => {
-            if (err) {
-                return callback(err);
-            }
-
-            if(delete_object.schema !== 'system') {
-                let delete_msg = common_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
-                delete_msg.transaction = delete_object;
-                common_utils.sendTransactionToSocketCluster(`${delete_object.schema}:${delete_object.table}`, delete_msg);
-            }
-
-            return callback(null, SUCCESS_MESSAGE);
-        });
-    } catch(e){
-        return callback(e);
+        return SUCCESS_MESSAGE;
+    } catch(err){
+        harper_logger.error(err);
+        throw err;
     }
 }
 
@@ -442,40 +421,4 @@ function conditionalDelete(delete_object, callback){
     } catch(e) {
         callback(e);
     }
-}
-
-function deleteRecords(schema, table, records, callback){
-    if(common_utils.isEmptyOrZeroLength(records)){
-        return callback(common_utils.errorizeMessage("Item not found!"));
-    }
-    let hash_attribute = null;
-    try {
-        hash_attribute = global.hdb_schema[schema][table].hash_attribute;
-    } catch (e) {
-        harper_logger.error(`could not retrieve hash attribute for schema:${schema} and table ${table}`);
-        return callback(common_utils.errorizeMessage(`hash attribute not found`));
-    }
-    let paths = [];
-    let table_path = common_utils.buildFolderPath(BASE_PATH, schema, table);
-
-    //generate the paths for each file to delete
-    records.forEach((record)=>{
-        Object.keys(record).forEach((attribute)=>{
-            let hash_value = record[hash_attribute];
-            if(!common_utils.isEmptyOrZeroLength(hash_value)) {
-                paths.push(common_utils.buildFolderPath(table_path, HDB_HASH_FOLDER_NAME, attribute, `${hash_value}${HDB_FILE_SUFFIX}`));
-                let stripped_value = String(record[attribute]).replace(slash_regex, '');
-                stripped_value = stripped_value.length > MAX_BYTES ? common_utils.buildFolderPath(truncate(stripped_value, MAX_BYTES), BLOB_FOLDER_NAME) : stripped_value;
-                paths.push(common_utils.buildFolderPath(table_path, attribute, stripped_value, `${hash_value}${HDB_FILE_SUFFIX}`));
-            }
-        });
-    });
-
-    c_unlink(paths, (err)=>{
-        if(err){
-            return callback(common_utils.errorizeMessage(err));
-        }
-
-        return callback();
-    });
 }

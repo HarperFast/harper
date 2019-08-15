@@ -17,7 +17,7 @@ const RESULT_TEST = {
         "dog"
     ],
     skipped_hashes: []
-    };
+};
 
 const INSERT_OBJ_TEST = {
     operation: "insert",
@@ -28,12 +28,13 @@ const INSERT_OBJ_TEST = {
             name: "dog",
             createddate: "1565108103810"
         }
-    ]};
+    ]
+};
 
 const ATTRIBUTES_TEST = [
     "name",
     "createddate"
-    ];
+];
 
 const SCHEMA_TABLE_TEST = {
     hash_attribute: "name",
@@ -49,12 +50,22 @@ const SCHEMA_TABLE_TEST = {
         {
             attribute: "createddate"
         }
-    ]};
+        ]
+};
 
 const SCHEMA_OBJ_TEST = {
     operation: "create_schema",
     schema: "dev",
-    };
+};
+
+const DELETE_OBJ_TEST = {
+    operation: "delete",
+    table: "dog",
+    schema: "dev",
+    hash_values: [
+        8,
+    ]
+};
 
 const CREATE_TABLE_OBJ_TEST = {
     operation: 'create_table',
@@ -167,6 +178,34 @@ describe('Tests for the file system bridge class', () => {
                 expect(test_error_result).to.be.true;
                 expect(log_error_spy).to.have.been.calledOnce;
             });
+        });
+    });
+
+    context('Test deleteRecords method', () => {
+        let fs_delete_records_stub = sandbox.stub();
+        let fs_delete_records_rw;
+
+        before(() => {
+            fs_delete_records_rw = FileSystemBridge.__set__('fsDeleteRecords', fs_delete_records_stub);
+        });
+
+        after(() => {
+            sandbox.restore();
+            fs_delete_records_rw();
+        });
+
+        it('Test deleteRecords method is called and result is as expected', async () => {
+            await fsBridge.deleteRecords(DELETE_OBJ_TEST);
+
+            expect(fs_delete_records_stub).to.have.been.calledWith(DELETE_OBJ_TEST);
+        });
+
+        it('Test that error is caught, thrown and logged', async () => {
+            fs_delete_records_stub.throws(new Error('Error deleting records'));
+            let test_error_result = await test_utils.testError(fsBridge.deleteRecords(DELETE_OBJ_TEST), 'Error deleting records');
+
+            expect(test_error_result).to.be.true;
+            expect(log_error_spy).to.have.been.calledOnce;
         });
     });
 });
