@@ -78,6 +78,10 @@ class HDBSocketConnector extends SocketConnector{
      * @returns {Promise<void>}
      */
     async compareSchemas(message_schema_object) {
+        if(!message_schema_object) {
+            let msg = 'Invalid parameter in compareSchemas';
+            log.error(msg);
+        }
         try {
             if (!global.hdb_schema) {
                 try {
@@ -91,14 +95,17 @@ class HDBSocketConnector extends SocketConnector{
             for(let i=0; i<schema_keys.length; i++) {
                 let curr_schema_name = schema_keys[i];
                 if(!global.hdb_schema[curr_schema_name]) {
-                    let msg = this.generateOperationFunctionCall(ENTITY_TYPE_ENUM.SCHEMA, message_schema_object[curr_schema_name]);
+                    let msg = this.generateOperationFunctionCall(ENTITY_TYPE_ENUM.SCHEMA, message_schema_object[curr_schema_name], curr_schema_name);
                     let {operation_function} = server_utilities.getOperationFunction(msg);
                     const async_func = promisify(operation_function);
                     let result = await async_func(msg);
                     // need to wait for the schema to be added to global.hdb_schema, or compareTableKeys will fail.
                     await p_set_schema_to_global();
                 }
-                await this.compareTableKeys(message_schema_object[curr_schema_name], curr_schema_name);
+                // no point in doing system schema.
+                if(curr_schema_name !== terms.SYSTEM_SCHEMA_NAME) {
+                    await this.compareTableKeys(message_schema_object[curr_schema_name], curr_schema_name);
+                }
             }
         } catch(err) {
             log.error('Error comparing schemas.');
@@ -208,13 +215,13 @@ class HDBSocketConnector extends SocketConnector{
         switch(entity_type_enum) {
             case ENTITY_TYPE_ENUM.SCHEMA:
                 api_msg.operation = terms.OPERATIONS_ENUM.CREATE_SCHEMA;
-                api_msg.schema = new_entity_object.name;
+                api_msg.schema = target_schema_name;
                 log.trace(`Generated create schema call`);
                 break;
             case ENTITY_TYPE_ENUM.TABLE:
                 api_msg.operation = terms.OPERATIONS_ENUM.CREATE_TABLE;
                 api_msg.schema = target_schema_name;
-                api_msg.table = new_entity_object.name;
+                api_msg.table = target_table_name;
                 api_msg.hash_attribute = new_entity_object.hash_attribute;
                 log.trace(`Generated create table call`);
                 break;
