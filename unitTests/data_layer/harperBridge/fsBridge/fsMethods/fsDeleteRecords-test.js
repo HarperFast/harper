@@ -86,7 +86,7 @@ describe('Tests for file system module fsDeleteRecords', () => {
         expect(test_err_result).to.be.true;
     });
 
-    // This test utilizes a mock file system that is temporally created in the unit test folder. The FS is created and then
+    // This test utilizes a mock file system that is temporarily created in the unit test folder. The FS is created and then
     // deleted from. We test that all the files have been deleted. After testing the mock FS is torn down.
     it('Test mock file system is successfully deleted', async () => {
         let mock_fs = test_utils.createMockFS(HASH_ATTRIBUTE, SCHEMA_TEST, TABLE_TEST, TEST_DATA_DOG);
