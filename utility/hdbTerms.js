@@ -28,6 +28,7 @@ const ESCAPED_DOUBLE_PERIOD_REGEX = /^U\+002EU\+002E$/;
 // Name of the System schema
 const SYSTEM_SCHEMA_NAME = 'system';
 const HASH_FOLDER_NAME = '__hdb_hash';
+const SYSTEM_TABLE_HASH = 'id';
 const CLUSTERING_VERSION_HEADER_NAME = 'hdb_version';
 const HDB_HOME_DIR_NAME = '.harperdb';
 const LICENSE_KEY_DIR_NAME = 'keys';
@@ -341,6 +342,7 @@ module.exports = {
     SC_PROC_NAME,
     SC_PROC_DESCRIPTOR,
     SYSTEM_SCHEMA_NAME,
+    SYSTEM_TABLE_HASH,
     HDB_INFO_TABLE_NAME,
     HDB_INTO_TABLE_HASH_ATTRIBUTE,
     HASH_FOLDER_NAME,
