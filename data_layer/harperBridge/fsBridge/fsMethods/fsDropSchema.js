@@ -1,0 +1,90 @@
+'use strict';
+
+const moveFolderToTrash = require('../fsUtility/moveFolderToTrash');
+const deleteAttrStructure = require('../fsUtility/deleteAttrStructure');
+const env = require('../../../../utility/environment/environmentManager');
+//const _delete = require('../../../delete');
+const terms = require('../../../../utility/hdbTerms');
+const log = require('../../../../utility/logging/harper_logger');
+
+const DATE_SUBSTR_LENGTH = 19;
+let current_date = new Date().toISOString().substr(0, DATE_SUBSTR_LENGTH);
+const TRASH_BASE_PATH = `${env.get(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY)}/${terms.HDB_TRASH_DIR}`;
+
+//TODO: This is temporary. Once we have search by value bridge func built, we will use that.
+const util = require('util');
+const search_by_value = require('../../../search').searchByValue;
+let p_search_by_value = (util.promisify(search_by_value));
+
+module.exports = dropSchema;
+
+const _delete = require('../../../delete');
+
+
+async function dropSchema(drop_schema_obj) {
+    let schema = drop_schema_obj.schema;
+    let delete_schema_obj = {
+        table: "hdb_schema",
+        schema: "system",
+        hash_values: [schema]
+    };
+
+    let search_obj = {
+        schema: 'system',
+        table: 'hdb_table',
+        hash_attribute: 'id',
+        search_attribute: 'schema',
+        search_value: schema,
+        get_attributes: ['id']
+    };
+
+    try {
+        await _delete.deleteRecord(delete_schema_obj);
+        let search_result = await p_search_by_value(search_obj);
+        await moveSchemaToTrash(drop_schema_obj, search_result);
+        await deleteAttrStructure(drop_schema_obj);
+    } catch(err) {
+        log.error(err);
+        throw err;
+    }
+}
+
+/**
+ * Moves the schema and it's contained tables to the trash folder.  Note the trash folder is not
+ * automatically emptied.
+ *
+ * @param drop_schema_obj - Object describing the table being dropped
+ * @param tables - the tables contained by the schema that will also be deleted
+ * @returns {Promise<void>}
+ */
+async function moveSchemaToTrash(drop_schema_obj, tables) {
+    if (!tables) {
+        throw new Error('tables parameter was null.');
+    }
+
+    let origin_path = `${env.get(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY)}/${terms.HDB_SCHEMA_DIR}/${drop_schema_obj.schema}`;
+    let destination_name = `${drop_schema_obj.schema}-${current_date}`;
+    let trash_path = `${TRASH_BASE_PATH}/${destination_name}`;
+
+    try {
+        await moveFolderToTrash(origin_path, trash_path);
+
+        let delete_table_obj = {
+            table: "hdb_table",
+            schema: "system",
+            hash_values: []
+        };
+
+        if (tables && tables.length > 0) {
+            for (let t in tables) {
+                delete_table_obj.hash_values.push(tables[t].id);
+            }
+        }
+
+        if( delete_table_obj.hash_values && delete_table_obj.hash_values.length > 0 ) {
+            await _delete.deleteRecord(delete_table_obj);
+        }
+    } catch(err) {
+        throw err;
+    }
+}

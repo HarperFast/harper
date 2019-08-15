@@ -12,7 +12,7 @@ const moment = require('moment');
 const harper_logger = require('../utility/logging/harper_logger');
 const { promisify, callbackify } = require('util');
 const terms = require('../utility/hdbTerms');
-const harperBridge = require('./harperBridge/harperBridge');
+
 
 const BASE_PATH = common_utils.buildFolderPath(env.get('HDB_ROOT'), "schema");
 const HDB_HASH_FOLDER_NAME = '__hdb_hash';
@@ -28,14 +28,18 @@ const p_fs_rmdir = promisify(fs.rmdir);
 const p_global_schema = promisify(global_schema.getTableSchema);
 const p_search_by_hash = promisify(search.searchByHash);
 
+const harperBridge = require('./harperBridge/harperBridge');
 // Callbackified functions
 const cb_delete_record = callbackify(deleteRecord);
 
 module.exports = {
     delete: cb_delete_record,
+    deleteRecord,
     conditionalDelete: conditionalDelete,
     deleteFilesBefore: deleteFilesBefore
 };
+
+
 
 /**
  * Deletes files that have a system date before the date parameter.  Note this does not technically delete the values from the database,
