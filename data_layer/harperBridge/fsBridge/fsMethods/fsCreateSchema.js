@@ -16,9 +16,9 @@ const hdb_core_insert = require('../../../insert');
  */
 async function createSchema(schema_create_obj) {
     let insert_object = {
-        operation: 'insert',
-        schema: 'system',
-        table: 'hdb_schema',
+        operation: terms.OPERATIONS_ENUM.INSERT,
+        schema: terms.SYSTEM_SCHEMA_NAME,
+        table: terms.SYSTEM_TABLE_NAMES.SCHEMA_TABLE_NAME,
         records: [
             {
                 name: schema_create_obj.schema,
@@ -29,12 +29,11 @@ async function createSchema(schema_create_obj) {
 
     try {
         await hdb_core_insert.insert(insert_object);
-        await fs.mkdir(env.get('HDB_ROOT') + '/schema/' + schema_create_obj.schema, {mode: terms.HDB_FILE_PERMISSIONS});
+        await fs.mkdir(`${env.get(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY)}/${terms.HDB_SCHEMA_DIR}/${schema_create_obj.schema}`, {mode: terms.HDB_FILE_PERMISSIONS});
     } catch(err) {
         if (err.errno === -17) {
             throw new Error('schema already exists');
         }
-
         throw err;
     }
 }

@@ -39,6 +39,7 @@ const RESTART_CODE = 'SIGTSTP';
 const RESTART_CODE_NUM = 24;
 const RESTART_TIMEOUT_MS = 60000;
 const HDB_FILE_PERMISSIONS = 0o700;
+const HDB_SCHEMA_DIR = 'schema';
 
 // Trying to keep socket cluster as modular as possible, so we will create values in here that point to values
 // inside of the socketcluster types module.
@@ -381,6 +382,7 @@ module.exports = {
     HDB_INTERNAL_SC_CHANNEL_PREFIX,
     INTERNAL_SC_CHANNELS,
     CLUSTERING_MESSAGE_TYPES,
+    HDB_SCHEMA_DIR,
     // Make the message objects available through hdbTerms to keep clustering as modular as possible.
     ClusterMessageObjects
 };
