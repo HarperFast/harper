@@ -64,6 +64,7 @@ describe('Tests for file system module fsDeleteRecords', () => {
     before(() => {
         fs_delete_records.__set__('BASE_PATH', FS_DIR_TEST);
         log_error_stub = sandbox.stub(log, 'error');
+        
     });
 
     after(() => {
@@ -72,14 +73,6 @@ describe('Tests for file system module fsDeleteRecords', () => {
         test_utils.tearDownMockFS();
     });
 
-    it('Test item not found msg is returned if delete object records empty', async () => {
-        let delete_obj_test_clone = test_utils.deepClone(DELETE_OBJ_TEST);
-        delete_obj_test_clone.records = [];
-        let test_err_result = await test_utils.testError(fs_delete_records(delete_obj_test_clone), 'Item not found');
-
-        expect(test_err_result).to.be.true;
-    });
-    
     it('Test that the check for hash attribute returns a not found message', async () => {
         let test_err_result = await test_utils.testError(fs_delete_records(DELETE_OBJ_TEST), 'hash attribute not found');
 
@@ -112,6 +105,24 @@ describe('Tests for file system module fsDeleteRecords', () => {
         let unlink_stub = sandbox.stub().throws(new Error('path does not exist'));
         fs_delete_records.__set__('unlink', unlink_stub);
         let test_err_result = await test_utils.testError(fs_delete_records(DELETE_OBJ_TEST), 'path does not exist');
+
+        expect(test_err_result).to.be.true;
+        expect(log_error_stub).has.been.called;
+    });
+
+    it('Test error from search by hash is thrown', async () => {
+        delete DELETE_OBJ_TEST.records;
+        let search_by_hash_stub = sandbox.stub().throws(new Error('invalid table deleteTest.doggo'));
+        fs_delete_records.__set__('p_search_by_hash', search_by_hash_stub);
+        let test_err_result = await test_utils.testError(fs_delete_records(DELETE_OBJ_TEST), 'invalid table deleteTest.doggo');
+
+        expect(test_err_result).to.be.true;
+    });
+
+    it('Test that item not found error thrown due to empty records', async () => {
+        let search_by_hash_stub = sandbox.stub().resolves([]);
+        fs_delete_records.__set__('p_search_by_hash', search_by_hash_stub);
+        let test_err_result = await test_utils.testError(fs_delete_records(DELETE_OBJ_TEST), 'Item not found');
 
         expect(test_err_result).to.be.true;
         expect(log_error_stub).has.been.called;

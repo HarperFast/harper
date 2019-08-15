@@ -26,13 +26,13 @@ const p_fs_readdir = promisify(fs.readdir);
 const p_fs_unlink = promisify(fs.unlink);
 const p_fs_rmdir = promisify(fs.rmdir);
 const p_global_schema = promisify(global_schema.getTableSchema);
-const p_search_by_hash = promisify(search.searchByHash);
 
 // Callbackified functions
 const cb_delete_record = callbackify(deleteRecord);
 
 module.exports = {
     delete: cb_delete_record,
+    deleteRecord,
     conditionalDelete: conditionalDelete,
     deleteFilesBefore: deleteFilesBefore
 };
@@ -373,13 +373,6 @@ async function deleteRecord(delete_object){
 
     try {
         await p_global_schema(delete_object.schema, delete_object.table);
-        let search_object = {
-                schema: delete_object.schema,
-                table: delete_object.table,
-                hash_values: delete_object.hash_values,
-                get_attributes: ['*']
-            };
-        delete_object.records = await p_search_by_hash(search_object);
         await harperBridge.deleteRecords(delete_object);
 
         if (delete_object.schema !== terms.SYSTEM_SCHEMA_NAME) {

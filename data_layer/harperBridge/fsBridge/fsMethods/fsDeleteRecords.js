@@ -11,14 +11,35 @@ const slash_regex = /\//g;
 const BASE_PATH = common_utils.buildFolderPath(env.get(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY), "schema");
 const MAX_BYTES = '255';
 
+// TODO: This is temporary. Will be removed when we have a search by hash bridge function built.
+const util = require('util');
+const search_by_hash = require('../../../search').searchByHash;
+let p_search_by_hash = util.promisify(search_by_hash);
+
 module.exports = deleteRecords;
 
 async function deleteRecords(delete_obj){
-    if (common_utils.isEmptyOrZeroLength(delete_obj.records)){
-        throw new Error('Item not found');
+    let hash_attribute = null;
+
+    try {
+        if (!delete_obj.records) {
+            let search_object = {
+                schema: delete_obj.schema,
+                table: delete_obj.table,
+                hash_values: delete_obj.hash_values,
+                get_attributes: ['*']
+            };
+            delete_obj.records = await p_search_by_hash(search_object);
+
+            if (common_utils.isEmptyOrZeroLength(delete_obj.records)){
+                throw new Error('Item not found');
+            }
+        }
+    } catch(err) {
+        log.error(err);
+        throw err;
     }
 
-    let hash_attribute = null;
     try {
         hash_attribute = global.hdb_schema[delete_obj.schema][delete_obj.table].hash_attribute;
     } catch (e) {

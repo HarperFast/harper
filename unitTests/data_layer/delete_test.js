@@ -95,7 +95,6 @@ const DELETE_OBJECT_TEST = {
 };
 
 let search_stub = sinon.stub(search, 'searchByHash');
-let p_search_by_hash_stub = sinon.stub();
 
 function setup() {
     const test_data_clone_dog = deepClone(TEST_DATA_DOG);
@@ -118,7 +117,6 @@ describe('Test DELETE', () => {
 
     before(() => {
         search_stub.yields(null, TEST_DATA_DOG);
-        delete_rewire.__set__('p_search_by_hash', p_search_by_hash_stub);
         tearDownMockFS();
         log_error_stub = sandbox.stub(log, 'error');
     });
@@ -143,14 +141,12 @@ describe('Test DELETE', () => {
             test_data = setup();
             files_to_check = [...test_data[TEST_TABLE_DOG][0].paths.files, ...test_data[TEST_TABLE_DOG][1].paths.files ];
             search_stub.yields(null, TEST_DATA_DOG);
-            p_search_by_hash_stub.resolves(TEST_DATA_DOG);
         });
 
         afterEach(() => {
             test_data = undefined;
             files_to_check = undefined;
             search_stub.reset();
-            p_search_by_hash_stub.reset();
             tearDownMockFS();
         });
 
@@ -659,7 +655,6 @@ describe('Test DELETE', () => {
 
         before(() => {
             async_delete_rw = delete_rewire.__get__('deleteRecord');
-            p_search_by_hash_stub.resolves(TEST_DATA_DOG);
             bridge_delete_records_stub = sandbox.stub(harperBridge, 'deleteRecords');
             send_tran_to_sc_stub = sandbox.stub(common_utils, 'sendTransactionToSocketCluster');
             get_cluster_msg_stub = sandbox.stub(common_utils, 'getClusterMessage')
@@ -702,7 +697,6 @@ describe('Test DELETE', () => {
             };
             let result = await async_delete_rw(DELETE_OBJECT_TEST);
 
-            expect(p_search_by_hash_stub).to.have.been.calledWith(search_object_test);
             expect(bridge_delete_records_stub).to.have.been.calledWith(DELETE_OBJECT_TEST);
             expect(get_cluster_msg_stub).to.have.been.calledWith(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
             expect(send_tran_to_sc_stub).to.have.been.calledWith(`${DELETE_OBJECT_TEST.schema}:${DELETE_OBJECT_TEST.table}`, delete_msg_test);
