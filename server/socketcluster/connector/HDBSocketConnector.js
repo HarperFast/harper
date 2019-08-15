@@ -95,6 +95,8 @@ class HDBSocketConnector extends SocketConnector{
                     let {operation_function} = server_utilities.getOperationFunction(msg);
                     const async_func = promisify(operation_function);
                     let result = await async_func(msg);
+                    // need to wait for the schema to be added to global.hdb_schema, or compareTableKeys will fail.
+                    await p_set_schema_to_global();
                 }
                 await this.compareTableKeys(message_schema_object[curr_schema_name], curr_schema_name);
             }
@@ -105,6 +107,11 @@ class HDBSocketConnector extends SocketConnector{
     }
 
     async compareTableKeys(schema_object, schema_name) {
+        if(!schema_object || !schema_name) {
+            let msg = 'Invalid parameters in compareTableKeys.';
+            log.error(msg);
+            throw new Error(msg);
+        }
         try {
             let table_keys = Object.keys(schema_object);
             for(let i=0; i<table_keys.length; i++) {
@@ -114,6 +121,8 @@ class HDBSocketConnector extends SocketConnector{
                     let {operation_function} = server_utilities.getOperationFunction(msg);
                     const async_func = promisify(operation_function);
                     let result = await async_func(msg);
+                    // need to wait for the table to be added to global.hdb_schema, or compareAttributeKeys will fail.
+                    await p_set_schema_to_global();
                 }
                 await this.compareAttributeKeys(schema_object[curr_table_name], schema_name, curr_table_name);
             }
@@ -170,7 +179,11 @@ class HDBSocketConnector extends SocketConnector{
                         let msg = this.generateOperationFunctionCall(ENTITY_TYPE_ENUM.ATTRIBUTE, table_object.attributes[i], schema_name, table_name);
                         let {operation_function} = server_utilities.getOperationFunction(msg);
                         const async_func = promisify(operation_function);
-                        let result = await async_func(msg);
+                        try {
+                            let result = await async_func(msg);
+                        } catch(err) {
+                            // no-op, some attributes may already exist so do nothing
+                        }
                     }
                 }
             }

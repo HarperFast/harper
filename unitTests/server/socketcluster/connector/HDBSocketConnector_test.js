@@ -14,6 +14,9 @@ const server_utils = require('../../../../server/serverUtilities');
 const terms = require('../../../../utility/hdbTerms');
 const {promisify} = require('util');
 
+const p_set_global = promisify(global_schema.setSchemaDataToGlobal);
+const p_get_table = promisify(global_schema.getTableSchema);
+
 const TEST_DATA_DOG = [
     {
         "name":"Frank",
@@ -46,6 +49,9 @@ const SCHEMA_2_TABLE_1_ID = 'table_1_id';
 const SCHEMA_2_TABLE_1_ATT_1_NAME = 'table_1_att_1';
 const SCHEMA_2_TABLE_1_ATT_2_NAME = 'table_1_att_2';
 
+const SCHEMA_1_NEW_TABLE_NAME = 'new_table';
+const SCHEMA_1_OTHER_NEW_TABLE_NAME = 'newer_table';
+
 const SCHEMA_3_NAME = 'schema_3';
 
 function setupGlobalSchema() {
@@ -62,53 +68,9 @@ function resetGlobalSchema() {
     global.hdb_schema = {};
 }
 
-/**
- * This function should be used in the getOperationFunction stub.
- * @param msg
- * @param callback
- * @returns {{operation_function: (function(*=, *): *)}|{operation_function: operation_function}}
- */
-function getOperationFunctionStub(msg, callback) {
-    switch(msg.operation) {
-        case terms.OPERATIONS_ENUM.CREATE_SCHEMA:
-            return {operation_function: (msg, callback) => {
-                    if(!global.hdb_schema[msg.schema]) {
-                        global.hdb_schema[msg.schema] = {};
-                        return callback(null, null);
-                    }
-                }};
-        case terms.OPERATIONS_ENUM.CREATE_TABLE:
-            return {operation_function: (msg, callback) => {
-                    if(!global.hdb_schema[msg.schema]) {
-                        global.hdb_schema[msg.schema] = {};
-                    }
-                    if(!global.hdb_schema[msg.schema][msg.table]) {
-                        global.hdb_schema[msg.schema][msg.table] = {};
-                        return callback(null, null);
-                    }
-                }};
-        case terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE:
-            return {operation_function: (msg, callback) => {
-                    global.hdb_schema[msg.schema][msg.table].attributes.push(msg);
-                    return callback(null, null);
-                }};
-    }
-}
-
-/**
- * Since we import getOperationFunction in a unique way inside of HDBSocketConnector, we are overrid
- * @param msg
- * @returns {undefined}
- */
-function get_operation_override(msg) {
-    let found_operation = undefined;
-
-    return found_operation;
-}
-
 describe('Test compareSchemas', () => {
     //Stub out connection related configuration.
-    let sandbox = sinon.createSandbox();
+    let sandbox = undefined;
     let SocketConnector_stub = undefined;
     let AddEventListener_stub = undefined;
     let get_operation_stub = undefined;
@@ -117,6 +79,7 @@ describe('Test compareSchemas', () => {
     let set_schema_to_global_stub = undefined;
 
     beforeEach(async () => {
+        sandbox = sinon.createSandbox();
        setupGlobalSchema();
         SocketConnector_stub = sandbox.stub(SocketConnector.prototype, `init`).resolves(``);
         AddEventListener_stub = sandbox.stub(HDBSocketConnector.prototype, 'addEventListener').resolves(``);
@@ -150,6 +113,7 @@ describe('Test compareSchemas', () => {
     });
     afterEach(async () => {
        resetGlobalSchema();
+       sandbox.restore();
     });
    it('Nominal case', async () => {
        let schem = 'new_schema3';
@@ -173,51 +137,70 @@ describe('Test compareSchemas', () => {
    });
 });
 
-describe('Test compareAttributeKeys', () => {
-    let sandbox = sinon.createSandbox();
+describe('Test compareAttributeKeys with filesystem', () => {
+    let connector = undefined;
     let SocketConnector_stub = undefined;
     let AddEventListener_stub = undefined;
-    let get_operation_stub = undefined;
-
-    let connector = undefined;
-    let set_schema_to_global_stub = undefined;
-
+    let sandbox = undefined;
     beforeEach(async () => {
-        setupGlobalSchema();
+        sandbox = sinon.createSandbox();
+        let dog_data = test_utils.deepClone(TEST_DATA_DOG);
+        test_utils.createMockFS(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_1_NAME, dog_data);
+        test_utils.createMockFS(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_2_NAME, dog_data);
+        test_utils.createMockFS(ID_HASH_NAME, SCHEMA_2_NAME, SCHEMA_2_TABLE_1_NAME, dog_data);
         SocketConnector_stub = sandbox.stub(SocketConnector.prototype, `init`).resolves(``);
         AddEventListener_stub = sandbox.stub(HDBSocketConnector.prototype, 'addEventListener').resolves(``);
         connector = new HDBSocketConnector(null, null, null, null);
-        get_operation_stub = sandbox.stub(server_utils, `getOperationFunction`).callsFake((msg) => {
-            switch(msg.operation) {
-                case terms.OPERATIONS_ENUM.CREATE_SCHEMA:
-                    return {operation_function: (msg, callback) => {
-                            if(!global.hdb_schema[msg.schema]) {
-                                global.hdb_schema[msg.schema] = {};
-                                return callback(null, null);
-                            }
-                        }};
-                case terms.OPERATIONS_ENUM.CREATE_TABLE:
-                    return {operation_function: (msg, callback) => {
-                            if(!global.hdb_schema[msg.schema]) {
-                                global.hdb_schema[msg.schema] = {};
-                            }
-                            if(!global.hdb_schema[msg.schema][msg.table]) {
-                                global.hdb_schema[msg.schema][msg.table] = {};
-                                return callback(null, null);
-                            }
-                        }};
-                case terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE:
-                    return {operation_function: (msg, callback) => {
-                            global.hdb_schema[msg.schema][msg.table].attributes.push({attribute: msg.attribute});
-                            return callback(null, null);
-                        }};
-            }
-        });
+
     });
     afterEach(async () => {
-        resetGlobalSchema();
+        test_utils.tearDownMockFS();
+        test_utils.tearDownMockFSSystem();
+        sandbox.restore();
     });
 
+    after(async () => {
+        test_utils.tearDownMockFS();
+        test_utils.tearDownMockFSSystem();
+    });
+
+    it('Nominal test for compareAttributeKeys, 1 new attributes', async () => {
+        let test_message = test_utils.deepClone(global.hdb_schema);
+        let att_3 = 'att_3';
+        test_message[SCHEMA_1_NAME][SCHEMA_1_TABLE_1_NAME].attributes.push({attribute: `${att_3}`});
+        assert.strictEqual(global.hdb_schema[SCHEMA_1_NAME][SCHEMA_1_TABLE_1_NAME].attributes.length, 3, 'Expected only 3 attributes in starting schema');
+        let result = undefined;
+        try {
+            result = await connector.compareAttributeKeys(test_message[SCHEMA_1_NAME][SCHEMA_1_TABLE_1_NAME], SCHEMA_1_NAME, SCHEMA_1_TABLE_1_NAME);
+        } catch(err) {
+            result = err;
+        }
+
+        // Need to force updating the global schema, otherwise we would have to wait for the signal to tell the master
+        // to update.
+        await p_set_global();
+        let found = await p_get_table(SCHEMA_1_NAME, SCHEMA_1_TABLE_1_NAME);
+        assert.strictEqual(found.attributes.length, 4, 'Expected new attribute in table');
+        assert.strictEqual(global.hdb_schema[SCHEMA_1_NAME][SCHEMA_1_TABLE_1_NAME].attributes.length, 4, 'Expected new attribute in global schema');
+    });
+    it('Nominal test for compareAttributeKeys, 2 new attributes', async () => {
+        let att_4 = 'att_4';
+        let att_5 = 'att_5';
+        let test_message = test_utils.deepClone(global.hdb_schema);
+        test_message[SCHEMA_1_NAME][SCHEMA_1_TABLE_1_NAME].attributes.push({attribute: `${att_4}`});
+        test_message[SCHEMA_1_NAME][SCHEMA_1_TABLE_1_NAME].attributes.push({attribute: `${att_5}`});
+
+        let result = undefined;
+        try {
+            result = await connector.compareAttributeKeys(test_message[SCHEMA_1_NAME][SCHEMA_1_TABLE_1_NAME], SCHEMA_1_NAME, SCHEMA_1_TABLE_1_NAME);
+        } catch(err) {
+            result = err;
+        }
+        await p_set_global();
+        let found = await p_get_table(SCHEMA_1_NAME, SCHEMA_1_TABLE_1_NAME);
+        assert.strictEqual(found.attributes.length, 5, 'Expected new attribute in table');
+        assert.strictEqual(global.hdb_schema[SCHEMA_1_NAME][SCHEMA_1_TABLE_1_NAME].attributes.length, 5, 'Expected new attribute in global schema');
+    });
     it('Nominal test for compareAttributeKeys, no new attributes', async () => {
         let test_message = test_utils.deepClone(global.hdb_schema);
 
@@ -227,35 +210,9 @@ describe('Test compareAttributeKeys', () => {
         } catch(err) {
             result = err;
         }
-        assert.strictEqual(global.hdb_schema[SCHEMA_1_NAME][SCHEMA_1_TABLE_1_NAME].attributes.length, 2, 'Expected new attribute in global schema');
-    });
-    it('Nominal test for compareAttributeKeys, 1 new attribute', async () => {
-        let att_3 = 'att_3';
-        let test_message = test_utils.deepClone(global.hdb_schema);
-        test_message[SCHEMA_1_NAME][SCHEMA_1_TABLE_1_NAME].attributes.push({attribute: `${att_3}`});
-
-        let result = undefined;
-        try {
-            result = await connector.compareAttributeKeys(test_message[SCHEMA_1_NAME][SCHEMA_1_TABLE_1_NAME], SCHEMA_1_NAME, SCHEMA_1_TABLE_1_NAME);
-        } catch(err) {
-            result = err;
-        }
-        assert.strictEqual(global.hdb_schema[SCHEMA_1_NAME][SCHEMA_1_TABLE_1_NAME].attributes.length, 3, 'Expected new attribute in global schema');
-    });
-    it('Nominal test for compareAttributeKeys, 2 new attributes', async () => {
-        let att_3 = 'att_3';
-        let att_4 = 'att_4';
-        let test_message = test_utils.deepClone(global.hdb_schema);
-        test_message[SCHEMA_1_NAME][SCHEMA_1_TABLE_1_NAME].attributes.push({attribute: `${att_3}`});
-        test_message[SCHEMA_1_NAME][SCHEMA_1_TABLE_1_NAME].attributes.push({attribute: `${att_4}`});
-
-        let result = undefined;
-        try {
-            result = await connector.compareAttributeKeys(test_message[SCHEMA_1_NAME][SCHEMA_1_TABLE_1_NAME], SCHEMA_1_NAME, SCHEMA_1_TABLE_1_NAME);
-        } catch(err) {
-            result = err;
-        }
-        assert.strictEqual(global.hdb_schema[SCHEMA_1_NAME][SCHEMA_1_TABLE_1_NAME].attributes.length, 4, 'Expected new attribute in global schema');
+        const p_get_table = promisify(global_schema.getTableSchema);
+        let found = await p_get_table(SCHEMA_1_NAME, SCHEMA_1_TABLE_1_NAME);
+        assert.strictEqual(found.attributes.length, 3, 'Expected 2 new attributes in schema');
     });
     it('Test with bad schema, expect exception', async () => {
         let test_message = test_utils.deepClone(global.hdb_schema);
@@ -268,7 +225,6 @@ describe('Test compareAttributeKeys', () => {
         }
         assert.strictEqual((result instanceof Error), true,'Expected new attribute in global schema');
     });
-
     it('Test with bad table, expect exception', async () => {
         let test_message = test_utils.deepClone(global.hdb_schema);
         let bad_table = `badbad`;
@@ -296,28 +252,26 @@ describe('Test compareAttributeKeys', () => {
     });
 });
 
-describe('Test compareAttributeKeys with filesystem', () => {
-    let sandbox = sinon.createSandbox();
+describe('Test compareTableKeys with filesystem', () => {
+    let connector = undefined;
     let SocketConnector_stub = undefined;
     let AddEventListener_stub = undefined;
-
-    let connector = undefined;
-
+    let sandbox = sinon.createSandbox();
     beforeEach(async () => {
-        //setupGlobalSchema();
         let dog_data = test_utils.deepClone(TEST_DATA_DOG);
         test_utils.createMockFS(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_1_NAME, dog_data);
         test_utils.createMockFS(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_2_NAME, dog_data);
         test_utils.createMockFS(ID_HASH_NAME, SCHEMA_2_NAME, SCHEMA_2_TABLE_1_NAME, dog_data);
+
         SocketConnector_stub = sandbox.stub(SocketConnector.prototype, `init`).resolves(``);
         AddEventListener_stub = sandbox.stub(HDBSocketConnector.prototype, 'addEventListener').resolves(``);
         connector = new HDBSocketConnector(null, null, null, null);
 
     });
     afterEach(async () => {
-        //resetGlobalSchema();
         test_utils.tearDownMockFS();
         test_utils.tearDownMockFSSystem();
+        sandbox.restore();
     });
 
     after(async () => {
@@ -325,19 +279,156 @@ describe('Test compareAttributeKeys with filesystem', () => {
         test_utils.tearDownMockFSSystem();
     });
 
-    it('Nominal test for compareAttributeKeys, 1 new attributes', async () => {
+    it(`test compareTableKeys 1 new table.`, async () => {
         let test_message = test_utils.deepClone(global.hdb_schema);
-        let att_3 = 'att_3';
-        test_message[SCHEMA_1_NAME][SCHEMA_1_TABLE_1_NAME].attributes.push({attribute: `${att_3}`});
-        assert.strictEqual(global.hdb_schema[SCHEMA_1_NAME][SCHEMA_1_TABLE_1_NAME].attributes.length, 3, 'Expected only 3 attributes in starting schema');
+
+        assert.strictEqual(global.hdb_schema[SCHEMA_1_NAME][SCHEMA_1_NEW_TABLE_NAME], undefined, 'Expected table does not exist');
         let result = undefined;
         try {
-            result = await connector.compareAttributeKeys(test_message[SCHEMA_1_NAME][SCHEMA_1_TABLE_1_NAME], SCHEMA_1_NAME, SCHEMA_1_TABLE_1_NAME);
+            result = await connector.compareTableKeys(test_message[SCHEMA_1_NAME], SCHEMA_1_NAME);
         } catch(err) {
             result = err;
         }
-        const p_get_table = promisify(global_schema.getTableSchema);
-        let found = await p_get_table(SCHEMA_1_NAME, SCHEMA_1_TABLE_1_NAME);
-        assert.strictEqual(found.attributes.length, 4, 'Expected new attribute in global schema');
+
+        // Need to force updating the global schema, otherwise we would have to wait for the signal to tell the master
+        // to update.
+        await p_set_global();
+        let found_table = undefined;
+        try {
+            found_table = await p_get_table(SCHEMA_1_NAME, SCHEMA_1_NEW_TABLE_NAME);
+        } catch(err) {
+            found_table = err;
+        }
+        // get table returns an error string rather than an error :(
+        assert.strictEqual(found_table , 'Invalid table', 'Expected exception');
+        assert.strictEqual(global.hdb_schema[SCHEMA_1_NAME][SCHEMA_1_NEW_TABLE_NAME], undefined, 'Expected no new tables.');
+    });
+
+    it(`test compareTableKeys 1 new table.`, async () => {
+        let test_message = test_utils.deepClone(global.hdb_schema);
+        test_message[SCHEMA_1_NAME][SCHEMA_1_NEW_TABLE_NAME] = {
+            "hash_attribute": `id`,
+            "id": `${ID_HASH_NAME}`,
+            "name": `${SCHEMA_1_NEW_TABLE_NAME}`,
+            "schema": `${SCHEMA_1_NAME}`,
+            "attributes": [
+                {
+                    "attribute": "att_1"
+                },
+                {
+                    "attribute": "att_2"
+                }
+            ]
+        };
+        test_message[SCHEMA_1_NAME][SCHEMA_1_OTHER_NEW_TABLE_NAME] = {
+            "hash_attribute": `id`,
+            "id": `${ID_HASH_NAME}`,
+            "name": `${SCHEMA_1_OTHER_NEW_TABLE_NAME}`,
+            "schema": `${SCHEMA_1_NAME}`,
+            "attributes": [
+                {
+                    "attribute": "att_1"
+                },
+                {
+                    "attribute": "att_2"
+                }
+            ]
+        };
+        assert.strictEqual(global.hdb_schema[SCHEMA_1_NAME][SCHEMA_1_NEW_TABLE_NAME], undefined, 'Expected table does not exist');
+        let result = undefined;
+        try {
+            result = await connector.compareTableKeys(test_message[SCHEMA_1_NAME], SCHEMA_1_NAME);
+        } catch(err) {
+            result = err;
+        }
+        assert.strictEqual(result, undefined, 'Got unexpected exception');
+        // Need to force updating the global schema, otherwise we would have to wait for the signal to tell the master
+        // to update.
+        await p_set_global();
+        let found_table = undefined;
+        let other_found_table = undefined;
+        try {
+            found_table = await p_get_table(SCHEMA_1_NAME, SCHEMA_1_NEW_TABLE_NAME);
+            other_found_table = await p_get_table(SCHEMA_1_NAME, SCHEMA_1_OTHER_NEW_TABLE_NAME);
+        } catch(err) {
+            found_table = err;
+        }
+        // get table returns an error string rather than an error :(
+        assert.notStrictEqual(found_table,undefined,'Expected table to be found');
+        assert.strictEqual(found_table.attributes.length,2,'Expected 2 attributes in table');
+        assert.notStrictEqual(other_found_table,undefined,'Expected table to be found');
+        assert.strictEqual(other_found_table.attributes.length,2,'Expected 2 attributes in table');
+        assert.notStrictEqual(global.hdb_schema[SCHEMA_1_NAME][SCHEMA_1_NEW_TABLE_NAME], undefined, 'Expected new table to be created.');
+        assert.notStrictEqual(global.hdb_schema[SCHEMA_1_NAME][SCHEMA_1_OTHER_NEW_TABLE_NAME], undefined, 'Expected new table to be created.');
+    });
+
+    it(`test compareTableKeys 2 new tables.`, async () => {
+        let test_message = test_utils.deepClone(global.hdb_schema);
+        test_message[SCHEMA_1_NAME][SCHEMA_1_NEW_TABLE_NAME] = {
+            "hash_attribute": `id`,
+            "id": `${ID_HASH_NAME}`,
+            "name": `${SCHEMA_1_NEW_TABLE_NAME}`,
+            "schema": `${SCHEMA_1_NAME}`,
+            "attributes": [
+                {
+                    "attribute": "att_1"
+                },
+                {
+                    "attribute": "att_2"
+                }
+            ]
+        };
+        assert.strictEqual(global.hdb_schema[SCHEMA_1_NAME][SCHEMA_1_NEW_TABLE_NAME], undefined, 'Expected table does not exist');
+        let result = undefined;
+        try {
+            result = await connector.compareTableKeys(test_message[SCHEMA_1_NAME], SCHEMA_1_NAME);
+        } catch(err) {
+            result = err;
+        }
+        assert.strictEqual(result, undefined, 'Got unexpected exception');
+        // Need to force updating the global schema, otherwise we would have to wait for the signal to tell the master
+        // to update.
+        await p_set_global();
+        let found_table = undefined;
+        try {
+            found_table = await p_get_table(SCHEMA_1_NAME, SCHEMA_1_NEW_TABLE_NAME);
+        } catch(err) {
+            found_table = err;
+        }
+        // get table returns an error string rather than an error :(
+        assert.notStrictEqual(found_table,undefined,'Expected table to be found');
+        assert.strictEqual(found_table.attributes.length,2,'Expected 2 attributes in table');
+        assert.notStrictEqual(global.hdb_schema[SCHEMA_1_NAME][SCHEMA_1_NEW_TABLE_NAME], undefined, 'Expected new table to be created.');
+    });
+    it(`test compareTableKeys bad parameter, expect exception`, async () => {
+        let test_message = test_utils.deepClone(global.hdb_schema);
+        let result = undefined;
+        try {
+            result = await connector.compareTableKeys(null, SCHEMA_1_NAME);
+        } catch(err) {
+            result = err;
+        }
+        assert.strictEqual((result instanceof Error), true, 'Expected exception');
+    });
+    it(`test compareTableKeys bad 2nd parameter, expect exception`, async () => {
+        let test_message = test_utils.deepClone(global.hdb_schema);
+        let result = undefined;
+        try {
+            result = await connector.compareTableKeys(test_message[SCHEMA_1_NAME], null);
+        } catch(err) {
+            result = err;
+        }
+        assert.strictEqual((result instanceof Error), true, 'Expected exception');
+    });
+    it(`test compareTableKeys bad 2nd parameter, expect exception`, async () => {
+        let test_message = test_utils.deepClone(global.hdb_schema);
+        let result = undefined;
+        try {
+            result = await connector.compareTableKeys(test_message[SCHEMA_1_NAME], null);
+        } catch(err) {
+            result = err;
+        }
+        assert.strictEqual((result instanceof Error), true, 'Expected exception');
     });
 });
+
