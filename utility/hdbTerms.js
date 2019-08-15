@@ -41,6 +41,7 @@ const RESTART_TIMEOUT_MS = 60000;
 const HDB_FILE_PERMISSIONS = 0o700;
 const HDB_FILE_SUFFIX = '.hdb';
 const BLOB_FOLDER_NAME = 'blob';
+const HDB_SCHEMA_DIR = 'schema';
 
 // Trying to keep socket cluster as modular as possible, so we will create values in here that point to values
 // inside of the socketcluster types module.
@@ -385,6 +386,7 @@ module.exports = {
     CLUSTERING_MESSAGE_TYPES,
     HDB_FILE_SUFFIX,
     BLOB_FOLDER_NAME,
+    HDB_SCHEMA_DIR,
     // Make the message objects available through hdbTerms to keep clustering as modular as possible.
     ClusterMessageObjects
 };
