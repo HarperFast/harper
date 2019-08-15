@@ -12,6 +12,7 @@ const SocketConnector = require('../../../../server/socketcluster/connector/Sock
 const schema = require('../../../../data_layer/schema');
 const server_utils = require('../../../../server/serverUtilities');
 const terms = require('../../../../utility/hdbTerms');
+const {promisify} = require('util');
 
 const TEST_DATA_DOG = [
     {
@@ -48,10 +49,10 @@ const SCHEMA_2_TABLE_1_ATT_2_NAME = 'table_1_att_2';
 const SCHEMA_3_NAME = 'schema_3';
 
 function setupGlobalSchema() {
-    test_utils.setGlobalSchema(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_1_NAME, SCHEMA_1_TABLE_1_ID, [SCHEMA_1_TABLE_1_ATT_1_NAME, SCHEMA_1_TABLE_1_ATT_2_NAME]);
-    test_utils.setGlobalSchema(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_2_NAME, SCHEMA_1_TABLE_2_ID, [SCHEMA_1_TABLE_2_ATT_1_NAME, SCHEMA_1_TABLE_2_ATT_2_NAME]);
+    test_utils.setGlobalSchema(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_1_NAME, SCHEMA_1_TABLE_1_ID, [SCHEMA_1_TABLE_1_ATT_1_NAME, SCHEMA_1_TABLE_1_ATT_2_NAME], false);
+    test_utils.setGlobalSchema(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_2_NAME, SCHEMA_1_TABLE_2_ID, [SCHEMA_1_TABLE_2_ATT_1_NAME, SCHEMA_1_TABLE_2_ATT_2_NAME], false);
 
-    test_utils.setGlobalSchema(ID_HASH_NAME, SCHEMA_2_NAME, SCHEMA_2_TABLE_1_NAME, SCHEMA_2_TABLE_1_ID, [SCHEMA_2_TABLE_1_ATT_1_NAME, SCHEMA_2_TABLE_1_ATT_2_NAME]);
+    test_utils.setGlobalSchema(ID_HASH_NAME, SCHEMA_2_NAME, SCHEMA_2_TABLE_1_NAME, SCHEMA_2_TABLE_1_ID, [SCHEMA_2_TABLE_1_ATT_1_NAME, SCHEMA_2_TABLE_1_ATT_2_NAME], false);
 
     // Manually set an empty schema
     global.hdb_schema[SCHEMA_3_NAME] = {};
@@ -316,10 +317,12 @@ describe('Test compareAttributeKeys with filesystem', () => {
     afterEach(async () => {
         //resetGlobalSchema();
         test_utils.tearDownMockFS();
+        test_utils.tearDownMockFSSystem();
     });
 
     after(async () => {
         test_utils.tearDownMockFS();
+        test_utils.tearDownMockFSSystem();
     });
 
     it('Nominal test for compareAttributeKeys, 1 new attributes', async () => {
@@ -333,6 +336,8 @@ describe('Test compareAttributeKeys with filesystem', () => {
         } catch(err) {
             result = err;
         }
-        assert.strictEqual(global.hdb_schema[SCHEMA_1_NAME][SCHEMA_1_TABLE_1_NAME].attributes.length, 4, 'Expected new attribute in global schema');
+        const p_get_table = promisify(global_schema.getTableSchema);
+        let found = await p_get_table(SCHEMA_1_NAME, SCHEMA_1_TABLE_1_NAME);
+        assert.strictEqual(found.attributes.length, 4, 'Expected new attribute in global schema');
     });
 });

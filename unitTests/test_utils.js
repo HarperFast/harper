@@ -40,33 +40,12 @@ const {
 const MOCK_FS_ARGS_ERROR_MSG = "Null, undefined, and/or empty string argument values not allowed when building mock HDB FS for testing";
 const UNIT_TEST_DIR = __dirname;
 const ENV_DIR_NAME = 'envDir';
-const TEST_FS_DIR = path.join(ENV_DIR_NAME, `test_schema`);;
 const ATTR_PATH_OBJECT = {
     "files": [],
     "journals": [],
     "system": []
 };
-
-/**
- * Used in the createMockGlobalSchema function to generate a global.hdb_schema in the test harness.
- */
-class MockSchemaObject {
-    constructor() {
-        this.schema = {};
-    }
-
-    addSchema(schema_name_string) {
-        this.schema[schema_name_string] = {};
-    }
-
-    addTable(schema_name_string, table_name_string) {
-        this.schema[schema_name_string][table_name_string] = {};
-    }
-
-    addAttribute(schema_name_string, table_name_string, att_name_string) {
-        this.schema[schema_name_string][table_name_string][att_name_string] = {};
-    }
-}
+const SCHEMA_DIR_NAME = 'schema';
 
 /**
  * This needs to be called near the top of our unit tests.  Most will fail when loading harper modules due to the
@@ -172,7 +151,7 @@ function cleanUpDirectories(target_path) {
  */
 function getMockFSPath() {
     env.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, path.join(UNIT_TEST_DIR, ENV_DIR_NAME));
-    return path.join(UNIT_TEST_DIR, TEST_FS_DIR);
+    return path.join(UNIT_TEST_DIR, ENV_DIR_NAME);
 }
 
 /**
@@ -205,7 +184,7 @@ function validateMockFSArgs(argArray) {
  *          entries associated with the data passed in.
  * TODO: The method does not currently return paths for the system schema directory.
  */
-function createMockFS(hash_attribute, schema, table, test_data) {
+function createMockFS(hash_attribute, schema, table, test_data, set_global_boolean) {
     try {
         validateMockFSArgs([hash_attribute, schema, table, test_data]);
 
@@ -213,8 +192,13 @@ function createMockFS(hash_attribute, schema, table, test_data) {
         const test_base_path = getMockFSPath();
         makeTheDir(test_base_path);
 
+        // make schema directory to mimic actual file system
+
+        const test_base_schema_path = path.join(test_base_path, SCHEMA_DIR_NAME);
+        makeTheDir(test_base_schema_path);
+
         //create schema
-        const schema_path = path.join(test_base_path, schema);
+        const schema_path = path.join(test_base_schema_path, schema);
         makeTheDir(schema_path);
 
         //create table
@@ -296,6 +280,12 @@ function tearDownMockFS() {
     global.hdb_schema = undefined;
 }
 
+function tearDownMockFSSystem() {
+    let mock_system_path = path.join(UNIT_TEST_DIR, ENV_DIR_NAME, 'system');
+    cleanUpDirectories(mock_system_path);
+    global.hdb_schema = undefined;
+}
+
 /**
  * Accepts a
  * @param system_schema_object
@@ -312,7 +302,7 @@ function createMockSystemSchema(system_schema_object) {
 
 function createMockSystemSchema(hash_attribute, schema, table, attributes_keys) {
     const test_base_path = getMockFSPath();
-    const test_system_base_path = path.join(test_base_path, terms.SYSTEM_SCHEMA_NAME);
+    const test_system_base_path = path.join(test_base_path, SCHEMA_DIR_NAME, terms.SYSTEM_SCHEMA_NAME);
 
     // create default dir structure
     makeTheDir(test_system_base_path);
@@ -730,6 +720,7 @@ module.exports = {
     createMockSystemSchema,
     setGlobalSchema,
     tearDownMockFS,
+    tearDownMockFSSystem,
     makeTheDir,
     getMockFSPath,
     generateMockAST,
