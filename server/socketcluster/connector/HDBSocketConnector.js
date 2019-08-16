@@ -45,6 +45,7 @@ class HDBSocketConnector extends SocketConnector{
                         log.trace(`Received transaction message with operation: ${req.transaction.operation}`);
                         log.trace(`request: ${inspect(req)}`);
                         if(req && req.catchup_schema) {
+                            log.trace('Found schema in transaction message, processing.');
                             await this.compareSchemas(req.catchup_schema);
                         }
                         let {operation_function} = server_utilities.getOperationFunction(req.transaction);
@@ -80,6 +81,7 @@ class HDBSocketConnector extends SocketConnector{
      * @returns {Promise<void>}
      */
     async compareSchemas(message_schema_object) {
+        log.trace('in compareSchema');
         if(!message_schema_object) {
             let msg = 'Invalid parameter in compareSchemas';
             log.error(msg);
@@ -87,6 +89,7 @@ class HDBSocketConnector extends SocketConnector{
         try {
             if (!global.hdb_schema) {
                 try {
+                    log.info('Empty global schema, setting schema.');
                     await p_set_schema_to_global();
                 } catch (err) {
                     log.error(`Error settings schema to global.`);
@@ -100,12 +103,13 @@ class HDBSocketConnector extends SocketConnector{
                     let msg = this.generateOperationFunctionCall(ENTITY_TYPE_ENUM.SCHEMA, message_schema_object[curr_schema_name], curr_schema_name);
                     let {operation_function} = server_utilities.getOperationFunction(msg);
                     const async_func = promisify(operation_function);
+                    log.trace('Calling operation in compare schema');
                     let result = await async_func(msg);
                     // need to wait for the schema to be added to global.hdb_schema, or compareTableKeys will fail.
                     await p_set_schema_to_global();
                 }
                 // no point in doing system schema.
-                if(curr_schema_name !== terms.SYSTEM_SCHEMA_NAME) {
+                if(curr_schema_name !== hdb_terms.SYSTEM_SCHEMA_NAME) {
                     await this.compareTableKeys(message_schema_object[curr_schema_name], curr_schema_name);
                 }
             }
@@ -116,6 +120,7 @@ class HDBSocketConnector extends SocketConnector{
     }
 
     async compareTableKeys(schema_object, schema_name) {
+        log.trace('in compareTableKeys');
         if(!schema_object || !schema_name) {
             let msg = 'Invalid parameters in compareTableKeys.';
             log.error(msg);
@@ -129,6 +134,7 @@ class HDBSocketConnector extends SocketConnector{
                     let msg = this.generateOperationFunctionCall(ENTITY_TYPE_ENUM.TABLE, schema_object[curr_table_name], schema_name, curr_table_name);
                     let {operation_function} = server_utilities.getOperationFunction(msg);
                     const async_func = promisify(operation_function);
+                    log.trace('Calling createTable');
                     let result = await async_func(msg);
                     // need to wait for the table to be added to global.hdb_schema, or compareAttributeKeys will fail.
                     await p_set_schema_to_global();
@@ -149,6 +155,7 @@ class HDBSocketConnector extends SocketConnector{
      * @returns {Promise<void>}
      */
     async compareAttributeKeys(table_object, schema_name, table_name) {
+        log.trace('In compareAttributeKeys');
         if(!table_object || !schema_name || !table_name) {
             throw new Error('Invalid parameter passed to compareAttributeKeys');
         }
@@ -168,6 +175,7 @@ class HDBSocketConnector extends SocketConnector{
                         // OK to be caught locally, just want to exit processing.
                         throw new Error('Invalid operation function in compareAttributeKeys.');
                     }
+                    log.trace('Calling create Attribute.');
                     const async_func = promisify(operation_function);
                     let result = await async_func(msg);
                 } else {
@@ -191,6 +199,7 @@ class HDBSocketConnector extends SocketConnector{
                         try {
                             let result = await async_func(msg);
                         } catch(err) {
+                            log.info(`There was a problem creating attribute ${msg.attribute}.  It probably already exists.`);
                             // no-op, some attributes may already exist so do nothing
                         }
                     }
@@ -203,9 +212,9 @@ class HDBSocketConnector extends SocketConnector{
     }
 
     /**
-        This function generates an object that resembles an API message call in order to create schema/table/attributes that
-        are found missing during a catchup call.  Using this allows us to avoid importing all the create functions and just
-        use the api as it stands.
+     This function generates an object that resembles an API message call in order to create schema/table/attributes that
+     are found missing during a catchup call.  Using this allows us to avoid importing all the create functions and just
+     use the api as it stands.
      **/
     generateOperationFunctionCall(entity_type_enum, new_entity_object, target_schema_name, target_table_name) {
         log.trace(`Processing generateOperationFunctionCall`);
@@ -216,19 +225,19 @@ class HDBSocketConnector extends SocketConnector{
         let api_msg = {};
         switch(entity_type_enum) {
             case ENTITY_TYPE_ENUM.SCHEMA:
-                api_msg.operation = terms.OPERATIONS_ENUM.CREATE_SCHEMA;
+                api_msg.operation = hdb_terms.OPERATIONS_ENUM.CREATE_SCHEMA;
                 api_msg.schema = target_schema_name;
                 log.trace(`Generated create schema call`);
                 break;
             case ENTITY_TYPE_ENUM.TABLE:
-                api_msg.operation = terms.OPERATIONS_ENUM.CREATE_TABLE;
+                api_msg.operation = hdb_terms.OPERATIONS_ENUM.CREATE_TABLE;
                 api_msg.schema = target_schema_name;
                 api_msg.table = target_table_name;
                 api_msg.hash_attribute = new_entity_object.hash_attribute;
                 log.trace(`Generated create table call`);
                 break;
             case ENTITY_TYPE_ENUM.ATTRIBUTE:
-                api_msg.operation = terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE;
+                api_msg.operation = hdb_terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE;
                 api_msg.schema = target_schema_name;
                 api_msg.table = target_table_name;
                 api_msg.attribute = new_entity_object.attribute;

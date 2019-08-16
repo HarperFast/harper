@@ -84,13 +84,16 @@ class InterNodeSocketConnector extends SocketConnector{
         }
     }
 
-    async catchupResponseHandler(error, catchup_msg){
-        if(error){
+    async catchupResponseHandler(error, catchup_msg) {
+        log.debug('Received catchup message');
+        if(error) {
+            log.info('Error in catchupResponseHandler');
             log.error(error);
             return;
         }
 
-        if(!catchup_msg){
+        if(!catchup_msg) {
+            log.info('empty catchup response message');
             return;
         }
 
@@ -106,9 +109,11 @@ class InterNodeSocketConnector extends SocketConnector{
             };
 
             if(catchup_msg && catchup_msg.catchup_schema) {
+                log.debug('Comparing catchup response schema to global.');
                 await this.compareSchemas(req.catchup_schema);
             }
 
+            log.debug('Sending catchup message to hdb child.');
             let assign = new AssignToHdbChild();
             assign.evaluateRule(req, null, this.worker).then(()=>{});
         } catch (e) {
@@ -117,6 +122,7 @@ class InterNodeSocketConnector extends SocketConnector{
     }
 
     async compareSchemas(message_schema_object) {
+        log.trace('in compareSchema');
         if(!message_schema_object) {
             let msg = 'Invalid parameter in compareSchemas';
             log.error(msg);
@@ -124,6 +130,7 @@ class InterNodeSocketConnector extends SocketConnector{
         try {
             if (!global.hdb_schema) {
                 try {
+                    log.info('Empty global schema, setting schema.');
                     await p_set_schema_to_global();
                 } catch (err) {
                     log.error(`Error settings schema to global.`);
@@ -137,6 +144,7 @@ class InterNodeSocketConnector extends SocketConnector{
                     let msg = this.generateOperationFunctionCall(ENTITY_TYPE_ENUM.SCHEMA, message_schema_object[curr_schema_name], curr_schema_name);
                     let {operation_function} = server_utilities.getOperationFunction(msg);
                     const async_func = promisify(operation_function);
+                    log.trace('Calling operation in compare schema');
                     let result = await async_func(msg);
                     // need to wait for the schema to be added to global.hdb_schema, or compareTableKeys will fail.
                     await p_set_schema_to_global();
@@ -153,6 +161,7 @@ class InterNodeSocketConnector extends SocketConnector{
     }
 
     async compareTableKeys(schema_object, schema_name) {
+        log.trace('in compareTableKeys');
         if(!schema_object || !schema_name) {
             let msg = 'Invalid parameters in compareTableKeys.';
             log.error(msg);
@@ -166,6 +175,7 @@ class InterNodeSocketConnector extends SocketConnector{
                     let msg = this.generateOperationFunctionCall(ENTITY_TYPE_ENUM.TABLE, schema_object[curr_table_name], schema_name, curr_table_name);
                     let {operation_function} = server_utilities.getOperationFunction(msg);
                     const async_func = promisify(operation_function);
+                    log.trace('Calling createTable');
                     let result = await async_func(msg);
                     // need to wait for the table to be added to global.hdb_schema, or compareAttributeKeys will fail.
                     await p_set_schema_to_global();
@@ -186,6 +196,7 @@ class InterNodeSocketConnector extends SocketConnector{
      * @returns {Promise<void>}
      */
     async compareAttributeKeys(table_object, schema_name, table_name) {
+        log.trace('In compareAttributeKeys');
         if(!table_object || !schema_name || !table_name) {
             throw new Error('Invalid parameter passed to compareAttributeKeys');
         }
@@ -205,6 +216,7 @@ class InterNodeSocketConnector extends SocketConnector{
                         // OK to be caught locally, just want to exit processing.
                         throw new Error('Invalid operation function in compareAttributeKeys.');
                     }
+                    log.trace('Calling create Attribute.');
                     const async_func = promisify(operation_function);
                     let result = await async_func(msg);
                 } else {
@@ -228,6 +240,7 @@ class InterNodeSocketConnector extends SocketConnector{
                         try {
                             let result = await async_func(msg);
                         } catch(err) {
+                            log.info(`There was a problem creating attribute ${msg.attribute}.  It probably already exists.`);
                             // no-op, some attributes may already exist so do nothing
                         }
                     }
