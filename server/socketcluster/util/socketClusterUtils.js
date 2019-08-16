@@ -135,7 +135,7 @@ async function catchupHandler(channel, start_timestamp, end_timestamp){
         }
         let catch_up_msg = utils.getClusterMessage(hdb_terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
         catch_up_msg.transaction = catchup_response;
-        catch_up_msg.schema = global.hdb_schema;
+        catch_up_msg.catchup_schema = global.hdb_schema;
 
         return catch_up_msg;
     }

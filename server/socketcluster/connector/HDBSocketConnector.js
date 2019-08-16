@@ -44,7 +44,9 @@ class HDBSocketConnector extends SocketConnector{
                     case terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION: {
                         log.trace(`Received transaction message with operation: ${req.transaction.operation}`);
                         log.trace(`request: ${inspect(req)}`);
-                        await this.compareSchemas(req.schema);
+                        if(req && req.catchup_schema) {
+                            await this.compareSchemas(req.catchup_schema);
+                        }
                         let {operation_function} = server_utilities.getOperationFunction(req.transaction);
                         const async_func = promisify(operation_function);
                         let result = await async_func(req.transaction);
