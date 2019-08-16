@@ -22,16 +22,16 @@ module.exports = dropSchema;
 async function dropSchema(drop_schema_obj) {
     let schema = drop_schema_obj.schema;
     let delete_schema_obj = {
-        table: "hdb_schema",
-        schema: "system",
+        table: terms.SYSTEM_TABLE_NAMES.SCHEMA_TABLE_NAME,
+        schema: terms.SYSTEM_SCHEMA_NAME,
         hash_values: [schema]
     };
 
     let search_obj = {
-        schema: 'system',
-        table: 'hdb_table',
-        hash_attribute: 'id',
-        search_attribute: 'schema',
+        schema: terms.SYSTEM_SCHEMA_NAME,
+        table: terms.SYSTEM_TABLE_NAMES.TABLE_TABLE_NAME,
+        hash_attribute: terms.SYSTEM_TABLE_HASH,
+        search_attribute: terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_SCHEMA_KEY,
         search_value: schema,
         get_attributes: ['id']
     };
@@ -68,8 +68,8 @@ async function moveSchemaToTrash(drop_schema_obj, tables) {
         await moveFolderToTrash(origin_path, trash_path);
 
         let delete_table_obj = {
-            table: "hdb_table",
-            schema: "system",
+            table: terms.SYSTEM_TABLE_NAMES.TABLE_TABLE_NAME,
+            schema: terms.SYSTEM_SCHEMA_NAME,
             hash_values: []
         };
 
