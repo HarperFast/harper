@@ -43,7 +43,7 @@ class InterNodeSocketConnector extends SocketConnector{
         this.addEventListener('catchup_response', this.catchupResponseHandler.bind(this));
     }
 
-    connectHandler(status){
+    async connectHandler(status){
         if(this.additional_info && this.connected_timestamp){
             //check subscriptions so we can locally fetch catchup and ask for remote catchup
             this.additional_info.subscriptions.forEach(async (subscription) => {
@@ -108,11 +108,6 @@ class InterNodeSocketConnector extends SocketConnector{
                 hdb_header: {}
             };
 
-            if(catchup_msg && catchup_msg.catchup_schema) {
-                log.debug('Comparing catchup response schema to global.');
-                await this.compareSchemas(req.catchup_schema);
-            }
-
             log.debug('Sending catchup message to hdb child.');
             let assign = new AssignToHdbChild();
             assign.evaluateRule(req, null, this.worker).then(()=>{});
@@ -158,136 +153,6 @@ class InterNodeSocketConnector extends SocketConnector{
             log.error('Error comparing schemas.');
             log.error(err);
         }
-    }
-
-    async compareTableKeys(schema_object, schema_name) {
-        log.trace('in compareTableKeys');
-        if(!schema_object || !schema_name) {
-            let msg = 'Invalid parameters in compareTableKeys.';
-            log.error(msg);
-            throw new Error(msg);
-        }
-        try {
-            let table_keys = Object.keys(schema_object);
-            for(let i=0; i<table_keys.length; i++) {
-                let curr_table_name = table_keys[i];
-                if(!global.hdb_schema[schema_name] || !global.hdb_schema[schema_name][curr_table_name]) {
-                    let msg = this.generateOperationFunctionCall(ENTITY_TYPE_ENUM.TABLE, schema_object[curr_table_name], schema_name, curr_table_name);
-                    let {operation_function} = server_utilities.getOperationFunction(msg);
-                    const async_func = promisify(operation_function);
-                    log.trace('Calling createTable');
-                    let result = await async_func(msg);
-                    // need to wait for the table to be added to global.hdb_schema, or compareAttributeKeys will fail.
-                    await p_set_schema_to_global();
-                }
-                await this.compareAttributeKeys(schema_object[curr_table_name], schema_name, curr_table_name);
-            }
-        } catch(err) {
-            log.error(err);
-        }
-    }
-
-    /**
-     * Compares the attributes with a table passed in with the matching table in global.hdb_schema.  If there are
-     * additional attributes in the passed table object, each new attribute will be created.
-     * @param table_object - A table description object
-     * @param schema_name - The schema the specified table should reside in
-     * @param table_name - The name of the table being compared.
-     * @returns {Promise<void>}
-     */
-    async compareAttributeKeys(table_object, schema_name, table_name) {
-        log.trace('In compareAttributeKeys');
-        if(!table_object || !schema_name || !table_name) {
-            throw new Error('Invalid parameter passed to compareAttributeKeys');
-        }
-
-        if(!global.hdb_schema[schema_name] || !global.hdb_schema[schema_name][table_name]) {
-            throw new Error(`Schema:${schema_name} or table: ${table_name} not found in compareAttributeKeys`);
-        }
-        try {
-            for(let i=0; i< table_object.attributes.length; i++) {
-                let curr_attribute_name = table_object.attributes[i].attribute;
-                // Attributes may not yet exist if this is a new table. If so,create the first one and then iterate in the
-                // else statement for all the rest of the attributes
-                if(!global.hdb_schema[schema_name][table_name].attributes) {
-                    let msg = this.generateOperationFunctionCall(ENTITY_TYPE_ENUM.ATTRIBUTE, table_object.attributes[i], schema_name, table_name);
-                    let {operation_function} = server_utilities.getOperationFunction(msg);
-                    if(!msg || !operation_function) {
-                        // OK to be caught locally, just want to exit processing.
-                        throw new Error('Invalid operation function in compareAttributeKeys.');
-                    }
-                    log.trace('Calling create Attribute.');
-                    const async_func = promisify(operation_function);
-                    let result = await async_func(msg);
-                } else {
-                    let create_attribute = true;
-                    if(!global.hdb_schema[schema_name][table_name].attributes) {
-                        // should never get here, but log an error if we do
-                        throw new Error(`attributes for schema: ${schema_name} and table: ${table_name} do not exist in compareAttributeKeys.`);
-                    }
-                    for(let i=0; i<global.hdb_schema[schema_name][table_name].attributes.length; i++) {
-                        if(global.hdb_schema[schema_name][table_name].attributes[i].attribute === curr_attribute_name) {
-                            // this attribute already exists, break out of the loop and move onto the next attribute.
-                            create_attribute = false;
-                            break;
-                        }
-                    }
-                    if(create_attribute) {
-                        log.trace(`compareAttributeKeys Creating attribute: ${table_object.attributes[i].attribute}`);
-                        let msg = this.generateOperationFunctionCall(ENTITY_TYPE_ENUM.ATTRIBUTE, table_object.attributes[i], schema_name, table_name);
-                        let {operation_function} = server_utilities.getOperationFunction(msg);
-                        const async_func = promisify(operation_function);
-                        try {
-                            let result = await async_func(msg);
-                        } catch(err) {
-                            log.info(`There was a problem creating attribute ${msg.attribute}.  It probably already exists.`);
-                            // no-op, some attributes may already exist so do nothing
-                        }
-                    }
-                }
-            }
-        } catch(err) {
-            log.error(`Failed to create attribute in table: ${table_name}`);
-            log.error(err);
-        }
-    }
-
-    /**
-     This function generates an object that resembles an API message call in order to create schema/table/attributes that
-     are found missing during a catchup call.  Using this allows us to avoid importing all the create functions and just
-     use the api as it stands.
-     **/
-    generateOperationFunctionCall(entity_type_enum, new_entity_object, target_schema_name, target_table_name) {
-        log.trace(`Processing generateOperationFunctionCall`);
-        if(!entity_type_enum || !new_entity_object) {
-            log.info(`Invalid parameter for getOperationFunctionCall`);
-            return null;
-        }
-        let api_msg = {};
-        switch(entity_type_enum) {
-            case ENTITY_TYPE_ENUM.SCHEMA:
-                api_msg.operation = hdb_terms.OPERATIONS_ENUM.CREATE_SCHEMA;
-                api_msg.schema = target_schema_name;
-                log.trace(`Generated create schema call`);
-                break;
-            case ENTITY_TYPE_ENUM.TABLE:
-                api_msg.operation = hdb_terms.OPERATIONS_ENUM.CREATE_TABLE;
-                api_msg.schema = target_schema_name;
-                api_msg.table = target_table_name;
-                api_msg.hash_attribute = new_entity_object.hash_attribute;
-                log.trace(`Generated create table call`);
-                break;
-            case ENTITY_TYPE_ENUM.ATTRIBUTE:
-                api_msg.operation = hdb_terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE;
-                api_msg.schema = target_schema_name;
-                api_msg.table = target_table_name;
-                api_msg.attribute = new_entity_object.attribute;
-                log.trace(`Generated create attribute call`);
-                break;
-            default:
-                break;
-        }
-        return api_msg;
     }
 }
 
