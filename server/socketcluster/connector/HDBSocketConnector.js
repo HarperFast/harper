@@ -1,11 +1,13 @@
 const SocketConnector = require('./SocketConnector');
-//const get_operation_function = require('../../serverUtilities').getOperationFunction;
-const server_utilities = require('../../serverUtilities');
+const get_operation_function = require('../../serverUtilities').getOperationFunction;
 const log = require('../../../utility/logging/harper_logger');
 const terms = require('../../../utility/hdbTerms');
 const ClusterStatusEmitter = require('../../../events/ClusterStatusEmitter');
 const {promisify, inspect} = require('util');
 const global_schema = require('../../../utility/globalSchema');
+const operation_function_caller = require('../../../utility/OperationFunctionCaller');
+const common_utils = require(`../../../utility/common_utils`);
+const env = require('../../../utility/environment/environmentManager');
 
 const p_set_schema_to_global = promisify(global_schema.setSchemaDataToGlobal);
 
@@ -44,14 +46,20 @@ class HDBSocketConnector extends SocketConnector{
                     case terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION: {
                         log.trace(`Received transaction message with operation: ${req.transaction.operation}`);
                         log.trace(`request: ${inspect(req)}`);
+
                         if(req && req.catchup_schema) {
                             log.trace('Found schema in transaction message, processing.');
                             await this.compareSchemas(req.catchup_schema);
                         }
-                        let {operation_function} = server_utilities.getOperationFunction(req.transaction);
-                        const async_func = promisify(operation_function);
-                        let result = await async_func(req.transaction);
-                        log.debug(result);
+
+                        let {operation_function} = get_operation_function(req.transaction);
+                        operation_function_caller.callOperationFunctionAsCallback(operation_function, req.transaction, this.postOperationHandler)
+                            .then((result) => {
+                                log.debug(result);
+                            })
+                            .catch((err) => {
+                                log.error(err);
+                            });
                         break;
                     }
                     default: {
@@ -60,7 +68,7 @@ class HDBSocketConnector extends SocketConnector{
                     }
                 }
             } else {
-                let {operation_function} = server_utilities.getOperationFunction(req);
+                let {operation_function} = get_operation_function(req);
                 operation_function(req, (err, result) => {
                     //TODO possibly would be good to have a queue on the SC side holding pending transactions, on error we send back stating a fail.
                     if (err) {
@@ -247,6 +255,33 @@ class HDBSocketConnector extends SocketConnector{
                 break;
         }
         return api_msg;
+    }
+    postOperationHandler(request_body, result) {
+        switch(request_body.operation) {
+            case terms.OPERATIONS_ENUM.INSERT:
+                if(global.hdb_socket_client !== undefined && request_body.schema !== 'system' && Array.isArray(result.inserted_hashes) && result.inserted_hashes.length > 0){
+                    let transaction = {
+                        operation: "insert",
+                        schema: request_body.schema,
+                        table: request_body.table,
+                        records:[]
+                    };
+
+                    result.inserted_hashes.forEach(record =>{
+                        transaction.records.push(record);
+                    });
+                    let insert_msg = common_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
+                    insert_msg.transaction = transaction;
+                    insert_msg.__originator[env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)] = '';
+                    insert_msg.__transacted = true;
+                    common_utils.sendTransactionToSocketCluster(`${request_body.schema}:${request_body.table}`, insert_msg);
+                    return result;
+                }
+                break;
+            default:
+                //do nothing
+                break;
+        }
     }
 }
 
