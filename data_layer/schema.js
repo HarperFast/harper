@@ -1,7 +1,7 @@
 'use strict';
 
 const fs = require('fs-extra');
-const insert = require('./insert.js');
+
 const validation = require('../validation/schema_validator.js');
 const search = require('./search.js');
 const logger = require('../utility/logging/harper_logger');
@@ -17,6 +17,7 @@ const signalling = require('../utility/signalling');
 const util = require('util');
 const hdb_util = require('../utility/common_utils');
 const terms = require('../utility/hdbTerms');
+const harperBridge = require('./harperBridge/harperBridge');
 
 // Promisified functions
 let p_search_search_by_value = util.promisify(search.searchByValue);
@@ -51,6 +52,11 @@ module.exports = {
     dropAttribute: dropAttribute
 };
 
+// This must be after export to prevent issues with circular dependencies
+const insert = require('./insert.js');
+const global_schema = require('../utility/globalSchema');
+const p_global_schema = util.promisify(global_schema.getTableSchema);
+
 /** EXPORTED FUNCTIONS **/
 
 async function createSchema(schema_create_object) {
@@ -74,34 +80,15 @@ async function createSchemaStructure(schema_create_object) {
         throw validation_error;
     }
 
+    if (global.hdb_schema[schema_create_object.schema]) {
+        throw new Error(`schema ${schema_create_object.schema} already exists`);
+    }
+
     try {
-        let schema_search = await searchForSchema(schema_create_object.schema);
-
-        if (schema_search && schema_search.length > 0) {
-            throw new Error(`Schema ${schema_create_object.schema} already exists`);
-        }
-
-        let insert_object = {
-            operation: 'insert',
-            schema: 'system',
-            table: 'hdb_schema',
-            records: [
-                {
-                    name: schema_create_object.schema,
-                    createddate: '' + Date.now()
-                }
-            ]
-        };
-
-        await insert.insert(insert_object);
-        let schema_object = schema_create_object.schema;
-        await fs.mkdir(env.get('HDB_ROOT') + '/schema/' + schema_object, {mode: terms.HDB_FILE_PERMISSIONS});
+        await harperBridge.createSchema(schema_create_object);
 
         return `schema ${schema_create_object.schema} successfully created`;
     } catch(err) {
-        if (err.errno === -17) {
-            throw new Error('schema already exists');
-        }
         throw err;
     }
 }
@@ -130,60 +117,35 @@ async function createTableStructure(create_table_object) {
 
     validation.validateTableResidence(create_table_object.residence);
 
+    if (!global.hdb_schema[create_table_object.schema]) {
+        throw new Error(`schema ${create_table_object.schema} does not exist`);
+    }
+
+    if (global.hdb_schema[create_table_object.schema][create_table_object.table]) {
+        throw new Error(`table ${create_table_object.table} already exists in schema ${create_table_object.schema}`);
+    }
+
+    let table_system_data = {
+        name: create_table_object.table,
+        schema: create_table_object.schema,
+        id: uuidV4(),
+        hash_attribute: create_table_object.hash_attribute
+    };
+
     try {
-        let schema_search = await searchForSchema(create_table_object.schema);
-        if (!schema_search || schema_search.length === 0) {
-            throw new Error(`schema ${create_table_object.schema} does not exist`);
-        }
-
-        let table_search = await searchForTable(create_table_object.schema, create_table_object.table);
-        if (table_search && table_search.length > 0) {
-            throw new Error(`table ${create_table_object.table} already exists in schema ${create_table_object.schema}`);
-        }
-
-        let table = {
-            name: create_table_object.table,
-            schema: create_table_object.schema,
-            id: uuidV4(),
-            hash_attribute: create_table_object.hash_attribute
-        };
-
         if(create_table_object.residence) {
             if(global.clustering_on) {
-                table.residence = create_table_object.residence;
-                await insertTable(table, create_table_object);
+                table_system_data.residence = create_table_object.residence;
+                await harperBridge.createTable(table_system_data, create_table_object);
             } else {
                 throw new Error(`Clustering does not appear to be enabled. Cannot insert table with property 'residence'.`);
             }
         } else {
-            await insertTable(table, create_table_object);
+            await harperBridge.createTable(table_system_data, create_table_object);
         }
 
         return `table ${create_table_object.schema}.${create_table_object.table} successfully created.`;
     } catch(err) {
-        throw err;
-    }
-}
-
-async function insertTable(table, create_table_object) {
-    let insertObject = {
-        operation: 'insert',
-        schema: 'system',
-        table: 'hdb_table',
-        hash_attribute: 'id',
-        records: [table]
-    };
-
-    try {
-        await insert.insert(insertObject);
-        await fs.mkdir(env.get('HDB_ROOT') + '/schema/' + create_table_object.schema + '/' + create_table_object.table, {mode: terms.HDB_FILE_PERMISSIONS});
-    } catch(err) {
-        if (err.errno === -2) {
-            throw new Error('schema does not exist');
-        }
-        if (err.errno === -17) {
-            throw new Error('table already exists');
-        }
         throw err;
     }
 }
@@ -508,47 +470,6 @@ async function moveFolderToTrash(origin_path, trash_path) {
         throw err;
     }
     return true;
-}
-
-async function searchForSchema(schema_name) {
-    let search_obj = {
-        schema: 'system',
-        table: 'hdb_schema',
-        get_attributes: ['name'],
-        conditions: [{
-            'and': {'=': ['name', schema_name]}
-        }]
-    };
-
-    try {
-        let search_result = await p_search_by_conditions(search_obj);
-
-        return search_result;
-    } catch(err) {
-        throw err;
-    }
-}
-
-async function searchForTable(schema_name, table_name) {
-    let search_obj = {
-        schema: 'system',
-        table: 'hdb_table',
-        get_attributes: ['name'],
-        conditions: [{
-            'and': {'=': ['name', table_name]}
-        },
-            {
-                'and': {'=': ['schema', schema_name]}
-            }]
-    };
-
-    try {
-        let search_result = await p_search_by_conditions(search_obj);
-
-        return search_result;
-    } catch(err) {
-        throw err;
-    }
 }
 
 async function createAttributeStructure(create_attribute_object) {

@@ -673,6 +673,23 @@ function sortAsc(data, sort_by) {
     return data.sort((a, b) => a - b);
 }
 
+/**
+ * Helper function that tests for correct error instance and its message.
+ * @param test_func
+ * @param error_msg
+ * @returns {Promise<boolean>}
+ */
+async function testError(test_func, error_msg) {
+    let error;
+    try {
+        await test_func;
+    } catch(err) {
+        error = err;
+    }
+
+    return error instanceof Error && error.message === error_msg;
+}
+
 module.exports = {
     changeProcessToBinDir,
     deepClone,
@@ -685,5 +702,6 @@ module.exports = {
     getMockFSPath,
     generateMockAST,
     sortAsc,
-    sortDesc
+    sortDesc,
+    testError
 };
