@@ -109,7 +109,7 @@ class HDBSocketConnector extends SocketConnector{
                     await p_set_schema_to_global();
                 }
                 // no point in doing system schema.
-                if(curr_schema_name !== hdb_terms.SYSTEM_SCHEMA_NAME) {
+                if(curr_schema_name !== terms.SYSTEM_SCHEMA_NAME) {
                     await this.compareTableKeys(message_schema_object[curr_schema_name], curr_schema_name);
                 }
             }
@@ -225,19 +225,19 @@ class HDBSocketConnector extends SocketConnector{
         let api_msg = {};
         switch(entity_type_enum) {
             case ENTITY_TYPE_ENUM.SCHEMA:
-                api_msg.operation = hdb_terms.OPERATIONS_ENUM.CREATE_SCHEMA;
+                api_msg.operation = terms.OPERATIONS_ENUM.CREATE_SCHEMA;
                 api_msg.schema = target_schema_name;
                 log.trace(`Generated create schema call`);
                 break;
             case ENTITY_TYPE_ENUM.TABLE:
-                api_msg.operation = hdb_terms.OPERATIONS_ENUM.CREATE_TABLE;
+                api_msg.operation = terms.OPERATIONS_ENUM.CREATE_TABLE;
                 api_msg.schema = target_schema_name;
                 api_msg.table = target_table_name;
                 api_msg.hash_attribute = new_entity_object.hash_attribute;
                 log.trace(`Generated create table call`);
                 break;
             case ENTITY_TYPE_ENUM.ATTRIBUTE:
-                api_msg.operation = hdb_terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE;
+                api_msg.operation = terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE;
                 api_msg.schema = target_schema_name;
                 api_msg.table = target_table_name;
                 api_msg.attribute = new_entity_object.attribute;
@@ -247,10 +247,6 @@ class HDBSocketConnector extends SocketConnector{
                 break;
         }
         return api_msg;
-    }
-
-    async invokeOperation(operation_msg) {
-
     }
 }
 
