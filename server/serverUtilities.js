@@ -119,22 +119,31 @@ function processLocalTransaction(req, res, operation_function, callback) {
 function postOperationHandler(request_body, result) {
     switch(request_body.operation) {
         case terms.OPERATIONS_ENUM.INSERT:
-            if(global.hdb_socket_client !== undefined && request_body.schema !== 'system' && Array.isArray(result.inserted_hashes) && result.inserted_hashes.length > 0){
-                let transaction = {
-                    operation: "insert",
-                    schema: request_body.schema,
-                    table: request_body.table,
-                    records:[]
-                };
+            try {
+                if (global.hdb_socket_client !== undefined && request_body.schema !== 'system' && Array.isArray(result.inserted_hashes) && result.inserted_hashes.length > 0) {
+                    let transaction = {
+                        operation: "insert",
+                        schema: request_body.schema,
+                        table: request_body.table,
+                        records: []
+                    };
 
-                result.inserted_hashes.forEach(record =>{
-                        transaction.records.push(record);
-                });
-                let insert_msg = common_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
-                insert_msg.transaction = transaction;
-                insert_msg.__originator[env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)] = '';
-                insert_msg.__transacted = true;
-                common_utils.sendTransactionToSocketCluster(`${request_body.schema}:${request_body.table}`, insert_msg);
+                    let hash_attribute = global.hdb_schema[request_body.schema][request_body.table].hash_attribute;
+                    request_body.records.forEach(record => {
+                        if(result.inserted_hashes.includes(common_utils.autoCast(record[hash_attribute]))) {
+                            transaction.records.push(record);
+                        }
+                    });
+
+                    let insert_msg = common_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
+                    insert_msg.transaction = transaction;
+                    insert_msg.__originator[env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)] = '';
+                    insert_msg.__transacted = true;
+                    common_utils.sendTransactionToSocketCluster(`${request_body.schema}:${request_body.table}`, insert_msg);
+                }
+            } catch(err) {
+                harper_logger.error('There was an error calling insert followup function.');
+                harper_logger.error(err);
             }
             break;
         default:
