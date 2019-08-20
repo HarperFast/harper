@@ -18,7 +18,6 @@ const forge = require('node-forge');
 const terms_address = 'http://legal.harperdb.io/Software+License+Subscription+Agreement+110317.pdf';
 const env = require('../../utility/environment/environmentManager');
 const os = require('os');
-const schema = require('../../utility/globalSchema');
 const user_schema = require('../../utility/user_schema');
 const comm = require('../common_utils');
 const hdb_terms = require('../hdbTerms');
@@ -26,9 +25,12 @@ const crypto = require('crypto');
 const hdbInfoController = require('../../data_layer/hdbInfoController');
 const version = require('../../bin/version');
 const LOG_LOCATION = ('../install_log.log');
+
 module.exports = {
     install: run_install
 };
+
+const schema = require('../../utility/globalSchema');
 
 let wizard_result;
 let existing_users = [];

@@ -1,6 +1,7 @@
 const async = require('async');
 const system_schema = require('../json/systemSchema.json');
 const logger = require('../utility/logging/harper_logger');
+
 module.exports = {
     setSchemaDataToGlobal: setSchemaDataToGlobal,
     getTableSchema: getTableSchema,

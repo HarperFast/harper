@@ -113,7 +113,7 @@ describe('Tests for file system module fsDeleteRecords', () => {
     it('Test error from search by hash is thrown', async () => {
         delete DELETE_OBJ_TEST.records;
         let search_by_hash_stub = sandbox.stub().throws(new Error('invalid table deleteTest.doggo'));
-        fs_delete_records.__set__('p_search_by_hash', search_by_hash_stub);
+        fs_delete_records.__set__('fsGetDataByHash', search_by_hash_stub);
         let test_err_result = await test_utils.testError(fs_delete_records(DELETE_OBJ_TEST), 'invalid table deleteTest.doggo');
 
         expect(test_err_result).to.be.true;
@@ -121,7 +121,7 @@ describe('Tests for file system module fsDeleteRecords', () => {
 
     it('Test that item not found error thrown due to empty records', async () => {
         let search_by_hash_stub = sandbox.stub().resolves([]);
-        fs_delete_records.__set__('p_search_by_hash', search_by_hash_stub);
+        fs_delete_records.__set__('fsGetDataByHash', search_by_hash_stub);
         let test_err_result = await test_utils.testError(fs_delete_records(DELETE_OBJ_TEST), 'Item not found');
 
         expect(test_err_result).to.be.true;
