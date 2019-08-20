@@ -11,9 +11,9 @@ const slash_regex = /\//g;
 const BASE_PATH = common_utils.buildFolderPath(env.get(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY), "schema");
 const MAX_BYTES = '255';
 
-const fsGetDataByHash = require('./fsGetDataByHash');
-
 module.exports = deleteRecords;
+
+const fsSearchByHash = require('./fsSearchByHash');
 
 async function deleteRecords(delete_obj){
     let hash_attribute = null;
@@ -26,7 +26,7 @@ async function deleteRecords(delete_obj){
                 hash_values: delete_obj.hash_values,
                 get_attributes: ['*']
             };
-            delete_obj.records = Object.values(await fsGetDataByHash(search_object));
+            delete_obj.records = await fsSearchByHash(search_object);
 
             if (common_utils.isEmptyOrZeroLength(delete_obj.records)){
                 throw new Error('Item not found');

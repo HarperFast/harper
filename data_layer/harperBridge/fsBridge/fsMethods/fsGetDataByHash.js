@@ -2,9 +2,8 @@
 
 const fs = require('fs-extra');
 const _ = require('lodash');
-const async = require('async');
 
-const { getBasePath } = require('../fsUtilities');
+const { getBasePath } = require('../fsUtils/getBasePath');
 const { autoCast } = require('../../../../utility/common_utils');
 const search_validator = require('../../../../validation/searchValidator.js');
 
@@ -57,28 +56,18 @@ function evaluateTableAttributes(get_attributes, table_attributes) {
     return get_attributes;
 }
 
-// async function getAttributeValuePromises(attribute, table_path, hash_values, attributes_data) {
-//     //evaluate if an array of strings or objects has been passed in and assign values accordingly
-//     let attribute_name = (typeof attribute === 'string') ? attribute : attribute.attribute;
-//     attributes_data[attribute_name] = await readAttributeFiles(table_path, attribute_name, hash_values);
-// }
-
-// TODO: this method and the one below seem to be less performance than the async.each/eachLimit - investigate
 async function getAttributeFiles(get_attributes, search_object) {
     try {
         const { hash_values, schema, table } = search_object;
         let table_path = `${getBasePath()}${schema}/${table}`;
         let attributes_data = {};
 
-            // const attributeValueLookupOps = [];
         for (const attribute of get_attributes) {
             //evaluate if an array of strings or objects has been passed in and assign values accordingly
             let attribute_name = (typeof attribute === 'string') ? attribute : attribute.attribute;
             attributes_data[attribute_name] = await readAttributeFiles(table_path, attribute_name, hash_values);
-            // attributeValueLookupOps.push(getAttributeValuePromises(attribute, table_path, hash_values, attributes_data));
         }
 
-        // await Promise.all(attributeValueLookupOps);
         return attributes_data;
     } catch(err) {
         throw err;
@@ -103,8 +92,6 @@ async function readAttributeFiles(table_path, attribute, hash_files) {
 
         const readFileOps = [];
         for (const file of hash_files) {
-            // const data = await fs.readFile(`${table_path}/__hdb_hash/${attribute}/${file}.hdb`, 'utf-8');
-            // attribute_data[file] = autoCast(data.toString());
             readFileOps.push(getAttributeFilePromise(table_path, attribute, file, attribute_data));
         }
 

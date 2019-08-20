@@ -125,7 +125,7 @@ async function validation(write_object){
  * Inserts data specified in the insert_object parameter.
  * @param insert_object
  */
-async function insertData(insert_object) {
+async function insertData(insert_object){
     if (insert_object.operation !== 'insert') {
         throw new Error('invalid operation, must be insert');
     }

@@ -3,11 +3,12 @@
 const BridgeMethods = require("../BridgeMethods.js");
 const log = require('../../../utility/logging/harper_logger');
 
-const fsGetDataByHash = require("./fsMethods/fsGetDataByHash");
 const fsCreateRecords = require('./fsMethods/fsCreateRecords');
 const fsCreateSchema = require('./fsMethods/fsCreateSchema');
 const fsCreateTable = require('./fsMethods/fsCreateTable');
 const fsDeleteRecords = require('./fsMethods/fsDeleteRecords');
+const fsSearchByHash = require('./fsMethods/fsSearchByHash');
+const fsGetDataByHash = require('./fsMethods/fsGetDataByHash');
 
 class FileSystemBridge extends BridgeMethods {
 
@@ -22,8 +23,7 @@ class FileSystemBridge extends BridgeMethods {
 
     async searchByHash(search_object) {
         try {
-            const search_results = await fsGetDataByHash(search_object);
-            return Object.values(search_results);
+            return await fsSearchByHash(search_object);
         } catch(err) {
             log.error(err);
             throw err;
