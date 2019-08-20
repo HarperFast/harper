@@ -10,7 +10,6 @@
 const insert_validator = require('../validation/insertValidator.js');
 const path = require('path');
 const h_utils = require('../utility/common_utils');
-const search = require('./search');
 const logger = require('../utility/logging/harper_logger');
 const _ = require('lodash');
 const env = require('../utility/environment/environmentManager');
@@ -48,8 +47,8 @@ module.exports = {
 };
 
 // These requires must stay after export to prevent issues with circular dependencies
-const harperBridge = require('./harperBridge/harperBridge');
 const global_schema = require('../utility/globalSchema');
+const search = require('./search');
 
 const p_global_schema = util.promisify(global_schema.getTableSchema);
 const p_search_by_hash = util.promisify(search.searchByHash);
@@ -126,6 +125,7 @@ async function validation(write_object){
  * @param insert_object
  */
 async function insertData(insert_object){
+    const harperBridge = require('./harperBridge/harperBridge');
     if (insert_object.operation !== 'insert') {
         throw new Error('invalid operation, must be insert');
     }

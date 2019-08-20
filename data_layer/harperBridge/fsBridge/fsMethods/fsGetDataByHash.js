@@ -6,6 +6,7 @@ const async = require('async');
 
 const { getBasePath } = require('../fsUtilities');
 const { autoCast } = require('../../../../utility/common_utils');
+const search_validator = require('../../../../validation/searchValidator.js');
 
 // Search Object
 // {
@@ -17,6 +18,10 @@ const { autoCast } = require('../../../../utility/common_utils');
 
 async function fsGetDataByHash(search_object) {
     try {
+        const validation_error = search_validator(search_object, 'hashes');
+        if (validation_error) {
+            throw validation_error;
+        }
         // NOTE: this is replacing the getAllAttributeNames() method that was finding attributes w/ file_search.findDirectoriesByRegex()
         let table_info = global.hdb_schema[search_object.schema][search_object.table];
         let final_get_attrs = evaluateTableAttributes(search_object.get_attributes, table_info.attributes);

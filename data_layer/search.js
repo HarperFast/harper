@@ -14,9 +14,6 @@ const math = require('mathjs');
 const system_schema = require('../json/systemSchema.json');
 const SelectValidator = require('../sqlTranslator/SelectValidator');
 const hdbTerms = require('../utility/hdbTerms');
-const harperBridge = require('./harperBridge/harperBridge');
-const util = require('util');
-const c_search_by_hash = util.callbackify(harperBridge.searchByHash);
 
 // Search is used in the installer, and the base path may be undefined when search is instantiated.  Dynamically
 // get the base path from the environment manager before using it.
@@ -37,15 +34,16 @@ module.exports = {
     multiConditionSearch: multiConditionSearch
 };
 
+const harperBridge = require('./harperBridge/harperBridge');
+const util = require('util');
+const c_search_by_hash = util.callbackify(harperBridge.searchByHash);
+
 function searchByHash(search_object, callback){
     try {
-        const validation_error = search_validator(search_object, 'hashes');
-        if (validation_error) {
-            throw new Error(validation_error);
-        }
         c_search_by_hash(search_object, (err, results) => {
             if (err) {
-                throw err;
+                callback(err);
+                return;
             }
             callback(null, results);
         });
