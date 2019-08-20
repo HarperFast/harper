@@ -4,6 +4,22 @@ const log = require('../../../utility/logging/harper_logger');
 
 const promisify = require('util').promisify;
 const sc_util = require('../util/socketClusterUtils');
+const types = require('../types');
+
+const EVENT_TYPES = {
+    ERROR: `error`,
+    RAW: `raw`,
+    DISCONNECT: `disconnect`,
+    CONNECT: 'connect',
+    CONNECT_ABORT: 'connectAbort',
+    CLOSE: 'close',
+    SUBSCRIBE: 'subscribe',
+    UNSUBSCRIBE: 'unsubscribe',
+    AUTHENTICATE: 'authenticate',
+    DEAUTHENTICATE: 'deauthenticate',
+    AUTH_STATE_CHANGE: 'authStateChange',
+    MESSAGE: 'message'
+};
 
 /**
  * This class establishes the handlers for the socket on the server, handling all messaging & state changes related to a connected client
@@ -26,20 +42,21 @@ class ServerSocket{
 
 //TODO probably better to detetct the connect/disconnect events and check for a header saying its a worker
     registerHandlers(){
-        this.socket.on('error', this.errorHandler);
-        this.socket.on('raw', this.rawHandler);
-        this.socket.on('disconnect', this.disconnectHandler.bind(this));
-        this.socket.on('connect', this.connectHandler.bind(this));
-        this.socket.on('connectAbort', this.connectAbortHandler);
-        this.socket.on('close', this.closeHandler);
-        this.socket.on('subscribe', this.subscribeHandler.bind(this));
-        this.socket.on('unsubscribe', this.unsubscribeHandler.bind(this));
-        this.socket.on('authenticate', this.authenticateHandler);
-        this.socket.on('deauthenticate', this.deauthenticateHandler.bind(this));
-        this.socket.on('authStateChange', this.authStateChangeHandler);
-        this.socket.on('message', this.messageHandler);
+        this.socket.on(EVENT_TYPES.ERROR, this.errorHandler);
+        this.socket.on(EVENT_TYPES.RAW, this.rawHandler);
+        this.socket.on(EVENT_TYPES.DISCONNECT, this.disconnectHandler.bind(this));
+        this.socket.on(EVENT_TYPES.CONNECT, this.connectHandler.bind(this));
+        this.socket.on(EVENT_TYPES.CONNECT_ABORT, this.connectAbortHandler);
+        this.socket.on(EVENT_TYPES.CLOSE, this.closeHandler);
+        this.socket.on(EVENT_TYPES.SUBSCRIBE, this.subscribeHandler.bind(this));
+        this.socket.on(EVENT_TYPES.UNSUBSCRIBE, this.unsubscribeHandler.bind(this));
+        this.socket.on(EVENT_TYPES.AUTHENTICATE, this.authenticateHandler);
+        this.socket.on(EVENT_TYPES.DEAUTHENTICATE, this.deauthenticateHandler.bind(this));
+        this.socket.on(EVENT_TYPES.AUTH_STATE_CHANGE, this.authStateChangeHandler);
+        this.socket.on(EVENT_TYPES.MESSAGE, this.messageHandler);
 
-        this.socket.on('catchup', this.catchup);
+        this.socket.on(types.EMIT_TYPES.CATCHUP, this.catchup);
+        this.socket.on(types.EMIT_TYPES.SCHEMA_CATCHUP, this.catchup);
     }
 
     /**
@@ -48,10 +65,25 @@ class ServerSocket{
      */
     async catchup(catchup_object, response){
         //TODO validate catchup object https://harperdb.atlassian.net/browse/CORE-409
-        try{
+        try {
             let catchup_msg = await sc_util.catchupHandler(catchup_object.channel, Date.now() - catchup_object.milis_since_connected, null);
             response(null, catchup_msg);
         } catch(e){
+            log.error(e);
+            response(e);
+        }
+    }
+
+    /**
+     *
+     * @param {<CatchupObject>} catchup_object
+     */
+    async schema_catchup(catchup_object, response) {
+        try {
+            let schema_catchup_msg = await sc_util.schemaCatchupHandler();
+            response(null, schema_catchup_msg);
+        } catch(e) {
+            log.error('Error generating a schema catch up message.');
             log.error(e);
             response(e);
         }

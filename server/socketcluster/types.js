@@ -11,6 +11,11 @@ const MIDDLEWARE_TYPE = {
     MIDDLEWARE_AUTHENTICATE: 'authenticate',
 };
 
+const EMIT_TYPES = {
+  CATCHUP: 'catchup',
+  SCHEMA_CATCHUP: 'schema_catchup'
+};
+
 const ROOM_TYPE = {
     DEMO: 'ChannelSource',
     HDB_DEMO: 'CoreSource',
@@ -101,5 +106,6 @@ module.exports = {
     RULE_TYPE_ENUM,
     WORKER_ROOM_MSG_TYPE_ENUM,
     CORE_ROOM_MSG_TYPE_ENUM,
-    HDB_HEADER_NAME
+    HDB_HEADER_NAME,
+    EMIT_TYPES
 };

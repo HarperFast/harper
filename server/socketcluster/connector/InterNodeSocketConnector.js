@@ -43,27 +43,41 @@ class InterNodeSocketConnector extends SocketConnector{
         this.addEventListener('catchup_response', this.catchupResponseHandler.bind(this));
     }
 
-    async connectHandler(status){
-        if(this.additional_info && this.connected_timestamp){
-            //check subscriptions so we can locally fetch catchup and ask for remote catchup
-            this.additional_info.subscriptions.forEach(async (subscription) => {
-                if(subscription.publish === true) {
-                    try{
-                        let catch_up_msg = await sc_util.catchupHandler(subscription.channel, this.connected_timestamp, null);
-                        if(catch_up_msg) {
-                            this.socket.publish(hdb_terms.INTERNAL_SC_CHANNELS.CATCHUP, catch_up_msg);
+    async connectHandler(status) {
+        try {
+            // we always want to keep all schema/table/attribute info up to date, so always make a schema catchup request.
+            let schema_catch_up_msg = await sc_util.schemaCatchupHandler();
+            if (schema_catch_up_msg) {
+                this.socket.publish(hdb_terms.INTERNAL_SC_CHANNELS.SCHEMA_CATCHUP, schema_catch_up_msg);
+            }
+            if (this.additional_info && this.connected_timestamp) {
+                //check subscriptions so we can locally fetch catchup and ask for remote catchup
+                this.additional_info.subscriptions.forEach(async (subscription) => {
+                    if (subscription.publish === true) {
+                        try {
+                            let catch_up_msg = await sc_util.catchupHandler(subscription.channel, this.connected_timestamp, null);
+                            if (catch_up_msg) {
+                                this.socket.publish(hdb_terms.INTERNAL_SC_CHANNELS.CATCHUP, catch_up_msg);
+                            }
+                        } catch (e) {
+                            log.error(e);
                         }
-                    } catch(e){
-                        log.error(e);
                     }
-                } if(subscription.subscribe === true) {
-                    //TODO correct the emits with CORE-402
-                    this.socket.emit('catchup', {channel: subscription.channel, milis_since_connected: Date.now() - this.connected_timestamp}, this.catchupResponseHandler.bind(this));
-                }
-            });
-        }
+                    if (subscription.subscribe === true) {
+                        //TODO correct the emits with CORE-402
+                        this.socket.emit('catchup', {
+                            channel: subscription.channel,
+                            milis_since_connected: Date.now() - this.connected_timestamp
+                        }, this.catchupResponseHandler.bind(this));
+                    }
+                });
+            }
 
-        this.interval_id = setInterval(this.recordConnectionTimestamp.bind(this), CATCHUP_INTERVAL);
+            this.interval_id = setInterval(this.recordConnectionTimestamp.bind(this), CATCHUP_INTERVAL);
+        } catch(err) {
+            log.error('Error during catchup handler.');
+            log.error(err);
+        }
     }
 
     disconnectHandler(){

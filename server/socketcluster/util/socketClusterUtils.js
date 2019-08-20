@@ -108,6 +108,28 @@ function createEventPromise(event_name, event_emitter_object, timeout_promise) {
 /**
  * Calls the Catchup class to read a specific transaction log with a time range.
  * Creates a catchup payload based on the results from Catchup and publishes to a socket
+ * @returns {Promise<void>}
+ */
+async function schemaCatchupHandler() {
+    if(!global.hdb_schema) {
+        try {
+            await p_set_schema_to_global();
+        } catch (err) {
+            log.error(`Error settings schema to global.`);
+            log.error(err);
+            throw err;
+        }
+    }
+    let catch_up_msg = utils.getClusterMessage(hdb_terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
+    catch_up_msg.transaction = [];
+    catch_up_msg.catchup_schema = global.hdb_schema;
+
+    return catch_up_msg;
+}
+
+/**
+ * Calls the Catchup class to read a specific transaction log with a time range.
+ * Creates a catchup payload based on the results from Catchup and publishes to a socket
  * @param channel
  * @param start_timestamp
  * @param end_timestamp
@@ -135,7 +157,10 @@ async function catchupHandler(channel, start_timestamp, end_timestamp){
         }
         let catch_up_msg = utils.getClusterMessage(hdb_terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
         catch_up_msg.transaction = catchup_response;
-        catch_up_msg.catchup_schema = global.hdb_schema;
+        let channel_split = channel.split(':');
+        if(channel_split[0] && channel_split[1]) {
+            catch_up_msg.catchup_schema = global.hdb_schema[channel_split[0]][channel_split[1]];
+        }
 
         return catch_up_msg;
     }
@@ -191,5 +216,6 @@ module.exports = {
     getWorkerStatus,
     createEventPromise,
     catchupHandler,
+    schemaCatchupHandler,
     requestAndHandleLogin
 };

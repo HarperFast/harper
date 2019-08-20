@@ -1,5 +1,5 @@
 const SocketConnector = require('./SocketConnector');
-const get_operation_function = require('../../serverUtilities').getOperationFunction;
+const server_utilities = require('../../serverUtilities');
 const log = require('../../../utility/logging/harper_logger');
 const terms = require('../../../utility/hdbTerms');
 const ClusterStatusEmitter = require('../../../events/ClusterStatusEmitter');
@@ -52,7 +52,7 @@ class HDBSocketConnector extends SocketConnector{
                             await this.compareSchemas(req.catchup_schema);
                         }
 
-                        let {operation_function} = get_operation_function(req.transaction);
+                        let {operation_function} = server_utilities.getOperationFunction(req.transaction);
                         operation_function_caller.callOperationFunctionAsCallback(operation_function, req.transaction, this.postOperationHandler)
                             .then((result) => {
                                 log.debug(result);
@@ -68,7 +68,7 @@ class HDBSocketConnector extends SocketConnector{
                     }
                 }
             } else {
-                let {operation_function} = get_operation_function(req);
+                let {operation_function} = server_utilities.getOperationFunction(req);
                 operation_function(req, (err, result) => {
                     //TODO possibly would be good to have a queue on the SC side holding pending transactions, on error we send back stating a fail.
                     if (err) {
