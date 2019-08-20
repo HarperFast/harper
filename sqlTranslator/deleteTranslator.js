@@ -1,9 +1,7 @@
 const alasql = require('alasql');
-const async = require('async');
 const search = require('../data_layer/search');
-const _delete = require('../data_layer/delete');
 const log = require('../utility/logging/harper_logger');
-// const harperBridge = require('../data_layer/harperBridge/harperBridge');
+const harperBridge = require('../data_layer/harperBridge/harperBridge');
 const util = require('util');
 
 const SUCCESS_MESSAGE = 'records successfully deleted';
@@ -14,7 +12,6 @@ const p_search_search = util.promisify(search.search);
 module.exports = {
     convertDelete:cb_convert_delete
 };
-const harperBridge = require('../data_layer/harperBridge/harperBridge');
 
 async function convertDelete(statement){
     //convert this update statement to a search capable statement

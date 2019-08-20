@@ -39,7 +39,7 @@ const {
 
 const MOCK_FS_ARGS_ERROR_MSG = "Null, undefined, and/or empty string argument values not allowed when building mock HDB FS for testing";
 const UNIT_TEST_DIR = __dirname;
-const TEST_FS_DIR = "envDir/test_schema";
+const TEST_FS_DIR = "envDir/schema";
 const ATTR_PATH_OBJECT = {
     "files": [],
     "journals": [],
@@ -703,5 +703,6 @@ module.exports = {
     generateMockAST,
     sortAsc,
     sortDesc,
-    testError
+    testError,
+    TEST_FS_DIR
 };

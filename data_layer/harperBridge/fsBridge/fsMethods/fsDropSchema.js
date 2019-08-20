@@ -4,7 +4,6 @@ const fsDeleteRecords = require('./fsDeleteRecords');
 const moveFolderToTrash = require('../fsUtility/moveFolderToTrash');
 const deleteAttrStructure = require('../fsUtility/deleteAttrStructure');
 const env = require('../../../../utility/environment/environmentManager');
-//const _delete = require('../../../delete');
 const terms = require('../../../../utility/hdbTerms');
 const log = require('../../../../utility/logging/harper_logger');
 

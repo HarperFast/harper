@@ -169,45 +169,6 @@ async function dropSchema(drop_schema_object) {
     }
 }
 
-/**
- * Moves a schema and it's contained tables/attributes to the trash directory.
- * @param drop_schema_object
- * @returns {Promise<string>}
- */
-// async function moveSchemaStructureToTrash(drop_schema_object) {
-//     let validation_error = validation.schema_object(drop_schema_object);
-//     if (validation_error) {
-//         throw validation_error;
-//     }
-//
-//     let schema = drop_schema_object.schema;
-//     let delete_schema_object = {
-//         table: "hdb_schema",
-//         schema: "system",
-//         hash_values: [schema]
-//     };
-//
-//     let search_object = {
-//         schema: 'system',
-//         table: 'hdb_table',
-//         hash_attribute: 'id',
-//         search_attribute: 'schema',
-//         search_value: schema,
-//         get_attributes: ['id']
-//     };
-//
-//     try {
-//         await p_delete_delete(delete_schema_object);
-//         let search_value = await p_search_search_by_value(search_object);
-//         await moveSchemaToTrash(drop_schema_object, search_value);
-//         await deleteAttributeStructure(drop_schema_object);
-//
-//         return `successfully deleted schema ${schema}`;
-//     } catch(err) {
-//         throw err;
-//     }
-// }
-
 async function dropTable(drop_table_object) {
     try {
         let move_table_struc_trash = await moveTableStructureToTrash(drop_table_object);
@@ -282,47 +243,6 @@ async function dropAttribute(drop_attribute_object) {
 }
 
 /** HELPER FUNCTIONS **/
-
-// /**
-//  * Moves the schema and it's contained tables to the trash folder.  Note the trash folder is not
-//  * automatically emptied.
-//  *
-//  * @param drop_schema_object - Object describing the table being dropped
-//  * @param tables - the tables contained by the schema that will also be deleted
-//  * @returns {Promise<void>}
-//  */
-// async function moveSchemaToTrash(drop_schema_object, tables) {
-//     if (!tables) {
-//         throw new Error('tables parameter was null.');
-//     }
-//
-//     let root_path = env.get('HDB_ROOT');
-//     let origin_path = `${root_path}/schema/${drop_schema_object.schema}`;
-//     let destination_name = `${drop_schema_object.schema}-${current_date}`;
-//     let trash_path = `${TRASH_BASE_PATH}${destination_name}`;
-//
-//     try {
-//         await moveFolderToTrash(origin_path, trash_path);
-//
-//         let delete_table_object = {
-//             table: "hdb_table",
-//             schema: "system",
-//             hash_values: []
-//         };
-//
-//         if (tables && tables.length > 0) {
-//             for (let t in tables) {
-//                 delete_table_object.hash_values.push(tables[t].id);
-//             }
-//         }
-//
-//         if( delete_table_object.hash_values && delete_table_object.hash_values.length > 0 ) {
-//             await p_delete_delete(delete_table_object);
-//         }
-//     } catch(err) {
-//         throw err;
-//     }
-// }
 
 /**
  * Builds a descriptor object that describes the table targeted for the trash.
