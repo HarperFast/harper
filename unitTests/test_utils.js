@@ -703,6 +703,5 @@ module.exports = {
     generateMockAST,
     sortAsc,
     sortDesc,
-    testError,
-    TEST_FS_DIR
+    testError
 };
