@@ -33,6 +33,10 @@ class BridgeMethods {
         throw new Error("deleteRecords bridge method is not defined");
     }
 
+    createAttribute() {
+        throw new Error("dropAttribute bridge method is not defined");
+    }
+
     dropAttribute() {
         throw new Error("dropAttribute bridge method is not defined");
     }

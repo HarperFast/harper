@@ -4,11 +4,21 @@ const log = require('../../../../utility/logging/harper_logger');
 const schema_validator = require('../../../../validation/schema_validator');
 const hdb_utils = require('../../../../utility/common_utils');
 const hdb_core_global_schema = require('../../../../utility/globalSchema');
+const env = require('../../../../utility/environment/environmentManager');
+const hdb_terms = require('../../../../utility/hdbTerms');
+const mkdirp = require('../../../../utility/fs/mkdirp');
+const writeFile = require('../../../../utility/fs/writeFile');
 const insert_validator = require('../../../../validation/insertValidator');
+const WriteProcessorObject = require('../../../WriteProcessorObject');
+const dataWriteProcessor = require('../../../dataWriteProcessor');
 const uuidV4 = require('uuid/v4');
 const util = require('util');
 
-const p_global_schema = util.promisify(hdb_core_global_schema.getTableSchema);
+const INSERT_ACTION = 'inserted';
+let p_global_schema = util.promisify(hdb_core_global_schema.getTableSchema);
+let hdb_path = function() {
+    return `${env.getHdbBasePath()}/schema/`;
+};
 
 // TODO: this is temporary, it will be updated when search by value is added to the bridge.
 const hdb_core_search = require('../../../search');
@@ -76,11 +86,13 @@ async function createAttribute(create_attribute_object) {
 
 async function insertData(insert_object){
     try {
+        let epoch = Date.now();
         let {schema_table, attributes} = await validation(insert_object);
-        //let hdb_bridge_result = await harperBridge.createRecords(insert_object, attributes, schema_table);
-        convertOperationToTransaction(insert_object, hdb_bridge_result.written_hashes, schema_table.hash_attribute);
+        let { written_hashes, skipped_hashes, ...data_wrapper} = await processRows(insert_object, attributes, schema_table, epoch, null);
+        await processData(data_wrapper);
+        convertOperationToTransaction(insert_object, written_hashes, schema_table.hash_attribute);
 
-        return returnObject(INSERT_ACTION, hdb_bridge_result.written_hashes, insert_object, hdb_bridge_result.skipped_hashes);
+        return returnObject(INSERT_ACTION, written_hashes, insert_object, skipped_hashes);
     } catch(e){
         throw (e);
     }
@@ -146,4 +158,97 @@ async function validation(write_object){
         hashes: Array.from(dups),
         attributes: Object.keys(attributes)
     };
+}
+
+async function processRows(insert_obj, attributes, schema_table, existing_rows){
+    let epoch = Date.now();
+
+    try {
+        let exploder_object = new WriteProcessorObject(hdb_path(), insert_obj.operation, insert_obj.records, schema_table, attributes, epoch, existing_rows);
+        let data_wrapper = await dataWriteProcessor(exploder_object);
+
+        return data_wrapper;
+    } catch(err) {
+        throw err;
+    }
+}
+
+/**
+ * Wrapper function that orchestrates the record creation on disk
+ * @param data_wrapper
+ */
+async function processData(data_wrapper) {
+    try {
+        await createFolders(data_wrapper.folders);
+        await writeRawDataFiles(data_wrapper.raw_data);
+    } catch(err) {
+        throw err;
+    }
+}
+
+/**
+ * creates all of the folders necessary to hold the raw files and hard links
+ * @param folders
+ */
+async function createFolders(folders) {
+    try {
+        await mkdirp(folders, {mode:  hdb_terms.HDB_FILE_PERMISSIONS});
+    } catch (err) {
+        throw err;
+    }
+}
+
+/**
+ * writes the raw data files to disk
+ * @param data
+ */
+async function writeRawDataFiles(data) {
+    try {
+        await writeFile(data);
+    } catch(err) {
+        throw err;
+    }
+}
+
+function convertOperationToTransaction(write_object, written_hashes, hash_attribute){
+    if(global.hdb_socket_client !== undefined && write_object.schema !== 'system' && Array.isArray(written_hashes) && written_hashes.length > 0){
+        let transaction = {
+            operation: write_object.operation,
+            schema: write_object.schema,
+            table: write_object.table,
+            records:[]
+        };
+
+        write_object.records.forEach(record =>{
+            if(written_hashes.indexOf(hdb_utils.autoCast(record[hash_attribute])) >= 0) {
+                transaction.records.push(record);
+            }
+        });
+        let insert_msg = hdb_utils.getClusterMessage(hdb_terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
+        insert_msg.transaction = transaction;
+        hdb_utils.sendTransactionToSocketCluster(`${write_object.schema}:${write_object.table}`, insert_msg);
+    }
+}
+
+/**
+ * constructs return object for insert and update.
+ * @param action
+ * @param written_hashes
+ * @param object
+ * @param skipped
+ * @returns {{skipped_hashes: *, update_hashes: *, message: string}}
+ */
+function returnObject(action, written_hashes, object, skipped) {
+    let return_object = {
+        message: `${action} ${written_hashes.length} of ${object.records.length} records`,
+        skipped_hashes: skipped
+    };
+
+    if (action === INSERT_ACTION) {
+        return_object.inserted_hashes = written_hashes;
+        return return_object;
+    }
+
+    return_object.update_hashes = written_hashes;
+    return return_object;
 }

@@ -41,7 +41,6 @@ module.exports = {
     createTable: createTable,
     createTableStructure: createTableStructure,
     createAttribute: createAttribute,
-    createAttributeStructure: createAttributeStructure,
     deleteSchemaStructure: moveSchemaStructureToTrash,
     deleteTableStructure: moveTableStructureToTrash,
     describeTable: schema_describe.describeTable,
@@ -579,7 +578,7 @@ async function createAttribute(create_attribute_object) {
         if(global.clustering_on
             && !create_attribute_object.delegated && create_attribute_object.schema !== 'system') {
 
-            attribute_structure = await createAttributeStructure(create_attribute_object);
+            attribute_structure = await harperBridge.createAttribute(create_attribute_object);
             create_attribute_object.delegated = true;
             create_attribute_object.operation = 'create_attribute';
             create_attribute_object.id = attribute_structure.id;
@@ -597,7 +596,7 @@ async function createAttribute(create_attribute_object) {
 
             return attribute_structure;
         }
-        attribute_structure = await createAttributeStructure(create_attribute_object);
+        attribute_structure = await harperBridge.createAttribute(create_attribute_object);
         let create_att_msg = hdb_util.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
         create_att_msg.transaction = create_attribute_object;
         hdb_util.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, create_att_msg);

@@ -6,6 +6,7 @@ const fsCreateRecords = require('./fsMethods/fsCreateRecords');
 const fsCreateSchema = require('./fsMethods/fsCreateSchema');
 const fsCreateTable = require('./fsMethods/fsCreateTable');
 const fsDeleteRecords = require('./fsMethods/fsDeleteRecords');
+const fsCreateAttribute = require('./fsMethods/fsCreateAttribute');
 
 class FileSystemBridge extends BridgeMethods {
 
