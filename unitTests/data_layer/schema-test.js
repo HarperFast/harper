@@ -108,7 +108,6 @@ describe('Test schema module', function() {
         delete_delete_rewire = schema.__set__('p_delete_delete', delete_delete_stub);
         delete_attr_struct_rewire = schema.__set__('deleteAttributeStructure', delete_attr_struct_stub);
         attr_validator_stub = sinon.stub(schema_validator, 'attribute_object');
-        //move_schema_to_trash_rewire = schema.__set__('moveSchemaToTrash', move_schema_to_trash_stub);
         build_drop_table_obj_rewire = schema.__set__('buildDropTableObject', build_drop_table_obj_stub);
         move_table_to_trash_rewire = schema.__set__('moveTableToTrash', move_table_to_trash_stub);
         move_attr_to_trash_rewire = schema.__set__('moveAttributeToTrash', move_attr_to_trash_stub);
@@ -132,7 +131,6 @@ describe('Test schema module', function() {
         search_by_value_rewire();
         delete_delete_rewire();
         delete_attr_struct_rewire();
-        //move_schema_to_trash_rewire();
         build_drop_table_obj_rewire();
     });
 
@@ -649,27 +647,6 @@ describe('Test schema module', function() {
         after(function() {
             deleteSchemaTableStruc();
         });
-
-        // Test is failing, not going to fix it on this task because it will be removed when I build out drop schema.
-
-        // it('should make trash dir and move test table to it', async function() {
-        //     let destination_name = `${DROP_TABLE_OBJECT_TEST.schema}-${DROP_TABLE_OBJECT_TEST.table}-${current_date}`;
-        //     let exists_in_trash;
-        //     let doesnt_exist_in_schema;
-        //
-        //     try {
-        //         insert_table_rewire();
-        //         await buildSchemaTableStruc();
-        //         await move_table_to_trash(DROP_TABLE_OBJECT_TEST);
-        //         exists_in_trash = await fs.pathExists(`${TRASH_PATH_TEST}/${destination_name}`);
-        //         doesnt_exist_in_schema = await fs.pathExists(FULL_TABLE_PATH_TEST);
-        //     } catch(err) {
-        //         console.error(err);
-        //     }
-        //
-        //     expect(exists_in_trash).to.be.true;
-        //     expect(doesnt_exist_in_schema).to.be.false;
-        // });
 
         it('should catch thrown error', async function() {
             let error;
