@@ -27,6 +27,15 @@ class FileSystemBridge extends BridgeMethods {
         }
     }
 
+    async createAttribute(create_attribute_obj) {
+        try {
+            return await fsCreateAttribute(create_attribute_obj);
+        } catch(err) {
+            log.error(err);
+            throw err;
+        }
+    }
+
     async createRecords(insert_obj, attributes, schema_table) {
         try {
             return await fsCreateRecords(insert_obj, attributes, schema_table);

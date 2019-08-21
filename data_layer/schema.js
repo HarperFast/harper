@@ -472,7 +472,7 @@ async function moveFolderToTrash(origin_path, trash_path) {
     return true;
 }
 
-async function createAttributeStructure(create_attribute_object) {
+/*async function createAttributeStructure(create_attribute_object) {
     let validation_error = validation.attribute_object(create_attribute_object);
     if (validation_error) {
         throw validation_error;
@@ -520,7 +520,7 @@ async function createAttributeStructure(create_attribute_object) {
         };
 
         logger.info('insert object: ' + JSON.stringify(insert_object));
-        let insert_response = await insert.insert(insert_object);
+        //let insert_response = await insert.insert(insert_object);
         logger.info('attribute: ' + record.attribute);
         logger.info(insert_response);
 
@@ -528,7 +528,7 @@ async function createAttributeStructure(create_attribute_object) {
     } catch(err) {
         throw err;
     }
-}
+}*/
 
 async function deleteAttributeStructure(attribute_drop_object) {
     let search_object = {
