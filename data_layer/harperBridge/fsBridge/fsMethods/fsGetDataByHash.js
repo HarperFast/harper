@@ -34,7 +34,8 @@ async function fsGetDataByHash(search_object) {
     }
 }
 
-//TODO: we're iterating through the get_attributes parameter 2 times below, once to detect if there is a star attribute, and the second time when a star exists we iterate to remove it.
+//TODO: we're iterating through the get_attributes parameter 2 times below, once to detect if there is a star attribute,
+// and the second time when a star exists we iterate to remove it.
 // This is (O)n^2, and not needed - update during next performance pass.
 function evaluateTableAttributes(get_attributes, table_attributes) {
     let star_attribute =  _.filter(get_attributes, attribute => {
@@ -59,7 +60,7 @@ function evaluateTableAttributes(get_attributes, table_attributes) {
 async function getAttributeFiles(get_attributes, search_object) {
     try {
         const { hash_values, schema, table } = search_object;
-        let table_path = `${getBasePath()}${schema}/${table}`;
+        let table_path = `${getBasePath()}/${schema}/${table}`;
         let attributes_data = {};
 
         for (const attribute of get_attributes) {
@@ -74,13 +75,13 @@ async function getAttributeFiles(get_attributes, search_object) {
     }
 }
 
-async function getAttributeFilePromise(table_path, attribute, file, attribute_data) {
+async function readAttributeFilePromise(table_path, attribute, file, attribute_data) {
     try {
         const data = await fs.readFile(`${table_path}/__hdb_hash/${attribute}/${file}.hdb`, 'utf-8');
         const value = autoCast(data.toString());
         attribute_data[file] = value;
     } catch(err) {
-        if (!err.code === 'ENOENT') {
+        if (err.code !== 'ENOENT') {
             throw(err);
         }
     }
@@ -92,7 +93,7 @@ async function readAttributeFiles(table_path, attribute, hash_files) {
 
         const readFileOps = [];
         for (const file of hash_files) {
-            readFileOps.push(getAttributeFilePromise(table_path, attribute, file, attribute_data));
+            readFileOps.push(readAttributeFilePromise(table_path, attribute, file, attribute_data));
         }
 
         await Promise.all(readFileOps);
