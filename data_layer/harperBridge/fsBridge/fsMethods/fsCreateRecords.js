@@ -2,6 +2,7 @@
 
 const WriteProcessorObject = require('../../../WriteProcessorObject');
 const dataWriteProcessor = require('../../../dataWriteProcessor');
+const insertUpdateValidate = require('../fsUtility/insertUpdateValidate');
 const mkdirp = require('../../../../utility/fs/mkdirp');
 const hdb_terms = require('../../../../utility/hdbTerms');
 const log = require('../../../../utility/logging/harper_logger');
@@ -22,19 +23,19 @@ const hdb_core_insert = require('../../../insert');
 /**
  * Calls all the functions specifically responsible for writing data to the file system
  * @param insert_obj
- * @param attributes
- * @param schema_table
- * @returns {Promise<{skipped_hashes, written_hashes}>}
+ * @returns {Promise<{skipped_hashes, written_hashes, schema_table}>}
  */
-async function createRecords(insert_obj, attributes, schema_table) {
+async function createRecords(insert_obj) {
     try {
+        let {schema_table, attributes} = await insertUpdateValidate(insert_obj);
         let data_wrapper = await processRows(insert_obj, attributes, schema_table);
         await hdb_core_insert.checkForNewAttributes(insert_obj.hdb_auth_header, schema_table, attributes);
         await processData(data_wrapper);
 
         let return_obj = {
             written_hashes: data_wrapper.written_hashes,
-            skipped_hashes: data_wrapper.skipped
+            skipped_hashes: data_wrapper.skipped,
+            schema_table: schema_table
         };
 
         return return_obj;

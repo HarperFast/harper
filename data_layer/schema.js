@@ -1,7 +1,6 @@
 'use strict';
 
 const fs = require('fs-extra');
-
 const validation = require('../validation/schema_validator.js');
 const search = require('./search.js');
 const logger = require('../utility/logging/harper_logger');
@@ -19,14 +18,9 @@ const hdb_util = require('../utility/common_utils');
 const terms = require('../utility/hdbTerms');
 const harperBridge = require('./harperBridge/harperBridge');
 
-const insert = require('./insert.js');
-const global_schema = require('../utility/globalSchema');
-const p_global_schema = util.promisify(global_schema.getTableSchema);
-
 // Promisified functions
 let p_search_search_by_value = util.promisify(search.searchByValue);
 let p_delete_delete = util.promisify(delete_.delete);
-let p_search_by_conditions = util.promisify(search.searchByConditions);
 
 // This is used by moveFileToTrash to decide where to put the removed file(s) in the trash directory.
 const ENTITY_TYPE_ENUM = {
@@ -36,7 +30,6 @@ const ENTITY_TYPE_ENUM = {
 };
 const DATE_SUBSTR_LENGTH = 19;
 const TRASH_BASE_PATH = `${env.get('HDB_ROOT')}/trash/`;
-
 let current_date = new Date().toISOString().substr(0, DATE_SUBSTR_LENGTH);
 
 module.exports = {
@@ -54,11 +47,6 @@ module.exports = {
     dropTable: dropTable,
     dropAttribute: dropAttribute
 };
-
-// This must be after export to prevent issues with circular dependencies
-// const insert = require('./insert.js');
-// const global_schema = require('../utility/globalSchema');
-// const p_global_schema = util.promisify(global_schema.getTableSchema);
 
 /** EXPORTED FUNCTIONS **/
 
@@ -475,64 +463,6 @@ async function moveFolderToTrash(origin_path, trash_path) {
     return true;
 }
 
-async function createAttributeStructure(create_attribute_object) {
-    let validation_error = validation.attribute_object(create_attribute_object);
-    if (validation_error) {
-        throw validation_error;
-    }
-
-    let search_object = {
-        schema: 'system',
-        table: 'hdb_attribute',
-        hash_attribute: 'id',
-        get_attributes: ['*'],
-        search_attribute: 'attribute',
-        search_value: create_attribute_object.attribute
-    };
-
-    try {
-        let attributes = await p_search_search_by_value(search_object);
-
-        if(attributes && attributes.length > 0) {
-            for (let att in attributes) {
-                if (attributes[att].schema === create_attribute_object.schema
-                    && attributes[att].table === create_attribute_object.table) {
-                    throw new Error(`attribute already exists with id ${JSON.stringify(attributes[att])}`);
-                }
-            }
-        }
-
-        let record = {
-            schema: create_attribute_object.schema,
-            table: create_attribute_object.table,
-            attribute: create_attribute_object.attribute,
-            id: uuidV4(),
-            schema_table: create_attribute_object.schema + '.' + create_attribute_object.table
-        };
-
-        if(create_attribute_object.id){
-            record.id = create_attribute_object.id;
-        }
-
-        let insert_object = {
-            operation: 'insert',
-            schema: 'system',
-            table: 'hdb_attribute',
-            hash_attribute: 'id',
-            records: [record]
-        };
-
-        logger.info('insert object: ' + JSON.stringify(insert_object));
-        let insert_response = await insert.insert(insert_object);
-        logger.info('attribute: ' + record.attribute);
-        logger.info(insert_response);
-
-        return insert_response;
-    } catch(err) {
-        throw err;
-    }
-}
-
 async function deleteAttributeStructure(attribute_drop_object) {
     let search_object = {
         schema:'system',
@@ -582,7 +512,7 @@ async function createAttribute(create_attribute_object) {
         if(global.clustering_on
             && !create_attribute_object.delegated && create_attribute_object.schema !== 'system') {
 
-            attribute_structure = await createAttributeStructure(create_attribute_object);
+            attribute_structure = await harperBridge.createAttribute(create_attribute_object);
             create_attribute_object.delegated = true;
             create_attribute_object.operation = 'create_attribute';
             create_attribute_object.id = attribute_structure.id;
@@ -600,7 +530,7 @@ async function createAttribute(create_attribute_object) {
 
             return attribute_structure;
         }
-        attribute_structure = await createAttributeStructure(create_attribute_object);
+        attribute_structure = await harperBridge.createAttribute(create_attribute_object);
         let create_att_msg = hdb_util.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
         create_att_msg.transaction = create_attribute_object;
         hdb_util.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, create_att_msg);

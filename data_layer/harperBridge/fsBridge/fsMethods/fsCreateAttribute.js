@@ -26,6 +26,16 @@ let p_search_search_by_value = util.promisify(hdb_core_search.searchByValue);
 
 module.exports = createAttribute;
 
+/** NOTE **
+ * Due to circular dependencies with insertData in insert.js we have a duplicate version
+ * of insertData in this file. It is only to be used by this function.
+ * **/
+
+/**
+ * Orchestrates the creation of an attribute on the file system and system schema
+ * @param create_attribute_object
+ * @returns {Promise<{skipped_hashes: *, update_hashes: *, message: string}>}
+ */
 async function createAttribute(create_attribute_object) {
     let validation_error = schema_validator.attribute_object(create_attribute_object);
     if (validation_error) {
@@ -86,9 +96,8 @@ async function createAttribute(create_attribute_object) {
 
 async function insertData(insert_object){
     try {
-        let epoch = Date.now();
         let {schema_table, attributes} = await validation(insert_object);
-        let { written_hashes, skipped_hashes, ...data_wrapper} = await processRows(insert_object, attributes, schema_table, epoch, null);
+        let { written_hashes, skipped_hashes, ...data_wrapper} = await processRows(insert_object, attributes, schema_table, null);
         await processData(data_wrapper);
         convertOperationToTransaction(insert_object, written_hashes, schema_table.hash_attribute);
 
@@ -98,6 +107,11 @@ async function insertData(insert_object){
     }
 }
 
+/**
+ * Takes an insert/update object and validates attributes, also looks for dups and get a list of all attributes from the record set
+ * @param {Object} write_object
+ * @returns {Promise<{table_schema, hashes: any[], attributes: string[]}>}
+ */
 async function validation(write_object){
     // Need to validate these outside of the validator as the getTableSchema call will fail with
     // invalid values.
@@ -160,6 +174,14 @@ async function validation(write_object){
     };
 }
 
+/**
+ * Prepares data using HDB file system model in preparation for writing to storage
+ * @param insert_obj
+ * @param attributes
+ * @param table_schema
+ * @param existing_rows
+ * @returns {Promise<ExplodedObject>}
+ */
 async function processRows(insert_obj, attributes, schema_table, existing_rows){
     let epoch = Date.now();
 

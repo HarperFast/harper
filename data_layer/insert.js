@@ -24,6 +24,7 @@ const util = require('util');
 const ExplodedObject = require('./ExplodedObject');
 const WriteProcessorObject = require('./WriteProcessorObject');
 
+
 // Search is used in the installer, and the base path may be undefined when search is instantiated.  Dynamically
 // get the base path from the environment manager before using it.
 let hdb_path = function() {
@@ -36,7 +37,6 @@ const CHUNK_SIZE = hdb_terms.INSERT_MODULE_ENUM.CHUNK_SIZE;
 
 //for release 2.0 we need to turn off threading.  this variable will control the enable/disable
 const ENABLE_THREADING = false;
-const INTERNAL_ERROR_MESSAGE = 'An internal error occurred, please check the logs for more information.';
 const ATTRIBUTE_ALREADY_EXISTS = 'attribute already exists';
 const UPDATE_ACTION = 'updated';
 const INSERT_ACTION = 'inserted';
@@ -132,9 +132,10 @@ async function insertData(insert_object){
     }
 
     try {
-        let {schema_table, attributes} = await validation(insert_object);
-        let hdb_bridge_result = await harperBridge.createRecords(insert_object, attributes, schema_table);
-        convertOperationToTransaction(insert_object, hdb_bridge_result.written_hashes, schema_table.hash_attribute);
+        //let {schema_table, attributes} = await validation(insert_object);
+        //let hdb_bridge_result = await harperBridge.createRecords(insert_object, attributes, schema_table);
+        let hdb_bridge_result = await harperBridge.createRecords(insert_object);
+        convertOperationToTransaction(insert_object, hdb_bridge_result.written_hashes, hdb_bridge_result.schema_table.hash_attribute);
 
         return returnObject(INSERT_ACTION, hdb_bridge_result.written_hashes, insert_object, hdb_bridge_result.skipped_hashes);
     } catch(e){
