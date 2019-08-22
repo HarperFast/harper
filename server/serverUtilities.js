@@ -207,7 +207,7 @@ function chooseOperation(json, callback) {
 }
 
 function getOperationFunction(json){
-
+    harper_logger.trace(`getOperationFunction with operation: ${json.operation}`);
     let operation_function = nullOperation;
     let job_operation_function = undefined;
 
@@ -366,6 +366,7 @@ function getOperationFunction(json){
 }
 
 async function catchup(catchup_object) {
+    harper_logger.trace('In serverUtils.catchup');
     let split_channel = catchup_object.channel.split(':');
 
     let schema = split_channel[0];
@@ -390,7 +391,8 @@ async function catchup(catchup_object) {
                     harper_logger.warn('invalid operation in catchup');
                     break;
             }
-        }catch(e){
+        }catch(e) {
+            harper_logger.info('Invalid operation in transaction');
             harper_logger.error(e);
         }
     }
