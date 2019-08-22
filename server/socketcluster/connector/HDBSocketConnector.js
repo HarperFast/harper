@@ -111,8 +111,10 @@ class HDBSocketConnector extends SocketConnector{
                     let msg = this.generateOperationFunctionCall(ENTITY_TYPE_ENUM.SCHEMA, message_schema_object[curr_schema_name], curr_schema_name);
                     let {operation_function} = server_utilities.getOperationFunction(msg);
                     const async_func = promisify(operation_function);
-                    log.trace('Calling operation in compare schema');
-                    let result = await async_func(msg);
+                    log.trace(`Calling operation in compare schema for schema: ${msg.schema}`);
+                    // Pass a null followup function so we don't send a schema update message back to the sender.
+                    let result = operation_function_caller.callOperationFunctionAsAwait(async_func, msg, null);
+                    //let result = await async_func(msg);
                     // need to wait for the schema to be added to global.hdb_schema, or compareTableKeys will fail.
                     await p_set_schema_to_global();
                 }
@@ -142,8 +144,9 @@ class HDBSocketConnector extends SocketConnector{
                     let msg = this.generateOperationFunctionCall(ENTITY_TYPE_ENUM.TABLE, schema_object[curr_table_name], schema_name, curr_table_name);
                     let {operation_function} = server_utilities.getOperationFunction(msg);
                     const async_func = promisify(operation_function);
-                    log.trace('Calling createTable');
-                    let result = await async_func(msg);
+                    log.trace(`Calling createTable for table: ${msg.table}`);
+                    let result = operation_function_caller.callOperationFunctionAsAwait(async_func, msg, null);
+                    //let result = await async_func(msg);
                     // need to wait for the table to be added to global.hdb_schema, or compareAttributeKeys will fail.
                     await p_set_schema_to_global();
                 }
@@ -183,9 +186,10 @@ class HDBSocketConnector extends SocketConnector{
                         // OK to be caught locally, just want to exit processing.
                         throw new Error('Invalid operation function in compareAttributeKeys.');
                     }
-                    log.trace('Calling create Attribute.');
+                    log.trace(`Calling create Attribute on attribute: ${msg.attribute}`);
                     const async_func = promisify(operation_function);
-                    let result = await async_func(msg);
+                    let result = operation_function_caller.callOperationFunctionAsAwait(async_func, msg, null);
+                    //let result = await async_func(msg);
                 } else {
                     let create_attribute = true;
                     if(!global.hdb_schema[schema_name][table_name].attributes) {
@@ -205,7 +209,8 @@ class HDBSocketConnector extends SocketConnector{
                         let {operation_function} = server_utilities.getOperationFunction(msg);
                         const async_func = promisify(operation_function);
                         try {
-                            let result = await async_func(msg);
+                            let result = operation_function_caller.callOperationFunctionAsAwait(async_func, msg, null);
+                            //let result = await async_func(msg);
                         } catch(err) {
                             log.info(`There was a problem creating attribute ${msg.attribute}.  It probably already exists.`);
                             // no-op, some attributes may already exist so do nothing

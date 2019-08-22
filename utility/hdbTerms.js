@@ -39,6 +39,7 @@ const RESTART_CODE = 'SIGTSTP';
 const RESTART_CODE_NUM = 24;
 const RESTART_TIMEOUT_MS = 60000;
 const HDB_FILE_PERMISSIONS = 0o700;
+const SCHEMA_DIR_NAME = 'schema';
 
 // Trying to keep socket cluster as modular as possible, so we will create values in here that point to values
 // inside of the socketcluster types module.
@@ -367,6 +368,7 @@ module.exports = {
     REG_KEY_FILE_NAME,
     RESTART_TIMEOUT_MS,
     HDB_FILE_PERMISSIONS,
+    SCHEMA_DIR_NAME,
     INSERT_MODULE_ENUM,
     UPGRADE_JSON_FIELD_NAMES_ENUM,
     RESTART_CODE,
