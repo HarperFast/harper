@@ -18,6 +18,7 @@ const hdb_terms = require('../utility/hdbTerms');
 const mkdirp = require('../utility/fs/mkdirp');
 const write_file = require('../utility/fs/writeFile');
 const unlink = require('../utility/fs/unlink');
+const signalling = require('../utility/signalling');
 const exploder = require('./dataWriteProcessor');
 const util = require('util');
 const ExplodedObject = require('./ExplodedObject');
@@ -378,7 +379,6 @@ function checkForExistingAttributes(table_schema, data_attributes){
     return existing_attributes;
 }
 
-
 /**
  * check the existing schema and creates new attributes based on what the incoming records have
  * @param hdb_auth_header
@@ -387,9 +387,6 @@ function checkForExistingAttributes(table_schema, data_attributes){
  * @param attribute
  */
 async function createNewAttribute(hdb_auth_header,schema, table, attribute) {
-    // TODO CORE-113 - remove circular dependency.
-    const schema_mod = require('./schema');
-
     let attribute_object = {
         schema:schema,
         table:table,
@@ -401,7 +398,7 @@ async function createNewAttribute(hdb_auth_header,schema, table, attribute) {
     }
 
     try {
-        await schema_mod.createAttribute(attribute_object);
+        await createAttribute(attribute_object);
     } catch(e){
         //if the attribute already exists we do not want to stop the insert
         if(typeof e === 'object' && e.message !== undefined && e.message.includes(ATTRIBUTE_ALREADY_EXISTS)){
@@ -409,5 +406,42 @@ async function createNewAttribute(hdb_auth_header,schema, table, attribute) {
         } else {
             throw e;
         }
+    }
+}
+
+async function createAttribute(create_attribute_object) {
+    let attribute_structure;
+    try {
+        if(global.clustering_on
+            && !create_attribute_object.delegated && create_attribute_object.schema !== 'system') {
+
+            attribute_structure = await harperBridge.createAttribute(create_attribute_object);
+            create_attribute_object.delegated = true;
+            create_attribute_object.operation = 'create_attribute';
+            create_attribute_object.id = attribute_structure.id;
+
+            let payload = {
+                "type": "clustering_payload",
+                "pid": process.pid,
+                "clustering_type": "broadcast",
+                "id": attribute_structure.id,
+                "body": create_attribute_object
+            };
+
+            h_utils.callProcessSend(payload);
+            signalling.signalSchemaChange({type: 'schema'});
+
+            return attribute_structure;
+        }
+        attribute_structure = await harperBridge.createAttribute(create_attribute_object);
+        let create_att_msg = h_utils.getClusterMessage(hdb_terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
+        create_att_msg.transaction = create_attribute_object;
+        h_utils.sendTransactionToSocketCluster(hdb_terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, create_att_msg);
+        signalling.signalSchemaChange({type: 'schema'});
+
+        return attribute_structure;
+    } catch(err) {
+        logger.error(err);
+        throw err;
     }
 }

@@ -19,6 +19,10 @@ const hdb_util = require('../utility/common_utils');
 const terms = require('../utility/hdbTerms');
 const harperBridge = require('./harperBridge/harperBridge');
 
+const insert = require('./insert.js');
+const global_schema = require('../utility/globalSchema');
+const p_global_schema = util.promisify(global_schema.getTableSchema);
+
 // Promisified functions
 let p_search_search_by_value = util.promisify(search.searchByValue);
 let p_delete_delete = util.promisify(delete_.delete);
@@ -52,9 +56,9 @@ module.exports = {
 };
 
 // This must be after export to prevent issues with circular dependencies
-const insert = require('./insert.js');
-const global_schema = require('../utility/globalSchema');
-const p_global_schema = util.promisify(global_schema.getTableSchema);
+// const insert = require('./insert.js');
+// const global_schema = require('../utility/globalSchema');
+// const p_global_schema = util.promisify(global_schema.getTableSchema);
 
 /** EXPORTED FUNCTIONS **/
 
@@ -471,7 +475,7 @@ async function moveFolderToTrash(origin_path, trash_path) {
     return true;
 }
 
-/*async function createAttributeStructure(create_attribute_object) {
+async function createAttributeStructure(create_attribute_object) {
     let validation_error = validation.attribute_object(create_attribute_object);
     if (validation_error) {
         throw validation_error;
@@ -519,7 +523,7 @@ async function moveFolderToTrash(origin_path, trash_path) {
         };
 
         logger.info('insert object: ' + JSON.stringify(insert_object));
-        //let insert_response = await insert.insert(insert_object);
+        let insert_response = await insert.insert(insert_object);
         logger.info('attribute: ' + record.attribute);
         logger.info(insert_response);
 
@@ -527,7 +531,7 @@ async function moveFolderToTrash(origin_path, trash_path) {
     } catch(err) {
         throw err;
     }
-}*/
+}
 
 async function deleteAttributeStructure(attribute_drop_object) {
     let search_object = {
@@ -578,7 +582,7 @@ async function createAttribute(create_attribute_object) {
         if(global.clustering_on
             && !create_attribute_object.delegated && create_attribute_object.schema !== 'system') {
 
-            attribute_structure = await harperBridge.createAttribute(create_attribute_object);
+            attribute_structure = await createAttributeStructure(create_attribute_object);
             create_attribute_object.delegated = true;
             create_attribute_object.operation = 'create_attribute';
             create_attribute_object.id = attribute_structure.id;
@@ -596,7 +600,7 @@ async function createAttribute(create_attribute_object) {
 
             return attribute_structure;
         }
-        attribute_structure = await harperBridge.createAttribute(create_attribute_object);
+        attribute_structure = await createAttributeStructure(create_attribute_object);
         let create_att_msg = hdb_util.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
         create_att_msg.transaction = create_attribute_object;
         hdb_util.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, create_att_msg);
