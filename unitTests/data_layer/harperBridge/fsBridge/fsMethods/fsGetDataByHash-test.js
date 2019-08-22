@@ -14,7 +14,6 @@ preTestPrep();
 
 const rewire = require('rewire');
 let fsGetDataByHash = rewire('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsGetDataByHash');
-const log = require('../../../../../utility/logging/harper_logger');
 const fs = require('fs-extra');
 const chai = require('chai');
 const { expect } = chai;
