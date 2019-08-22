@@ -38,13 +38,12 @@ const TEST_SEARCH_OBJ = {
 };
 
 let sandbox;
-let log_error_spy;
 let getAttributeFiles_rw;
-let getAttributeFiles_spy;
 let readAttributeFiles_rw;
 let readAttributeFiles_spy;
 let readAttributeFilePromise_rw;
 let readAttributeFilePromise_spy;
+let consolidateData_rw;
 
 function setupTestData() {
     const test_data = deepClone(TEST_DATA_DOG);
@@ -61,16 +60,14 @@ function setupTestData() {
 
 function setupTestSpies() {
     sandbox = sinon.createSandbox()
-    log_error_spy = sandbox.spy(log, 'error');
     getAttributeFiles_rw = fsGetDataByHash.__get__('getAttributeFiles');
-    // getAttributeFiles_spy = sandbox.spy(getAttributeFiles_rw);
-    // fsGetDataByHash.__set__('getAttributeFiles', getAttributeFiles_spy);
     readAttributeFiles_rw = fsGetDataByHash.__get__('readAttributeFiles');
     readAttributeFiles_spy = sandbox.spy(readAttributeFiles_rw);
     fsGetDataByHash.__set__('readAttributeFiles', readAttributeFiles_spy);
     readAttributeFilePromise_rw = fsGetDataByHash.__get__('readAttributeFilePromise');
     readAttributeFilePromise_spy = sandbox.spy(readAttributeFilePromise_rw);
     fsGetDataByHash.__set__('readAttributeFilePromise', readAttributeFilePromise_spy);
+    consolidateData_rw = fsGetDataByHash.__get__('consolidateData');
 }
 
 describe('fsGetDataByHash', () => {
@@ -173,13 +170,6 @@ describe('fsGetDataByHash', () => {
     });
 
      context('Test getAttributeFiles function', () => {
-        // let getAttributeFiles_rw;
-
-
-        // before(() => {
-        //     getAttributeFiles_rw = fsGetDataByHash.__get__('getAttributeFiles');
-        // });
-
         it('Should return all get_attr data for hashes in search_object', mochaAsyncWrapper(async () => {
             const test_result = await getAttributeFiles_rw(test_attr_names, TEST_SEARCH_OBJ);
 
@@ -287,17 +277,53 @@ describe('fsGetDataByHash', () => {
             test_attr_name = test_attr_names[0];
         });
 
-        afterEach(() => {
-            fsGetDataByHash.__set__('fs', fs);
+        it('Should return an object of attr value/pairs for each hash value passed in', mochaAsyncWrapper(async () => {
+            const test_results = await readAttributeFiles_rw(test_table_path, test_attr_name, test_hash_values);
+
+            const test_result_keys = Object.keys(test_results);
+            expect(test_result_keys.length).to.equal(test_hash_values.length);
+            test_result_keys.forEach(hash_val => {
+                expect(test_results[hash_val]).to.equal(test_data_dog[hash_val][test_attr_name]);
+            });
+        }));
+    });
+
+    context('Test consolidateData function', () => {
+        let test_attr_data = {};
+
+        before(() => {
+            test_attr_names.forEach(attr => {
+                test_hash_values.forEach(hash_id => {
+                    if (!test_attr_data[attr]) {
+                        test_attr_data[attr] = Object.assign({[hash_id]: test_data_dog[hash_id][attr] });
+                    } else {
+                        test_attr_data[attr] = Object.assign(test_attr_data[attr], {[hash_id]: test_data_dog[hash_id][attr] });
+                    }
+                });
+            });
         })
 
-        it('Should create promise', mochaAsyncWrapper(async () => {
-            await readAttributeFilePromise_rw(test_table_path, test_attr_name, test_hash_val, test_attr_data);
+        it('Should return an empty object if there is no attribute data passed in', () => {
+            const test_result = consolidateData_rw(HASH_ATTRIBUTE, {});
 
-            const test_result_keys = Object.values(test_attr_data);
-            expect(test_result_keys.length).to.equal(1);
-            expect(test_attr_data[test_hash_val]).to.equal(test_data_dog[test_hash_val][test_attr_name]);
-        }));
+            expect(test_result).to.deep.equal({});
+        });
+
+        it('Should return an object of objects with attr value pairs from the attr values passed in', () => {
+            const test_result = consolidateData_rw(HASH_ATTRIBUTE, test_attr_data);
+
+            const test_result_keys = Object.keys(test_result);
+            expect(test_result_keys.length).to.equal(test_hash_values.length);
+        });
+
+        it('Should return an object of objects with attr value pairs from the attr values passed in when hash attr values are not included', () => {
+            const test_attr_data_wo_hash = deepClone(test_attr_data);
+            delete test_attr_data_wo_hash[HASH_ATTRIBUTE]
+            const test_result = consolidateData_rw(HASH_ATTRIBUTE, test_attr_data);
+
+            const test_result_keys = Object.keys(test_result);
+            expect(test_result_keys.length).to.equal(test_hash_values.length);
+        });
     });
 
 

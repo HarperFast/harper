@@ -80,7 +80,7 @@ async function readAttributeFilePromise(table_path, attribute, file, attribute_d
         const data = await fs.readFile(`${table_path}/__hdb_hash/${attribute}/${file}.hdb`, 'utf-8');
         const value = autoCast(data.toString());
         attribute_data[file] = value;
-    } catch(err) {
+    } catch (err) {
         if (err.code !== 'ENOENT') {
             throw(err);
         }
