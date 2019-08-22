@@ -1,5 +1,6 @@
 "use strict";
 
+const terms = require('../../utility/hdbTerms');
 
 class NodeObject{
     /**
@@ -44,8 +45,32 @@ class CatchupObject{
     }
 }
 
+class RotatingFileWriteStreamOptionsObject{
+    /**
+     *
+     * @param filename
+     * @param frequency
+     * @param size
+     * @param max_logs
+     * @param audit_file
+     */
+    constructor(filename, frequency, size, max_logs, audit_file){
+        this.filename = filename;
+        this.frequency = frequency;
+        this.size = size;
+        this.verbose = false;
+        this.max_logs = max_logs;
+        this.audit_file = audit_file;
+        this. file_options = {
+            flags: 'a',
+                mode: terms.HDB_FILE_PERMISSIONS
+        };
+    }
+}
+
 module.exports = {
     NodeObject,
     SubscriptionObject,
-    CatchupObject
+    CatchupObject,
+    RotatingFileWriteStreamOptionsObject
 };
