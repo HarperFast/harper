@@ -56,7 +56,7 @@ class ServerSocket{
         this.socket.on(EVENT_TYPES.MESSAGE, this.messageHandler);
 
         this.socket.on(types.EMIT_TYPES.CATCHUP, this.catchup);
-        this.socket.on(types.EMIT_TYPES.SCHEMA_CATCHUP, this.catchup);
+        this.socket.on(types.EMIT_TYPES.SCHEMA_CATCHUP, this.schema_catchup);
     }
 
     /**
