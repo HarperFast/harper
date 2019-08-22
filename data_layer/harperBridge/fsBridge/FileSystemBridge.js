@@ -4,14 +4,24 @@ const log = require('../../../utility/logging/harper_logger');
 const BridgeMethods = require("../BridgeMethods.js");
 const fsCreateRecords = require('./fsMethods/fsCreateRecords');
 const fsCreateSchema = require('./fsMethods/fsCreateSchema');
-const fsCreateTable = require('./fsMethods/fsCreateTable');
 const fsDeleteRecords = require('./fsMethods/fsDeleteRecords');
+const fsDropSchema = require('./fsMethods/fsDropSchema');
+const fsCreateTable = require('./fsMethods/fsCreateTable');
 
 class FileSystemBridge extends BridgeMethods {
 
     async createSchema(schema_create_obj) {
         try {
             return await fsCreateSchema(schema_create_obj);
+        } catch(err) {
+            log.error(err);
+            throw err;
+        }
+    }
+
+    async dropSchema(drop_schema_obj) {
+        try {
+            return await fsDropSchema(drop_schema_obj);
         } catch(err) {
             log.error(err);
             throw err;

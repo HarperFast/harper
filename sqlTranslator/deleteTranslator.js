@@ -1,7 +1,5 @@
 const alasql = require('alasql');
-const async = require('async');
 const search = require('../data_layer/search');
-const _delete = require('../data_layer/delete');
 const log = require('../utility/logging/harper_logger');
 const harperBridge = require('../data_layer/harperBridge/harperBridge');
 const util = require('util');
