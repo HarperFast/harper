@@ -27,7 +27,7 @@ class CatchUp extends FSReadStream{
      *
      * @param {Buffer} data
      */
-    onData(data){
+    onData(data) {
         let lines = super.onData(data);
 
         let resume = this.evaluateData(lines);
@@ -36,8 +36,8 @@ class CatchUp extends FSReadStream{
             try {
                 this.fs_read_stream.pause();
                 this.fs_read_stream.emit('end');
-            } catch(e){
-                console.error(e);
+            } catch(e) {
+                log.error(e);
             }
         }
     }
@@ -47,42 +47,47 @@ class CatchUp extends FSReadStream{
      * @param {Array.<string>} data
      * @returns {boolean}
      */
-    evaluateData(data){
+    evaluateData(data) {
         let resume = true;
-        for(let x = 0; x < data.length; x++){
-            let row = data[x];
-            if(!row) {
-                continue;
-            }
-
-            let values = row.split(',');
-            let stamp = Number(values[0]);
-            let operation = values[1];
-            resume = stamp < this.end_timestamp;
-
-            if(this.between(stamp)){
-                resume = true;
-
-                let json = this.getJSON(values);
-
-                if(!json) {
-                    log.warn('no json');
+        try {
+            for (let x = 0; x < data.length; x++) {
+                let row = data[x];
+                if (!row) {
                     continue;
                 }
 
-                let result_object = {
-                    timestamp: stamp,
-                    operation: operation,
-                };
+                let values = row.split(',');
+                let stamp = Number(values[0]);
+                let operation = values[1];
+                resume = stamp < this.end_timestamp;
 
-                if (operation === 'insert' || operation === 'update') {
-                    result_object.records = json;
-                } else if (operation === 'delete') {
-                    result_object.hash_values = json;
+                if (this.between(stamp)) {
+                    resume = true;
+
+                    let json = this.getJSON(values);
+
+                    if (!json) {
+                        log.warn('no json');
+                        continue;
+                    }
+
+                    let result_object = {
+                        timestamp: stamp,
+                        operation: operation,
+                    };
+
+                    if (operation === 'insert' || operation === 'update') {
+                        result_object.records = json;
+                    } else if (operation === 'delete') {
+                        result_object.hash_values = json;
+                    }
+
+                    this.results.push(result_object);
                 }
-
-                this.results.push(result_object);
             }
+        } catch(err) {
+            log.error('Error evaluating catchup data.');
+            log.error(err);
         }
 
         return resume;
@@ -98,7 +103,7 @@ class CatchUp extends FSReadStream{
             let json_string = values.slice(2, values.length).join(',');
             return JSON.parse(json_string);
         } catch(e){
-            console.error(e);
+            log.error(e);
         }
     }
 

@@ -136,34 +136,38 @@ async function schemaCatchupHandler() {
  * @param socket
  * @returns {Promise<void>}
  */
-async function catchupHandler(channel, start_timestamp, end_timestamp){
-    let catchup = new CatchUp(hdb_queue_path + channel, start_timestamp, end_timestamp);
-    await catchup.run();
+async function catchupHandler(channel, start_timestamp, end_timestamp) {
+    let catch_up_msg = {};
+    try {
+        let catchup = new CatchUp(hdb_queue_path + channel, start_timestamp, end_timestamp);
+        await catchup.run();
 
-    if(Array.isArray(catchup.results) && catchup.results.length > 0) {
-        let catchup_response = {
-            channel: channel,
-            operation:'catchup',
-            transactions: catchup.results
-        };
+        if (Array.isArray(catchup.results) && catchup.results.length > 0) {
+            let catchup_response = {
+                channel: channel,
+                operation: 'catchup',
+                transactions: catchup.results
+            };
 
-        if(!global.hdb_schema) {
-            try {
-                await p_set_schema_to_global();
-            } catch (err) {
-                log.error(`Error settings schema to global.`);
-                log.error(err);
+            if (!global.hdb_schema) {
+                try {
+                    await p_set_schema_to_global();
+                } catch (err) {
+                    log.error(`Error settings schema to global.`);
+                    log.error(err);
+                }
+            }
+            let catch_up_msg = utils.getClusterMessage(hdb_terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
+            catch_up_msg.transaction = catchup_response;
+            let channel_split = channel.split(':');
+            if (channel_split[0] && channel_split[1]) {
+                catch_up_msg.catchup_schema = global.hdb_schema[channel_split[0]][channel_split[1]];
             }
         }
-        let catch_up_msg = utils.getClusterMessage(hdb_terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
-        catch_up_msg.transaction = catchup_response;
-        let channel_split = channel.split(':');
-        if(channel_split[0] && channel_split[1]) {
-            catch_up_msg.catchup_schema = global.hdb_schema[channel_split[0]][channel_split[1]];
-        }
-
-        return catch_up_msg;
+    } catch(err) {
+        log.info('There is no catchup data to respond with.');
     }
+    return catch_up_msg;
 }
 
 /**
