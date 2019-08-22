@@ -60,8 +60,9 @@ describe('Tests for fsUtility function moveFolderToTrash', () => {
     });
 
     it('Test fs mkdirp throws an error and message is logged', async () => {
-        sandbox.stub(fs, 'mkdirp').throws(new Error('We got an error!'));
-        let test_err_result = await test_utils.testError(moveFolderToTrash(ORIGIN_PATH_TEST, TRASH_PATH_TEST), 'We got an error!');
+        let error_msg = 'We got an error';
+        sandbox.stub(fs, 'mkdirp').throws(new Error(error_msg));
+        let test_err_result = await test_utils.testError(moveFolderToTrash(ORIGIN_PATH_TEST, TRASH_PATH_TEST), error_msg);
 
         expect(test_err_result).to.be.true;
         expect(log_error_spy).to.have.been.calledWith(`Failed to create the trash directory.`);

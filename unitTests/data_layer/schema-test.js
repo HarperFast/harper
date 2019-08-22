@@ -374,8 +374,9 @@ describe('Test schema module', function() {
         });
 
         it('Test error from bridge drop schema is caught, thrown and logged', async () => {
-            bridge_drop_schema_stub.throws(new Error('We have an error on the bridge'));
-            let test_err_result = await test_util.testError(schema.dropSchema(DROP_SCHEMA_OBJECT_TEST), 'We have an error on the bridge');
+            let error_msg = 'We have an error on the bridge';
+            bridge_drop_schema_stub.throws(new Error(error_msg));
+            let test_err_result = await test_util.testError(schema.dropSchema(DROP_SCHEMA_OBJECT_TEST), error_msg);
 
             expect(test_err_result).to.be.true;
             expect(logger_error_stub).to.have.been.called;

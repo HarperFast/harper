@@ -9,7 +9,7 @@ const log = require('../../../../utility/logging/harper_logger');
 
 const DATE_SUBSTR_LENGTH = 19;
 let current_date = new Date().toISOString().substr(0, DATE_SUBSTR_LENGTH);
-const TRASH_BASE_PATH = `${env.get(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY)}/${terms.HDB_TRASH_DIR}`;
+const TRASH_BASE_PATH = `${env.getHdbBasePath()}/${terms.HDB_TRASH_DIR}`;
 
 //TODO: This is temporary. Once we have search by value bridge func built, we will use that.
 const util = require('util');
@@ -59,7 +59,7 @@ async function moveSchemaToTrash(drop_schema_obj, tables) {
         throw new Error('tables parameter was null.');
     }
 
-    let origin_path = `${env.get(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY)}/${terms.HDB_SCHEMA_DIR}/${drop_schema_obj.schema}`;
+    let origin_path = `${env.getHdbBasePath()}/${terms.HDB_SCHEMA_DIR}/${drop_schema_obj.schema}`;
     let destination_name = `${drop_schema_obj.schema}-${current_date}`;
     let trash_path = `${TRASH_BASE_PATH}/${destination_name}`;
 

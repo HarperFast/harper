@@ -78,8 +78,9 @@ describe('Tests for file system module fsDropSchema', () => {
         });
 
         it('Error from search is caught and logged', async () => {
-            p_search_by_value_stub.throws(new Error('Error searching for records'));
-            let test_err_result = await test_utils.testError(fsDropSchema(DROP_SCHEMA_OBJ_TEST), 'Error searching for records');
+            let error_msg = 'Error searching for records';
+            p_search_by_value_stub.throws(new Error(error_msg));
+            let test_err_result = await test_utils.testError(fsDropSchema(DROP_SCHEMA_OBJ_TEST), error_msg);
 
             expect(test_err_result).to.be.true;
             expect(log_error_spy).to.have.been.called;
@@ -117,8 +118,9 @@ describe('Tests for file system module fsDropSchema', () => {
         });
 
         it('Test that an error from delete records is caught and thrown', async () => {
-            fs_delete_records_stub.throws(new Error('Error deleting record'));
-            let test_err_result = await test_utils.testError(move_schema_to_trash(DROP_SCHEMA_OBJ_TEST, TABLES_TEST), 'Error deleting record');
+            let error_msg = 'Error deleting record';
+            fs_delete_records_stub.throws(new Error(error_msg));
+            let test_err_result = await test_utils.testError(move_schema_to_trash(DROP_SCHEMA_OBJ_TEST, TABLES_TEST), error_msg);
 
             expect(test_err_result).to.be.true;
         });

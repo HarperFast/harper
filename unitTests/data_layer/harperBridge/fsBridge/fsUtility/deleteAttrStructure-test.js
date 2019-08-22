@@ -74,8 +74,9 @@ describe('Tests for fsUtility function deleteAttrStructure', () => {
     });
 
     it('Test that an error from delete records is caught and thrown', async () => {
-        fs_delete_records_stub.throws(new Error('Problem deleting record'));
-        let test_err_result = await test_utils.testError(deleteAttrStructure(ATTR_DROP_OBJ_TEST), 'Problem deleting record');
+        let error_msg = 'Problem deleting record';
+        fs_delete_records_stub.throws(new Error(error_msg));
+        let test_err_result = await test_utils.testError(deleteAttrStructure(ATTR_DROP_OBJ_TEST), error_msg);
 
         expect(test_err_result).to.be.true;
     });
