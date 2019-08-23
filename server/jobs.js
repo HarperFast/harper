@@ -36,26 +36,20 @@ module.exports = {
     updateJob: updateJob
 };
 
-/**
- * Handles all job related messages.  This function accepts a callback to remain compatible with chooseOperation.
- * @param json_body - The inbound message
- * @param callback - callback is supported to remain compatible with chooseOperation.
- * @returns {*}
- */
-function jobHandler(json_body, callback) {
-	switch(json_body.operation) {
-		case 'add_job':
-			addJob(json_body).then( (result) => {
-				log.trace(`Added job with type ${json_body.job_type}`);
-                return callback(null, result);
-			}).catch(function caughtError(err) {
-                let message = `There was an error adding a job: ${err}`;
-				log.error(message);
-                return callback(message, null);
-			});
-			break;
-		case 'search_jobs_by_start_date':
-            getJobsInDateRange(json_body).then( (result) => {
+async function jobHandler(json_body) {
+    switch(json_body.operation) {
+        case 'add_job':
+            try {
+                log.trace(`Adding job with type ${json_body.job_type}`);
+                return await addJob(json_body);
+            } catch(err) {
+                let msg = `There was an error adding a job: ${err}`;
+                log.error(msg);
+                throw new Error(msg);
+            }
+        case 'search_jobs_by_start_date':
+            try {
+                let result = await getJobsInDateRange(json_body);
                 log.trace(`Searching for jobs from ${json_body.from_date} to ${json_body.to_date}`);
                 if(result && result.length > 0) {
                     for(let curr_res of result) {
@@ -67,46 +61,45 @@ function jobHandler(json_body, callback) {
                         }
                     }
                 }
-                return callback(null, result);
-            }).catch(function caughtError(err) {
+                return result;
+            } catch(err) {
                 let message = `There was an error searching jobs by date: ${err}`;
                 log.error(message);
-                return callback(message, null);
-            });
-			break;
-		case 'get_job':
-                getJobById(json_body).then( (result) => {
-                    log.trace(`Searching for jobs from ${json_body.from_date} to ${json_body.to_date}`);
-                    if(result && result.length > 0) {
-                        for(let curr_res of result) {
-                            if (curr_res.start_datetime) {
-                                curr_res.start_datetime_converted = moment(curr_res.start_datetime);
-                            }
-                            if (curr_res.end_datetime) {
-                                curr_res.end_datetime_converted = moment(curr_res.end_datetime);
-                            }
+                throw new Error(message);
+            }
+        case 'get_job':
+            try {
+                let result = await getJobById(json_body);
+                log.trace(`Searching for jobs from ${json_body.from_date} to ${json_body.to_date}`);
+                if(result && result.length > 0) {
+                    for(let curr_res of result) {
+                        if (curr_res.start_datetime) {
+                            curr_res.start_datetime_converted = moment(curr_res.start_datetime);
+                        }
+                        if (curr_res.end_datetime) {
+                            curr_res.end_datetime_converted = moment(curr_res.end_datetime);
                         }
                     }
-                    return callback(null, result);
-                }).catch(function caughtError(err) {
-                    let message = `There was an error searching jobs by date: ${err}`;
-                    log.error(message);
-                    return callback(message, null);
-                });
-			break;
-		case 'delete_job':
-            deleteJobById(json_body).then( (result) => {
-                log.trace(`Deleting jobs ${json_body.id}`);
-                return callback(null, result);
-            }).catch(function caughtError(err) {
+                }
+                return result;
+            } catch(err) {
                 let message = `There was an error searching jobs by date: ${err}`;
                 log.error(message);
-                return callback(message, null);
-            });
-			break;
-		default:
-            return callback('Invalid operation specified.', null);
-	}
+                throw new Error(message);
+            }
+        case 'delete_job':
+            try {
+                let result = await deleteJobById(json_body);
+                log.trace(`Deleting jobs ${json_body.id}`);
+                return result;
+            } catch(err) {
+                let message = `There was an error searching jobs by date: ${err}`;
+                log.error(message);
+                throw new Error(message);
+            }
+        default:
+            return 'Invalid operation specified.';
+    }
 }
 
 /**

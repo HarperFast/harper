@@ -5,7 +5,7 @@ const types = require('../../types');
 const env = require('../../../../utility/environment/environmentManager');
 env.initSync();
 const HDB_QUEUE_PATH = env.getHdbBasePath() + '/clustering/transaction_log/';
-const FileWriteStream = require('../../../../utility/fs/FileWriteStream');
+const FileWriteStream = require('../../../../utility/fs/RotatingFileWriteStream');
 const terms = require('../../../../utility/hdbTerms');
 
 const LINE_DELIMITER = '\r\n';

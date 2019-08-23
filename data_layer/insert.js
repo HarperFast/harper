@@ -134,7 +134,6 @@ async function insertData(insert_object){
         let { written_hashes, skipped, ...data_wrapper} = await processRows(insert_object, attributes, table_schema, epoch, null);
         await checkForNewAttributes(insert_object.hdb_auth_header, table_schema, attributes);
         await processData(data_wrapper);
-        convertOperationToTransaction(insert_object, written_hashes, table_schema.hash_attribute);
 
         return returnObject(INSERT_ACTION, written_hashes, insert_object, skipped);
     } catch(e){
