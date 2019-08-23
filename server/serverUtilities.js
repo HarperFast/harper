@@ -29,6 +29,17 @@ const UNAUTH_RESPONSE = 403;
 const UNAUTHORIZED_TEXT = 'You are not authorized to perform the operation specified';
 let OPERATION_PARAM_ERROR_MSG = `operation parameter is undefined`;
 
+const p_search_search_by_hash = util.promisify(search.searchByHash);
+const p_search_search_by_value = util.promisify(search.searchByValue);
+const p_search_search = util.promisify(search.search);
+const p_sql_evaluate_sql = util.promisify(sql.evaluateSQL);
+const p_schema_describe_schema = util.promisify(schema.describeSchema);
+const p_schema_describe_table = util.promisify(schema.describeTable);
+const p_schema_describe_all = util.promisify(schema.describeAll);
+const p_delete = util.promisify(delete_.delete);
+const p_signal_job = util.promisify(signalJob);
+const p_job_handler = util.promisify(jobs.jobHandler);
+
 module.exports = {
     chooseOperation: chooseOperation,
     getOperationFunction: getOperationFunction,
@@ -189,16 +200,16 @@ function getOperationFunction(json){
             operation_function = insert.update;
             break;
         case terms.OPERATIONS_ENUM.SEARCH_BY_HASH:
-            operation_function = search.searchByHash;
+            operation_function = p_search_search_by_hash;
             break;
         case terms.OPERATIONS_ENUM.SEARCH_BY_VALUE:
-            operation_function = search.searchByValue;
+            operation_function = p_search_search_by_value;
             break;
         case terms.OPERATIONS_ENUM.SEARCH:
-            operation_function = search.search;
+            operation_function = p_search_search;
             break;
         case terms.OPERATIONS_ENUM.SQL:
-            operation_function = sql.evaluateSQL;
+            operation_function = p_sql_evaluate_sql;
             break;
         case terms.OPERATIONS_ENUM.CSV_DATA_LOAD:
             operation_function = signalJob;
@@ -231,16 +242,16 @@ function getOperationFunction(json){
             operation_function = schema.dropAttribute;
             break;
         case terms.OPERATIONS_ENUM.DESCRIBE_SCHEMA:
-            operation_function = schema.describeSchema;
+            operation_function = p_schema_describe_schema;
             break;
         case terms.OPERATIONS_ENUM.DESCRIBE_TABLE:
-            operation_function = schema.describeTable;
+            operation_function = p_schema_describe_table;
             break;
         case terms.OPERATIONS_ENUM.DESCRIBE_ALL:
-            operation_function = schema.describeAll;
+            operation_function = p_schema_describe_all;
             break;
         case terms.OPERATIONS_ENUM.DELETE:
-            operation_function = delete_.delete;
+            operation_function = p_delete;
             break;
         case terms.OPERATIONS_ENUM.ADD_USER:
             operation_function = user.addUser;
@@ -288,25 +299,25 @@ function getOperationFunction(json){
             operation_function = cluster_utilities.clusterStatus;
             break;
         case terms.OPERATIONS_ENUM.EXPORT_TO_S3:
-            operation_function = signalJob;
+            operation_function = p_signal_job;
             job_operation_function = export_.export_to_s3;
             break;
         case terms.OPERATIONS_ENUM.DELETE_FILES_BEFORE:
-            operation_function = signalJob;
+            operation_function = p_signal_job;
             job_operation_function = delete_.deleteFilesBefore;
             break;
         case terms.OPERATIONS_ENUM.EXPORT_LOCAL:
-            operation_function = signalJob;
+            operation_function = p_signal_job;
             job_operation_function = export_.export_local;
             break;
         case terms.OPERATIONS_ENUM.SEARCH_JOBS_BY_START_DATE:
-            operation_function = jobs.jobHandler;
+            operation_function = p_job_handler;
             break;
         case terms.OPERATIONS_ENUM.GET_JOB:
-            operation_function = jobs.jobHandler;
+            operation_function = p_job_handler;
             break;
         case terms.OPERATIONS_ENUM.DELETE_JOB:
-            operation_function = jobs.jobHandler;
+            operation_function = p_job_handler;
             break;
         case terms.OPERATIONS_ENUM.UPDATE_JOB:
             operation_function = jobs.updateJob;
