@@ -16,9 +16,7 @@ const util = require('util');
 
 const INSERT_ACTION = 'inserted';
 let p_global_schema = util.promisify(hdb_core_global_schema.getTableSchema);
-let hdb_path = function() {
-    return `${env.getHdbBasePath()}/schema/`;
-};
+const HDB_PATH = `${env.getHdbBasePath()}/schema/`;
 
 // TODO: this is temporary, it will be updated when search by value is added to the bridge.
 const hdb_core_search = require('../../../search');
@@ -186,7 +184,7 @@ async function processRows(insert_obj, attributes, schema_table, existing_rows){
     let epoch = Date.now();
 
     try {
-        let exploder_object = new WriteProcessorObject(hdb_path(), insert_obj.operation, insert_obj.records, schema_table, attributes, epoch, existing_rows);
+        let exploder_object = new WriteProcessorObject(HDB_PATH, insert_obj.operation, insert_obj.records, schema_table, attributes, epoch, existing_rows);
         let data_wrapper = await dataWriteProcessor(exploder_object);
 
         return data_wrapper;
