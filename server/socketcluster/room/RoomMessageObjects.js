@@ -17,6 +17,7 @@ class HdbCoreBaseMessageIF {
         this.type = core_room_msg_type_enum;
         this.hdb_header = {};
         this.transaction = undefined;
+        this.__originator = {};
     }
 }
 
