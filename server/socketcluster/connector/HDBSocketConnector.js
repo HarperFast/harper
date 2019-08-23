@@ -52,14 +52,16 @@ class HDBSocketConnector extends SocketConnector{
                             await this.compareSchemas(req.catchup_schema);
                         }
 
-                        let {operation_function} = server_utilities.getOperationFunction(req.transaction);
-                        operation_function_caller.callOperationFunctionAsCallback(operation_function, req.transaction, this.postOperationHandler)
-                            .then((result) => {
-                                log.debug(result);
-                            })
-                            .catch((err) => {
-                                log.error(err);
-                            });
+                        if(req && req.transaction && Object.keys(req.transaction).length > 0) {
+                            let {operation_function} = server_utilities.getOperationFunction(req.transaction);
+                            operation_function_caller.callOperationFunctionAsCallback(operation_function, req.transaction, this.postOperationHandler)
+                                .then((result) => {
+                                    log.debug(result);
+                                })
+                                .catch((err) => {
+                                    log.error(err);
+                                });
+                        }
                         break;
                     }
                     default: {

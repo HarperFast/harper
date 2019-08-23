@@ -121,7 +121,7 @@ async function schemaCatchupHandler() {
         }
     }
     let catch_up_msg = utils.getClusterMessage(hdb_terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
-    catch_up_msg.transaction = [];
+    catch_up_msg.transaction = {};
     catch_up_msg.catchup_schema = global.hdb_schema;
 
     return catch_up_msg;

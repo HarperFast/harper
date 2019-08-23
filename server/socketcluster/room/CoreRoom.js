@@ -214,8 +214,6 @@ class CoreRoom extends RoomIF {
                 break;
             }
             case types.CORE_ROOM_MSG_TYPE_ENUM.HDB_TRANSACTION: {
-                // This is where we will send transactions to the cluster.
-                log.info(`Sending transaction to cluster.`);
                 break;
             }
 
