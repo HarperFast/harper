@@ -37,7 +37,7 @@ class HDBSocketConnector extends SocketConnector{
                         log.trace(`Received transaction message with operation: ${req.transaction.operation}`);
                         log.trace(`request: ${inspect(req)}`);
                         let {operation_function} = get_operation_function(req.transaction);
-                        operation_function_caller.callOperationFunctionAsCallback(operation_function, req.transaction, this.postOperationHandler)
+                        operation_function_caller.callOperationFunctionAsAwait(operation_function, req.transaction, this.postOperationHandler)
                             .then((result) => {
                                 log.debug(result);
                             })
