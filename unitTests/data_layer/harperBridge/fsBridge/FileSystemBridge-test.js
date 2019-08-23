@@ -80,6 +80,11 @@ const TABLE_SYSTEM_DATA_TEST = {
     hash_attribute: CREATE_TABLE_OBJ_TEST.hash_attribute
     };
 
+const DROP_SCHEMA_OBJ_TEST = {
+    operation: "drop_schema",
+    schema: "dropTest",
+};
+
 describe('Tests for the file system bridge class', () => {
     let sandbox = sinon.createSandbox();
     let fsBridge = new FileSystemBridge();
@@ -117,8 +122,9 @@ describe('Tests for the file system bridge class', () => {
         });
 
         it('Test that error is caught, thrown and logged', async () => {
-            fs_create_records_stub.throws(new Error('Error creating records'));
-            let test_error_result = await test_utils.testError(fsBridge.createRecords(INSERT_OBJ_TEST, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST), 'Error creating records');
+            let error_msg = 'Error creating records';
+            fs_create_records_stub.throws(new Error(error_msg));
+            let test_error_result = await test_utils.testError(fsBridge.createRecords(INSERT_OBJ_TEST, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST), error_msg);
 
             expect(test_error_result).to.be.true;
             expect(log_error_spy).to.have.been.calledOnce;
@@ -145,8 +151,9 @@ describe('Tests for the file system bridge class', () => {
         });
 
         it('Test that error is caught, thrown and logged', async () => {
-            fs_create_schema_stub.throws(new Error('Error creating schema'));
-            let test_error_result = await test_utils.testError(fsBridge.createSchema(SCHEMA_OBJ_TEST), 'Error creating schema');
+            let error_msg = 'Error creating schema';
+            fs_create_schema_stub.throws(new Error(error_msg));
+            let test_error_result = await test_utils.testError(fsBridge.createSchema(SCHEMA_OBJ_TEST), error_msg);
 
             expect(test_error_result).to.be.true;
             expect(log_error_spy).to.have.been.calledOnce;
@@ -172,8 +179,9 @@ describe('Tests for the file system bridge class', () => {
             });
 
             it('Test that error is caught, thrown and logged', async () => {
-                fs_create_table_stub.throws(new Error('Error creating table'));
-                let test_error_result = await test_utils.testError(fsBridge.createTable(TABLE_SYSTEM_DATA_TEST, CREATE_TABLE_OBJ_TEST), 'Error creating table');
+                let error_msg = 'Error creating table';
+                fs_create_table_stub.throws(new Error(error_msg));
+                let test_error_result = await test_utils.testError(fsBridge.createTable(TABLE_SYSTEM_DATA_TEST, CREATE_TABLE_OBJ_TEST), error_msg);
 
                 expect(test_error_result).to.be.true;
                 expect(log_error_spy).to.have.been.calledOnce;
@@ -201,8 +209,38 @@ describe('Tests for the file system bridge class', () => {
         });
 
         it('Test that error is caught, thrown and logged', async () => {
-            fs_delete_records_stub.throws(new Error('Error deleting records'));
-            let test_error_result = await test_utils.testError(fsBridge.deleteRecords(DELETE_OBJ_TEST), 'Error deleting records');
+            let error_msg = 'Error deleting records';
+            fs_delete_records_stub.throws(new Error(error_msg));
+            let test_error_result = await test_utils.testError(fsBridge.deleteRecords(DELETE_OBJ_TEST), error_msg);
+
+            expect(test_error_result).to.be.true;
+            expect(log_error_spy).to.have.been.calledOnce;
+        });
+    });
+    
+    context('Test dropSchema method', () => {
+        let fs_drop_schema_stub = sandbox.stub();
+        let fs_drop_schema_rw;
+
+        before(() => {
+            fs_drop_schema_rw = FileSystemBridge.__set__('fsDropSchema', fs_drop_schema_stub);
+        });
+
+        after(() => {
+            sandbox.restore();
+            fs_drop_schema_rw();
+        });
+
+        it('Test dropSchema method is called and result is as expected', async () => {
+            await fsBridge.dropSchema(DROP_SCHEMA_OBJ_TEST);
+
+            expect(fs_drop_schema_stub).to.have.been.calledWith(DROP_SCHEMA_OBJ_TEST);
+        });
+
+        it('Test that error is caught, thrown and logged', async () => {
+            let error_msg = 'Error dropping schema';
+            fs_drop_schema_stub.throws(new Error(error_msg));
+            let test_error_result = await test_utils.testError(fsBridge.dropSchema(DROP_SCHEMA_OBJ_TEST), error_msg);
 
             expect(test_error_result).to.be.true;
             expect(log_error_spy).to.have.been.calledOnce;

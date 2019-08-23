@@ -12,7 +12,7 @@ const moment = require('moment');
 const harper_logger = require('../utility/logging/harper_logger');
 const { promisify, callbackify } = require('util');
 const terms = require('../utility/hdbTerms');
-const harperBridge = require('./harperBridge/harperBridge');
+
 
 const BASE_PATH = common_utils.buildFolderPath(env.get('HDB_ROOT'), "schema");
 const HDB_HASH_FOLDER_NAME = '__hdb_hash';
@@ -27,6 +27,7 @@ const p_fs_unlink = promisify(fs.unlink);
 const p_fs_rmdir = promisify(fs.rmdir);
 const p_global_schema = promisify(global_schema.getTableSchema);
 
+const harperBridge = require('./harperBridge/harperBridge');
 // Callbackified functions
 const cb_delete_record = callbackify(deleteRecord);
 
