@@ -54,7 +54,7 @@ class WriteToTransactionLogRule extends RuleIF {
             if(this.transaction_stream === undefined){
                 let log_filename = path.join(HDB_TRANSACTION_LOG_PATH, req.channel, req.channel);
                 let audit_filename = path.join(HDB_TRANSACTION_LOG_PATH, req.channel, "audit.json");
-                let options = new RotatingFileWriteStreamOptionsObject(log_filename, "custom", "50M", "10", audit_filename);
+                let options = new RotatingFileWriteStreamOptionsObject(log_filename, "50M", "10", audit_filename);
 
                 this.transaction_stream = new RotatingFileWriteStream(options);
             }

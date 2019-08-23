@@ -7,12 +7,13 @@ const {inspect} = require('util');
 const CatchUp = require('../handlers/CatchUp');
 const env = require('../../../utility/environment/environmentManager');
 env.initSync();
-const hdb_queue_path = env.getHdbBasePath() + '/clustering/transaction_log/';
+const HDB_QUEUE_PATH = env.getHdbBasePath() + '/clustering/transaction_log/';
 const utils = require('../../../utility/common_utils');
 const get_cluster_user = require('../../../utility/common_utils').getClusterUser;
 const password_utility = require('../../../utility/password');
 
 const SC_TOKEN_EXPIRATION = '1d';
+const CATCHUP_OFFSET_MS = 100;
 
 class ConnectionDetails {
     constructor(id, host_address, host_port, state) {
@@ -111,9 +112,21 @@ function createEventPromise(event_name, event_emitter_object, timeout_promise) {
  * @param socket
  * @returns {Promise<void>}
  */
-async function catchupHandler(channel, start_timestamp, end_timestamp){
-    let channel_log_path = hdb_queue_path + channel;
-    let channel_audit_path = channel_log_path + 'audit.json';
+async function catchupHandler(channel, start_timestamp, end_timestamp = Date.now()){
+    if(!channel){
+        throw new Error('channel is required');
+    }
+
+    if(!start_timestamp || !Number.isInteger(start_timestamp)){
+        throw new Error('invalid start_timestamp');
+    }
+
+    if(start_timestamp > end_timestamp){
+        throw new Error('end_timestamp must be greater than start_timestamp');
+    }
+
+    let channel_log_path = utils.buildFolderPath(HDB_QUEUE_PATH, channel);
+    let channel_audit_path = utils.buildFolderPath(channel_log_path, 'audit.json');
 
     //check if the channel transaction log path exists
     try {
@@ -132,19 +145,20 @@ async function catchupHandler(channel, start_timestamp, end_timestamp){
     }
 
     try {
-        let audit_string = await fs.readFile(channel_log_path + 'audit.json');
-        let channel_log_audit = JSON.parse(audit_string);
+        let audit_string = await fs.readFile(channel_audit_path);
+        let channel_log_audit = JSON.parse(audit_string.toString());
 
         let results = [];
 
-        //get files to read for catchup, iterate the files list in reverse order to read oldest logs/records first.  the audit.json holds a list of the
-        for (let x = channel_log_audit.files.length - 1; x > 0; x--) {
-            let log_metadata = this.audit.files[x];
-            if (log_metadata.date >= start_timestamp && log_metadata.date < end_timestamp) {
+        //get files to read for catchup, iterate the files list, the list is oldest to newest.
+        for (let x = 0; x < channel_log_audit.files.length; x++) {
+            let log_metadata = channel_log_audit.files[x];
+            //we add an offset to account for the date on the log being off by a few milliseconds from the transaction time, because the transaction passes from hdb -> sc server before being written
+            if ((log_metadata.date + CATCHUP_OFFSET_MS) >= start_timestamp && (log_metadata.date + CATCHUP_OFFSET_MS) <= end_timestamp) {
                 let reader = new CatchUp(log_metadata.name, start_timestamp, end_timestamp);
                 await reader.run();
                 if (Array.isArray(reader.results) && reader.results.length > 0) {
-                    results.concat(reader.results);
+                    results = results.concat(reader.results);
                 }
             }
         }

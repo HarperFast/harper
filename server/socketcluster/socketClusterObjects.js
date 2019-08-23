@@ -54,9 +54,9 @@ class RotatingFileWriteStreamOptionsObject{
      * @param max_logs
      * @param audit_file
      */
-    constructor(filename, frequency, size, max_logs, audit_file){
+    constructor(filename, size, max_logs, audit_file){
         this.filename = filename;
-        this.frequency = frequency;
+        this.frequency = 'custom';
         this.size = size;
         this.verbose = false;
         this.max_logs = max_logs;
