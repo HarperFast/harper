@@ -37,8 +37,6 @@ const p_schema_describe_schema = util.promisify(schema.describeSchema);
 const p_schema_describe_table = util.promisify(schema.describeTable);
 const p_schema_describe_all = util.promisify(schema.describeAll);
 const p_delete = util.promisify(delete_.delete);
-const p_signal_job = util.promisify(signalJob);
-const p_job_handler = util.promisify(jobs.jobHandler);
 
 module.exports = {
     chooseOperation: chooseOperation,
@@ -299,25 +297,25 @@ function getOperationFunction(json){
             operation_function = cluster_utilities.clusterStatus;
             break;
         case terms.OPERATIONS_ENUM.EXPORT_TO_S3:
-            operation_function = p_signal_job;
+            operation_function = signalJob;
             job_operation_function = export_.export_to_s3;
             break;
         case terms.OPERATIONS_ENUM.DELETE_FILES_BEFORE:
-            operation_function = p_signal_job;
+            operation_function = signalJob;
             job_operation_function = delete_.deleteFilesBefore;
             break;
         case terms.OPERATIONS_ENUM.EXPORT_LOCAL:
-            operation_function = p_signal_job;
+            operation_function = signalJob;
             job_operation_function = export_.export_local;
             break;
         case terms.OPERATIONS_ENUM.SEARCH_JOBS_BY_START_DATE:
-            operation_function = p_job_handler;
+            operation_function = jobs.jobHandler;
             break;
         case terms.OPERATIONS_ENUM.GET_JOB:
-            operation_function = p_job_handler;
+            operation_function = jobs.jobHandler;
             break;
         case terms.OPERATIONS_ENUM.DELETE_JOB:
-            operation_function = p_job_handler;
+            operation_function = jobs.jobHandler;
             break;
         case terms.OPERATIONS_ENUM.UPDATE_JOB:
             operation_function = jobs.updateJob;
@@ -380,28 +378,28 @@ function nullOperation(json, callback) {
     callback('Invalid operation');
 }
 
-function signalJob(json, callback) {
+async function signalJob(json) {
     let new_job_object = undefined;
-    jobs.addJob(json).then( (result) => {
+    let result = undefined;
+    try {
+        result = await jobs.addJob(json);
         new_job_object = result.createdJob;
         let job_runner_message = new job_runner.RunnerMessage(new_job_object, json);
         let job_signal_message = new signal.JobAddedSignalObject(new_job_object.id, job_runner_message);
         if (process.send !== undefined) {
             signal.signalJobAdded(job_signal_message);
-            // purposefully not waiting for a response as we want to callback immediately.
         } else {
             try {
+                // purposefully not waiting for await response as we want to callback immediately.
                 job_runner.parseMessage(job_signal_message.runner_message);
-            } catch(e) {
+            } catch (e) {
                 harper_logger.error(`Got an error trying to run a job with message ${job_runner_message}. ${e}`);
             }
-            // purposefully not waiting for a response as we want to callback immediately.
         }
-
-        return callback(null, `Starting job with id ${new_job_object.id}`);
-    }).catch(function caughtError(err) {
+        return `Starting job with id ${new_job_object.id}`;
+    } catch (err) {
         let message = `There was an error adding a job: ${err}`;
         harper_logger.error(message);
-        return callback(message, null);
-    });
+        throw new Error(message);
+    }
 }
