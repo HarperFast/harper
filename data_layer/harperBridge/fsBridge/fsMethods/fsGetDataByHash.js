@@ -3,7 +3,7 @@
 const fs = require('fs-extra');
 const _ = require('lodash');
 
-const { getBasePath } = require('../fsUtils/getBasePath');
+const { getBasePath } = require('../fsUtility/getBasePath');
 const { autoCast } = require('../../../../utility/common_utils');
 const search_validator = require('../../../../validation/searchValidator.js');
 
