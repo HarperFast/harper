@@ -1,14 +1,12 @@
 "use strict";
 const RuleIF = require('./RulesIF');
-const path = require('path');
 const log = require('../../../../utility/logging/harper_logger');
 const types = require('../../types');
 const env = require('../../../../utility/environment/environmentManager');
 env.initSync();
-const HDB_TRANSACTION_LOG_PATH = path.join(env.getHdbBasePath(),'clustering', 'transaction_log');
-const RotatingFileWriteStream = require('../../../../utility/fs/RotatingFileWriteStream');
+const HDB_QUEUE_PATH = env.getHdbBasePath() + '/clustering/transaction_log/';
+const FileWriteStream = require('../../../../utility/fs/RotatingFileWriteStream');
 const terms = require('../../../../utility/hdbTerms');
-const RotatingFileWriteStreamOptionsObject = require('../../socketClusterObjects').RotatingFileWriteStreamOptionsObject;
 
 const LINE_DELIMITER = '\r\n';
 const VALID_OPERATIONS = ['insert', 'update', 'delete'];
@@ -52,14 +50,10 @@ class WriteToTransactionLogRule extends RuleIF {
 
         try {
             if(this.transaction_stream === undefined){
-                let log_filename = path.join(HDB_TRANSACTION_LOG_PATH, req.channel, req.channel);
-                let audit_filename = path.join(HDB_TRANSACTION_LOG_PATH, req.channel, "audit.json");
-                let options = new RotatingFileWriteStreamOptionsObject(log_filename, "50M", "10", audit_filename);
-
-                this.transaction_stream = new RotatingFileWriteStream(options);
+                this.transaction_stream = new FileWriteStream(HDB_QUEUE_PATH + req.channel, {flags: 'a', mode: terms.HDB_FILE_PERMISSIONS});
             }
         }catch(e){
-            log.trace('unable to create transaction stream: ' + HDB_TRANSACTION_LOG_PATH + req.channel);
+            log.trace('unable to create transaction stream: ' + HDB_QUEUE_PATH + req.channel);
             log.error(e);
             return true;
         }
@@ -68,11 +62,10 @@ class WriteToTransactionLogRule extends RuleIF {
             let timestamp = (req.data && req.data.hdb_header && req.data.hdb_header.timestamp) ? req.data.hdb_header.timestamp : Date.now();
             let transaction_csv = timestamp + ',' + req.data.transaction.operation + ',';
 
-            //using the JS native encodeURIComponent is 3x faster than using regex to replace special character like \t \n \r, etc...
             if(req.data.transaction.operation === terms.OPERATIONS_ENUM.INSERT || req.data.transaction.operation === terms.OPERATIONS_ENUM.UPDATE){
-                transaction_csv += encodeURIComponent(JSON.stringify(req.data.transaction.records));
+                transaction_csv += JSON.stringify(req.data.transaction.records, this.escape);
             } else if(req.data.transaction.operation === terms.OPERATIONS_ENUM.DELETE) {
-                transaction_csv += encodeURIComponent(JSON.stringify(req.data.transaction.hash_values));
+                transaction_csv += JSON.stringify(req.data.transaction.hash_values, this.escape);
             }
 
             transaction_csv += LINE_DELIMITER;
@@ -84,5 +77,28 @@ class WriteToTransactionLogRule extends RuleIF {
         }
         return true;
     }
+
+    /**
+     * this function escapes special characters in a stringified json object.
+     * in testing i found that when a json object has these special characters and is read from a file the JSON.parse fails because say \n
+     * is a literal new line rather than the string version of it
+     * @param key
+     * @param val
+     * @returns {string|*}
+     */
+    //TODO per https://harperdb.atlassian.net/browse/CORE-412 find a better way to do this escaping
+    escape (key, val) {
+        if (typeof(val)!="string") return val;
+        return val
+            .replace(/[\"]/g, '\\"')
+            .replace(/[\\]/g, '\\\\')
+            .replace(/[\/]/g, '\\/')
+            .replace(/[\b]/g, '\\b')
+            .replace(/[\f]/g, '\\f')
+            .replace(/[\n]/g, '\\n')
+            .replace(/[\r]/g, '\\r')
+            .replace(/[\t]/g, '\\t');
+    }
+
 }
 module.exports = WriteToTransactionLogRule;

@@ -8,8 +8,8 @@ const sinon = require('sinon');
 const rewire = require('rewire');
 const server_utilities = rewire('../server/serverUtilities');
 
-function test_func(test_valuse, callback) {
-    return callback(null, true);
+async function test_func(test_valuse) {
+    return true;
 }
 
 function test_func_error(test_valuse, callback) {

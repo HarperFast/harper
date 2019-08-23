@@ -37,7 +37,7 @@ class InterNodeSocketConnector extends SocketConnector{
             this.additional_info.subscriptions.forEach(async (subscription) => {
                 if (subscription.publish === true) {
                     try{
-                        let catch_up_msg = await sc_util.catchupHandler(subscription.channel, parseInt(this.connected_timestamp));
+                        let catch_up_msg = await sc_util.catchupHandler(subscription.channel, this.connected_timestamp, null);
                         if(catch_up_msg) {
                             this.socket.publish(hdb_terms.INTERNAL_SC_CHANNELS.CATCHUP, catch_up_msg);
                         }
