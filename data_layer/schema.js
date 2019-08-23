@@ -38,7 +38,6 @@ module.exports = {
     createTable: createTable,
     createTableStructure: createTableStructure,
     createAttribute: createAttribute,
-    deleteSchemaStructure: moveSchemaStructureToTrash,
     deleteTableStructure: moveTableStructureToTrash,
     describeTable: schema_describe.describeTable,
     describeSchema: schema_describe.describeSchema,
