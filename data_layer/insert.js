@@ -122,6 +122,12 @@ async function validation(write_object){
     };
 }
 
+/** NOTE **
+ * Due to circular dependencies between insert.js and schema.js, specifically around createNewAttribute, there
+ * is duplicate insertData code in fsCreateAttribute. If you change something here, related to insertData, you should
+ * do the same in fsCreateAttribute.
+ * **/
+
 /**
  * Inserts data specified in the insert_object parameter.
  * @param insert_object
@@ -132,8 +138,6 @@ async function insertData(insert_object){
     }
 
     try {
-        //let {schema_table, attributes} = await validation(insert_object);
-        //let hdb_bridge_result = await harperBridge.createRecords(insert_object, attributes, schema_table);
         let hdb_bridge_result = await harperBridge.createRecords(insert_object);
         convertOperationToTransaction(insert_object, hdb_bridge_result.written_hashes, hdb_bridge_result.schema_table.hash_attribute);
 

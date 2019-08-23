@@ -9,7 +9,7 @@ const p_global_schema = util.promisify(global_schema.getTableSchema);
 module.exports = insertUpdateValidate;
 
 /**
- *  Takes an insert/update object and validates attributes, also looks for dups and get a list of all attributes from the record set
+ * Takes an insert/update object and validates attributes, also looks for dups and get a list of all attributes from the record set
  * @param {Object} write_object
  * @returns {Promise<{table_schema, hashes: any[], attributes: string[]}>}
  */
