@@ -3,9 +3,12 @@
 const fs = require('fs-extra');
 const _ = require('lodash');
 
-const { getBasePath } = require('../fsUtility/getBasePath');
-const { autoCast } = require('../../../../utility/common_utils');
+const getBasePath = require('../fsUtility/getBasePath');
+const common_utils = require('../../../../utility/common_utils');
 const search_validator = require('../../../../validation/searchValidator.js');
+const hdb_terms = require('../../../../utility/hdbTerms');
+
+module.exports = fsGetDataByHash;
 
 // Search Object
 // {
@@ -77,8 +80,8 @@ async function getAttributeFiles(get_attributes, search_object) {
 
 async function readAttributeFilePromise(table_path, attribute, file, attribute_data) {
     try {
-        const data = await fs.readFile(`${table_path}/__hdb_hash/${attribute}/${file}.hdb`, 'utf-8');
-        const value = autoCast(data.toString());
+        const data = await fs.readFile(`${table_path}/${hdb_terms.HASH_FOLDER_NAME}/${attribute}/${file}${hdb_terms.HDB_FILE_SUFFIX}`, 'utf-8');
+        const value = common_utils.autoCast(data.toString());
         attribute_data[file] = value;
     } catch (err) {
         if (err.code !== 'ENOENT') {
@@ -137,5 +140,3 @@ function consolidateData(hash_attribute, attributes_data) {
 
     return results_object;
 }
-
-module.exports = fsGetDataByHash;

@@ -6,6 +6,4 @@ function getBasePath() {
     return `${env.getHdbBasePath()}/schema/`;
 }
 
-module.exports = {
-    getBasePath
-};
+module.exports = getBasePath;

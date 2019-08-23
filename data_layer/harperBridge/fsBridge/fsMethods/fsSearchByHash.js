@@ -2,6 +2,8 @@
 
 const fsGetDataByHash = require('./fsGetDataByHash');
 
+module.exports = fsSearchByHash;
+
 // Search Object
 // {
 //   schema:String, // schema to search
@@ -18,5 +20,3 @@ async function fsSearchByHash(search_object) {
         throw err;
     }
 }
-
-module.exports = fsSearchByHash;
