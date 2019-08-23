@@ -1,17 +1,19 @@
 "use strict";
 
+const fs = require('fs-extra');
 const hdb_terms = require('../../../utility/hdbTerms');
 const log = require('../../../utility/logging/harper_logger');
 const {inspect} = require('util');
 const CatchUp = require('../handlers/CatchUp');
 const env = require('../../../utility/environment/environmentManager');
 env.initSync();
-const hdb_queue_path = env.getHdbBasePath() + '/clustering/transaction_log/';
+const HDB_QUEUE_PATH = env.getHdbBasePath() + '/clustering/transaction_log/';
 const utils = require('../../../utility/common_utils');
 const get_cluster_user = require('../../../utility/common_utils').getClusterUser;
 const password_utility = require('../../../utility/password');
 
 const SC_TOKEN_EXPIRATION = '1d';
+const CATCHUP_OFFSET_MS = 100;
 
 class ConnectionDetails {
     constructor(id, host_address, host_port, state) {
@@ -110,21 +112,71 @@ function createEventPromise(event_name, event_emitter_object, timeout_promise) {
  * @param socket
  * @returns {Promise<void>}
  */
-async function catchupHandler(channel, start_timestamp, end_timestamp){
-    let catchup = new CatchUp(hdb_queue_path + channel, start_timestamp, end_timestamp);
-    await catchup.run();
+async function catchupHandler(channel, start_timestamp, end_timestamp = Date.now()){
+    if(!channel){
+        throw new Error('channel is required');
+    }
 
-    if(Array.isArray(catchup.results) && catchup.results.length > 0) {
-        let catchup_response = {
-            channel: channel,
-            operation:'catchup',
-            transactions: catchup.results
-        };
+    if(!start_timestamp || !Number.isInteger(start_timestamp)){
+        throw new Error('invalid start_timestamp');
+    }
 
-        let catch_up_msg = utils.getClusterMessage(hdb_terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
-        catch_up_msg.transaction = catchup_response;
+    if(start_timestamp > end_timestamp){
+        throw new Error('end_timestamp must be greater than start_timestamp');
+    }
 
-        return catch_up_msg;
+    let channel_log_path = utils.buildFolderPath(HDB_QUEUE_PATH, channel);
+    let channel_audit_path = utils.buildFolderPath(channel_log_path, 'audit.json');
+
+    //check if the channel transaction log path exists
+    try {
+        await fs.access(channel_log_path, fs.constants.R_OK | fs.constants.F_OK);
+    } catch(e){
+        //doesn't exist so we exit
+        return;
+    }
+
+    //check if the channel audit file exists
+    try {
+        await fs.access(channel_audit_path, fs.constants.R_OK | fs.constants.F_OK);
+    } catch(e){
+        //doesn't exist so we exit
+        return;
+    }
+
+    try {
+        let audit_string = await fs.readFile(channel_audit_path);
+        let channel_log_audit = JSON.parse(audit_string.toString());
+
+        let results = [];
+
+        //get files to read for catchup, iterate the files list, the list is oldest to newest.
+        for (let x = 0; x < channel_log_audit.files.length; x++) {
+            let log_metadata = channel_log_audit.files[x];
+            //we add an offset to account for the date on the log being off by a few milliseconds from the transaction time, because the transaction passes from hdb -> sc server before being written
+            if ((log_metadata.date + CATCHUP_OFFSET_MS) >= start_timestamp && (log_metadata.date + CATCHUP_OFFSET_MS) <= end_timestamp) {
+                let reader = new CatchUp(log_metadata.name, start_timestamp, end_timestamp);
+                await reader.run();
+                if (Array.isArray(reader.results) && reader.results.length > 0) {
+                    results = results.concat(reader.results);
+                }
+            }
+        }
+
+        if (Array.isArray(results) && results.length > 0) {
+            let catchup_response = {
+                channel: channel,
+                operation: 'catchup',
+                transactions: results
+            };
+
+            let catch_up_msg = utils.getClusterMessage(hdb_terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
+            catch_up_msg.transaction = catchup_response;
+
+            return catch_up_msg;
+        }
+    }catch(e){
+        log.error(e);
     }
 }
 
@@ -173,6 +225,21 @@ function handleLoginResponse(socket, credentials, hdb_users) {
         log.error(e);
     }
 }
+
+/*async function catchupHandler(path, start_timestamp, end_timestamp, ){
+    this.audit = require(path + 'audit.json');
+
+    this.results = [];
+
+    //get files to read for catchup, iterate the files list in reverse order to read oldest logs/records first
+    for(let x = this.audit.files.length -1; x > 0; x--){
+        let log_metadata = this.audit.files[x];
+        if(log_metadata.date >= start_timestamp && log_metadata.date < end_timestamp){
+            let reader = new CatchUp(log_metadata.name, start_timestamp, end_timestamp);
+            reader.run()
+        }
+    }
+}*/
 
 module.exports = {
     getWorkerStatus,
