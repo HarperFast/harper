@@ -11,6 +11,7 @@ const HDB_QUEUE_PATH = env.getHdbBasePath() + '/clustering/transaction_log/';
 const utils = require('../../../utility/common_utils');
 const get_cluster_user = require('../../../utility/common_utils').getClusterUser;
 const password_utility = require('../../../utility/password');
+const types = require('../types');
 
 const SC_TOKEN_EXPIRATION = '1d';
 const CATCHUP_OFFSET_MS = 100;
@@ -126,20 +127,14 @@ async function catchupHandler(channel, start_timestamp, end_timestamp = Date.now
     }
 
     let channel_log_path = utils.buildFolderPath(HDB_QUEUE_PATH, channel);
-    let channel_audit_path = utils.buildFolderPath(channel_log_path, 'audit.json');
+    let channel_audit_path = utils.buildFolderPath(channel_log_path, types.ROTATING_TRANSACTION_LOG_ENUM.AUDIT_LOG_NAME);
 
-    //check if the channel transaction log path exists
+    //check if the channel transaction log path & channel audit file exists
     try {
         await fs.access(channel_log_path, fs.constants.R_OK | fs.constants.F_OK);
-    } catch(e){
-        //doesn't exist so we exit
-        return;
-    }
-
-    //check if the channel audit file exists
-    try {
         await fs.access(channel_audit_path, fs.constants.R_OK | fs.constants.F_OK);
     } catch(e){
+        log.info(`transacion log path for channel ${channel} does not exist`);
         //doesn't exist so we exit
         return;
     }
