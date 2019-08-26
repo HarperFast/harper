@@ -134,6 +134,7 @@ class NodeConnectionsHandler {
     subscriptionManager(connection, subscription){
         if(subscription.publish === true){
             //we need to observe the channel locally and push the data remotely.
+            //TODO create one watcher / channel & send to all connections subscribed to the channel
             let sub_channel = this.worker.exchange.subscribe(subscription.channel);
             sub_channel.watch(data=>{
                 if(connection.socket.state === connection.socket.OPEN && connection.socket.authState === connection.socket.AUTHENTICATED) {
