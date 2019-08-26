@@ -34,7 +34,7 @@ class BridgeMethods {
     }
 
     createAttribute() {
-        throw new Error("dropAttribute bridge method is not defined");
+        throw new Error("createAttribute bridge method is not defined");
     }
 
     dropAttribute() {

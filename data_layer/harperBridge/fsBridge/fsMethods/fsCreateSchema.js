@@ -7,9 +7,6 @@ const fsCreateRecords = require('./fsCreateRecords');
 
 module.exports = createSchema;
 
-// This must be after export to prevent issues with circular dependencies related to insert.checkForNewAttributes.
-//const hdb_core_insert = require('../../../insert');
-
 /**
  * Calls HDB core insert to first add schema to system schema then mkdirp to create folder in file system.
  * @param schema_create_obj

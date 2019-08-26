@@ -7,9 +7,6 @@ const fsCreateRecords = require('./fsCreateRecords');
 
 module.exports = createTable;
 
-// This must be after export to prevent issues with circular dependencies related to insert.checkForNewAttributes.
-//const hdb_core_insert = require('../../../insert');
-
 async function createTable(table_system_data, create_table_obj) {
     let insert_object = {
         operation: terms.OPERATIONS_ENUM.INSERT,
