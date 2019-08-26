@@ -30,6 +30,7 @@ module.exports = {
     install: run_install
 };
 
+// These require statements were moved below the module.exports to resolve circular dependencies within the harperBridge module.
 const schema = require('../../utility/globalSchema');
 
 let wizard_result;

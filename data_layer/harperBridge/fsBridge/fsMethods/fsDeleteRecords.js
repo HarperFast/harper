@@ -13,6 +13,7 @@ const MAX_BYTES = '255';
 
 module.exports = deleteRecords;
 
+// These require statements were moved below the module.exports to resolve circular dependencies within the harperBridge module.
 const fsSearchByHash = require('./fsSearchByHash');
 
 async function deleteRecords(delete_obj){

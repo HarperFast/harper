@@ -33,6 +33,7 @@ module.exports = {
     deleteFilesBefore: deleteFilesBefore
 };
 
+// These require statements were moved below the module.exports to resolve circular dependencies within the harperBridge module.
 const global_schema = require('../utility/globalSchema');
 const p_global_schema = promisify(global_schema.getTableSchema);
 const search = require('./search');

@@ -9,6 +9,7 @@ module.exports = {
     getSystemSchema: getSystemSchema
 };
 
+// These require statements were moved below the module.exports to resolve circular dependencies within the harperBridge module.
 const schema = require('../data_layer/schemaDescribe');
 
 function setSchemaDataToGlobal(callback) {
