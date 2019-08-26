@@ -54,7 +54,6 @@ const GLOBAL_SCHEMA_FAKE = {
     }
 };
 
-let current_date = new Date().toISOString().substr(0, DATE_SUBSTR_LENGTH);
 let global_schema_original = clonedeep(global.hdb_schema);
 
 /**
@@ -72,7 +71,6 @@ function deleteSchemaTableStruc() {
 describe('Test schema module', function() {
     let signal_schema_change_stub;
     let insert_stub;
-    let search_by_conditions_stub = sinon.stub();
     let logger_error_stub;
     let logger_info_stub;
     let schema_validator_stub;
@@ -83,8 +81,6 @@ describe('Test schema module', function() {
     let delete_attr_struct_stub = sinon.stub();
     let delete_attr_struct_rewire;
     let attr_validator_stub;
-    let move_schema_to_trash_stub = sinon.stub();
-    let move_schema_to_trash_rewire;
     let build_drop_table_obj_stub = sinon.stub();
     let build_drop_table_obj_rewire;
     let move_table_to_trash_stub = sinon.stub();
@@ -94,13 +90,13 @@ describe('Test schema module', function() {
     let move_folder_to_trash_stub = sinon.stub();
     let move_folder_to_trash_rewire;
     let harper_bridge_stub;
+    let sandbox = sinon.createSandbox();
     global.hdb_schema = {};
 
     before(function() {
         env.setProperty('HDB_ROOT', HDB_ROOT_TEST);
         insert_stub = sinon.stub(insert, 'insert');
         signal_schema_change_stub = sinon.stub(signalling, 'signalSchemaChange');
-        schema.__set__('p_search_by_conditions', search_by_conditions_stub);
         logger_error_stub = sinon.stub(logger, 'error');
         logger_info_stub = sinon.stub(logger, 'info');
         schema_validator_stub = sinon.stub(schema_validator, 'schema_object');
@@ -881,72 +877,6 @@ describe('Test schema module', function() {
     });
 
     /**
-     * Tests for createAttributeStructure function.
-     */
-    describe('Create attribute structure', function() {
-
-        it('should throw a validation error', async function() {
-            let validation_err = 'Attribute is required';
-            attr_validator_stub.returns(validation_err);
-            let error;
-
-            try {
-                await schema.createAttributeStructure(CREATE_ATTR_OBJECT_TEST);
-            } catch(err) {
-                error = err;
-            }
-
-            expect(error).to.equal(validation_err);
-            expect(attr_validator_stub).to.have.been.calledOnce;
-        });
-
-        it('should throw attribute already exists error', async function() {
-            attr_validator_stub.returns();
-            search_by_value_stub.resolves([CREATE_ATTR_OBJECT_TEST]);
-            let error;
-
-            try {
-                await schema.createAttributeStructure(CREATE_ATTR_OBJECT_TEST);
-            } catch(err) {
-                error = err;
-            }
-
-            expect(error.message).to.equal(`attribute already exists with id ${JSON.stringify(CREATE_ATTR_OBJECT_TEST)}`);
-            expect(search_by_value_stub).to.have.been.calledOnce;
-            expect(attr_validator_stub).to.have.been.calledOnce;
-        });
-
-        it('should log all necessary info and return insert response', async function() {
-            search_by_value_stub.resolves();
-            let insert_response_fake = {message: 'inserted 1 of 1 records - fake'};
-            insert_stub.resolves(insert_response_fake);
-            let result = await schema.createAttributeStructure(CREATE_ATTR_OBJECT_TEST);
-
-            expect(attr_validator_stub).to.have.been.calledOnce;
-            expect(search_by_value_stub).to.have.been.calledOnce;
-            expect(insert_stub).to.have.been.calledOnce;
-            expect(logger_info_stub).to.have.been.calledThrice;
-            expect(result).to.equal(insert_response_fake);
-        });
-
-        it('should catch error from insert', async function () {
-            let insert_err = 'Error inserting value';
-            insert_stub.throws(new Error(insert_err));
-            let error;
-
-            try {
-                await schema.createAttributeStructure(CREATE_ATTR_OBJECT_TEST);
-            } catch(err) {
-                error = err;
-            }
-
-            expect(error).to.be.instanceOf(Error);
-            expect(error.message).to.equal(insert_err);
-            expect(insert_stub).to.have.been.calledOnce;
-        });
-    });
-
-    /**
      * Tests for deleteAttributeStructure function.
      */
     describe('Delete attribute structure', function() {
@@ -1000,9 +930,8 @@ describe('Test schema module', function() {
      * Tests for createAttribute function.
      */
     describe('Create attribute', function() {
-        let create_attr_struc_stub = sinon.stub();
+        let bridge_create_attr_stub;
         let call_process_send_stub = sinon.stub(common, 'callProcessSend');
-        let create_attr_struc_rewire;
         let attribute_structure_fake = {message:'inserted 1 of 1 records', skipped_hashes:'', inserted_hashes:''};
         sinon.stub(process, 'pid').value('8877');
         let payload_fake = {
@@ -1014,21 +943,21 @@ describe('Test schema module', function() {
         };
 
         before(function() {
-            create_attr_struc_rewire = schema.__set__('createAttributeStructure', create_attr_struc_stub);
-            create_attr_struc_stub.resolves(attribute_structure_fake);
+            bridge_create_attr_stub = sandbox.stub(harperBridge, 'createAttribute').resolves(attribute_structure_fake);
         });
 
         after(function() {
-            create_attr_struc_rewire();
+            sandbox.restore();
         });
+
 
         it('should call process send and return attribute structure with clustering on', async function() {
             global.clustering_on = true;
 
             let result = await schema.createAttribute(CREATE_ATTR_OBJECT_TEST);
 
-            expect(create_attr_struc_stub).to.have.been.calledOnce;
-            expect(create_attr_struc_stub).to.have.been.calledWith(CREATE_ATTR_OBJECT_TEST);
+            expect(bridge_create_attr_stub).to.have.been.calledOnce;
+            expect(bridge_create_attr_stub).to.have.been.calledWith(CREATE_ATTR_OBJECT_TEST);
             expect(call_process_send_stub).to.have.been.calledOnce;
             expect(call_process_send_stub).to.have.been.calledWith(payload_fake);
             expect(signal_schema_change_stub).to.have.been.calledOnce;
@@ -1056,8 +985,7 @@ describe('Test schema module', function() {
         it('should return attribute structure with clustering off', async function() {
             global.clustering_on = false;
             let result = await schema.createAttribute(CREATE_ATTR_OBJECT_TEST);
-            expect(create_attr_struc_stub).to.have.been.calledOnce;
-            expect(create_attr_struc_stub).to.have.been.calledWith(CREATE_ATTR_OBJECT_TEST);
+            expect(bridge_create_attr_stub).to.have.been.calledWith(CREATE_ATTR_OBJECT_TEST);
             expect(call_process_send_stub).to.have.been.callCount(0);
             expect(signal_schema_change_stub).to.have.been.calledOnce;
             expect(result).to.equal(attribute_structure_fake);

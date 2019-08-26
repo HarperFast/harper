@@ -3,21 +3,18 @@
 const log = require('../../../../utility/logging/harper_logger');
 const schema_validator = require('../../../../validation/schema_validator');
 const hdb_utils = require('../../../../utility/common_utils');
-const hdb_core_global_schema = require('../../../../utility/globalSchema');
 const env = require('../../../../utility/environment/environmentManager');
 const hdb_terms = require('../../../../utility/hdbTerms');
 const insertUpdateValidate = require('../fsUtility/insertUpdateValidate');
 const mkdirp = require('../../../../utility/fs/mkdirp');
 const writeFile = require('../../../../utility/fs/writeFile');
-const insert_validator = require('../../../../validation/insertValidator');
 const WriteProcessorObject = require('../../../WriteProcessorObject');
 const dataWriteProcessor = require('../../../dataWriteProcessor');
 const uuidV4 = require('uuid/v4');
 const util = require('util');
 
 const INSERT_ACTION = 'inserted';
-let p_global_schema = util.promisify(hdb_core_global_schema.getTableSchema);
-const HDB_PATH = `${env.getHdbBasePath()}/schema/`;
+const HDB_PATH = `${env.getHdbBasePath()}/${hdb_terms.HDB_SCHEMA_DIR}/`;
 
 // TODO: this is temporary, it will be updated when search by value is added to the bridge.
 const hdb_core_search = require('../../../search');
@@ -27,7 +24,7 @@ module.exports = createAttribute;
 
 /** NOTE **
  * Due to circular dependencies with insertData in insert.js we have a duplicate version
- * of insertData in this file. It is only to be used by this function.
+ * of insertData in this file. It should only be used by createAttribute.
  * **/
 
 /**
@@ -42,9 +39,9 @@ async function createAttribute(create_attribute_object) {
     }
 
     let search_object = {
-        schema: 'system',
-        table: 'hdb_attribute',
-        hash_attribute: 'id',
+        schema: hdb_terms.SYSTEM_SCHEMA_NAME,
+        table: hdb_terms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME,
+        hash_attribute: hdb_terms.SYSTEM_TABLE_HASH,
         get_attributes: ['*'],
         search_attribute: 'attribute',
         search_value: create_attribute_object.attribute
@@ -75,10 +72,10 @@ async function createAttribute(create_attribute_object) {
         }
 
         let insert_object = {
-            operation: 'insert',
-            schema: 'system',
-            table: 'hdb_attribute',
-            hash_attribute: 'id',
+            operation: hdb_terms.OPERATIONS_ENUM.INSERT,
+            schema: hdb_terms.SYSTEM_SCHEMA_NAME,
+            table: hdb_terms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME,
+            hash_attribute: hdb_terms.SYSTEM_TABLE_HASH,
             records: [record]
         };
 
@@ -93,6 +90,11 @@ async function createAttribute(create_attribute_object) {
     }
 }
 
+/**
+ * Inserts data specified in the insert_object parameter.
+ * @param insert_object
+ * @returns {Promise<{skipped_hashes: *, update_hashes: *, message: string}>}
+ */
 async function insertData(insert_object){
     try {
         let { schema_table, attributes } = await insertUpdateValidate(insert_object);

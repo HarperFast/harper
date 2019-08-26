@@ -93,6 +93,8 @@ const DATA_WRAPPER_TEST = {
     unlinks: WRITTEN_HASH_TEST
 };
 const EXISTING_ROWS_TEST = {};
+const INSERT_ACTION_TEST = 'inserted';
+const UPDATE_ACTION_TEST = 'updated';
 
 describe('Tests for file system module fsCreateAttribute', () => {
     let sandbox = sinon.createSandbox();
@@ -194,105 +196,145 @@ describe('Tests for file system module fsCreateAttribute', () => {
 
             expect(test_err_result).to.be.true;
         });
+    });
 
-        context('Tests for processRows function', () => {
-            let process_rows = fsCreateAttribute.__get__('processRows');
-            let exploder_obj_fake = {schema: 'test'};
-            let write_process_obj_stub = sandbox.stub().returns(exploder_obj_fake);
-            let write_process_obj_rw;
-            let data_write_process_stub = sandbox.stub().resolves(DATA_WRAPPER_TEST);
-            let data_write_process_rw;
-            
-            before(() => {
-                write_process_obj_rw = fsCreateAttribute.__set__('WriteProcessorObject', write_process_obj_stub);
-                data_write_process_rw = fsCreateAttribute.__set__('dataWriteProcessor', data_write_process_stub);
-            });
+    context('Tests for processRows function', () => {
+        let process_rows = fsCreateAttribute.__get__('processRows');
+        let exploder_obj_fake = {schema: 'test'};
+        let write_process_obj_stub = sandbox.stub().returns(exploder_obj_fake);
+        let write_process_obj_rw;
+        let data_write_process_stub = sandbox.stub().resolves(DATA_WRAPPER_TEST);
+        let data_write_process_rw;
 
-            after(() => {
-                write_process_obj_rw();
-                data_write_process_rw();
-            });
-
-            it('Test write processor and data write stubs are called and returned as expected', async () => {
-                let result = await process_rows(INSERT_OBJ_TEST, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST, EXISTING_ROWS_TEST);
-
-                expect(result).to.equal(DATA_WRAPPER_TEST);
-                expect(write_process_obj_stub).to.have.been.called;
-                expect(data_write_process_stub).to.have.been.calledWith(exploder_obj_fake);
-            });
+        before(() => {
+            write_process_obj_rw = fsCreateAttribute.__set__('WriteProcessorObject', write_process_obj_stub);
+            data_write_process_rw = fsCreateAttribute.__set__('dataWriteProcessor', data_write_process_stub);
         });
 
-        context('Test for processData function', () => {
-            let process_data = fsCreateAttribute.__get__('processData');
-            let create_folders_stub = sandbox.stub();
-            let create_folders_rw;
-            let write_raw_data_stub = sandbox.stub();
-            let write_raw_data_rw;
-
-            before(() => {
-                create_folders_rw = fsCreateAttribute.__set__('createFolders', create_folders_stub);
-                write_raw_data_rw = fsCreateAttribute.__set__('writeRawDataFiles', write_raw_data_stub)
-            });
-
-            after(() => {
-                write_raw_data_rw();
-                create_folders_rw();
-            });
-
-            it('Test that createFolders and writeRawDataFiles stubs are called', async () => {
-                await process_data(DATA_WRAPPER_TEST);
-
-                expect(create_folders_stub).to.have.been.calledWith(DATA_WRAPPER_TEST.folders);
-                expect(write_raw_data_stub).to.have.been.calledWith(DATA_WRAPPER_TEST.raw_data);
-            });
-
-            it('Test error from create folders is caught and thrown', async () => {
-                let error_msg = 'Error creating a thing for another thing';
-                create_folders_stub.throws(new Error(error_msg));
-                let test_err_result = await test_utils.testError(process_data(DATA_WRAPPER_TEST), error_msg);
-
-                expect(test_err_result).to.be.true;
-            });
+        after(() => {
+            write_process_obj_rw();
+            data_write_process_rw();
         });
 
-        context('Test createFolders function', () => {
-            let create_folders = fsCreateAttribute.__get__('createFolders');
+        it('Test write processor and data write stubs are called and returned as expected', async () => {
+            let result = await process_rows(INSERT_OBJ_TEST, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST, EXISTING_ROWS_TEST);
 
-            it('Test that a folder is created on the file system', async () => {
-                let test_folders_array = [`${FS_DIR_TEST}/im_a_test_folder`];
-                await create_folders(test_folders_array);
-                let exists = await fs.pathExists(test_folders_array[0]);
+            expect(result).to.equal(DATA_WRAPPER_TEST);
+            expect(write_process_obj_stub).to.have.been.called;
+            expect(data_write_process_stub).to.have.been.calledWith(exploder_obj_fake);
+        });
+    });
 
-                expect(exists).to.be.true;
-            });
+    context('Test for processData function', () => {
+        let process_data = fsCreateAttribute.__get__('processData');
+        let create_folders_stub = sandbox.stub();
+        let create_folders_rw;
+        let write_raw_data_stub = sandbox.stub();
+        let write_raw_data_rw;
 
-            it('Test that an error from mkdirp is caught and thrown', async () => {
-                let wrong_folders = `${FS_DIR_TEST}/im_a_test_folder`;
-                let test_err_result = await test_utils.testError(create_folders(wrong_folders), 'folders.map is not a function');
-
-                expect(test_err_result).to.be.true;
-            });
+        before(() => {
+            create_folders_rw = fsCreateAttribute.__set__('createFolders', create_folders_stub);
+            write_raw_data_rw = fsCreateAttribute.__set__('writeRawDataFiles', write_raw_data_stub)
         });
 
-        context('Test writeRawDataFile function', () => {
-            let write_raw_data_file = fsCreateAttribute.__get__('writeRawDataFiles');
+        after(() => {
+            write_raw_data_rw();
+            create_folders_rw();
+        });
 
-            it('Test that a file is written to the file system', async () => {
-                let test_file_array = [
-                    {
-                        path: `${FS_DIR_TEST}/testWriteFile/123456.hdb`,
-                        value: "attrUnitTest",
-                        link_path: `${FS_DIR_TEST}/testWriteFile/linkFile.hdb`,
-                    }
-                ];
-                await write_raw_data_file(test_file_array);
-                let exists_path = await fs.pathExists(test_file_array[0].path);
-                let exists_link = await fs.pathExists(test_file_array[0].link_path);
+        it('Test that createFolders and writeRawDataFiles stubs are called', async () => {
+            await process_data(DATA_WRAPPER_TEST);
 
-                expect(exists_path).to.be.true;
-                expect(exists_link).to.be.true;
-            });
+            expect(create_folders_stub).to.have.been.calledWith(DATA_WRAPPER_TEST.folders);
+            expect(write_raw_data_stub).to.have.been.calledWith(DATA_WRAPPER_TEST.raw_data);
+        });
 
+        it('Test error from create folders is caught and thrown', async () => {
+            let error_msg = 'Error creating a thing for another thing';
+            create_folders_stub.throws(new Error(error_msg));
+            let test_err_result = await test_utils.testError(process_data(DATA_WRAPPER_TEST), error_msg);
+
+            expect(test_err_result).to.be.true;
+        });
+    });
+
+    context('Test createFolders function', () => {
+        let create_folders = fsCreateAttribute.__get__('createFolders');
+
+        it('Test that a folder is created on the file system', async () => {
+            let test_folders_array = [`${FS_DIR_TEST}/im_a_test_folder`];
+            await create_folders(test_folders_array);
+            let exists = await fs.pathExists(test_folders_array[0]);
+
+            expect(exists).to.be.true;
+        });
+
+        it('Test that an error from mkdirp is caught and thrown', async () => {
+            let wrong_folders = `${FS_DIR_TEST}/im_a_test_folder`;
+            let test_err_result = await test_utils.testError(create_folders(wrong_folders), 'folders.map is not a function');
+
+            expect(test_err_result).to.be.true;
+        });
+    });
+
+    context('Test writeRawDataFile function', () => {
+        let write_raw_data_file = fsCreateAttribute.__get__('writeRawDataFiles');
+
+        it('Test that a file is written to the file system', async () => {
+            let test_file_array = [
+                {
+                    path: `${FS_DIR_TEST}/testWriteFile/123456.hdb`,
+                    value: "attrUnitTest",
+                    link_path: `${FS_DIR_TEST}/testWriteFile/linkFile.hdb`,
+                }
+            ];
+            await write_raw_data_file(test_file_array);
+            let exists_path = await fs.pathExists(test_file_array[0].path);
+            let exists_link = await fs.pathExists(test_file_array[0].link_path);
+
+            expect(exists_path).to.be.true;
+            expect(exists_link).to.be.true;
+        });
+
+        it('Test that an error from writeFile is caught and thrown', async () => {
+            let wrong_files = `${FS_DIR_TEST}/im_a_test_folder`;
+            let test_err_result = await test_utils.testError(write_raw_data_file(wrong_files), 'files.map is not a function');
+
+            expect(test_err_result).to.be.true;
+        });
+    });
+
+    context('Test returnObject function', () => {
+        let return_object = fsCreateAttribute.__get__('returnObject');
+
+        it('Test that an insert object is returned', () => {
+            let expected_result = {
+                message: "inserted 1 of 1 records",
+                skipped_hashes: [
+                    "13md39"
+                ],
+                inserted_hashes: [
+                    "7d0181"
+                ]
+            };
+            let result = return_object(INSERT_ACTION_TEST, WRITTEN_HASH_TEST, INSERT_OBJ_TEST, SKIPPED_HASH_TEST);
+
+            expect(result).to.eql(expected_result);
+        });
+
+        it('Test that an update object is returned', () => {
+            let expected_result = {
+                message: "updated 1 of 1 records",
+                skipped_hashes: [
+                    "13md39"
+                ],
+                update_hashes: [
+                    "7d0181"
+                ]
+            };
+            let result = return_object(UPDATE_ACTION_TEST, WRITTEN_HASH_TEST, INSERT_OBJ_TEST, SKIPPED_HASH_TEST);
+
+            expect(result).to.eql(expected_result);
         });
     });
 });

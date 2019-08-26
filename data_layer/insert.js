@@ -124,9 +124,9 @@ async function validation(write_object){
 
 /** NOTE **
  * Due to circular dependencies between insert.js and schema.js, specifically around createNewAttribute, there
- * is duplicate insertData code in fsCreateAttribute. If you change something here, related to insertData, you should
- * do the same in fsCreateAttribute.
- * **/
+ * is duplicate insertData code in fsCreateAttribute. If you change something here related to insertData, you should
+ * do the same in fsCreateAttribute.js
+ */
 
 /**
  * Inserts data specified in the insert_object parameter.

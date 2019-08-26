@@ -17,17 +17,22 @@ async function insertUpdateValidate(write_object){
     // Need to validate these outside of the validator as the getTableSchema call will fail with
     // invalid values.
 
-    if(hdb_utils.isEmpty(write_object)) {
+    if (hdb_utils.isEmpty(write_object)) {
         throw new Error('invalid update parameters defined.');
     }
-    if(hdb_utils.isEmptyOrZeroLength(write_object.schema) ) {
+    if (hdb_utils.isEmptyOrZeroLength(write_object.schema)) {
         throw new Error('invalid schema specified.');
     }
-    if(hdb_utils.isEmptyOrZeroLength(write_object.table) ) {
+    if (hdb_utils.isEmptyOrZeroLength(write_object.table)) {
         throw new Error('invalid table specified.');
     }
 
-    let schema_table = await p_global_schema(write_object.schema, write_object.table);
+    let schema_table;
+    try {
+        schema_table = await p_global_schema(write_object.schema, write_object.table);
+    } catch(err) {
+        throw new Error(err);
+    }
 
     //validate insert_object for required attributes
     let validator = insert_validator(write_object);
@@ -35,7 +40,7 @@ async function insertUpdateValidate(write_object){
         throw validator;
     }
 
-    if(!Array.isArray(write_object.records)) {
+    if (!Array.isArray(write_object.records)) {
         throw new Error('records must be an array');
     }
 

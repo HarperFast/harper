@@ -115,9 +115,24 @@ describe('Tests for file system module fsCreateRecords', () => {
                 "written_hashes": [
                     "dev"
                 ],
-                "skipped_hashes": []
-                };
-
+                "skipped_hashes": [],
+                "schema_table": {
+                    "hash_attribute": "name",
+                    "name": "hdb_schema",
+                    "schema": "system",
+                    "residence": [
+                        "*"
+                    ],
+                    "attributes": [
+                        {
+                            "attribute": "name"
+                        },
+                        {
+                            "attribute": "createddate"
+                        }
+                    ]
+                }
+            };
             let result = await fs_create_records(INSERT_OBJ_TEST, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST);
 
             expect(result).to.eql(expected_result);
