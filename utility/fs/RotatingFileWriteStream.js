@@ -8,7 +8,6 @@ const log = require('../logging/harper_logger');
  */
 class RotatingFileWriteStream{
     constructor(options){
-        //this.stream = fs.createWriteStream(path, options);
         this.stream = fsr.getStream(options);
 
         this.stream.on('error', this.errorHandler);
