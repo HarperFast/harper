@@ -11,6 +11,8 @@ const RequestDataValidMiddleware = require('./RequestDataValidMiddleware');
 const AuthMiddleware = require('./AuthMiddleware');
 const StampRequestMiddleware = require('./StampRequestMiddleware');
 const MessagePrepMiddleware = require('./MessagePrepMiddleware');
+const ConnectionNameCheckMiddleware = require('./ConnectionNameCheckMiddleware');
+
 const types = require('../types');
 const log = require('../../../utility/logging/harper_logger');
 
@@ -55,6 +57,10 @@ function createMiddleware(middleware_type_enum, eval_function, options) {
                 case types.PREMADE_MIDDLEWARE_TYPES.MSG_PREP:
                     log.trace('Creating msg prep middleware');
                     created_middleware = new MessagePrepMiddleware(middleware_type_enum, null);
+                    break;
+                case types.PREMADE_MIDDLEWARE_TYPES.CONNECTION_NAME_CHECK:
+                    log.trace('Creating connection name check middleware');
+                    created_middleware = new ConnectionNameCheckMiddleware(middleware_type_enum, null);
                     break;
                 default:
                     created_middleware = new GenericMiddleware(middleware_type_enum, null);
