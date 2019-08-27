@@ -1,4 +1,3 @@
-const schema = require('../data_layer/schemaDescribe');
 const async = require('async');
 const system_schema = require('../json/systemSchema.json');
 const logger = require('../utility/logging/harper_logger');
@@ -9,6 +8,9 @@ module.exports = {
     schemaSignal: schemaSignal,
     getSystemSchema: getSystemSchema
 };
+
+// These require statements were moved below the module.exports to resolve circular dependencies within the harperBridge module.
+const schema = require('../data_layer/schemaDescribe');
 
 function setSchemaDataToGlobal(callback) {
     schema.describeAll(null, (err, data) => {

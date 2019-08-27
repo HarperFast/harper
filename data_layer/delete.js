@@ -2,17 +2,14 @@
 const env = require('../utility/environment/environmentManager');
 const bulk_delete_validator = require('../validation/bulkDeleteValidator');
 const conditional_delete_validator = require('../validation/conditionalDeleteValidator');
-const search = require('./search');
 const common_utils = require('../utility/common_utils');
 const async = require('async');
 const fs = require('graceful-fs');
-const global_schema = require('../utility/globalSchema');
 const path = require('path');
 const moment = require('moment');
 const harper_logger = require('../utility/logging/harper_logger');
 const { promisify, callbackify } = require('util');
 const terms = require('../utility/hdbTerms');
-
 
 const BASE_PATH = common_utils.buildFolderPath(env.get('HDB_ROOT'), "schema");
 const HDB_HASH_FOLDER_NAME = '__hdb_hash';
@@ -25,9 +22,7 @@ const p_fs_stat = promisify(fs.stat);
 const p_fs_readdir = promisify(fs.readdir);
 const p_fs_unlink = promisify(fs.unlink);
 const p_fs_rmdir = promisify(fs.rmdir);
-const p_global_schema = promisify(global_schema.getTableSchema);
 
-const harperBridge = require('./harperBridge/harperBridge');
 // Callbackified functions
 const cb_delete_record = callbackify(deleteRecord);
 
@@ -37,6 +32,12 @@ module.exports = {
     conditionalDelete: conditionalDelete,
     deleteFilesBefore: deleteFilesBefore
 };
+
+// These require statements were moved below the module.exports to resolve circular dependencies within the harperBridge module.
+const global_schema = require('../utility/globalSchema');
+const p_global_schema = promisify(global_schema.getTableSchema);
+const search = require('./search');
+const harperBridge = require('./harperBridge/harperBridge');
 
 /**
  * Deletes files that have a system date before the date parameter.  Note this does not technically delete the values from the database,

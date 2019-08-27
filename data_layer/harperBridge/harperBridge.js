@@ -1,5 +1,6 @@
 "use strict";
 
+const BridgeMethods = require("./BridgeMethods.js");
 const FileSystemBridge = require('./fsBridge/FileSystemBridge');
 const HeliumBridge = require('./heliumBridge/HeliumBridge');
 
@@ -7,8 +8,13 @@ const terms = require('../../utility/hdbTerms');
 
 let harper_bridge = undefined;
 
+function getDataStoreType() {
+    //Process for parsing correct data store type from HDB license is still TBD
+    return terms.HDB_DATA_STORE_TYPES.FILE_SYSTEM;
+}
+
 function getBridge() {
-    if (harper_bridge) {
+    if (harper_bridge instanceof BridgeMethods) {
         return harper_bridge;
     }
 
@@ -25,11 +31,6 @@ function getBridge() {
             harper_bridge = new FileSystemBridge();
     }
     return harper_bridge;
-}
-
-function getDataStoreType() {
-    //Process for parsing correct data store type from HDB license is still TBD
-    return terms.HDB_DATA_STORE_TYPES.FILE_SYSTEM;
 }
 
 module.exports = getBridge();

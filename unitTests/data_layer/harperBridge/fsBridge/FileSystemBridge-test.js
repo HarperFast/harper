@@ -19,6 +19,14 @@ const RESULT_TEST = {
     skipped_hashes: []
 };
 
+const SEARCH_OBJ_TEST = {
+    operation: "search_by_hash",
+    schema: "dev",
+    table: "dog",
+    hash_values: [1,2,3],
+    get_attributes: "*"
+}
+
 const INSERT_OBJ_TEST = {
     operation: "insert",
     schema: "system",
@@ -241,6 +249,35 @@ describe('Tests for the file system bridge class', () => {
             let error_msg = 'Error dropping schema';
             fs_drop_schema_stub.throws(new Error(error_msg));
             let test_error_result = await test_utils.testError(fsBridge.dropSchema(DROP_SCHEMA_OBJ_TEST), error_msg);
+
+            expect(test_error_result).to.be.true;
+            expect(log_error_spy).to.have.been.calledOnce;
+        });
+    });
+
+    context('Test getDataByHash method', () => {
+        let fs_get_data_by_hash_stub = sandbox.stub();
+        let fs_get_data_by_hash_rw;
+
+        before(() => {
+            fs_get_data_by_hash_rw = FileSystemBridge.__set__('fsGetDataByHash', fs_get_data_by_hash_stub);
+        });
+
+        after(() => {
+            sandbox.restore();
+            fs_get_data_by_hash_rw();
+        });
+
+        it('Test getDataByHash method is called and result is as expected', async () => {
+            await fsBridge.getDataByHash(SEARCH_OBJ_TEST);
+
+            expect(fs_get_data_by_hash_stub).to.have.been.calledWith(SEARCH_OBJ_TEST);
+        });
+
+        it('Test that error is caught, thrown and logged', async () => {
+            const error_msg = 'Search error';
+            fs_get_data_by_hash_stub.throws(new Error(error_msg));
+            let test_error_result = await test_utils.testError(fsBridge.getDataByHash(DELETE_OBJ_TEST), error_msg);
 
             expect(test_error_result).to.be.true;
             expect(log_error_spy).to.have.been.calledOnce;
