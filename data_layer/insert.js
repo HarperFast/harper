@@ -8,28 +8,11 @@
  */
 
 const insert_validator = require('../validation/insertValidator.js');
-const path = require('path');
 const h_utils = require('../utility/common_utils');
-const search = require('./search');
 const logger = require('../utility/logging/harper_logger');
-const _ = require('lodash');
-const env = require('../utility/environment/environmentManager');
 const hdb_terms = require('../utility/hdbTerms');
-const mkdirp = require('../utility/fs/mkdirp');
-const write_file = require('../utility/fs/writeFile');
-const unlink = require('../utility/fs/unlink');
 const signalling = require('../utility/signalling');
-const exploder = require('./dataWriteProcessor');
 const util = require('util');
-const ExplodedObject = require('./ExplodedObject');
-const WriteProcessorObject = require('./WriteProcessorObject');
-
-
-// Search is used in the installer, and the base path may be undefined when search is instantiated.  Dynamically
-// get the base path from the environment manager before using it.
-let hdb_path = function() {
-    return `${env.getHdbBasePath()}/schema/`;
-};
 
 //This is an internal value that should not be written to the DB.
 //const HDB_PATH_KEY = hdb_terms.INSERT_MODULE_ENUM.HDB_PATH_KEY;
@@ -53,7 +36,6 @@ const harperBridge = require('./harperBridge/harperBridge');
 const global_schema = require('../utility/globalSchema');
 
 const p_global_schema = util.promisify(global_schema.getTableSchema);
-const p_search_by_hash = util.promisify(search.searchByHash);
 
 /**
  *  Takes an insert/update object and validates attributes, also looks for dups and get a list of all attributes from the record set
@@ -138,10 +120,10 @@ async function insertData(insert_object){
     }
 
     try {
-        let hdb_bridge_result = await harperBridge.createRecords(insert_object);
-        convertOperationToTransaction(insert_object, hdb_bridge_result.written_hashes, hdb_bridge_result.schema_table.hash_attribute);
+        let bridge_insert_result = await harperBridge.createRecords(insert_object);
+        convertOperationToTransaction(insert_object, bridge_insert_result.written_hashes, bridge_insert_result.schema_table.hash_attribute);
 
-        return returnObject(INSERT_ACTION, hdb_bridge_result.written_hashes, insert_object, hdb_bridge_result.skipped_hashes);
+        return returnObject(INSERT_ACTION, bridge_insert_result.written_hashes, insert_object, bridge_insert_result.skipped_hashes);
     } catch(e){
         throw (e);
     }
@@ -172,32 +154,17 @@ function convertOperationToTransaction(write_object, written_hashes, hash_attrib
  * @param update_object - The data that will be updated in the database
  */
 async function updateData(update_object){
+    if (update_object.operation !== 'update') {
+        throw new Error('invalid operation, must be update');
+    }
     try {
-        let epoch = Date.now();
-
-        if (update_object.operation !== 'update') {
-            throw new Error('invalid operation, must be update');
+        let bridge_update_result = await harperBridge.updateRecords(update_object);
+        if (!h_utils.isEmpty(bridge_update_result.existing_rows)) {
+            return returnObject(bridge_update_result.update_action, [], update_object, bridge_update_result.hashes);
         }
+        convertOperationToTransaction(update_object, bridge_update_result.written_hashes, bridge_update_result.schema_table.hash_attribute);
 
-        let {schema_table, hashes, attributes} = await validation(update_object);
-        let existing_rows = await getExistingRows(schema_table, hashes, attributes);
-
-        // If no hashes are existing skip update attempts
-        if(h_utils.isEmptyOrZeroLength(existing_rows)){
-            return returnObject(UPDATE_ACTION, [], update_object, hashes);
-        }
-
-        let existing_map = _.keyBy(existing_rows, function(record) {
-            return record[schema_table.hash_attribute];
-        });
-
-        let { written_hashes, skipped, unlinks, ...data_wrapper} = await processRows(update_object, attributes, schema_table, epoch, existing_map);
-        await checkForNewAttributes(update_object.hdb_auth_header, schema_table, attributes);
-        await unlinkFiles(unlinks);
-        await processData(data_wrapper);
-        convertOperationToTransaction(update_object, written_hashes, schema_table.hash_attribute);
-
-        return returnObject(UPDATE_ACTION, written_hashes, update_object, skipped);
+        return returnObject(UPDATE_ACTION, bridge_update_result.written_hashes, update_object, bridge_update_result.skipped_hashes);
     } catch(e){
         throw (e);
     }
@@ -224,100 +191,6 @@ function returnObject(action, written_hashes, object, skipped) {
 
     return_object.update_hashes = written_hashes;
     return return_object;
-}
-
-/**
- * performs a bulk search_by_hash for the defined hashes
- * @param table_schema
- * @param hashes
- * @param attributes
- * @returns {Promise<void>}
- */
-async function getExistingRows(table_schema, hashes, attributes){
-    try {
-        let existing_attributes = checkForExistingAttributes(table_schema, attributes);
-        if (h_utils.isEmptyOrZeroLength(existing_attributes)) {
-            throw new Error('no attributes to update');
-        }
-
-        let search_object = {
-            schema: table_schema.schema,
-            table: table_schema.name,
-            hash_values: hashes,
-            get_attributes: existing_attributes
-        };
-
-        let existing_records = await p_search_by_hash(search_object);
-        return existing_records;
-    } catch(e) {
-        logger.error(e);
-        throw new Error(e);
-    }
-}
-
-/**
- * Prepares data for writing to storage
- * @param insert_object
- * @param attributes
- * @param table_schema
- * @param epoch
- * @param existing_rows
- * @returns {Promise<ExplodedObject>}
- */
-async function processRows(insert_object, attributes, table_schema, epoch, existing_rows){
-    let exploder_object = new WriteProcessorObject(hdb_path(), insert_object.operation, insert_object.records, table_schema, attributes, epoch, existing_rows);
-    let data_wrapper = await exploder(exploder_object);
-
-    return data_wrapper;
-}
-
-/**
- * deletes files in bulk
- * @param unlink_paths
- */
-async function unlinkFiles(unlink_paths) {
-    try {
-        await unlink(unlink_paths);
-    } catch(e) {
-        logger.error(e);
-    }
-}
-
-/**
- * wrapper function that orchestrates the record creation on disk
- * @param data_wrapper
- */
-async function processData(data_wrapper) {
-    try {
-        await createFolders(data_wrapper.folders);
-        await writeRawDataFiles(data_wrapper.raw_data);
-    } catch(err) {
-        throw err;
-    }
-}
-
-/**
- * writes the raw data files to disk
- * @param data
- */
-async function writeRawDataFiles(data) {
-    try {
-        await write_file(data);
-    } catch(e) {
-        logger.error(e);
-    }
-}
-
-/**
- * creates all of the folders necessary to hold the raw files and hard links
- * @param folders
- */
-async function createFolders(folders) {
-    try {
-        await mkdirp(folders, {mode:  hdb_terms.HDB_FILE_PERMISSIONS});
-    } catch (e) {
-        logger.error(e);
-    }
 }
 
 /**
@@ -357,31 +230,6 @@ async function checkForNewAttributes(hdb_auth_header, table_schema, data_attribu
         logger.error(e);
         throw new Error(e);
     }
-}
-
-/**
- * Compares the existing schema attributes to attributes from a record set and returns only the ones that exist
- * @param table_schema
- * @param data_attributes
- * @returns {*[]}
- */
-function checkForExistingAttributes(table_schema, data_attributes){
-    if(h_utils.isEmptyOrZeroLength(data_attributes)){
-        return;
-    }
-
-    let raw_attributes = [];
-    if(!h_utils.isEmptyOrZeroLength(table_schema.attributes)){
-        table_schema.attributes.forEach((attribute)=>{
-            raw_attributes.push(attribute.attribute);
-        });
-    }
-
-    let existing_attributes = data_attributes.filter(attribute =>{
-        return raw_attributes.indexOf(attribute) >= 0;
-    });
-
-    return existing_attributes;
 }
 
 /**
