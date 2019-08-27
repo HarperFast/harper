@@ -12,6 +12,9 @@ class OriginatorCheckMiddleware extends MiddlewareIF {
     constructor(middleware_type_enum, eval_function) {
         eval_function = (req, next) => {
             try {
+                if(!req.data.__originator) {
+                    req.data.__originator = {};
+                }
                 req.data.__originator[env.getProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)] = '';
             } catch(err) {
                 log.error('Got an error in OriginatorCheckMiddleware');
