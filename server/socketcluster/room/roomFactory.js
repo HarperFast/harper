@@ -10,6 +10,9 @@ const AddUserRoom = require('./AddUserRoom');
 const AlterUserRoom = require('./AlterUserRoom');
 const DropUserRoom = require('./DropUserRoom');
 const HDBNodeRoom = require('./HDBNodeRoom');
+const CreateAttributeRoom = require('./CreateAttributeRoom');
+const CreateSchemaRoom = require('./CreateSchemaRoom');
+const CreateTableRoom = require('./CreateTableRoom');
 
 const types = require('../types');
 const hdb_terms = require('../../../utility/hdbTerms');
@@ -43,6 +46,24 @@ function createRoom(topicName) {
             configureStandardRoom(created_room);
             configureSingleFunctionRoom(created_room);
             configureWorkerRoom(created_room);
+            break;
+        }
+        case hdb_terms.INTERNAL_SC_CHANNELS.CREATE_SCHEMA: {
+            created_room = new CreateSchemaRoom(topicName);
+            configureStandardRoom(created_room);
+            configureCreateSchemaEntityRoom(created_room);
+            break;
+        }
+        case hdb_terms.INTERNAL_SC_CHANNELS.CREATE_TABLE: {
+            created_room = new CreateTableRoom(topicName);
+            configureStandardRoom(created_room);
+            configureCreateSchemaEntityRoom(created_room);
+            break;
+        }
+        case hdb_terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE: {
+            created_room = new CreateAttributeRoom(topicName);
+            configureStandardRoom(created_room);
+            configureCreateSchemaEntityRoom(created_room);
             break;
         }
         case hdb_terms.INTERNAL_SC_CHANNELS.HDB_USERS: {
@@ -119,6 +140,19 @@ function configureWorkerRoom(created_room) {
 }
 
 /**
+ * Meant to be called after configureStandardRoom, this will configure a room that will be used to handle messages sent
+ * to internal channels.  Removes the transaction rule and the clean data rule
+ * @param created_room
+ */
+function configureCreateSchemaEntityRoom(created_room) {
+    created_room.decision_matrix.removeRuleByType(types.RULE_TYPE_ENUM.WRITE_TO_TRANSACTION_LOG, types.CONNECTOR_TYPE_ENUM.CORE, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
+    created_room.decision_matrix.removeRuleByType(types.RULE_TYPE_ENUM.WRITE_TO_TRANSACTION_LOG, types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
+
+    created_room.decision_matrix.removeRuleByType(types.RULE_TYPE_ENUM.CLEAN_DATA_OBJECT, types.CONNECTOR_TYPE_ENUM.CORE, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
+    created_room.decision_matrix.removeRuleByType(types.RULE_TYPE_ENUM.CLEAN_DATA_OBJECT, types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
+}
+
+/**
  * Populates a newly created room with a nominal setup of rules and middleware.
  * @param created_room
  */
@@ -163,7 +197,7 @@ function configureStandardRoom(created_room) {
     created_room.addMiddleware(un_auth_middleware, types.CONNECTOR_TYPE_ENUM.CORE);
     created_room.addMiddleware(un_auth_middleware, types.CONNECTOR_TYPE_ENUM.CLUSTER);
 
-    let stamp_middleware = middleware_factory.createMiddleware(types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_OUT,
+    let stamp_middleware = middleware_factory.createMiddleware(types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN,
         null,
         new middleware_factory.MiddlewareFactoryOptions(types.PREMADE_MIDDLEWARE_TYPES.STAMP_REQUEST));
     created_room.addMiddleware(stamp_middleware, types.CONNECTOR_TYPE_ENUM.CORE);
