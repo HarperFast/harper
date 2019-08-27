@@ -145,7 +145,7 @@ function cleanUpDirectories(target_path) {
 
 /** HELPER METHODS TO CREATE MOCK HDB SCHEMA FILE SYSTEM STRUCTURE */
 /**
- * Returns the path to the directory with the mock FS structure that will be created by `createMockFS()`
+ * Returns the path to the test root path that will be used for testing `createMockFS()`
  * @returns String representing the path value to the mock file system directory
  */
 function getMockFSPath() {

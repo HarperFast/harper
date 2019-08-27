@@ -32,8 +32,9 @@ module.exports = {
 };
 
 // These requires must stay after export to prevent issues with circular dependencies
-const harperBridge = require('./harperBridge/harperBridge');
+const search = require('./search');
 const global_schema = require('../utility/globalSchema');
+const harperBridge = require('./harperBridge/harperBridge');
 
 const p_global_schema = util.promisify(global_schema.getTableSchema);
 

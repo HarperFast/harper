@@ -15,7 +15,6 @@ const system_schema = require('../json/systemSchema.json');
 const SelectValidator = require('../sqlTranslator/SelectValidator');
 const hdbTerms = require('../utility/hdbTerms');
 
-//let base_path = env.get('HDB_ROOT') + "/schema/";
 // Search is used in the installer, and the base path may be undefined when search is instantiated.  Dynamically
 // get the base path from the environment manager before using it.
 let base_path = function() {
@@ -35,37 +34,21 @@ module.exports = {
     multiConditionSearch: multiConditionSearch
 };
 
+const harperBridge = require('./harperBridge/harperBridge');
+const util = require('util');
+const c_search_by_hash = util.callbackify(harperBridge.searchByHash);
+
 function searchByHash(search_object, callback){
     try {
-        let validation_error = search_validator(search_object, 'hashes');
-        if (validation_error) {
-            callback(validation_error, null);
-            return;
-        }
-        
-        let table_path = `${base_path()}${search_object.schema}/${search_object.table}/`;
-        evaluateTableAttributes(search_object.get_attributes, search_object, (error, attributes) => {
-            if (error) {
-                callback(error);
+        c_search_by_hash(search_object, (err, results) => {
+            if (err) {
+                callback(err);
                 return;
             }
-
-            let table_info = global.hdb_schema[search_object.schema][search_object.table];
-            attributes = removeTableFromAttributeAlias(attributes, search_object.table);
-            async.waterfall([
-                getAttributeFiles.bind(null, attributes, table_path, search_object.hash_values),
-                consolidateData.bind(null, table_info.hash_attribute)
-            ], (error, data) => {
-                if (error) {
-                    callback(error);
-                    return;
-                }
-
-                callback(null, data);
-            });
+            callback(null, results);
         });
-    } catch(e){
-        callback(e);
+    } catch(err) {
+        return callback(err);
     }
 }
 

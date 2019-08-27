@@ -19,6 +19,14 @@ const RESULT_TEST = {
     skipped_hashes: []
 };
 
+const SEARCH_OBJ_TEST = {
+    operation: "search_by_hash",
+    schema: "dev",
+    table: "dog",
+    hash_values: [1,2,3],
+    get_attributes: "*"
+}
+
 const INSERT_OBJ_TEST = {
     operation: "insert",
     schema: "system",
