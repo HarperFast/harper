@@ -21,6 +21,14 @@ async function callOperationFunctionAsCallback(operation_function_as_callback, f
     return result;
 }
 
+/**
+ * Calls the operation function specified in the parameter with the input specified in the parameter.  Once complete,
+ * calls the response function in the parameter with  the operation result as the first parameter.
+ * @param promisified_function - The operation which is in async/await format
+ * @param function_input - The input needed for the operation_function_as_callback function.
+ * @param followup_async_func - The response function that will be called with the operation function response as an input.  The function is expected to be promisifed, callbacks not supported.
+ * @returns {Promise<void>}
+ */
 async function callOperationFunctionAsAwait(promisified_function, function_input, followup_async_func) {
     if(!promisified_function || !(typeof promisified_function === 'function')) {
         throw new Error('Invalid function parameter');

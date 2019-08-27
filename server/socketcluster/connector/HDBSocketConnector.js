@@ -54,7 +54,7 @@ class HDBSocketConnector extends SocketConnector{
 
                         if(req && req.transaction && Object.keys(req.transaction).length > 0) {
                             let {operation_function} = server_utilities.getOperationFunction(req.transaction);
-                            operation_function_caller.callOperationFunctionAsCallback(operation_function, req.transaction, this.postOperationHandler)
+                            operation_function_caller.callOperationFunctionAsAwait(operation_function, req.transaction, this.postOperationHandler)
                                 .then((result) => {
                                     log.debug(result);
                                 })
