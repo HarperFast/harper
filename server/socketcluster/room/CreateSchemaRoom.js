@@ -46,12 +46,6 @@ class CreateSchemaRoom extends RoomIF {
         if(!worker) {
             worker = this;
         }
-        let user = req.user;
-        if(!req || !req.schema) {
-            log.info('Invalid request sent to CreateSchemaRoom.');
-            return;
-        }
-
         try {
             // no-op for now, let it be pushed to the child for processing.
             log.trace('In CreateSchemaRoom');

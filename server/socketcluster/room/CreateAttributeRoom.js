@@ -46,12 +46,6 @@ class CreateAttributeRoom extends RoomIF {
         if(!worker) {
             worker = this;
         }
-        let user = req.user;
-        if(!req || !req.schema || !req.table || !req.attribute) {
-            log.info('Invalid request sent to CreateAttributeRoom.');
-            return;
-        }
-
         try {
             // no-op for now, let it be pushed to the child for processing.
             log.trace('In CreateAttributeRoom');
