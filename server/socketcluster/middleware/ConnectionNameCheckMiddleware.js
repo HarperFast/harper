@@ -18,11 +18,17 @@ class ConnectionNameCheckMiddleware extends MiddlewareIF {
             if(!req.__originator) {
                 log.info('ConnectionNameCheckMiddleware processing a message with no originator.');
             }
-            if(!req.socket.url.node_name) {
+            if(!req.socket.request.url) {
                 log.info('ConnectionNameCheckMiddleware processing a message that has no node name in its connector options.');
             }
-            if(req.__originator[req.socket.request.url.node_name] !== undefined) {
-                return types.ERROR_CODES.MIDDLEWARE_SWALLOW;
+            // NOTE: This is assuming the socket cluster connection url has only 1 variable, node_name.  If we add more
+            // later this will need to change.
+            let value_index = req.socket.request.url.lastIndexOf('=')+1;
+            if(value_index) {
+                let node_name = req.socket.request.url.substr(value_index, req.socket.request.url.length);
+                if (req.__originator && req.__originator[node_name] !== undefined) {
+                    return types.ERROR_CODES.MIDDLEWARE_SWALLOW;
+                }
             }
             next();
         };
