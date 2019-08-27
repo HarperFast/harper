@@ -30,7 +30,6 @@ class ConnectionNameCheckMiddleware extends MiddlewareIF {
                     return types.ERROR_CODES.MIDDLEWARE_SWALLOW;
                 }
             }
-            next();
         };
         super(middleware_type_enum, eval_function);
         this.type = types.PREMADE_MIDDLEWARE_TYPES.CONNECTION_NAME_CHECK;
