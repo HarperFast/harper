@@ -458,7 +458,6 @@ function isClusterOperation(operation_name) {
 function sendTransactionToSocketCluster(channel, transaction) {
     log.trace(`Sending transaction to channel: ${channel}`);
     if(global.hdb_socket_client !== undefined) {
-        transaction.__transacted = true;
         let {hdb_user, hdb_auth_header, ...data} = transaction;
         global.hdb_socket_client.publish(channel, data);
     }

@@ -97,8 +97,6 @@ function processLocalTransaction(req, res, operation_function, callback) {
 
 function postOperationHandler(request_body, result) {
     let transaction_msg = common_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
-    //transaction_msg.__originator[env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)] = '';
-    transaction_msg.__transacted = true;
     switch(request_body.operation) {
         case terms.OPERATIONS_ENUM.INSERT:
             try {
