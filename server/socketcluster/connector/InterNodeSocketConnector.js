@@ -44,6 +44,7 @@ class InterNodeSocketConnector extends SocketConnector{
     }
 
     async connectHandler(status) {
+        log.trace(`connect handler with status: ${status}`);
         try {
             // we always want to keep all schema/table/attribute info up to date, so always make a schema catchup request.
             let schema_catch_up_msg = await sc_util.schemaCatchupHandler();

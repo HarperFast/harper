@@ -230,10 +230,11 @@ class WorkerIF extends SCWorker{
             log.trace(`____passed all publish in middleware____`);
             return next();
         }
-        // TODO: There was a problem in the middleware, parse the returned ERROR_CODE and log appropriately.
-        log.info(`There was a failure in middleware.`);
+        // There was a problem in the middleware, parse the returned ERROR_CODE and log appropriately.
+        let msg = `Message was swallowed in PublishIn middleware.`;
+        log.info(msg);
         log.debug(`____finished evaluating room publish in middleware____`);
-        return next(`There was a middleware failure. ${result}`);
+        return next(`${msg} ${result}`);
     }
 
     /**
@@ -252,8 +253,9 @@ class WorkerIF extends SCWorker{
         }
         log.debug(`____finished evaluating room publish out middleware____`);
         // There was a problem in the middleware, parse the returned ERROR_CODE and log appropriately.
-        log.info(`There was a failure in middleware.`);
-        return next(`There was a middleware failure. ${result}`);
+        let msg = `Message was swallowed in PublishOut middleware.`;
+        log.info(msg);
+        return next(`${msg} ${result}`);
     }
 
     /**
@@ -270,8 +272,9 @@ class WorkerIF extends SCWorker{
             return next();
         }
         // There was a problem in the middleware, parse the returned ERROR_CODE and log appropriately.
-        log.info(`There was a failure in middleware.`);
-        return next(`There was a middleware failure. ${result}`);
+        let msg = `Message was swallowed in Subscribe middleware.`;
+        log.info(msg);
+        return next(`${msg} ${result}`);
     }
 
     /**
@@ -287,9 +290,9 @@ class WorkerIF extends SCWorker{
         if(!result) {
             return next();
         }
-        // There was a problem in the middleware, parse the returned ERROR_CODE and log appropriately.
-        log.info(`There was a failure in middleware.`);
-        return next(`There was a middleware failure. ${result}`);
+        let msg = `Message was swallowed in Authenticate middleware.`;
+        log.info(msg);
+        return next(`${msg} ${result}`);
     }
 
     run() {
