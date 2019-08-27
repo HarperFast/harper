@@ -1,16 +1,17 @@
 "use strict";
 
-const fs = require('fs-extra');
+let fsr = require('file-stream-rotator');
 const log = require('../logging/harper_logger');
 
 /**
  *
  */
-class FileWriteStream{
-    constructor(path, options){
-        this.stream = fs.createWriteStream(path, options);
+class RotatingFileWriteStream{
+    constructor(options){
+        this.stream = fsr.getStream(options);
 
         this.stream.on('error', this.errorHandler);
+        this.stream.on('rotate', this.rotateHandler);
     }
 
     /**
@@ -34,6 +35,15 @@ class FileWriteStream{
     errorHandler(error){
         log.error(error);
     }
+
+    /**
+     *
+     * @param old_filename
+     * @param new_filename
+     */
+    rotateHandler(old_filename, new_filename){
+        log.trace('rotating:', old_filename, new_filename);
+    }
 }
 
-module.exports = FileWriteStream;
+module.exports = RotatingFileWriteStream;
