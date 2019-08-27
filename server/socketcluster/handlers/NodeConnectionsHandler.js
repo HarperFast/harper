@@ -153,21 +153,36 @@ class NodeConnectionsHandler {
      */
     subscriptionManager(connection, subscription){
         if(subscription.publish === true){
-            //we need to observe the channel locally and push the data remotely.
-            //TODO create one watcher / channel & send to all connections subscribed to the channel
-            let sub_channel = this.worker.exchange.subscribe(subscription.channel);
-            sub_channel.watch(data=>{
-                if(connection.socket.state === connection.socket.OPEN && connection.socket.authState === connection.socket.AUTHENTICATED) {
-                    log.trace('sending out');
-                    connection.publish(subscription.channel, data);
-                }
-            });
+            let publish_channel = this.publish_channel_connections[subscription.channel];
+            if(publish_channel=== undefined){
+                publish_channel = this.publish_channel_connections[subscription.channel] = {};
+                let sub_channel = this.worker.exchange.subscribe(subscription.channel);
+
+                sub_channel.watch(this.subscriptionChannelWatcher.bind(this, subscription.channel));
+            }
+
+            publish_channel[connection.additional_info.name] = connection;
         }
 
         if(subscription.subscribe === true){
             //we need to observe the channel remotely and send the data locally
             connection.subscribe(subscription.channel, this.assignTransactionToChild.bind(this, subscription.channel, connection.socket));
         }
+    }
+
+    /**
+     *
+     * @param channel
+     * @param data
+     */
+    subscriptionChannelWatcher(channel, data){
+        let connections = Object.values(this.publish_channel_connections[channel]);
+        connections.forEach(connection=>{
+            if(connection.socket.state === connection.socket.OPEN && connection.socket.authState === connection.socket.AUTHENTICATED) {
+                log.trace('publishing out');
+                connection.publish(channel, data);
+            }
+        });
     }
 
     async assignTransactionToChild(channel, socket, data){
