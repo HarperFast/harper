@@ -179,6 +179,12 @@ function configureStandardRoom(created_room) {
     created_room.addMiddleware(originator_middleware, types.CONNECTOR_TYPE_ENUM.CORE);
     created_room.addMiddleware(originator_middleware, types.CONNECTOR_TYPE_ENUM.CLUSTER);
 
+    let stamp_originator_middleware = middleware_factory.createMiddleware(types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_OUT,
+        null,
+        new middleware_factory.MiddlewareFactoryOptions(types.PREMADE_MIDDLEWARE_TYPES.STAMP_ORIGINATOR));
+    created_room.addMiddleware(stamp_originator_middleware, types.CONNECTOR_TYPE_ENUM.CORE);
+    created_room.addMiddleware(stamp_originator_middleware, types.CONNECTOR_TYPE_ENUM.CLUSTER);
+
     let connection_name_check_middleware = middleware_factory.createMiddleware(types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_OUT,
         null,
         new middleware_factory.MiddlewareFactoryOptions(types.PREMADE_MIDDLEWARE_TYPES.CONNECTION_NAME_CHECK));

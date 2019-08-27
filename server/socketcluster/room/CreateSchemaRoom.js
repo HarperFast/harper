@@ -42,12 +42,12 @@ class CreateSchemaRoom extends RoomIF {
      * @returns {Promise<void>}
      */
     async inboundMsgHandler(req, worker, response) {
-        log.trace('AlterUser handler');
+        log.trace('CreateSchema handler');
         if(!worker) {
             worker = this;
         }
         let user = req.user;
-        if(!req || !user) {
+        if(!req || !req.schema) {
             log.info('Invalid request sent to CreateSchemaRoom.');
             return;
         }

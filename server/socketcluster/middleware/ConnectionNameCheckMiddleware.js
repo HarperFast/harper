@@ -27,7 +27,8 @@ class ConnectionNameCheckMiddleware extends MiddlewareIF {
             next();
         };
         super(middleware_type_enum, eval_function);
-        this.type = types.PREMADE_MIDDLEWARE_TYPES.MSG_PREP;
+        this.type = types.PREMADE_MIDDLEWARE_TYPES.CONNECTION_NAME_CHECK;
+        this.command_order = types.COMMAND_EVAL_ORDER_ENUM.LOW;
     }
 }
 

@@ -42,12 +42,12 @@ class CreateAttributeRoom extends RoomIF {
      * @returns {Promise<void>}
      */
     async inboundMsgHandler(req, worker, response) {
-        log.trace('AlterUser handler');
+        log.trace('CreateTable handler');
         if(!worker) {
             worker = this;
         }
         let user = req.user;
-        if(!req || !user) {
+        if(!req || !req.schema || !req.table || !req.hash_attribute) {
             log.info('Invalid request sent to CreateTableRoom.');
             return;
         }
