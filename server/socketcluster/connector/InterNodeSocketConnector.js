@@ -9,9 +9,6 @@ const hdb_clustering_connections_path = env.getHdbBasePath() + '/clustering/conn
 const fs = require('fs-extra');
 const promisify = require('util').promisify;
 const p_settimeout = promisify(setTimeout);
-const global_schema = require('../../../utility/globalSchema');
-const p_set_schema_to_global = promisify(global_schema.setSchemaDataToGlobal);
-const server_utilities = require('../../../server/serverUtilities');
 
 const CATCHUP_INTERVAL = 10000;
 const WORKER_RESPONSE_HANDLER = 1000;
@@ -128,45 +125,6 @@ class InterNodeSocketConnector extends SocketConnector{
             assign.evaluateRule(req, null, this.worker).then(()=>{});
         } catch (e) {
             log.error(e);
-        }
-    }
-
-    async compareSchemas(message_schema_object) {
-        log.trace('in compareSchema');
-        if(!message_schema_object) {
-            let msg = 'Invalid parameter in compareSchemas';
-            log.error(msg);
-        }
-        try {
-            if (!global.hdb_schema) {
-                try {
-                    log.info('Empty global schema, setting schema.');
-                    await p_set_schema_to_global();
-                } catch (err) {
-                    log.error(`Error settings schema to global.`);
-                    log.error(err);
-                }
-            }
-            let schema_keys = Object.keys(message_schema_object);
-            for(let i=0; i<schema_keys.length; i++) {
-                let curr_schema_name = schema_keys[i];
-                if(!global.hdb_schema[curr_schema_name]) {
-                    let msg = this.generateOperationFunctionCall(ENTITY_TYPE_ENUM.SCHEMA, message_schema_object[curr_schema_name], curr_schema_name);
-                    let {operation_function} = server_utilities.getOperationFunction(msg);
-                    const async_func = promisify(operation_function);
-                    log.trace('Calling operation in compare schema');
-                    let result = await async_func(msg);
-                    // need to wait for the schema to be added to global.hdb_schema, or compareTableKeys will fail.
-                    await p_set_schema_to_global();
-                }
-                // no point in doing system schema.
-                if(curr_schema_name !== hdb_terms.SYSTEM_SCHEMA_NAME) {
-                    await this.compareTableKeys(message_schema_object[curr_schema_name], curr_schema_name);
-                }
-            }
-        } catch(err) {
-            log.error('Error comparing schemas.');
-            log.error(err);
         }
     }
 }

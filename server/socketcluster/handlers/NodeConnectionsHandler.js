@@ -80,12 +80,10 @@ class NodeConnectionsHandler {
         };
         let connection = new SocketConnector(socket_client, this.worker, additional_info,options, this.creds, this.connection_timestamps);
         await connection.initialize();
-        if(node.subscriptions){
-            node.subscriptions.push(this.HDB_Schema_Subscription);
-            node.subscriptions.push(this.HDB_Table_Subscription);
-            node.subscriptions.push(this.HDB_Attribute_Subscription);
-            node.subscriptions.forEach(this.subscriptionManager.bind(this, connection));
-        }
+        node.subscriptions.push(this.HDB_Schema_Subscription);
+        node.subscriptions.push(this.HDB_Table_Subscription);
+        node.subscriptions.push(this.HDB_Attribute_Subscription);
+        node.subscriptions.forEach(this.subscriptionManager.bind(this, connection));
     }
 
     addNewNode(new_node){
@@ -138,6 +136,7 @@ class NodeConnectionsHandler {
             sub_channel.watch(data=>{
                 if(connection.socket.state === connection.socket.OPEN && connection.socket.authState === connection.socket.AUTHENTICATED) {
                     log.trace('sending out');
+                    // need to get publish out
                     connection.publish(subscription.channel, data);
                 }
             });

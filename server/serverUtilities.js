@@ -139,7 +139,8 @@ function postOperationHandler(request_body, result) {
                 transaction_msg.transaction = {
                     operation: terms.OPERATIONS_ENUM.CREATE_TABLE,
                     schema: request_body.schema,
-                    table: request_body.table
+                    table: request_body.table,
+                    hash_attribute: request_body.hash_attribute
                 };
                 common_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_SCHEMA, transaction_msg);
             } catch(err) {
