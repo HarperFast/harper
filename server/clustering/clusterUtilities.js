@@ -185,7 +185,7 @@ async function updateNode(update_node){
 
     try {
         let update_node_msg = new terms.ClusterMessageObjects.HdbCoreUdateNodeMessage();
-        update_node_msg.node = update_node;
+        update_node_msg.update_node = update_node;
         hdb_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.HDB_NODES, update_node_msg);
     } catch(e){
         throw new Error(e);

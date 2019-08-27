@@ -34,6 +34,10 @@ class NodeConnectionsHandler {
 
         this.connection_timestamps = {};
 
+        //only needed to handle publish as that is the one that needs a watcher / channel
+        //sample structure: {"dev:dog":{watcher:()=>{}, channels:{ "edge1": socket}}
+        this.publish_channel_connections = {};
+
         this.worker.scServer._middleware.publishIn.forEach(middleware_function => {
             this.publishin_promises.push(promisify(middleware_function).bind(this.worker.scServer));
         });
@@ -44,6 +48,8 @@ class NodeConnectionsHandler {
                 this.addNewNode(data.add_node);
             } else if(data.remove_node !== undefined){
                 this.removeNode(data.remove_node);
+            } else if(data.update_node !== undefined){
+                this.update_node(data.update_node);
             }
         });
 
@@ -88,42 +94,56 @@ class NodeConnectionsHandler {
         }
     }
 
-    addNewNode(new_node){
+    /**
+     *
+     * @param new_node
+     * @returns {Promise<void>}
+     */
+    async addNewNode(new_node){
         try {
             let node_exists = false;
             let connect_keys = Object.keys(this.connections.clients);
             for (let x = 0; x < connect_keys.length; x++) {
                 let key = connect_keys[x];
                 let socket = this.connections.clients[key];
-                if (socket.host === new_node.host && socket.port === new_node.port) {
+                if (socket.additional_info && socket.additional_info.name === new_node.name) {
                     node_exists = true;
                     return;
                 }
             }
 
             if (node_exists) {
+                log.info(`node ${new_node.name} already exists`);
                 return;
             }
 
-            this.createNewConnection(new_node);
+            await this.createNewConnection(new_node);
         }catch(e){
             log.error(e);
         }
     }
 
+    /**
+     *
+     * @param remove_node
+     */
     removeNode(remove_node){
         try {
             let connect_keys = Object.keys(this.connections.clients);
             for (let x = 0; x < connect_keys.length; x++) {
                 let key = connect_keys[x];
                 let socket = this.connections.clients[key];
-                if (socket.additional_info.name === remove_node.name) {
+                if (socket.additional_info && socket.additional_info.name === remove_node.name) {
                     this.connections.destroy(socket);
                 }
             }
         } catch(e){
             log.error(e);
         }
+    }
+
+    update_node(update_node){
+
     }
 
     /**
