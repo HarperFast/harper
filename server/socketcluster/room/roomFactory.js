@@ -215,6 +215,12 @@ function configureStandardRoom(created_room) {
     created_room.addMiddleware(stamp_middleware, types.CONNECTOR_TYPE_ENUM.CORE);
     created_room.addMiddleware(stamp_middleware, types.CONNECTOR_TYPE_ENUM.CLUSTER);
 
+    let originator_in_middleware = middleware_factory.createMiddleware(types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN,
+        null,
+        new middleware_factory.MiddlewareFactoryOptions(types.PREMADE_MIDDLEWARE_TYPES.ORIGINATOR));
+    created_room.addMiddleware(originator_in_middleware, types.CONNECTOR_TYPE_ENUM.CORE);
+    created_room.addMiddleware(originator_in_middleware, types.CONNECTOR_TYPE_ENUM.CLUSTER);
+
     // create room decision matrix
     let new_decision_matrix = new CoreDecisionMatrix();
 

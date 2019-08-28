@@ -114,7 +114,7 @@ function postOperationHandler(request_body, result) {
                             transaction_msg.transaction.records.push(record);
                         }
                     });
-                    common_utils.sendTransactionToSocketCluster(`${request_body.schema}:${request_body.table}`, transaction_msg);
+                    common_utils.sendTransactionToSocketCluster(`${request_body.schema}:${request_body.table}`, transaction_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
                 }
             } catch(err) {
                 harper_logger.error('There was an error calling insert followup function.');
@@ -127,7 +127,7 @@ function postOperationHandler(request_body, result) {
                     operation: terms.OPERATIONS_ENUM.CREATE_SCHEMA,
                     schema: request_body.schema,
                 };
-                common_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_SCHEMA, transaction_msg);
+                common_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_SCHEMA, transaction_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
             } catch(err) {
                 harper_logger.error('There was a problem sending the create_schema transaction to the cluster.');
             }
@@ -140,7 +140,7 @@ function postOperationHandler(request_body, result) {
                     table: request_body.table,
                     hash_attribute: request_body.hash_attribute
                 };
-                common_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_SCHEMA, transaction_msg);
+                common_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_SCHEMA, transaction_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
             } catch(err) {
                 harper_logger.error('There was a problem sending the create_schema transaction to the cluster.');
             }
@@ -153,7 +153,7 @@ function postOperationHandler(request_body, result) {
                     table: request_body.table,
                     attribute: request_body.attribute
                 };
-                common_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_SCHEMA, transaction_msg);
+                common_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_SCHEMA, transaction_msg, env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
             } catch(err) {
                 harper_logger.error('There was a problem sending the create_schema transaction to the cluster.');
             }
