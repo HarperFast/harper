@@ -10,6 +10,10 @@ const sc_utils = require('../util/socketClusterUtils');
 const terms = require('../../../utility/hdbTerms');
 const {inspect} = require('util');
 const RoomMessageObjects = require('../room/RoomMessageObjects');
+// NOTE: The cluster worker doesn't use the environment manager yet, but some of the commands need values in there.
+// We initialize this here so the manager is always ready and initialized when a rule needs it.
+const env = require('../../../utility/environment/environmentManager');
+env.initSync();
 
 let worker_subscriptions = {};
 

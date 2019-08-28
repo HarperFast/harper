@@ -10,6 +10,7 @@ const SubscriptionObject = sc_objects.SubscriptionObject;
 const NodeObject = sc_objects.NodeObject;
 const promisify = require('util').promisify;
 const terms = require('../../../utility/hdbTerms');
+const env = require('../../../utility/environment/environmentManager');
 
 class NodeConnectionsHandler {
     constructor(nodes, cluster_user, worker){
@@ -74,7 +75,8 @@ class NodeConnectionsHandler {
         options.hostname = node.host;
         options.port = node.port;
         let additional_info = {
-            name: node.name,
+            server_name: node.name,
+            client_name: env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY),
             subscriptions: node.subscriptions,
             connected_timestamp: null
         };

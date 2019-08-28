@@ -671,7 +671,7 @@ async function createAttribute(create_attribute_object) {
                 "body": create_attribute_object
             };
 
-            hdb_util.callProcessSend(payload);
+            //hdb_util.callProcessSend(payload);
             signalling.signalSchemaChange({type: 'schema'});
 
             return attribute_structure;

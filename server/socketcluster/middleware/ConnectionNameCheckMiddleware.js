@@ -6,6 +6,7 @@ const types = require('../types');
 const terms = require('../../../utility/hdbTerms');
 const uuidV4 = require('uuid/v4');
 const env = require('../../../utility/environment/environmentManager');
+const url = require('url');
 
 /**
  * This middleware should be called after any middlware which compares against the message's originator.  It will stamp
@@ -15,18 +16,18 @@ class ConnectionNameCheckMiddleware extends MiddlewareIF {
     constructor(middleware_type_enum, eval_function) {
         eval_function = (req, next) => {
             log.trace('Evaluating Message Prep middleware');
-            if(!req.__originator) {
+            if(!req.data.__originator) {
                 log.info('ConnectionNameCheckMiddleware processing a message with no originator.');
             }
             if(!req.socket.request.url) {
                 log.info('ConnectionNameCheckMiddleware processing a message that has no node name in its connector options.');
             }
-            // NOTE: This is assuming the socket cluster connection url has only 1 variable, node_name.  If we add more
-            // later this will need to change.
-            let value_index = req.socket.request.url.lastIndexOf('=')+1;
-            if(value_index) {
-                let node_name = req.socket.request.url.substr(value_index, req.socket.request.url.length);
-                if (req.__originator && req.__originator[node_name] !== undefined) {
+            if(!this.server_node_name || !this.client_node_name) {
+                this.parseConnectionString(req.socket.request.url);
+            }
+
+            if(this.client_node_name) {
+                if (req.data.__originator && req.data.__originator[this.client_node_name] !== undefined) {
                     return types.ERROR_CODES.MIDDLEWARE_SWALLOW;
                 }
             }
@@ -34,6 +35,14 @@ class ConnectionNameCheckMiddleware extends MiddlewareIF {
         super(middleware_type_enum, eval_function);
         this.type = types.PREMADE_MIDDLEWARE_TYPES.CONNECTION_NAME_CHECK;
         this.command_order = types.COMMAND_EVAL_ORDER_ENUM.LOW;
+        this.server_node_name = undefined;
+        this.client_node_name = undefined;
+    }
+
+    parseConnectionString(req_url) {
+        let query_vals = url.parse(req_url);
+        this.server_node_name = query_vals.server_node_name;
+        this.client_node_name = query_vals.client_node_name;
     }
 }
 

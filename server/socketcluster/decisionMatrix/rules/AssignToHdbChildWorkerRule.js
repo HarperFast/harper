@@ -3,7 +3,7 @@ const RuleIF = require('./RulesIF');
 const log = require('../../../../utility/logging/harper_logger');
 const types = require('../../types');
 const terms = require('../../../../utility/hdbTerms');
-
+const env = require('../../../../utility/environment/environmentManager');
 /**
  * This worker rule sends a request via socketcluster to an HDBChild for processing in core.
  */
@@ -38,8 +38,7 @@ class AssignToHdbChildWorkerRule extends RuleIF {
                 log.info('No hdbChild workers are stored. Cant send this off');
                 return false;
             }
-
-            if(!req.hdb_header.__transacted && !req.data.__transacted) {
+            if(!req.data.__originator && !req.data.__originator[env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)]) {
                 let rand = Math.floor(Math.random() * worker.hdb_workers.length);
                 let random_worker = worker.hdb_workers[rand];
                 worker.exchange.publish(random_worker, req.data);
