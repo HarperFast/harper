@@ -21,7 +21,7 @@ class InterNodeSocketConnector extends SocketConnector{
      */
     constructor(socket_client, worker, additional_info = {}, options = {}, credentials){
         super(socket_client, additional_info, options, credentials);
-        if(additional_info.name !== undefined && options.query !== undefined){
+        if(additional_info.client_name !== undefined && additional_info.server_name !== undefined) {
             options.query.node_client_name = additional_info.client_name;
             options.query.node_server_name = additional_info.server_name;
         }

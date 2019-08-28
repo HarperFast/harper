@@ -40,9 +40,9 @@ class ConnectionNameCheckMiddleware extends MiddlewareIF {
     }
 
     parseConnectionString(req_url) {
-        let query_vals = url.parse(req_url);
-        this.server_node_name = query_vals.server_node_name;
-        this.client_node_name = query_vals.client_node_name;
+        let query_vals = url.parse(req_url, true).query;
+        this.server_node_name = query_vals.node_server_name;
+        this.client_node_name = query_vals.node_client_name;
     }
 }
 
