@@ -38,13 +38,16 @@ class AssignToHdbChildWorkerRule extends RuleIF {
                 log.info('No hdbChild workers are stored. Cant send this off');
                 return false;
             }
-            if(!req.data.__originator && !req.data.__originator[env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)]) {
-                let rand = Math.floor(Math.random() * worker.hdb_workers.length);
-                let random_worker = worker.hdb_workers[rand];
-                worker.exchange.publish(random_worker, req.data);
-                log.debug(`Transacted flag not found, swallowing message.`);
-                return(true);
+            if(req.data.__originator && req.data.__originator[env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)]) {
+                // Dont send this to core, it has already been processed.
+                return;
             }
+            let rand = Math.floor(Math.random() * worker.hdb_workers.length);
+            let random_worker = worker.hdb_workers[rand];
+            worker.exchange.publish(random_worker, req.data);
+            log.debug(`Transacted flag not found, swallowing message.`);
+            return(true);
+
         } catch(err) {
             log.trace('Failed Assign to Hdb Child worker rule');
             log.error(err);
