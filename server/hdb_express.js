@@ -401,7 +401,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     });
 
     function spawnSCConnection(){
-        if(enterprise !== true && global.clustering_on !== true){
+        if(enterprise !== true || global.clustering_on !== true){
             return;
         }
 
