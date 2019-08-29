@@ -399,7 +399,7 @@ function deleteRecord(delete_object, callback){
             if(delete_object.schema !== 'system') {
                 let delete_msg = common_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
                 delete_msg.transaction = delete_object;
-                common_utils.sendTransactionToSocketCluster(`${delete_object.schema}:${delete_object.table}`, delete_msg);
+                common_utils.sendTransactionToSocketCluster(`${delete_object.schema}:${delete_object.table}`, delete_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
             }
 
             return callback(null, SUCCESS_MESSAGE);

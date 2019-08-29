@@ -101,7 +101,7 @@ class CatchUp extends FSReadStream{
     getJSON(values){
         try {
             let json_string = values.slice(2, values.length).join(',');
-            return JSON.parse(json_string);
+            return JSON.parse(decodeURIComponent(json_string));
         } catch(e){
             log.error(e);
         }

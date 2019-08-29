@@ -1,6 +1,6 @@
 "use strict";
 
-const SocketConnector = require('../connector/InterNodeSocketConnector');
+const InterNodeSocketConnector = require('../connector/InterNodeSocketConnector');
 const socket_client = require('socketcluster-client');
 const sc_objects = require('../socketClusterObjects');
 const log = require('../../../utility/logging/harper_logger');
@@ -10,6 +10,7 @@ const SubscriptionObject = sc_objects.SubscriptionObject;
 const NodeObject = sc_objects.NodeObject;
 const promisify = require('util').promisify;
 const terms = require('../../../utility/hdbTerms');
+const env = require('../../../utility/environment/environmentManager');
 
 class NodeConnectionsHandler {
     constructor(nodes, cluster_user, worker){
@@ -70,15 +71,16 @@ class NodeConnectionsHandler {
 
     async createNewConnection(node){
         // eslint-disable-next-line global-require
-        let options = require('../../../json/connectorOptions');
+        let options = require('../../../json/interNodeConnectorOptions');
         options.hostname = node.host;
         options.port = node.port;
         let additional_info = {
-            name: node.name,
+            server_name: node.name,
+            client_name: env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY),
             subscriptions: node.subscriptions,
             connected_timestamp: null
         };
-        let connection = new SocketConnector(socket_client, this.worker, additional_info,options, this.creds, this.connection_timestamps);
+        let connection = new InterNodeSocketConnector(socket_client, this.worker, additional_info,options, this.creds, this.connection_timestamps);
         await connection.initialize();
         node.subscriptions.push(this.HDB_Schema_Subscription);
         node.subscriptions.push(this.HDB_Table_Subscription);

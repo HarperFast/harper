@@ -1,5 +1,7 @@
 "use strict";
+
 const terms = require('../../utility/hdbTerms');
+const ROTATING_TRANSACTION_LOG_ENUM = require('./types').ROTATING_TRANSACTION_LOG_ENUM;
 
 class NodeObject{
     /**
@@ -53,9 +55,9 @@ class RotatingFileWriteStreamOptionsObject{
      * @param max_logs
      * @param audit_file
      */
-    constructor(filename, frequency, size, max_logs, audit_file){
+    constructor(filename, size, max_logs, audit_file){
         this.filename = filename;
-        this.frequency = frequency;
+        this.frequency = ROTATING_TRANSACTION_LOG_ENUM.FREQUENCY;
         this.size = size;
         this.verbose = false;
         this.max_logs = max_logs;

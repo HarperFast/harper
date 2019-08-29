@@ -20,8 +20,20 @@ const ENTITY_TYPE_ENUM = {
 };
 
 class InterNodeSocketConnector extends SocketConnector{
-    constructor(socket_client, worker, additional_info, options, credentials){
+    /**
+     *
+     * @param socket_client
+     * @param worker
+     * @param additional_info
+     * @param options
+     * @param credentials
+     */
+    constructor(socket_client, worker, additional_info = {}, options = {}, credentials){
         super(socket_client, additional_info, options, credentials);
+        if(additional_info.client_name !== undefined && additional_info.server_name !== undefined) {
+            options.query.node_client_name = additional_info.client_name;
+            options.query.node_server_name = additional_info.server_name;
+        }
         //TODO possibly change this to the node name, rather hostname / port?
         this.connection_path = hdb_clustering_connections_path + this.socket.options.hostname + ':' + this.socket.options.port;
         this.worker = worker;

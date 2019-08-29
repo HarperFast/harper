@@ -127,7 +127,7 @@ async function addNode(new_node) {
     try {
         let add_node_msg = new terms.ClusterMessageObjects.HdbCoreAddNodeMessage();
         add_node_msg.add_node = new_node;
-        hdb_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.HDB_NODES, add_node_msg);
+        hdb_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.HDB_NODES, add_node_msg, env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
     } catch(e){
         throw new Error(e);
     }
@@ -186,7 +186,7 @@ async function updateNode(update_node){
     try {
         let update_node_msg = new terms.ClusterMessageObjects.HdbCoreUdateNodeMessage();
         update_node_msg.node = update_node;
-        hdb_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.HDB_NODES, update_node_msg);
+        hdb_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.HDB_NODES, update_node_msg, env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
     } catch(e){
         throw new Error(e);
     }
@@ -225,7 +225,7 @@ async function removeNode(remove_json_message) {
     }
     let remove_node_msg = new terms.ClusterMessageObjects.HdbCoreRemoveNodeMessage();
     remove_node_msg.remove_node = remove_json_message;
-    hdb_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.HDB_NODES, remove_node_msg);
+    hdb_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.HDB_NODES, remove_node_msg, env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
     return `successfully removed ${remove_json_message.name} from manifest`;
 }
 
@@ -280,7 +280,7 @@ async function clusterStatus(cluster_status_json) {
         }
         cluster_status_msg.requesting_hdb_worker_id = process.pid;
         cluster_status_msg.requestor_channel = global.hdb_socket_client.socket.id;
-        hdb_utils.sendTransactionToSocketCluster( cluster_status_msg.requestor_channel, cluster_status_msg);
+        hdb_utils.sendTransactionToSocketCluster( cluster_status_msg.requestor_channel, cluster_status_msg, env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
         // Wait for cluster status event to fire then respond to client
         let result = await Promise.race([event_promise, timeout_promise.promise]);
         log.trace(`cluster status result: ${util.inspect(result)}`);
