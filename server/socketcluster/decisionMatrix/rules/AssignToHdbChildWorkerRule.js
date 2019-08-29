@@ -53,7 +53,6 @@ class AssignToHdbChildWorkerRule extends RuleIF {
             log.error(err);
             return false;
         }
-        return true;
     }
 }
 module.exports = AssignToHdbChildWorkerRule;
