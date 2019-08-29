@@ -63,7 +63,6 @@
     "pino": "^5.12.2",
     "prompt": "^1.0.0",
     "properties-reader": "0.0.15",
-    "randomstring": "^1.1.5",
     "recursive-iterator": "^3.3.0",
     "request": "^2.88.0",
     "request-promise-native": "^1.0.5",
