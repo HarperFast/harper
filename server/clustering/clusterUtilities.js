@@ -117,10 +117,19 @@ async function addNode(new_node) {
 function nodeValidation(node_object){
     // need to clean up new node as it hads operation and user on it
     let validation = node_validator(node_object);
+    if(validation) {
+        log.error(`Validation error in addNode validation. ${validation}`);
+        throw new Error(validation);
+    }
+
     let new_port = undefined;
     try {
         new_port = parseInt(node_object.port);
     } catch(err) {
+        throw new Error(`Invalid port: ${node_object.port} specified`);
+    }
+
+    if(isNaN(new_port)){
         throw new Error(`Invalid port: ${node_object.port} specified`);
     }
 
@@ -135,11 +144,6 @@ function nodeValidation(node_object){
         if(os.hostname() === node_object.host) {
             throw new Error(DUPLICATE_ERR_MSG);
         }
-    }
-
-    if(validation) {
-        log.error(`Validation error in addNode validation. ${validation}`);
-        throw new Error(validation);
     }
 
     if(!hdb_utils.isEmptyOrZeroLength(node_object.subscriptions) && !Array.isArray(node_object.subscriptions)){
@@ -175,6 +179,7 @@ async function updateNode(update_node){
         hash_values: [update_node.name],
         get_attributes: ['*']
     };
+
     let node_search = await p_search_by_hash(search_object);
 
     if (hdb_utils.isEmptyOrZeroLength(node_search)) {
