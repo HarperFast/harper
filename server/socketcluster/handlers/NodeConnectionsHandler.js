@@ -136,14 +136,40 @@ class NodeConnectionsHandler {
                 if (socket.additional_info && socket.additional_info.name === remove_node.name) {
                     this.connections.destroy(socket);
                 }
+
+                //remove node from all publish connections
+                for(let channel in this.publish_channel_connections){
+                    for(let socket_name in this.publish_channel_connections[channel]){
+                        if(socket_name === remove_node.name){
+                            delete this.publish_channel_connections[channel][socket_name];
+                        }
+                    }
+                }
             }
         } catch(e){
             log.error(e);
         }
     }
 
-    update_node(update_node){
-
+    /**
+     * on update we simply remove and readd the node so that all changes take effect properly.
+     * @param update_node
+     */
+    async update_node(update_node){
+        try {
+            let connect_keys = Object.keys(this.connections.clients);
+            for (let x = 0; x < connect_keys.length; x++) {
+                let key = connect_keys[x];
+                let connection = this.connections.clients[key];
+                if (connection.additional_info.name === update_node.name) {
+                    this.removeNode(update_node);
+                    await this.addNewNode(update_node);
+                    return;
+                }
+            }
+        } catch(e){
+            log.error(e);
+        }
     }
 
     /**
@@ -152,21 +178,25 @@ class NodeConnectionsHandler {
      * @param {SubscriptionObject} subscription
      */
     subscriptionManager(connection, subscription){
-        if(subscription.publish === true){
-            let publish_channel = this.publish_channel_connections[subscription.channel];
-            if(publish_channel=== undefined){
-                publish_channel = this.publish_channel_connections[subscription.channel] = {};
-                let sub_channel = this.worker.exchange.subscribe(subscription.channel);
+        try {
+            if (subscription.publish === true) {
+                if (this.publish_channel_connections[subscription.channel] === undefined) {
+                    this.publish_channel_connections[subscription.channel] = {};
+                    let sub_channel = this.worker.exchange.subscribe(subscription.channel);
 
-                sub_channel.watch(this.subscriptionChannelWatcher.bind(this, subscription.channel));
+                    sub_channel.watch(this.subscriptionChannelWatcher.bind(this, subscription.channel));
+                }
+
+                //add the connection to the channel map
+                this.publish_channel_connections[subscription.channel][connection.additional_info.name] = connection;
             }
 
-            publish_channel[connection.additional_info.name] = connection;
-        }
-
-        if(subscription.subscribe === true){
-            //we need to observe the channel remotely and send the data locally
-            connection.subscribe(subscription.channel, this.assignTransactionToChild.bind(this, subscription.channel, connection.socket));
+            if (subscription.subscribe === true) {
+                //we need to observe the channel remotely and send the data locally
+                connection.subscribe(subscription.channel, this.assignTransactionToChild.bind(this, subscription.channel, connection.socket));
+            }
+        } catch(e){
+            log.error(e);
         }
     }
 
@@ -176,13 +206,17 @@ class NodeConnectionsHandler {
      * @param data
      */
     subscriptionChannelWatcher(channel, data){
-        let connections = Object.values(this.publish_channel_connections[channel]);
-        connections.forEach(connection=>{
-            if(connection.socket.state === connection.socket.OPEN && connection.socket.authState === connection.socket.AUTHENTICATED) {
-                log.trace('publishing out');
-                connection.publish(channel, data);
-            }
-        });
+        try {
+            let connections = Object.values(this.publish_channel_connections[channel]);
+            connections.forEach(connection => {
+                if (connection.socket.state === connection.socket.OPEN && connection.socket.authState === connection.socket.AUTHENTICATED) {
+                    log.trace('publishing out');
+                    connection.publish(channel, data);
+                }
+            });
+        } catch(e){
+            log.error(e);
+        }
     }
 
     async assignTransactionToChild(channel, socket, data){
