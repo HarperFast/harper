@@ -1,5 +1,6 @@
 'use strict';
 
+const fsSearchByHash = require('./fsSearchByHash');
 const log = require('../../../../utility/logging/harper_logger');
 const common_utils = require('../../../../utility/common_utils');
 const env = require('../../../../utility/environment/environmentManager');
@@ -12,9 +13,6 @@ const BASE_PATH = common_utils.buildFolderPath(env.get(terms.HDB_SETTINGS_NAMES.
 const MAX_BYTES = '255';
 
 module.exports = deleteRecords;
-
-// These require statements were moved below the module.exports to resolve circular dependencies within the harperBridge module.
-const fsSearchByHash = require('./fsSearchByHash');
 
 async function deleteRecords(delete_obj){
     let hash_attribute = null;

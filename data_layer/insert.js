@@ -6,17 +6,15 @@
  * This module is used to validate and insert or update data.  Note insert.update should be used over the update module,
  * as the update module is meant to be used in more specific circumstances.
  */
-
 const insert_validator = require('../validation/insertValidator.js');
 const h_utils = require('../utility/common_utils');
-const logger = require('../utility/logging/harper_logger');
 const hdb_terms = require('../utility/hdbTerms');
-const signalling = require('../utility/signalling');
 const util = require('util');
-
-//This is an internal value that should not be written to the DB.
-//const HDB_PATH_KEY = hdb_terms.INSERT_MODULE_ENUM.HDB_PATH_KEY;
-const CHUNK_SIZE = hdb_terms.INSERT_MODULE_ENUM.CHUNK_SIZE;
+// Leave this unused signalling import here. Due to circular dependencies we bring it in early to load it before the bridge
+const signalling = require('../utility/signalling');
+const harperBridge = require('./harperBridge/harperBridge');
+const global_schema = require('../utility/globalSchema');
+const p_global_schema = util.promisify(global_schema.getTableSchema);
 
 //for release 2.0 we need to turn off threading.  this variable will control the enable/disable
 const ENABLE_THREADING = false;
@@ -27,17 +25,11 @@ const INSERT_ACTION = 'inserted';
 module.exports = {
     insert: insertData,
     update: updateData,
-    validation,
-    checkForNewAttributes
+    validation
 };
 
-// These requires must stay after export to prevent issues with circular dependencies
-const search = require('./search');
-const global_schema = require('../utility/globalSchema');
-const harperBridge = require('./harperBridge/harperBridge');
 
-const p_global_schema = util.promisify(global_schema.getTableSchema);
-
+// TODO: We have duplicate validation code, here and in the bridge.
 /**
  *  Takes an insert/update object and validates attributes, also looks for dups and get a list of all attributes from the record set
  * @param {Object} write_object
@@ -192,110 +184,4 @@ function returnObject(action, written_hashes, object, skipped) {
 
     return_object.update_hashes = written_hashes;
     return return_object;
-}
-
-/**
- * Compares the existing schema attributes to the
- * @param hdb_auth_header
- * @param table_schema
- * @param data_attributes
- * @returns {Promise<void>}
- */
-async function checkForNewAttributes(hdb_auth_header, table_schema, data_attributes){
-    try {
-        if (h_utils.isEmptyOrZeroLength(data_attributes)) {
-            return;
-        }
-
-        let raw_attributes = [];
-        if (!h_utils.isEmptyOrZeroLength(table_schema.attributes)) {
-            table_schema.attributes.forEach((attribute) => {
-                raw_attributes.push(attribute.attribute);
-            });
-        }
-
-        let new_attributes = data_attributes.filter(attribute => {
-            return raw_attributes.indexOf(attribute) < 0;
-        });
-
-        if (new_attributes.length === 0) {
-            return;
-        }
-
-        await Promise.all(
-            new_attributes.map(async attribute => {
-                await createNewAttribute(hdb_auth_header, table_schema.schema, table_schema.name, attribute);
-            })
-        );
-    } catch(e){
-        logger.error(e);
-        throw new Error(e);
-    }
-}
-
-/**
- * check the existing schema and creates new attributes based on what the incoming records have
- * @param hdb_auth_header
- * @param schema
- * @param table
- * @param attribute
- */
-async function createNewAttribute(hdb_auth_header,schema, table, attribute) {
-    let attribute_object = {
-        schema:schema,
-        table:table,
-        attribute:attribute
-    };
-
-    if(hdb_auth_header){
-        attribute_object.hdb_auth_header = hdb_auth_header;
-    }
-
-    try {
-        await createAttribute(attribute_object);
-    } catch(e){
-        //if the attribute already exists we do not want to stop the insert
-        if(typeof e === 'object' && e.message !== undefined && e.message.includes(ATTRIBUTE_ALREADY_EXISTS)){
-            logger.warn(e);
-        } else {
-            throw e;
-        }
-    }
-}
-
-async function createAttribute(create_attribute_object) {
-    let attribute_structure;
-    try {
-        if(global.clustering_on
-            && !create_attribute_object.delegated && create_attribute_object.schema !== 'system') {
-
-            attribute_structure = await harperBridge.createAttribute(create_attribute_object);
-            create_attribute_object.delegated = true;
-            create_attribute_object.operation = 'create_attribute';
-            create_attribute_object.id = attribute_structure.id;
-
-            let payload = {
-                "type": "clustering_payload",
-                "pid": process.pid,
-                "clustering_type": "broadcast",
-                "id": attribute_structure.id,
-                "body": create_attribute_object
-            };
-
-            h_utils.callProcessSend(payload);
-            signalling.signalSchemaChange({type: 'schema'});
-
-            return attribute_structure;
-        }
-        attribute_structure = await harperBridge.createAttribute(create_attribute_object);
-        let create_att_msg = h_utils.getClusterMessage(hdb_terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
-        create_att_msg.transaction = create_attribute_object;
-        h_utils.sendTransactionToSocketCluster(hdb_terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, create_att_msg);
-        signalling.signalSchemaChange({type: 'schema'});
-
-        return attribute_structure;
-    } catch(err) {
-        logger.error(err);
-        throw err;
-    }
 }

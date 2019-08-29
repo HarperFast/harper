@@ -5,22 +5,23 @@ const schema_validator = require('../../../../validation/schema_validator');
 const hdb_utils = require('../../../../utility/common_utils');
 const env = require('../../../../utility/environment/environmentManager');
 const hdb_terms = require('../../../../utility/hdbTerms');
-const insertUpdateValidate = require('../fsUtility/insertUpdateValidate');
 const mkdirp = require('../../../../utility/fs/mkdirp');
 const writeFile = require('../../../../utility/fs/writeFile');
 const WriteProcessorObject = require('../../../WriteProcessorObject');
 const dataWriteProcessor = require('../../../dataWriteProcessor');
+const insertUpdateValidate = require('../fsUtility/insertUpdateValidate');
 const uuidV4 = require('uuid/v4');
 const util = require('util');
 
 const INSERT_ACTION = 'inserted';
 const HDB_PATH = `${env.getHdbBasePath()}/${hdb_terms.HDB_SCHEMA_DIR}/`;
 
+module.exports = createAttribute;
+
 // TODO: this is temporary, it will be updated when search by value is added to the bridge.
 const hdb_core_search = require('../../../search');
 let p_search_search_by_value = util.promisify(hdb_core_search.searchByValue);
 
-module.exports = createAttribute;
 
 /** NOTE **
  * Due to circular dependencies with insertData in insert.js we have a duplicate version

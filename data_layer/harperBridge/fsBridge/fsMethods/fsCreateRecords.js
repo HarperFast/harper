@@ -1,14 +1,12 @@
 'use strict';
 
-const insertUpdateValidate = require('../fsUtility/insertUpdateValidate');
 const processData = require('../fsUtility/processData');
 const processRows = require('../fsUtility/processRows');
 const log = require('../../../../utility/logging/harper_logger');
+const insertUpdateValidate = require('../fsUtility/insertUpdateValidate');
+const checkForNewAttributes = require('../fsUtility/checkForNewAttr');
 
 module.exports = createRecords;
-
-// This must be here to prevent issues with circular dependencies related to insert.checkForNewAttributes
-const hdb_core_insert = require('../../../insert');
 
 /**
  * Calls all the functions specifically responsible for writing data to the file system
@@ -19,7 +17,7 @@ async function createRecords(insert_obj) {
     try {
         let {schema_table, attributes} = await insertUpdateValidate(insert_obj);
         let data_wrapper = await processRows(insert_obj, attributes, schema_table);
-        await hdb_core_insert.checkForNewAttributes(insert_obj.hdb_auth_header, schema_table, attributes);
+        await checkForNewAttributes(insert_obj.hdb_auth_header, schema_table, attributes);
         await processData(data_wrapper);
 
         let return_obj = {

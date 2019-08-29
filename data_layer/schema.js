@@ -2,11 +2,9 @@
 
 const fs = require('fs-extra');
 const validation = require('../validation/schema_validator.js');
-const search = require('./search.js');
 const logger = require('../utility/logging/harper_logger');
 const uuidV4 = require('uuid/v4');
-const delete_ = require('../data_layer/delete');
-    //this is to avoid a circular dependency with insert.
+    // this is to avoid a circular dependency with insert.
     // insert needs the describe all function but so does this module.
     // as such the functions have been broken out into a separate module.
 const schema_describe = require('./schemaDescribe');
@@ -16,6 +14,8 @@ const signalling = require('../utility/signalling');
 const util = require('util');
 const hdb_util = require('../utility/common_utils');
 const terms = require('../utility/hdbTerms');
+const search = require('./search.js');
+const delete_ = require('../data_layer/delete');
 const harperBridge = require('./harperBridge/harperBridge');
 
 // Promisified functions
@@ -46,11 +46,6 @@ module.exports = {
     dropTable: dropTable,
     dropAttribute: dropAttribute
 };
-
-// This must be after export to prevent issues with circular dependencies
-const insert = require('./insert.js');
-const global_schema = require('../utility/globalSchema');
-const p_global_schema = util.promisify(global_schema.getTableSchema);
 
 /** EXPORTED FUNCTIONS **/
 

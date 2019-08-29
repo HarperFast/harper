@@ -1,24 +1,18 @@
 'use strict';
 
+const fsSearchByHash = require('./fsSearchByHash');
 const insertUpdateValidate = require('../fsUtility/insertUpdateValidate');
 const processRows = require('../fsUtility/processRows');
 const processData = require('../fsUtility/processData');
 const unlink = require('../../../../utility/fs/unlink');
 const hdb_utils = require('../../../../utility/common_utils');
 const log = require('../../../../utility/logging/harper_logger');
-const util = require('util');
 const _ = require('lodash');
+const checkForNewAttributes = require('../fsUtility/checkForNewAttr');
 
 const UPDATE_ACTION = 'updated';
 
-// TODO: this is temporary, it will be updated when search by value is added to the bridge.
-const hdb_core_search = require('../../../search');
-let p_search_by_hash = util.promisify(hdb_core_search.searchByHash);
-
 module.exports = updateRecords;
-
-// This must be here to prevent issues with circular dependencies related to insert.checkForNewAttributes
-const hdb_core_insert = require('../../../insert');
 
 async function updateRecords(update_obj) {
     try {
@@ -38,7 +32,7 @@ async function updateRecords(update_obj) {
             return record[schema_table.hash_attribute];
         });
         let { written_hashes, skipped_hashes, unlinks, ...data_wrapper} = await processRows(update_obj, attributes, schema_table, existing_map);
-        await hdb_core_insert.checkForNewAttributes(update_obj.hdb_auth_header, schema_table, attributes);
+        await checkForNewAttributes(update_obj.hdb_auth_header, schema_table, attributes);
         await unlinkFiles(unlinks);
         await processData(data_wrapper);
 
@@ -74,7 +68,7 @@ async function getExistingRows(schema_table, hashes, attributes){
             get_attributes: existing_attributes
         };
 
-        let existing_records = await p_search_by_hash(search_object);
+        let existing_records = await fsSearchByHash(search_object);
         return existing_records;
     } catch(err) {
         log.error(err);

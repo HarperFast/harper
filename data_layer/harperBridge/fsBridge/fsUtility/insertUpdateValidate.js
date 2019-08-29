@@ -1,12 +1,13 @@
 'use strict';
 
 const hdb_utils = require('../../../../utility/common_utils');
-const global_schema = require('../../../../utility/globalSchema');
 const insert_validator = require('../../../../validation/insertValidator');
 const util = require('util');
-const p_global_schema = util.promisify(global_schema.getTableSchema);
 
 module.exports = insertUpdateValidate;
+
+const global_schema = require('../../../../utility/globalSchema');
+const p_global_schema = util.promisify(global_schema.getTableSchema);
 
 /**
  * Takes an insert/update object and validates attributes, also looks for dups and get a list of all attributes from the record set

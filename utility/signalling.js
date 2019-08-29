@@ -1,5 +1,4 @@
 const harper_logger = require('../utility/logging/harper_logger');
-const global_schema = require('../utility/globalSchema');
 const terms = require('./hdbTerms');
 const common = require('./common_utils');
 
@@ -123,3 +122,6 @@ module.exports = {
     signalChildStarted: signalChildStarted,
     signalRestart: signalRestart
 };
+
+// This is here to prevent errors with circular dependencies related to insertUpdateValidate and search.
+const global_schema = require('../utility/globalSchema');

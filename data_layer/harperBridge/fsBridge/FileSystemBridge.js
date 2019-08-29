@@ -2,15 +2,16 @@
 
 const log = require('../../../utility/logging/harper_logger');
 const BridgeMethods = require("../BridgeMethods.js");
+const fsCreateAttribute = require('./fsMethods/fsCreateAttribute');
 const fsCreateRecords = require('./fsMethods/fsCreateRecords');
-const fsUpdateRecords = require('./fsMethods/fsUpdateRecords');
 const fsCreateSchema = require('./fsMethods/fsCreateSchema');
 const fsDeleteRecords = require('./fsMethods/fsDeleteRecords');
-const fsCreateAttribute = require('./fsMethods/fsCreateAttribute');
 const fsSearchByHash = require('./fsMethods/fsSearchByHash');
 const fsGetDataByHash = require('./fsMethods/fsGetDataByHash');
 const fsDropSchema = require('./fsMethods/fsDropSchema');
 const fsCreateTable = require('./fsMethods/fsCreateTable');
+const fsUpdateRecords = require('./fsMethods/fsUpdateRecords');
+
 
 class FileSystemBridge extends BridgeMethods {
 
