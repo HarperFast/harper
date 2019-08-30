@@ -462,7 +462,7 @@ function sendTransactionToSocketCluster(channel, transaction, originator) {
         if(!data.__originator) {
             data.__originator = {};
         }
-        data.__originator[originator] = '';
+        data.__originator[originator] = terms.ORIGINATOR_SET_VALUE;
         global.hdb_socket_client.publish(channel, data);
     }
 }

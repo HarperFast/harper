@@ -27,7 +27,7 @@ class ConnectionNameCheckMiddleware extends MiddlewareIF {
             }
 
             if(this.client_node_name) {
-                if (req.data.__originator && req.data.__originator[this.client_node_name] !== undefined) {
+                if (req.data.__originator && req.data.__originator[this.client_node_name] !== types.ORIGINATOR_SET_VALUE) {
                     return types.ERROR_CODES.MIDDLEWARE_SWALLOW;
                 }
             }

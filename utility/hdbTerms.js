@@ -326,6 +326,7 @@ const CLUSTER_EVENTS_DEFS_ENUM = {
 };
 
 const CLUSTERING_MESSAGE_TYPES = cluster_types.CORE_ROOM_MSG_TYPE_ENUM;
+const ORIGINATOR_SET_VALUE = cluster_types.ORIGINATOR_SET_VALUE;
 
 module.exports = {
     LOCAL_HARPERDB_OPERATIONS,
@@ -379,6 +380,7 @@ module.exports = {
     INTERNAL_SC_CHANNELS,
     CLUSTERING_MESSAGE_TYPES,
     // Make the message objects available through hdbTerms to keep clustering as modular as possible.
-    ClusterMessageObjects
+    ClusterMessageObjects,
+    ORIGINATOR_SET_VALUE
 };
 
