@@ -95,7 +95,30 @@ function processLocalTransaction(req, res, operation_function, callback) {
         });
 }
 
-function postOperationHandler(request_body, result) {
+/**
+ * Add any relevant data from an original request into a newly created outbound message.
+ * @param outbound_message - The message about to be sent
+ * @param orig_req - An inbound request which may contain relevant data the outbound message needs to contain (such as originator).
+ */
+function concatSourceMessageHeader(outbound_message, orig_req) {
+    if(!outbound_message) {
+        harper_logger.error('Invalid message passed to concatSourceMessageHeader');
+        return;
+    }
+    if(!orig_req) {
+        harper_logger.error('no orig request data passed to concatSourceMessageHeader');
+        return;
+    }
+    // TODO: Do we need to include anything else in the hdb_header?
+    if(orig_req.__originator) {
+        if(!outbound_message.__originator) {
+            outbound_message.__originator = {};
+        }
+        outbound_message.__originator = orig_req.__originator;
+    }
+}
+
+function postOperationHandler(request_body, result, orig_req) {
     let transaction_msg = common_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
     transaction_msg.__originator[env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)] = '';
     transaction_msg.__transacted = true;
@@ -115,6 +138,9 @@ function postOperationHandler(request_body, result) {
                         if(result.inserted_hashes.includes(common_utils.autoCast(record[hash_attribute]))) {
                             transaction_msg.transaction.records.push(record);
                         }
+                        if(orig_req) {
+                            concatSourceMessageHeader(transaction_msg, orig_req);
+                        }
                     });
                     common_utils.sendTransactionToSocketCluster(`${request_body.schema}:${request_body.table}`, transaction_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
                 }
@@ -129,6 +155,9 @@ function postOperationHandler(request_body, result) {
                     operation: terms.OPERATIONS_ENUM.CREATE_SCHEMA,
                     schema: request_body.schema,
                 };
+                if(orig_req) {
+                    concatSourceMessageHeader(transaction_msg, orig_req);
+                }
                 common_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_SCHEMA, transaction_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
             } catch(err) {
                 harper_logger.error('There was a problem sending the create_schema transaction to the cluster.');
@@ -142,6 +171,9 @@ function postOperationHandler(request_body, result) {
                     table: request_body.table,
                     hash_attribute: request_body.hash_attribute
                 };
+                if(orig_req) {
+                    concatSourceMessageHeader(transaction_msg, orig_req);
+                }
                 common_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_TABLE, transaction_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
             } catch(err) {
                 harper_logger.error('There was a problem sending the create_schema transaction to the cluster.');
@@ -155,6 +187,9 @@ function postOperationHandler(request_body, result) {
                     table: request_body.table,
                     attribute: request_body.attribute
                 };
+                if(orig_req) {
+                    concatSourceMessageHeader(transaction_msg, orig_req);
+                }
                 common_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, transaction_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
             } catch(err) {
                 harper_logger.error('There was a problem sending the create_schema transaction to the cluster.');

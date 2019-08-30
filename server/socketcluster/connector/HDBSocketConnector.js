@@ -8,6 +8,7 @@ const global_schema = require('../../../utility/globalSchema');
 const operation_function_caller = require('../../../utility/OperationFunctionCaller');
 const common_utils = require(`../../../utility/common_utils`);
 const env = require('../../../utility/environment/environmentManager');
+const sc_utils = require('../util/socketClusterUtils');
 
 const p_set_schema_to_global = promisify(global_schema.setSchemaDataToGlobal);
 
@@ -54,7 +55,7 @@ class HDBSocketConnector extends SocketConnector{
 
                         if(req && req.transaction && Object.keys(req.transaction).length > 0) {
                             let {operation_function} = server_utilities.getOperationFunction(req.transaction);
-                            operation_function_caller.callOperationFunctionAsAwait(operation_function, req.transaction, this.postOperationHandler)
+                            operation_function_caller.callOperationFunctionAsAwait(operation_function, req.transaction, this.postOperationHandler, req)
                                 .then((result) => {
                                     log.debug(result);
                                 })
@@ -264,7 +265,7 @@ class HDBSocketConnector extends SocketConnector{
         return api_msg;
     }
 
-    postOperationHandler(request_body, result) {
+    postOperationHandler(request_body, result, orig_req) {
         let transaction_msg = common_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
         transaction_msg.__originator[env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)] = '';
         transaction_msg.__transacted = true;
@@ -285,6 +286,9 @@ class HDBSocketConnector extends SocketConnector{
                                 transaction_msg.transaction.records.push(record);
                             }
                         });
+                        if(orig_req) {
+                            sc_utils.concatSourceMessageHeader(transaction_msg, orig_req);
+                        }
                         common_utils.sendTransactionToSocketCluster(`${request_body.schema}:${request_body.table}`, transaction_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
                     }
                 } catch(err) {
@@ -298,6 +302,9 @@ class HDBSocketConnector extends SocketConnector{
                         operation: terms.OPERATIONS_ENUM.CREATE_SCHEMA,
                         schema: request_body.schema,
                     };
+                    if(orig_req) {
+                        sc_utils.concatSourceMessageHeader(transaction_msg, orig_req);
+                    }
                     common_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_SCHEMA, transaction_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
                 } catch(err) {
                     log.error('There was a problem sending the create_schema transaction to the cluster.');
@@ -311,6 +318,9 @@ class HDBSocketConnector extends SocketConnector{
                         table: request_body.table,
                         hash_attribute: request_body.hash_attribute
                     };
+                    if(orig_req) {
+                        sc_utils.concatSourceMessageHeader(transaction_msg, orig_req);
+                    }
                     common_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_TABLE, transaction_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
                 } catch(err) {
                     log.error('There was a problem sending the create_schema transaction to the cluster.');
@@ -324,6 +334,9 @@ class HDBSocketConnector extends SocketConnector{
                         table: request_body.table,
                         attribute: request_body.attribute
                     };
+                    if(orig_req) {
+                        sc_utils.concatSourceMessageHeader(transaction_msg, orig_req);
+                    }
                     common_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, transaction_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
                 } catch(err) {
                     log.error('There was a problem sending the create_schema transaction to the cluster.');

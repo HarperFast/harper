@@ -247,10 +247,34 @@ function handleLoginResponse(socket, credentials, hdb_users) {
     }
 }
 
+/**
+ * Add any relevant data from an original request into a newly created outbound message.
+ * @param outbound_message - The message about to be sent
+ * @param orig_req - An inbound request which may contain relevant data the outbound message needs to contain (such as originator).
+ */
+function concatSourceMessageHeader(outbound_message, orig_req) {
+    if(!outbound_message) {
+        log.error('Invalid message passed to concatSourceMessageHeader');
+        return;
+    }
+    if(!orig_req) {
+        log.error('no orig request data passed to concatSourceMessageHeader');
+        return;
+    }
+    // TODO: Do we need to include anything else in the hdb_header?
+    if(orig_req.__originator) {
+        if(!outbound_message.__originator) {
+            outbound_message.__originator = {};
+        }
+        outbound_message.__originator = orig_req.__originator;
+    }
+}
+
 module.exports = {
     getWorkerStatus,
     createEventPromise,
     catchupHandler,
     schemaCatchupHandler,
-    requestAndHandleLogin
+    requestAndHandleLogin,
+    concatSourceMessageHeader
 };
