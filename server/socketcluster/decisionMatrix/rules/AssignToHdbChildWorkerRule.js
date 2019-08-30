@@ -39,7 +39,7 @@ class AssignToHdbChildWorkerRule extends RuleIF {
                 return false;
             }
 
-            if(req.data.__originator && req.data.__originator[env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)] === types.ORIGINATOR_SET_VALUE) {
+            if(req.data.__transacted) {
                 // Dont send this to core, it has already been processed.  We can't swallow it as it needs to go out to the cluster.
                 return true;
             }

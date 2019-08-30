@@ -19,15 +19,17 @@ class ConnectionNameCheckMiddleware extends MiddlewareIF {
             if(!req.data.__originator) {
                 log.info('ConnectionNameCheckMiddleware processing a message with no originator.');
             }
+
             if(!req.socket.request.url) {
                 log.info('ConnectionNameCheckMiddleware processing a message that has no node name in its connector options.');
             }
+
             if(!this.server_node_name || !this.client_node_name) {
                 this.parseConnectionString(req.socket.request.url);
             }
 
             if(this.client_node_name) {
-                if (req.data.__originator && req.data.__originator[this.client_node_name] !== types.ORIGINATOR_SET_VALUE) {
+                if (req.data.__originator && req.data.__originator[this.client_node_name] === types.ORIGINATOR_SET_VALUE) {
                     return types.ERROR_CODES.MIDDLEWARE_SWALLOW;
                 }
             }
