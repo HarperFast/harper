@@ -41,10 +41,16 @@ async function callOperationFunctionAsAwait(promisified_function, function_input
         // necessary.
         if(followup_async_func) {
             //TODO: Passing result twice seems silly, why is this a thing?
-            return await followup_async_func(function_input, result, orig_req);
+            result = await followup_async_func(function_input, result, orig_req);
         }
         return result;
     } catch(err) {
+        // This specific check was added to avoid an error message in the log which could make the error look worse than it
+        // seems when scanning a log.  In reality a schema already existing isn't really an error, just a failure.
+        if(err.message.includes('already exists')) {
+            log.info(err.message);
+            return err.message;
+        }
         log.error(`Error calling operation: ${promisified_function.name}`);
         log.error(err);
         throw err;
