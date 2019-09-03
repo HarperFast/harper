@@ -3,14 +3,16 @@
 const terms = require('../../../../utility/hdbTerms');
 const fsDeleteRecords = require('../fsMethods/fsDeleteRecords');
 
-//TODO: This is temporary. Once we have search by value bridge func built, we will use that.
-const util = require('util');
-const search_by_value = require('../../../search').searchByValue;
-let p_search_by_value = (util.promisify(search_by_value));
+
 
 module.exports = deleteAttributeStructure;
 
 async function deleteAttributeStructure(attribute_drop_obj) {
+    //TODO: This is temporary. Once we have search by value bridge func built, we will use that.
+    const util = require('util');
+    const search_by_value = require('../../../search').searchByValue;
+    let p_search_by_value = (util.promisify(search_by_value));
+
     let search_obj = {
         schema: terms.SYSTEM_SCHEMA_NAME,
         table: terms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME,
@@ -30,6 +32,7 @@ async function deleteAttributeStructure(attribute_drop_obj) {
 
     try {
         let attributes = await p_search_by_value(search_obj);
+        let attr = global.hdb_schema;
 
         if (attributes && attributes.length > 0) {
             let delete_table_obj = {

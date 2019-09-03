@@ -7,7 +7,6 @@ const uuidV4 = require('uuid/v4');
     // this is to avoid a circular dependency with insert.
     // insert needs the describe all function but so does this module.
     // as such the functions have been broken out into a separate module.
-const schema_describe = require('./schemaDescribe');
 const env = require('../utility/environment/environmentManager');
 const clone = require('clone');
 const signalling = require('../utility/signalling');
@@ -39,9 +38,6 @@ module.exports = {
     createTableStructure: createTableStructure,
     createAttribute: createAttribute,
     deleteTableStructure: moveTableStructureToTrash,
-    describeTable: schema_describe.describeTable,
-    describeSchema: schema_describe.describeSchema,
-    describeAll: schema_describe.describeAll,
     dropSchema: dropSchema,
     dropTable: dropTable,
     dropAttribute: dropAttribute

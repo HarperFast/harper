@@ -16,7 +16,7 @@ module.exports = updateRecords;
 
 async function updateRecords(update_obj) {
     try {
-        let { schema_table, hashes, attributes } = await insertUpdateValidate(update_obj);
+        let { schema_table, hashes, attributes } = insertUpdateValidate(update_obj);
         let existing_rows = await getExistingRows(schema_table, hashes, attributes);
 
         // If no hashes are existing skip update attempts

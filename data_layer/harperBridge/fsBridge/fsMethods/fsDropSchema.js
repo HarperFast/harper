@@ -11,11 +11,6 @@ const DATE_SUBSTR_LENGTH = 19;
 let current_date = new Date().toISOString().substr(0, DATE_SUBSTR_LENGTH);
 const TRASH_BASE_PATH = `${env.getHdbBasePath()}/${terms.HDB_TRASH_DIR}`;
 
-//TODO: This is temporary. Once we have search by value bridge func built, we will use that.
-const util = require('util');
-const search_by_value = require('../../../search').searchByValue;
-let p_search_by_value = (util.promisify(search_by_value));
-
 module.exports = dropSchema;
 
 async function dropSchema(drop_schema_obj) {
@@ -36,9 +31,14 @@ async function dropSchema(drop_schema_obj) {
     };
 
     try {
+        let tables = global.hdb_schema[schema];
+        let table_ids = [];
+        for (let table_name in tables) {
+            table_ids.push({id: tables[table_name].id});
+        }
+
         await fsDeleteRecords(delete_schema_obj);
-        let search_result = await p_search_by_value(search_obj);
-        await moveSchemaToTrash(drop_schema_obj, search_result);
+        await moveSchemaToTrash(drop_schema_obj, table_ids);
         await deleteAttrStructure(drop_schema_obj);
     } catch(err) {
         log.error(err);

@@ -28,25 +28,13 @@ class ChildStartedSignalObject {
 
 function signalSchemaChange(message){
     try {
-        // if process.send is undefined we are running a single instance of the process.
-        if (process.send === undefined || global.isMaster) {
-            global_schema.schemaSignal((err) => {
-                if (err) {
-                    harper_logger.error(err);
-                }
-            });
-        } else if(!global.isMaster){
+        if(!global.isMaster){
             process.send(message);
         } else {
             harper_logger.warn(`Got schema change, but process.send is undefined and I am not master. My pid is ${process.pid}.  Global.isMaster is: ${global.isMaster}`);
         }
     }catch(e){
         harper_logger.error(e);
-        global_schema.schemaSignal((err) => {
-            if (err) {
-                harper_logger.error(err);
-            }
-        });
     }
 }
 
@@ -123,5 +111,3 @@ module.exports = {
     signalRestart: signalRestart
 };
 
-// This is here to prevent errors with circular dependencies related to insertUpdateValidate and search.
-const global_schema = require('../utility/globalSchema');

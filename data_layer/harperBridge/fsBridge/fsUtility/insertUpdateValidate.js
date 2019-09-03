@@ -2,19 +2,18 @@
 
 const hdb_utils = require('../../../../utility/common_utils');
 const insert_validator = require('../../../../validation/insertValidator');
-const util = require('util');
 
 module.exports = insertUpdateValidate;
 
-const global_schema = require('../../../../utility/globalSchema');
-const p_global_schema = util.promisify(global_schema.getTableSchema);
+// const global_schema = require('../../../../utility/globalSchema');
+// const p_global_schema = util.promisify(global_schema.getTableSchema);
 
 /**
  * Takes an insert/update object and validates attributes, also looks for dups and get a list of all attributes from the record set
  * @param {Object} write_object
  * @returns {Promise<{table_schema, hashes: any[], attributes: string[]}>}
  */
-async function insertUpdateValidate(write_object){
+function insertUpdateValidate(write_object){
     // Need to validate these outside of the validator as the getTableSchema call will fail with
     // invalid values.
 
@@ -30,7 +29,7 @@ async function insertUpdateValidate(write_object){
 
     let schema_table;
     try {
-        schema_table = await p_global_schema(write_object.schema, write_object.table);
+        schema_table = global.hdb_schema[write_object.schema][write_object.table];
     } catch(err) {
         throw new Error(err);
     }

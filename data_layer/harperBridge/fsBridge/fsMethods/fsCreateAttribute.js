@@ -18,11 +18,6 @@ const HDB_PATH = `${env.getHdbBasePath()}/${hdb_terms.HDB_SCHEMA_DIR}/`;
 
 module.exports = createAttribute;
 
-// TODO: this is temporary, it will be updated when search by value is added to the bridge.
-const hdb_core_search = require('../../../search');
-let p_search_search_by_value = util.promisify(hdb_core_search.searchByValue);
-
-
 /** NOTE **
  * Due to circular dependencies with insertData in insert.js we have a duplicate version
  * of insertData in this file. It should only be used by createAttribute.
@@ -49,14 +44,11 @@ async function createAttribute(create_attribute_object) {
     };
 
     try {
-        let attributes = await p_search_search_by_value(search_object);
+        let attributes_obj = Object.values(global.hdb_schema[create_attribute_object.schema][create_attribute_object.table]['attributes']);
 
-        if(attributes && attributes.length > 0) {
-            for (let att in attributes) {
-                if (attributes[att].schema === create_attribute_object.schema
-                    && attributes[att].table === create_attribute_object.table) {
-                    throw new Error(`attribute already exists with id ${JSON.stringify(attributes[att])}`);
-                }
+        for (let attribute of attributes_obj) {
+            if (attribute.attribute === create_attribute_object.attribute) {
+                throw new Error(`attribute '${attribute.attribute}' already exists in ${create_attribute_object.schema}.${create_attribute_object.table}`);
             }
         }
 
@@ -98,7 +90,7 @@ async function createAttribute(create_attribute_object) {
  */
 async function insertData(insert_object){
     try {
-        let { schema_table, attributes } = await insertUpdateValidate(insert_object);
+        let { schema_table, attributes } = insertUpdateValidate(insert_object);
         let { written_hashes, skipped_hashes, ...data_wrapper } = await processRows(insert_object, attributes, schema_table, null);
         await processData(data_wrapper);
         convertOperationToTransaction(insert_object, written_hashes, schema_table.hash_attribute);

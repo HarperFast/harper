@@ -15,7 +15,7 @@ module.exports = createRecords;
  */
 async function createRecords(insert_obj) {
     try {
-        let {schema_table, attributes} = await insertUpdateValidate(insert_obj);
+        let {schema_table, attributes} = insertUpdateValidate(insert_obj);
         let data_wrapper = await processRows(insert_obj, attributes, schema_table);
         await checkForNewAttributes(insert_obj.hdb_auth_header, schema_table, attributes);
         await processData(data_wrapper);

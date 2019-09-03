@@ -5,6 +5,7 @@ const search = require('../data_layer/search');
 const sql = require('../sqlTranslator/index');
 const csv = require('../data_layer/csvBulkLoad');
 const schema = require('../data_layer/schema');
+const schema_describe = require('../data_layer/schemaDescribe');
 const delete_ = require('../data_layer/delete');
 const user = require('../security/user');
 const role = require('../security/role');
@@ -21,7 +22,7 @@ const reg = require('../utility/registration/registrationHandler');
 const stop = require('../bin/stop');
 const util = require('util');
 const insert = require('../data_layer/insert');
-
+const global_schema = require('../utility/globalSchema');
 /**
  * Callback functions are still heavily relied on.
  * Callbackify takes an async function and converts to an error-first callback style function.
@@ -55,6 +56,14 @@ const cb_read_log = util.callbackify(harper_logger.readLog);
 const UNAUTH_RESPONSE = 403;
 const UNAUTHORIZED_TEXT = 'You are not authorized to perform the operation specified';
 let OPERATION_PARAM_ERROR_MSG = `operation parameter is undefined`;
+
+let GLOBAL_SCHEMA_UPDATE_FUNCTIONS = {};
+GLOBAL_SCHEMA_UPDATE_FUNCTIONS[terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE] = '';
+GLOBAL_SCHEMA_UPDATE_FUNCTIONS[terms.OPERATIONS_ENUM.CREATE_TABLE] = '';
+GLOBAL_SCHEMA_UPDATE_FUNCTIONS[terms.OPERATIONS_ENUM.CREATE_SCHEMA] = '';
+GLOBAL_SCHEMA_UPDATE_FUNCTIONS[terms.OPERATIONS_ENUM.DROP_ATTRIBUTE] = '';
+GLOBAL_SCHEMA_UPDATE_FUNCTIONS[terms.OPERATIONS_ENUM.DROP_TABLE] = '';
+GLOBAL_SCHEMA_UPDATE_FUNCTIONS[terms.OPERATIONS_ENUM.DROP_SCHEMA] = '';
 
 module.exports = {
     chooseOperation: chooseOperation,
@@ -92,8 +101,25 @@ function processLocalTransaction(req, res, operation_function, callback) {
     }
 
     operation_function(req.body, (error, data) => {
+        if (GLOBAL_SCHEMA_UPDATE_FUNCTIONS[req.body.operation]) {
+            global_schema.setSchemaDataToGlobal((err) => {
+                if (err) {
+                    harper_logger.error(err);
+                }
+            });
+        }
+
         if (error) {
             harper_logger.info(error);
+
+            if (GLOBAL_SCHEMA_UPDATE_FUNCTIONS[req.body.operation]) {
+                global_schema.setSchemaDataToGlobal((err) => {
+                    if (err) {
+                        harper_logger.error(err);
+                    }
+                });
+            }
+
             if(error === UNAUTH_RESPONSE) {
                 setResponseStatus(res, terms.HTTP_STATUS_CODES.FORBIDDEN, {error: UNAUTHORIZED_TEXT});
                 return callback(error);
@@ -219,13 +245,13 @@ function getOperationFunction(json){
             operation_function = cb_schema_drop_attribute;
             break;
         case terms.OPERATIONS_ENUM.DESCRIBE_SCHEMA:
-            operation_function = schema.describeSchema;
+            operation_function = schema_describe.describeSchema;
             break;
         case terms.OPERATIONS_ENUM.DESCRIBE_TABLE:
-            operation_function = schema.describeTable;
+            operation_function = schema_describe.describeTable;
             break;
         case terms.OPERATIONS_ENUM.DESCRIBE_ALL:
-            operation_function = schema.describeAll;
+            operation_function = schema_describe.describeAll;
             break;
         case terms.OPERATIONS_ENUM.DELETE:
             operation_function = delete_.delete;
