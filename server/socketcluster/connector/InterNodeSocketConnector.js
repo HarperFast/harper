@@ -21,7 +21,6 @@ const ENTITY_TYPE_ENUM = {
 
 class InterNodeSocketConnector extends SocketConnector{
     /**
-     *
      * @param socket_client
      * @param worker
      * @param additional_info

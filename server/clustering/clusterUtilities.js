@@ -16,12 +16,14 @@ const children_stopped_event = require('../../events/AllChildrenStoppedEvent');
 const child_process = require('child_process');
 const path = require('path');
 const InsertObject = require('../../data_layer/DataLayerObjects').InsertObject;
+const search = require('../../data_layer/search');
 
 const CLUSTER_PORT = env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY);
 
 //Promisified functions
 const p_delete_delete = util.promisify(del.delete);
 const p_auth_authorize = util.promisify(auth.authorize);
+const p_search_by_hash = util.promisify(search.searchByHash);
 
 const iface = os.networkInterfaces();
 const addresses = [];
@@ -80,36 +82,9 @@ async function kickOffEnterprise() {
 }
 
 async function addNode(new_node) {
-    // need to clean up new node as it hads operation and user on it
-    let validation = node_validator(new_node);
-    let new_port = undefined;
-    try {
-        new_port = parseInt(new_node.port);
-    } catch(err) {
-        throw new Error(`Invalid port: ${new_node.port} specified`);
-    }
+    nodeValidation(new_node);
 
-    //TODO: We may need to expand this depending on what is decided in https://harperdb.atlassian.net/browse/HDB-638
-    if(new_port === CLUSTER_PORT) {
-        if((new_node.host === 'localhost' || new_node.host === '127.0.0.1')) {
-            throw new Error(DUPLICATE_ERR_MSG);
-        }
-        if(addresses && addresses.includes(new_node.host)) {
-            throw new Error(DUPLICATE_ERR_MSG);
-        }
-        if(os.hostname() === new_node.host) {
-            throw new Error(DUPLICATE_ERR_MSG);
-        }
-    }
-
-    if(validation) {
-        log.error(`Validation error in addNode validation. ${validation}`);
-        throw new Error(validation);
-    }
-
-    subscriptionsValidation(new_node);
-
-    let new_node_insert = new InsertObject("insert", "system", "hdb_nodes", null, [new_node]);
+    let new_node_insert = new InsertObject("insert", terms.SYSTEM_SCHEMA_NAME, terms.SYSTEM_TABLE_NAMES.NODE_TABLE_NAME, null, [new_node]);
 
     let results = undefined;
     try {
@@ -139,7 +114,38 @@ async function addNode(new_node) {
  *
  * @param {./NodeObject} node_object
  */
-function subscriptionsValidation(node_object){
+function nodeValidation(node_object){
+    // need to clean up new node as it hads operation and user on it
+    let validation = node_validator(node_object);
+    if(validation) {
+        log.error(`Validation error in addNode validation. ${validation}`);
+        throw new Error(validation);
+    }
+
+    let new_port = undefined;
+    try {
+        new_port = parseInt(node_object.port);
+    } catch(err) {
+        throw new Error(`Invalid port: ${node_object.port} specified`);
+    }
+
+    if(isNaN(new_port)){
+        throw new Error(`Invalid port: ${node_object.port} specified`);
+    }
+
+    //TODO: We may need to expand this depending on what is decided in https://harperdb.atlassian.net/browse/HDB-638
+    if(new_port === CLUSTER_PORT) {
+        if((node_object.host === 'localhost' || node_object.host === '127.0.0.1')) {
+            throw new Error(DUPLICATE_ERR_MSG);
+        }
+        if(addresses && addresses.includes(node_object.host)) {
+            throw new Error(DUPLICATE_ERR_MSG);
+        }
+        if(os.hostname() === node_object.host) {
+            throw new Error(DUPLICATE_ERR_MSG);
+        }
+    }
+
     if(!hdb_utils.isEmptyOrZeroLength(node_object.subscriptions) && !Array.isArray(node_object.subscriptions)){
         log.error(`${SUBSCRIPTIONS_MUST_BE_ARRAY}: ${node_object.subscriptions}`);
         throw new Error(SUBSCRIPTIONS_MUST_BE_ARRAY);
@@ -166,9 +172,27 @@ async function updateNode(update_node){
         throw new Error('name is required');
     }
 
-    subscriptionsValidation(update_node);
+    //fecth the existing node and merge with the update_node
+    let search_object = {
+        schema: terms.SYSTEM_SCHEMA_NAME,
+        table: terms.SYSTEM_TABLE_NAMES.NODE_TABLE_NAME,
+        hash_values: [update_node.name],
+        get_attributes: ['*']
+    };
 
-    let update_node_object = new InsertObject("update", "system", "hdb_nodes", null, [update_node]);
+    let node_search = await p_search_by_hash(search_object);
+
+    if (hdb_utils.isEmptyOrZeroLength(node_search)) {
+        log.info(`Node '${update_node.name}' does not exist. Operation aborted.`);
+        throw new Error(`Node '${update_node.name}' does not exist. Operation aborted.`);
+    }
+    let merge_node = node_search[0];
+    Object.assign(merge_node, update_node);
+
+
+    nodeValidation(merge_node);
+
+    let update_node_object = new InsertObject("update", terms.SYSTEM_SCHEMA_NAME, terms.SYSTEM_TABLE_NAMES.NODE_TABLE_NAME, null, [update_node]);
 
     let results = undefined;
     try {
@@ -185,7 +209,7 @@ async function updateNode(update_node){
 
     try {
         let update_node_msg = new terms.ClusterMessageObjects.HdbCoreUdateNodeMessage();
-        update_node_msg.node = update_node;
+        update_node_msg.update_node = merge_node;
         hdb_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.HDB_NODES, update_node_msg, env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
     } catch(e){
         throw new Error(e);
