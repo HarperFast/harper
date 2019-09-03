@@ -23,31 +23,31 @@ const CHANNEL_AUDIT_FILE_DATA = {
         "days": false,
         "amount": 10
     },
-    "auditLog": "/home/kyle/hdb/clustering/transaction_log/dev:dog/audit.json",
+    "auditLog": path.join(CHANNEL_LOG_PATH_DEV_DOG, "audit.json"),
     "files": [
         {
             "date": 1566493358738,
-            "name": "/home/kyle/hdb/clustering/transaction_log/dev:dog/dev:dog.201908221102",
+            "name": path.join(CHANNEL_LOG_PATH_DEV_DOG, "dev:dog.201908221102"),
             "hash": "94902fe17b9e8a33a7f89b894d64ce13"
         },
         {
             "date": 1566493702105,
-            "name": "/home/kyle/hdb/clustering/transaction_log/dev:dog/dev:dog.201908221108",
+            "name": path.join(CHANNEL_LOG_PATH_DEV_DOG,"dev:dog.201908221108"),
             "hash": "30c2eb3e6defd43aee9bf338c46423a1"
         },
         {
             "date": 1566497336658,
-            "name": "/home/kyle/hdb/clustering/transaction_log/dev:dog/dev:dog.201908221208",
+            "name": path.join(CHANNEL_LOG_PATH_DEV_DOG,"dev:dog.201908221208"),
             "hash": "5583258643e03e8fc70e079e657ffd27"
         }
     ]
 };
 const CHANNEL_LOG_FILE1_PATH = path.join(CHANNEL_LOG_PATH_DEV_DOG, 'dev:dog.201908221102');
-const CHANNEL_LOG_FILE1_DATA = '1566493358734,insert,%5B%7B%22name%22%3A%22Harper%22%2C%22breed%22%3A%22Mutt%22%2C%22id%22%3A%22887888%22%2C%22age%22%3A5%7D%2C%7B%22name%22%3A%22Penny%22%2C%22breed%22%3A%22Mutt%22%2C%22id%22%3A%22998%22%2C%22age%22%3A5%7D%5D';
+const CHANNEL_LOG_FILE1_DATA = '1566493358734,insert,%5B%7B%22name%22%3A%22Harper%22%2C%22breed%22%3A%22Mutt%22%2C%22id%22%3A%22887888%22%2C%22age%22%3A5%7D%2C%7B%22name%22%3A%22Penny%22%2C%22breed%22%3A%22Mutt%22%2C%22id%22%3A%22998%22%2C%22age%22%3A5%7D%5D\r\n';
 const CHANNEL_LOG_FILE2_PATH = path.join(CHANNEL_LOG_PATH_DEV_DOG, 'dev:dog.201908221108');
-const CHANNEL_LOG_FILE2_DATA = '1566493702103,insert,%5B%7B%22name%22%3A%22%5CtHarper%5C%22%22%2C%22breed%22%3A%22Mutt%5Cn%22%2C%22id%22%3A%228871888%22%2C%22age%22%3A5%7D%2C%7B%22name%22%3A%22Penny%22%2C%22breed%22%3A%22Mutt%22%2C%22id%22%3A%229198%22%2C%22age%22%3A5%7D%5D';
+const CHANNEL_LOG_FILE2_DATA = '1566493702103,insert,%5B%7B%22name%22%3A%22%5CtHarper%5C%22%22%2C%22breed%22%3A%22Mutt%5Cn%22%2C%22id%22%3A%228871888%22%2C%22age%22%3A5%7D%2C%7B%22name%22%3A%22Penny%22%2C%22breed%22%3A%22Mutt%22%2C%22id%22%3A%229198%22%2C%22age%22%3A5%7D%5D\r\n';
 const CHANNEL_LOG_FILE3_PATH = path.join(CHANNEL_LOG_PATH_DEV_DOG, 'dev:dog.201908221208');
-const CHANNEL_LOG_FILE3_DATA = '1566497336655,insert,%5B%7B%22name%22%3A%22%5CtHarper%5C%22%22%2C%22breed%22%3A%22Mutt%5Cn%22%2C%22id%22%3A%2288715888%22%2C%22age%22%3A5%7D%2C%7B%22name%22%3A%22Penny%22%2C%22breed%22%3A%22Mutt%22%2C%22id%22%3A%2291598%22%2C%22age%22%3A5%7D%5D';
+const CHANNEL_LOG_FILE3_DATA = '1566497336655,insert,%5B%7B%22name%22%3A%22%5CtHarper%5C%22%22%2C%22breed%22%3A%22Mutt%5Cn%22%2C%22id%22%3A%2288715888%22%2C%22age%22%3A5%7D%2C%7B%22name%22%3A%22Penny%22%2C%22breed%22%3A%22Mutt%22%2C%22id%22%3A%2291598%22%2C%22age%22%3A5%7D%5D\r\n';
 
 const TIMESTAMP_8_20_2019 = 1566259200000;
 const TIMESTAMP_8_25_2019 = 1566691200000;
