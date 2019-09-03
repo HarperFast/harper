@@ -3,18 +3,13 @@
 const log = require('../../../../utility/logging/harper_logger');
 const schema_validator = require('../../../../validation/schema_validator');
 const hdb_utils = require('../../../../utility/common_utils');
-const env = require('../../../../utility/environment/environmentManager');
 const hdb_terms = require('../../../../utility/hdbTerms');
-const mkdirp = require('../../../../utility/fs/mkdirp');
-const writeFile = require('../../../../utility/fs/writeFile');
-const WriteProcessorObject = require('../../../WriteProcessorObject');
-const dataWriteProcessor = require('../../../dataWriteProcessor');
 const insertUpdateValidate = require('../fsUtility/insertUpdateValidate');
+const processData = require('../fsUtility/processData');
+const processRows = require('../fsUtility/processRows');
 const uuidV4 = require('uuid/v4');
-const util = require('util');
 
 const INSERT_ACTION = 'inserted';
-const HDB_PATH = `${env.getHdbBasePath()}/${hdb_terms.HDB_SCHEMA_DIR}/`;
 
 module.exports = createAttribute;
 
@@ -33,45 +28,35 @@ async function createAttribute(create_attribute_object) {
     if (validation_error) {
         throw validation_error;
     }
+    let attributes_obj = Object.values(global.hdb_schema[create_attribute_object.schema][create_attribute_object.table]['attributes']);
 
-    let search_object = {
+    for (let attribute of attributes_obj) {
+        if (attribute.attribute === create_attribute_object.attribute) {
+            throw new Error(`attribute '${attribute.attribute}' already exists in ${create_attribute_object.schema}.${create_attribute_object.table}`);
+        }
+    }
+
+    let record = {
+        schema: create_attribute_object.schema,
+        table: create_attribute_object.table,
+        attribute: create_attribute_object.attribute,
+        id: uuidV4(),
+        schema_table: create_attribute_object.schema + '.' + create_attribute_object.table
+    };
+
+    if(create_attribute_object.id){
+        record.id = create_attribute_object.id;
+    }
+
+    let insert_object = {
+        operation: hdb_terms.OPERATIONS_ENUM.INSERT,
         schema: hdb_terms.SYSTEM_SCHEMA_NAME,
         table: hdb_terms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME,
         hash_attribute: hdb_terms.SYSTEM_TABLE_HASH,
-        get_attributes: ['*'],
-        search_attribute: 'attribute',
-        search_value: create_attribute_object.attribute
+        records: [record]
     };
 
     try {
-        let attributes_obj = Object.values(global.hdb_schema[create_attribute_object.schema][create_attribute_object.table]['attributes']);
-
-        for (let attribute of attributes_obj) {
-            if (attribute.attribute === create_attribute_object.attribute) {
-                throw new Error(`attribute '${attribute.attribute}' already exists in ${create_attribute_object.schema}.${create_attribute_object.table}`);
-            }
-        }
-
-        let record = {
-            schema: create_attribute_object.schema,
-            table: create_attribute_object.table,
-            attribute: create_attribute_object.attribute,
-            id: uuidV4(),
-            schema_table: create_attribute_object.schema + '.' + create_attribute_object.table
-        };
-
-        if(create_attribute_object.id){
-            record.id = create_attribute_object.id;
-        }
-
-        let insert_object = {
-            operation: hdb_terms.OPERATIONS_ENUM.INSERT,
-            schema: hdb_terms.SYSTEM_SCHEMA_NAME,
-            table: hdb_terms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME,
-            hash_attribute: hdb_terms.SYSTEM_TABLE_HASH,
-            records: [record]
-        };
-
         log.info('insert object: ' + JSON.stringify(insert_object));
         let insert_response = await insertData(insert_object);
         log.info('attribute: ' + record.attribute);
@@ -98,64 +83,6 @@ async function insertData(insert_object){
         return returnObject(INSERT_ACTION, written_hashes, insert_object, skipped_hashes);
     } catch(err){
         throw (err);
-    }
-}
-
-/**
- * Prepares data using HDB file system model in preparation for writing to storage
- * @param insert_obj
- * @param attributes
- * @param table_schema
- * @param existing_rows
- * @returns {Promise<ExplodedObject>}
- */
-async function processRows(insert_obj, attributes, schema_table, existing_rows){
-    let epoch = Date.now();
-
-    try {
-        let exploder_object = new WriteProcessorObject(HDB_PATH, insert_obj.operation, insert_obj.records, schema_table, attributes, epoch, existing_rows);
-        let data_wrapper = await dataWriteProcessor(exploder_object);
-
-        return data_wrapper;
-    } catch(err) {
-        throw err;
-    }
-}
-
-/**
- * Wrapper function that orchestrates the record creation on disk
- * @param data_wrapper
- */
-async function processData(data_wrapper) {
-    try {
-        await createFolders(data_wrapper.folders);
-        await writeRawDataFiles(data_wrapper.raw_data);
-    } catch(err) {
-        throw err;
-    }
-}
-
-/**
- * creates all of the folders necessary to hold the raw files and hard links
- * @param folders
- */
-async function createFolders(folders) {
-    try {
-        await mkdirp(folders, {mode:  hdb_terms.HDB_FILE_PERMISSIONS});
-    } catch (err) {
-        throw err;
-    }
-}
-
-/**
- * writes the raw data files to disk
- * @param data
- */
-async function writeRawDataFiles(data) {
-    try {
-        await writeFile(data);
-    } catch(err) {
-        throw err;
     }
 }
 

@@ -5,9 +5,6 @@ const insert_validator = require('../../../../validation/insertValidator');
 
 module.exports = insertUpdateValidate;
 
-// const global_schema = require('../../../../utility/globalSchema');
-// const p_global_schema = util.promisify(global_schema.getTableSchema);
-
 /**
  * Takes an insert/update object and validates attributes, also looks for dups and get a list of all attributes from the record set
  * @param {Object} write_object

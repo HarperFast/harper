@@ -2,7 +2,6 @@
 
 const test_utils = require('../../../../test_utils');
 const fsCreateSchema = require('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsCreateSchema');
-const hdb_core_insert = require('../../../../../data_layer/insert');
 const env = require('../../../../../utility/environment/environmentManager');
 const fs = require('fs-extra');
 const chai = require('chai');
@@ -12,6 +11,22 @@ const SCHEMA_CREATE_OBJ_TEST = {
     operation: 'create_schema',
     schema: 'dogs'
     };
+const SCHEMA_TABLE = {
+    "hash_attribute": "name",
+    "name": "hdb_schema",
+    "schema": "system",
+    "residence": [
+        "*"
+    ],
+    "attributes": [
+        {
+            "attribute": "name"
+        },
+        {
+            "attribute": "createddate"
+        }
+    ]
+}
 let current_dir = `${process.cwd()}/unitTests/data_layer/harperBridge/fsBridge/fsMethods`;
 const FULL_TABLE_PATH_TEST = `${current_dir}/schema/${SCHEMA_CREATE_OBJ_TEST.schema}`;
 
@@ -21,6 +36,7 @@ describe('Test file system module fsCreateSchema', () => {
     before(() => {
         root_original = env.get('HDB_ROOT');
         env.setProperty('HDB_ROOT', current_dir);
+        global.hdb_schema // TODO: this was where you left off
     });
 
     after(() => {

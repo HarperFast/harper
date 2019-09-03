@@ -221,6 +221,14 @@ async function dropAttribute(drop_attribute_object) {
     try {
         let success = await moveAttributeToTrash(drop_attribute_object);
 
+        // Remove the dropped attribute from the global hdb schema object.
+        let attributes_obj = Object.values(global.hdb_schema[drop_attribute_object.schema][drop_attribute_object.table]['attributes']);
+        for (let i = 0; i < attributes_obj.length; i++) {
+            if (attributes_obj[i].attribute === drop_attribute_object.attribute) {
+                global.hdb_schema[drop_attribute_object.schema][drop_attribute_object.table]['attributes'].splice(i, 1);
+            }
+        }
+
         return success;
     } catch(err) {
         logger.error(`Got an error deleting attribute ${util.inspect(drop_attribute_object)}.`);
@@ -378,8 +386,13 @@ async function moveFolderToTrash(origin_path, trash_path) {
     try {
         await fs.move(origin_path,trash_path, {overwrite: true});
     } catch(err) {
-        logger.error(`Got an error moving path ${origin_path} to trash path: ${trash_path}`);
-        throw err;
+        if (err.errno === -2) {
+            logger.error(err);
+            logger.error(`Got an error moving path ${origin_path} to trash path: ${trash_path}`);
+        } else {
+            logger.error(`Got an error moving path ${origin_path} to trash path: ${trash_path}`);
+            throw err;
+        }
     }
     return true;
 }
