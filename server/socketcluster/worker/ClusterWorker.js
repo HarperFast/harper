@@ -96,7 +96,9 @@ class ClusterWorker extends WorkerIF {
             log.trace('Calling processArgs');
             this.processArgs().then(hdb_data=>{
                 if(hdb_data && hdb_data.cluster_user) {
+                    log.trace('Cluster worker is creating connections');
                     this.node_connector = new NodeConnector(hdb_data.nodes, hdb_data.cluster_user, this);
+                    log.trace('Cluster worker is Initializing connections.');
                     this.node_connector.initialize().then(()=>{});
                 }
             });

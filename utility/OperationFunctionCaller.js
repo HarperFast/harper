@@ -49,7 +49,7 @@ async function callOperationFunctionAsAwait(promisified_function, function_input
         // seems when scanning a log.  In reality a schema already existing isn't really an error, just a failure.
         if(err.message.includes('already exists')) {
             log.info(err.message);
-            return err.message;
+            throw err;
         }
         log.error(`Error calling operation: ${promisified_function.name}`);
         log.error(err);

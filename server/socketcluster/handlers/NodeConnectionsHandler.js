@@ -72,6 +72,7 @@ class NodeConnectionsHandler {
     async createNewConnection(node){
         // eslint-disable-next-line global-require
         let options = require('../../../json/interNodeConnectorOptions');
+        log.trace(`Creating new connection to ${node.host}`);
         options.hostname = node.host;
         options.port = node.port;
         let additional_info = {
@@ -81,7 +82,8 @@ class NodeConnectionsHandler {
             connected_timestamp: null
         };
         let connection = new InterNodeSocketConnector(socket_client, this.worker, additional_info,options, this.creds, this.connection_timestamps);
-        await connection.initialize();
+        await connection.initialize()
+        log.trace(`Done initializing new connection to ${node.host}`);
         node.subscriptions.push(this.HDB_Schema_Subscription);
         node.subscriptions.push(this.HDB_Table_Subscription);
         node.subscriptions.push(this.HDB_Attribute_Subscription);
@@ -111,7 +113,7 @@ class NodeConnectionsHandler {
         }
     }
 
-    removeNode(remove_node){
+    removeNode(remove_node) {
         try {
             let connect_keys = Object.keys(this.connections.clients);
             for (let x = 0; x < connect_keys.length; x++) {
@@ -131,21 +133,23 @@ class NodeConnectionsHandler {
      * @param connection
      * @param {SubscriptionObject} subscription
      */
-    subscriptionManager(connection, subscription){
+    subscriptionManager(connection, subscription) {
+        log.trace(`Binding subscriptions.`);
         if(subscription.publish === true){
             //we need to observe the channel locally and push the data remotely.
             let sub_channel = this.worker.exchange.subscribe(subscription.channel);
             sub_channel.watch(data=>{
                 if(connection.socket.state === connection.socket.OPEN && connection.socket.authState === connection.socket.AUTHENTICATED) {
-                    log.trace('sending out');
                     // need to get publish out
+                    log.trace(`Worker is publishing to ${subscription.channel}`);
                     connection.publish(subscription.channel, data);
                 }
             });
         }
 
-        if(subscription.subscribe === true){
+        if(subscription.subscribe === true) {
             //we need to observe the channel remotely and send the data locally
+            log.trace(`Worker is subscribing to ${subscription.channel}`);
             connection.subscribe(subscription.channel, this.assignTransactionToChild.bind(this, subscription.channel, connection.socket));
         }
     }
