@@ -28,10 +28,10 @@ class ConnectionNameCheckMiddleware extends MiddlewareIF {
                 this.parseConnectionString(req.socket.request.url);
             }
 
-            if(this.client_node_name) {
-                if (req.data.__originator && req.data.__originator[this.client_node_name] === types.ORIGINATOR_SET_VALUE) {
-                    return types.ERROR_CODES.MIDDLEWARE_SWALLOW;
-                }
+            let remote_host_name = (env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY) === req.socket.additional_info.client_name ?
+                req.socket.additional_info.server_name : req.socket.additional_info.client_name);
+            if (req.data.__originator && req.data.__originator[remote_host_name] === types.ORIGINATOR_SET_VALUE) {
+                return types.ERROR_CODES.MIDDLEWARE_SWALLOW;
             }
         };
         super(middleware_type_enum, eval_function);

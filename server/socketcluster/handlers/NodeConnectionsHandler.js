@@ -10,6 +10,7 @@ const SubscriptionObject = sc_objects.SubscriptionObject;
 const NodeObject = sc_objects.NodeObject;
 const promisify = require('util').promisify;
 const terms = require('../../../utility/hdbTerms');
+const types = require('../types');
 const env = require('../../../utility/environment/environmentManager');
 
 class NodeConnectionsHandler {
@@ -28,6 +29,7 @@ class NodeConnectionsHandler {
         }
 
         this.publishin_promises = [];
+
         this.creds = {
             username: cluster_user.username,
             password: crypto_hash.decrypt(cluster_user.hash)
@@ -82,7 +84,7 @@ class NodeConnectionsHandler {
             connected_timestamp: null
         };
         let connection = new InterNodeSocketConnector(socket_client, this.worker, additional_info,options, this.creds, this.connection_timestamps);
-        await connection.initialize()
+        await connection.initialize();
         log.trace(`Done initializing new connection to ${node.host}`);
         node.subscriptions.push(this.HDB_Schema_Subscription);
         node.subscriptions.push(this.HDB_Table_Subscription);
@@ -135,12 +137,27 @@ class NodeConnectionsHandler {
      */
     subscriptionManager(connection, subscription) {
         log.trace(`Binding subscriptions.`);
-        if(subscription.publish === true){
+        if(subscription.publish === true) {
             //we need to observe the channel locally and push the data remotely.
             let sub_channel = this.worker.exchange.subscribe(subscription.channel);
             sub_channel.watch(data=>{
                 if(connection.socket.state === connection.socket.OPEN && connection.socket.authState === connection.socket.AUTHENTICATED) {
-                    // need to get publish out
+                    // We need to delete the transacted flag here so it isn't evaluated on the remote side.
+                    if(data.__transacted) {
+                        delete data.__transacted;
+                    }
+
+                    if(!data.channel) {
+                        // worker middleware expects a channel in order to evaluate properly, so append it here.
+                        data.channel = subscription.channel;
+                    }
+
+                    let remote_host_name = (env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY) === connection.socket.additional_info.client_name ?
+                        connection.socket.additional_info.server_name : connection.socket.additional_info.client_name);
+                    if(data.__originator && data.__originator[remote_host_name] === types.ORIGINATOR_SET_VALUE) {
+                        log.info('Message contains originator matching remote host, swallowing message.');
+                        return;
+                    }
                     log.trace(`Worker is publishing to ${subscription.channel}`);
                     connection.publish(subscription.channel, data);
                 }
@@ -161,19 +178,26 @@ class NodeConnectionsHandler {
             socket: socket
         };
 
-        await this.runMiddleware(req);
-    }
-
-    async runMiddleware(request){
-        for (let x = 0; x < this.publishin_promises.length; x++) {
-            try {
-                await this.publishin_promises[x](request);
-            } catch(e){
-                log.error(e);
-            }
+        try {
+            await this.runPublishInMiddleware(req);
+        } catch(err) {
+            log.info(`Middleware objection found on channel: ${channel}. Not consuming message.`);
         }
     }
 
+    async runPublishInMiddleware(request) {
+        let result = undefined;
+        for (let x = 0; x < this.publishin_promises.length; x++) {
+            try {
+                result = await this.publishin_promises[x](request);
+            } catch(e) {
+                log.error(e);
+            }
+            if(result) {
+                throw new Error('Got objection from publishin middleware');
+            }
+        }
+    }
 }
 
 module.exports = NodeConnectionsHandler;
