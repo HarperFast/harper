@@ -10,6 +10,10 @@ const sc_utils = require('../util/socketClusterUtils');
 const terms = require('../../../utility/hdbTerms');
 const {inspect} = require('util');
 const RoomMessageObjects = require('../room/RoomMessageObjects');
+const fs = require('fs-extra');
+const path = require('path');
+const env = require('../../../utility/environment/environmentManager');
+env.initSync();
 
 let worker_subscriptions = {};
 
@@ -105,13 +109,17 @@ class ClusterWorker extends WorkerIF {
     async processArgs() {
         log.trace('processArgs');
         try{
-            let data = process.argv[2];
+            let file_path = path.join(env.getHdbBasePath(), terms.CLUSTERING_FOLDER_NAME, terms.CLUSTERING_PAYLOAD_FILE_NAME);
+            let data = await fs.readFile(file_path, 'utf-8');
+            await fs.unlink(file_path);
             let hdb_data = JSON.parse(data);
             if(hdb_data !== undefined) {
                 await this.setHDBDatatoExchange(hdb_data);
                 log.info('hdb_data successfully set to exchange');
                 return hdb_data;
             }
+
+
         } catch(e){
             log.error(e);
         }
