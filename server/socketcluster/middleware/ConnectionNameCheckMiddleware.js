@@ -27,7 +27,10 @@ class ConnectionNameCheckMiddleware extends MiddlewareIF {
             if(!this.server_node_name || !this.client_node_name) {
                 this.parseConnectionString(req.socket.request.url);
             }
-
+            // This is a message meant for an hdb_child.
+            if(this.query_values && this.query_values.hdb_worker) {
+                return;
+            }
             let remote_host_name = (env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY) === req.socket.additional_info.client_name ?
                 req.socket.additional_info.server_name : req.socket.additional_info.client_name);
             if (req.data.__originator && req.data.__originator[remote_host_name] === types.ORIGINATOR_SET_VALUE) {
@@ -39,10 +42,12 @@ class ConnectionNameCheckMiddleware extends MiddlewareIF {
         this.command_order = types.COMMAND_EVAL_ORDER_ENUM.LOW;
         this.server_node_name = undefined;
         this.client_node_name = undefined;
+        this.query_values = undefined;
     }
 
     parseConnectionString(req_url) {
         let query_vals = url.parse(req_url, true).query;
+        this.query_values = query_vals;
         this.server_node_name = query_vals.node_server_name;
         this.client_node_name = query_vals.node_client_name;
     }
