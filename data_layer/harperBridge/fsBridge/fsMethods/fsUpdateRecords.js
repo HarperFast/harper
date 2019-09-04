@@ -31,14 +31,14 @@ async function updateRecords(update_obj) {
         let existing_map = _.keyBy(existing_rows, function(record) {
             return record[schema_table.hash_attribute];
         });
-        let { written_hashes, skipped_hashes, unlinks, ...data_wrapper} = await processRows(update_obj, attributes, schema_table, existing_map);
+        let data_wrapper = await processRows(update_obj, attributes, schema_table, existing_map);
         await checkForNewAttributes(update_obj.hdb_auth_header, schema_table, attributes);
-        await unlinkFiles(unlinks);
+        await unlinkFiles(data_wrapper.unlinks);
         await processData(data_wrapper);
 
         return {
-            written_hashes,
-            skipped_hashes,
+            written_hashes: data_wrapper.written_hashes,
+            skipped_hashes: data_wrapper.skipped_hashes,
             schema_table
         };
     } catch(err) {
@@ -72,7 +72,7 @@ async function getExistingRows(schema_table, hashes, attributes){
         return existing_records;
     } catch(err) {
         log.error(err);
-        throw new Error(err);
+        throw err;
     }
 }
 

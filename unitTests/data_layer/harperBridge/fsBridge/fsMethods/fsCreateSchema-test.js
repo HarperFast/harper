@@ -1,47 +1,48 @@
 'use strict';
 
+const rewire = require('rewire');
 const test_utils = require('../../../../test_utils');
-const fsCreateSchema = require('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsCreateSchema');
+const fsCreateSchema = rewire('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsCreateSchema');
 const env = require('../../../../../utility/environment/environmentManager');
 const fs = require('fs-extra');
 const chai = require('chai');
+const sinon = require('sinon');
 const { expect } = chai;
 
 const SCHEMA_CREATE_OBJ_TEST = {
     operation: 'create_schema',
     schema: 'dogs'
     };
-const SCHEMA_TABLE = {
-    "hash_attribute": "name",
-    "name": "hdb_schema",
-    "schema": "system",
-    "residence": [
-        "*"
-    ],
-    "attributes": [
-        {
-            "attribute": "name"
-        },
-        {
-            "attribute": "createddate"
-        }
-    ]
-}
+
 let current_dir = `${process.cwd()}/unitTests/data_layer/harperBridge/fsBridge/fsMethods`;
 const FULL_TABLE_PATH_TEST = `${current_dir}/schema/${SCHEMA_CREATE_OBJ_TEST.schema}`;
+const ROOT_SCHEMA_DIR = `${current_dir}/schema/`;
+
+async function setupTestSchemaDir() {
+    try {
+        await fs.mkdir(ROOT_SCHEMA_DIR);
+    } catch(err) {
+        console.error(err);
+    }
+}
 
 describe('Test file system module fsCreateSchema', () => {
+    let sandbox = sinon.createSandbox();
     let root_original;
+    let create_records_stub = sandbox.stub();
 +
-    before(() => {
+    before(async () => {
         root_original = env.get('HDB_ROOT');
+        fsCreateSchema.__set__('fsCreateRecords', create_records_stub);
         env.setProperty('HDB_ROOT', current_dir);
-        global.hdb_schema // TODO: this was where you left off
+        await setupTestSchemaDir();
     });
 
     after(() => {
         env.setProperty('HDB_ROOT', root_original);
         test_utils.cleanUpDirectories(`${current_dir}/schema`);
+        sandbox.restore();
+        rewire('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsCreateSchema');
     });
     
     it('Test a schema directory is created on the file system', async () => {

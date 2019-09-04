@@ -1,11 +1,13 @@
 'use strict';
 
+const rewire = require('rewire');
 const test_utils = require('../../../../test_utils');
-const fsCreateTable = require('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsCreateTable');
+const fsCreateTable = rewire('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsCreateTable');
 const env = require('../../../../../utility/environment/environmentManager');
 const uuidV4 = require('uuid/v4');
 const fs = require('fs-extra');
 const chai = require('chai');
+const sinon = require('sinon');
 const { expect } = chai;
 
 const CREATE_TABLE_OBJ_TEST = {
@@ -27,15 +29,21 @@ const FULL_TABLE_PATH_TEST = `${current_dir}/schema/${CREATE_TABLE_OBJ_TEST.sche
 
 describe('Test file system module fsCreateTable', () => {
     let root_original;
+    let sandbox = sinon.createSandbox();
+    let create_records_stub = sandbox.stub();
+
 
     before(() => {
         root_original = env.get('HDB_ROOT');
         env.setProperty('HDB_ROOT', current_dir);
+        fsCreateTable.__set__('fsCreateRecords', create_records_stub);
     });
 
     after(() => {
         env.setProperty('HDB_ROOT', root_original);
         test_utils.cleanUpDirectories(`${current_dir}/schema`);
+        sandbox.restore();
+        rewire('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsCreateTable');
     });
 
     it('Test that createTable returns an error when the schema does not exist', async () => {

@@ -51,51 +51,91 @@ const SCEMA_TABLE_TEST = {
     ]
 };
 
-describe('Tests for fsUtility function', () => {
+describe('Tests for fsUtility function insertUpdateValidate', () => {
     let sandbox = sinon.createSandbox();
-    let p_global_schema_stub = sandbox.stub().resolves(SCEMA_TABLE_TEST);
 
     before(() => {
-        insertUpdateValidate.__set__('p_global_schema', p_global_schema_stub);
+        global.hdb_schema = {
+            [SCEMA_TABLE_TEST.schema]: {
+                [SCEMA_TABLE_TEST.name]: {
+                    attributes: SCEMA_TABLE_TEST.attributes,
+                    hash_attribute: SCEMA_TABLE_TEST.hash_attribute,
+                    residence: SCEMA_TABLE_TEST.residence,
+                    schema: SCEMA_TABLE_TEST.schema,
+                    name: SCEMA_TABLE_TEST.name
+                }
+            }
+        };
     });
 
     after(() => {
+        delete global.hdb_schema[SCEMA_TABLE_TEST.schema];
         sandbox.restore();
     });
 
-    it('Test invalid update parameters defined error is thrown', async () => {
-        let result = await test_utils.testError(insertUpdateValidate(null), 'invalid update parameters defined.');
+    it('Test invalid update parameters defined error is thrown',() => {
+        let error;
+        try {
+            insertUpdateValidate(null);
+        } catch(err) {
+            error = err;
+        }
 
-        expect(result).to.be.true;
+        expect(error.message).to.equal('invalid update parameters defined.');
+        expect(error).to.be.instanceOf(Error);
     });
 
-    it('Test invalid schema specified error is thrown', async () => {
-        let result = await test_utils.testError(insertUpdateValidate({schema: ''}), 'invalid schema specified.');
+    it('Test invalid schema specified error is thrown',() => {
+        let error;
+        try {
+            insertUpdateValidate({schema: ''});
+        } catch(err) {
+            error = err;
+        }
 
-        expect(result).to.be.true;
+        expect(error.message).to.equal('invalid schema specified.');
+        expect(error).to.be.instanceOf(Error);
     });
     
-    it('Test invalid table specified error is thrown', async () => {
-        let result = await test_utils.testError(insertUpdateValidate({schema: 'present', table: ''}), 'invalid table specified.');
+    it('Test invalid table specified error is thrown',() => {
+        let error;
+        try {
+            insertUpdateValidate({schema: 'present', table: ''});
+        } catch(err) {
+            error = err;
+        }
 
-        expect(result).to.be.true;
+        expect(error.message).to.equal('invalid table specified.');
+        expect(error).to.be.instanceOf(Error);
     });
 
-    it('Test that insert validator throws schema must be alpha numeric error', async () => {
+    it('Test that insert validator throws schema must be alpha numeric error',() => {
         let write_object_clone = test_utils.deepClone(WRITE_OBJECT_TEST);
         write_object_clone.table = '#$%';
-        let result = await test_utils.testError(insertUpdateValidate(write_object_clone), 'Table schema must be alpha numeric');
+        let error;
+        try {
+            insertUpdateValidate(write_object_clone);
+        } catch(err) {
+            error = err;
+        }
 
-        expect(result).to.be.true;
+        expect(error.message).to.equal('Table schema must be alpha numeric');
+        expect(error).to.be.instanceOf(Error);
     });
 
-    it('Test that valid hash must be provided error is thrown', async () => {
+    it('Test that valid hash must be provided error is thrown',() => {
         let write_object_clone = test_utils.deepClone(WRITE_OBJECT_TEST);
         write_object_clone.operation = 'update';
         write_object_clone.records[0].id = '';
-        let result = await test_utils.testError(insertUpdateValidate(write_object_clone), 'a valid hash attribute must be provided with update record');
+        let error;
+        try {
+            insertUpdateValidate(write_object_clone);
+        } catch(err) {
+            error = err;
+        }
 
-        expect(result).to.be.true;
+        expect(error.message).to.equal('a valid hash attribute must be provided with update record');
+        expect(error).to.be.instanceOf(Error);
     });
 
     it('Test nominal operation and correct value returned', async () => {

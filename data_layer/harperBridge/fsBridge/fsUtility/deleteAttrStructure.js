@@ -7,10 +7,10 @@ module.exports = deleteAttributeStructure;
 
 async function deleteAttributeStructure(attribute_drop_obj) {
 
-    // TODO: This code is temporary, bridge function search by value will replace it when built.
+    // TODO: This code is temporary, bridge function search by value will replace it when built. Update unit tests when bridge function added.
     const util = require('util');
     const search_by_value = require('../../../search').searchByValue;
-    let p_search_by_value = (util.promisify(search_by_value));
+    let p_search_by_value = util.promisify(search_by_value);
 
     let search_obj = {
         schema: terms.SYSTEM_SCHEMA_NAME,

@@ -386,6 +386,9 @@ async function moveFolderToTrash(origin_path, trash_path) {
     try {
         await fs.move(origin_path,trash_path, {overwrite: true});
     } catch(err) {
+
+        // This is here because calling drop attribute on an attribute that only exists in the system schema folder shouldn't
+        // throw and error if that folder doesn't exist in schema file path.
         if (err.errno === -2) {
             logger.error(err);
             logger.error(`Got an error moving path ${origin_path} to trash path: ${trash_path}`);

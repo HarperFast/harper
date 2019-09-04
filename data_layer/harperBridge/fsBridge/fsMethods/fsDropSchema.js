@@ -21,15 +21,6 @@ async function dropSchema(drop_schema_obj) {
         hash_values: [schema]
     };
 
-    let search_obj = {
-        schema: terms.SYSTEM_SCHEMA_NAME,
-        table: terms.SYSTEM_TABLE_NAMES.TABLE_TABLE_NAME,
-        hash_attribute: terms.SYSTEM_TABLE_HASH,
-        search_attribute: terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_SCHEMA_KEY,
-        search_value: schema,
-        get_attributes: ['id']
-    };
-
     try {
         let tables = global.hdb_schema[schema];
         let table_ids = [];
