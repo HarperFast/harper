@@ -173,9 +173,16 @@ describe('Test kickOffEnterprise', function () {
         env.append('CLUSTERING_PORT', '1115');
         env.append('CLUSTERING_USER', 'test_cluster_user');
         env.append('NODE_NAME', 'node_1');
-        
+        env.append('HDB_ROOT', 'hdb');
+
+        let revert = enterprise_initialization.__set__('fs', {
+            writeFile: async()=>{
+                return;
+            }
+        });
         await enterprise_initialization.kickOffEnterprise();
         assert.equal(fork_stub.called, true, 'Child fork should have been called');
+        revert();
     });
     it('No node data in hdb_nodes table, expect cluster server initiated', async function () {
         search_nodes_stub = sandbox.stub(search, 'searchByValue').yields('', []);
@@ -185,9 +192,17 @@ describe('Test kickOffEnterprise', function () {
         env.append('CLUSTERING_PORT', '1115');
         env.append('CLUSTERING_USER', 'test_cluster_user');
         env.append('NODE_NAME', 'node_1');
-        
+        env.append('HDB_ROOT', 'hdb');
+
+        let revert = enterprise_initialization.__set__('fs', {
+            writeFile: async()=>{
+                return;
+            }
+        });
+
         await enterprise_initialization.kickOffEnterprise();
         assert.equal(fork_stub.called, true, 'Child fork should have been called');
+        revert();
     });
     it('No cluster config in properties, expect no cluster node initiated', async function () {
         search_nodes_stub = sandbox.stub(search, 'searchByValue').yields('', SEARCH_RESULT_OBJECT);
@@ -204,11 +219,19 @@ describe('Test kickOffEnterprise', function () {
         env.append('CLUSTERING', 'TRUE');
         env.append('CLUSTERING_PORT', '1115');
         env.append('NODE_NAME', 'node_1');
+        env.append('HDB_ROOT', 'hdb');
+
+        let revert = enterprise_initialization.__set__('fs', {
+            writeFile: async()=>{
+                return;
+            }
+        });
         // Need to restore this before we can set it to a new stub;
         fork_stub = null;
         fork_stub = sandbox.stub().throws(new Error('Fork Failure'));
         enterprise_initialization.__set__('fork', fork_stub);
         await enterprise_initialization.kickOffEnterprise();
         assert.equal(fork_stub.called, true, 'Fork should have been called');
+        revert();
     });
 });
