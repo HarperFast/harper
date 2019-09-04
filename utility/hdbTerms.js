@@ -63,7 +63,6 @@ const SYSTEM_TABLE_NAMES = {
     NODE_TABLE_NAME :'hdb_nodes',
     ATTRIBUTE_TABLE_NAME : 'hdb_attribute',
     LICENSE_TABLE_NAME: 'hdb_license',
-    QUEUE_TABLE_NAME: 'hdb_queue',
     ROLE_TABLE_NAME: 'hdb_role',
     SCHEMA_TABLE_NAME: 'hdb_schema',
     TABLE_TABLE_NAME: 'hdb_table',

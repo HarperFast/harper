@@ -18,7 +18,6 @@ const {
     NODE_TABLE_NAME,
     ATTRIBUTE_TABLE_NAME,
     LICENSE_TABLE_NAME,
-    QUEUE_TABLE_NAME,
     ROLE_TABLE_NAME,
     SCHEMA_TABLE_NAME,
     TABLE_TABLE_NAME,
@@ -504,7 +503,6 @@ function createMockSystemSchema(hash_attribute, schema, table, attributes_keys) 
     makeTheDir(path.join(test_system_base_path, LICENSE_TABLE_NAME));
     makeTheDir(path.join(test_system_base_path, JOB_TABLE_NAME));
     makeTheDir(path.join(test_system_base_path, NODE_TABLE_NAME));
-    makeTheDir(path.join(test_system_base_path, QUEUE_TABLE_NAME));
     makeTheDir(path.join(test_system_base_path, ROLE_TABLE_NAME));
     makeTheDir(path.join(test_system_base_path, USER_TABLE_NAME));
 }
@@ -604,14 +602,6 @@ function setGlobalSchema(hash_attribute, schema, table, table_id, attributes_key
                 },
                 "hdb_nodes": {
                     "hash_attribute": "name",
-                    "residence": [
-                        "*"
-                    ]
-                },
-                "hdb_queue": {
-                    "hash_attribute": "id",
-                    "name": "hdb_queue",
-                    "schema": "system",
                     "residence": [
                         "*"
                     ]
