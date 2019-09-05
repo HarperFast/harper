@@ -9,6 +9,7 @@ const fsDeleteRecords = require('./fsMethods/fsDeleteRecords');
 const fsGetDataByHash = require('./fsMethods/fsGetDataByHash');
 const fsSearchByHash = require('./fsMethods/fsSearchByHash');
 const fsGetDataByValue = require('./fsMethods/fsGetDataByValue');
+const fsSearchByValue = require('./fsMethods/fsSearchByValue');
 const fsDropSchema = require('./fsMethods/fsDropSchema');
 const fsCreateTable = require('./fsMethods/fsCreateTable');
 
@@ -41,11 +42,9 @@ class FileSystemBridge extends BridgeMethods {
         }
     }
 
-    // TODO: update to actual fs method
     async searchByValue(search_object) {
         try {
-            const search_results = await fsGetDataByValue(search_object);
-            return Object.values(search_results);
+            return await fsSearchByValue(search_object);
         } catch(err) {
             log.error(err);
             throw err;

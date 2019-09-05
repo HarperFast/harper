@@ -103,6 +103,4 @@ describe('fsGetDataByHash', () => {
             });
         });
     }));
-
-    //TODO: Add tests for validation errors
 });

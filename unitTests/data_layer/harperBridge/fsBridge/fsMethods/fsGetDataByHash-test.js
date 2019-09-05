@@ -9,14 +9,15 @@ const {
     tearDownMockFS,
     preTestPrep
 } = test_utils;
+
 preTestPrep();
 
+const { expect } = require('chai');
 const rewire = require('rewire');
 const getAttributeFileValues_rw = rewire('../../../../../data_layer/harperBridge/fsBridge/fsUtility/getAttributeFileValues');
 getAttributeFileValues_rw.__set__('getBasePath', getMockFSPath);
 let fsGetDataByHash_rw = rewire('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsGetDataByHash');
-const chai = require('chai');
-const { expect } = chai;
+fsGetDataByHash_rw.__set__('getAttributeFileValues', getAttributeFileValues_rw);
 
 const { TEST_DATA_DOG } = require('../../../../test_data');
 const TEST_SCHEMA = 'dev';
@@ -52,7 +53,6 @@ describe('fsGetDataByHash', () => {
 
     before(() => {
         setupTestData();
-        fsGetDataByHash_rw.__set__('getAttributeFileValues', getAttributeFileValues_rw);
     });
 
     after(() => {
@@ -98,6 +98,4 @@ describe('fsGetDataByHash', () => {
             });
         });
     }));
-
-    //TODO: Add tests for validation errors
 });
