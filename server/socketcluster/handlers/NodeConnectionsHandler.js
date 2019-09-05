@@ -1,6 +1,6 @@
 "use strict";
 
-const SocketConnector = require('../connector/InterNodeSocketConnector');
+const InterNodeSocketConnector = require('../connector/InterNodeSocketConnector');
 const socket_client = require('socketcluster-client');
 const sc_objects = require('../socketClusterObjects');
 const log = require('../../../utility/logging/harper_logger');
@@ -70,7 +70,7 @@ class NodeConnectionsHandler {
 
     async createNewConnection(node){
         // eslint-disable-next-line global-require
-        let options = require('../../../json/connectorOptions');
+        let options = require('../../../json/interNodeConnectorOptions');
         options.hostname = node.host;
         options.port = node.port;
         let additional_info = {
@@ -78,7 +78,7 @@ class NodeConnectionsHandler {
             subscriptions: node.subscriptions,
             connected_timestamp: null
         };
-        let connection = new SocketConnector(socket_client, this.worker, additional_info,options, this.creds, this.connection_timestamps);
+        let connection = new InterNodeSocketConnector(socket_client, this.worker, additional_info,options, this.creds, this.connection_timestamps);
         await connection.initialize();
         if(node.subscriptions){
             node.subscriptions.push(this.HDB_Schema_Subscription);

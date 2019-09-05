@@ -88,6 +88,13 @@ const CORE_ROOM_MSG_TYPE_ENUM = {
     HDB_TRANSACTION: 'HDB_TRANSACTION'
 };
 
+const ROTATING_TRANSACTION_LOG_ENUM = {
+    FREQUENCY: 'custom',
+    AUDIT_LOG_NAME: 'audit.json',
+    LOG_SIZE: '50M',
+    NUMBER_OF_LOGS: '10'
+};
+
 const HDB_HEADER_NAME = 'hdb_header';
 
 module.exports = {
@@ -101,5 +108,6 @@ module.exports = {
     RULE_TYPE_ENUM,
     WORKER_ROOM_MSG_TYPE_ENUM,
     CORE_ROOM_MSG_TYPE_ENUM,
-    HDB_HEADER_NAME
+    HDB_HEADER_NAME,
+    ROTATING_TRANSACTION_LOG_ENUM
 };
