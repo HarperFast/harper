@@ -31,8 +31,8 @@ class ConnectionNameCheckMiddleware extends MiddlewareIF {
             if(this.query_values && this.query_values.hdb_worker) {
                 return;
             }
-            let remote_host_name = (env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY) === req.socket.additional_info.client_name ?
-                req.socket.additional_info.server_name : req.socket.additional_info.client_name);
+            let remote_host_name = (env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY) === this.client_node_name ?
+                this.server_node_name : this.client_node_name);
             if (req.data.__originator && req.data.__originator[remote_host_name] === types.ORIGINATOR_SET_VALUE) {
                 return types.ERROR_CODES.MIDDLEWARE_SWALLOW;
             }
