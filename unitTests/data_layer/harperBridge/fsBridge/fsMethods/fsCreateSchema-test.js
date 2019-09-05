@@ -14,9 +14,8 @@ const SCHEMA_CREATE_OBJ_TEST = {
     schema: 'dogs'
     };
 
-let current_dir = `${process.cwd()}/unitTests/data_layer/harperBridge/fsBridge/fsMethods`;
-const FULL_TABLE_PATH_TEST = `${current_dir}/schema/${SCHEMA_CREATE_OBJ_TEST.schema}`;
-const ROOT_SCHEMA_DIR = `${current_dir}/schema/`;
+const FULL_TABLE_PATH_TEST = `${__dirname}/schema/${SCHEMA_CREATE_OBJ_TEST.schema}`;
+const ROOT_SCHEMA_DIR = `${__dirname}/schema/`;
 
 async function setupTestSchemaDir() {
     try {
@@ -34,13 +33,13 @@ describe('Test file system module fsCreateSchema', () => {
     before(async () => {
         root_original = env.get('HDB_ROOT');
         fsCreateSchema.__set__('fsCreateRecords', create_records_stub);
-        env.setProperty('HDB_ROOT', current_dir);
+        env.setProperty('HDB_ROOT', __dirname);
         await setupTestSchemaDir();
     });
 
     after(() => {
         env.setProperty('HDB_ROOT', root_original);
-        test_utils.cleanUpDirectories(`${current_dir}/schema`);
+        test_utils.cleanUpDirectories(`${__dirname}/schema`);
         sandbox.restore();
         rewire('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsCreateSchema');
     });

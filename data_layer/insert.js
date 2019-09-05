@@ -22,6 +22,8 @@ const ATTRIBUTE_ALREADY_EXISTS = 'attribute already exists';
 const UPDATE_ACTION = 'updated';
 const INSERT_ACTION = 'inserted';
 
+const log = require('../utility/logging/harper_logger');
+
 module.exports = {
     insert: insertData,
     update: updateData,
@@ -115,6 +117,9 @@ async function insertData(insert_object){
     try {
         let bridge_insert_result = await harperBridge.createRecords(insert_object);
         convertOperationToTransaction(insert_object, bridge_insert_result.written_hashes, bridge_insert_result.schema_table.hash_attribute);
+
+        const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
+        await p_schema_to_global();
 
         return returnObject(INSERT_ACTION, bridge_insert_result.written_hashes, insert_object, bridge_insert_result.skipped_hashes);
     } catch(e){

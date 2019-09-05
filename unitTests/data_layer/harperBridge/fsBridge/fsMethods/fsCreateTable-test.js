@@ -24,8 +24,7 @@ const TABLE_SYSTEM_DATA_TEST = {
     hash_attribute: CREATE_TABLE_OBJ_TEST.hash_attribute
     };
 
-let current_dir = `${process.cwd()}/unitTests/data_layer/harperBridge/fsBridge/fsMethods`;
-const FULL_TABLE_PATH_TEST = `${current_dir}/schema/${CREATE_TABLE_OBJ_TEST.schema}/${CREATE_TABLE_OBJ_TEST.table}`;
+const FULL_TABLE_PATH_TEST = `${__dirname}/schema/${CREATE_TABLE_OBJ_TEST.schema}/${CREATE_TABLE_OBJ_TEST.table}`;
 
 describe('Test file system module fsCreateTable', () => {
     let root_original;
@@ -35,13 +34,13 @@ describe('Test file system module fsCreateTable', () => {
 
     before(() => {
         root_original = env.get('HDB_ROOT');
-        env.setProperty('HDB_ROOT', current_dir);
+        env.setProperty('HDB_ROOT', __dirname);
         fsCreateTable.__set__('fsCreateRecords', create_records_stub);
     });
 
     after(() => {
         env.setProperty('HDB_ROOT', root_original);
-        test_utils.cleanUpDirectories(`${current_dir}/schema`);
+        test_utils.cleanUpDirectories(`${__dirname}/schema`);
         sandbox.restore();
         rewire('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsCreateTable');
     });
@@ -62,7 +61,7 @@ describe('Test file system module fsCreateTable', () => {
         try {
             // createTable expects schema dir to already exist so I am creating a temporary one.
             // Directory is removed after test
-            await fs.mkdirp(`${current_dir}/schema/${CREATE_TABLE_OBJ_TEST.schema}`);
+            await fs.mkdirp(`${__dirname}/schema/${CREATE_TABLE_OBJ_TEST.schema}`);
             await fsCreateTable(TABLE_SYSTEM_DATA_TEST, CREATE_TABLE_OBJ_TEST);
         } catch(err) {
             console.error(err);

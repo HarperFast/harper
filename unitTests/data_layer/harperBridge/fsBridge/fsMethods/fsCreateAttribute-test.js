@@ -67,10 +67,6 @@ const INSERT_RESPONSE = {
 describe('Tests for file system module fsCreateAttribute', () => {
     let sandbox = sinon.createSandbox();
 
-    before(() => {
-        processRows.__set__('HDB_PATH', FS_DIR_TEST);
-    });
-
     after(() => {
         rewire('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsCreateAttribute');
     });
