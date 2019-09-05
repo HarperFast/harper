@@ -45,6 +45,9 @@ const BLOB_FOLDER_NAME = 'blob';
 const HDB_SCHEMA_DIR = 'schema';
 const HDB_TRASH_DIR = 'trash';
 
+const CLUSTERING_FOLDER_NAME = 'clustering';
+const CLUSTERING_PAYLOAD_FILE_NAME = '.scPayload.json';
+
 // Trying to keep socket cluster as modular as possible, so we will create values in here that point to values
 // inside of the socketcluster types module.
 const cluster_types = require('../server/socketcluster/types');
@@ -392,6 +395,8 @@ module.exports = {
     HDB_SCHEMA_DIR,
     HDB_TRASH_DIR,
     // Make the message objects available through hdbTerms to keep clustering as modular as possible.
-    ClusterMessageObjects
+    ClusterMessageObjects,
+    CLUSTERING_FOLDER_NAME,
+    CLUSTERING_PAYLOAD_FILE_NAME
 };
 
