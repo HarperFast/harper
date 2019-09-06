@@ -39,6 +39,18 @@ const INSERT_OBJ_TEST = {
     ]
 };
 
+const UPDATE_OBJ_TEST = {
+    operation: "update",
+    schema: "system",
+    table: "hdb_schema",
+    records: [
+        {
+            name: "dog",
+            createddate: "1565108103810"
+        }
+    ]
+};
+
 const ATTRIBUTES_TEST = [
     "name",
     "createddate"
@@ -105,14 +117,13 @@ describe('Tests for the file system bridge class', () => {
     let fsBridge = new FileSystemBridge();
     let log_error_spy;
 
-
     before(() => {
         log_error_spy = sandbox.spy(log, 'error');
     });
 
     after(() => {
         sandbox.restore();
-        FileSystemBridge = rewire('../../../../data_layer/harperBridge/fsBridge/FileSystemBridge');
+        rewire('../../../../data_layer/harperBridge/fsBridge/FileSystemBridge');
     });
 
     context('Test createRecords method', () => {
@@ -285,6 +296,35 @@ describe('Tests for the file system bridge class', () => {
             let error_msg = 'Error creating attribute';
             fs_create_attribute_stub.throws(new Error(error_msg));
             let test_error_result = await test_utils.testError(fsBridge.createAttribute(CREATE_ATTR_OBJ_TEST), error_msg);
+
+            expect(test_error_result).to.be.true;
+            expect(log_error_spy).to.have.been.calledOnce;
+        });
+    });
+
+    context('Test updateRecords', () => {
+        let fs_update_records_stub = sandbox.stub();
+        let fs_update_records_rw;
+
+        before(() => {
+            fs_update_records_rw = FileSystemBridge.__set__('fsUpdateRecords', fs_update_records_stub);
+        });
+
+        after(() => {
+            sandbox.restore();
+            fs_update_records_rw();
+        });
+
+        it('Test updateRecords method is called as expected', async () => {
+            await fsBridge.updateRecords(UPDATE_OBJ_TEST);
+
+            expect(fs_update_records_stub).to.have.been.calledWith(UPDATE_OBJ_TEST);
+        });
+
+        it('Test that error is caught, thrown and logged', async () => {
+            let error_msg = 'Error updating records';
+            fs_update_records_stub.throws(new Error(error_msg));
+            let test_error_result = await test_utils.testError( fsBridge.updateRecords(UPDATE_OBJ_TEST), error_msg);
 
             expect(test_error_result).to.be.true;
             expect(log_error_spy).to.have.been.calledOnce;
