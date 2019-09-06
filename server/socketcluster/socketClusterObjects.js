@@ -1,5 +1,7 @@
 "use strict";
 
+const terms = require('../../utility/hdbTerms');
+const ROTATING_TRANSACTION_LOG_ENUM = require('./types').ROTATING_TRANSACTION_LOG_ENUM;
 
 class NodeObject{
     /**
@@ -44,8 +46,32 @@ class CatchupObject{
     }
 }
 
+class RotatingFileWriteStreamOptionsObject{
+    /**
+     *
+     * @param filename
+     * @param frequency
+     * @param size
+     * @param max_logs
+     * @param audit_file
+     */
+    constructor(filename, size, max_logs, audit_file){
+        this.filename = filename;
+        this.frequency = ROTATING_TRANSACTION_LOG_ENUM.FREQUENCY;
+        this.size = size;
+        this.verbose = false;
+        this.max_logs = max_logs;
+        this.audit_file = audit_file;
+        this. file_options = {
+            flags: 'a',
+                mode: terms.HDB_FILE_PERMISSIONS
+        };
+    }
+}
+
 module.exports = {
     NodeObject,
     SubscriptionObject,
-    CatchupObject
+    CatchupObject,
+    RotatingFileWriteStreamOptionsObject
 };

@@ -13,7 +13,6 @@ let test_hash_values = [];
 let test_attr_names;
 let test_attr_data = {};
 
-//TODO: look into cleaning upp to only build the data needed
 function setupTestData() {
     const test_data = test_utils.deepClone(TEST_DATA_DOG);
     test_attr_names = Object.keys(test_data[0]);

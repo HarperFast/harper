@@ -23,39 +23,23 @@ const stop = require('../bin/stop');
 const util = require('util');
 const insert = require('../data_layer/insert');
 const global_schema = require('../utility/globalSchema');
-/**
- * Callback functions are still heavily relied on.
- * Callbackify takes an async function and converts to an error-first callback style function.
-* */
-const cb_insert_insert = util.callbackify(insert.insert);
-const cb_insert_update = util.callbackify(insert.update);
-const cb_schema_drop_attribute = util.callbackify(schema.dropAttribute);
-const cb_user_add_user = util.callbackify(user.addUser);
-const cb_user_alter_user = util.callbackify(user.alterUser);
-const cb_user_drop_user = util.callbackify(user.dropUser);
-const cb_user_user_info = util.callbackify(user.userInfo);
-const cb_user_list_user_external = util.callbackify(user.listUsersExternal);
-const cb_role_add_role = util.callbackify(role.addRole);
-const cb_role_alter_role = util.callbackify(role.alterRole);
-const cb_role_drop_role = util.callbackify(role.dropRole);
-const cb_role_list_role = util.callbackify(role.listRoles);
-const cb_reg_hand_get_finger = util.callbackify(reg.getFingerprint);
-const cb_reg_hand_set_licence = util.callbackify(reg.setLicense);
-const cb_clust_util_config = util.callbackify(cluster_utilities.configureCluster);
-const cb_clust_util_status = util.callbackify(cluster_utilities.clusterStatus);
-const cb_clust_util_add_node = util.callbackify(cluster_utilities.addNode);
-const cb_clust_util_update_node = util.callbackify(cluster_utilities.updateNode);
-const cb_clust_util_remove_node = util.callbackify(cluster_utilities.removeNode);
-const cb_schema_create_schema = util.callbackify(schema.createSchema);
-const cb_schema_create_attribute = util.callbackify(schema.createAttribute);
-const cb_schema_create_table = util.callbackify(schema.createTable);
-const cb_schema_drop_schema = util.callbackify(schema.dropSchema);
-const cb_schema_drop_table = util.callbackify(schema.dropTable);
-const cb_read_log = util.callbackify(harper_logger.readLog);
+
+const operation_function_caller = require(`../utility/OperationFunctionCaller`);
+const common_utils = require(`../utility/common_utils`);
+const env = require(`../utility/environment/environmentManager`);
 
 const UNAUTH_RESPONSE = 403;
 const UNAUTHORIZED_TEXT = 'You are not authorized to perform the operation specified';
 let OPERATION_PARAM_ERROR_MSG = `operation parameter is undefined`;
+
+const p_search_search_by_hash = util.promisify(search.searchByHash);
+const p_search_search_by_value = util.promisify(search.searchByValue);
+const p_search_search = util.promisify(search.search);
+const p_sql_evaluate_sql = util.promisify(sql.evaluateSQL);
+const p_schema_describe_schema = util.promisify(schema_describe.describeSchema);
+const p_schema_describe_table = util.promisify(schema_describe.describeTable);
+const p_schema_describe_all = util.promisify(schema_describe.describeAll);
+const p_delete = util.promisify(delete_.delete);
 
 const GLOBAL_SCHEMA_UPDATE_FUNCTIONS = {
     [terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE]: 1,
@@ -101,17 +85,11 @@ function processLocalTransaction(req, res, operation_function, callback) {
         setResponseStatus(res, terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, e);
     }
 
-    operation_function(req.body, (error, data) => {
-        if (GLOBAL_SCHEMA_UPDATE_FUNCTIONS[req.body.operation]) {
-            global_schema.setSchemaDataToGlobal((err) => {
-                if (err) {
-                    harper_logger.error(err);
-                }
-            });
-        }
-
-        if (error) {
-            harper_logger.info(error);
+    operation_function_caller.callOperationFunctionAsAwait(operation_function, req.body, postOperationHandler)
+        .then((data) => {
+            if (typeof data !== 'object') {
+                data = {"message": data};
+            }
 
             if (GLOBAL_SCHEMA_UPDATE_FUNCTIONS[req.body.operation]) {
                 global_schema.setSchemaDataToGlobal((err) => {
@@ -121,6 +99,11 @@ function processLocalTransaction(req, res, operation_function, callback) {
                 });
             }
 
+            setResponseStatus(res, terms.HTTP_STATUS_CODES.OK, data);
+            return callback(null, data);
+        })
+        .catch((error) => {
+            harper_logger.info(error);
             if(error === UNAUTH_RESPONSE) {
                 setResponseStatus(res, terms.HTTP_STATUS_CODES.FORBIDDEN, {error: UNAUTHORIZED_TEXT});
                 return callback(error);
@@ -128,14 +111,55 @@ function processLocalTransaction(req, res, operation_function, callback) {
             if(typeof error !== 'object') {
                 error = {"error": error};
             }
+
+            if (GLOBAL_SCHEMA_UPDATE_FUNCTIONS[req.body.operation]) {
+                global_schema.setSchemaDataToGlobal((err) => {
+                    if (err) {
+                        harper_logger.error(err);
+                    }
+                });
+            }
+
             setResponseStatus(res, terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, {error: (error.message ? error.message : error.error)});
             return callback(error);
-        }
-        if (typeof data !== 'object')
-            data = {"message": data};
-        setResponseStatus(res, terms.HTTP_STATUS_CODES.OK, data);
-        return callback(null, data);
-    });
+        });
+}
+
+function postOperationHandler(request_body, result) {
+    switch(request_body.operation) {
+        case terms.OPERATIONS_ENUM.INSERT:
+            try {
+                if (global.hdb_socket_client !== undefined && request_body.schema !== 'system' && Array.isArray(result.inserted_hashes) && result.inserted_hashes.length > 0) {
+                    let transaction = {
+                        operation: "insert",
+                        schema: request_body.schema,
+                        table: request_body.table,
+                        records: []
+                    };
+
+                    let hash_attribute = global.hdb_schema[request_body.schema][request_body.table].hash_attribute;
+                    request_body.records.forEach(record => {
+                        if(result.inserted_hashes.includes(common_utils.autoCast(record[hash_attribute]))) {
+                            transaction.records.push(record);
+                        }
+                    });
+
+                    let insert_msg = common_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
+                    insert_msg.transaction = transaction;
+                    insert_msg.__originator[env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)] = '';
+                    insert_msg.__transacted = true;
+                    common_utils.sendTransactionToSocketCluster(`${request_body.schema}:${request_body.table}`, insert_msg);
+                }
+            } catch(err) {
+                harper_logger.error('There was an error calling insert followup function.');
+                harper_logger.error(err);
+            }
+            break;
+        default:
+            //do nothing
+            break;
+    }
+    return result;
 }
 
 /**
@@ -198,22 +222,22 @@ function getOperationFunction(json){
 
     switch (json.operation) {
         case terms.OPERATIONS_ENUM.INSERT:
-            operation_function = cb_insert_insert;
+            operation_function = insert.insert;
             break;
         case terms.OPERATIONS_ENUM.UPDATE:
-            operation_function = cb_insert_update;
+            operation_function = insert.update;
             break;
         case terms.OPERATIONS_ENUM.SEARCH_BY_HASH:
-            operation_function = search.searchByHash;
+            operation_function = p_search_search_by_hash;
             break;
         case terms.OPERATIONS_ENUM.SEARCH_BY_VALUE:
-            operation_function = search.searchByValue;
+            operation_function = p_search_search_by_value;
             break;
         case terms.OPERATIONS_ENUM.SEARCH:
-            operation_function = search.search;
+            operation_function = p_search_search;
             break;
         case terms.OPERATIONS_ENUM.SQL:
-            operation_function = sql.evaluateSQL;
+            operation_function = p_sql_evaluate_sql;
             break;
         case terms.OPERATIONS_ENUM.CSV_DATA_LOAD:
             operation_function = signalJob;
@@ -228,79 +252,79 @@ function getOperationFunction(json){
             job_operation_function = csv.csvURLLoad;
             break;
         case terms.OPERATIONS_ENUM.CREATE_SCHEMA:
-            operation_function = cb_schema_create_schema;
+            operation_function = schema.createSchema;
             break;
         case terms.OPERATIONS_ENUM.CREATE_TABLE:
-            operation_function = cb_schema_create_table;
+            operation_function = schema.createTable;
             break;
         case terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE:
-            operation_function = cb_schema_create_attribute;
+            operation_function = schema.createAttribute;
             break;
         case terms.OPERATIONS_ENUM.DROP_SCHEMA:
-            operation_function = cb_schema_drop_schema;
+            operation_function = schema.dropSchema;
             break;
         case terms.OPERATIONS_ENUM.DROP_TABLE:
-            operation_function = cb_schema_drop_table;
+            operation_function = schema.dropTable;
             break;
         case terms.OPERATIONS_ENUM.DROP_ATTRIBUTE:
-            operation_function = cb_schema_drop_attribute;
+            operation_function = schema.dropAttribute;
             break;
         case terms.OPERATIONS_ENUM.DESCRIBE_SCHEMA:
-            operation_function = schema_describe.describeSchema;
+            operation_function = p_schema_describe_schema;
             break;
         case terms.OPERATIONS_ENUM.DESCRIBE_TABLE:
-            operation_function = schema_describe.describeTable;
+            operation_function = p_schema_describe_table;
             break;
         case terms.OPERATIONS_ENUM.DESCRIBE_ALL:
-            operation_function = schema_describe.describeAll;
+            operation_function = p_schema_describe_all;
             break;
         case terms.OPERATIONS_ENUM.DELETE:
-            operation_function = delete_.delete;
+            operation_function = p_delete;
             break;
         case terms.OPERATIONS_ENUM.ADD_USER:
-            operation_function = cb_user_add_user;
+            operation_function = user.addUser;
             break;
         case terms.OPERATIONS_ENUM.ALTER_USER:
-            operation_function = cb_user_alter_user;
+            operation_function = user.alterUser;
             break;
         case terms.OPERATIONS_ENUM.DROP_USER:
-            operation_function = cb_user_drop_user;
+            operation_function = user.dropUser;
             break;
         case terms.OPERATIONS_ENUM.LIST_USERS:
-            operation_function = cb_user_list_user_external;
+            operation_function = user.listUsersExternal;
             break;
         case terms.OPERATIONS_ENUM.LIST_ROLES:
-            operation_function = cb_role_list_role;
+            operation_function = role.listRoles;
             break;
         case terms.OPERATIONS_ENUM.ADD_ROLE:
-            operation_function = cb_role_add_role;
+            operation_function = role.addRole;
             break;
         case terms.OPERATIONS_ENUM.ALTER_ROLE:
-            operation_function = cb_role_alter_role;
+            operation_function = role.alterRole;
             break;
         case terms.OPERATIONS_ENUM.DROP_ROLE:
-            operation_function = cb_role_drop_role;
+            operation_function = role.dropRole;
             break;
         case terms.OPERATIONS_ENUM.USER_INFO:
-            operation_function = cb_user_user_info;
+            operation_function = user.userInfo;
             break;
         case terms.OPERATIONS_ENUM.READ_LOG:
-            operation_function = cb_read_log;
+            operation_function = harper_logger.readLog;
             break;
         case terms.OPERATIONS_ENUM.ADD_NODE:
-            operation_function = cb_clust_util_add_node;
+            operation_function = cluster_utilities.addNode;
             break;
         case terms.OPERATIONS_ENUM.UPDATE_NODE:
-            operation_function = cb_clust_util_update_node;
+            operation_function = cluster_utilities.updateNode;
             break;
         case terms.OPERATIONS_ENUM.REMOVE_NODE:
-            operation_function = cb_clust_util_remove_node;
+            operation_function = cluster_utilities.removeNode;
             break;
         case terms.OPERATIONS_ENUM.CONFIGURE_CLUSTER:
-            operation_function = cb_clust_util_config;
+            operation_function = cluster_utilities.configureCluster;
             break;
         case terms.OPERATIONS_ENUM.CLUSTER_STATUS:
-            operation_function = cb_clust_util_status;
+            operation_function = cluster_utilities.clusterStatus;
             break;
         case terms.OPERATIONS_ENUM.EXPORT_TO_S3:
             operation_function = signalJob;
@@ -327,15 +351,14 @@ function getOperationFunction(json){
             operation_function = jobs.updateJob;
             break;
         case terms.OPERATIONS_ENUM.GET_FINGERPRINT:
-            operation_function = cb_reg_hand_get_finger;
+            operation_function = reg.getFingerprint;
             break;
         case terms.OPERATIONS_ENUM.SET_LICENSE:
-            operation_function = cb_reg_hand_set_licence;
+            operation_function = reg.setLicense;
             break;
         case terms.OPERATIONS_ENUM.RESTART:
             // TODO: Does callbackify work?
-            let restart_cb = util.callbackify(stop.restartProcesses);
-            operation_function = restart_cb;
+            operation_function = stop.restartProcesses;
             break;
         case terms.OPERATIONS_ENUM.CATCHUP:
             operation_function = catchup;
@@ -385,28 +408,28 @@ function nullOperation(json, callback) {
     callback('Invalid operation');
 }
 
-function signalJob(json, callback) {
+async function signalJob(json) {
     let new_job_object = undefined;
-    jobs.addJob(json).then( (result) => {
+    let result = undefined;
+    try {
+        result = await jobs.addJob(json);
         new_job_object = result.createdJob;
         let job_runner_message = new job_runner.RunnerMessage(new_job_object, json);
         let job_signal_message = new signal.JobAddedSignalObject(new_job_object.id, job_runner_message);
         if (process.send !== undefined) {
             signal.signalJobAdded(job_signal_message);
-            // purposefully not waiting for a response as we want to callback immediately.
         } else {
             try {
+                // purposefully not waiting for await response as we want to callback immediately.
                 job_runner.parseMessage(job_signal_message.runner_message);
-            } catch(e) {
+            } catch (e) {
                 harper_logger.error(`Got an error trying to run a job with message ${job_runner_message}. ${e}`);
             }
-            // purposefully not waiting for a response as we want to callback immediately.
         }
-
-        return callback(null, `Starting job with id ${new_job_object.id}`);
-    }).catch(function caughtError(err) {
+        return `Starting job with id ${new_job_object.id}`;
+    } catch (err) {
         let message = `There was an error adding a job: ${err}`;
         harper_logger.error(message);
-        return callback(message, null);
-    });
+        throw new Error(message);
+    }
 }

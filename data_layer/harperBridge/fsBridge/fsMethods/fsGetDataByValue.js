@@ -42,7 +42,6 @@ async function fsGetDataByValue(search_object) {
 
         let table_info = null;
         if (search_object.schema === hdb_terms.SYSTEM_SCHEMA_NAME) {
-            // TODO: why are we getting global this way here? Related to install/run?
             table_info = system_schema[search_object.table];
         } else {
             table_info = global.hdb_schema[search_object.schema][search_object.table];

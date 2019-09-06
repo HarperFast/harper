@@ -4,23 +4,25 @@ const test_utils = require('../../../../test_utils');
 const { mochaAsyncWrapper } = test_utils;
 
 const rewire = require('rewire');
-let fsSearchByHash = rewire('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsSearchByHash');
+let fsSearchByValue = rewire('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsSearchByValue');
 const { expect } = require('chai');
 const sinon = require('sinon');
 
 let sandbox;
-let fsGetDataByHash_stub;
+let fsGetDataByValue_stub;
 
 const TEST_SCHEMA = 'dev';
 const TEST_TABLE_DOG = 'dog';
-let test_hash_values = [1,2,3];
+const test_search_value = 'things';
+const test_search_attr = 'stuff';
 
 const TEST_SEARCH_OBJ = {
-    operation: "search_by_hash",
+    operation: "search_by_value",
     schema: TEST_SCHEMA,
     table: TEST_TABLE_DOG,
-    hash_values: test_hash_values,
-    get_attributes: ["*"]
+    search_attribute: test_search_attr,
+    search_value: test_search_value,
+    get_attributes: ["stuff"]
 };
 
 const test_search_result_stub = {
@@ -32,26 +34,25 @@ const test_search_result_stub = {
 
 function setupTestStub() {
     sandbox = sinon.createSandbox()
-    fsGetDataByHash_stub = sandbox.stub().returns(test_search_result_stub);
-    fsSearchByHash.__set__('fsGetDataByHash', fsGetDataByHash_stub);
+    fsGetDataByValue_stub = sandbox.stub().returns(test_search_result_stub);
+    fsSearchByValue.__set__('fsGetDataByValue', fsGetDataByValue_stub);
 }
 
-describe('fsSearchByHash', () => {
+describe('fsSearchByValue', () => {
     before(() => {
         setupTestStub();
     });
 
     after(() => {
         sandbox.reset();
-        rewire('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsSearchByHash');
+        rewire('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsSearchByValue');
     });
 
     it('Should return an array with objects from object of objects returned from fsGetDataByHash', mochaAsyncWrapper(async () => {
         const test_expected_result = Object.values(test_search_result_stub);
-        const test_search_result = await fsSearchByHash(TEST_SEARCH_OBJ);
+        const test_search_result = await fsSearchByValue(TEST_SEARCH_OBJ);
 
         expect(test_search_result).to.deep.equal(test_expected_result);
         expect(test_search_result.length).to.equal(test_expected_result.length);
     }));
-
 });

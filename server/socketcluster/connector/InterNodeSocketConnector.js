@@ -11,8 +11,19 @@ const promisify = require('util').promisify;
 const p_settimeout = promisify(setTimeout);
 
 class InterNodeSocketConnector extends SocketConnector{
-    constructor(socket_client, worker, additional_info, options, credentials){
+    /**
+     *
+     * @param socket_client
+     * @param worker
+     * @param additional_info
+     * @param options
+     * @param credentials
+     */
+    constructor(socket_client, worker, additional_info = {}, options = {}, credentials){
         super(socket_client, additional_info, options, credentials);
+        if(additional_info.name !== undefined && options.query !== undefined){
+            options.query.node_name = additional_info.name;
+        }
         //TODO possibly change this to the node name, rather hostname / port?
         this.connection_path = hdb_clustering_connections_path + this.socket.options.hostname + ':' + this.socket.options.port;
         this.worker = worker;
@@ -37,7 +48,7 @@ class InterNodeSocketConnector extends SocketConnector{
             this.additional_info.subscriptions.forEach(async (subscription) => {
                 if (subscription.publish === true) {
                     try{
-                        let catch_up_msg = await sc_util.catchupHandler(subscription.channel, this.connected_timestamp, null);
+                        let catch_up_msg = await sc_util.catchupHandler(subscription.channel, parseInt(this.connected_timestamp));
                         if(catch_up_msg) {
                             this.socket.publish(hdb_terms.INTERNAL_SC_CHANNELS.CATCHUP, catch_up_msg);
                         }

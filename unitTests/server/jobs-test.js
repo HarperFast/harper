@@ -59,7 +59,7 @@ describe('Test jobHandler', function() {
         sandbox.restore();
     });
 
-    it('nominal case, call addJob.', function(done) {
+    it('nominal case, call addJob.', async function() {
         addJob_stub = sandbox.stub().resolves(ADD_JOB_SUCCESS);
         jobs.__set__('addJob', addJob_stub);
 
@@ -68,37 +68,30 @@ describe('Test jobHandler', function() {
         test_request.hdb_user = 'test user';
 
         try {
-            jobs.jobHandler(test_request, function (err, result) {
-            	if(err) {
-            		throw (`expected success, got err ${err}`);
-				}
-                assert.equal(result.success, true, 'Got an error, expected success');
-                done();
-            });
+            let result = await jobs.jobHandler(test_request);
+            assert.equal(result.success, true, 'Got an error, expected success');
         } catch(e) {
-            done(e);
+            throw e;
 		}
     });
 
-    it('call addJob, throw an error to test catch.', function(done) {
+    it('call addJob, throw an error to test catch.', async function() {
         addJob_stub = sandbox.stub().rejects(new Error('Oh Noes!'));
         jobs.__set__('addJob', addJob_stub);
 
         let test_request = {};
         test_request.operation = 'add_job';
         test_request.hdb_user = 'test user';
-
+        let result = undefined;
         try {
-            jobs.jobHandler(test_request, function (err) {
-                assert.ok(err.length > 0, 'Got success, expected an error.');
-                done();
-            });
+            result = await jobs.jobHandler(test_request);
         } catch(e) {
-            done(e);
+            result = e;
         }
+        assert.deepStrictEqual( (result instanceof Error), true, 'Got success, expected an error.');
     });
 
-    it('nominal case, call getJobsInDateRange.', function(done) {
+    it('nominal case, call getJobsInDateRange.', async function() {
         getJobsInDateRange_stub = sandbox.stub().resolves([JOB_SEARCH_RESULT]);
         jobs.__set__('getJobsInDateRange', getJobsInDateRange_stub);
 
@@ -107,20 +100,16 @@ describe('Test jobHandler', function() {
         test_request.hdb_user = 'test user';
         test_request.from_date = '2017-02-01';
         test_request.to_date = '2018-07-07';
+        let result = undefined;
         try {
-            jobs.jobHandler(test_request, function (err, result) {
-                if(err) {
-                    throw (`expected success, got err ${err}`);
-                }
-                assert.equal(result.length, 1, 'Got an error, expected success');
-                done();
-            });
+            result = await jobs.jobHandler(test_request);
+            assert.equal(result.length, 1, 'Got an error, expected success');
         } catch(e) {
-            done(e);
+            result = e;
         }
     });
 
-    it('call getJobsInDateRange, throw an error to test catch.', function(done) {
+    it('call getJobsInDateRange, throw an error to test catch.', async function() {
         getJobsInDateRange_stub = sandbox.stub().rejects(new Error('Oh Noes!'));
         jobs.__set__('getJobsInDateRange', getJobsInDateRange_stub);
 
@@ -129,18 +118,18 @@ describe('Test jobHandler', function() {
         test_request.hdb_user = 'test user';
         test_request.from_date = '2017-02-01';
         test_request.to_date = '2018-07-07';
-
+        let result = undefined;
         try {
-            jobs.jobHandler(test_request, function (err) {
-                assert.ok(err.length > 0, 'Got success, expected an error.');
-                done();
-            });
+            result = await jobs.jobHandler(test_request);
+
         } catch(e) {
-            done(e);
+            result = e;
         }
+
+        assert.strictEqual((result instanceof Error), true, 'Got success, expected an error.');
     });
 
-    it('nominal case, call getJobById.', function(done) {
+    it('nominal case, call getJobById.', async function() {
         getJobById_stub = sandbox.stub().resolves([JOB_SEARCH_RESULT]);
         jobs.__set__('getJobById', getJobById_stub);
 
@@ -148,20 +137,16 @@ describe('Test jobHandler', function() {
         test_request.operation = 'get_job';
         test_request.hdb_user = 'test user';
         test_request.id = null;
+        let result = undefined;
         try {
-            jobs.jobHandler(test_request, function (err, result) {
-                if(err) {
-                    done(`expected success, got err ${err}`);
-                }
-                assert.equal(result.length, 1, 'Got an error, expected success');
-                done();
-            });
+            result = await jobs.jobHandler(test_request);
+            assert.equal(result.length, 1, 'Got an error, expected success');
         } catch(e) {
-            done(e);
+            result = e;
         }
     });
 
-    it('call getJobById, throw an error to test catch.', function(done) {
+    it('call getJobById, throw an error to test catch.', async function() {
         getJobById_stub = sandbox.stub().rejects(new Error('Oh Noes!'));
         jobs.__set__('getJobById', getJobById_stub);
 
@@ -169,17 +154,16 @@ describe('Test jobHandler', function() {
         test_request.operation = 'get_job';
         test_request.hdb_user = 'test user';
         test_request.id = null;
+        let result = undefined;
         try {
-            jobs.jobHandler(test_request, function (err) {
-                assert.ok(err.length > 0, 'Got success, expected an error.');
-                done();
-            });
+            result = await jobs.jobHandler(test_request);
         } catch(e) {
-            done(e);
+            result = e;
         }
+        assert.strictEqual((result instanceof Error), true, 'Got success, expected an error.');
     });
 
-    it('nominal case, call deleteJobById.', function(done) {
+    it('nominal case, call deleteJobById.', async function() {
         deleteJobById_stub = sandbox.stub().resolves({message: 'Succesfully deleted records'});
         jobs.__set__('deleteJobById', deleteJobById_stub);
 
@@ -187,20 +171,16 @@ describe('Test jobHandler', function() {
         test_request.operation = 'delete_job';
         test_request.hdb_user = 'test user';
         test_request.id = '2e358f82-523c-48b0-ab92-46ab52054419';
+        let result = undefined;
         try {
-            jobs.jobHandler(test_request, function (err, result) {
-                if(err) {
-                    throw (`expected success, got err ${err}`);
-                }
-                assert.ok(result.message.length > 0, 'Got an error, expected success');
-                done();
-            });
+            result = await jobs.jobHandler(test_request);
+            assert.ok(result.message.length > 0, 'Got an error, expected success');
         } catch(e) {
-            done(e);
+            result = e;
         }
     });
 
-    it('call deleteJobById, throw an error to test catch.', function(done) {
+    it('call deleteJobById, throw an error to test catch.', async function() {
         deleteJobById_stub = sandbox.stub().rejects(new Error('Oh Noes!'));
         jobs.__set__('deleteJobById', deleteJobById_stub);
 
@@ -208,16 +188,16 @@ describe('Test jobHandler', function() {
         test_request.operation = 'delete_job';
         test_request.hdb_user = 'test user';
         test_request.id = '2e358f82-523c-48b0-ab92-46ab52054419';
+        let result = undefined;
+        let result2 = undefined;
         try {
-            jobs.jobHandler(test_request, function () {
-                jobs.jobHandler(test_request, function (err) {
-                    assert.ok(err.length > 0, 'Got success, expected an error.');
-                    done();
-                });
-            });
+            result = await jobs.jobHandler(test_request);
+            result2 = await jobs.jobHandler(test_request);
+
         } catch(e) {
-            done(e);
+            result = e;
         }
+        assert.strictEqual((result instanceof Error), true, 'Got success, expected an error.');
     });
 });
 
