@@ -1,0 +1,49 @@
+            Copyright (C) 2013-2019, Levyx, Inc.
+
+
+                     LINUX INSTALL
+
+System Requirements
+~~~~~~~~~~~~~~~~~~~
+- 64-bit server/workstation with Linux RHEL/CentOS 6.x, 7.x
+- pthreads library
+- It is desired to have SSD(s) on the system
+- Have either root access or sudo priviliges to install/uninstall
+
+
+Installation Package
+~~~~~~~~~~~~~~~~~~~~
+1. install-helium-linux-x.y.z.sh        Installer
+2. uninstall-helium-linux-x.y.z.sh      Uninstaller
+3. README.md                            README containing FAQs
+4. helium.pdf                           Helium documenation manual
+
+
+Installation Steps
+~~~~~~~~~~~~~~~~~~
+1. sudo ./install-helium-linux-x.y.z.sh
+
+This will install the following files on your system:
+
+(i)   /usr/bin/helium                   Helium binary
+(ii)  /usr/include/he.h                 Helium header file
+(iii) /usr/lib/libhe.{a,so}             Helium shared and static libraries
+(iv)  /usr/share/man/man3/he*           Helium man pages
+
+2. From here, you can do one or more of the following:
+
+(i)   Run `man he` to view the man pages
+(ii)  Run `helium --help` to run the Helium binary
+(iii) Refer to the README.md file for a few FAQs
+(iv)  Write your application and link it to the Helium library
+
+
+Uninstall Steps
+~~~~~~~~~~~~~~~
+1. sudo ./uninstall-helium-linux-x.y.z.sh
+
+
+Support
+~~~~~~~
+Please email your contact at Levyx for any technical support questions
+
