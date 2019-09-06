@@ -102,7 +102,6 @@ async function addNode(new_node) {
     try {
         let add_node_msg = new terms.ClusterMessageObjects.HdbCoreAddNodeMessage();
         add_node_msg.add_node = new_node;
-        add_node_msg.__transacted = true;
         hdb_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.HDB_NODES, add_node_msg, env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
     } catch(e){
         throw new Error(e);
@@ -209,9 +208,8 @@ async function updateNode(update_node){
     }
 
     try {
-        let update_node_msg = new terms.ClusterMessageObjects.HdbCoreUdateNodeMessage();
+        let update_node_msg = new terms.ClusterMessageObjects.HdbCoreUpdateNodeMessage();
         update_node_msg.update_node = merge_node;
-        update_node_msg.__transacted = true;
         hdb_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.HDB_NODES, update_node_msg, env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
     } catch(e){
         throw new Error(e);
@@ -251,7 +249,6 @@ async function removeNode(remove_json_message) {
     }
     let remove_node_msg = new terms.ClusterMessageObjects.HdbCoreRemoveNodeMessage();
     remove_node_msg.remove_node = remove_json_message;
-    remove_node_msg.__transacted = true;
     hdb_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.HDB_NODES, remove_node_msg, env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
     return `successfully removed ${remove_json_message.name} from manifest`;
 }
