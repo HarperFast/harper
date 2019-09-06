@@ -10,7 +10,7 @@ const log = require('../../../../utility/logging/harper_logger');
 
 const DATE_SUBSTR_LENGTH = 19;
 let current_date = new Date().toISOString().substr(0, DATE_SUBSTR_LENGTH);
-const TRASH_BASE_PATH = `${env.getHdbBasePath()}/${terms.HDB_TRASH_DIR}`;
+const TRASH_BASE_PATH = `${env.getHdbBasePath()}/${terms.HDB_TRASH_DIR}/`;
 
 module.exports = dropSchema;
 
