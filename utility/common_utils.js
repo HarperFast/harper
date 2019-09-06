@@ -9,6 +9,11 @@ const terms = require('./hdbTerms');
 const ps_list = require('./psList');
 const papa_parse = require('papaparse');
 const cluster_messages = require('../server/socketcluster/room/RoomMessageObjects');
+const harperdb_helium = require('../dependencies/harperdb_helium/test/out/hdb');
+const env = require('./environment/environmentManager');
+if(!env.isInitialized()){
+    env.initSync();
+}
 
 const EMPTY_STRING = '';
 const FILE_EXTENSION_LENGTH = 4;
@@ -51,7 +56,9 @@ module.exports = {
     getPropsFilePath: getPropsFilePath,
     promisifyPapaParse,
     removeBOM,
-    getClusterMessage
+    getClusterMessage,
+    initializeHelium,
+    terminateHelium
 };
 
 /**
@@ -572,4 +579,22 @@ function getClusterMessage(cluster_msg_type_enum) {
             break;
     }
     return built_msg;
+}
+
+function initializeHelium(){
+    if(isEmptyOrZeroLength(env.get('HELIUM_VOLUME_PATH'))){
+        throw new Error('HELIUM_VOLUME_PATH must be defined in config settings.');
+    }
+
+    let helium = new harperdb_helium(false);
+    let start_result = helium.startSession(terms.HELIUM_URL_PREFIX + env.get('HELIUM_VOLUME_PATH'));
+    if(start_result !== [0, "HE_ERR_OK"]){
+        throw new Error(`Unable to access Helium volume with error code: ${start_result[1]}`);
+    }
+
+    return helium;
+}
+
+function terminateHelium(helium){
+    helium.stopSession(terms.HELIUM_URL_PREFIX + env.get('HELIUM_VOLUME_PATH'));
 }
