@@ -34,6 +34,7 @@ const logger = require('../utility/logging/harper_logger');
 const {promisify} = require('util');
 const crypto_hash = require('./cryptoHash');
 const terms = require('../utility/hdbTerms');
+const env = require('../utility/environment/environmentManager');
 
 const USER_ATTRIBUTE_WHITELIST = {
     username: true,
@@ -101,7 +102,7 @@ async function addUser(user){
     clean_user.role = search_role[0];
     let add_user_msg = new terms.ClusterMessageObjects.HdbCoreClusterAddUserRequestMessage();
     add_user_msg.user = clean_user;
-    hdb_utility.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.ADD_USER, add_user_msg);
+    hdb_utility.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.ADD_USER, add_user_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
     signalling.signalUserChange({type: 'user'});
     return `${clean_user.username} successfully added`;
 }
@@ -189,7 +190,7 @@ async function alterUser(json_message) {
 
     let alter_user_msg = new terms.ClusterMessageObjects.HdbCoreClusterAlterUserRequestMessage();
     alter_user_msg.user = clean_user;
-    hdb_utility.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.ALTER_USER, alter_user_msg);
+    hdb_utility.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.ALTER_USER, alter_user_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
     signalling.signalUserChange({type: 'user'});
     return success;
 }
@@ -235,7 +236,7 @@ async function dropUser(user) {
 
         let alter_user_msg = new terms.ClusterMessageObjects.HdbCoreClusterDropUserRequestMessage();
         alter_user_msg.user = user;
-        hdb_utility.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.DROP_USER, alter_user_msg);
+        hdb_utility.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.DROP_USER, alter_user_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
         signalling.signalUserChange({type: 'user'});
         return `${user.username} successfully deleted`;
     } catch(err) {

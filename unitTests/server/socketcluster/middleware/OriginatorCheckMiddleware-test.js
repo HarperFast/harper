@@ -39,7 +39,7 @@ describe('Test AuthMiddleware', function() {
 
     it('test constructor', () => {
         assert.notEqual(test_instance.id, undefined, 'expected id');
-        assert.equal(test_instance.command_order, types.COMMAND_EVAL_ORDER_ENUM.MID, 'expected default command order');
+        assert.equal(test_instance.command_order, types.COMMAND_EVAL_ORDER_ENUM.VERY_FIRST, 'expected default command order');
     });
     it('test constructor missing type', () => {
         let result = undefined;

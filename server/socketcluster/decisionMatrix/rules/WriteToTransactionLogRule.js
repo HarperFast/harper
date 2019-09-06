@@ -43,8 +43,6 @@ class WriteToTransactionLogRule extends RuleIF {
             return true;
         }
 
-        delete req.data.__transacted;
-
         if(VALID_OPERATIONS.indexOf(req.data.transaction.operation) < 0){
             log.debug('Invalid operation, not writing to transaction log.');
             return true;
