@@ -3,6 +3,7 @@
 const fsDeleteRecords = require('./fsDeleteRecords');
 const moveFolderToTrash = require('../fsUtility/moveFolderToTrash');
 const deleteAttrStructure = require('../fsUtility/deleteAttrStructure');
+const fsSearchByValue = require('./fsSearchByValue');
 const env = require('../../../../utility/environment/environmentManager');
 const terms = require('../../../../utility/hdbTerms');
 const log = require('../../../../utility/logging/harper_logger');
@@ -10,11 +11,6 @@ const log = require('../../../../utility/logging/harper_logger');
 const DATE_SUBSTR_LENGTH = 19;
 let current_date = new Date().toISOString().substr(0, DATE_SUBSTR_LENGTH);
 const TRASH_BASE_PATH = `${env.getHdbBasePath()}/${terms.HDB_TRASH_DIR}`;
-
-//TODO: This is temporary. Once we have search by value bridge func built, we will use that.
-const util = require('util');
-const search_by_value = require('../../../search').searchByValue;
-let p_search_by_value = (util.promisify(search_by_value));
 
 module.exports = dropSchema;
 
@@ -37,7 +33,7 @@ async function dropSchema(drop_schema_obj) {
 
     try {
         await fsDeleteRecords(delete_schema_obj);
-        let search_result = await p_search_by_value(search_obj);
+        let search_result = await fsSearchByValue(search_obj);
         await moveSchemaToTrash(drop_schema_obj, search_result);
         await deleteAttrStructure(drop_schema_obj);
     } catch(err) {
