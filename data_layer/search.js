@@ -37,6 +37,7 @@ module.exports = {
 const harperBridge = require('./harperBridge/harperBridge');
 const util = require('util');
 const c_search_by_hash = util.callbackify(harperBridge.searchByHash);
+const c_search_by_value = util.callbackify(harperBridge.searchByValue);
 
 function searchByHash(search_object, callback){
     try {
@@ -52,68 +53,17 @@ function searchByHash(search_object, callback){
     }
 }
 
-function removeTableFromAttributeAlias(attributes, table_name){
-    attributes.forEach(attribute => {
-        if (typeof attribute !== 'string') {
-            attribute.alias = attribute.alias.replace(`${table_name}.`, '');
-        }
-    });
-    return attributes;
-}
-
 function searchByValue (search_object, callback) {
     try {
-        let validation_error = search_validator(search_object, 'value');
-        if (validation_error) {
-            callback(validation_error);
-            return;
-        }
-        let operation = '=';
-        if (search_object.search_value !== '*' && search_object.search_value !== '%' && (search_object.search_value.includes('*') || search_object.search_value.includes('%'))) {
-            operation = 'like';
-        }
-        let condition = {};
-        condition[operation] = [search_object.search_attribute, search_object.search_value];
-
-        let hash_attribute = null;
-        if (search_object.schema === hdbTerms.SYSTEM_SCHEMA_NAME) {
-            hash_attribute = system_schema[search_object.table].hash_attribute;
-        } else {
-            hash_attribute = global.hdb_schema[search_object.schema][search_object.table].hash_attribute;
-        }
-
-        let patterns = condition_patterns.createPatterns(condition, {
-            name: search_object.table,
-            schema: search_object.schema,
-            hash_attribute: hash_attribute
-        }, base_path());
-
-        evaluateTableAttributes(search_object.get_attributes, search_object, (err, attributes) => {
+        c_search_by_value(search_object, (err, results) => {
             if (err) {
                 callback(err);
                 return;
             }
-
-            search_object.get_attributes = attributes;
-
-            async.waterfall([
-                file_search.findIDsByRegex.bind(null, patterns.folder_search_path, patterns.folder_search, patterns.blob_search),
-                getAttributeFiles.bind(null, search_object.get_attributes, patterns.table_path),
-                consolidateData.bind(null, hash_attribute)
-            ], (error, data) => {
-                if (error) {
-                    callback(error);
-                    return;
-                }
-
-                return callback(null, data);
-            });
-
+            callback(null, results);
         });
-
-
-    } catch(e){
-        callback(e);
+    } catch(err){
+        return callback(err);
     }
 }
 

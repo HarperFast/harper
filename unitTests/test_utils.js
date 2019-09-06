@@ -149,7 +149,7 @@ function cleanUpDirectories(target_path) {
  * @returns String representing the path value to the mock file system directory
  */
 function getMockFSPath() {
-    return path.join(UNIT_TEST_DIR, TEST_FS_DIR);
+    return `${path.join(UNIT_TEST_DIR, TEST_FS_DIR)}/`;
 }
 
 /**
