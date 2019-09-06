@@ -10,6 +10,7 @@ const fsSearchByHash = require('./fsMethods/fsSearchByHash');
 const fsGetDataByHash = require('./fsMethods/fsGetDataByHash');
 const fsDropSchema = require('./fsMethods/fsDropSchema');
 const fsCreateTable = require('./fsMethods/fsCreateTable');
+const fsDropTable = require('./fsMethods/fsDropTable');
 
 class FileSystemBridge extends BridgeMethods {
 
@@ -52,6 +53,15 @@ class FileSystemBridge extends BridgeMethods {
     async createTable(table, table_create_obj) {
         try {
             return await fsCreateTable(table, table_create_obj);
+        } catch(err) {
+            log.error(err);
+            throw err;
+        }
+    }
+
+    async dropTable(table, drop_table_obj) {
+        try {
+            return await fsDropTable(table, drop_table_obj);
         } catch(err) {
             log.error(err);
             throw err;

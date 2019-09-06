@@ -22,7 +22,6 @@ const harperBridge = require('./harperBridge/harperBridge');
 // Promisified functions
 let p_search_search_by_value = util.promisify(search.searchByValue);
 let p_delete_delete = util.promisify(delete_.delete);
-let p_search_by_conditions = util.promisify(search.searchByConditions);
 
 // This is used by moveFileToTrash to decide where to put the removed file(s) in the trash directory.
 const ENTITY_TYPE_ENUM = {
@@ -31,9 +30,6 @@ const ENTITY_TYPE_ENUM = {
     ATTRIBUTE: 'attribute'
 };
 const DATE_SUBSTR_LENGTH = 19;
-const TRASH_BASE_PATH = `${env.get('HDB_ROOT')}/trash/`;
-
-
 let current_date = new Date().toISOString().substr(0, DATE_SUBSTR_LENGTH);
 
 module.exports = {
@@ -43,7 +39,6 @@ module.exports = {
     createTableStructure: createTableStructure,
     createAttribute: createAttribute,
     createAttributeStructure: createAttributeStructure,
-    deleteTableStructure: moveTableStructureToTrash,
     describeTable: schema_describe.describeTable,
     describeSchema: schema_describe.describeSchema,
     describeAll: schema_describe.describeAll,
@@ -54,8 +49,6 @@ module.exports = {
 
 // This must be after export to prevent issues with circular dependencies
 const insert = require('./insert.js');
-const global_schema = require('../utility/globalSchema');
-const p_global_schema = util.promisify(global_schema.getTableSchema);
 
 /** EXPORTED FUNCTIONS **/
 
@@ -170,49 +163,19 @@ async function dropSchema(drop_schema_object) {
 }
 
 async function dropTable(drop_table_object) {
-    try {
-        let move_table_struc_trash = await moveTableStructureToTrash(drop_table_object);
-        signalling.signalSchemaChange({type: 'schema'});
-
-        return move_table_struc_trash;
-    } catch(err) {
-        logger.error(err);
-        throw err;
-    }
-}
-
-/**
- * Moves a target table and it's attributes to the trash directory.
- * @param drop_table_object - Descriptor for the table being targeted for move.
- * @returns {Promise<string>}
- */
-async function moveTableStructureToTrash(drop_table_object) {
     let validation_error = validation.table_object(drop_table_object);
     if (validation_error) {
         throw validation_error;
     }
 
-    let schema = drop_table_object.schema;
-    let table = drop_table_object.table;
-
-    let search_object = {
-        schema: 'system',
-        table: 'hdb_table',
-        hash_attribute: 'id',
-        search_attribute: 'name',
-        search_value: table,
-        get_attributes: ['name', 'schema', 'id']
-    };
-
     try {
-        let search_value = await p_search_search_by_value(search_object);
-        let delete_table_object = await buildDropTableObject(drop_table_object, search_value);
-        await p_delete_delete(delete_table_object);
-        await moveTableToTrash(drop_table_object);
-        await deleteAttributeStructure(drop_table_object);
+        await harperBridge.dropTable(drop_table_object);
+        signalling.signalSchemaChange({type: 'schema'});
+        const TABLE_DELETE_MSG = `successfully deleted table ${drop_table_object.schema}.${drop_table_object.table}`;
 
-        return `successfully deleted table ${schema}.${table}`;
+        return TABLE_DELETE_MSG;
     } catch(err) {
+        logger.error(err);
         throw err;
     }
 }
@@ -244,53 +207,7 @@ async function dropAttribute(drop_attribute_object) {
 
 /** HELPER FUNCTIONS **/
 
-/**
- * Builds a descriptor object that describes the table targeted for the trash.
- * @param drop_table_object - Top level descriptor of the table being moved.
- * @param data - The data found by the search function.
- * @returns {Promise<{schema: string, hash_attribute: string, hash_values: *[], table: string}>}
- */
-function buildDropTableObject(drop_table_object, data) {
-    let delete_table;
 
-    // Data found by the search function should match the drop_table_object
-    for (let item in data) {
-        if (data[item].name === drop_table_object.table && data[item].schema === drop_table_object.schema) {
-            delete_table = data[item];
-        }
-    }
-
-    if (!delete_table) {
-        throw new Error(`${drop_table_object.schema}.${drop_table_object.table} was not found`);
-    }
-
-    let delete_table_object = {
-        table: "hdb_table",
-        schema: "system",
-        hash_attribute: "id",
-        hash_values: [delete_table.id]
-    };
-
-    return delete_table_object;
-}
-
-/**
- * Performs the move of the target table to the trash directory.
- * @param drop_table_object - Descriptor of the table being moved to trash.
- * @returns {Promise<void>}
- */
-async function moveTableToTrash(drop_table_object) {
-    let root_path = env.get('HDB_ROOT');
-    let origin_path = `${root_path}/schema/${drop_table_object.schema}/${drop_table_object.table}`;
-    let destination_name = `${drop_table_object.schema}-${drop_table_object.table}-${current_date}`;
-    let trash_path = `${TRASH_BASE_PATH}${destination_name}`;
-
-    try {
-        await moveFolderToTrash(origin_path, trash_path);
-    } catch(err) {
-        throw err;
-    }
-}
 
 /**
  * Remove an attribute from __hdb_attribute.
@@ -451,49 +368,6 @@ async function createAttributeStructure(create_attribute_object) {
         logger.info(insert_response);
 
         return insert_response;
-    } catch(err) {
-        throw err;
-    }
-}
-
-async function deleteAttributeStructure(attribute_drop_object) {
-    let search_object = {
-        schema:'system',
-        table: 'hdb_attribute',
-        hash_attribute: 'id',
-        get_attributes: ['id', 'attribute']
-    };
-
-    if (attribute_drop_object.table && attribute_drop_object.schema) {
-        search_object.search_attribute = 'schema_table';
-        search_object.search_value = `${attribute_drop_object.schema}.${attribute_drop_object.table}`;
-    } else if (attribute_drop_object.schema) {
-        search_object.search_attribute = 'schema';
-        search_object.search_value = `${attribute_drop_object.schema}`;
-    } else {
-        throw new Error('attribute drop requires table and or schema.');
-    }
-
-    try {
-        let attributes = await p_search_search_by_value(search_object);
-
-        if (attributes && attributes.length > 0) {
-            let delete_table_object = {
-                table: 'hdb_attribute',
-                schema: 'system',
-                hash_values: []
-            };
-
-            for (let att in attributes) {
-                if ((attribute_drop_object.attribute && attribute_drop_object.attribute === attributes[att].attribute)
-                    || !attribute_drop_object.attribute) {
-                    delete_table_object.hash_values.push(attributes[att].id);
-                }
-            }
-            await p_delete_delete(delete_table_object);
-
-            return `successfully deleted ${delete_table_object.hash_values.length} attributes`;
-        }
     } catch(err) {
         throw err;
     }
