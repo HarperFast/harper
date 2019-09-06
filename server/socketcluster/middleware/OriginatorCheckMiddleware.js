@@ -13,6 +13,12 @@ class OriginatorCheckMiddleware extends MiddlewareIF {
         eval_function = (req, next) => {
             try {
                 log.trace('Evaluating originator check middleware');
+                if(req.data.__transacted) {
+                    // If transacted is set, that means this message is a transaction that came from core. We can't swallow the message as
+                    // it may need to be sent to subscribers. So ignore the originator flag here, it will be caught in
+                    // the assign rule.
+                    return;
+                }
                 if (!req.data.__originator || req.data.__originator[env.getProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)] !== types.ORIGINATOR_SET_VALUE) {
                     log.debug('Passed Originator Middleware');
                     return;
