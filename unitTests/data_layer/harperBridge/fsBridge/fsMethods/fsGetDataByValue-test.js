@@ -12,12 +12,12 @@ const {
 
 preTestPrep();
 
-const { expect } = require('chai');
 const rewire = require('rewire');
 const getAttributeFileValues_rw = rewire('../../../../../data_layer/harperBridge/fsBridge/fsUtility/getAttributeFileValues');
 getAttributeFileValues_rw.__set__('getBasePath', getMockFSPath);
-let fsGetDataByHash_rw = rewire('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsGetDataByHash');
-fsGetDataByHash_rw.__set__('getAttributeFileValues', getAttributeFileValues_rw);
+let fsGetDataByValue_rw = rewire('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsGetDataByValue');
+fsGetDataByValue_rw.__set__('getBasePath', getMockFSPath);
+const { expect } = require('chai');
 
 const { TEST_DATA_DOG } = require('../../../../test_data');
 const TEST_SCHEMA = 'dev';
@@ -25,21 +25,25 @@ const HASH_ATTRIBUTE = 'id';
 const TEST_TABLE_DOG = 'dog';
 
 let test_data_dog;
-let test_hash_values = [];
+let test_search_attr = 'breed';
+const test_search_value = 'Pit';
 let test_attr_names;
+const test_expected_hash_result = [];
 
 const TEST_SEARCH_OBJ = {
-    operation: "search_by_hash",
+    operation: "search_by_value",
     schema: TEST_SCHEMA,
     table: TEST_TABLE_DOG,
-    hash_values: test_hash_values,
+    search_attribute: test_search_attr,
+    search_value: `${test_search_value}*`,
     get_attributes: "*"
 };
 
 const ERR_MSGS = {
     SCHEMA: "Schema can't be blank",
     TABLE: "Table can't be blank",
-    HASHES: "Hash values can't be blank",
+    S_ATTR: "Search attribute can't be blank",
+    S_VAL: "Search value can't be blank",
     GET_ATTR: "Get attributes can't be blank"
 }
 
@@ -48,8 +52,8 @@ function setupTestData() {
     test_attr_names = Object.keys(test_data[0]);
     test_data_dog = test_data.reduce((acc, row) => {
         acc[row.id] = row;
-        if (row.id < 4) {
-            test_hash_values.push(row.id);
+        if (row.breed.includes(test_search_value)) {
+            test_expected_hash_result.push(row.id);
         }
         return acc;
     }, {});
@@ -60,45 +64,47 @@ describe('fsGetDataByHash', () => {
 
     before(() => {
         setupTestData();
+        fsGetDataByValue_rw.__set__('getAttributeFileValues', getAttributeFileValues_rw);
     });
 
     after(() => {
         tearDownMockFS();
-        rewire('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsGetDataByHash');
+        rewire('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsGetDataByValue');
         rewire('../../../../../data_layer/harperBridge/fsBridge/fsUtility/getAttributeFileValues');
     });
 
     it('Should return results for each hash value passed', mochaAsyncWrapper(async () => {
-        const test_search_result = await fsGetDataByHash_rw(TEST_SEARCH_OBJ);
+        const test_search_result = await fsGetDataByValue_rw(TEST_SEARCH_OBJ);
 
-        expect(Object.keys(test_search_result).length).to.equal(test_hash_values.length);
+        expect(Object.keys(test_search_result).length).to.equal(test_expected_hash_result.length);
         Object.keys(test_search_result).forEach(row_id => {
             const test_hash = parseInt(row_id);
             expect(test_hash).to.equal(test_search_result[row_id].id);
-            expect(test_hash_values.includes(test_hash)).to.equal(true);
+            expect(test_expected_hash_result.includes(test_hash)).to.equal(true);
         });
     }));
 
-    it('Should return correct attributes for each hash value passed', mochaAsyncWrapper(async () => {
-        const test_search_result = await fsGetDataByHash_rw(TEST_SEARCH_OBJ);
+    it('Should return correct attributes for each matching row', mochaAsyncWrapper(async () => {
+        const test_search_result = await fsGetDataByValue_rw(TEST_SEARCH_OBJ);
 
         Object.keys(test_search_result).forEach(row_id => {
-            expect(test_hash_values.includes(parseInt(row_id))).to.equal(true);
+            expect(test_expected_hash_result.includes(parseInt(row_id))).to.equal(true);
             Object.keys(test_search_result[row_id]).forEach(attr_name => {
                 expect(test_data_dog[row_id][attr_name]).to.equal(test_search_result[row_id][attr_name]);
             });
         });
     }));
 
-    it('Should return specified attributes for each hash value passed', mochaAsyncWrapper(async () => {
+    it('Should return specified attributes for each matching row', mochaAsyncWrapper(async () => {
         const test_attr_name = test_attr_names[0];
         const TEMP_SEARCH_OBJECT = deepClone(TEST_SEARCH_OBJ);
         TEMP_SEARCH_OBJECT.get_attributes = [test_attr_name];
 
-        const test_search_result = await fsGetDataByHash_rw(TEST_SEARCH_OBJ);
+        const test_search_result = await fsGetDataByValue_rw(TEST_SEARCH_OBJ);
 
-        expect(Object.keys(test_search_result).length).to.equal(test_hash_values.length);
+        expect(Object.keys(test_search_result).length).to.equal(test_expected_hash_result.length);
         Object.keys(test_search_result).forEach(row_id => {
+            expect(test_expected_hash_result.includes(parseInt(row_id))).to.equal(true);
             Object.keys(test_search_result[row_id]).forEach(attr_name => {
                 expect(test_attr_names.includes(attr_name)).to.equal(true);
                 expect(test_search_result[row_id][attr_name]).to.equal(test_data_dog[row_id][attr_name]);
@@ -109,12 +115,12 @@ describe('fsGetDataByHash', () => {
     it('Should return error if empty object is passed in', mochaAsyncWrapper(async () => {
         let err;
         try{
-            await fsGetDataByHash_rw({});
+            await fsGetDataByValue_rw({});
         } catch(e) {
             err = e;
         }
 
-        expect(err.message).to.equal("Schema can't be blank,Table can't be blank,Hash values can't be blank,Get attributes can't be blank");
+        expect(err.message).to.equal("Schema can't be blank,Table can't be blank,Search attribute can't be blank,Search value can't be blank,Get attributes can't be blank");
     }));
 
     it('Should return error if empty string is passed in for schema', mochaAsyncWrapper(async () => {
@@ -123,7 +129,7 @@ describe('fsGetDataByHash', () => {
         let err;
 
         try{
-            err = await fsGetDataByHash_rw(TEMP_SEARCH_OBJECT);
+            err = await fsGetDataByValue_rw(TEMP_SEARCH_OBJECT);
         } catch(e) {
             err = e;
         }
@@ -137,7 +143,7 @@ describe('fsGetDataByHash', () => {
         let err;
 
         try{
-            err = await fsGetDataByHash_rw(TEMP_SEARCH_OBJECT);
+            err = await fsGetDataByValue_rw(TEMP_SEARCH_OBJECT);
         } catch(e) {
             err = e;
         }
@@ -145,32 +151,60 @@ describe('fsGetDataByHash', () => {
         expect(err.message).to.equal(ERR_MSGS.TABLE);
     }));
 
-    it('Should return error if empty string is passed in for hashes', mochaAsyncWrapper(async () => {
+    it('Should return error if empty string is passed in for search attribute', mochaAsyncWrapper(async () => {
         const TEMP_SEARCH_OBJECT = deepClone(TEST_SEARCH_OBJ);
-        TEMP_SEARCH_OBJECT.hash_values = "";
+        TEMP_SEARCH_OBJECT.search_attribute = "";
         let err;
 
         try{
-            err = await fsGetDataByHash_rw(TEMP_SEARCH_OBJECT);
+            err = await fsGetDataByValue_rw(TEMP_SEARCH_OBJECT);
         } catch(e) {
             err = e;
         }
 
-        expect(err.message).to.equal(ERR_MSGS.HASHES);
+        expect(err.message).to.equal(ERR_MSGS.S_ATTR);
     }));
 
-    it('Should return error if empty array is passed in for hash_values', mochaAsyncWrapper(async () => {
+    it('Should return error if empty object is passed in for search attribute', mochaAsyncWrapper(async () => {
         const TEMP_SEARCH_OBJECT = deepClone(TEST_SEARCH_OBJ);
-        TEMP_SEARCH_OBJECT.hash_values = [];
+        TEMP_SEARCH_OBJECT.search_attribute = {};
         let err;
 
         try{
-            await fsGetDataByHash_rw(TEMP_SEARCH_OBJECT);
+            err = await fsGetDataByValue_rw(TEMP_SEARCH_OBJECT);
         } catch(e) {
             err = e;
         }
 
-        expect(err.message).to.equal(ERR_MSGS.HASHES);
+        expect(err.message).to.equal(ERR_MSGS.S_ATTR);
+    }));
+
+    it('Should return error if empty string is passed in for search value', mochaAsyncWrapper(async () => {
+        const TEMP_SEARCH_OBJECT = deepClone(TEST_SEARCH_OBJ);
+        TEMP_SEARCH_OBJECT.search_value = '';
+        let err;
+
+        try{
+            await fsGetDataByValue_rw(TEMP_SEARCH_OBJECT);
+        } catch(e) {
+            err = e;
+        }
+
+        expect(err.message).to.equal(ERR_MSGS.S_VAL);
+    }));
+
+    it('Should return error if empty array is passed in for search value', mochaAsyncWrapper(async () => {
+        const TEMP_SEARCH_OBJECT = deepClone(TEST_SEARCH_OBJ);
+        TEMP_SEARCH_OBJECT.search_value = [];
+        let err;
+
+        try{
+            await fsGetDataByValue_rw(TEMP_SEARCH_OBJECT);
+        } catch(e) {
+            err = e;
+        }
+
+        expect(err.message).to.equal(ERR_MSGS.S_VAL);
     }));
 
     it('Should return error if empty string is passed in for get_attributes', mochaAsyncWrapper(async () => {
@@ -179,7 +213,7 @@ describe('fsGetDataByHash', () => {
         let err;
 
         try{
-            err = await fsGetDataByHash_rw(TEMP_SEARCH_OBJECT);
+            err = await fsGetDataByValue_rw(TEMP_SEARCH_OBJECT);
         } catch(e) {
             err = e;
         }
@@ -193,7 +227,7 @@ describe('fsGetDataByHash', () => {
         let err;
 
         try{
-            err = await fsGetDataByHash_rw(TEMP_SEARCH_OBJECT);
+            err = await fsGetDataByValue_rw(TEMP_SEARCH_OBJECT);
         } catch(e) {
             err = e;
         }
