@@ -39,6 +39,14 @@ const TEST_SEARCH_OBJ = {
     get_attributes: "*"
 };
 
+const ERR_MSGS = {
+    SCHEMA: "Schema can't be blank",
+    TABLE: "Table can't be blank",
+    S_ATTR: "Search attribute can't be blank",
+    S_VAL: "Search value can't be blank",
+    GET_ATTR: "Get attributes can't be blank"
+}
+
 function setupTestData() {
     const test_data = deepClone(TEST_DATA_DOG);
     test_attr_names = Object.keys(test_data[0]);
@@ -102,5 +110,128 @@ describe('fsGetDataByHash', () => {
                 expect(test_search_result[row_id][attr_name]).to.equal(test_data_dog[row_id][attr_name]);
             });
         });
+    }));
+
+    it('Should return error if empty object is passed in', mochaAsyncWrapper(async () => {
+        let err;
+        try{
+            await fsGetDataByValue_rw({});
+        } catch(e) {
+            err = e;
+        }
+
+        expect(err.message).to.equal("Schema can't be blank,Table can't be blank,Search attribute can't be blank,Search value can't be blank,Get attributes can't be blank");
+    }));
+
+    it('Should return error if empty string is passed in for schema', mochaAsyncWrapper(async () => {
+        const TEMP_SEARCH_OBJECT = deepClone(TEST_SEARCH_OBJ);
+        TEMP_SEARCH_OBJECT.schema = "";
+        let err;
+
+        try{
+            err = await fsGetDataByValue_rw(TEMP_SEARCH_OBJECT);
+        } catch(e) {
+            err = e;
+        }
+
+        expect(err.message).to.equal(ERR_MSGS.SCHEMA);
+    }));
+
+    it('Should return error if empty string is passed in for table', mochaAsyncWrapper(async () => {
+        const TEMP_SEARCH_OBJECT = deepClone(TEST_SEARCH_OBJ);
+        TEMP_SEARCH_OBJECT.table = "";
+        let err;
+
+        try{
+            err = await fsGetDataByValue_rw(TEMP_SEARCH_OBJECT);
+        } catch(e) {
+            err = e;
+        }
+
+        expect(err.message).to.equal(ERR_MSGS.TABLE);
+    }));
+
+    it('Should return error if empty string is passed in for search attribute', mochaAsyncWrapper(async () => {
+        const TEMP_SEARCH_OBJECT = deepClone(TEST_SEARCH_OBJ);
+        TEMP_SEARCH_OBJECT.search_attribute = "";
+        let err;
+
+        try{
+            err = await fsGetDataByValue_rw(TEMP_SEARCH_OBJECT);
+        } catch(e) {
+            err = e;
+        }
+
+        expect(err.message).to.equal(ERR_MSGS.S_ATTR);
+    }));
+
+    it('Should return error if empty object is passed in for search attribute', mochaAsyncWrapper(async () => {
+        const TEMP_SEARCH_OBJECT = deepClone(TEST_SEARCH_OBJ);
+        TEMP_SEARCH_OBJECT.search_attribute = {};
+        let err;
+
+        try{
+            err = await fsGetDataByValue_rw(TEMP_SEARCH_OBJECT);
+        } catch(e) {
+            err = e;
+        }
+
+        expect(err.message).to.equal(ERR_MSGS.S_ATTR);
+    }));
+
+    it('Should return error if empty string is passed in for search value', mochaAsyncWrapper(async () => {
+        const TEMP_SEARCH_OBJECT = deepClone(TEST_SEARCH_OBJ);
+        TEMP_SEARCH_OBJECT.search_value = '';
+        let err;
+
+        try{
+            await fsGetDataByValue_rw(TEMP_SEARCH_OBJECT);
+        } catch(e) {
+            err = e;
+        }
+
+        expect(err.message).to.equal(ERR_MSGS.S_VAL);
+    }));
+
+    it('Should return error if empty array is passed in for search value', mochaAsyncWrapper(async () => {
+        const TEMP_SEARCH_OBJECT = deepClone(TEST_SEARCH_OBJ);
+        TEMP_SEARCH_OBJECT.search_value = [];
+        let err;
+
+        try{
+            await fsGetDataByValue_rw(TEMP_SEARCH_OBJECT);
+        } catch(e) {
+            err = e;
+        }
+
+        expect(err.message).to.equal(ERR_MSGS.S_VAL);
+    }));
+
+    it('Should return error if empty string is passed in for get_attributes', mochaAsyncWrapper(async () => {
+        const TEMP_SEARCH_OBJECT = deepClone(TEST_SEARCH_OBJ);
+        TEMP_SEARCH_OBJECT.get_attributes = "";
+        let err;
+
+        try{
+            err = await fsGetDataByValue_rw(TEMP_SEARCH_OBJECT);
+        } catch(e) {
+            err = e;
+        }
+
+        expect(err.message).to.equal(ERR_MSGS.GET_ATTR);
+    }));
+
+    it('Should return error if empty array is passed in for get_attributes', mochaAsyncWrapper(async () => {
+        const TEMP_SEARCH_OBJECT = deepClone(TEST_SEARCH_OBJ);
+        TEMP_SEARCH_OBJECT.get_attributes = [];
+        let err;
+
+        try{
+            err = await fsGetDataByValue_rw(TEMP_SEARCH_OBJECT);
+        } catch(e) {
+            err = e;
+        }
+
+        expect(err.message).to.equal(ERR_MSGS.GET_ATTR);
     }));
 });
