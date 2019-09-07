@@ -100,7 +100,7 @@ describe('fsGetDataByHash', () => {
         const TEMP_SEARCH_OBJECT = deepClone(TEST_SEARCH_OBJ);
         TEMP_SEARCH_OBJECT.get_attributes = [test_attr_name];
 
-        const test_search_result = await fsGetDataByValue_rw(TEST_SEARCH_OBJ);
+        const test_search_result = await fsGetDataByValue_rw(TEMP_SEARCH_OBJECT);
 
         expect(Object.keys(test_search_result).length).to.equal(test_expected_hash_result.length);
         Object.keys(test_search_result).forEach(row_id => {

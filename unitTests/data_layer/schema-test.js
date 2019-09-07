@@ -72,7 +72,6 @@ function deleteSchemaTableStruc() {
 describe('Test schema module', function() {
     let signal_schema_change_stub;
     let insert_stub;
-    let search_by_conditions_stub = sinon.stub();
     let logger_error_stub;
     let logger_info_stub;
     let schema_validator_stub;
@@ -100,7 +99,6 @@ describe('Test schema module', function() {
         env.setProperty('HDB_ROOT', HDB_ROOT_TEST);
         insert_stub = sinon.stub(insert, 'insert');
         signal_schema_change_stub = sinon.stub(signalling, 'signalSchemaChange');
-        schema.__set__('p_search_by_conditions', search_by_conditions_stub);
         logger_error_stub = sinon.stub(logger, 'error');
         logger_info_stub = sinon.stub(logger, 'info');
         schema_validator_stub = sinon.stub(schema_validator, 'schema_object');
