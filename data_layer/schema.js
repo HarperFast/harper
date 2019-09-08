@@ -22,17 +22,9 @@ const harperBridge = require('./harperBridge/harperBridge');
 // Promisified functions
 let p_search_search_by_value = util.promisify(search.searchByValue);
 let p_delete_delete = util.promisify(delete_.delete);
-let p_search_by_conditions = util.promisify(search.searchByConditions);
 
-// This is used by moveFileToTrash to decide where to put the removed file(s) in the trash directory.
-const ENTITY_TYPE_ENUM = {
-    TABLE: 'table',
-    SCHEMA: 'schema',
-    ATTRIBUTE: 'attribute'
-};
 const DATE_SUBSTR_LENGTH = 19;
 const TRASH_BASE_PATH = `${env.get('HDB_ROOT')}/trash/`;
-
 
 let current_date = new Date().toISOString().substr(0, DATE_SUBSTR_LENGTH);
 
@@ -233,9 +225,9 @@ async function dropAttribute(drop_attribute_object) {
     }
 
     try {
-        let success = await moveAttributeToTrash(drop_attribute_object);
+        await harperBridge.dropAttribute(drop_attribute_object);
 
-        return success;
+        return `successfully deleted attribute '${drop_attribute_object.attribute}'`;
     } catch(err) {
         logger.error(`Got an error deleting attribute ${util.inspect(drop_attribute_object)}.`);
         throw err;
@@ -288,84 +280,6 @@ async function moveTableToTrash(drop_table_object) {
     try {
         await moveFolderToTrash(origin_path, trash_path);
     } catch(err) {
-        throw err;
-    }
-}
-
-/**
- * Remove an attribute from __hdb_attribute.
- * @param drop_attribute_object - the drop attribute json received in drop_attribute inbound message.
- * @returns {Promise<string>}
- */
-async function dropAttributeFromSystem(drop_attribute_object) {
-    let search_object = {
-        schema: 'system',
-        table: 'hdb_attribute',
-        hash_attribute: 'id',
-        search_attribute: 'attribute',
-        search_value: drop_attribute_object.attribute,
-        get_attributes: ['id']
-    };
-
-    try {
-        let attributes = await p_search_search_by_value(search_object);
-        if (!attributes || attributes.length < 1) {
-            throw new Error(`Attribute ${drop_attribute_object.attribute} was not found.`);
-        }
-
-        let delete_table_object = {
-            table: "hdb_attribute",
-            schema: "system",
-            hash_attribute: "id",
-            hash_values: [attributes[0].id]
-        };
-
-        let success_message = await p_delete_delete(delete_table_object);
-
-        return success_message;
-    } catch(err) {
-        throw err;
-    }
-}
-
-/**
- * Performs the move of the target attribute and it's __hdb_hash entry to the trash directory.
- * @param drop_attribute_object - Descriptor of the table being moved to trash.
- */
-async function moveAttributeToTrash(drop_attribute_object) {
-    // TODO: Need to do specific rollback actions if any of the actions below fails.  https://harperdb.atlassian.net/browse/HDB-312
-    let origin_path = `${env.get('HDB_ROOT')}/schema/${drop_attribute_object.schema}/${drop_attribute_object.table}/${drop_attribute_object.attribute}`;
-    let hash_path = `${env.get('HDB_ROOT')}/schema/${drop_attribute_object.schema}/${drop_attribute_object.table}/${terms.HASH_FOLDER_NAME}/${drop_attribute_object.attribute}`;
-    let attribute_trash_path = `${env.get('HDB_ROOT')}/trash/${ENTITY_TYPE_ENUM.ATTRIBUTE}/${drop_attribute_object.attribute}-${current_date}`;
-    let attribute_hash_trash_path = `${attribute_trash_path}/${terms.HASH_FOLDER_NAME}/${drop_attribute_object.attribute}`;
-
-    try {
-        let att_result = await moveFolderToTrash(origin_path, attribute_trash_path);
-        if(!att_result) {
-
-            return false;
-        }
-    } catch(err) {
-        // Not good, rollback attribute folder
-        logger.error(`There was a problem moving the attribute at path ${origin_path} to the trash at path: ${attribute_trash_path}`);
-        throw err;
-    }
-
-    try {
-       await moveFolderToTrash(hash_path, attribute_hash_trash_path);
-    } catch(err) {
-        // Not good, rollback attribute __hdb_hash folder and attribute folder
-        logger.error(`There was a problem moving the hash attribute at path ${origin_path} to the trash at path: ${attribute_trash_path}`);
-        throw err;
-    }
-
-    try {
-        let drop_result = await dropAttributeFromSystem(drop_attribute_object);
-
-        return drop_result;
-    } catch(err) {
-        // Not good, rollback attribute folder, __hdb_hash folder, and attribute removal from hdb_attribute if it happened.
-        logger.error(`There was a problem dropping attribute: ${drop_attribute_object.attribute} from hdb_attribute.`);
         throw err;
     }
 }
