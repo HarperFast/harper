@@ -30,8 +30,6 @@ async function dropTable(drop_table_obj) {
         await fsDeleteRecords(delete_table_obj);
         await moveTableToTrash(drop_table_obj);
         await deleteAttrStructure(drop_table_obj);
-
-        return `successfully deleted table ${drop_table_obj.schema}.${drop_table_obj.table}`;
     } catch(err) {
         log.error(err);
         throw err;

@@ -75,10 +75,8 @@ describe('Tests for file system module fsDropTable', () => {
                     "id"
                 ]
             };
+            await fsDropTable(DROP_TABLE_OBJ_TEST);
 
-            let result = await fsDropTable(DROP_TABLE_OBJ_TEST);
-
-            expect(result).to.equal(`successfully deleted table ${DROP_TABLE_OBJ_TEST.schema}.${DROP_TABLE_OBJ_TEST.table}`);
             expect(fs_search_by_hash_stub).to.have.been.calledWith(search_obj_expected);
             expect(fs_delete_records_stub).to.have.been.calledWith(delete_table_obj_expected);
             expect(move_table_to_trash_stub).to.have.been.calledWith(DROP_TABLE_OBJ_TEST);
