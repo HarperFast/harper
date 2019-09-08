@@ -79,9 +79,9 @@ class FileSystemBridge extends BridgeMethods {
         }
     }
 
-    async dropTable(table, drop_table_obj) {
+    async dropTable(drop_table_obj) {
         try {
-            return await fsDropTable(table, drop_table_obj);
+            return await fsDropTable(drop_table_obj);
         } catch(err) {
             log.error(err);
             throw err;

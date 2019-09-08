@@ -7,6 +7,7 @@ const rewire = require('rewire');
 let fsDropSchema = rewire('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsDropSchema');
 const log = require('../../../../../utility/logging/harper_logger');
 const terms = require('../../../../../utility/hdbTerms');
+const env = require('../../../../../utility/environment/environmentManager');
 const chai = require('chai');
 const sinon = require('sinon');
 const sinon_chai = require('sinon-chai');

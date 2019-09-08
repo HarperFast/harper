@@ -206,9 +206,6 @@ async function dropAttribute(drop_attribute_object) {
 }
 
 /** HELPER FUNCTIONS **/
-
-
-
 /**
  * Remove an attribute from __hdb_attribute.
  * @param drop_attribute_object - the drop attribute json received in drop_attribute inbound message.
