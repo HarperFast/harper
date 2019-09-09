@@ -22,7 +22,6 @@ const harperBridge = require('./harperBridge/harperBridge');
 // Promisified functions
 let p_search_search_by_value = util.promisify(search.searchByValue);
 let p_delete_delete = util.promisify(delete_.delete);
-let p_search_by_conditions = util.promisify(search.searchByConditions);
 
 // This is used by moveFileToTrash to decide where to put the removed file(s) in the trash directory.
 const ENTITY_TYPE_ENUM = {
