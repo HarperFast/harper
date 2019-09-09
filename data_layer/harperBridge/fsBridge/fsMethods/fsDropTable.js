@@ -3,10 +3,10 @@
 const fsDeleteRecords = require('./fsDeleteRecords');
 const moveFolderToTrash = require('../fsUtility/moveFolderToTrash');
 const deleteAttrStructure = require('../fsUtility/deleteAttrStructure');
+const getBasePath = require('../fsUtility/getBasePath');
 const fsSearchByValue = require('./fsSearchByValue');
 const env = require('../../../../utility/environment/environmentManager');
 const terms = require('../../../../utility/hdbTerms');
-const log = require('../../../../utility/logging/harper_logger');
 
 const DATE_SUBSTR_LENGTH = 19;
 let current_date = new Date().toISOString().substr(0, DATE_SUBSTR_LENGTH);
@@ -21,7 +21,7 @@ async function dropTable(drop_table_obj) {
         hash_attribute: terms.SYSTEM_TABLE_HASH,
         search_attribute: terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_NAME_KEY,
         search_value: drop_table_obj.table,
-        get_attributes: ['name', 'schema', 'id']
+        get_attributes: [terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_NAME_KEY, terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_SCHEMA_KEY, terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_ID_KEY]
     };
 
     try {
@@ -31,7 +31,6 @@ async function dropTable(drop_table_obj) {
         await moveTableToTrash(drop_table_obj);
         await deleteAttrStructure(drop_table_obj);
     } catch(err) {
-        log.error(err);
         throw err;
     }
 }
@@ -72,8 +71,7 @@ function buildDropTableObject(drop_table_object, data) {
  * @returns {Promise<void>}
  */
 async function moveTableToTrash(drop_table_object) {
-    let root_path = env.get(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY);
-    let origin_path = `${root_path}/${terms.HDB_SCHEMA_DIR}/${drop_table_object.schema}/${drop_table_object.table}`;
+    let origin_path = `${getBasePath()}/${drop_table_object.schema}/${drop_table_object.table}`;
     let destination_name = `${drop_table_object.schema}-${drop_table_object.table}-${current_date}`;
     let trash_path = `${TRASH_BASE_PATH}${destination_name}`;
 

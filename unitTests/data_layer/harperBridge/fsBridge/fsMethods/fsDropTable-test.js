@@ -89,7 +89,6 @@ describe('Tests for file system module fsDropTable', () => {
             let test_err_result = await test_utils.testError(fsDropTable(DROP_TABLE_OBJ_TEST), error_msg);
 
             expect(test_err_result).to.be.true;
-            expect(log_error_spy).to.have.been.called;
         });
     });
 
