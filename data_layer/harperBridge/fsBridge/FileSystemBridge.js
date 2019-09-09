@@ -12,6 +12,7 @@ const fsGetDataByValue = require('./fsMethods/fsGetDataByValue');
 const fsSearchByValue = require('./fsMethods/fsSearchByValue');
 const fsDropSchema = require('./fsMethods/fsDropSchema');
 const fsCreateTable = require('./fsMethods/fsCreateTable');
+const fsDeleteRecordsBefore = require('./fsMethods/fsDeleteRecordsBefore');
 
 class FileSystemBridge extends BridgeMethods {
 
@@ -90,6 +91,15 @@ class FileSystemBridge extends BridgeMethods {
     async deleteRecords(delete_obj) {
         try {
             return await fsDeleteRecords(delete_obj);
+        } catch(err) {
+            log.error(err);
+            throw err;
+        }
+    }
+
+    async deleteRecordsBefore(delete_obj) {
+        try {
+            return await fsDeleteRecordsBefore(delete_obj);
         } catch(err) {
             log.error(err);
             throw err;

@@ -44,33 +44,35 @@ const harperBridge = require('./harperBridge/harperBridge');
  * so if clustering is enabled values added will still remain in a parent node.  This serves only to remove files for
  * devices that have a small amount of disk space.
  *
- * @param json_body - the request passed from chooseOperation.
+ * @param delete_obj - the request passed from chooseOperation.
  * @param callback
  */
-async function deleteFilesBefore(json_body) {
+async function deleteFilesBefore(delete_obj) {
 
-    if(common_utils.isEmptyOrZeroLength(json_body.date)) {
+    if(common_utils.isEmptyOrZeroLength(delete_obj.date)) {
         throw new Error("Invalid date.");
     }
-    let parsed_date = moment(json_body.date, moment.ISO_8601);
+    let parsed_date = moment(delete_obj.date, moment.ISO_8601);
     if(!parsed_date.isValid()) {
         throw new Error("Invalid date, must be in ISO-8601 format (YYYY-MM-DD).");
     }
-    if(common_utils.isEmptyOrZeroLength(json_body.schema)) {
+    if(common_utils.isEmptyOrZeroLength(delete_obj.schema)) {
         throw new Error("Invalid schema.");
     }
-    let schema = json_body.schema;
-    if(common_utils.isEmptyOrZeroLength(json_body.table)) {
+
+    if(common_utils.isEmptyOrZeroLength(delete_obj.table)) {
         throw new Error("Invalid table.");
     }
-    let table = json_body.table;
-    let dir_path = common_utils.buildFolderPath(BASE_PATH, schema, table);
 
-    await deleteFilesInPath(schema, table, dir_path, parsed_date).catch(function caughtError(err) {
-        harper_logger.error(`There was an error deleting files by date: ${err}`);
-        throw new Error(`There was an error deleting files by date: ${err}`);
-    });
-    harper_logger.info(`Finished deleting files before ${json_body.date}`);
+    await harperBridge.deleteRecordsBefore(delete_obj);
+    // let table = delete_obj.table;
+    // let dir_path = common_utils.buildFolderPath(BASE_PATH, schema, table);
+    //
+    // await deleteFilesInPath(schema, table, dir_path, parsed_date).catch(function caughtError(err) {
+    //     harper_logger.error(`There was an error deleting files by date: ${err}`);
+    //     throw new Error(`There was an error deleting files by date: ${err}`);
+    // });
+    harper_logger.info(`Finished deleting files before ${delete_obj.date}`);
 }
 
 /**
