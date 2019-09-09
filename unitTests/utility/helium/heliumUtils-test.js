@@ -109,12 +109,18 @@ describe('test heliumUtils', ()=>{
         });
 
         it('test all good', ()=>{
+            let revert = helium_utils.__set__('env', {
+                get:()=>{
+                    return '/tmp/hdb';
+                }
+            });
+
             let revert_helium = helium_utils.__set__('harperdb_helium', HarperDBHelium);
 
             assert.doesNotThrow(()=>{
                 helium_utils.createSystemDataStores();
             });
-
+            revert();
             revert_helium();
         });
     });
