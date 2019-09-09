@@ -26,13 +26,8 @@ const crypto = require('crypto');
 const hdbInfoController = require('../../data_layer/hdbInfoController');
 const version = require('../../bin/version');
 const LOG_LOCATION = ('../install_log.log');
-
-const system_schema = require('../../json/systemSchema');
-const log = require('../logging/harper_logger');
-
 module.exports = {
-    install: run_install,
-    createSystemDataStores: createSystemDataStores
+    install: run_install
 };
 
 let wizard_result;
@@ -117,13 +112,13 @@ function updateHdbInfo(callback) {
                     return callback(null, res);
                 }
 
-        });
+            });
     }
 }
 
 /**
  * Prompts the user to accept the linked Terms & Conditions.  If the user does not agree, install process is killed.
- * @param {*} callback 
+ * @param {*} callback
  */
 function termsAgreement(callback) {
     winston.info('Asking for terms agreement.');
@@ -768,26 +763,4 @@ function createBootPropertiesFile(settings_path, callback) {
         env.setPropsFilePath(props_file_path);
         return callback(null, 'success');
     });
-}
-
-function createSystemDataStores(){
-    try {
-        log.info('Creating HarperDB System datastores');
-        let helium = comm.initializeHelium();
-        let data_stores = [];
-        //build the attribute array list from the systemSchema.json
-        Object.keys(system_schema).forEach(table=>{
-            let schema_table = `${table.schema}/${table.name}`;
-            table.attributes.forEach(attribute=>{
-                data_stores.push(`${schema_table}/${attribute.attribute}`);
-            });
-        });
-
-        helium.createDataStores(data_stores);
-
-        comm.terminateHelium(helium);
-        log.info('Created system level data stores');
-    }catch(e){
-        log.error(`Creating system data stores failed due to ${e}`);
-    }
 }
