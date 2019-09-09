@@ -32,10 +32,7 @@ async function dropAttribute(drop_attr_obj) {
     let attribute_hash_trash_path = `${attribute_trash_path}/${terms.HASH_FOLDER_NAME}/${drop_attr_obj.attribute}`;
 
     try {
-        let att_result = await moveFolderToTrash(origin_path, attribute_trash_path);
-        if(!att_result) {
-            return false;
-        }
+        await moveFolderToTrash(origin_path, attribute_trash_path);
     } catch(err) {
         // Not good, rollback attribute folder
         if (err.code === 'ENOENT') {

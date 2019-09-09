@@ -230,6 +230,7 @@ async function dropAttribute(drop_attribute_object) {
         return `successfully deleted attribute '${drop_attribute_object.attribute}'`;
     } catch(err) {
         logger.error(`Got an error deleting attribute ${util.inspect(drop_attribute_object)}.`);
+        logger.error(err);
         throw err;
    }
 }
