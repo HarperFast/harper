@@ -41,6 +41,9 @@ const RESTART_TIMEOUT_MS = 60000;
 const HDB_FILE_PERMISSIONS = 0o700;
 const SCHEMA_DIR_NAME = 'schema';
 
+const CLUSTERING_FOLDER_NAME = 'clustering';
+const CLUSTERING_PAYLOAD_FILE_NAME = '.scPayload.json';
+
 // Trying to keep socket cluster as modular as possible, so we will create values in here that point to values
 // inside of the socketcluster types module.
 const cluster_types = require('../server/socketcluster/types');
@@ -381,6 +384,8 @@ module.exports = {
     CLUSTERING_MESSAGE_TYPES,
     // Make the message objects available through hdbTerms to keep clustering as modular as possible.
     ClusterMessageObjects,
-    ORIGINATOR_SET_VALUE
+    ORIGINATOR_SET_VALUE,
+    CLUSTERING_FOLDER_NAME,
+    CLUSTERING_PAYLOAD_FILE_NAME
 };
 

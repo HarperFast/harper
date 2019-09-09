@@ -47,7 +47,7 @@ function getWorkerStatus(status_response_msg, worker) {
                 let conn = new ConnectionDetails('', client.options.hostname, client.options.port, client.state);
                 if (client.additional_info) {
                     conn['subscriptions'] = [];
-                    conn.node_name = client.additional_info.name;
+                    conn.node_name = client.additional_info.server_name;
                     for (let i = 0; i < client.additional_info.subscriptions.length; i++) {
                         let sub = client.additional_info.subscriptions[i];
                         if (sub.channel.indexOf(hdb_terms.HDB_INTERNAL_SC_CHANNEL_PREFIX) === 0) {
