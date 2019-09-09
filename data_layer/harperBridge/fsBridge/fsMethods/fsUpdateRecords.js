@@ -42,7 +42,6 @@ async function updateRecords(update_obj) {
             schema_table
         };
     } catch(err) {
-        log.error(err);
         throw err;
     }
 }
@@ -71,7 +70,6 @@ async function getExistingRows(schema_table, hashes, attributes){
         let existing_records = await fsSearchByHash(search_object);
         return existing_records;
     } catch(err) {
-        log.error(err);
         throw err;
     }
 }

@@ -4,15 +4,12 @@ test_utils.preTestPrep();
 
 const rewire = require('rewire');
 let fsCreateAttribute = rewire('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsCreateAttribute');
-let processRows = rewire('../../../../../data_layer/harperBridge/fsBridge/fsUtility/processRows');
 const chai = require('chai');
 const sinon = require('sinon');
 const sinon_chai = require('sinon-chai');
 const { expect } = chai;
 chai.use(sinon_chai);
 
-//const HDB_PATH = `${env.getHdbBasePath()}/schema/`;
-const FS_DIR_TEST = test_utils.getMockFSPath();
 const CREATE_ATTR_OBJ_TEST = {
     operation: "create_attribute",
     schema: "attrUnitTest",
@@ -86,8 +83,6 @@ describe('Tests for file system module fsCreateAttribute', () => {
                     }
                 }
             };
-
-            sandbox.stub().resolves(INSERT_RESPONSE);
             fsCreateAttribute.__set__('insertData', insert_data_stub)
         });
 

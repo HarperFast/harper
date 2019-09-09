@@ -4,9 +4,6 @@ const fs = require('fs-extra');
 const validation = require('../validation/schema_validator.js');
 const logger = require('../utility/logging/harper_logger');
 const uuidV4 = require('uuid/v4');
-    // this is to avoid a circular dependency with insert.
-    // insert needs the describe all function but so does this module.
-    // as such the functions have been broken out into a separate module.
 const env = require('../utility/environment/environmentManager');
 const clone = require('clone');
 const signalling = require('../utility/signalling');
@@ -220,14 +217,7 @@ async function dropAttribute(drop_attribute_object) {
 
     try {
         let success = await moveAttributeToTrash(drop_attribute_object);
-
-        // Remove the dropped attribute from the global hdb schema object.
-        let attributes_obj = Object.values(global.hdb_schema[drop_attribute_object.schema][drop_attribute_object.table]['attributes']);
-        for (let i = 0; i < attributes_obj.length; i++) {
-            if (attributes_obj[i].attribute === drop_attribute_object.attribute) {
-                global.hdb_schema[drop_attribute_object.schema][drop_attribute_object.table]['attributes'].splice(i, 1);
-            }
-        }
+        dropAttributeFromGlobal(drop_attribute_object);
 
         return success;
     } catch(err) {
@@ -239,11 +229,26 @@ async function dropAttribute(drop_attribute_object) {
 /** HELPER FUNCTIONS **/
 
 /**
+ * Removes the dropped attribute from the global hdb schema object.
+ * @param drop_attribute_object
+ */
+function dropAttributeFromGlobal(drop_attribute_object) {
+    let attributes_obj = Object.values(global.hdb_schema[drop_attribute_object.schema][drop_attribute_object.table]['attributes']);
+
+    for (let i = 0; i < attributes_obj.length; i++) {
+        if (attributes_obj[i].attribute === drop_attribute_object.attribute) {
+            global.hdb_schema[drop_attribute_object.schema][drop_attribute_object.table]['attributes'].splice(i, 1);
+        }
+    }
+}
+
+/**
  * Builds a descriptor object that describes the table targeted for the trash.
  * @param drop_table_object - Top level descriptor of the table being moved.
  * @param data - The data found by the search function.
  * @returns {Promise<{schema: string, hash_attribute: string, hash_values: *[], table: string}>}
  */
+
 function buildDropTableObject(drop_table_object, data) {
     let delete_table;
 
@@ -389,9 +394,8 @@ async function moveFolderToTrash(origin_path, trash_path) {
 
         // This is here because calling drop attribute on an attribute that only exists in the system schema folder shouldn't
         // throw and error if that folder doesn't exist in schema file path.
-        if (err.errno === -2) {
-            logger.error(err);
-            logger.error(`Got an error moving path ${origin_path} to trash path: ${trash_path}`);
+        if (err.code === 'ENOENT') {
+            logger.error(`Skipped moving folder ${origin_path} to trash path: ${trash_path}`);
         } else {
             logger.error(`Got an error moving path ${origin_path} to trash path: ${trash_path}`);
             throw err;

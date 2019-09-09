@@ -41,13 +41,13 @@ const p_schema_describe_table = util.promisify(schema_describe.describeTable);
 const p_schema_describe_all = util.promisify(schema_describe.describeAll);
 const p_delete = util.promisify(delete_.delete);
 
-const GLOBAL_SCHEMA_UPDATE_FUNCTIONS = {
-    [terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE]: 1,
-    [terms.OPERATIONS_ENUM.CREATE_TABLE]: 1,
-    [terms.OPERATIONS_ENUM.CREATE_SCHEMA]: 1,
-    [terms.OPERATIONS_ENUM.DROP_ATTRIBUTE]: 1,
-    [terms.OPERATIONS_ENUM.DROP_TABLE]: 1,
-    [terms.OPERATIONS_ENUM.DROP_SCHEMA]: 1
+const GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM = {
+    [terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE]: true,
+    [terms.OPERATIONS_ENUM.CREATE_TABLE]: true,
+    [terms.OPERATIONS_ENUM.CREATE_SCHEMA]: true,
+    [terms.OPERATIONS_ENUM.DROP_ATTRIBUTE]: true,
+    [terms.OPERATIONS_ENUM.DROP_TABLE]: true,
+    [terms.OPERATIONS_ENUM.DROP_SCHEMA]: true
 };
 
 module.exports = {
@@ -91,7 +91,7 @@ function processLocalTransaction(req, res, operation_function, callback) {
                 data = {"message": data};
             }
 
-            if (GLOBAL_SCHEMA_UPDATE_FUNCTIONS[req.body.operation]) {
+            if (GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM[req.body.operation]) {
                 global_schema.setSchemaDataToGlobal((err) => {
                     if (err) {
                         harper_logger.error(err);
@@ -112,7 +112,7 @@ function processLocalTransaction(req, res, operation_function, callback) {
                 error = {"error": error};
             }
 
-            if (GLOBAL_SCHEMA_UPDATE_FUNCTIONS[req.body.operation]) {
+            if (GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM[req.body.operation]) {
                 global_schema.setSchemaDataToGlobal((err) => {
                     if (err) {
                         harper_logger.error(err);

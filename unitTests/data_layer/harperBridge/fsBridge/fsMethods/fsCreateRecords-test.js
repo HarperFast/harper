@@ -133,6 +133,5 @@ describe('Tests for file system module fsCreateRecords', () => {
         let test_error_response = await test_utils.testError(fs_create_records(INSERT_OBJ_TEST, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST), 'Insert error');
 
         expect(test_error_response).to.be.true;
-        expect(log_error_spy).to.have.been.calledOnce;
     });
 });

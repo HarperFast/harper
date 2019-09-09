@@ -13,11 +13,6 @@ const INSERT_ACTION = 'inserted';
 
 module.exports = createAttribute;
 
-/** NOTE **
- * Due to circular dependencies with insertData in insert.js we have a duplicate version
- * of insertData in this file. It should only be used by createAttribute.
- * **/
-
 /**
  * Orchestrates the creation of an attribute on the file system and system schema
  * @param create_attribute_object
@@ -28,9 +23,9 @@ async function createAttribute(create_attribute_object) {
     if (validation_error) {
         throw validation_error;
     }
-    let attributes_obj = Object.values(global.hdb_schema[create_attribute_object.schema][create_attribute_object.table]['attributes']);
+    let attributes_obj_array = global.hdb_schema[create_attribute_object.schema][create_attribute_object.table]['attributes'];
 
-    for (let attribute of attributes_obj) {
+    for (let attribute of attributes_obj_array) {
         if (attribute.attribute === create_attribute_object.attribute) {
             throw new Error(`attribute '${attribute.attribute}' already exists in ${create_attribute_object.schema}.${create_attribute_object.table}`);
         }
@@ -67,6 +62,11 @@ async function createAttribute(create_attribute_object) {
         throw err;
     }
 }
+
+/** NOTE **
+ * Due to circular dependencies with insertData in insert.js we have a duplicate version
+ * of insertData in this file. It should only be used by createAttribute.
+ * **/
 
 /**
  * Inserts data specified in the insert_object parameter.

@@ -1,8 +1,8 @@
 'use strict';
 
 const fs = require('fs-extra');
-const env = require('../../../../utility/environment/environmentManager');
 const terms = require('../../../../utility/hdbTerms');
+const getBasePath = require('../fsUtility/getBasePath');
 const fsCreateRecords = require('./fsCreateRecords');
 
 module.exports = createSchema;
@@ -27,9 +27,9 @@ async function createSchema(schema_create_obj) {
 
     try {
         await fsCreateRecords(insert_object);
-        await fs.mkdir(`${env.getHdbBasePath()}/${terms.HDB_SCHEMA_DIR}/${schema_create_obj.schema}`, {mode: terms.HDB_FILE_PERMISSIONS});
+        await fs.mkdir(`${getBasePath()}/${schema_create_obj.schema}`, {mode: terms.HDB_FILE_PERMISSIONS});
     } catch(err) {
-        if (err.errno === -17) {
+        if (err.code === 'EEXIST') {
             throw new Error('schema already exists');
         }
         throw err;

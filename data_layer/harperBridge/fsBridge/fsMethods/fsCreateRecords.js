@@ -28,7 +28,6 @@ async function createRecords(insert_obj) {
 
         return return_obj;
     } catch(err) {
-        log.error(err);
         throw err;
     }
 }

@@ -587,8 +587,27 @@ describe('Test schema module', function() {
             expect(logger_error_stub).to.have.been.calledWith(`Got an error deleting attribute ${util.inspect(DROP_ATTR_OBJECT_TEST)}.`);
             expect(error.message).to.equal(move_attr_trash_err);
         });
+    });
 
+    describe('Test dropAttributeFromGlobal function', () => {
+        let drop_attr_from_global = schema.__get__('dropAttributeFromGlobal');
 
+        before(() => {
+            global.hdb_schema = {
+                [DROP_ATTR_OBJECT_TEST.schema]: {
+                    [DROP_ATTR_OBJECT_TEST.table]: {
+                        attributes: [{attribute: 'id'}]
+                    }
+                }
+            };
+        });
+
+        it('Test that attribute is removed from global schema', () => {
+            drop_attr_from_global(DROP_ATTR_OBJECT_TEST);
+            let exists_in_global = global.hdb_schema[DROP_ATTR_OBJECT_TEST.schema][DROP_ATTR_OBJECT_TEST.table]['attributes'];
+
+            expect(exists_in_global.length).to.be.equal(0);
+        });
     });
 
     /**

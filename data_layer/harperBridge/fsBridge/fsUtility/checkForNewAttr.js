@@ -11,7 +11,7 @@ const ATTRIBUTE_ALREADY_EXISTS = 'attribute already exists';
 module.exports = checkForNewAttributes;
 
 /**
- * Compares the existing schema attributes to the
+ * Compares the existing schema attributes to attributes from a record set and returns only the ones that exist.
  * @param hdb_auth_header
  * @param table_schema
  * @param data_attributes
@@ -44,7 +44,6 @@ async function checkForNewAttributes(hdb_auth_header, table_schema, data_attribu
             })
         );
     } catch(e){
-        logger.error(e);
         throw new Error(e);
     }
 }
@@ -111,7 +110,6 @@ async function createAttribute(create_attribute_object) {
 
         return attribute_structure;
     } catch(err) {
-        logger.error(err);
         throw err;
     }
 }
