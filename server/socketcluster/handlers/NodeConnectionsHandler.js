@@ -209,36 +209,28 @@ class NodeConnectionsHandler {
      * @param channel
      * @param data
      */
-    subscriptionChannelWatcher(channel, data){
+    subscriptionChannelWatcher(channel, data) {
         try {
-            //TODO: This needs to be corrected and tested.
-            if(connection.socket.state === connection.socket.OPEN && connection.socket.authState === connection.socket.AUTHENTICATED) {
                 // We need to delete the transacted flag here so it isn't evaluated on the remote side.
                 if(data.__transacted) {
                     delete data.__transacted;
                 }
-
-                if(!data.channel) {
-                    // worker middleware expects a channel in order to evaluate properly, so append it here.
-                    data.channel = subscription.channel;
+                let connections = Object.values(this.publish_channel_connections[channel]);
+                for(let i=0; i<connections.length; ++i) {
+                    //TODO: Remove this.
+                    let temp =  this.publish_channel_connections[channel][connections[i]];
+                    let connection = this.publish_channel_connections[channel][connections[i]];
+                    if (connection.socket.state === connection.socket.OPEN && connection.socket.authState === connection.socket.AUTHENTICATED) {
+                        let remote_host_name = (env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY) === connection.socket.additional_info.client_name ?
+                            connection.socket.additional_info.server_name : connection.socket.additional_info.client_name);
+                        if(data.__originator && data.__originator[remote_host_name] === types.ORIGINATOR_SET_VALUE) {
+                            log.info('Message contains originator matching remote host, swallowing message.');
+                            continue;
+                        }
+                        log.trace(`Worker is publishing to ${channel}`);
+                        connection.publish(channel, data);
+                    }
                 }
-
-                let remote_host_name = (env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY) === connection.socket.additional_info.client_name ?
-                    connection.socket.additional_info.server_name : connection.socket.additional_info.client_name);
-                if(data.__originator && data.__originator[remote_host_name] === types.ORIGINATOR_SET_VALUE) {
-                    log.info('Message contains originator matching remote host, swallowing message.');
-                    return;
-                }
-                log.trace(`Worker is publishing to ${subscription.channel}`);
-                connection.publish(subscription.channel, data);
-            }
-            let connections = Object.values(this.publish_channel_connections[channel]);
-            connections.forEach(connection => {
-                if (connection.socket.state === connection.socket.OPEN && connection.socket.authState === connection.socket.AUTHENTICATED) {
-                    log.trace('publishing out');
-                    connection.publish(channel, data);
-                }
-            });
         } catch(e){
             log.error(e);
         }
