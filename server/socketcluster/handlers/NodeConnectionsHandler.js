@@ -217,10 +217,8 @@ class NodeConnectionsHandler {
                 }
                 let connections = Object.values(this.publish_channel_connections[channel]);
                 for(let i=0; i<connections.length; ++i) {
-                    //TODO: Remove this.
-                    let temp =  this.publish_channel_connections[channel][connections[i]];
-                    let connection = this.publish_channel_connections[channel][connections[i]];
-                    if (connection.socket.state === connection.socket.OPEN && connection.socket.authState === connection.socket.AUTHENTICATED) {
+                    let connection = connections[i];
+                    if (connection && connection.socket.state === connection.socket.OPEN && connection.socket.authState === connection.socket.AUTHENTICATED) {
                         let remote_host_name = (env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY) === connection.socket.additional_info.client_name ?
                             connection.socket.additional_info.server_name : connection.socket.additional_info.client_name);
                         if(data.__originator && data.__originator[remote_host_name] === types.ORIGINATOR_SET_VALUE) {
