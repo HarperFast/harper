@@ -9,6 +9,7 @@ const path = require('path');
 const os = require('os');
 
 let BOOT_PROPS_FILE_PATH = common_utils.getPropsFilePath();
+let initialized = false;
 
 const defaults = {};
 
@@ -30,7 +31,8 @@ module.exports = {
     setProperty: setProperty,
     append: append,
     writeSettingsFileSync: writeSettingsFileSync,
-    initTestEnvironment : initTestEnvironment
+    initTestEnvironment : initTestEnvironment,
+    isInitialized: isInitialized
 };
 
 let hdb_properties = PropertiesReader();
@@ -59,6 +61,10 @@ function setPropsFilePath(path) {
         log.warn(`Path is invalid.`);
         return null;
     }
+}
+
+function isInitialized(){
+    return initialized;
 }
 
 /**
@@ -324,6 +330,7 @@ function initSync() {
                 readEnvVariable(value);
             }
         }
+        initialized = true;
     } catch(err) {
         let msg = `Error reading in HDB environment variables from path ${BOOT_PROPS_FILE_PATH}.  Please check your boot props and settings files`;
         log.fatal(msg);

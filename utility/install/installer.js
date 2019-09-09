@@ -112,13 +112,13 @@ function updateHdbInfo(callback) {
                     return callback(null, res);
                 }
 
-        });
+            });
     }
 }
 
 /**
  * Prompts the user to accept the linked Terms & Conditions.  If the user does not agree, install process is killed.
- * @param {*} callback 
+ * @param {*} callback
  */
 function termsAgreement(callback) {
     winston.info('Asking for terms agreement.');

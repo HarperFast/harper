@@ -40,6 +40,8 @@ const RESTART_CODE_NUM = 24;
 const RESTART_TIMEOUT_MS = 60000;
 const HDB_FILE_PERMISSIONS = 0o700;
 
+const HELIUM_URL_PREFIX = 'he://localhost/';
+
 const CLUSTERING_FOLDER_NAME = 'clustering';
 const CLUSTERING_PAYLOAD_FILE_NAME = '.scPayload.json';
 
@@ -380,6 +382,7 @@ module.exports = {
     // Make the message objects available through hdbTerms to keep clustering as modular as possible.
     ClusterMessageObjects,
     CLUSTERING_FOLDER_NAME,
-    CLUSTERING_PAYLOAD_FILE_NAME
+    CLUSTERING_PAYLOAD_FILE_NAME,
+    HELIUM_URL_PREFIX
 };
 
