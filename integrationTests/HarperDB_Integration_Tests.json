@@ -1,6 +1,6 @@
 {
 	"info": {
-		"_postman_id": "a20eee7f-d7ee-4322-be92-6e34e1183720",
+		"_postman_id": "5641e504-c65a-4fcf-9f88-3bbe1e275a9b",
 		"name": "HarperDB Integration Tests",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
 	},
@@ -12292,12 +12292,19 @@
 							"listen": "test",
 							"script": {
 								"id": "43e34308-05a8-433b-be7d-964fccf09f03",
-								"type": "text/javascript",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Body includes correct message\", function () {",
+									"    const respMsg = pm.response.json().message;",
+									"    pm.expect(respMsg).to.equal(",
+									"        \"test_user successfully deleted\"",
+									"    );",
 									"});"
-								]
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -12356,12 +12363,19 @@
 							"listen": "test",
 							"script": {
 								"id": "43e34308-05a8-433b-be7d-964fccf09f03",
-								"type": "text/javascript",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Body includes correct message\", function () {",
+									"    const respMsg = pm.response.json().message;",
+									"    pm.expect(respMsg).to.equal(",
+									"        \"developer_test_5 successfully deleted\"",
+									"    );",
 									"});"
-								]
+								],
+								"type": "text/javascript"
 							}
 						}
 					],

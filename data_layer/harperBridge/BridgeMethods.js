@@ -57,6 +57,10 @@ class BridgeMethods {
         throw new Error("getDataByValue bridge method is not defined");
     }
 
+    searchByConditions() {
+        throw new Error("searchByConditions bridge method is not defined");
+    }
+
     deleteRecordsBefore() {
         throw new Error("deleteRecordsBefore bridge method is not defined");
     }
