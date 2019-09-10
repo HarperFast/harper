@@ -1,7 +1,6 @@
 "use strict";
 
 const types = require('../types');
-const hdb_terms = require('../../../utility/hdbTerms');
 const uuid = require('uuid/v4');
 
 /**
