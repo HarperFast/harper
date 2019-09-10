@@ -105,6 +105,12 @@ const DROP_SCHEMA_OBJ_TEST = {
     schema: "dropTest",
 };
 
+const DROP_TABLT_OBJ_TEST = {
+    operation: "drop_table",
+    schema: "dev",
+    table: "dog",
+};
+
 const CREATE_ATTR_OBJ_TEST = {
     operation: "create_attribute",
     schema: "attrUnitTest",
@@ -358,5 +364,35 @@ describe('Tests for the file system bridge class', () => {
             expect(test_error_result).to.be.true;
             expect(log_error_spy).to.have.been.calledOnce;
         });
+    });
+
+    context('Test dropTable method', () => {
+        let fs_drop_table_stub = sandbox.stub();
+        let fs_drop_table_rw;
+
+        before(() => {
+            fs_drop_table_rw = FileSystemBridge.__set__('fsDropTable', fs_drop_table_stub);
+        });
+
+        after(() => {
+            sandbox.restore();
+            fs_drop_table_rw();
+        });
+
+        it('Test dropTable method is called and result is as expected', async () => {
+            await fsBridge.dropTable(DROP_TABLT_OBJ_TEST);
+
+            expect(fs_drop_table_stub).to.have.been.calledWith(DROP_TABLT_OBJ_TEST);
+        });
+
+        it('Test that error is caught, thrown and logged', async () => {
+            const error_msg = 'Drop table error';
+            fs_drop_table_stub.throws(new Error(error_msg));
+            let test_error_result = await test_utils.testError(fsBridge.dropTable(DROP_TABLT_OBJ_TEST), error_msg);
+
+            expect(test_error_result).to.be.true;
+            expect(log_error_spy).to.have.been.calledOnce;
+        });
+
     });
 });
