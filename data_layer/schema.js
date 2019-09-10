@@ -1,22 +1,17 @@
 'use strict';
 
 const fs = require('fs-extra');
-
 const validation = require('../validation/schema_validator.js');
-const search = require('./search.js');
 const logger = require('../utility/logging/harper_logger');
 const uuidV4 = require('uuid/v4');
-const delete_ = require('../data_layer/delete');
-    //this is to avoid a circular dependency with insert.
-    // insert needs the describe all function but so does this module.
-    // as such the functions have been broken out into a separate module.
-const schema_describe = require('./schemaDescribe');
 const env = require('../utility/environment/environmentManager');
 const clone = require('clone');
 const signalling = require('../utility/signalling');
 const util = require('util');
 const hdb_util = require('../utility/common_utils');
 const terms = require('../utility/hdbTerms');
+const search = require('./search.js');
+const delete_ = require('../data_layer/delete');
 const harperBridge = require('./harperBridge/harperBridge');
 
 // Promisified functions
@@ -34,20 +29,10 @@ module.exports = {
     createTable: createTable,
     createTableStructure: createTableStructure,
     createAttribute: createAttribute,
-    createAttributeStructure: createAttributeStructure,
-    deleteTableStructure: moveTableStructureToTrash,
-    describeTable: schema_describe.describeTable,
-    describeSchema: schema_describe.describeSchema,
-    describeAll: schema_describe.describeAll,
     dropSchema: dropSchema,
     dropTable: dropTable,
     dropAttribute: dropAttribute
 };
-
-// This must be after export to prevent issues with circular dependencies
-const insert = require('./insert.js');
-const global_schema = require('../utility/globalSchema');
-const p_global_schema = util.promisify(global_schema.getTableSchema);
 
 /** EXPORTED FUNCTIONS **/
 
@@ -56,7 +41,7 @@ async function createSchema(schema_create_object) {
         let schema_structure = await createSchemaStructure(schema_create_object);
         let create_schema_msg = hdb_util.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
         create_schema_msg.transaction = schema_create_object;
-        hdb_util.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_SCHEMA, create_schema_msg);
+        hdb_util.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_SCHEMA, create_schema_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
         signalling.signalSchemaChange({type: 'schema'});
 
         return schema_structure;
@@ -90,7 +75,7 @@ async function createTable(create_table_object) {
         let create_table_structure = await createTableStructure(create_table_object);
         let create_table_msg = hdb_util.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
         create_table_msg.transaction = create_table_object;
-        hdb_util.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_TABLE, create_table_msg);
+        hdb_util.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_TABLE, create_table_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
         signalling.signalSchemaChange({type: 'schema'});
 
         return create_table_structure;
@@ -162,49 +147,19 @@ async function dropSchema(drop_schema_object) {
 }
 
 async function dropTable(drop_table_object) {
-    try {
-        let move_table_struc_trash = await moveTableStructureToTrash(drop_table_object);
-        signalling.signalSchemaChange({type: 'schema'});
-
-        return move_table_struc_trash;
-    } catch(err) {
-        logger.error(err);
-        throw err;
-    }
-}
-
-/**
- * Moves a target table and it's attributes to the trash directory.
- * @param drop_table_object - Descriptor for the table being targeted for move.
- * @returns {Promise<string>}
- */
-async function moveTableStructureToTrash(drop_table_object) {
     let validation_error = validation.table_object(drop_table_object);
     if (validation_error) {
         throw validation_error;
     }
 
-    let schema = drop_table_object.schema;
-    let table = drop_table_object.table;
-
-    let search_object = {
-        schema: 'system',
-        table: 'hdb_table',
-        hash_attribute: 'id',
-        search_attribute: 'name',
-        search_value: table,
-        get_attributes: ['name', 'schema', 'id']
-    };
-
     try {
-        let search_value = await p_search_search_by_value(search_object);
-        let delete_table_object = await buildDropTableObject(drop_table_object, search_value);
-        await p_delete_delete(delete_table_object);
-        await moveTableToTrash(drop_table_object);
-        await deleteAttributeStructure(drop_table_object);
+        await harperBridge.dropTable(drop_table_object);
+        signalling.signalSchemaChange({type: 'schema'});
+        const TABLE_DELETE_MSG = `successfully deleted table ${drop_table_object.schema}.${drop_table_object.table}`;
 
-        return `successfully deleted table ${schema}.${table}`;
+        return TABLE_DELETE_MSG;
     } catch(err) {
+        logger.error(err);
         throw err;
     }
 }
@@ -238,33 +193,17 @@ async function dropAttribute(drop_attribute_object) {
 /** HELPER FUNCTIONS **/
 
 /**
- * Builds a descriptor object that describes the table targeted for the trash.
- * @param drop_table_object - Top level descriptor of the table being moved.
- * @param data - The data found by the search function.
- * @returns {Promise<{schema: string, hash_attribute: string, hash_values: *[], table: string}>}
+ * Removes the dropped attribute from the global hdb schema object.
+ * @param drop_attribute_object
  */
-function buildDropTableObject(drop_table_object, data) {
-    let delete_table;
+function dropAttributeFromGlobal(drop_attribute_object) {
+    let attributes_obj = Object.values(global.hdb_schema[drop_attribute_object.schema][drop_attribute_object.table]['attributes']);
 
-    // Data found by the search function should match the drop_table_object
-    for (let item in data) {
-        if (data[item].name === drop_table_object.table && data[item].schema === drop_table_object.schema) {
-            delete_table = data[item];
+    for (let i = 0; i < attributes_obj.length; i++) {
+        if (attributes_obj[i].attribute === drop_attribute_object.attribute) {
+            global.hdb_schema[drop_attribute_object.schema][drop_attribute_object.table]['attributes'].splice(i, 1);
         }
     }
-
-    if (!delete_table) {
-        throw new Error(`${drop_table_object.schema}.${drop_table_object.table} was not found`);
-    }
-
-    let delete_table_object = {
-        table: "hdb_table",
-        schema: "system",
-        hash_attribute: "id",
-        hash_values: [delete_table.id]
-    };
-
-    return delete_table_object;
 }
 
 /**
@@ -307,111 +246,16 @@ async function moveFolderToTrash(origin_path, trash_path) {
     try {
         await fs.move(origin_path,trash_path, {overwrite: true});
     } catch(err) {
-        logger.error(`Got an error moving path ${origin_path} to trash path: ${trash_path}`);
-        throw err;
+        // Calling drop attribute on an attribute that only exists in the system schema folder shouldn't
+        // throw and error if that folder doesn't exist in schema file path.
+        if (err.code === 'ENOENT') {
+            logger.error(`Skipped moving folder ${origin_path} to trash path: ${trash_path}`);
+        } else {
+            logger.error(`Got an error moving path ${origin_path} to trash path: ${trash_path}`);
+            throw err;
+        }
     }
     return true;
-}
-
-async function createAttributeStructure(create_attribute_object) {
-    let validation_error = validation.attribute_object(create_attribute_object);
-    if (validation_error) {
-        throw validation_error;
-    }
-
-    let search_object = {
-        schema: 'system',
-        table: 'hdb_attribute',
-        hash_attribute: 'id',
-        get_attributes: ['*'],
-        search_attribute: 'attribute',
-        search_value: create_attribute_object.attribute
-    };
-
-    try {
-        let attributes = await p_search_search_by_value(search_object);
-
-        if(attributes && attributes.length > 0) {
-            for (let att in attributes) {
-                if (attributes[att].schema === create_attribute_object.schema
-                    && attributes[att].table === create_attribute_object.table) {
-                    throw new Error(`attribute already exists with id ${JSON.stringify(attributes[att])}`);
-                }
-            }
-        }
-
-        let record = {
-            schema: create_attribute_object.schema,
-            table: create_attribute_object.table,
-            attribute: create_attribute_object.attribute,
-            id: uuidV4(),
-            schema_table: create_attribute_object.schema + '.' + create_attribute_object.table
-        };
-
-        if(create_attribute_object.id){
-            record.id = create_attribute_object.id;
-        }
-
-        let insert_object = {
-            operation: 'insert',
-            schema: 'system',
-            table: 'hdb_attribute',
-            hash_attribute: 'id',
-            records: [record]
-        };
-
-        logger.info('insert object: ' + JSON.stringify(insert_object));
-        let insert_response = await insert.insert(insert_object);
-        logger.info('attribute: ' + record.attribute);
-        logger.info(insert_response);
-
-        return insert_response;
-    } catch(err) {
-        throw err;
-    }
-}
-
-async function deleteAttributeStructure(attribute_drop_object) {
-    let search_object = {
-        schema:'system',
-        table: 'hdb_attribute',
-        hash_attribute: 'id',
-        get_attributes: ['id', 'attribute']
-    };
-
-    if (attribute_drop_object.table && attribute_drop_object.schema) {
-        search_object.search_attribute = 'schema_table';
-        search_object.search_value = `${attribute_drop_object.schema}.${attribute_drop_object.table}`;
-    } else if (attribute_drop_object.schema) {
-        search_object.search_attribute = 'schema';
-        search_object.search_value = `${attribute_drop_object.schema}`;
-    } else {
-        throw new Error('attribute drop requires table and or schema.');
-    }
-
-    try {
-        let attributes = await p_search_search_by_value(search_object);
-
-        if (attributes && attributes.length > 0) {
-            let delete_table_object = {
-                table: 'hdb_attribute',
-                schema: 'system',
-                hash_values: []
-            };
-
-            for (let att in attributes) {
-                if ((attribute_drop_object.attribute && attribute_drop_object.attribute === attributes[att].attribute)
-                    || !attribute_drop_object.attribute) {
-                    delete_table_object.hash_values.push(attributes[att].id);
-                }
-            }
-            await p_delete_delete(delete_table_object);
-
-            return `successfully deleted ${delete_table_object.hash_values.length} attributes`;
-        }
-    } catch(err) {
-        throw err;
-    }
 }
 
 async function createAttribute(create_attribute_object) {
@@ -420,7 +264,7 @@ async function createAttribute(create_attribute_object) {
         if(global.clustering_on
             && !create_attribute_object.delegated && create_attribute_object.schema !== 'system') {
 
-            attribute_structure = await createAttributeStructure(create_attribute_object);
+            attribute_structure = await harperBridge.createAttribute(create_attribute_object);
             create_attribute_object.delegated = true;
             create_attribute_object.operation = 'create_attribute';
             create_attribute_object.id = attribute_structure.id;
@@ -438,10 +282,10 @@ async function createAttribute(create_attribute_object) {
 
             return attribute_structure;
         }
-        attribute_structure = await createAttributeStructure(create_attribute_object);
+        attribute_structure = await harperBridge.createAttribute(create_attribute_object);
         let create_att_msg = hdb_util.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
         create_att_msg.transaction = create_attribute_object;
-        hdb_util.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, create_att_msg);
+        hdb_util.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, create_att_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
         signalling.signalSchemaChange({type: 'schema'});
 
         return attribute_structure;

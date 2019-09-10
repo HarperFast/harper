@@ -46,12 +46,12 @@ let SEARCH_OBJ_TEST = {
 
 describe('Tests for fsUtility function deleteAttrStructure', () => {
     let sandbox = sinon.createSandbox();
-    let p_search_by_value_stub = sandbox.stub();
     let fs_delete_records_stub = sandbox.stub();
+    let fs_search_by_value_stub = sandbox.stub();
 
     before(() => {
-        deleteAttrStructure.__set__('p_search_by_value', p_search_by_value_stub);
         deleteAttrStructure.__set__('fsDeleteRecords', fs_delete_records_stub);
+        deleteAttrStructure.__set__('fsSearchByValue', fs_search_by_value_stub);
     });
 
     after(() => {
@@ -66,11 +66,11 @@ describe('Tests for fsUtility function deleteAttrStructure', () => {
     });
 
     it('Test search by value and delete records stubs are called as expected', async () => {
-        p_search_by_value_stub.resolves(ATTR_SEARCH_RES_TEST);
+        fs_search_by_value_stub.resolves(ATTR_SEARCH_RES_TEST);
         let result = await deleteAttrStructure(ATTR_DROP_OBJ_TEST);
 
         expect(result).to.equal('successfully deleted 4 attributes');
-        expect(p_search_by_value_stub).to.have.been.calledWith(SEARCH_OBJ_TEST);
+        expect(fs_search_by_value_stub).to.have.been.calledWith(SEARCH_OBJ_TEST);
     });
 
     it('Test that an error from delete records is caught and thrown', async () => {

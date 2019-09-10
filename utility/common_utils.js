@@ -455,11 +455,12 @@ function isClusterOperation(operation_name) {
  * @param channel
  * @param transaction
  */
-function sendTransactionToSocketCluster(channel, transaction) {
+function sendTransactionToSocketCluster(channel, transaction, originator) {
     log.trace(`Sending transaction to channel: ${channel}`);
     if(global.hdb_socket_client !== undefined) {
-        transaction.__transacted = true;
         let {hdb_user, hdb_auth_header, ...data} = transaction;
+        data.__originator = {};
+        data.__originator[originator] = '';
         global.hdb_socket_client.publish(channel, data);
     }
 }

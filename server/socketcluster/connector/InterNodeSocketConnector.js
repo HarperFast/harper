@@ -21,8 +21,9 @@ class InterNodeSocketConnector extends SocketConnector{
      */
     constructor(socket_client, worker, additional_info = {}, options = {}, credentials){
         super(socket_client, additional_info, options, credentials);
-        if(additional_info.name !== undefined && options.query !== undefined){
-            options.query.node_name = additional_info.name;
+        if(additional_info.client_name !== undefined && additional_info.server_name !== undefined) {
+            options.query.node_client_name = additional_info.client_name;
+            options.query.node_server_name = additional_info.server_name;
         }
         //TODO possibly change this to the node name, rather hostname / port?
         this.connection_path = hdb_clustering_connections_path + this.socket.options.hostname + ':' + this.socket.options.port;
