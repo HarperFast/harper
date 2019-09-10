@@ -1,8 +1,8 @@
 "use strict";
 
-const BridgeMethods = require("../BridgeMethods.js");
 const log = require('../../../utility/logging/harper_logger');
-
+const BridgeMethods = require("../BridgeMethods.js");
+const fsCreateAttribute = require('./fsMethods/fsCreateAttribute');
 const fsCreateRecords = require('./fsMethods/fsCreateRecords');
 const fsCreateSchema = require('./fsMethods/fsCreateSchema');
 const fsDeleteRecords = require('./fsMethods/fsDeleteRecords');
@@ -13,6 +13,8 @@ const fsSearchByValue = require('./fsMethods/fsSearchByValue');
 const fsSearchByConditions = require('./fsMethods/fsSearchByConditions');
 const fsDropSchema = require('./fsMethods/fsDropSchema');
 const fsCreateTable = require('./fsMethods/fsCreateTable');
+const fsUpdateRecords = require('./fsMethods/fsUpdateRecords');
+
 
 class FileSystemBridge extends BridgeMethods {
 
@@ -23,7 +25,7 @@ class FileSystemBridge extends BridgeMethods {
             log.error(err);
             throw err;
         }
-    }   
+    }
 
     async searchByHash(search_object) {
         try {
@@ -88,9 +90,27 @@ class FileSystemBridge extends BridgeMethods {
         }
     }
 
-    async createRecords(insert_obj, attributes, schema_table) {
+    async createAttribute(create_attribute_obj) {
         try {
-            return await fsCreateRecords(insert_obj, attributes, schema_table);
+            return await fsCreateAttribute(create_attribute_obj);
+        } catch(err) {
+            log.error(err);
+            throw err;
+        }
+    }
+
+    async createRecords(insert_obj) {
+        try {
+            return await fsCreateRecords(insert_obj);
+        } catch(err) {
+            log.error(err);
+            throw err;
+        }
+    }
+
+    async updateRecords(update_obj) {
+        try {
+            return await fsUpdateRecords(update_obj);
         } catch(err) {
             log.error(err);
             throw err;

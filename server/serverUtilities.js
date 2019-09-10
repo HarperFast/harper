@@ -5,6 +5,7 @@ const search = require('../data_layer/search');
 const sql = require('../sqlTranslator/index');
 const csv = require('../data_layer/csvBulkLoad');
 const schema = require('../data_layer/schema');
+const schema_describe = require('../data_layer/schemaDescribe');
 const delete_ = require('../data_layer/delete');
 const user = require('../security/user');
 const role = require('../security/role');
@@ -21,6 +22,8 @@ const reg = require('../utility/registration/registrationHandler');
 const stop = require('../bin/stop');
 const util = require('util');
 const insert = require('../data_layer/insert');
+const global_schema = require('../utility/globalSchema');
+
 const operation_function_caller = require(`../utility/OperationFunctionCaller`);
 const common_utils = require(`../utility/common_utils`);
 const env = require(`../utility/environment/environmentManager`);
@@ -33,10 +36,19 @@ const p_search_search_by_hash = util.promisify(search.searchByHash);
 const p_search_search_by_value = util.promisify(search.searchByValue);
 const p_search_search = util.promisify(search.search);
 const p_sql_evaluate_sql = util.promisify(sql.evaluateSQL);
-const p_schema_describe_schema = util.promisify(schema.describeSchema);
-const p_schema_describe_table = util.promisify(schema.describeTable);
-const p_schema_describe_all = util.promisify(schema.describeAll);
+const p_schema_describe_schema = util.promisify(schema_describe.describeSchema);
+const p_schema_describe_table = util.promisify(schema_describe.describeTable);
+const p_schema_describe_all = util.promisify(schema_describe.describeAll);
 const p_delete = util.promisify(delete_.delete);
+
+const GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM = {
+    [terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE]: true,
+    [terms.OPERATIONS_ENUM.CREATE_TABLE]: true,
+    [terms.OPERATIONS_ENUM.CREATE_SCHEMA]: true,
+    [terms.OPERATIONS_ENUM.DROP_ATTRIBUTE]: true,
+    [terms.OPERATIONS_ENUM.DROP_TABLE]: true,
+    [terms.OPERATIONS_ENUM.DROP_SCHEMA]: true
+};
 
 module.exports = {
     chooseOperation: chooseOperation,
@@ -78,6 +90,15 @@ function processLocalTransaction(req, res, operation_function, callback) {
             if (typeof data !== 'object') {
                 data = {"message": data};
             }
+
+            if (GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM[req.body.operation]) {
+                global_schema.setSchemaDataToGlobal((err) => {
+                    if (err) {
+                        harper_logger.error(err);
+                    }
+                });
+            }
+
             setResponseStatus(res, terms.HTTP_STATUS_CODES.OK, data);
             return callback(null, data);
         })
@@ -90,6 +111,15 @@ function processLocalTransaction(req, res, operation_function, callback) {
             if(typeof error !== 'object') {
                 error = {"error": error};
             }
+
+            if (GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM[req.body.operation]) {
+                global_schema.setSchemaDataToGlobal((err) => {
+                    if (err) {
+                        harper_logger.error(err);
+                    }
+                });
+            }
+
             setResponseStatus(res, terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, {error: (error.message ? error.message : error.error)});
             return callback(error);
         });
