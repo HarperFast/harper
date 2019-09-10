@@ -1,6 +1,5 @@
 'use strict';
 
-const fs = require('fs-extra');
 const validation = require('../validation/schema_validator.js');
 const logger = require('../utility/logging/harper_logger');
 const uuidV4 = require('uuid/v4');
@@ -10,18 +9,7 @@ const signalling = require('../utility/signalling');
 const util = require('util');
 const hdb_util = require('../utility/common_utils');
 const terms = require('../utility/hdbTerms');
-const search = require('./search.js');
-const delete_ = require('../data_layer/delete');
 const harperBridge = require('./harperBridge/harperBridge');
-
-// Promisified functions
-let p_search_search_by_value = util.promisify(search.searchByValue);
-let p_delete_delete = util.promisify(delete_.delete);
-
-const DATE_SUBSTR_LENGTH = 19;
-const TRASH_BASE_PATH = `${env.get('HDB_ROOT')}/trash/`;
-
-let current_date = new Date().toISOString().substr(0, DATE_SUBSTR_LENGTH);
 
 module.exports = {
     createSchema: createSchema,
