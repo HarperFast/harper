@@ -47,7 +47,7 @@ async function callOperationFunctionAsAwait(promisified_function, function_input
     } catch(err) {
         // This specific check was added to avoid an error message in the log which could make the error look worse than it
         // seems when scanning a log.  In reality a schema already existing isn't really an error, just a failure.
-        if(err.message.includes('already exists')) {
+        if(err.message && err.message.includes('already exists')) {
             log.info(err.message);
             throw err;
         }
