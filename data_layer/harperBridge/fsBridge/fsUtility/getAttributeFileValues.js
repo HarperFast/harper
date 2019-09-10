@@ -30,6 +30,7 @@ async function getAttributeFileValues(get_attributes, search_object, hash_result
 
 async function readAttributeFilePromise(table_path, attribute, file, attribute_data) {
     try {
+        // TODO: Does this read from Blobs?!
         const data = await fs.readFile(`${table_path}/${hdb_terms.HASH_FOLDER_NAME}/${attribute}/${file}${hdb_terms.HDB_FILE_SUFFIX}`, 'utf-8');
         const value = common_utils.autoCast(data.toString());
         attribute_data[file] = value;

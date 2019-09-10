@@ -1,6 +1,5 @@
 'use strict';
 
-const FileSearch = require('../lib/fileSystem/SQLSearch');
 const SelectValidator = require('../sqlTranslator/SelectValidator');
 
 module.exports = {
@@ -15,6 +14,7 @@ const util = require('util');
 const c_search_by_hash = util.callbackify(harperBridge.searchByHash);
 const c_search_by_value = util.callbackify(harperBridge.searchByValue);
 const c_search_by_conditions = util.callbackify(harperBridge.searchByConditions);
+const SQLSearch = require('../lib/fileSystem/SQLSearch');
 
 function searchByHash(search_object, callback){
     try {
@@ -64,7 +64,7 @@ function search(statement, callback) {
         let validator = new SelectValidator(statement);
         validator.validate();
 
-        let search = new FileSearch(validator.statement, validator.attributes);
+        let search = new SQLSearch(validator.statement, validator.attributes);
 
         search.search().then(data => {
             callback(null, data);
