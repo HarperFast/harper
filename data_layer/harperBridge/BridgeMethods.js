@@ -33,6 +33,10 @@ class BridgeMethods {
         throw new Error("deleteRecords bridge method is not defined");
     }
 
+    createAttribute() {
+        throw new Error("createAttribute bridge method is not defined");
+    }
+
     dropAttribute() {
         throw new Error("dropAttribute bridge method is not defined");
     }
@@ -51,6 +55,10 @@ class BridgeMethods {
 
     getDataByValue() {
         throw new Error("getDataByValue bridge method is not defined");
+    }
+
+    searchByConditions() {
+        throw new Error("searchByConditions bridge method is not defined");
     }
 
     deleteRecordsBefore() {

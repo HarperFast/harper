@@ -32,7 +32,7 @@ const rewire = require('rewire');
 let schema = rewire('../../data_layer/schema');
 
 const SCHEMA_NAME_TEST = 'dogsrule';
-const TABLE_NAME_TEST = 'catsdrool' ;
+const TABLE_NAME_TEST = 'catsdrool';
 const HASH_ATT_TEST = 'id';
 const FULL_SCHEMA_PATH_TEST = env.get('HDB_ROOT') + '/schema/' + SCHEMA_NAME_TEST;
 const TRASH_PATH_TEST = `${HDB_ROOT_TEST}/trash`;
@@ -54,7 +54,6 @@ const GLOBAL_SCHEMA_FAKE = {
     }
 };
 
-let current_date = new Date().toISOString().substr(0, DATE_SUBSTR_LENGTH);
 let global_schema_original = clonedeep(global.hdb_schema);
 
 /**
@@ -79,8 +78,10 @@ describe('Test schema module', function() {
     let search_by_value_rewire;
     let delete_delete_stub = sinon.stub().resolves();
     let delete_delete_rewire;
+    let delete_attr_struct_stub = sinon.stub();
     let delete_attr_struct_rewire;
     let attr_validator_stub;
+    let build_drop_table_obj_stub = sinon.stub();
     let build_drop_table_obj_rewire;
     let move_table_to_trash_rewire;
     let move_attr_to_trash_stub = sinon.stub();
@@ -424,8 +425,6 @@ describe('Test schema module', function() {
      * Tests for dropAttribute function.
      */
     describe('Drop attribute', function() {
-
-
         after(function() {
             move_attr_to_trash_rewire();
             delete global.hdb_schema[GLOBAL_SCHEMA_FAKE];
@@ -463,6 +462,21 @@ describe('Test schema module', function() {
             expect(error.message).to.equal('You cannot drop a hash attribute');
         });
 
+        it('should call all functions and return a success message', async function() {
+            let global_schema_test = clonedeep(GLOBAL_SCHEMA_FAKE);
+            global_schema_test['dogsrule']['catsdrool']['hash_attribute'] = 'age';
+            global_schema_test['dogsrule']['catsdrool']['attributes'] = [{attribute: 'age'}];
+            global.hdb_schema = global_schema_test;
+            let move_attr_to_trash_fake = 'Attribute successfully moved to trash';
+            move_attr_to_trash_stub.resolves(move_attr_to_trash_fake);
+            let result = await schema.dropAttribute(DROP_ATTR_OBJECT_TEST);
+
+            expect(attr_validator_stub).to.have.been.calledOnce;
+            expect(move_attr_to_trash_stub).to.have.been.calledOnce;
+            expect(move_attr_to_trash_stub).to.have.been.calledWith(DROP_ATTR_OBJECT_TEST);
+            expect(result).to.equal(move_attr_to_trash_fake);
+        });
+
         it('should throw and log error from moveAttributeToTrash', async function() {
             // Set global schema hash_attribute to something different than test schema const after last test.
             global.hdb_schema = GLOBAL_SCHEMA_FAKE;
@@ -484,16 +498,26 @@ describe('Test schema module', function() {
             expect(logger_error_stub).to.have.been.calledWith(`Got an error deleting attribute ${util.inspect(DROP_ATTR_OBJECT_TEST)}.`);
             expect(error.message).to.equal(move_attr_trash_err);
         });
+    });
 
-        it('should call all functions and return a success message', async function() {
-            let move_attr_to_trash_fake = 'Attribute successfully moved to trash';
-            move_attr_to_trash_stub.resolves(move_attr_to_trash_fake);
-            let result = await schema.dropAttribute(DROP_ATTR_OBJECT_TEST);
+    describe('Test dropAttributeFromGlobal function', () => {
+        let drop_attr_from_global = schema.__get__('dropAttributeFromGlobal');
 
-            expect(attr_validator_stub).to.have.been.calledOnce;
-            expect(move_attr_to_trash_stub).to.have.been.calledOnce;
-            expect(move_attr_to_trash_stub).to.have.been.calledWith(DROP_ATTR_OBJECT_TEST);
-            expect(result).to.equal(move_attr_to_trash_fake);
+        before(() => {
+            global.hdb_schema = {
+                [DROP_ATTR_OBJECT_TEST.schema]: {
+                    [DROP_ATTR_OBJECT_TEST.table]: {
+                        attributes: [{attribute: 'id'}]
+                    }
+                }
+            };
+        });
+
+        it('Test that attribute is removed from global schema', () => {
+            drop_attr_from_global(DROP_ATTR_OBJECT_TEST);
+            let exists_in_global = global.hdb_schema[DROP_ATTR_OBJECT_TEST.schema][DROP_ATTR_OBJECT_TEST.table]['attributes'];
+
+            expect(exists_in_global.length).to.be.equal(0);
         });
     });
 
@@ -641,6 +665,56 @@ describe('Test schema module', function() {
     });
 
     /**
+     * Tests for deleteAttributeStructure function.
+     */
+    describe('Delete attribute structure', function() {
+        let delete_attribute_structure;
+
+        before(function() {
+            search_by_value_stub.resolves([DROP_ATTR_OBJECT_TEST]);
+            delete_attr_struct_rewire();
+            delete_attribute_structure = schema.__get__('deleteAttributeStructure');
+        });
+
+        it('should throw attribute drop requires table and or schema', async function() {
+            let error;
+
+            try {
+                await delete_attribute_structure({});
+            } catch(err) {
+                error = err;
+            }
+
+            expect(error.message).to.equal('attribute drop requires table and or schema.');
+        });
+
+        it('should return successfully deleted message', async function() {
+            delete_delete_stub.resolves();
+            let result = await delete_attribute_structure(DROP_ATTR_OBJECT_TEST);
+
+            expect(result).to.equal('successfully deleted 1 attributes');
+            expect(search_by_value_stub).to.have.been.calledOnce;
+            expect(delete_delete_stub).to.have.been.calledOnce;
+        });
+
+        it('should catch thrown error from delete', async function() {
+            let delete_err = 'Error delete value';
+            delete_delete_stub.throws(new Error(delete_err));
+            let error;
+
+            try {
+                await delete_attribute_structure(DROP_ATTR_OBJECT_TEST);
+            } catch(err) {
+                error = err;
+            }
+
+            expect(error).to.be.instanceOf(Error);
+            expect(error.message).to.equal(delete_err);
+            expect(delete_delete_stub).to.have.been.calledOnce;
+        });
+    });
+
+    /**
      * Tests for createAttributeStructure function.
      */
     describe('Create attribute structure', function() {
@@ -710,9 +784,8 @@ describe('Test schema module', function() {
      * Tests for createAttribute function.
      */
     describe('Create attribute', function() {
-        let create_attr_struc_stub = sinon.stub();
+        let bridge_create_attr_stub;
         let call_process_send_stub = sinon.stub(common, 'callProcessSend');
-        let create_attr_struc_rewire;
         let attribute_structure_fake = {message:'inserted 1 of 1 records', skipped_hashes:'', inserted_hashes:''};
         sinon.stub(process, 'pid').value('8877');
         let payload_fake = {
@@ -724,21 +797,21 @@ describe('Test schema module', function() {
         };
 
         before(function() {
-            create_attr_struc_rewire = schema.__set__('createAttributeStructure', create_attr_struc_stub);
-            create_attr_struc_stub.resolves(attribute_structure_fake);
+            bridge_create_attr_stub = sandbox.stub(harperBridge, 'createAttribute').resolves(attribute_structure_fake);
         });
 
         after(function() {
-            create_attr_struc_rewire();
+            sandbox.restore();
         });
+
 
         it('should call process send and return attribute structure with clustering on', async function() {
             global.clustering_on = true;
 
             let result = await schema.createAttribute(CREATE_ATTR_OBJECT_TEST);
 
-            expect(create_attr_struc_stub).to.have.been.calledOnce;
-            expect(create_attr_struc_stub).to.have.been.calledWith(CREATE_ATTR_OBJECT_TEST);
+            expect(bridge_create_attr_stub).to.have.been.calledOnce;
+            expect(bridge_create_attr_stub).to.have.been.calledWith(CREATE_ATTR_OBJECT_TEST);
             expect(call_process_send_stub).to.have.been.calledOnce;
             expect(call_process_send_stub).to.have.been.calledWith(payload_fake);
             expect(signal_schema_change_stub).to.have.been.calledOnce;
@@ -766,8 +839,7 @@ describe('Test schema module', function() {
         it('should return attribute structure with clustering off', async function() {
             global.clustering_on = false;
             let result = await schema.createAttribute(CREATE_ATTR_OBJECT_TEST);
-            expect(create_attr_struc_stub).to.have.been.calledOnce;
-            expect(create_attr_struc_stub).to.have.been.calledWith(CREATE_ATTR_OBJECT_TEST);
+            expect(bridge_create_attr_stub).to.have.been.calledWith(CREATE_ATTR_OBJECT_TEST);
             expect(call_process_send_stub).to.have.been.callCount(0);
             expect(signal_schema_change_stub).to.have.been.calledOnce;
             expect(result).to.equal(attribute_structure_fake);

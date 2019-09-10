@@ -1,11 +1,13 @@
 'use strict';
 
+const rewire = require('rewire');
 const test_utils = require('../../../../test_utils');
-const fsCreateTable = require('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsCreateTable');
+const fsCreateTable = rewire('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsCreateTable');
 const env = require('../../../../../utility/environment/environmentManager');
 const uuidV4 = require('uuid/v4');
 const fs = require('fs-extra');
 const chai = require('chai');
+const sinon = require('sinon');
 const { expect } = chai;
 
 const CREATE_TABLE_OBJ_TEST = {
@@ -22,20 +24,25 @@ const TABLE_SYSTEM_DATA_TEST = {
     hash_attribute: CREATE_TABLE_OBJ_TEST.hash_attribute
     };
 
-let current_dir = `${process.cwd()}/unitTests/data_layer/harperBridge/fsBridge/fsMethods`;
-const FULL_TABLE_PATH_TEST = `${current_dir}/schema/${CREATE_TABLE_OBJ_TEST.schema}/${CREATE_TABLE_OBJ_TEST.table}`;
+const FULL_TABLE_PATH_TEST = `${__dirname}/schema/${CREATE_TABLE_OBJ_TEST.schema}/${CREATE_TABLE_OBJ_TEST.table}`;
 
 describe('Test file system module fsCreateTable', () => {
     let root_original;
+    let sandbox = sinon.createSandbox();
+    let create_records_stub = sandbox.stub();
+
 
     before(() => {
         root_original = env.get('HDB_ROOT');
-        env.setProperty('HDB_ROOT', current_dir);
+        env.setProperty('HDB_ROOT', __dirname);
+        fsCreateTable.__set__('fsCreateRecords', create_records_stub);
     });
 
     after(() => {
         env.setProperty('HDB_ROOT', root_original);
-        test_utils.cleanUpDirectories(`${current_dir}/schema`);
+        test_utils.cleanUpDirectories(`${__dirname}/schema`);
+        sandbox.restore();
+        rewire('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsCreateTable');
     });
 
     it('Test that createTable returns an error when the schema does not exist', async () => {
@@ -54,7 +61,7 @@ describe('Test file system module fsCreateTable', () => {
         try {
             // createTable expects schema dir to already exist so I am creating a temporary one.
             // Directory is removed after test
-            await fs.mkdirp(`${current_dir}/schema/${CREATE_TABLE_OBJ_TEST.schema}`);
+            await fs.mkdirp(`${__dirname}/schema/${CREATE_TABLE_OBJ_TEST.schema}`);
             await fsCreateTable(TABLE_SYSTEM_DATA_TEST, CREATE_TABLE_OBJ_TEST);
         } catch(err) {
             console.error(err);

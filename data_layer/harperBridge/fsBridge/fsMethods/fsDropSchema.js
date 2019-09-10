@@ -3,14 +3,13 @@
 const fsDeleteRecords = require('./fsDeleteRecords');
 const moveFolderToTrash = require('../fsUtility/moveFolderToTrash');
 const deleteAttrStructure = require('../fsUtility/deleteAttrStructure');
-const fsSearchByValue = require('./fsSearchByValue');
 const env = require('../../../../utility/environment/environmentManager');
 const terms = require('../../../../utility/hdbTerms');
 const log = require('../../../../utility/logging/harper_logger');
 
 const DATE_SUBSTR_LENGTH = 19;
 let current_date = new Date().toISOString().substr(0, DATE_SUBSTR_LENGTH);
-const TRASH_BASE_PATH = `${env.getHdbBasePath()}/${terms.HDB_TRASH_DIR}/`;
+const TRASH_BASE_PATH = `${env.getHdbBasePath()}/${terms.HDB_TRASH_DIR}`;
 
 module.exports = dropSchema;
 
@@ -22,19 +21,15 @@ async function dropSchema(drop_schema_obj) {
         hash_values: [schema]
     };
 
-    let search_obj = {
-        schema: terms.SYSTEM_SCHEMA_NAME,
-        table: terms.SYSTEM_TABLE_NAMES.TABLE_TABLE_NAME,
-        hash_attribute: terms.SYSTEM_TABLE_HASH,
-        search_attribute: terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_SCHEMA_KEY,
-        search_value: schema,
-        get_attributes: ['id']
-    };
-
     try {
+        let tables = global.hdb_schema[schema];
+        let table_ids = [];
+        for (let table_name in tables) {
+            table_ids.push({id: tables[table_name].id});
+        }
+
         await fsDeleteRecords(delete_schema_obj);
-        let search_result = await fsSearchByValue(search_obj);
-        await moveSchemaToTrash(drop_schema_obj, search_result);
+        await moveSchemaToTrash(drop_schema_obj, table_ids);
         await deleteAttrStructure(drop_schema_obj);
     } catch(err) {
         log.error(err);

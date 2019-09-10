@@ -1,31 +1,47 @@
 'use strict';
 
+const rewire = require('rewire');
 const test_utils = require('../../../../test_utils');
-const fsCreateSchema = require('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsCreateSchema');
-const hdb_core_insert = require('../../../../../data_layer/insert');
+const fsCreateSchema = rewire('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsCreateSchema');
 const env = require('../../../../../utility/environment/environmentManager');
 const fs = require('fs-extra');
 const chai = require('chai');
+const sinon = require('sinon');
 const { expect } = chai;
 
 const SCHEMA_CREATE_OBJ_TEST = {
     operation: 'create_schema',
     schema: 'dogs'
     };
-let current_dir = `${process.cwd()}/unitTests/data_layer/harperBridge/fsBridge/fsMethods`;
-const FULL_TABLE_PATH_TEST = `${current_dir}/schema/${SCHEMA_CREATE_OBJ_TEST.schema}`;
+
+const FULL_TABLE_PATH_TEST = `${__dirname}/schema/${SCHEMA_CREATE_OBJ_TEST.schema}`;
+const ROOT_SCHEMA_DIR = `${__dirname}/schema/`;
+
+async function setupTestSchemaDir() {
+    try {
+        await fs.mkdir(ROOT_SCHEMA_DIR);
+    } catch(err) {
+        console.error(err);
+    }
+}
 
 describe('Test file system module fsCreateSchema', () => {
+    let sandbox = sinon.createSandbox();
     let root_original;
+    let create_records_stub = sandbox.stub();
 +
-    before(() => {
+    before(async () => {
         root_original = env.get('HDB_ROOT');
-        env.setProperty('HDB_ROOT', current_dir);
+        fsCreateSchema.__set__('fsCreateRecords', create_records_stub);
+        env.setProperty('HDB_ROOT', __dirname);
+        await setupTestSchemaDir();
     });
 
     after(() => {
         env.setProperty('HDB_ROOT', root_original);
-        test_utils.cleanUpDirectories(`${current_dir}/schema`);
+        test_utils.cleanUpDirectories(`${__dirname}/schema`);
+        sandbox.restore();
+        rewire('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsCreateSchema');
     });
     
     it('Test a schema directory is created on the file system', async () => {
