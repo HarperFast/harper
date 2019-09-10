@@ -1,7 +1,7 @@
 "use strict";
 
 const RoomIF = require('./RoomIF');
-
+const log = require('../../../utility/logging/harper_logger');
 /**
  * This is a room that handles messages on the hdb_internal:hdb_node channel.  Rooms should not be instantiated directly, instead the room factory should be used.
  */
@@ -25,7 +25,7 @@ class HDBNodeRoom extends RoomIF {
      * @returns {Promise<void>}
      */
     inboundMsgHandler(req, worker, response) {
-
+        log.info('Got node update message.');
     }
 }
 

@@ -45,6 +45,8 @@ const BLOB_FOLDER_NAME = 'blob';
 const HDB_SCHEMA_DIR = 'schema';
 const HDB_TRASH_DIR = 'trash';
 
+const HELIUM_URL_PREFIX = 'he://localhost/';
+
 const CLUSTERING_FOLDER_NAME = 'clustering';
 const CLUSTERING_PAYLOAD_FILE_NAME = '.scPayload.json';
 
@@ -71,7 +73,6 @@ const SYSTEM_TABLE_NAMES = {
     NODE_TABLE_NAME :'hdb_nodes',
     ATTRIBUTE_TABLE_NAME : 'hdb_attribute',
     LICENSE_TABLE_NAME: 'hdb_license',
-    QUEUE_TABLE_NAME: 'hdb_queue',
     ROLE_TABLE_NAME: 'hdb_role',
     SCHEMA_TABLE_NAME: 'hdb_schema',
     TABLE_TABLE_NAME: 'hdb_table',
@@ -397,6 +398,7 @@ module.exports = {
     // Make the message objects available through hdbTerms to keep clustering as modular as possible.
     ClusterMessageObjects,
     CLUSTERING_FOLDER_NAME,
-    CLUSTERING_PAYLOAD_FILE_NAME
+    CLUSTERING_PAYLOAD_FILE_NAME,
+    HELIUM_URL_PREFIX
 };
 

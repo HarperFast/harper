@@ -12,6 +12,8 @@ const {inspect} = require('util');
 const RoomMessageObjects = require('../room/RoomMessageObjects');
 const fs = require('fs-extra');
 const path = require('path');
+// NOTE: The cluster worker doesn't use the environment manager yet, but some of the commands need values in there.
+// We initialize this here so the manager is always ready and initialized when a rule needs it.
 const env = require('../../../utility/environment/environmentManager');
 env.initSync();
 
@@ -118,8 +120,6 @@ class ClusterWorker extends WorkerIF {
                 log.info('hdb_data successfully set to exchange');
                 return hdb_data;
             }
-
-
         } catch(e){
             log.error(e);
         }
