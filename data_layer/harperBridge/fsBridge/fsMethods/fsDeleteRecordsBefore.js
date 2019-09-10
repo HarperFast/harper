@@ -7,7 +7,6 @@ const bulkDeleteValidator = require('../../../../validation/bulkDeleteValidator'
 const log = require('../../../../utility/logging/harper_logger');
 const hdb_utils = require('../../../../utility/common_utils');
 const terms = require('../../../../utility/hdbTerms');
-const global_schema = require('../../../../utility/globalSchema');
 const moment = require('moment');
 const fs = require('graceful-fs');
 const util = require('util');
@@ -17,7 +16,6 @@ const p_fs_stat = util.promisify(fs.stat);
 const p_fs_unlink = util.promisify(fs.unlink);
 const p_fs_readdir = util.promisify(fs.readdir);
 const p_fs_rmdir = util.promisify(fs.rmdir);
-const p_global_schema = util.promisify(global_schema.getTableSchema);
 
 const MOMENT_UNIX_TIMESTAMP_FLAG = 'x';
 
@@ -27,10 +25,12 @@ async function deleteRecordsBefore(delete_obj) {
     let dir_path = buildFolderPath(getBasePath(), delete_obj.schema, delete_obj.table);
     let parsed_date = moment(delete_obj.date, moment.ISO_8601);
 
-    await deleteFilesInPath(delete_obj.schema, delete_obj.table, dir_path, parsed_date).catch(function caughtError(err) {
+    try {
+        await deleteFilesInPath(delete_obj.schema, delete_obj.table, dir_path, parsed_date);
+    } catch(err) {
         log.error(`There was an error deleting files by date: ${err}`);
         throw new Error(`There was an error deleting files by date: ${err}`);
-    });
+    }
 }
 
 /**
@@ -130,7 +130,7 @@ async function removeFiles(schema, table, hash_attribute, ids_to_remove) {
     }
 
     try {
-        await p_global_schema(schema, table);
+
         await fsDeleteRecords(records_to_remove);
         if (schema !== terms.SYSTEM_SCHEMA_NAME) {
             let delete_msg = hdb_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);

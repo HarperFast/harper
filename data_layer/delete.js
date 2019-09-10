@@ -65,6 +65,7 @@ async function deleteFilesBefore(delete_obj) {
     }
 
     await harperBridge.deleteRecordsBefore(delete_obj);
+    await p_global_schema(delete_obj.schema, delete_obj.table);
 
     // let table = delete_obj.table;
     // let dir_path = common_utils.buildFolderPath(BASE_PATH, schema, table);

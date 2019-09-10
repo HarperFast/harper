@@ -1,7 +1,5 @@
 'use strict';
 
-"use strict";
-
 const test_utils = require('../../../../test_utils');
 // try to move to /bin directory so our properties reader doesn't explode.
 test_utils.preTestPrep();
@@ -17,34 +15,19 @@ const {
 const path = require('path');
 const assert = require('assert');
 const sinon = require('sinon');
-const chai = require('chai');
-const sinon_chai = require('sinon-chai');
-const { expect } = chai;
-chai.use(sinon_chai);
 const rewire = require('rewire');
-// const delete_rewire = rewire('../../data_layer/delete');
-// const fs_delete_records_rw = rewire('../../data_layer/harperBridge/fsBridge/fsMethods/fsDeleteRecords');
 const fsDeleteRecordsBefore = rewire('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsDeleteRecordsBefore');
-
+const fsDeleteRecords_rw = rewire('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsDeleteRecords');
 const fs = require('graceful-fs');
 const moment = require('moment');
-// const global_schema = require('../../../../../utility/globalSchema');
-// const env = require('../../utility/environment/environmentManager');
-// const common_utils = require('../../utility/common_utils');
-// const terms = require('../../utility/hdbTerms');
 const log = require('../../../../../utility/logging/harper_logger');
-const search = require('../../../../../data_layer/search');
-// const harperBridge = require('../../data_layer/harperBridge/harperBridge');
 
-const DELETE_MOD_BASE_PATH_NAME = 'BASE_PATH';
 const TEST_FS_DIR = getMockFSPath();
 const TEST_SCHEMA = 'test';
 const TEST_SCHEMA_PATH = path.join(TEST_FS_DIR, TEST_SCHEMA);
 const HASH_ATTRIBUTE = 'id';
 const BAD_DIR_PATH = path.join(TEST_FS_DIR, '/tmp/zaphodbeeblebrox');
-const SUCCESS_MESSAGE_TEST = 'records successfully deleted';
 let TEST_TABLE_DOG_PATH;
-
 const TEST_DATA_DOG = [
     {
         "name":"Frank",
@@ -64,11 +47,9 @@ const TEST_DATA_CAT = [
         "age":4
     }
 ];
-
 const TEST_DOG_HASH_VALUES = TEST_DATA_DOG.map(data => data[HASH_ATTRIBUTE]);
 const TEST_TABLE_DOG = 'dog';
 const TEST_TABLE_CAT = 'cat';
-
 const TOMORROW_TIME = moment().add(1, 'days');
 const YESTERDAY_TIME = moment().subtract(1, 'days');
 const NOW = moment();
@@ -81,24 +62,6 @@ const JSON_OBJECT_DELETE_BEFORE = {
     "schema": `${TEST_SCHEMA}`,
     "table": `${TEST_TABLE_DOG}`
 };
-const JSON_OBJECT_DELETE = {
-    "operation": "delete",
-    "table": TEST_TABLE_DOG,
-    "schema": TEST_SCHEMA,
-    "hash_values": TEST_DOG_HASH_VALUES
-};
-
-const DELETE_OBJECT_TEST = {
-    operation: "delete",
-    table: "dog",
-    schema: "dev",
-    hash_values: [
-        8,
-        9
-    ]
-};
-
-let search_stub = sinon.stub(search, 'searchByHash');
 
 function setup() {
     const test_data_clone_dog = deepClone(TEST_DATA_DOG);
@@ -115,38 +78,40 @@ function setup() {
     };
 }
 
-describe('Test DELETE', () => {
+describe('Tests for file system module fsDeleteRecordsBefore', () => {
     let sandbox = sinon.createSandbox();
+    let search_stub = sandbox.stub();
     let log_error_stub;
 
     before(() => {
-        search_stub.yields(null, TEST_DATA_DOG);
+
         tearDownMockFS();
         log_error_stub = sandbox.stub(log, 'error');
         fsDeleteRecordsBefore.__set__('getBasePath', test_utils.getMockFSPath);
-
+        fsDeleteRecordsBefore.__set__('fsDeleteRecords', fsDeleteRecords_rw);
+        fsDeleteRecords_rw.__set__('BASE_PATH', test_utils.getMockFSPath());
+        fsDeleteRecords_rw.__set__('fsSearchByHash', search_stub);
     });
 
     after(() => {
-        // rewire('../../data_layer/delete');
-        // rewire('../../data_layer/harperBridge/fsBridge/fsMethods/fsDeleteRecords');
-        search_stub.reset();
+        rewire('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsDeleteRecordsBefore');
+        rewire('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsDeleteRecords');
         sandbox.restore();
     });
 
-    /*describe('Test deleteFilesInPath', () => {
+    describe('Test deleteFilesInPath', () => {
         let test_data;
         let files_to_check;
         let deleteFilesInPath;
 
         before(() => {
-            deleteFilesInPath = delete_rewire.__get__('deleteFilesInPath');
+            deleteFilesInPath = fsDeleteRecordsBefore.__get__('deleteFilesInPath');
         });
 
         beforeEach(() => {
             test_data = setup();
             files_to_check = [...test_data[TEST_TABLE_DOG][0].paths.files, ...test_data[TEST_TABLE_DOG][1].paths.files ];
-            search_stub.yields(null, TEST_DATA_DOG);
+            search_stub.resolves(TEST_DATA_DOG);
         });
 
         afterEach(() => {
@@ -156,14 +121,13 @@ describe('Test DELETE', () => {
             tearDownMockFS();
         });
 
-        // This will be fixed and moved from here with CORE-445 Extract delete files before from core HDB and insert into HDB FS module.
-        /!*  it('Nominal path of deleteFilesInPath, test against DOG table', mochaAsyncWrapper(async () => {
+        it('Nominal path of deleteFilesInPath, test against DOG table', mochaAsyncWrapper(async () => {
               await deleteFilesInPath(TEST_SCHEMA, TEST_TABLE_DOG, TEST_TABLE_DOG_PATH, TOMORROW_TIME);
 
               for (let i = 0; i < files_to_check.length; i++) {
                   assert.equal(fs.existsSync(files_to_check[i]), false, `FAILURE: file ${files_to_check[i]} still exists.`);
               }
-          }));*!/
+          }));
 
         it('Test invalid directory parameter.  Expect no files to be deleted.', mochaAsyncWrapper(async () => {
             await deleteFilesInPath(TEST_SCHEMA, TEST_TABLE_DOG, null, TOMORROW_TIME)
@@ -202,20 +166,22 @@ describe('Test DELETE', () => {
             }
         }));
     });
-*/
+
     describe('Test deleteFilesBefore', () => {
         let test_data = undefined;
         let files_to_check;
-        let deleteFilesBefore;
+
+        before(() => {
+            fsDeleteRecords_rw.__set__('fsSearchByHash', search_stub);
+        });
 
         beforeEach(() => {
-            search_stub.yields(null, TEST_DATA_DOG);
+            search_stub.resolves(TEST_DATA_DOG);
             test_data = setup();
             files_to_check = [...test_data[TEST_TABLE_DOG][0].paths.files, ...test_data[TEST_TABLE_DOG][1].paths.files ];
         });
 
         afterEach(() => {
-            search_stub.reset();
             test_data = undefined;
             files_to_check = undefined;
             tearDownMockFS();
@@ -224,118 +190,69 @@ describe('Test DELETE', () => {
         it('deleteFilesBefore with yesterday as a time stamp, expect no files removed', mochaAsyncWrapper(async () => {
             let request = deepClone(JSON_OBJECT_DELETE_BEFORE);
             request.date = YESTERDAY_TIME.format(ISO_8601_FORMAT);
-            search_stub.yields(null, [TEST_DATA_DOG[0]]);
+            //search_stub.resolves([TEST_DATA_DOG[0]]);
             await fsDeleteRecordsBefore(request);
             for (let i = 0; i < files_to_check.length; i++) {
                 assert.equal(fs.existsSync(files_to_check[i]), true, `FAILURE: file ${files_to_check[i]} does not exist.`);
             }
         }));
 
-       it('Nominal path of deleteFilesBefore with 1 directory', mochaAsyncWrapper(async () => {
+        it('Nominal path of deleteFilesBefore with 1 directory', mochaAsyncWrapper(async () => {
            let files_to_check = [...test_data[TEST_TABLE_CAT][0].paths.files, ...test_data[TEST_TABLE_CAT][0].paths.journals];
            let request = deepClone(JSON_OBJECT_DELETE_BEFORE);
            request.table = TEST_TABLE_CAT;
            request.date = TOMORROW_TIME.format(ISO_8601_FORMAT);
-           search_stub.yields(null, TEST_DATA_CAT);
+           search_stub.resolves(TEST_DATA_CAT);
            await fsDeleteRecordsBefore(request);
            for (let i = 0; i < files_to_check.length; i++) {
                assert.equal(fs.existsSync(files_to_check[i]), false, `FAILURE: file ${files_to_check[i]} still exists.`);
            }
-       }));
-       //
-       // it('Nominal path of deleteFilesBefore on the dog table', mochaAsyncWrapper(async () => {
-       //     let request = deepClone(JSON_OBJECT_DELETE_BEFORE);
-       //     request.date = TOMORROW_TIME.format(ISO_8601_FORMAT);
-       //     await delete_rewire.deleteFilesBefore(request);
-       //     for (let i = 0; i < files_to_check.length; i++) {
-       //         assert.equal( fs.existsSync(files_to_check[i]), false, `FAILURE: file ${files_to_check[i]} still exists.`);
-       //     }
-       // }));
-       //
-       //  it('Call deleteFilesBefore with null date', mochaAsyncWrapper(async () => {
-       //      let request = deepClone(JSON_OBJECT_DELETE_BEFORE);
-       //      request.date = null;
-       //      let err = undefined;
-       //      try {
-       //          await delete_rewire.deleteFilesBefore(request);
-       //      } catch(e) {
-       //          err = e;
-       //      }
-       //      assert.equal(err.message, 'Invalid date.');
-       //  }));
-       //
-       //  it(`Call deleteFileBefore with null schema`, mochaAsyncWrapper(async () => {
-       //      let err;
-       //      let request = deepClone(JSON_OBJECT_DELETE_BEFORE);
-       //      request.schema = null;
-       //      try {
-       //          await delete_rewire.deleteFilesBefore(request);
-       //      } catch(e) {
-       //          err = e;
-       //      }
-       //      assert.equal(err.message, "Invalid schema.");
-       //  }));
-       //
-       //  it(`Call deleteFileBefore with null table`, mochaAsyncWrapper(async () => {
-       //      let err;
-       //      let request = deepClone(JSON_OBJECT_DELETE_BEFORE);
-       //      request.table = null;
-       //      try {
-       //          await delete_rewire.deleteFilesBefore(request);
-       //      } catch(e) {
-       //          err = e;
-       //      }
-       //      assert.equal(err.message, "Invalid table.");
-       //  }));
-       //
-       //  it('Call deleteFilesBefore with valid date strings, nothing removed', mochaAsyncWrapper(async () => {
-       //      let request = deepClone(JSON_OBJECT_DELETE_BEFORE);
-       //      request.date = '2011-01-11';
-       //      await delete_rewire.deleteFilesBefore(request);
-       //      for (let i = 0; i < files_to_check.length; i++) {
-       //          assert.equal(fs.existsSync(files_to_check[i]), true, `FAILURE: file ${files_to_check[i]} was deleted.`);
-       //      }
-       //  }));
-       //
-       //  // Test date with Times included
-       //  it('Call with valid date/time, nothing removed', mochaAsyncWrapper(async () => {
-       //      let request = deepClone(JSON_OBJECT_DELETE_BEFORE);
-       //      request.date = '2011-01-11T17:45:55+00:00';
-       //      await delete_rewire.deleteFilesBefore(request);
-       //      for (let i = 0; i < files_to_check.length; i++) {
-       //          assert.equal(fs.existsSync(files_to_check[i]), true, `FAILURE: file ${files_to_check[i]} was deleted.`);
-       //      }
-       //  }));
-       //
-       //  // Test leap year silliness
-       //  it('Call with invalid leap year', mochaAsyncWrapper(async () => {
-       //      let err;
-       //      let request = deepClone(JSON_OBJECT_DELETE_BEFORE);
-       //      request.date = '2011-02-29';
-       //      try {
-       //          await delete_rewire.deleteFilesBefore(request);
-       //      } catch(e) {
-       //          err = e;
-       //      }
-       //      assert.equal(err.message, 'Invalid date, must be in ISO-8601 format (YYYY-MM-DD).');
-       //  }));
-       //
-       //  //Test Epoc
-       //  it('Call with Epoc', mochaAsyncWrapper(async () => {
-       //      let request = deepClone(JSON_OBJECT_DELETE_BEFORE);
-       //      request.date = '1969-01-01';
-       //      await delete_rewire.deleteFilesBefore(request);
-       //      for (let i = 0; i < files_to_check.length; i++) {
-       //          assert.equal(fs.existsSync(files_to_check[i]), true, `FAILURE: file ${files_to_check[i]} was deleted.`);
-       //      }
-       //  }));
+        }));
+
+        it('Nominal path of deleteFilesBefore on the dog table', mochaAsyncWrapper(async () => {
+           let request = deepClone(JSON_OBJECT_DELETE_BEFORE);
+           request.date = TOMORROW_TIME.format(ISO_8601_FORMAT);
+           await fsDeleteRecordsBefore(request);
+           for (let i = 0; i < files_to_check.length; i++) {
+               assert.equal( fs.existsSync(files_to_check[i]), false, `FAILURE: file ${files_to_check[i]} still exists.`);
+           }
+        }));
+
+        it('Call deleteFilesBefore with valid date strings, nothing removed', mochaAsyncWrapper(async () => {
+            let request = deepClone(JSON_OBJECT_DELETE_BEFORE);
+            request.date = '2011-01-11';
+            await fsDeleteRecordsBefore(request);
+            for (let i = 0; i < files_to_check.length; i++) {
+                assert.equal(fs.existsSync(files_to_check[i]), true, `FAILURE: file ${files_to_check[i]} was deleted.`);
+            }
+        }));
+
+        // Test date with Times included
+        it('Call with valid date/time, nothing removed', mochaAsyncWrapper(async () => {
+            let request = deepClone(JSON_OBJECT_DELETE_BEFORE);
+            request.date = '2011-01-11T17:45:55+00:00';
+            await fsDeleteRecordsBefore(request);
+            for (let i = 0; i < files_to_check.length; i++) {
+                assert.equal(fs.existsSync(files_to_check[i]), true, `FAILURE: file ${files_to_check[i]} was deleted.`);
+            }
+        }));
+
+        //Test Epoc
+        it('Call with Epoc', mochaAsyncWrapper(async () => {
+            let request = deepClone(JSON_OBJECT_DELETE_BEFORE);
+            request.date = '1969-01-01';
+            await fsDeleteRecordsBefore(request);
+            for (let i = 0; i < files_to_check.length; i++) {
+                assert.equal(fs.existsSync(files_to_check[i]), true, `FAILURE: file ${files_to_check[i]} was deleted.`);
+            }
+        }));
     });
 
-   /* describe('Test doesDirectoryExist', () => {
+    describe('Test doesDirectoryExist', () => {
         let doesDirectoryExist;
 
         before(() => {
-            doesDirectoryExist = delete_rewire.__get__('doesDirectoryExist');
+            doesDirectoryExist = fsDeleteRecordsBefore.__get__('doesDirectoryExist');
             setup();
         });
 
@@ -358,15 +275,15 @@ describe('Test DELETE', () => {
             let doesExist = await doesDirectoryExist(null);
             assert.equal(doesExist, false);
         }));
-    });*/
+    });
 
-    /*describe('Test inspectHashAttributeDir', () => {
+    describe('Test inspectHashAttributeDir', () => {
         let inspectHashAttributeDir;
         let found_hashes_to_remove;
 
         before(() => {
             found_hashes_to_remove = [];
-            inspectHashAttributeDir = delete_rewire.__get__('inspectHashAttributeDir');
+            inspectHashAttributeDir = fsDeleteRecordsBefore.__get__('inspectHashAttributeDir');
         });
 
         beforeEach(() => {
@@ -420,13 +337,13 @@ describe('Test DELETE', () => {
             await inspectHashAttributeDir(0, TEST_TABLE_DOG, found_hashes_to_remove);
             assert.equal(found_hashes_to_remove.length, 0);
         }));
-    });*/
+    });
 
-   /* describe('Test isFileTimeBeforeParameterTime', () => {
+   describe('Test isFileTimeBeforeParameterTime', () => {
         let isFileTimeBeforeParameterTime;
 
         before(() => {
-            isFileTimeBeforeParameterTime = delete_rewire.__get__('isFileTimeBeforeParameterTime');
+            isFileTimeBeforeParameterTime = fsDeleteRecordsBefore.__get__('isFileTimeBeforeParameterTime');
         });
 
         it('Nominal path of isFileTimeBeforeParameterTime, tomorrow is greater than now expect true', () => {
@@ -479,16 +396,16 @@ describe('Test DELETE', () => {
             let result = isFileTimeBeforeParameterTime(tomorrow, "");
             assert.equal(result, false);
         });
-    });*/
+    });
 
-    /*describe('Test removeFiles', () => {
+    describe('Test removeFiles', () => {
         let removeFiles;
         let files_to_remove;
         let test_data = null;
 
         before(() => {
-            removeFiles = delete_rewire.__get__('removeFiles');
-            search_stub.yields(null, TEST_DATA_DOG);
+            removeFiles = fsDeleteRecordsBefore.__get__('removeFiles');
+            search_stub.resolves(TEST_DATA_DOG);
         });
 
         beforeEach(() => {
@@ -508,8 +425,7 @@ describe('Test DELETE', () => {
             tearDownMockFS();
         });
 
-        // This will be fixed and moved from here with CORE-445 Extract delete files before from core HDB and insert into HDB FS module.
-        /!*it('Nominal path of removeFiles on dog table', mochaAsyncWrapper(async () => {
+        it('Nominal path of removeFiles on dog table', mochaAsyncWrapper(async () => {
             for (let file of files_to_remove) {
                 assert.equal(fs.existsSync(file), true, `SETUP FAILURE: File ${file} was not created.`);
             }
@@ -517,38 +433,22 @@ describe('Test DELETE', () => {
             for (let file of files_to_remove) {
                 assert.equal(fs.existsSync(file), false, `FAILURE: File ${file} still exists.`);
             }
-        }));*!/
-
-        it('removeFiles with empty files parameter', mochaAsyncWrapper(async () => {
-            await removeFiles(TEST_SCHEMA, TEST_TABLE_DOG, HASH_ATTRIBUTE, []);
-            for (let file of files_to_remove) {
-                assert.equal(fs.existsSync(file), true, `FAILURE: File ${file} does not exist.`);
-            }
         }));
 
-        it('removeFiles with all invalid files parameter', mochaAsyncWrapper(async () => {
-            let bad_files = BAD_DIR_PATH;
-            await removeFiles(TEST_SCHEMA, TEST_TABLE_DOG, HASH_ATTRIBUTE, bad_files);
-            for (let file of files_to_remove) {
-                assert.equal(fs.existsSync(file), true, `FAILURE: File ${file} does not exist.`);
-            }
-        }));
+        it('removeFiles with empty files parameter', mochaAsyncWrapper( async () => {
+            let test_err_result = await test_utils.testError(removeFiles(TEST_SCHEMA, TEST_TABLE_DOG, HASH_ATTRIBUTE, []), "Hash values can't be blank");
 
-        it('removeFiles with null files parameter', mochaAsyncWrapper(async () => {
-            await removeFiles(TEST_SCHEMA, TEST_TABLE_DOG, HASH_ATTRIBUTE, null);
-            for (let file of files_to_remove) {
-                assert.equal(fs.existsSync(file), true, `FAILURE: File ${file} does not exist.`);
-            }
+            assert.strictEqual(test_err_result, true);
         }));
-    });*/
+    });
 
-/*
+
     describe('Test removeIDFiles', () => {
         let removeIDFiles;
         let test_values;
 
         before(() => {
-            removeIDFiles = delete_rewire.__get__('removeIDFiles');
+            removeIDFiles = fsDeleteRecordsBefore.__get__('removeIDFiles');
         });
 
         beforeEach(() => {
@@ -560,8 +460,7 @@ describe('Test DELETE', () => {
             tearDownMockFS();
         });
 
-        // This will be fixed and moved from here with CORE-445 Extract delete files before from core HDB and insert into HDB FS module.
-        /!* it('Nominal path of removeIDFiles against dog table.', mochaAsyncWrapper(async () => {
+        it('Nominal path of removeIDFiles against dog table.', mochaAsyncWrapper(async () => {
              let journal_files = [...test_values[TEST_TABLE_DOG][0].paths.journals, ...test_values[TEST_TABLE_DOG][1].paths.journals];
              let ids = test_values[TEST_TABLE_DOG].map(a => a[HASH_ATTRIBUTE]);
              for (let i = 0; i < journal_files.length; i++) {
@@ -571,7 +470,7 @@ describe('Test DELETE', () => {
              for (let i = 0; i < journal_files.length; i++) {
                  assert.equal(fs.existsSync(journal_files[i]), false, `FAILURE: file ${journal_files[i]} still exists.`);
              }
-         }));*!/
+        }));
 
         it('Try to pass system schema.', mochaAsyncWrapper(async () => {
             let journal_files = [...test_values[TEST_TABLE_DOG][0].paths.journals, ...test_values[TEST_TABLE_DOG][1].paths.journals];
@@ -581,14 +480,13 @@ describe('Test DELETE', () => {
             }
         }));
     });
-*/
 
-  /*  describe('Test getDirectoriesInPath', () => {
+    describe('Test getDirectoriesInPath', () => {
         let getDirectoriesInPath;
 
         before(() => {
             setup();
-            getDirectoriesInPath = delete_rewire.__get__('getDirectoriesInPath');
+            getDirectoriesInPath = fsDeleteRecordsBefore.__get__('getDirectoriesInPath');
             const ATTRIBUTE_TIME_NAME = moment().subtract(6, 'hours').valueOf();
             const TEST_FILE_NAME = `${ATTRIBUTE_TIME_NAME}.hdb`;
             const FILE_CONTENTS = "Name";
@@ -635,8 +533,5 @@ describe('Test DELETE', () => {
             await getDirectoriesInPath(TEST_TABLE_BIRD_PATH, list_dir_results, TOMORROW_TIME);
             assert.equal(Object.keys(list_dir_results).length, 1);
         }));
-    });*/
-
-
-
+    });
 });
