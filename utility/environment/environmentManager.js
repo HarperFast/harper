@@ -344,10 +344,10 @@ function initTestEnvironment() {
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.LOG_LEVEL_KEY, `debug`);
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY, `${props_path}/envDir/log/hdb_log.log`);
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.LOG_DAILY_ROTATE_KEY, false);
-        setProperty(hdb_terms.HDB_SETTINGS_NAMES.PROJECT_DIR_KEY, `${props_path}/envDir/`);
+        setProperty(hdb_terms.HDB_SETTINGS_NAMES.PROJECT_DIR_KEY, `${props_path}`);
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY, 'TRUE');
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY, 'test_node');
-        setProperty(hdb_terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, __dirname);
+        setProperty(hdb_terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, `${props_path}/envDir/`);
 
     } catch(err) {
         let msg = `Error reading in HDB environment variables from path ${BOOT_PROPS_FILE_PATH}.  Please check your boot props and settings files`;

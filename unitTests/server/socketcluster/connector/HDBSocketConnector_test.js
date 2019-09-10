@@ -81,6 +81,7 @@ describe('Test compareSchemas', () => {
         test_utils.createMockFS(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_2_NAME, dog_data);
         test_utils.createMockFS(ID_HASH_NAME, SCHEMA_2_NAME, SCHEMA_2_TABLE_1_NAME, dog_data);
 
+        await p_set_global();
     });
 
     afterEach(async () => {
@@ -96,9 +97,10 @@ describe('Test compareSchemas', () => {
 
    it('Nominal case with a new schema', async () => {
        let new_schema = 'new_schema3';
+       assert.notStrictEqual(global.hdb_schema, undefined);
        let test_message = test_utils.deepClone(global.hdb_schema);
        test_message[new_schema] = {};
-       assert.notStrictEqual(global.hdb_schema, undefined);
+
        let result = undefined;
         try {
             result = await connector.compareSchemas(test_message);
@@ -306,9 +308,9 @@ describe('Test compareTableKeys with filesystem', () => {
     });
 
     it(`test compareTableKeys 1 new table.`, async () => {
+        assert.strictEqual(global.hdb_schema[SCHEMA_1_NAME][SCHEMA_1_NEW_TABLE_NAME], undefined, 'Expected table does not exist');
         let test_message = test_utils.deepClone(global.hdb_schema);
 
-        assert.strictEqual(global.hdb_schema[SCHEMA_1_NAME][SCHEMA_1_NEW_TABLE_NAME], undefined, 'Expected table does not exist');
         let result = undefined;
         try {
             result = await connector.compareTableKeys(test_message[SCHEMA_1_NAME], SCHEMA_1_NAME);

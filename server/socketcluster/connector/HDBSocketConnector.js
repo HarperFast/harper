@@ -55,13 +55,13 @@ class HDBSocketConnector extends SocketConnector{
 
                         if(req && req.transaction && Object.keys(req.transaction).length > 0) {
                             let {operation_function} = server_utilities.getOperationFunction(req.transaction);
-                            operation_function_caller.callOperationFunctionAsAwait(operation_function, req.transaction, this.postOperationHandler, req)
-                                .then((result) => {
-                                    log.debug(result);
-                                })
-                                .catch((err) => {
-                                    log.error(err);
-                                });
+                            try {
+                                let result = await operation_function_caller.callOperationFunctionAsAwait(operation_function, req.transaction, this.postOperationHandler, req);
+                                log.debug(result);
+                            } catch(err) {
+                                log.info('There was an error processing an HDB_TRANSACTION');
+                                log.error(err);
+                            }
                         }
                         break;
                     }
@@ -72,14 +72,13 @@ class HDBSocketConnector extends SocketConnector{
                 }
             } else {
                 let {operation_function} = server_utilities.getOperationFunction(req);
-                operation_function(req, (err, result) => {
-                    //TODO possibly would be good to have a queue on the SC side holding pending transactions, on error we send back stating a fail.
-                    if (err) {
-                        log.error(err);
-                    } else {
-                        log.debug(result);
-                    }
-                });
+                try {
+                    let result = await operation_function(req);
+                    log.debug(result);
+                } catch(err) {
+                    log.error('There was an error processing a transaction');
+                    log.error(err);
+                }
             }
         } catch(e){
             log.error(e);
@@ -113,11 +112,9 @@ class HDBSocketConnector extends SocketConnector{
                 if(!global.hdb_schema[curr_schema_name]) {
                     let msg = this.generateOperationFunctionCall(ENTITY_TYPE_ENUM.SCHEMA, message_schema_object[curr_schema_name], curr_schema_name);
                     let {operation_function} = server_utilities.getOperationFunction(msg);
-                    const async_func = promisify(operation_function);
                     log.trace(`Calling operation in compare schema for schema: ${msg.schema}`);
                     // Pass a null followup function so we don't send a schema update message back to the sender.
-                    let result = operation_function_caller.callOperationFunctionAsAwait(async_func, msg, null);
-                    //let result = await async_func(msg);
+                    let result = await operation_function_caller.callOperationFunctionAsAwait(operation_function, msg, null);
                     // need to wait for the schema to be added to global.hdb_schema, or compareTableKeys will fail.
                     await p_set_schema_to_global();
                 }
@@ -146,10 +143,8 @@ class HDBSocketConnector extends SocketConnector{
                 if(!global.hdb_schema[schema_name] || !global.hdb_schema[schema_name][curr_table_name]) {
                     let msg = this.generateOperationFunctionCall(ENTITY_TYPE_ENUM.TABLE, schema_object[curr_table_name], schema_name, curr_table_name);
                     let {operation_function} = server_utilities.getOperationFunction(msg);
-                    const async_func = promisify(operation_function);
                     log.trace(`Calling createTable for table: ${msg.table}`);
-                    let result = operation_function_caller.callOperationFunctionAsAwait(async_func, msg, null);
-                    //let result = await async_func(msg);
+                    let result = await operation_function_caller.callOperationFunctionAsAwait(operation_function, msg, null);
                     // need to wait for the table to be added to global.hdb_schema, or compareAttributeKeys will fail.
                     await p_set_schema_to_global();
                 }
@@ -190,9 +185,7 @@ class HDBSocketConnector extends SocketConnector{
                         throw new Error('Invalid operation function in compareAttributeKeys.');
                     }
                     log.trace(`Calling create Attribute on attribute: ${msg.attribute}`);
-                    const async_func = promisify(operation_function);
-                    let result = operation_function_caller.callOperationFunctionAsAwait(async_func, msg, null);
-                    //let result = await async_func(msg);
+                    let result = await operation_function_caller.callOperationFunctionAsAwait(operation_function, msg, null);
                 } else {
                     let create_attribute = true;
                     if(!global.hdb_schema[schema_name][table_name].attributes) {
@@ -210,10 +203,8 @@ class HDBSocketConnector extends SocketConnector{
                         log.trace(`compareAttributeKeys Creating attribute: ${table_object.attributes[i].attribute}`);
                         let msg = this.generateOperationFunctionCall(ENTITY_TYPE_ENUM.ATTRIBUTE, table_object.attributes[i], schema_name, table_name);
                         let {operation_function} = server_utilities.getOperationFunction(msg);
-                        const async_func = promisify(operation_function);
                         try {
-                            let result = operation_function_caller.callOperationFunctionAsAwait(async_func, msg, null);
-                            //let result = await async_func(msg);
+                            let result = await operation_function_caller.callOperationFunctionAsAwait(operation_function, msg, null);
                         } catch(err) {
                             log.info(`There was a problem creating attribute ${msg.attribute}.  It probably already exists.`);
                             // no-op, some attributes may already exist so do nothing

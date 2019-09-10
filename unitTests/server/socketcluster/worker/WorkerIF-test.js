@@ -257,7 +257,7 @@ describe('Test workerIF evalRoomPublishInMiddleware', function() {
 
         assert.equal(result, undefined, 'expected success');
         assert.equal(next_stub.calledOnce, true, 'expected stub to be called');
-        assert.equal(next_stub.calledWith(`There was a middleware failure. ${types.ERROR_CODES.MIDDLEWARE_ERROR}`), true, 'expected next to be called with error');
+        assert.equal(next_stub.calledWith(`Message was swallowed in PublishIn middleware. ${types.ERROR_CODES.MIDDLEWARE_ERROR}`), true, 'expected next to be called with error');
     });
 });
 
@@ -293,7 +293,7 @@ describe('Test workerIF evalRoomPublishOutMiddleware', function() {
 
         assert.equal(result, undefined, 'expected success');
         assert.equal(next_stub.calledOnce, true, 'expected stub to be called');
-        assert.equal(next_stub.calledWith(`There was a middleware failure. ${types.ERROR_CODES.MIDDLEWARE_ERROR}`), true, 'expected next to be called with error');
+        assert.equal(next_stub.calledWith(`Message was swallowed in PublishOut middleware. ${types.ERROR_CODES.MIDDLEWARE_ERROR}`), true, 'expected next to be called with error');
     });
 });
 
@@ -329,7 +329,7 @@ describe('Test workerIF evalRoomSubscribeMiddleware', function() {
 
         assert.equal(result, undefined, 'expected success');
         assert.equal(next_stub.calledOnce, true, 'expected stub to be called');
-        assert.equal(next_stub.calledWith(`There was a middleware failure. ${types.ERROR_CODES.MIDDLEWARE_ERROR}`), true, 'expected next to be called with error');
+        assert.equal(next_stub.calledWith(`Message was swallowed in Subscribe middleware. ${types.ERROR_CODES.MIDDLEWARE_ERROR}`), true, 'expected next to be called with error');
     });
 });
 
@@ -365,6 +365,6 @@ describe('Test workerIF evalRoomAuthenticateMiddleware', function() {
 
         assert.equal(result, undefined, 'expected success');
         assert.equal(next_stub.calledOnce, true, 'expected stub to be called');
-        assert.equal(next_stub.calledWith(`There was a middleware failure. ${types.ERROR_CODES.MIDDLEWARE_ERROR}`), true, 'expected next to be called with error');
+        assert.equal(next_stub.calledWith(`Message was swallowed in Authenticate middleware. ${types.ERROR_CODES.MIDDLEWARE_ERROR}`), true, 'expected next to be called with error');
     });
 });
