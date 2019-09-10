@@ -11,17 +11,17 @@ const harper_logger = require('../utility/logging/harper_logger');
 const { promisify, callbackify } = require('util');
 const terms = require('../utility/hdbTerms');
 
-const BASE_PATH = common_utils.buildFolderPath(env.get('HDB_ROOT'), "schema");
-const HDB_HASH_FOLDER_NAME = '__hdb_hash';
+// const BASE_PATH = common_utils.buildFolderPath(env.get('HDB_ROOT'), "schema");
+// const HDB_HASH_FOLDER_NAME = '__hdb_hash';
 const SUCCESS_MESSAGE = 'records successfully deleted';
-const MOMENT_UNIX_TIMESTAMP_FLAG = 'x';
-const SYSTEM_SCHEMA_NAME = 'system';
+// const MOMENT_UNIX_TIMESTAMP_FLAG = 'x';
+// const SYSTEM_SCHEMA_NAME = 'system';
 
 // Promisified functions
-const p_fs_stat = promisify(fs.stat);
-const p_fs_readdir = promisify(fs.readdir);
-const p_fs_unlink = promisify(fs.unlink);
-const p_fs_rmdir = promisify(fs.rmdir);
+// const p_fs_stat = promisify(fs.stat);
+// const p_fs_readdir = promisify(fs.readdir);
+// const p_fs_unlink = promisify(fs.unlink);
+// const p_fs_rmdir = promisify(fs.rmdir);
 
 // Callbackified functions
 const cb_delete_record = callbackify(deleteRecord);
@@ -65,6 +65,7 @@ async function deleteFilesBefore(delete_obj) {
     }
 
     await harperBridge.deleteRecordsBefore(delete_obj);
+
     // let table = delete_obj.table;
     // let dir_path = common_utils.buildFolderPath(BASE_PATH, schema, table);
     //
@@ -84,7 +85,7 @@ async function deleteFilesBefore(delete_obj) {
  * @param date - the date as a momentjs object.
  * @returns {Promise<*>}
  */
-async function deleteFilesInPath(schema, table, dir_path, date) {
+/*async function deleteFilesInPath(schema, table, dir_path, date) {
     if(common_utils.isEmptyOrZeroLength(dir_path)) {
         harper_logger.error(`directory path ${dir_path} is invalid.`);
         return;
@@ -130,13 +131,14 @@ async function deleteFilesInPath(schema, table, dir_path, date) {
         harper_logger.info(`There was a problem removing files for Schema ${schema} and table ${table}`);
     });
 
-}
+}*/
 
 /**
  * Internal function used to verify a given directory path exists.
  * @param dir_path - directory path to stat
  * @returns {*}
  */
+/*
 async function doesDirectoryExist(dir_path) {
     if(common_utils.isEmptyOrZeroLength(dir_path)) {
         harper_logger.info('not a valid directory path');
@@ -151,6 +153,7 @@ async function doesDirectoryExist(dir_path) {
         return false;
     }
 }
+*/
 
 /**
  * Removes all files which had a last modified date less than the date parameter by calling deleteRecord.
@@ -159,7 +162,7 @@ async function doesDirectoryExist(dir_path) {
  * @param hash_attribute - The hash attribute of the table.
  * @param ids_to_remove - Array that contains the IDs of the records that should be removed in the schema/table.
  */
-async function removeFiles(schema, table, hash_attribute, ids_to_remove) {
+/*async function removeFiles(schema, table, hash_attribute, ids_to_remove) {
     let records_to_remove = {"operation": "delete",
         "table": `${table}`,
         "schema": `${schema}`,
@@ -173,7 +176,7 @@ async function removeFiles(schema, table, hash_attribute, ids_to_remove) {
         harper_logger.info(`There was a problem deleting records: ${e}`);
         return common_utils.errorizeMessage(e);
     }
-}
+}*/
 
 /**
  * Removes all id files specified in the hash_ids parameter.  The remove workflow leaves these files as part of
@@ -183,7 +186,7 @@ async function removeFiles(schema, table, hash_attribute, ids_to_remove) {
  * @param hash_ids - An array containing the ids for hash directories that need to be removed.
  * @returns {Promise<void>}
  */
-async function removeIDFiles(schema, table, hash_attribute, hash_ids) {
+/*async function removeIDFiles(schema, table, hash_attribute, hash_ids) {
     if(common_utils.isEmptyOrZeroLength(schema) || schema === SYSTEM_SCHEMA_NAME) {
         harper_logger.info(`Invalid schema name.`);
         return;
@@ -222,7 +225,7 @@ async function removeIDFiles(schema, table, hash_attribute, hash_ids) {
             harper_logger.error(`There was a problem removing directory ${curr_id_path}.  ${e}`);
         }
     }
-}
+}*/
 
 /**
  * Inspects a specified dir_path which should be the path to the hash attribute of a record.  It will compare the
@@ -233,7 +236,7 @@ async function removeIDFiles(schema, table, hash_attribute, hash_ids) {
  * @param hash_attributes_to_remove - Array that will be filled in with found ids.
  * @returns {Promise<void>}
  */
-async function inspectHashAttributeDir(date_unix_ms, dir_path, hash_attributes_to_remove) {
+/*async function inspectHashAttributeDir(date_unix_ms, dir_path, hash_attributes_to_remove) {
 
     let found_dirs = [];
     try {
@@ -282,21 +285,21 @@ async function inspectHashAttributeDir(date_unix_ms, dir_path, hash_attributes_t
             hash_attributes_to_remove.push(id);
         }
     }
-}
+}*/
 
 /**
  * Converts strings of unix time stamps to a moment object.
  * @param date_val - A string with a unix ms time stamp as the value.
  * @returns {*} - A moment object.
  */
-function convertUnixStringToMoment(date_val) {
+/*function convertUnixStringToMoment(date_val) {
     try {
         return moment(common_utils.stripFileExtension(date_val), MOMENT_UNIX_TIMESTAMP_FLAG);
     } catch(e) {
         harper_logger.info("had problem parsing file time" + e);
         return null;
     }
-}
+}*/
 
 /**
  * Compares 2 dates to see if the file_name date is before the parameter date.  The function will strip off
@@ -306,7 +309,7 @@ function convertUnixStringToMoment(date_val) {
  * @param file_name - File name being compared.
  * @returns {*|boolean}
  */
-function isFileTimeBeforeParameterTime(parameter_date, file_name) {
+/*function isFileTimeBeforeParameterTime(parameter_date, file_name) {
     if(!parameter_date || (typeof parameter_date) === "string") {
         harper_logger.info(`invalid date passed as parameter`);
         return false;
@@ -317,7 +320,7 @@ function isFileTimeBeforeParameterTime(parameter_date, file_name) {
     }
     let parsed_time = convertUnixStringToMoment(file_name);
     return ( (parsed_time && parsed_time.isValid()) && parsed_time.isBefore(parameter_date));
-}
+}*/
 
 /**
  * fills in the found_dirs parameter with found directories.
@@ -325,7 +328,7 @@ function isFileTimeBeforeParameterTime(parameter_date, file_name) {
  * @param found_dirs - An array of directory paths.
  * @param date_unix_ms - The date to compare files found in dirPath.
  */
-async function getDirectoriesInPath(dirPath, found_dirs, date_unix_ms) {
+/*async function getDirectoriesInPath(dirPath, found_dirs, date_unix_ms) {
 
     if(!(date_unix_ms) || !moment(date_unix_ms).isValid()) {
         harper_logger.info(`An invalid date ${date_unix_ms} was passed `);
@@ -362,7 +365,7 @@ async function getDirectoriesInPath(dirPath, found_dirs, date_unix_ms) {
             }
         }
     }
-}
+}*/
 
 /**
  * Calls the harper bridge to delete records.
