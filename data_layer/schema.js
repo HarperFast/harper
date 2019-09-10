@@ -1,22 +1,17 @@
 'use strict';
 
 const fs = require('fs-extra');
-
 const validation = require('../validation/schema_validator.js');
-const search = require('./search.js');
 const logger = require('../utility/logging/harper_logger');
 const uuidV4 = require('uuid/v4');
-const delete_ = require('../data_layer/delete');
-    //this is to avoid a circular dependency with insert.
-    // insert needs the describe all function but so does this module.
-    // as such the functions have been broken out into a separate module.
-const schema_describe = require('./schemaDescribe');
 const env = require('../utility/environment/environmentManager');
 const clone = require('clone');
 const signalling = require('../utility/signalling');
 const util = require('util');
 const hdb_util = require('../utility/common_utils');
 const terms = require('../utility/hdbTerms');
+const search = require('./search.js');
+const delete_ = require('../data_layer/delete');
 const harperBridge = require('./harperBridge/harperBridge');
 
 // Promisified functions
@@ -31,8 +26,6 @@ const ENTITY_TYPE_ENUM = {
 };
 const DATE_SUBSTR_LENGTH = 19;
 const TRASH_BASE_PATH = `${env.get('HDB_ROOT')}/trash/`;
-
-
 let current_date = new Date().toISOString().substr(0, DATE_SUBSTR_LENGTH);
 
 module.exports = {
@@ -41,20 +34,11 @@ module.exports = {
     createTable: createTable,
     createTableStructure: createTableStructure,
     createAttribute: createAttribute,
-    createAttributeStructure: createAttributeStructure,
     deleteTableStructure: moveTableStructureToTrash,
-    describeTable: schema_describe.describeTable,
-    describeSchema: schema_describe.describeSchema,
-    describeAll: schema_describe.describeAll,
     dropSchema: dropSchema,
     dropTable: dropTable,
     dropAttribute: dropAttribute
 };
-
-// This must be after export to prevent issues with circular dependencies
-const insert = require('./insert.js');
-const global_schema = require('../utility/globalSchema');
-const p_global_schema = util.promisify(global_schema.getTableSchema);
 
 /** EXPORTED FUNCTIONS **/
 
@@ -233,6 +217,7 @@ async function dropAttribute(drop_attribute_object) {
 
     try {
         let success = await moveAttributeToTrash(drop_attribute_object);
+        dropAttributeFromGlobal(drop_attribute_object);
 
         return success;
     } catch(err) {
@@ -244,11 +229,26 @@ async function dropAttribute(drop_attribute_object) {
 /** HELPER FUNCTIONS **/
 
 /**
+ * Removes the dropped attribute from the global hdb schema object.
+ * @param drop_attribute_object
+ */
+function dropAttributeFromGlobal(drop_attribute_object) {
+    let attributes_obj = Object.values(global.hdb_schema[drop_attribute_object.schema][drop_attribute_object.table]['attributes']);
+
+    for (let i = 0; i < attributes_obj.length; i++) {
+        if (attributes_obj[i].attribute === drop_attribute_object.attribute) {
+            global.hdb_schema[drop_attribute_object.schema][drop_attribute_object.table]['attributes'].splice(i, 1);
+        }
+    }
+}
+
+/**
  * Builds a descriptor object that describes the table targeted for the trash.
  * @param drop_table_object - Top level descriptor of the table being moved.
  * @param data - The data found by the search function.
  * @returns {Promise<{schema: string, hash_attribute: string, hash_values: *[], table: string}>}
  */
+
 function buildDropTableObject(drop_table_object, data) {
     let delete_table;
 
@@ -391,68 +391,17 @@ async function moveFolderToTrash(origin_path, trash_path) {
     try {
         await fs.move(origin_path,trash_path, {overwrite: true});
     } catch(err) {
-        logger.error(`Got an error moving path ${origin_path} to trash path: ${trash_path}`);
-        throw err;
+
+        // This is here because calling drop attribute on an attribute that only exists in the system schema folder shouldn't
+        // throw and error if that folder doesn't exist in schema file path.
+        if (err.code === 'ENOENT') {
+            logger.error(`Skipped moving folder ${origin_path} to trash path: ${trash_path}`);
+        } else {
+            logger.error(`Got an error moving path ${origin_path} to trash path: ${trash_path}`);
+            throw err;
+        }
     }
     return true;
-}
-
-async function createAttributeStructure(create_attribute_object) {
-    let validation_error = validation.attribute_object(create_attribute_object);
-    if (validation_error) {
-        throw validation_error;
-    }
-
-    let search_object = {
-        schema: 'system',
-        table: 'hdb_attribute',
-        hash_attribute: 'id',
-        get_attributes: ['*'],
-        search_attribute: 'attribute',
-        search_value: create_attribute_object.attribute
-    };
-
-    try {
-        let attributes = await p_search_search_by_value(search_object);
-
-        if(attributes && attributes.length > 0) {
-            for (let att in attributes) {
-                if (attributes[att].schema === create_attribute_object.schema
-                    && attributes[att].table === create_attribute_object.table) {
-                    throw new Error(`attribute already exists with id ${JSON.stringify(attributes[att])}`);
-                }
-            }
-        }
-
-        let record = {
-            schema: create_attribute_object.schema,
-            table: create_attribute_object.table,
-            attribute: create_attribute_object.attribute,
-            id: uuidV4(),
-            schema_table: create_attribute_object.schema + '.' + create_attribute_object.table
-        };
-
-        if(create_attribute_object.id){
-            record.id = create_attribute_object.id;
-        }
-
-        let insert_object = {
-            operation: 'insert',
-            schema: 'system',
-            table: 'hdb_attribute',
-            hash_attribute: 'id',
-            records: [record]
-        };
-
-        logger.info('insert object: ' + JSON.stringify(insert_object));
-        let insert_response = await insert.insert(insert_object);
-        logger.info('attribute: ' + record.attribute);
-        logger.info(insert_response);
-
-        return insert_response;
-    } catch(err) {
-        throw err;
-    }
 }
 
 async function deleteAttributeStructure(attribute_drop_object) {
@@ -504,7 +453,7 @@ async function createAttribute(create_attribute_object) {
         if(global.clustering_on
             && !create_attribute_object.delegated && create_attribute_object.schema !== 'system') {
 
-            attribute_structure = await createAttributeStructure(create_attribute_object);
+            attribute_structure = await harperBridge.createAttribute(create_attribute_object);
             create_attribute_object.delegated = true;
             create_attribute_object.operation = 'create_attribute';
             create_attribute_object.id = attribute_structure.id;
@@ -522,7 +471,7 @@ async function createAttribute(create_attribute_object) {
 
             return attribute_structure;
         }
-        attribute_structure = await createAttributeStructure(create_attribute_object);
+        attribute_structure = await harperBridge.createAttribute(create_attribute_object);
         let create_att_msg = hdb_util.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
         create_att_msg.transaction = create_attribute_object;
         hdb_util.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, create_att_msg);
