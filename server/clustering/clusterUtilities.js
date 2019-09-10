@@ -19,7 +19,7 @@ const InsertObject = require('../../data_layer/DataLayerObjects').InsertObject;
 const search = require('../../data_layer/search');
 
 const CLUSTER_PORT = env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY);
-
+const CONFIGURE_SUCCESS_RESPONSE = 'Successfully configured and loaded clustering configuration.';
 //Promisified functions
 const p_delete_delete = util.promisify(del.delete);
 const p_auth_authorize = util.promisify(auth.authorize);
@@ -261,18 +261,40 @@ async function removeNode(remove_json_message) {
  */
 async function configureCluster(enable_cluster_json) {
     let validation = configure_validator(enable_cluster_json);
+    let should_reload = false;
     if(validation) {
         log.error(`Validation error in configureCluster validation. ${validation}`);
         throw new Error(validation);
     }
     try {
-        env_mgr.setProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY, enable_cluster_json.clustering_enabled);
-        env_mgr.setProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY, enable_cluster_json.clustering_port);
-        env_mgr.setProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY, enable_cluster_json.clustering_node_name);
-        await env_mgr.writeSettingsFileSync(true);
+        if(!hdb_utils.isEmptyOrZeroLength(enable_cluster_json.clustering_enabled)) {
+            env_mgr.setProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY, enable_cluster_json.clustering_enabled);
+            should_reload = true;
+        }
+
+        if(!hdb_utils.isEmptyOrZeroLength(enable_cluster_json.clustering_port)) {
+            env_mgr.setProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY, enable_cluster_json.clustering_port);
+            should_reload = true;
+        }
+
+        if(!hdb_utils.isEmptyOrZeroLength(enable_cluster_json.clustering_node_name)) {
+            env_mgr.setProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY, enable_cluster_json.clustering_node_name);
+            should_reload = true;
+        }
+
+        if(!hdb_utils.isEmptyOrZeroLength(enable_cluster_json.clustering_user_name)) {
+            env_mgr.setProperty(terms.HDB_SETTINGS_NAMES.CLUSTER_USER, enable_cluster_json.clustering_user_name);
+            should_reload = true;
+        }
+
+        if(should_reload) {
+            await env_mgr.writeSettingsFileSync(true);
+            env_mgr.initSync();
+        }
+        return CONFIGURE_SUCCESS_RESPONSE;
     } catch(err) {
         log.error(err);
-        throw err;
+        throw 'There was an error storing the configuration information.  Please check the logs and try again.';
     }
 }
 
@@ -552,7 +574,7 @@ module.exports = {
     addNode: addNode,
     updateNode: updateNode,
     // The reference to the callback functions can be removed once processLocalTransaction has been refactored
-    configureCluster: configureCluster,
+    configureCluster,
     clusterStatus,
     removeNode: removeNode,
     clusterMessageHandler: clusterMessageHandler,
