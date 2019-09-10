@@ -36,16 +36,12 @@ const TABLE_NAME_TEST = 'catsdrool';
 const HASH_ATT_TEST = 'id';
 const FULL_SCHEMA_PATH_TEST = env.get('HDB_ROOT') + '/schema/' + SCHEMA_NAME_TEST;
 const TRASH_PATH_TEST = `${HDB_ROOT_TEST}/trash`;
-const FULL_TABLE_PATH_TEST = FULL_SCHEMA_PATH_TEST + '/' + TABLE_NAME_TEST;
 const SCHEMA_CREATE_OBJECT_TEST = {operation: 'create_schema', schema: SCHEMA_NAME_TEST};
 const CREATE_TABLE_OBJECT_TEST = {operation: 'create_table', schema: SCHEMA_NAME_TEST, table: TABLE_NAME_TEST, hash_attribute: HASH_ATT_TEST, residence: ''};
-const TABLE_TEST = {name: CREATE_TABLE_OBJECT_TEST.table, schema: CREATE_TABLE_OBJECT_TEST.schema, id: uuidV4(), hash_attribute: CREATE_TABLE_OBJECT_TEST.hash_attribute};
-const INSERT_OBJECT_TEST = {operation: 'insert', schema: 'system', table: 'hdb_table', hash_attribute: 'id', records: [TABLE_TEST]};
 const DROP_SCHEMA_OBJECT_TEST = {operation: 'drop_schema', schema: SCHEMA_NAME_TEST};
 const DROP_TABLE_OBJECT_TEST = {operation: 'drop_table', schema: SCHEMA_NAME_TEST, table: TABLE_NAME_TEST};
 const DROP_ATTR_OBJECT_TEST = {operation: 'drop_attribute', schema: SCHEMA_NAME_TEST, table: TABLE_NAME_TEST, attribute: 'id'};
 const CREATE_ATTR_OBJECT_TEST = {schema: SCHEMA_NAME_TEST, table: TABLE_NAME_TEST, attribute: 'name', delegated: false};
-const DATE_SUBSTR_LENGTH = 19;
 const GLOBAL_SCHEMA_FAKE = {
     'dogsrule': {
         'catsdrool': {
@@ -78,18 +74,12 @@ describe('Test schema module', function() {
     let search_by_value_rewire;
     let delete_delete_stub = sinon.stub().resolves();
     let delete_delete_rewire;
-    let delete_attr_struct_stub = sinon.stub();
-    let delete_attr_struct_rewire;
     let attr_validator_stub;
-    let build_drop_table_obj_stub = sinon.stub();
-    let build_drop_table_obj_rewire;
-    let move_table_to_trash_rewire;
     let move_attr_to_trash_rewire;
     let move_folder_to_trash_stub = sinon.stub();
     let move_folder_to_trash_rewire;
-    let harper_bridge_stub;
     global.hdb_schema = {};
-    let sandbox = sinon.createSandbox()
+    let sandbox = sinon.createSandbox();
 
     before(function() {
         env.setProperty('HDB_ROOT', HDB_ROOT_TEST);
@@ -101,8 +91,6 @@ describe('Test schema module', function() {
         search_by_value_rewire = schema.__set__('p_search_search_by_value', search_by_value_stub);
         delete_delete_rewire = schema.__set__('p_delete_delete', delete_delete_stub);
         attr_validator_stub = sinon.stub(schema_validator, 'attribute_object');
-        move_attr_to_trash_rewire = schema.__set__('moveAttributeToTrash', move_attr_to_trash_stub);
-        move_folder_to_trash_rewire = schema.__set__('moveFolderToTrash', move_folder_to_trash_stub)
     });
 
     afterEach(function() {
@@ -245,6 +233,7 @@ describe('Test schema module', function() {
     describe('Create table structure', function() {
         let create_table_validator_stub = sinon.stub(schema_validator, 'create_table_object');
         let residence_validator_stub = sinon.stub(schema_validator, 'validateTableResidence');
+        let harper_bridge_stub;
 
 
         before(() => {
@@ -425,13 +414,17 @@ describe('Test schema module', function() {
      */
     describe('Drop attribute', function() {
         let bridge_drop_attr_stub;
+        let drop_attr_from_global_stub = sandbox.stub();
+        let drop_attr_from_global_rw;
 
         before(() => {
             bridge_drop_attr_stub = sandbox.stub(harperBridge, 'dropAttribute');
+            drop_attr_from_global_rw = schema.__set__('dropAttributeFromGlobal', drop_attr_from_global_stub);
         });
 
         after(function() {
             sandbox.restore();
+            drop_attr_from_global_rw();
             delete global.hdb_schema[GLOBAL_SCHEMA_FAKE];
         });
 
@@ -517,289 +510,6 @@ describe('Test schema module', function() {
             let exists_in_global = global.hdb_schema[DROP_ATTR_OBJECT_TEST.schema][DROP_ATTR_OBJECT_TEST.table]['attributes'];
 
             expect(exists_in_global.length).to.be.equal(0);
-        });
-    });
-
-    /**
-     * Tests for dropAttributeFromSystem function.
-     */
-    describe('Drop attribute from system', function() {
-        let drop_attr_from_system = schema.__get__('dropAttributeFromSystem');
-        let attributes_fake = [{id: '12345'}];
-        let delete_table_object_fake = {
-            table: "hdb_attribute",
-            schema: "system",
-            hash_attribute: "id",
-            hash_values: [attributes_fake[0].id]
-        };
-
-        it('should throw attribute not found error', async function () {
-            search_by_value_stub.resolves([]);
-            let error;
-
-            try {
-                await drop_attr_from_system(DROP_ATTR_OBJECT_TEST);
-            } catch(err) {
-                error = err;
-            }
-
-            expect(error.message).to.equal(`Attribute ${DROP_ATTR_OBJECT_TEST.attribute} was not found.`);
-            expect(search_by_value_stub).to.have.been.calledOnce;
-        });
-
-        it('should should return success message', async function() {
-            let success_msg_fake = 'successfully deleted';
-            search_by_value_stub.resolves([{id: '12345'}]);
-            delete_delete_stub.resolves(success_msg_fake);
-            let result = await drop_attr_from_system(DROP_ATTR_OBJECT_TEST);
-
-            expect(result).to.equal(success_msg_fake);
-            expect(search_by_value_stub).to.have.been.calledOnce;
-            expect(delete_delete_stub).to.have.been.calledOnce;
-            expect(delete_delete_stub).to.have.been.calledWith(delete_table_object_fake);
-        });
-
-        it('should catch thrown error from delete_delete', async function () {
-            let delete_delete_err = 'could not retrieve hash attribute';
-            delete_delete_stub.throws(new Error(delete_delete_err));
-            let error;
-
-            try {
-                await drop_attr_from_system(DROP_ATTR_OBJECT_TEST);
-            } catch(err) {
-                error = err;
-            }
-
-            expect(error).to.be.instanceOf(Error);
-            expect(error.message).to.include(delete_delete_err);
-        });
-    });
-
-    /**
-     * Tests for moveAttributeToTrash function.
-     */
-    describe('Move attribute to trash', function() {
-        let move_attr_to_trash;
-        let drop_attr_from_sys_stub = sinon.stub();
-        let drop_attr_from_sys_rewire = schema.__set__('dropAttributeFromSystem', drop_attr_from_sys_stub);
-
-        before(function() {
-            move_attr_to_trash_rewire();
-            move_attr_to_trash = schema.__get__('moveAttributeToTrash');
-            move_folder_to_trash_rewire = schema.__set__('moveFolderToTrash', move_folder_to_trash_stub);
-        });
-
-        after(function() {
-            move_folder_to_trash_rewire();
-            drop_attr_from_sys_rewire();
-        });
-
-        it('should return false boolean', async function() {
-            move_folder_to_trash_stub.resolves(false);
-            let result = await move_attr_to_trash(DROP_ATTR_OBJECT_TEST);
-
-            expect(result).to.be.false;
-            expect(move_folder_to_trash_stub).to.have.been.calledOnce;
-        });
-
-        it('should throw and log error on attribute to trash', async function () {
-            let move_folder_to_trash_err = 'Error moving folder to trash';
-            move_folder_to_trash_stub.onFirstCall().throws(new Error(move_folder_to_trash_err));
-            let error;
-
-            try {
-                await move_attr_to_trash(DROP_ATTR_OBJECT_TEST);
-            } catch(err) {
-               error = err;
-            }
-
-            expect(error.message).to.equal(move_folder_to_trash_err);
-            expect(move_folder_to_trash_stub).to.have.calledOnce;
-            expect(logger_error_stub).to.have.calledOnce;
-        });
-
-        it('should throw and log error on hash attribute to trash', async function () {
-            let move_folder_to_trash_err = 'Error moving folder to trash';
-            move_folder_to_trash_stub.onFirstCall().resolves(true);
-            move_folder_to_trash_stub.onSecondCall().throws(new Error(move_folder_to_trash_err));
-            let error;
-
-            try {
-                await move_attr_to_trash(DROP_ATTR_OBJECT_TEST);
-            } catch(err) {
-                error = err;
-            }
-
-            expect(error.message).to.equal(move_folder_to_trash_err);
-            expect(move_folder_to_trash_stub).to.have.calledTwice;
-        });
-
-        it('should return result from dropAttributeFromSystem', async function() {
-            move_folder_to_trash_stub.onSecondCall().resolves(true);
-            let drop_attr_from_sys_fake = 'Successfully dropped';
-            drop_attr_from_sys_stub.resolves(drop_attr_from_sys_fake);
-            let result = await move_attr_to_trash(DROP_ATTR_OBJECT_TEST);
-
-            expect(result).to.equal(drop_attr_from_sys_fake);
-            expect(move_folder_to_trash_stub).to.have.calledTwice;
-            expect(drop_attr_from_sys_stub).to.have.calledOnce;
-        });
-
-        it('should throw and log error on from dropAttributeFromSystem', async function() {
-            let drop_attr_from_sys_err = 'There was a problem dropping attribute';
-            drop_attr_from_sys_stub.throws(new Error(drop_attr_from_sys_err));
-            let error;
-
-            try {
-                await move_attr_to_trash(DROP_ATTR_OBJECT_TEST);
-            } catch(err) {
-                error = err;
-            }
-
-            expect(error.message).to.equal(drop_attr_from_sys_err);
-            expect(move_folder_to_trash_stub).to.have.calledTwice;
-            expect(drop_attr_from_sys_stub).to.have.calledOnce;
-            expect(logger_error_stub).to.have.calledOnce;
-        });
-    });
-
-    /**
-     * Tests for moveFolderToTrash function.
-     */
-    describe('move folder to trash', function() {
-        // this function is also tested through move table to trash plus move attribute to trash.
-        let move_folder_to_trash;
-        let fs_mkdirp_stub;
-        let fs_move_stub;
-
-        before(function() {
-            move_folder_to_trash_rewire();
-            fs_mkdirp_stub = sinon.stub(fs, 'mkdirp');
-            fs_move_stub = sinon.stub(fs, 'move');
-            move_folder_to_trash = schema.__get__('moveFolderToTrash');
-        });
-
-        it('should return false from empty origin_path parameter', async function () {
-            let result = await move_folder_to_trash('', TRASH_PATH_TEST);
-
-            expect(result).to.be.false;
-        });
-
-        it('should return false from empty trash_path parameter', async function () {
-            let result = await move_folder_to_trash(FULL_SCHEMA_PATH_TEST, '');
-
-            expect(result).to.be.false;
-        });
-
-        it('should catch and log error from fs.mkdirp', async function() {
-            let fs_mkdirp_err = 'Unable to create directory';
-            fs_mkdirp_stub.throws(new Error(fs_mkdirp_err));
-            let error;
-
-            try {
-                await move_folder_to_trash(FULL_SCHEMA_PATH_TEST, TRASH_PATH_TEST);
-            } catch(err) {
-                error = err;
-            }
-
-            expect(error.message).to.equal(fs_mkdirp_err);
-            expect(fs_mkdirp_stub).to.have.been.calledOnce;
-            expect(logger_error_stub).to.have.been.calledOnce;
-            expect(logger_error_stub).to.have.been.calledWith(`Failed to create the trash directory.`);
-        });
-
-        it('should catch and log error from fs.mkdirp', async function() {
-            let fs_move_err = 'Directorey does not exist';
-            fs_mkdirp_stub.resolves();
-            fs_move_stub.throws(new Error(fs_move_err));
-            let error;
-
-            try {
-                await move_folder_to_trash(FULL_SCHEMA_PATH_TEST, TRASH_PATH_TEST);
-            } catch(err) {
-                error = err;
-            }
-
-            expect(error.message).to.equal(fs_move_err);
-            expect(fs_mkdirp_stub).to.have.been.calledOnce;
-            expect(fs_move_stub).to.have.been.calledOnce;
-            expect(logger_error_stub).to.have.been.calledOnce;
-            expect(logger_error_stub).to.have.been.calledWith(`Got an error moving path ${FULL_SCHEMA_PATH_TEST} to trash path: ${TRASH_PATH_TEST}`);
-        });
-
-        it('should return true without any errors', async function() {
-            fs_move_stub.resolves();
-            let result = await move_folder_to_trash(FULL_SCHEMA_PATH_TEST, TRASH_PATH_TEST);
-
-            expect(fs_mkdirp_stub).to.have.been.calledOnce;
-            expect(fs_move_stub).to.have.been.calledOnce;
-            expect(result).to.be.true;
-        });
-    });
-
-    /**
-     * Tests for createAttributeStructure function.
-     */
-    describe('Create attribute structure', function() {
-
-        it('should throw a validation error', async function() {
-            let validation_err = 'Attribute is required';
-            attr_validator_stub.returns(validation_err);
-            let error;
-
-            try {
-                await schema.createAttributeStructure(CREATE_ATTR_OBJECT_TEST);
-            } catch(err) {
-                error = err;
-            }
-
-            expect(error).to.equal(validation_err);
-            expect(attr_validator_stub).to.have.been.calledOnce;
-        });
-
-        it('should throw attribute already exists error', async function() {
-            attr_validator_stub.returns();
-            search_by_value_stub.resolves([CREATE_ATTR_OBJECT_TEST]);
-            let error;
-
-            try {
-                await schema.createAttributeStructure(CREATE_ATTR_OBJECT_TEST);
-            } catch(err) {
-                error = err;
-            }
-
-            expect(error.message).to.equal(`attribute already exists with id ${JSON.stringify(CREATE_ATTR_OBJECT_TEST)}`);
-            expect(search_by_value_stub).to.have.been.calledOnce;
-            expect(attr_validator_stub).to.have.been.calledOnce;
-        });
-
-        it('should log all necessary info and return insert response', async function() {
-            search_by_value_stub.resolves();
-            let insert_response_fake = {message: 'inserted 1 of 1 records - fake'};
-            insert_stub.resolves(insert_response_fake);
-            let result = await schema.createAttributeStructure(CREATE_ATTR_OBJECT_TEST);
-
-            expect(attr_validator_stub).to.have.been.calledOnce;
-            expect(search_by_value_stub).to.have.been.calledOnce;
-            expect(insert_stub).to.have.been.calledOnce;
-            expect(logger_info_stub).to.have.been.calledThrice;
-            expect(result).to.equal(insert_response_fake);
-        });
-
-        it('should catch error from insert', async function () {
-            let insert_err = 'Error inserting value';
-            insert_stub.throws(new Error(insert_err));
-            let error;
-
-            try {
-                await schema.createAttributeStructure(CREATE_ATTR_OBJECT_TEST);
-            } catch(err) {
-                error = err;
-            }
-
-            expect(error).to.be.instanceOf(Error);
-            expect(error.message).to.equal(insert_err);
-            expect(insert_stub).to.have.been.calledOnce;
         });
     });
 

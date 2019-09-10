@@ -181,6 +181,7 @@ async function dropAttribute(drop_attribute_object) {
 
     try {
         await harperBridge.dropAttribute(drop_attribute_object);
+        dropAttributeFromGlobal(drop_attribute_object);
 
         return `successfully deleted attribute '${drop_attribute_object.attribute}'`;
     } catch(err) {
@@ -189,8 +190,6 @@ async function dropAttribute(drop_attribute_object) {
         throw err;
    }
 }
-
-/** HELPER FUNCTIONS **/
 
 /**
  * Removes the dropped attribute from the global hdb schema object.
@@ -204,58 +203,6 @@ function dropAttributeFromGlobal(drop_attribute_object) {
             global.hdb_schema[drop_attribute_object.schema][drop_attribute_object.table]['attributes'].splice(i, 1);
         }
     }
-}
-
-/**
- * Performs the move of the target table to the trash directory.
- * @param drop_table_object - Descriptor of the table being moved to trash.
- * @returns {Promise<void>}
- */
-async function moveTableToTrash(drop_table_object) {
-    let root_path = env.get('HDB_ROOT');
-    let origin_path = `${root_path}/schema/${drop_table_object.schema}/${drop_table_object.table}`;
-    let destination_name = `${drop_table_object.schema}-${drop_table_object.table}-${current_date}`;
-    let trash_path = `${TRASH_BASE_PATH}${destination_name}`;
-
-    try {
-        await moveFolderToTrash(origin_path, trash_path);
-    } catch(err) {
-        throw err;
-    }
-}
-
-/**
- * Move the specified folder from path to the trash path folder.  If the trash folder does not exist, it will be created.
- *
- * @param path
- * @param trash_path
- * @returns {Promise<boolean>}
- */
-async function moveFolderToTrash(origin_path, trash_path) {
-    if(hdb_util.isEmptyOrZeroLength(origin_path) || hdb_util.isEmptyOrZeroLength(trash_path)) {
-        return false;
-    }
-
-    try {
-        await fs.mkdirp(trash_path, {mode: terms.HDB_FILE_PERMISSIONS});
-    } catch(err) {
-        logger.error(`Failed to create the trash directory.`);
-        throw err;
-    }
-
-    try {
-        await fs.move(origin_path,trash_path, {overwrite: true});
-    } catch(err) {
-        // Calling drop attribute on an attribute that only exists in the system schema folder shouldn't
-        // throw and error if that folder doesn't exist in schema file path.
-        if (err.code === 'ENOENT') {
-            logger.error(`Skipped moving folder ${origin_path} to trash path: ${trash_path}`);
-        } else {
-            logger.error(`Got an error moving path ${origin_path} to trash path: ${trash_path}`);
-            throw err;
-        }
-    }
-    return true;
 }
 
 async function createAttribute(create_attribute_object) {
