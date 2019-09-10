@@ -2,7 +2,6 @@
 
 const BridgeMethods = require("../BridgeMethods.js");
 const log = require('../../../utility/logging/harper_logger');
-const BridgeMethods = require("../BridgeMethods.js");
 const fsCreateAttribute = require('./fsMethods/fsCreateAttribute');
 const fsCreateRecords = require('./fsMethods/fsCreateRecords');
 const fsCreateSchema = require('./fsMethods/fsCreateSchema');
