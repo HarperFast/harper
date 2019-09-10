@@ -17,7 +17,6 @@ class CleanDataObjectRule extends RuleIF {
         }
 
         delete req.data.__id;
-        delete req.data.__transacted;
         return true;
     }
 }

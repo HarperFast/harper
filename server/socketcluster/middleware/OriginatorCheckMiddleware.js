@@ -13,6 +13,9 @@ class OriginatorCheckMiddleware extends MiddlewareIF {
         eval_function = (req, next) => {
             try {
                 log.trace('Evaluating originator check middleware');
+                if(req.data.__transacted) {
+                    return;
+                }
                 if (!req.data.__originator || req.data.__originator[env.getProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)] === undefined) {
                     log.debug('Passed Originator Middleware');
                     return;
@@ -27,6 +30,7 @@ class OriginatorCheckMiddleware extends MiddlewareIF {
         };
         super(middleware_type_enum, eval_function);
         this.type = types.PREMADE_MIDDLEWARE_TYPES.ORIGINATOR;
+        this.command_order = types.COMMAND_EVAL_ORDER_ENUM.VERY_FIRST;
     }
 }
 

@@ -10,6 +10,7 @@ const insert_validator = require('../validation/insertValidator.js');
 const h_utils = require('../utility/common_utils');
 const hdb_terms = require('../utility/hdbTerms');
 const util = require('util');
+const env = require('../utility/environment/environmentManager');
 // Leave this unused signalling import here. Due to circular dependencies we bring it in early to load it before the bridge
 const signalling = require('../utility/signalling');
 const harperBridge = require('./harperBridge/harperBridge');
@@ -144,7 +145,7 @@ function convertOperationToTransaction(write_object, written_hashes, hash_attrib
         });
         let insert_msg = h_utils.getClusterMessage(hdb_terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
         insert_msg.transaction = transaction;
-        h_utils.sendTransactionToSocketCluster(`${write_object.schema}:${write_object.table}`, insert_msg);
+        h_utils.sendTransactionToSocketCluster(`${write_object.schema}:${write_object.table}`, insert_msg, env.getProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
     }
 }
 

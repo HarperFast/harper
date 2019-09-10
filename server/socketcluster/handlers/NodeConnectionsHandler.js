@@ -10,6 +10,7 @@ const SubscriptionObject = sc_objects.SubscriptionObject;
 const NodeObject = sc_objects.NodeObject;
 const promisify = require('util').promisify;
 const terms = require('../../../utility/hdbTerms');
+const env = require('../../../utility/environment/environmentManager');
 
 class NodeConnectionsHandler {
     constructor(nodes, cluster_user, worker){
@@ -80,7 +81,8 @@ class NodeConnectionsHandler {
         options.hostname = node.host;
         options.port = node.port;
         let additional_info = {
-            name: node.name,
+            server_name: node.name,
+            client_name: env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY),
             subscriptions: node.subscriptions,
             connected_timestamp: null
         };
@@ -106,7 +108,7 @@ class NodeConnectionsHandler {
             for (let x = 0; x < connect_keys.length; x++) {
                 let key = connect_keys[x];
                 let socket = this.connections.clients[key];
-                if (socket.additional_info && socket.additional_info.name === new_node.name) {
+                if (socket.additional_info && socket.additional_info.server_name === new_node.name) {
                     node_exists = true;
                     return;
                 }
@@ -133,7 +135,7 @@ class NodeConnectionsHandler {
             for (let x = 0; x < connect_keys.length; x++) {
                 let key = connect_keys[x];
                 let socket = this.connections.clients[key];
-                if (socket.additional_info && socket.additional_info.name === remove_node.name) {
+                if (socket.additional_info && socket.additional_info.server_name === remove_node.name) {
                     this.connections.destroy(socket);
                 }
 
@@ -161,7 +163,7 @@ class NodeConnectionsHandler {
             for (let x = 0; x < connect_keys.length; x++) {
                 let key = connect_keys[x];
                 let connection = this.connections.clients[key];
-                if (connection.additional_info.name === update_node.name) {
+                if (connection.additional_info.server_name === update_node.name) {
                     this.removeNode(update_node);
                     await this.addNewNode(update_node);
                     return;
@@ -188,7 +190,7 @@ class NodeConnectionsHandler {
                 }
 
                 //add the connection to the channel map
-                this.publish_channel_connections[subscription.channel][connection.additional_info.name] = connection;
+                this.publish_channel_connections[subscription.channel][connection.additional_info.server_name] = connection;
             }
 
             if (subscription.subscribe === true) {
