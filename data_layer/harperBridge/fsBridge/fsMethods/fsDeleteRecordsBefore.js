@@ -28,7 +28,6 @@ async function deleteRecordsBefore(delete_obj) {
     try {
         await deleteFilesInPath(delete_obj.schema, delete_obj.table, dir_path, parsed_date);
     } catch(err) {
-        log.error(`There was an error deleting files by date: ${err}`);
         throw new Error(`There was an error deleting files by date: ${err}`);
     }
 }

@@ -12,6 +12,6 @@ function buildFolderPath(...path_elements){
     try {
         return path_elements.join(path.sep);
     } catch(e){
-        console.error(path_elements);
+        throw new Error(`error building folder path: ${path_elements}`);
     }
 }
