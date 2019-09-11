@@ -105,6 +105,13 @@ const DROP_SCHEMA_OBJ_TEST = {
     schema: "dropTest",
 };
 
+const DROP_ATTR_TEST = {
+    operation: "drop_attribute",
+    schema: "dev",
+    table: "dog",
+    attribute: "another_attribute"
+};
+
 const DROP_TABLT_OBJ_TEST = {
     operation: "drop_table",
     schema: "dev",
@@ -360,6 +367,35 @@ describe('Tests for the file system bridge class', () => {
             const error_msg = 'Search error';
             fs_get_data_by_hash_stub.throws(new Error(error_msg));
             let test_error_result = await test_utils.testError(fsBridge.getDataByHash(DELETE_OBJ_TEST), error_msg);
+
+            expect(test_error_result).to.be.true;
+            expect(log_error_spy).to.have.been.calledOnce;
+        });
+    });
+
+    context('Test dropAttribute method', () => {
+        let fs_drop_attr_stub = sandbox.stub();
+        let fs_drop_attr_rw;
+
+        before(() => {
+            fs_drop_attr_rw = FileSystemBridge.__set__('fsDropAttribute', fs_drop_attr_stub);
+        });
+
+        after(() => {
+            sandbox.restore();
+            fs_drop_attr_rw();
+        });
+
+        it('Test dropAttribute method is called and result is as expected', async () => {
+            await fsBridge.dropAttribute(DROP_ATTR_TEST);
+
+            expect(fs_drop_attr_stub).to.have.been.calledWith(DROP_ATTR_TEST);
+        });
+
+        it('Test that error from fsDropAttribute is caught, thrown and logged', async () => {
+            const error_msg = 'Error dropping attribute';
+            fs_drop_attr_stub.throws(new Error(error_msg));
+            let test_error_result = await test_utils.testError(fsBridge.dropAttribute(DROP_ATTR_TEST), error_msg);
 
             expect(test_error_result).to.be.true;
             expect(log_error_spy).to.have.been.calledOnce;
