@@ -40,6 +40,9 @@ const RESTART_CODE_NUM = 24;
 const RESTART_TIMEOUT_MS = 60000;
 const HDB_FILE_PERMISSIONS = 0o700;
 
+// API Message consts
+const OPERATION_FIELD_NAME = 'operation';
+
 const HELIUM_URL_PREFIX = 'he://localhost/';
 
 const CLUSTERING_FOLDER_NAME = 'clustering';
@@ -384,6 +387,7 @@ module.exports = {
     ClusterMessageObjects,
     CLUSTERING_FOLDER_NAME,
     CLUSTERING_PAYLOAD_FILE_NAME,
-    HELIUM_URL_PREFIX
+    HELIUM_URL_PREFIX,
+    OPERATION_FIELD_NAME
 };
 

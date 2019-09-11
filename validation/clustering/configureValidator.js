@@ -1,7 +1,7 @@
 const validator = require('../validationWrapper.js');
-
+const terms = require('../../utility/hdbTerms');
 const constraints = {
-    clustering_enabled: {
+    CLUSTERING: {
         presence: false,
         inclusion: {
             within: [true, false, "true", "false"],

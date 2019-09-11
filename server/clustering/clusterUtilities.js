@@ -260,6 +260,7 @@ async function removeNode(remove_json_message) {
  * @returns {Promise<void>}
  */
 async function configureCluster(enable_cluster_json) {
+    log.debug('In configureCluster');
     let validation = configure_validator(enable_cluster_json);
     let should_reload = false;
     if(validation) {
@@ -267,29 +268,24 @@ async function configureCluster(enable_cluster_json) {
         throw new Error(validation);
     }
     try {
-        if(!hdb_utils.isEmptyOrZeroLength(enable_cluster_json.clustering_enabled)) {
-            env_mgr.setProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY, enable_cluster_json.clustering_enabled);
-            should_reload = true;
+        let msg_keys = Object.keys(enable_cluster_json);
+        for(let i=0; i<msg_keys; ++i) {
+            let curr = msg_keys[i];
+            if(curr && curr === terms.OPERATION_FIELD_NAME) {
+                continue;
+            }
+            let temp = terms.OPERATIONS_ENUM[curr];
+            let temp_val = enable_cluster_json[curr];
+            if(curr && !hdb_utils.isEmptyOrZeroLength(terms.OPERATIONS_ENUM[curr])) {
+                log.info(`Setting property ${curr} to value ${enable_cluster_json[curr]}`);
+                env_mgr.setProperty(curr, enable_cluster_json[curr]);
+                should_reload = true;
+            }
         }
-
-        if(!hdb_utils.isEmptyOrZeroLength(enable_cluster_json.clustering_port)) {
-            env_mgr.setProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY, enable_cluster_json.clustering_port);
-            should_reload = true;
-        }
-
-        if(!hdb_utils.isEmptyOrZeroLength(enable_cluster_json.clustering_node_name)) {
-            env_mgr.setProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY, enable_cluster_json.clustering_node_name);
-            should_reload = true;
-        }
-
-        if(!hdb_utils.isEmptyOrZeroLength(enable_cluster_json.clustering_user_name)) {
-            env_mgr.setProperty(terms.HDB_SETTINGS_NAMES.CLUSTER_USER, enable_cluster_json.clustering_user_name);
-            should_reload = true;
-        }
-
         if(should_reload) {
             await env_mgr.writeSettingsFileSync(true);
             env_mgr.initSync();
+            log.info('Completed writing new settings to file and reloading the manager.');
         }
         return CONFIGURE_SUCCESS_RESPONSE;
     } catch(err) {
