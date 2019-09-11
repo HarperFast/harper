@@ -1,4 +1,8 @@
 "use strict";
+/**
+ * this is simply meant to allow a developer to create their own license file & gets stripped out on release
+ * @type {{validateLicense, generateFingerPrint, generateLicense}|*}
+ */
 
 const license = require('../registration/hdb_license');
 const reg_handler = require('../registration/registrationHandler');

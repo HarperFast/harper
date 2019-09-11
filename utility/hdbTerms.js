@@ -306,6 +306,13 @@ const CLUSTER_CONNECTION_DIRECTION_ENUM = {
     INBOUND: "INBOUND"
 };
 
+const LICENSE_VALUES = {
+    FILE_SYSTEM: 'fs',
+    HELIUM: 'heliunm',
+    API_CALL_DEFAULT: 90000,
+    VERSION_DEFAULT: '2.0.0'
+};
+
 const CLUSTER_EVENTS_DEFS_ENUM = {
     IDENTIFY : 'identify',
     AUTHENTICATE : 'authenticate',
@@ -383,6 +390,7 @@ module.exports = {
     ClusterMessageObjects,
     CLUSTERING_FOLDER_NAME,
     CLUSTERING_PAYLOAD_FILE_NAME,
-    HELIUM_URL_PREFIX
+    HELIUM_URL_PREFIX,
+    LICENSE_VALUES
 };
 

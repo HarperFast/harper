@@ -53,9 +53,9 @@ function generateLicense(license_object) {
 
     let obj = {
         exp_date: moment(license_object.exp_date).unix(),
-        storage_type: license_object.storage_type ? license_object.storage_type : 'fs',
-        api_call: license_object.api_call ? license_object.api_call : 90000,
-        version: license_object.version
+        storage_type: license_object.storage_type ? license_object.storage_type : terms.LICENSE_VALUES.FILE_SYSTEM,
+        api_call: license_object.api_call ? license_object.api_call : terms.LICENSE_VALUES.API_CALL_DEFAULT,
+        version: license_object.version ? license_object.version : terms.LICENSE_VALUES.VERSION_DEFAULT
     };
 
     let encrypted_exp = hashDate(obj);
@@ -76,9 +76,9 @@ async function validateLicense(license_key, company) {
         valid_date: false,
         valid_machine: false,
         exp_date: null,
-        storage_type: 'fs',
-        api_call: 90000,
-        version: '1.3'
+        storage_type: terms.LICENSE_VALUES.FILE_SYSTEM,
+        api_call: terms.LICENSE_VALUES.API_CALL_DEFAULT,
+        version: terms.LICENSE_VALUES.VERSION_DEFAULT
     };
     if(!license_key) {
         log.error(`empty license key passed to validate.`);
