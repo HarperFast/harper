@@ -2,7 +2,7 @@
 
 const BridgeMethods = require("./BridgeMethods.js");
 const FileSystemBridge = require('./fsBridge/FileSystemBridge');
-const HeliumBridge = require('./heliumBridge/HeliumBridge');
+const HeliumBridge = require('./heBridge/HeliumBridge');
 
 const terms = require('../../utility/hdbTerms');
 
