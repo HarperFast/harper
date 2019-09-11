@@ -39,7 +39,13 @@ describe(`Test generateLicense`, function () {
         // rewire hdb_license instance locally to keep internal cipher const fresh from another test
         const hdb_license = rewire('../../../utility/registration/hdb_license');
         // prepare license key obj which expire tomorrow with dummy fingerprint (no fingerprint validation in generate license process)
-        let licenseKeyObject = { exp_date: moment().add(1, 'day').format('YYYY-MM-DD'), company: 'hdb', fingerprint: 'whatever'};
+        let licenseKeyObject = {
+            exp_date: moment().add(1, 'day').format('YYYY-MM-DD'),
+            company: 'hdb',
+            fingerprint: 'whatever',
+            storage_type: 'helium',
+            api_call: 90000,
+            version: '2.0.0'};
 
         let err = null;
         let license = undefined;
@@ -57,7 +63,10 @@ describe(`Test generateLicense`, function () {
         // rewire hdb_license instance locally to keep internal cipher const fresh from another test
         const hdb_license = rewire('../../../utility/registration/hdb_license');
         // prepare license key obj which *expire today* with dummy fingerprint (no fingerprint validation in generate license process)
-        let licenseKeyObject = { exp_date: moment().format('YYYY-MM-DD'), company: 'hdb', fingerprint: 'whatever'};
+        let licenseKeyObject = { exp_date: moment().format('YYYY-MM-DD'), company: 'hdb', fingerprint: 'whatever',
+            storage_type: 'helium',
+            api_call: 90000,
+            version: '2.0.0'};
 
         let err = null;
         let license = undefined;
@@ -75,7 +84,10 @@ describe(`Test generateLicense`, function () {
         // rewire hdb_license instance locally to keep internal cipher const fresh from another test   
         let hdb_license = rewire('../../../utility/registration/hdb_license');
         // prepare license key obj which expire tomorrow with *blank company* and dummy fingerprint (no fingerprint validation in generate license process)
-        let licenseKeyObject = { exp_date: moment().add(1, 'day').format('YYYY-MM-DD'), company: null, fingerprint: 'whatever'};
+        let licenseKeyObject = { exp_date: moment().add(1, 'day').format('YYYY-MM-DD'), company: null, fingerprint: 'whatever',
+            storage_type: 'helium',
+            api_call: 90000,
+            version: '2.0.0'};
 
         let err = null;
         let license = undefined;
@@ -93,7 +105,10 @@ describe(`Test generateLicense`, function () {
         // rewire hdb_license instance locally to keep internal cipher const fresh from another test
         let hdb_license = rewire('../../../utility/registration/hdb_license');
         // prepare license key obj which *expire date is blank* with dummy fingerprint (no fingerprint validation in generate license process)
-        let licenseKeyObject = { exp_date: null, company: 'hdb', fingerprint: 'whatever'};
+        let licenseKeyObject = { exp_date: null, company: 'hdb', fingerprint: 'whatever',
+            storage_type: 'helium',
+            api_call: 90000,
+            version: '2.0.0'};
 
         let err = null;
         let license = undefined;
@@ -114,7 +129,10 @@ describe(`Test validateLicense`, function () {
         // rewire hdb_license instance locally to keep internal cipher const fresh from another test
         const hdb_license = rewire('../../../utility/registration/hdb_license');
 
-        let licenseKeyObject = { exp_date: moment().add(1, 'day').format('YYYY-MM-DD'), company: 'hdb'};
+        let licenseKeyObject = { exp_date: moment().add(1, 'day').format('YYYY-MM-DD'), company: 'hdb',
+            storage_type: 'helium',
+            api_call: 90000,
+            version: '2.0.0'};
 
         let err = null;
         let fingerprint = await hdb_license.generateFingerPrint().catch((e) => {
@@ -133,7 +151,10 @@ describe(`Test validateLicense`, function () {
         // rewire hdb_license instance locally to keep internal cipher const fresh from another test
         const hdb_license = rewire('../../../utility/registration/hdb_license');
 
-        let licenseKeyObject = { exp_date: moment().add(1, 'day').format('YYYY-MM-DD'), company: 'hdb'};
+        let licenseKeyObject = { exp_date: moment().add(1, 'day').format('YYYY-MM-DD'), company: 'hdb',
+            storage_type: 'helium',
+            api_call: 90000,
+            version: '2.0.0'};
 
         let err = null;
         let fingerprint = await hdb_license.generateFingerPrint().catch((e) => {
@@ -156,7 +177,10 @@ describe(`Test validateLicense`, function () {
         // rewire hdb_license instance locally to keep internal cipher const fresh from another test
         const hdb_license = rewire('../../../utility/registration/hdb_license');
 
-        let licenseKeyObject = { exp_date: moment().add(1, 'day').format('YYYY-MM-DD'), company: 'hdb'};
+        let licenseKeyObject = { exp_date: moment().add(1, 'day').format('YYYY-MM-DD'), company: 'hdb',
+            storage_type: 'helium',
+            api_call: 90000,
+            version: '2.0.0'};
 
         let err = null;
         let fingerprint = await hdb_license.generateFingerPrint().catch((e) => {
@@ -175,7 +199,10 @@ describe(`Test validateLicense`, function () {
         // rewire hdb_license instance locally to keep internal cipher const fresh from another test
         const hdb_license = rewire('../../../utility/registration/hdb_license');
 
-        let licenseKeyObject = { exp_date: moment().add(1, 'day').format('YYYY-MM-DD'), company: 'hdb'};
+        let licenseKeyObject = { exp_date: moment().add(1, 'day').format('YYYY-MM-DD'), company: 'hdb',
+            storage_type: 'helium',
+            api_call: 90000,
+            version: '2.0.0'};
 
         let err = null;
         let fingerprint = await hdb_license.generateFingerPrint().catch((e) => {
@@ -194,7 +221,10 @@ describe(`Test validateLicense`, function () {
         // rewire hdb_license instance locally to keep internal cipher const fresh from another test
         const hdb_license = rewire('../../../utility/registration/hdb_license');
 
-        let licenseKeyObject = { exp_date: moment().add(1, 'day').format('YYYY-MM-DD'), company: 'hdb'};
+        let licenseKeyObject = { exp_date: moment().add(1, 'day').format('YYYY-MM-DD'), company: 'hdb',
+            storage_type: 'helium',
+            api_call: 90000,
+            version: '2.0.0'};
 
         let err = null;
         let fingerprint = await hdb_license.generateFingerPrint().catch((e) => {

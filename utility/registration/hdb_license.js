@@ -1,7 +1,6 @@
 const fs = require('fs-extra');
 const password = require('../password');
 const crypto = require('crypto');
-const cipher = crypto.createCipher('aes192', 'a password');
 const validation = require('../../validation/registration/license_key_object.js');
 const moment = require('moment');
 const uuidV4 = require('uuid/v4');
@@ -49,12 +48,19 @@ function generateLicense(license_object) {
         if (validation_error) {
             throw validation_error;
         }
+    let fingerprint = license_object.fingerprint,
+        company = license_object.company;
 
-        let fingerprint = license_object.fingerprint;
-        let company = license_object.company;
-        let encrypted_exp = hashDate(moment(license_object.exp_date).unix());
+    let obj = {
+        exp_date: moment(license_object.exp_date).unix(),
+        storage_type: license_object.storage_type ? license_object.storage_type : 'fs',
+        api_call: license_object.api_call ? license_object.api_call : 90000,
+        version: license_object.version
+    };
 
-        let hash_license = hashLicense(fingerprint, company);
+    let encrypted_exp = hashDate(obj);
+
+    let hash_license = hashLicense(fingerprint, company);
 
         license = `${encrypted_exp}${LICENSE_KEY_DELIMITER}${hash_license}`;
     } catch(err) {
@@ -65,10 +71,17 @@ function generateLicense(license_object) {
 }
 
 async function validateLicense(license_key, company) {
-    let license_validation_object = {};
+    let license_validation_object = {
+        valid_license: false,
+        valid_date: false,
+        valid_machine: false,
+        exp_date: null,
+        storage_type: 'fs',
+        api_call: 90000,
+        version: '1.3'
+    };
     if(!license_key) {
         log.error(`empty license key passed to validate.`);
-        license_validation_object.valid_license = false;
         return license_validation_object;
     }
     let decipher = crypto.createDecipher('aes192', 'a password');
@@ -85,13 +98,26 @@ async function validateLicense(license_key, company) {
         decrypted += decipher.final('utf8');
     } catch (e) {
         license_validation_object.valid_license = false;
+        license_validation_object.valid_machine = false;
         let err_msg = new Error(`invalid license key format`);
         console.error(`invalid license key format`);
         log.error(err_msg.message);
         throw err_msg;
     }
 
-    if (decrypted < moment().unix()) {
+    let license_obj;
+
+    try {
+        license_obj = JSON.parse(decrypted);
+        license_validation_object.api_call = license_obj.api_call;
+        license_validation_object.version = license_obj.version;
+        license_validation_object.storage_type = license_obj.storage_type;
+        license_validation_object.exp_date = license_obj.exp_date;
+    } catch(e){
+        license_validation_object.exp_date = decrypted;
+    }
+
+    if (license_validation_object.exp_date < moment().unix()) {
         license_validation_object.valid_date = false;
     }
 
@@ -115,8 +141,9 @@ async function validateLicense(license_key, company) {
     return license_validation_object;
 }
 
-function hashDate(expdate) {
-    let encrypted_exp = cipher.update('' + expdate, 'utf8', 'hex');
+function hashDate(obj) {
+    let cipher = crypto.createCipher('aes192', 'a password');
+    let encrypted_exp = cipher.update(JSON.stringify(obj), 'utf8', 'hex');
     encrypted_exp += cipher.final('hex');
     return encrypted_exp;
 }
