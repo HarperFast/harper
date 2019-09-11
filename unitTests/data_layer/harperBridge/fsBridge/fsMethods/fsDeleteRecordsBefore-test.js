@@ -87,9 +87,9 @@ describe('Tests for file system module fsDeleteRecordsBefore', () => {
 
         tearDownMockFS();
         log_error_stub = sandbox.stub(log, 'error');
+        fsDeleteRecords_rw.__set__('getBasePath', test_utils.getMockFSPath);
         fsDeleteRecordsBefore.__set__('getBasePath', test_utils.getMockFSPath);
         fsDeleteRecordsBefore.__set__('fsDeleteRecords', fsDeleteRecords_rw);
-        fsDeleteRecords_rw.__set__('BASE_PATH', test_utils.getMockFSPath());
         fsDeleteRecords_rw.__set__('fsSearchByHash', search_stub);
     });
 

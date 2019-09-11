@@ -55,16 +55,14 @@ const TEST_DATA_DOG = [
 const HASH_ATTRIBUTE = 'id';
 const TABLE_TEST = 'doggo';
 const SCHEMA_TEST = 'deleteTest';
-const FS_DIR_TEST = test_utils.getMockFSPath();
 
 describe('Tests for file system module fsDeleteRecords', () => {
     let sandbox = sinon.createSandbox();
     let log_error_stub;
 
     before(() => {
-        fs_delete_records.__set__('BASE_PATH', FS_DIR_TEST);
+        fs_delete_records.__set__('getBasePath', test_utils.getMockFSPath);
         log_error_stub = sandbox.stub(log, 'error');
-        
     });
 
     after(() => {

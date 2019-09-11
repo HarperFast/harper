@@ -47,18 +47,22 @@ async function deleteFilesInPath(schema, table, dir_path, date) {
         log.error(`directory path ${dir_path} is invalid.`);
         return;
     }
+
     if(!date || !moment.isMoment(date) || !date.isValid()) {
         log.error(`date ${date} is invalid.`);
         return;
     }
+
     if(hdb_utils.isEmptyOrZeroLength(schema) || schema === terms.SYSTEM_SCHEMA_NAME) {
         log.error(`Schema ${schema} is invalid.`);
         return;
     }
+
     if(hdb_utils.isEmptyOrZeroLength(table)) {
         log.error(`Table ${table} is invalid.`);
         return;
     }
+
     let hash_attribute = undefined;
     try {
         hash_attribute = global.hdb_schema[schema][table].hash_attribute;
@@ -66,9 +70,11 @@ async function deleteFilesInPath(schema, table, dir_path, date) {
         log.error(`Schema ${schema} and table ${table} attributes were not found.`);
         return;
     }
+
     let doesExist = await doesDirectoryExist(dir_path).catch(e => {
         log.info(`There was a problem checking directory ${dir_path}`);
     });
+
     if (!doesExist) {
         let message = "Invalid Directory Path.";
         log.info(message);
@@ -79,11 +85,13 @@ async function deleteFilesInPath(schema, table, dir_path, date) {
     await inspectHashAttributeDir(date, path.join(dir_path, hash_attribute), found_files).catch(e => {
         log.info(`There was a problem getting attributes for table directory ${dir_path}`);
     });
+
     if (hdb_utils.isEmptyOrZeroLength(found_files)) {
         let message = "No files found";
         log.info(message);
         return message;
     }
+
     await removeFiles(schema, table, hash_attribute, found_files).catch( e => {
         log.info(`There was a problem removing files for Schema ${schema} and table ${table}`);
     });
@@ -130,7 +138,6 @@ async function removeFiles(schema, table, hash_attribute, ids_to_remove) {
     }
 
     try {
-
         await fsDeleteRecords(records_to_remove);
         if (schema !== terms.SYSTEM_SCHEMA_NAME) {
             let delete_msg = hdb_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
@@ -178,6 +185,7 @@ async function removeIDFiles(schema, table, hash_attribute, hash_ids) {
         if(hdb_utils.isEmptyOrZeroLength(files_in_dir)) {
             continue;
         }
+
         for(let file_num = 0; file_num < files_in_dir.length; file_num++) {
             try {
                 log.trace(`trying to unlink file ${files_in_dir[file_num]}`);
@@ -186,6 +194,7 @@ async function removeIDFiles(schema, table, hash_attribute, hash_ids) {
                 log.error(`There was a problem unlinking file ${files_in_dir[file_num]}.  ${e}`);
             }
         }
+
         try {
             await p_fs_rmdir(curr_id_path);
         } catch(e) {
@@ -204,8 +213,8 @@ async function removeIDFiles(schema, table, hash_attribute, hash_ids) {
  * @returns {Promise<void>}
  */
 async function inspectHashAttributeDir(date_unix_ms, dir_path, hash_attributes_to_remove) {
-
     let found_dirs = [];
+
     try {
         if (!(date_unix_ms) || !moment(date_unix_ms).isValid()) {
             log.info(`An invalid date ${date_unix_ms} was passed `);
@@ -214,23 +223,28 @@ async function inspectHashAttributeDir(date_unix_ms, dir_path, hash_attributes_t
     } catch (e) {
         log.error(e);
     }
+
     await getDirectoriesInPath(dir_path, found_dirs, date_unix_ms).catch(e => {
         log.info(`There was a problem inspecting the hash attribute dir ${dir_path}`);
     });
+
     if(!hash_attributes_to_remove) {
         log.info(`An invalid array was passed.`);
         return;
     }
+
     if(hdb_utils.isEmptyOrZeroLength(found_dirs)) {
         log.trace(`No hash directories were found to remove.`);
         return;
     }
+
     for(let curr_dir in found_dirs) {
         let files_in_dir = await p_fs_readdir(found_dirs[curr_dir]);
         if(hdb_utils.isEmptyOrZeroLength(files_in_dir)) {
             continue;
         }
         let latest_file = undefined;
+
         if(files_in_dir.length === 1) {
             latest_file = files_in_dir[0];
         } else {
@@ -245,6 +259,7 @@ async function inspectHashAttributeDir(date_unix_ms, dir_path, hash_attributes_t
                 }
             }
         }
+
         if(!hdb_utils.isEmptyOrZeroLength(latest_file) && isFileTimeBeforeParameterTime(date_unix_ms, latest_file)) {
             // The ID of the record should be the last /<TEXT> part of the path.  Pull the ID and remove the file.
             let dir_path = (found_dirs[curr_dir]);
@@ -267,10 +282,12 @@ function isFileTimeBeforeParameterTime(parameter_date, file_name) {
         log.info(`invalid date passed as parameter`);
         return false;
     }
+
     if(hdb_utils.isEmptyOrZeroLength(file_name)) {
         log.info(`invalid file name passed as parameter`);
         return false;
     }
+
     let parsed_time = convertUnixStringToMoment(file_name);
     return ( (parsed_time && parsed_time.isValid()) && parsed_time.isBefore(parameter_date));
 }
@@ -296,11 +313,11 @@ function convertUnixStringToMoment(date_val) {
  * @param date_unix_ms - The date to compare files found in dirPath.
  */
 async function getDirectoriesInPath(dirPath, found_dirs, date_unix_ms) {
-
     if(!(date_unix_ms) || !moment(date_unix_ms).isValid()) {
         log.info(`An invalid date ${date_unix_ms} was passed `);
         return;
     }
+
     let list = undefined;
     try {
         list = await p_fs_readdir(dirPath);
@@ -308,20 +325,24 @@ async function getDirectoriesInPath(dirPath, found_dirs, date_unix_ms) {
         log.info(`Specified Directory path ${dirPath} does not exist.`);
         return;
     }
+
     if(!list) { return; }
 
     for(let found in list) {
         if(list[found] === terms.HASH_FOLDER_NAME) {
             continue;
         }
+
         let file = path.resolve(dirPath, list[found]);
         let stats = undefined;
+
         try {
             stats = await p_fs_stat(file);
         } catch(e) {
             log.info(`Had trouble getting stats for file ${file}.`);
             return;
         }
+
         if (stats && stats.isDirectory() && stats.mtimeMs < date_unix_ms.valueOf()) {
             try {
                 found_dirs.push(file);

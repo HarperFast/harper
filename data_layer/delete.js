@@ -1,4 +1,5 @@
 "use strict";
+
 const env = require('../utility/environment/environmentManager');
 const bulk_delete_validator = require('../validation/bulkDeleteValidator');
 const conditional_delete_validator = require('../validation/conditionalDeleteValidator');
@@ -34,14 +35,15 @@ module.exports = {
  * @param callback
  */
 async function deleteFilesBefore(delete_obj) {
-
     if(common_utils.isEmptyOrZeroLength(delete_obj.date)) {
         throw new Error("Invalid date.");
     }
+
     let parsed_date = moment(delete_obj.date, moment.ISO_8601);
     if(!parsed_date.isValid()) {
         throw new Error("Invalid date, must be in ISO-8601 format (YYYY-MM-DD).");
     }
+
     if(common_utils.isEmptyOrZeroLength(delete_obj.schema)) {
         throw new Error("Invalid schema.");
     }
