@@ -1,7 +1,7 @@
 "use strict";
 
-const BridgeMethods = require("../BridgeMethods.js");
 const log = require('../../../utility/logging/harper_logger');
+const BridgeMethods = require("../BridgeMethods.js");
 const fsCreateAttribute = require('./fsMethods/fsCreateAttribute');
 const fsCreateRecords = require('./fsMethods/fsCreateRecords');
 const fsCreateSchema = require('./fsMethods/fsCreateSchema');
@@ -15,6 +15,8 @@ const fsDropSchema = require('./fsMethods/fsDropSchema');
 const fsCreateTable = require('./fsMethods/fsCreateTable');
 const fsUpdateRecords = require('./fsMethods/fsUpdateRecords');
 const fsDeleteRecordsBefore = require('./fsMethods/fsDeleteRecordsBefore');
+const fsDropTable = require('./fsMethods/fsDropTable');
+const fsDropAttribute = require('./fsMethods/fsDropAttribute');
 
 class FileSystemBridge extends BridgeMethods {
 
@@ -90,6 +92,15 @@ class FileSystemBridge extends BridgeMethods {
         }
     }
 
+    async dropTable(drop_table_obj) {
+        try {
+            return await fsDropTable(drop_table_obj);
+        } catch(err) {
+            log.error(err);
+            throw err;
+        }
+    }
+
     async createAttribute(create_attribute_obj) {
         try {
             return await fsCreateAttribute(create_attribute_obj);
@@ -129,6 +140,15 @@ class FileSystemBridge extends BridgeMethods {
     async deleteRecordsBefore(delete_obj) {
         try {
             return await fsDeleteRecordsBefore(delete_obj);
+        } catch(err) {
+            log.error(err);
+            throw err;
+        }
+    }
+
+    async dropAttribute(drop_attr_obj) {
+        try {
+            return await fsDropAttribute(drop_attr_obj);
         } catch(err) {
             log.error(err);
             throw err;
