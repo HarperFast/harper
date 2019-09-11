@@ -1,6 +1,7 @@
 'use strict';
 
 const moveFolderToTrash = require('../fsUtility/moveFolderToTrash');
+const getBasePath = require('../fsUtility/getBasePath');
 const fsSearchByValue = require('./fsSearchByValue');
 const fsDeleteRecords = require('./fsDeleteRecords');
 const env = require('../../../../utility/environment/environmentManager');
@@ -26,9 +27,9 @@ module.exports = dropAttribute;
  */
 async function dropAttribute(drop_attr_obj) {
     // TODO: Need to do specific rollback actions if any of the actions below fails.  https://harperdb.atlassian.net/browse/HDB-312
-    let origin_path = `${env.get('HDB_ROOT')}/schema/${drop_attr_obj.schema}/${drop_attr_obj.table}/${drop_attr_obj.attribute}`;
-    let hash_path = `${env.get('HDB_ROOT')}/schema/${drop_attr_obj.schema}/${drop_attr_obj.table}/${terms.HASH_FOLDER_NAME}/${drop_attr_obj.attribute}`;
-    let attribute_trash_path = `${env.get('HDB_ROOT')}/trash/${ENTITY_TYPE_ENUM.ATTRIBUTE}/${drop_attr_obj.attribute}-${current_date}`;
+    let origin_path = `${getBasePath()}/${drop_attr_obj.schema}/${drop_attr_obj.table}/${drop_attr_obj.attribute}`;
+    let hash_path = `${getBasePath()}/${drop_attr_obj.schema}/${drop_attr_obj.table}/${terms.HASH_FOLDER_NAME}/${drop_attr_obj.attribute}`;
+    let attribute_trash_path = `${env.get(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY)}/${terms.HDB_TRASH_DIR}/${ENTITY_TYPE_ENUM.ATTRIBUTE}/${drop_attr_obj.attribute}-${current_date}`;
     let attribute_hash_trash_path = `${attribute_trash_path}/${terms.HASH_FOLDER_NAME}/${drop_attr_obj.attribute}`;
 
     try {
