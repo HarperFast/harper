@@ -4,7 +4,6 @@ const evaluateTableGetAttributes = require('../../fsBridge/fsUtility/evaluateTab
 const heConsolidateSearchData = require('../heUtility/heConsolidateSearchData');
 const heGetAttributeValues = require('../heUtility/heGetAttributeValues');
 const search_validator = require('../../../../validation/searchValidator.js');
-const MOCK_SCHEMA = require('../heUtility/TEMP-ConfigHelium')
 
 module.exports = heGetDataByHash;
 
@@ -22,17 +21,14 @@ function heGetDataByHash(search_object) {
         if (validation_error) {
             throw validation_error;
         }
-        // NOTE: this is replacing the getAllAttributeNames() method that was finding attributes w/ file_search.findDirectoriesByRegex()
-        //TODO: UPDATE TO REMOVE HARD CODED GLOBAL SCHEMA
-        // let table_info = global.hdb_schema[search_object.schema][search_object.table];
-        let table_info = MOCK_SCHEMA;
+        let table_info = global.hdb_schema[search_object.schema][search_object.table];
         let final_get_attrs = evaluateTableGetAttributes(search_object.get_attributes, table_info.attributes);
 
         let hash_values = search_object.hash_values.map(hash => `${hash}`)
         let data_stores = final_get_attrs.map(attr => `${table_info.schema}/${table_info.name}/${attr}`);
 
         const attributes_data = heGetAttributeValues(hash_values, data_stores);
-        const final_results = heConsolidateSearchData(data_stores, attributes_data);
+        const final_results = heConsolidateSearchData(final_get_attrs, attributes_data);
 
         return final_results;
     } catch(err) {

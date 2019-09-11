@@ -8,20 +8,11 @@ module.exports = heGetAttributeValues;
 
 function heGetAttributeValues(hash_values, data_stores) {
     try {
+        // TODO: remove helium references here after helium initialization process is figured out
         const helium = heliumUtil.initializeHelium();
-        let search_results = helium.searchByKeys(hash_values, data_stores);
+        const search_results = helium.searchByKeys(hash_values, data_stores);
         heliumUtil.terminateHelium(helium);
 
-        console.log(search_results);
-        // let attributes_data = {};
-        //
-        // for (const attribute of get_attributes) {
-        //     //evaluate if an array of strings or objects has been passed in and assign values accordingly
-        //     let attribute_name = (typeof attribute === 'string') ? attribute : attribute.attribute;
-        //     attributes_data[attribute_name] = await readAttributeValues(table_path, attribute_name, hash_values);
-        // }
-        //
-        // return attributes_data;
         return search_results;
     } catch(err) {
         throw err;

@@ -1,41 +1,19 @@
 "use strict";
 
+const common_utils = require('../../../../utility/common_utils');
+
 module.exports = heConsolidateSearchData;
 
-function heConsolidateSearchData(data_stores, attributes_data) {
-    console.log('Data: ', data_stores, attributes_data);
+function heConsolidateSearchData(attrs_keys, attrs_data) {
+    let final_data = {};
 
-    // let results_object = {};
-    // let data_keys = Object.keys(attributes_data);
-    //
-    // if (!attributes_data || data_keys.length === 0) {
-    //     return results_object;
-    // }
-    //
-    // let ids;
-    // if (attributes_data[hash_attribute]) {
-    //     ids = Object.keys(attributes_data[hash_attribute]);
-    // } else {
-    //     Object.keys(attributes_data).forEach(key => {
-    //         let split_key = key.split('.');
-    //         if (split_key.length > 1 && split_key[1] === hash_attribute) {
-    //             ids = Object.keys(attributes_data[key]);
-    //         }
-    //     });
-    // }
-    //
-    // if (!ids) {
-    //     ids = Object.keys(attributes_data[Object.keys(attributes_data)[0]]);
-    // }
-    //
-    // for (let id_key of ids) {
-    //     const row_object = {};
-    //     for (let attribute of data_keys) {
-    //         row_object[attribute] = attributes_data[attribute][id_key];
-    //     }
-    //     results_object[id_key] = row_object;
-    // }
-    //
-    // return results_object;
-    return {1: {name: "Sam"}};
+    attrs_data.forEach(row => {
+        let row_obj = {};
+        row[1].forEach((data, i) => {
+            row_obj[attrs_keys[i]] = common_utils.autoCast(data.toString());
+        });
+        final_data[row[0]] = row_obj;
+    })
+
+    return final_data;
 }
