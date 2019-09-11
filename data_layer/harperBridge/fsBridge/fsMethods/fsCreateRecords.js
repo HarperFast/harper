@@ -2,7 +2,6 @@
 
 const processData = require('../fsUtility/processData');
 const processRows = require('../fsUtility/processRows');
-const log = require('../../../../utility/logging/harper_logger');
 const insertUpdateValidate = require('../fsUtility/insertUpdateValidate');
 const checkForNewAttributes = require('../fsUtility/checkForNewAttr');
 
