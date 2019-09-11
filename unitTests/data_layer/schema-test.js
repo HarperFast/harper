@@ -15,10 +15,8 @@ const sinon = require('sinon');
 const sinon_chai = require('sinon-chai');
 const { expect } = chai;
 chai.use(sinon_chai);
-const fs = require('fs-extra');
 const signalling = require('../../utility/signalling');
 let insert = require('../../data_layer/insert');
-const uuidV4 = require('uuid/v4');
 const logger = require('../../utility/logging/harper_logger');
 const common = require('../../utility/common_utils');
 const schema_validator = require('../../validation/schema_validator');
@@ -34,7 +32,6 @@ let schema = rewire('../../data_layer/schema');
 const SCHEMA_NAME_TEST = 'dogsrule';
 const TABLE_NAME_TEST = 'catsdrool';
 const HASH_ATT_TEST = 'id';
-const FULL_SCHEMA_PATH_TEST = env.get('HDB_ROOT') + '/schema/' + SCHEMA_NAME_TEST;
 const TRASH_PATH_TEST = `${HDB_ROOT_TEST}/trash`;
 const SCHEMA_CREATE_OBJECT_TEST = {operation: 'create_schema', schema: SCHEMA_NAME_TEST};
 const CREATE_TABLE_OBJECT_TEST = {operation: 'create_table', schema: SCHEMA_NAME_TEST, table: TABLE_NAME_TEST, hash_attribute: HASH_ATT_TEST, residence: ''};
@@ -70,14 +67,7 @@ describe('Test schema module', function() {
     let logger_error_stub;
     let logger_info_stub;
     let schema_validator_stub;
-    let search_by_value_stub = sinon.stub();
-    let search_by_value_rewire;
-    let delete_delete_stub = sinon.stub().resolves();
-    let delete_delete_rewire;
     let attr_validator_stub;
-    let move_attr_to_trash_rewire;
-    let move_folder_to_trash_stub = sinon.stub();
-    let move_folder_to_trash_rewire;
     global.hdb_schema = {};
     let sandbox = sinon.createSandbox();
 
@@ -88,8 +78,6 @@ describe('Test schema module', function() {
         logger_error_stub = sinon.stub(logger, 'error');
         logger_info_stub = sinon.stub(logger, 'info');
         schema_validator_stub = sinon.stub(schema_validator, 'schema_object');
-        search_by_value_rewire = schema.__set__('p_search_search_by_value', search_by_value_stub);
-        delete_delete_rewire = schema.__set__('p_delete_delete', delete_delete_stub);
         attr_validator_stub = sinon.stub(schema_validator, 'attribute_object');
     });
 
@@ -107,8 +95,6 @@ describe('Test schema module', function() {
         deleteSchemaTableStruc();
         env.setProperty('HDB_ROOT', HDB_ROOT_ORIGINAL);
         global.schema = global_schema_original;
-        search_by_value_rewire();
-        delete_delete_rewire();
         sandbox.restore();
     });
 
