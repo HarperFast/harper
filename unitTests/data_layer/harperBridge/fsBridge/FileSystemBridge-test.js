@@ -87,6 +87,13 @@ const DELETE_OBJ_TEST = {
     ]
 };
 
+const DELETE_BEFORE_OBJ = {
+    operation: 'delete_files_before',
+    date: '2018-06-14',
+    schema: 'fish',
+    table: 'thatFly'
+};
+
 const CREATE_TABLE_OBJ_TEST = {
     operation: 'create_table',
     schema: 'dogsrule',
@@ -367,6 +374,35 @@ describe('Tests for the file system bridge class', () => {
             const error_msg = 'Search error';
             fs_get_data_by_hash_stub.throws(new Error(error_msg));
             let test_error_result = await test_utils.testError(fsBridge.getDataByHash(DELETE_OBJ_TEST), error_msg);
+
+            expect(test_error_result).to.be.true;
+            expect(log_error_spy).to.have.been.calledOnce;
+        });
+    });
+
+    context('Test deleteRecordsBefore method', () => {
+        let fs_delete_records_before_stub = sandbox.stub();
+        let fs_delete_records_before_rw;
+
+        before(() => {
+            fs_delete_records_before_rw = FileSystemBridge.__set__('fsDeleteRecordsBefore', fs_delete_records_before_stub);
+        });
+
+        after(() => {
+            sandbox.restore();
+            fs_delete_records_before_rw();
+        });
+
+        it('Test deleteRecordsBefore method is called and result is as expected', async () => {
+            await fsBridge.deleteRecordsBefore(DELETE_BEFORE_OBJ);
+
+            expect(fs_delete_records_before_stub).to.have.been.calledWith(DELETE_BEFORE_OBJ);
+        });
+
+        it('Test that error is caught, thrown and logged', async () => {
+            const error_msg = 'Error dropping record';
+            fs_delete_records_before_stub.throws(new Error(error_msg));
+            let test_error_result = await test_utils.testError(fsBridge.deleteRecordsBefore(DELETE_BEFORE_OBJ), error_msg);
 
             expect(test_error_result).to.be.true;
             expect(log_error_spy).to.have.been.calledOnce;

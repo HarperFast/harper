@@ -1,15 +1,14 @@
 'use strict';
 
 const fsSearchByHash = require('./fsSearchByHash');
+const getBasePath = require('../fsUtility/getBasePath');
 const log = require('../../../../utility/logging/harper_logger');
 const common_utils = require('../../../../utility/common_utils');
-const env = require('../../../../utility/environment/environmentManager');
 const unlink = require('../../../../utility/fs/unlink');
 const terms = require('../../../../utility/hdbTerms');
 const truncate = require('truncate-utf8-bytes');
 
 const slash_regex = /\//g;
-const BASE_PATH = common_utils.buildFolderPath(env.get(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY), "schema");
 const MAX_BYTES = '255';
 
 module.exports = deleteRecords;
@@ -44,7 +43,7 @@ async function deleteRecords(delete_obj){
     }
 
     let paths = [];
-    let table_path = common_utils.buildFolderPath(BASE_PATH, delete_obj.schema, delete_obj.table);
+    let table_path = common_utils.buildFolderPath(getBasePath(), delete_obj.schema, delete_obj.table);
 
     // Generate the paths for each file to delete
     delete_obj.records.forEach((record)=>{
