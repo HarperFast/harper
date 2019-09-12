@@ -1,7 +1,7 @@
 'use strict';
 
-const hdb_utils = require('../../../../utility/common_utils');
-const insert_validator = require('../../../../validation/insertValidator');
+const hdb_utils = require('../../../utility/common_utils');
+const insert_validator = require('../../../validation/insertValidator');
 
 module.exports = insertUpdateValidate;
 

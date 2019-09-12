@@ -5,22 +5,12 @@ const FileSystemBridge = require('./fsBridge/FileSystemBridge');
 const HeliumBridge = require('./heBridge/HeliumBridge');
 
 const terms = require('../../utility/hdbTerms');
-const heliumUtils = require('../../utility/helium/heliumUtils');
 
 let harper_bridge = undefined;
 
 function getDataStoreType() {
     //Process for parsing correct data store type from HDB license is still TBD
     return terms.HDB_DATA_STORE_TYPES.FILE_SYSTEM;
-}
-
-// TODO: temp code to get helium wired into bridge
-function startHelium() {
-    try {
-        global.hdb_helium = heliumUtils.initializeHelium();
-    } catch(err) {
-        console.log(err);
-    }
 }
 
 function getBridge() {
@@ -35,7 +25,6 @@ function getBridge() {
             harper_bridge = new FileSystemBridge();
             break;
         case terms.HDB_DATA_STORE_TYPES.HELIUM:
-            startHelium();
             harper_bridge = new HeliumBridge();
             break;
         default:
