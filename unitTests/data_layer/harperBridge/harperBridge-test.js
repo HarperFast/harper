@@ -14,7 +14,7 @@ let getDataStoreType_rw;
 const terms = require('../../../utility/hdbTerms');
 
 const FileSystemBridge = require('../../../data_layer/harperBridge/fsBridge/FileSystemBridge');
-const HeliumBridge = require('../../../data_layer/harperBridge/heliumBridge/HeliumBridge');
+const HeliumBridge = require('../../../data_layer/harperBridge/heBridge/HeliumBridge');
 
 const returnFS = () => terms.HDB_DATA_STORE_TYPES.FILE_SYSTEM;
 const returnHelium = () => terms.HDB_DATA_STORE_TYPES.HELIUM;
