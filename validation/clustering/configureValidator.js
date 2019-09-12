@@ -4,6 +4,7 @@ const hdb_utils = require('../../utility/common_utils');
 const fs = require('fs-extra');
 const validate = require('validate.js');
 
+// This function is used to validate existence of paths passed as an argument
 async function doesPathExist(path) {
     let exists = await fs.pathExists(path);
     if(exists) {

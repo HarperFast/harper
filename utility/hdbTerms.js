@@ -40,11 +40,6 @@ const RESTART_CODE_NUM = 24;
 const RESTART_TIMEOUT_MS = 60000;
 const HDB_FILE_PERMISSIONS = 0o700;
 
-// API Message consts
-const OPERATION_FIELD_NAME = 'operation';
-const HDB_USER_FIELD_NAME = 'hdb_user';
-const HDB_AUTH_FIELD_NAME = 'hdb_auth_header';
-
 const HELIUM_URL_PREFIX = 'he://localhost/';
 
 const CLUSTERING_FOLDER_NAME = 'clustering';
@@ -260,6 +255,9 @@ const HDB_SETTINGS_NAMES = {
     INSTALL_USER: 'install_user'
 };
 
+/**
+ * Used for looking up key names by the actual setting field name.
+ */
 const HDB_SETTINGS_NAMES_REVERSE_LOOKUP = {
     PROJECT_DIR: 'PROJECT_DIR_KEY',
     HDB_ROOT: 'HDB_ROOT_KEY',
@@ -418,9 +416,6 @@ module.exports = {
     ClusterMessageObjects,
     CLUSTERING_FOLDER_NAME,
     CLUSTERING_PAYLOAD_FILE_NAME,
-    HELIUM_URL_PREFIX,
-    OPERATION_FIELD_NAME,
-    HDB_USER_FIELD_NAME,
-    HDB_AUTH_FIELD_NAME
+    HELIUM_URL_PREFIX
 };
 

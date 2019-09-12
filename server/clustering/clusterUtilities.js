@@ -270,11 +270,16 @@ async function configureCluster(enable_cluster_json) {
     let field_keys = Object.keys(config_fields);
     for(let i=0; i<field_keys.length; ++i) {
         let orig_field_name = field_keys[i];
+
+        // if the field is not all uppercase in the config_fields object, then add the all uppercase field
+        // and remove the old not uppercase field.
         if(config_fields[orig_field_name.toUpperCase()] === undefined) {
             config_fields[orig_field_name.toUpperCase()] = config_fields[orig_field_name];
             delete config_fields[orig_field_name];
         }
 
+        // if the field is not all uppercase in the config_fields object, then add the all uppercase field
+        // and remove the old not uppercase field.
         if(enable_cluster_json[orig_field_name.toUpperCase()] === undefined) {
             enable_cluster_json[orig_field_name.toUpperCase()] = enable_cluster_json[orig_field_name];
             delete enable_cluster_json[orig_field_name];
