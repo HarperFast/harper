@@ -9,6 +9,7 @@ const path = require('path');
 const hdb_utils = require('../common_utils');
 const terms = require('../hdbTerms');
 
+const INVALID_LICENSE_FORMAT_MSG = 'invalid license key format';
 const LICENSE_HASH_PREFIX = '061183';
 const LICENSE_KEY_DELIMITER = 'mofi25';
 const env = require('../../utility/environment/environmentManager');
@@ -53,7 +54,7 @@ function generateLicense(license_object) {
 
     let obj = {
         exp_date: moment(license_object.exp_date).unix(),
-        storage_type: license_object.storage_type ? license_object.storage_type : terms.LICENSE_VALUES.FILE_SYSTEM,
+        storage_type: license_object.storage_type ? license_object.storage_type : terms.STORAGE_TYPES_ENUM.FILE_SYSTEM,
         api_call: license_object.api_call ? license_object.api_call : terms.LICENSE_VALUES.API_CALL_DEFAULT,
         version: license_object.version ? license_object.version : terms.LICENSE_VALUES.VERSION_DEFAULT
     };
@@ -76,7 +77,7 @@ async function validateLicense(license_key, company) {
         valid_date: false,
         valid_machine: false,
         exp_date: null,
-        storage_type: terms.LICENSE_VALUES.FILE_SYSTEM,
+        storage_type: terms.STORAGE_TYPES_ENUM.FILE_SYSTEM,
         api_call: terms.LICENSE_VALUES.API_CALL_DEFAULT,
         version: terms.LICENSE_VALUES.VERSION_DEFAULT
     };
@@ -99,21 +100,27 @@ async function validateLicense(license_key, company) {
     } catch (e) {
         license_validation_object.valid_license = false;
         license_validation_object.valid_machine = false;
-        let err_msg = new Error(`invalid license key format`);
-        console.error(`invalid license key format`);
-        log.error(err_msg.message);
-        throw err_msg;
+
+        console.error(INVALID_LICENSE_FORMAT_MSG);
+        log.error(INVALID_LICENSE_FORMAT_MSG);
+        throw new Error(INVALID_LICENSE_FORMAT_MSG);
     }
 
     let license_obj;
 
-    try {
-        license_obj = JSON.parse(decrypted);
-        license_validation_object.api_call = license_obj.api_call;
-        license_validation_object.version = license_obj.version;
-        license_validation_object.storage_type = license_obj.storage_type;
-        license_validation_object.exp_date = license_obj.exp_date;
-    } catch(e){
+    if(isNaN(decrypted)){
+        try {
+            license_obj = JSON.parse(decrypted);
+            license_validation_object.api_call = license_obj.api_call;
+            license_validation_object.version = license_obj.version;
+            license_validation_object.storage_type = license_obj.storage_type;
+            license_validation_object.exp_date = license_obj.exp_date;
+        } catch(e){
+            console.error(INVALID_LICENSE_FORMAT_MSG);
+            log.error(INVALID_LICENSE_FORMAT_MSG);
+            throw new Error(INVALID_LICENSE_FORMAT_MSG);
+        }
+    } else {
         license_validation_object.exp_date = decrypted;
     }
 

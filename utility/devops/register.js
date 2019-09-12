@@ -8,7 +8,11 @@ const license = require('../registration/hdb_license');
 const reg_handler = require('../registration/registrationHandler');
 const global_schema = require('../globalSchema');
 const env = require('../environment/environmentManager');
-env.initSync();
+const moment = require('moment');
+if(!env.isInitialized()) {
+    env.initSync();
+}
+const terms = require('../hdbTerms');
 const promisify = require('util').promisify;
 const p_schema_to_global = promisify(global_schema.setSchemaDataToGlobal);
 
@@ -21,10 +25,10 @@ async function register(){
     let license_object = {
         company: 'harperdb.io',
         fingerprint: fingerprint,
-        storage_type: 'helium',
-        api_call: 90000,
-        version: '2.0.0',
-        exp_date: '2020-12-31'
+        storage_type: terms.STORAGE_TYPES_ENUM.HELIUM,
+        api_call: terms.LICENSE_VALUES.API_CALL_DEFAULT,
+        version: terms.LICENSE_VALUES.VERSION_DEFAULT,
+        exp_date: moment().add(1, 'year').format('YYYY-MM-DD')
     };
     console.log('generating license');
     let generated_license = license.generateLicense(license_object);
