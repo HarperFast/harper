@@ -1,5 +1,6 @@
 "use strict";
 
+const common_utils = require('../../../../utility/common_utils');
 const hdb_terms = require('../../../../utility/hdbTerms');
 const search_validator = require('../../../../validation/searchValidator.js');
 const system_schema = require('../../../../json/systemSchema.json');
@@ -17,7 +18,7 @@ const HE_SEARCH_OPERATIONS = {
     STARTS_WITH_NO_CASE: 'startsWithNoCase',
     ENDS_WITH_NO_CASE: 'endsWithNoCase',
     INCLUDES_NO_CASE: 'includesNoCase'
-}
+};
 
 // const file_search = require('../../../../lib/fileSystem/fileSearch');
 // const p_find_ids_by_regex = util.promisify(file_search.findIDsByRegex);
@@ -34,7 +35,7 @@ module.exports = heGetDataByValue;
 // }
 
 
-async function heGetDataByValue(search_object) {
+function heGetDataByValue(search_object) {
     try {
         let validation_error = search_validator(search_object, 'value');
         if (validation_error) {
@@ -60,13 +61,18 @@ async function heGetDataByValue(search_object) {
         const search_values = [search_object.search_value];
 
         const final_get_attrs = evaluateTableGetAttributes(search_object.get_attributes, table_info.attributes);
+
+        //TODO: figure out better way to ensure we get the hash value included in results when not included in get_attrs
+        final_get_attrs.unshift(table_info.hash_attribute);
+
         const data_stores = final_get_attrs.map(attr => heGenerateDataStoreName(table_info.schema, table_info.name, attr));
 
+        // TODO: update helium code below to use new process when it is enabled
         const helium = heliumUtil.initializeHelium();
         const final_attributes_data = helium.searchByValues(value_store, operation, search_values, data_stores);
         heliumUtil.terminateHelium(helium);
 
-        const final_results = consolidateSearchData(search_object.search_value, final_get_attrs, final_attributes_data);
+        const final_results = consolidateSearchData(final_get_attrs, final_attributes_data);
 
         return final_results;
 
@@ -75,6 +81,17 @@ async function heGetDataByValue(search_object) {
     }
 }
 
-function consolidateSearchData(search_attr, attrs_keys, data) {
-    return {};
+function consolidateSearchData(attrs_keys, data) {
+    let final_data = {};
+    attrs_keys.shift();
+
+    data.forEach(row => {
+        const hash = row[1].shift();
+        final_data[hash] = {};
+        row[1].forEach((data, i) => {
+            final_data[hash][attrs_keys[i]] = common_utils.autoCast(data.toString());
+        });
+    });
+
+    return final_data;
 }

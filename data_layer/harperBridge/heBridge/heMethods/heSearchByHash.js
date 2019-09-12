@@ -12,7 +12,7 @@ module.exports = heSearchByHash;
 //   get_attributes:Array // attributes to return with search result
 // }
 
-async function heSearchByHash(search_object) {
+function heSearchByHash(search_object) {
     try {
         const search_results = heGetDataByHash(search_object);
         return Object.values(search_results);
