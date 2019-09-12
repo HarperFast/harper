@@ -30,7 +30,7 @@ const constraints = {
     HDB_ROOT: {
         presence: false,
         format: {
-            pattern: "^\\/|\\/\\/|(\\/[\\w-]+)+$",
+            pattern: "/^\\/|\\/\\/|(\\/[\\w-]+)+$",
             message: "must be a valid unix directory path."
         },
         length: {
@@ -133,7 +133,7 @@ const constraints = {
     LOG_PATH: {
         presence: false,
         format: {
-            pattern: "^\\/|\\/\\/|(\\/[\\w-]+)+$",
+            pattern: "/^\\/|\\/\\/|(\\/[\\w-]+)+$",
             message: "must be a valid unix file path structure."
         },
         length: {

@@ -13,8 +13,7 @@ const CLUSTERING_PORT = 12345;
 const ADD_NODE = {name:'test', host:"localhost", port:12345};
 const SUBSCRIPTIONS_OBJECT = {channel:'dev:dog', publish:true, subscribe:true};
 const REMOVE_NODE = {name:'test'};
-
-const CONFIGURE_SUCCESS_RESPONSE = 'Successfully configured and loaded clustering configuration.';
+const CONFIGURE_SUCCESS_RESPONSE = 'Successfully configured and loaded clustering configuration.  Some configurations may require a restart of HarperDB to take effect.';
 
 describe('Test clusterUtilities' , ()=> {
     describe('Test addNode', () => {

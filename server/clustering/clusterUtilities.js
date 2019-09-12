@@ -19,7 +19,8 @@ const InsertObject = require('../../data_layer/DataLayerObjects').InsertObject;
 const search = require('../../data_layer/search');
 
 const CLUSTER_PORT = env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY);
-const CONFIGURE_SUCCESS_RESPONSE = 'Successfully configured and loaded clustering configuration.';
+const CONFIGURE_SUCCESS_RESPONSE = 'Successfully configured and loaded clustering configuration.  Some configurations may require a restart of HarperDB to take effect.';
+
 //Promisified functions
 const p_delete_delete = util.promisify(del.delete);
 const p_auth_authorize = util.promisify(auth.authorize);
@@ -262,6 +263,17 @@ async function removeNode(remove_json_message) {
 async function configureCluster(enable_cluster_json) {
     log.debug('In configureCluster');
     let {operation, hdb_user, hdb_auth_header, ...config_fields} = enable_cluster_json;
+
+    // We need to make all fields upper case so they will match in the validator.  It is less efficient to do this in its
+    // own loop, but we dont want to update the file unless all fields pass validation, and we can't validate until all
+    // fields are converted.
+    let field_keys = Object.keys(config_fields);
+    for(let i=0; i<field_keys.length; ++i) {
+        let orig_field_name = field_keys[i];
+        config_fields[orig_field_name.toUpperCase()] = config_fields[orig_field_name];
+        delete config_fields[orig_field_name];
+    }
+
     let validation = await configure_validator(config_fields);
     let should_reload = false;
     if (validation) {
@@ -282,7 +294,6 @@ async function configureCluster(enable_cluster_json) {
         }
         if(should_reload) {
             await env_mgr.writeSettingsFileSync(true);
-            //env_mgr.initSync();
             log.info('Completed writing new settings to file and reloading the manager.');
         }
         return CONFIGURE_SUCCESS_RESPONSE;

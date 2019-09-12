@@ -35,7 +35,9 @@ async function validateObjectAsync(object, file_constraints) {
     try {
         validate_result = await validate.async(object, file_constraints, {format: 'flat'});
     } catch(err) {
-        return new Error(validate_result);
+        // unroll the array and make a full error message.
+        let msg = err.join(`,`);
+        return new Error(msg);
     }
     // If no error, just return null so this will behave as the non async version.
     return null;
