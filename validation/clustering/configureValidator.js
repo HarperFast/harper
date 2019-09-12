@@ -133,14 +133,13 @@ const constraints = {
     LOG_PATH: {
         presence: false,
         format: {
-            pattern: "/^\\/|\\/\\/|(\\/[\\w-]+)+$",
-            message: "must be a valid unix file path structure."
+            pattern: "^((?!.*\\/\\/.*)(?!.*\\/ .*)\\/{1}([^\\\\(){}:\\*\\?<>\\|\\\"\\'])+\\.(log))$",
+            message: "must be a valid unix file path structure to a file ending in .log."
         },
         length: {
             maximum: 250,
             tooLong: 'cannot exceed 250 characters'
-        },
-        doesPathExist
+        }
     },
     LOG_DAILY_ROTATE: {
         presence: false,
@@ -202,10 +201,6 @@ const constraints = {
         format: {
             pattern: "^[a-zA-Z0-9_]*$",
             message: "must be alpha numeric"
-        },
-        length: {
-            maximum: 250,
-            tooLong: 'cannot exceed 250 characters'
         }
     },
     CLUSTERING_USER: {

@@ -270,8 +270,15 @@ async function configureCluster(enable_cluster_json) {
     let field_keys = Object.keys(config_fields);
     for(let i=0; i<field_keys.length; ++i) {
         let orig_field_name = field_keys[i];
-        config_fields[orig_field_name.toUpperCase()] = config_fields[orig_field_name];
-        delete config_fields[orig_field_name];
+        if(config_fields[orig_field_name.toUpperCase()] === undefined) {
+            config_fields[orig_field_name.toUpperCase()] = config_fields[orig_field_name];
+            delete config_fields[orig_field_name];
+        }
+
+        if(enable_cluster_json[orig_field_name.toUpperCase()] === undefined) {
+            enable_cluster_json[orig_field_name.toUpperCase()] = enable_cluster_json[orig_field_name];
+            delete enable_cluster_json[orig_field_name];
+        }
     }
 
     let validation = await configure_validator(config_fields);

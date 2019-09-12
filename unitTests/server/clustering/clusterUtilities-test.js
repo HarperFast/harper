@@ -412,4 +412,42 @@ describe('Test configureCluster', () => {
         }
         assert.strictEqual(result instanceof Error, true, 'Expected error');
     });
+    it(`Test nominal test for NODE_NAME, all numbers`, async () => {
+        let test_msg = {
+            "operation": "configure_cluster",
+            "NODE_NAME": 12314123123
+        };
+        let result = await cluster_utils.configureCluster(test_msg);
+        assert.strictEqual(result, CONFIGURE_SUCCESS_RESPONSE, 'Expected success message');
+    });
+    it(`Test nominal test for NODE_NAME, mix of numbers, chars`, async () => {
+        let test_msg = {
+            "operation": "configure_cluster",
+            "NODE_NAME": "1231412de213"
+        };
+        let result = await cluster_utils.configureCluster(test_msg);
+        assert.strictEqual(result, CONFIGURE_SUCCESS_RESPONSE, 'Expected success message');
+    });
+    it(`Test nominal test lower case field being replaced with upper case`, async () => {
+        let field_name = "node_name";
+        let test_msg = {
+            "operation": "configure_cluster",
+            "node_name": "1231412de213"
+        };
+        let result = await cluster_utils.configureCluster(test_msg);
+        assert.strictEqual(result, CONFIGURE_SUCCESS_RESPONSE, 'Expected success message');
+        assert.strictEqual(test_msg[field_name], undefined, 'expected lower case field to be deleted');
+        assert.strictEqual(test_msg[field_name.toUpperCase()], "1231412de213", 'expected lower case field to be deleted');
+    });
+    it(`Test nominal test mix of lower and upper case field being replaced with upper case`, async () => {
+        let field_name = "nodE_nAme";
+        let test_msg = {
+            "operation": "configure_cluster",
+            "nodE_nAme": "1231412de213"
+        };
+        let result = await cluster_utils.configureCluster(test_msg);
+        assert.strictEqual(result, CONFIGURE_SUCCESS_RESPONSE, 'Expected success message');
+        assert.strictEqual(test_msg[field_name], undefined, 'expected lower case field to be deleted');
+        assert.strictEqual(test_msg[field_name.toUpperCase()], "1231412de213", 'expected lower case field to be deleted');
+    });
 });
