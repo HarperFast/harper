@@ -6,7 +6,7 @@ const logger = require('../../../../utility/logging/harper_logger');
 const util = require('util');
 
 const consolidateSearchData = require('../fsUtility/consolidateSearchData');
-const evaluateTableGetAttributes = require('../fsUtility/evaluateTableGetAttributes');
+const evaluateTableGetAttributes = require('../../bridgeUtility/evaluateTableGetAttributes');
 const getAttributeFileValues = require('../fsUtility/getAttributeFileValues');
 const getBasePath = require('../fsUtility/getBasePath');
 
