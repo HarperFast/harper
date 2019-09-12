@@ -33,10 +33,8 @@ function processRows(insert_obj, attributes, schema_table) {
         rows.push([records[x][schema_table.hash_attribute],row_records]);
     }
 
-    let data_wrapper = {
+    return {
         datastores,
         rows
     };
-
-    return data_wrapper;
 }
