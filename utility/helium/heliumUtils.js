@@ -20,21 +20,35 @@ module.exports = {
 };
 
 function initializeHelium(){
-    if(utils.isEmptyOrZeroLength(env.get('HELIUM_VOLUME_PATH'))){
+    if(global.hdb_helium !== undefined && global.hdb_helium instanceof harperdb_helium){
+        return global.hdb_helium;
+    }
+
+    let volume_path = env.get('HELIUM_VOLUME_PATH');
+    //there is an instance if you do not have a property defined the Properties Reader library will return the string 'null'
+    if(utils.isEmptyOrZeroLength(volume_path) || volume_path === 'null'){
         throw new Error('HELIUM_VOLUME_PATH must be defined in config settings.');
     }
 
-    let helium = new harperdb_helium(false);
-    let start_result = helium.startSession(terms.HELIUM_URL_PREFIX + env.get('HELIUM_VOLUME_PATH'));
+    let start_result;
+    try {
+        global.hdb_helium = new harperdb_helium(false);
+        start_result = global.hdb_helium.startSession(terms.HELIUM_URL_PREFIX + env.get('HELIUM_VOLUME_PATH'));
+    } catch(e){
+        log.error('Error attempting to start Helium: ' + e);
+        throw e;
+    }
+
     if(!_.isEqual(start_result, START_SESSION_OK)){
         throw new Error(`Unable to access Helium volume with error code: ${start_result[1]}`);
     }
 
-    return helium;
+    return global.hdb_helium;
 }
 
 function terminateHelium(helium){
     helium.stopSession(terms.HELIUM_URL_PREFIX + env.get('HELIUM_VOLUME_PATH'));
+    delete global.hdb_helium;
 }
 
 function createSystemDataStores(){
