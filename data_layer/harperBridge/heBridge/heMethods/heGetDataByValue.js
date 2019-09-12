@@ -20,9 +20,6 @@ const HE_SEARCH_OPERATIONS = {
     INCLUDES_NO_CASE: 'includesNoCase'
 };
 
-// const file_search = require('../../../../lib/fileSystem/fileSearch');
-// const p_find_ids_by_regex = util.promisify(file_search.findIDsByRegex);
-
 module.exports = heGetDataByValue;
 
 // Search Object

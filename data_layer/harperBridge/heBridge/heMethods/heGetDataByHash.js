@@ -5,6 +5,7 @@ const common_utils = require('../../../../utility/common_utils');
 
 const evaluateTableGetAttributes = require('../../bridgeUtility/evaluateTableGetAttributes');
 const heGetAttributeValues = require('../heUtility/heGetAttributeValues');
+const heGenerateDataStoreName = require('../heUtility/heGenerateDataStoreName');
 
 module.exports = heGetDataByHash;
 
@@ -26,7 +27,7 @@ function heGetDataByHash(search_object) {
         const final_get_attrs = evaluateTableGetAttributes(search_object.get_attributes, table_info.attributes);
 
         const hash_values = search_object.hash_values.map(hash => `${hash}`)
-        const data_stores = final_get_attrs.map(attr => `${table_info.schema}/${table_info.name}/${attr}`);
+        const data_stores = final_get_attrs.map(attr => heGenerateDataStoreName(table_info.schema, table_info.name, attr));
 
         const attributes_data = heGetAttributeValues(hash_values, data_stores);
         const final_results = consolidateSearchData(final_get_attrs, attributes_data);
