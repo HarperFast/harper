@@ -12,7 +12,8 @@
 const validate = require('validate.js');
 
 module.exports = {
-    validateObject: validateObject
+    validateObject,
+    validateObjectAsync
 };
 
 function validateObject(object, file_constraints) {
@@ -20,8 +21,22 @@ function validateObject(object, file_constraints) {
         return new Error('validateObject parameters were null');
     }
 
-    validate.async(object, file_constraints, {format: 'flat'}).then( (validate_result) => {
-        if (!validate_result) return null;
+    let validate_result = validate(object, file_constraints, {format: 'flat'});
+    if (!validate_result) return null;
+    return new Error(validate_result);
+}
+
+async function validateObjectAsync(object, file_constraints) {
+    if(!object || !file_constraints) {
+        return new Error('validateObject parameters were null');
+    }
+
+    let validate_result = undefined;
+    try {
+        validate_result = await validate.async(object, file_constraints, {format: 'flat'});
+    } catch(err) {
         return new Error(validate_result);
-    });
+    }
+    // If no error, just return null so this will behave as the non async version.
+    return null;
 }

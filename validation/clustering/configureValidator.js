@@ -221,9 +221,8 @@ const constraints = {
     }
 };
 
-module.exports = function (config_object) {
+module.exports = async function (config_object) {
     // ensure all fields specified are a valid setting
-
     let msg_keys = Object.keys(config_object);
     for(let i=0; i<msg_keys.length; ++i) {
         let curr = msg_keys[i];
@@ -231,6 +230,11 @@ module.exports = function (config_object) {
             return new Error(`Invalid config setting specified: ${curr}`);
         }
     }
-
-    return validator.validateObject(config_object, constraints);
+    let result = undefined;
+    try {
+        result = await validator.validateObjectAsync(config_object, constraints);
+    } catch(err) {
+        result = err;
+    }
+    return result;
 };

@@ -7,11 +7,14 @@ const cluster_utils = rewire('../../../server/clustering/clusterUtilities');
 const cluster_utils_node_validation = cluster_utils.__get__('nodeValidation');
 const test_util = require('../../test_utils');
 test_util.preTestPrep();
+const path = require(`path`);
 
 const CLUSTERING_PORT = 12345;
 const ADD_NODE = {name:'test', host:"localhost", port:12345};
 const SUBSCRIPTIONS_OBJECT = {channel:'dev:dog', publish:true, subscribe:true};
 const REMOVE_NODE = {name:'test'};
+
+const CONFIGURE_SUCCESS_RESPONSE = 'Successfully configured and loaded clustering configuration.';
 
 describe('Test clusterUtilities' , ()=> {
     describe('Test addNode', () => {
@@ -320,12 +323,94 @@ describe('Test clusterUtilities' , ()=> {
     });
 });
 
+/**
+ * Since there are common validators across most settings values, only testing a subset of the validators.
+ */
 describe('Test configureCluster', () => {
-    it(`Test nominal project dir`, async () => {
+    it(`Test nominal project dir path`, async () => {
         let test_msg = {
             "operation": "configure_cluster",
-            "PROJECT_DIR": "/Users/elipalmer/harperdb/bin"
+            "PROJECT_DIR": __dirname
         };
         let result = await cluster_utils.configureCluster(test_msg);
+        assert.strictEqual(result, CONFIGURE_SUCCESS_RESPONSE, 'Expected success message');
+    });
+    it(`Test bad windows path`, async () => {
+        let test_msg = {
+            "operation": "configure_cluster",
+            "PROJECT_DIR": "\\LOLWindows"
+        };
+        let result = undefined;
+        try {
+            result = await cluster_utils.configureCluster(test_msg);
+        } catch(err) {
+            result = err;
+        }
+        assert.strictEqual(result instanceof Error, true, 'Expected error');
+    });
+    it(`Test nominal integer validation for HTTP Port`, async () => {
+        let test_msg = {
+            "operation": "configure_cluster",
+            "HTTP_PORT": "12345"
+        };
+        let result = await cluster_utils.configureCluster(test_msg);
+        assert.strictEqual(result, CONFIGURE_SUCCESS_RESPONSE, 'Expected success message');
+    });
+    it(`Test http port non integer`, async () => {
+        let test_msg = {
+            "operation": "configure_cluster",
+            "HTTP_PORT": "asdf"
+        };
+        let result = undefined;
+        try {
+            result = await cluster_utils.configureCluster(test_msg);
+        } catch(err) {
+            result = err;
+        }
+        assert.strictEqual(result instanceof Error, true, 'Expected error');
+    });
+    it(`Test nominal pem file path`, async () => {
+        let cert_path = path.join(__dirname, `envDir`, `utilities`, `keys`, 'certificate.pem');
+        let test_msg = {
+            "operation": "configure_cluster",
+            "CERTIFICATE": `${cert_path}`
+        };
+        let result = await cluster_utils.configureCluster(test_msg);
+        assert.strictEqual(result, CONFIGURE_SUCCESS_RESPONSE, 'Expected success message');
+    });
+    it(`Test non pem file path`, async () => {
+        let cert_path = path.join(__dirname, `settings.test`);
+        let test_msg = {
+            "operation": "configure_cluster",
+            "CERTIFICATE": `${cert_path}`
+        };
+        let result = undefined;
+        try {
+            result = await cluster_utils.configureCluster(test_msg);
+        } catch(err) {
+            result = err;
+        }
+        assert.strictEqual(result instanceof Error, true, 'Expected error');
+    });
+    it(`Test nominal true false validation for ALLOW_SELF_SIGNED_SSL_CERTS`, async () => {
+        let test_msg = {
+            "operation": "configure_cluster",
+            "ALLOW_SELF_SIGNED_SSL_CERTS": `true`
+        };
+        let result = await cluster_utils.configureCluster(test_msg);
+        assert.strictEqual(result, CONFIGURE_SUCCESS_RESPONSE, 'Expected success message');
+    });
+    it(`Test invalid true false validation for ALLOW_SELF_SIGNED_SSL_CERTS`, async () => {
+        let test_msg = {
+            "operation": "configure_cluster",
+            "ALLOW_SELF_SIGNED_SSL_CERTS": 1234
+        };
+        let result = undefined;
+        try {
+            result = await cluster_utils.configureCluster(test_msg);
+        } catch(err) {
+            result = err;
+        }
+        assert.strictEqual(result instanceof Error, true, 'Expected error');
     });
 });

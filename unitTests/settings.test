@@ -1,9 +1,11 @@
 PRIVATE_KEY=/Users/elipalmer/harperdb/unitTests/envDir/utility/keys/privateKey.pem
-CERTIFICATE=/Users/elipalmer/harperdb/unitTests/envDir/utility/keys/certificate.pem
+CERTIFICATE=/Users/elipalmer/harperdb/unitTests/server/clustering/envDir/utilities/keys/certificate.pem
 LOGGER=1
 LOG_LEVEL=debug
 LOG_PATH=/Users/elipalmer/harperdb/unitTests/envDir/log/hdb_log.log
 LOG_DAILY_ROTATE=false
-PROJECT_DIR=/Users/elipalmer/harperdb/bin
+PROJECT_DIR=/Users/elipalmer/harperdb/unitTests/server/clustering
 CLUSTERING=TRUE
 NODE_NAME=test_node
+HTTP_PORT=12345
+ALLOW_SELF_SIGNED_SSL_CERTS=true
