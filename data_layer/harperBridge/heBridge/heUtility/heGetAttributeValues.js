@@ -2,7 +2,7 @@
 
 // const common_utils = require('../../../../utility/common_utils');
 // const hdb_terms = require('../../../../utility/hdbTerms');
-const heliumUtil = require('../../../../utility/helium/heliumUtils');
+//const heliumUtil = require('../../../../utility/helium/heliumUtils');
 
 module.exports = heGetAttributeValues;
 
