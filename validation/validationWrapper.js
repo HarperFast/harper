@@ -20,7 +20,8 @@ function validateObject(object, file_constraints) {
         return new Error('validateObject parameters were null');
     }
 
-    let validate_result = validate(object, file_constraints, {format: 'flat'});
-    if (!validate_result) return null;
-    return new Error(validate_result);
+    validate.async(object, file_constraints, {format: 'flat'}).then( (validate_result) => {
+        if (!validate_result) return null;
+        return new Error(validate_result);
+    });
 }

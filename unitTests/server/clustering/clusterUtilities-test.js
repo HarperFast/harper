@@ -319,3 +319,13 @@ describe('Test clusterUtilities' , ()=> {
         });
     });
 });
+
+describe('Test configureCluster', () => {
+    it(`Test nominal project dir`, async () => {
+        let test_msg = {
+            "operation": "configure_cluster",
+            "PROJECT_DIR": "/Users/elipalmer/harperdb/bin"
+        };
+        let result = await cluster_utils.configureCluster(test_msg);
+    });
+});

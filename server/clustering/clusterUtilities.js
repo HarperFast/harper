@@ -261,22 +261,20 @@ async function removeNode(remove_json_message) {
  */
 async function configureCluster(enable_cluster_json) {
     log.debug('In configureCluster');
-    let validation = configure_validator(enable_cluster_json);
+    let {operation, hdb_user, hdb_auth_header, ...config_fields} = enable_cluster_json;
+    let validation = await configure_validator(config_fields);
     let should_reload = false;
-    if(validation) {
+    if (validation) {
         log.error(`Validation error in configureCluster validation. ${validation}`);
         throw new Error(validation);
     }
+
     try {
-        let msg_keys = Object.keys(enable_cluster_json);
-        for(let i=0; i<msg_keys; ++i) {
+        let msg_keys = Object.keys(config_fields);
+        for(let i=0; i<msg_keys.length; ++i) {
             let curr = msg_keys[i];
-            if(curr && curr === terms.OPERATION_FIELD_NAME) {
-                continue;
-            }
-            let temp = terms.OPERATIONS_ENUM[curr];
-            let temp_val = enable_cluster_json[curr];
-            if(curr && !hdb_utils.isEmptyOrZeroLength(terms.OPERATIONS_ENUM[curr])) {
+
+            if(curr && !hdb_utils.isEmptyOrZeroLength(terms.HDB_SETTINGS_NAMES_REVERSE_LOOKUP[curr])) {
                 log.info(`Setting property ${curr} to value ${enable_cluster_json[curr]}`);
                 env_mgr.setProperty(curr, enable_cluster_json[curr]);
                 should_reload = true;
@@ -284,7 +282,7 @@ async function configureCluster(enable_cluster_json) {
         }
         if(should_reload) {
             await env_mgr.writeSettingsFileSync(true);
-            env_mgr.initSync();
+            //env_mgr.initSync();
             log.info('Completed writing new settings to file and reloading the manager.');
         }
         return CONFIGURE_SUCCESS_RESPONSE;
