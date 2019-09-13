@@ -38,6 +38,7 @@ const DATA_ATTR_TEST = [
 ];
 
 describe('Tests for bridge utility module checkForNewAttr', () => {
+
     it('Test function returns early if data attributes empty', () => {
         let result = checkForNewAttributes(TABLE_SCHEMA_TEST, []);
 

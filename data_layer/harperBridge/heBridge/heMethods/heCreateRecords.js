@@ -22,10 +22,17 @@ module.exports = createRecords;
  * @returns {Promise<{skipped_hashes: *, written_hashes: *, schema_table: *}>}
  */
 async function createRecords(insert_obj) {
-    let { schema_table, attributes } = insertUpdateValidate(insert_obj);
-    let { datastores, rows } = heProcessRows(insert_obj, attributes, schema_table);
-    await checkAttributes(insert_obj.hdb_auth_header, schema_table, attributes);
     let he_response;
+    let datastores;
+    let rows;
+
+    try {
+        let { schema_table, attributes } = insertUpdateValidate(insert_obj);
+        let { datastores, rows } = heProcessRows(insert_obj, attributes, schema_table);
+        checkAttributes(insert_obj.hdb_auth_header, schema_table, attributes);
+    } catch(err) {
+        throw err;
+    }
 
     try {
         he_response = hdb_helium.insertRows(datastores, rows);
