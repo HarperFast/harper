@@ -24,8 +24,9 @@ const search = require('../../data_layer/search');
 
 const DELETE_MOD_BASE_PATH_NAME = 'BASE_PATH';
 const TEST_FS_DIR = getMockFSPath();
+const SCHEMA_DIR_NAME = 'schema';
 const TEST_SCHEMA = 'test';
-const TEST_SCHEMA_PATH = path.join(TEST_FS_DIR, TEST_SCHEMA);
+const TEST_SCHEMA_PATH = path.join(TEST_FS_DIR, SCHEMA_DIR_NAME, TEST_SCHEMA);
 const HASH_ATTRIBUTE = 'id';
 const BAD_DIR_PATH = path.join(TEST_FS_DIR, '/tmp/zaphodbeeblebrox');
 let TEST_TABLE_DOG_PATH;
@@ -93,7 +94,6 @@ function setup() {
 describe('Test DELETE', () => {
     before(() => {
         search_stub.yields(null, TEST_DATA_DOG);
-        delete_rewire.__set__(DELETE_MOD_BASE_PATH_NAME, TEST_FS_DIR);
         tearDownMockFS();
     });
 

@@ -144,7 +144,6 @@ function searchByConditions(search_object, callback){
 
         let table_schema = global.hdb_schema[search_object.schema][search_object.table];
 
-        //let patterns = condition_patterns.createPatterns(search_object.condition, table_schema, base_path);
         let get_attributes = search_object.get_attributes;
         if (search_object.supplemental_fields && search_object.supplemental_fields.length > 0) {
             get_attributes = _.uniqBy(search_object.get_attributes.concat(search_object.supplemental_fields), 'alias');
