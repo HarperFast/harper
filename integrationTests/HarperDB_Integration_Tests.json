@@ -4018,7 +4018,7 @@
 											"pm.test(\"Receives invalid SQL error msg\", function () {",
 											"    const errorMsg = pm.response.json().error;",
 											"    pm.expect(errorMsg).to.equal(",
-											"        \"Error: Attribute name can only contain alpha numeric characters or underscores\"",
+											"        \"Attribute name can only contain alpha numeric characters or underscores\"",
 											"    );",
 											"});"
 										],
@@ -4140,7 +4140,7 @@
 											"pm.test(\"Receives invalid SQL error msg\", function () {",
 											"    const errorMsg = pm.response.json().error;",
 											"    pm.expect(errorMsg).to.equal(",
-											"        \"Error: Attribute name can only contain alpha numeric characters or underscores\"",
+											"        \"Attribute name can only contain alpha numeric characters or underscores\"",
 											"    );",
 											"});"
 										],
@@ -4262,7 +4262,7 @@
 											"pm.test(\"Receives invalid SQL error msg\", function () {",
 											"    const errorMsg = pm.response.json().error;",
 											"    pm.expect(errorMsg).to.equal(",
-											"        \"Error: Attribute name can only contain alpha numeric characters or underscores\"",
+											"        \"Attribute name can only contain alpha numeric characters or underscores\"",
 											"    )",
 											"});"
 										],
@@ -7162,7 +7162,7 @@
 											"pm.test(\"Receives invalid attribute name error msg\", function () {",
 											"    const errorMsg = pm.response.json().error;",
 											"    pm.expect(errorMsg).to.equal(",
-											"        \"Error: Attribute name can only contain alpha numeric characters or underscores\"",
+											"        \"Attribute name can only contain alpha numeric characters or underscores\"",
 											"    )",
 											"});"
 										],
@@ -7284,7 +7284,7 @@
 											"pm.test(\"Receives invalid attribute name error msg\", function () {",
 											"    const errorMsg = pm.response.json().error;",
 											"    pm.expect(errorMsg).to.equal(",
-											"        \"Error: Attribute name can only contain alpha numeric characters or underscores\"",
+											"        \"Attribute name can only contain alpha numeric characters or underscores\"",
 											"    )",
 											"});"
 										],
@@ -7406,7 +7406,7 @@
 											"pm.test(\"Receives invalid attribute name error msg\", function () {",
 											"    const errorMsg = pm.response.json().error;",
 											"    pm.expect(errorMsg).to.equal(",
-											"        \"Error: Attribute name can only contain alpha numeric characters or underscores\"",
+											"        \"Attribute name can only contain alpha numeric characters or underscores\"",
 											"    )",
 											"});"
 										],
