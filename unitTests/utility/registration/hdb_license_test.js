@@ -233,6 +233,28 @@ describe(`Test validateLicense`, function () {
         assert.equal(validation.valid_license, true, 'license validation should be valid');
         assert.equal(validation.valid_machine, true, 'machine validation should be valid');
     });
+    it('Nominal with fs styorage_type, validate valid license with pass', async function ( ) {
+        // rewire hdb_license instance locally to keep internal cipher const fresh from another test
+        const hdb_license = rewire('../../../utility/registration/hdb_license');
+        const license_generator = rewire('../../../utility/devops/licenseGenerator');
+        let licenseKeyObject = { exp_date: moment().add(1, 'day').format('YYYY-MM-DD'), company: 'hdb',
+            storage_type: 'fs',
+            api_call: 90000,
+            version: '2.0.0'};
+
+        let err = null;
+        let fingerprint = await hdb_license.generateFingerPrint().catch((e) => {
+            err = e;
+        }) ;
+        licenseKeyObject.fingerprint = fingerprint;
+        let license = license_generator.generateLicense(licenseKeyObject);
+        let validation = await hdb_license.validateLicense(license, 'hdb').catch((e) => {
+            throw e;
+        });
+        assert.equal(validation.valid_date, true, 'date validation should be valid');
+        assert.equal(validation.valid_license, true, 'license validation should be valid');
+        assert.equal(validation.valid_machine, true, 'machine validation should be valid');
+    });
     it('Pass expired license, expect invalid date from validation', async function () {
         // rewire hdb_license instance locally to keep internal cipher const fresh from another test
         const hdb_license = rewire('../../../utility/registration/hdb_license');
