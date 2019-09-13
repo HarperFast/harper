@@ -38,12 +38,13 @@ const {
 
 const MOCK_FS_ARGS_ERROR_MSG = "Null, undefined, and/or empty string argument values not allowed when building mock HDB FS for testing";
 const UNIT_TEST_DIR = __dirname;
-const TEST_FS_DIR = "envDir/test_schema";
+const ENV_DIR_NAME = 'envDir';
 const ATTR_PATH_OBJECT = {
     "files": [],
     "journals": [],
     "system": []
 };
+const SCHEMA_DIR_NAME = 'schema';
 
 /**
  * This needs to be called near the top of our unit tests.  Most will fail when loading harper modules due to the
@@ -148,7 +149,8 @@ function cleanUpDirectories(target_path) {
  * @returns String representing the path value to the mock file system directory
  */
 function getMockFSPath() {
-    return path.join(UNIT_TEST_DIR, TEST_FS_DIR);
+    env.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, path.join(UNIT_TEST_DIR, ENV_DIR_NAME));
+    return path.join(UNIT_TEST_DIR, ENV_DIR_NAME);
 }
 
 /**
@@ -181,7 +183,7 @@ function validateMockFSArgs(argArray) {
  *          entries associated with the data passed in.
  * TODO: The method does not currently return paths for the system schema directory.
  */
-function createMockFS(hash_attribute, schema, table, test_data) {
+function createMockFS(hash_attribute, schema, table, test_data, set_global_boolean) {
     try {
         validateMockFSArgs([hash_attribute, schema, table, test_data]);
 
@@ -189,8 +191,13 @@ function createMockFS(hash_attribute, schema, table, test_data) {
         const test_base_path = getMockFSPath();
         makeTheDir(test_base_path);
 
+        // make schema directory to mimic actual file system
+
+        const test_base_schema_path = path.join(test_base_path, SCHEMA_DIR_NAME);
+        makeTheDir(test_base_schema_path);
+
         //create schema
-        const schema_path = path.join(test_base_path, schema);
+        const schema_path = path.join(test_base_schema_path, schema);
         makeTheDir(schema_path);
 
         //create table
@@ -272,15 +279,29 @@ function tearDownMockFS() {
     global.hdb_schema = undefined;
 }
 
+function tearDownMockFSSystem() {
+    let mock_system_path = path.join(UNIT_TEST_DIR, ENV_DIR_NAME, 'system');
+    cleanUpDirectories(mock_system_path);
+    global.hdb_schema = undefined;
+}
+
+/**
+ * Accepts a
+ * @param system_schema_object
+ */
+function createMockSystemSchema(system_schema_object) {
+
+}
+
 /**
  * This method is used in `createMockFS()` to create the mock FS structure for the schema > system directory
- * TODO: Right now, this method does not return paths to specific directories or files being created.  This functionalty
+ * TODO: Right now, this method does not return paths to specific directories or files being created.  This functionality
  ** should be added as when needed in future tests in the `system` array value returned from `createMockFS()`.
  */
 
 function createMockSystemSchema(hash_attribute, schema, table, attributes_keys) {
     const test_base_path = getMockFSPath();
-    const test_system_base_path = path.join(test_base_path, terms.SYSTEM_SCHEMA_NAME);
+    const test_system_base_path = path.join(test_base_path, SCHEMA_DIR_NAME, terms.SYSTEM_SCHEMA_NAME);
 
     // create default dir structure
     makeTheDir(test_system_base_path);
@@ -663,6 +684,22 @@ function sortAsc(data, sort_by) {
     return data.sort((a, b) => a - b);
 }
 
+function generateAPIMessage(msg_type_enum) {
+    let generated_msg = undefined;
+    switch(msg_type_enum) {
+        case terms.OPERATIONS_ENUM.CREATE_SCHEMA:
+            break;
+        case terms.OPERATIONS_ENUM.CREATE_TABLE:
+            break;
+        case terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE:
+            break;
+
+        default:
+            break;
+    }
+    return generated_msg;
+}
+
 module.exports = {
     changeProcessToBinDir,
     deepClone,
@@ -670,10 +707,14 @@ module.exports = {
     preTestPrep,
     cleanUpDirectories,
     createMockFS,
+    createMockSystemSchema,
+    setGlobalSchema,
     tearDownMockFS,
+    tearDownMockFSSystem,
     makeTheDir,
     getMockFSPath,
     generateMockAST,
     sortAsc,
-    sortDesc
+    sortDesc,
+    generateAPIMessage
 };

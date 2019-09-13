@@ -79,7 +79,7 @@ describe('Test AuthMiddleware eval_function', function() {
     it('Test evalFunction match originator', () => {
         let request = test_util.deepClone(TEST_REQUEST);
         request.data[ORIGINATOR_NAME] = {};
-        request.data[ORIGINATOR_NAME][env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)] = true;
+        request.data[ORIGINATOR_NAME][env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)] = types.ORIGINATOR_SET_VALUE;
         request.socket.id = ORIGINATOR;
         let result = test_instance.eval_function(request, next_stub);
         assert.notEqual(next_stub.calledOnce, true, 'next should never be called by MiddlewareIF types');

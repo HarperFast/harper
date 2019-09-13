@@ -462,6 +462,7 @@ function sendTransactionToSocketCluster(channel, transaction, originator) {
         if(!data.__originator) {
             data.__originator = {};
         }
+        data.__transacted = true;
         if(originator) {
             data.__originator[originator] = '';
         }
