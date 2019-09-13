@@ -9,11 +9,11 @@ const log = require('../../../../utility/logging/harper_logger');
 const hdb_terms = require('../../../../utility/hdbTerms');
 const signalling = require('../../../../utility/signalling');
 const heliumUtils = require('../../../../utility/helium/heliumUtils');
-let hdb_helium = heliumUtils.initializeHelium();
+const hdb_helium = heliumUtils.initializeHelium();
 
 const ATTRIBUTE_ALREADY_EXISTS = 'attribute already exists';
 
-module.exports = createRecords;
+module.exports = heCreateRecords;
 
 /**
  * Orchestrates the insertion of data into Helium and the creation of new attributes/datastores
@@ -21,34 +21,24 @@ module.exports = createRecords;
  * @param insert_obj
  * @returns {Promise<{skipped_hashes: *, written_hashes: *, schema_table: *}>}
  */
-async function createRecords(insert_obj) {
-    let he_response;
-    let datastores;
-    let rows;
-
+async function heCreateRecords(insert_obj) {
     try {
         let { schema_table, attributes } = insertUpdateValidate(insert_obj);
         let { datastores, rows } = heProcessRows(insert_obj, attributes, schema_table);
         checkAttributes(insert_obj.hdb_auth_header, schema_table, attributes);
+        let he_response = hdb_helium.insertRows(datastores, rows);
+        let { written_hashes, skipped_hashes } = processHeliumResponse(he_response);
+
+        let return_obj = {
+            written_hashes,
+            skipped_hashes,
+            schema_table
+        };
+
+        return return_obj;
     } catch(err) {
         throw err;
     }
-
-    try {
-        he_response = hdb_helium.insertRows(datastores, rows);
-    } catch(err) {
-        throw err;
-    }
-
-    let { written_hashes, skipped_hashes } = processHeliumResponse(he_response);
-
-    let return_obj = {
-        written_hashes,
-        skipped_hashes,
-        schema_table
-    };
-
-    return return_obj;
 }
 
 /**

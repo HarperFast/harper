@@ -3,7 +3,7 @@
 const log = require('../../../utility/logging/harper_logger');
 const BridgeMethods = require("../BridgeMethods.js");
 const heCreateRecords = require('./heMethods/heCreateRecords');
-const heCreateDatastore = require('./heMethods/heCreateDatastores');
+const heCreateAttribute = require('./heMethods/heCreateAttribute');
 // const heCreateSchema = require('./heMethods/heCreateSchema');
 // const heDeleteRecords = require('./heMethods/heDeleteRecords');
 const heGetDataByHash = require('./heMethods/heGetDataByHash');
@@ -27,7 +27,7 @@ class HeliumBridge extends BridgeMethods {
 
     async createAttribute(create_attribute_obj) {
         try {
-            return heCreateDatastore(create_attribute_obj);
+            return heCreateAttribute(create_attribute_obj);
         } catch(err) {
             log.error(err);
             throw err;
