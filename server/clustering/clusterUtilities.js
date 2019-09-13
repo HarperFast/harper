@@ -186,7 +186,7 @@ async function updateNode(update_node) {
         throw new Error(err);
     }
 
-    if (!hdb_utils.isEmptyOrZeroLength(results.skipped_hashes)) {
+    if(!hdb_utils.isEmptyOrZeroLength(results.skipped_hashes)) {
         log.info(`Node '${update_node.name}' does not exist. Operation aborted.`);
         throw new Error(`Node '${update_node.name}' does not exist. Operation aborted.`);
     }
@@ -342,7 +342,7 @@ function getClusterStatus() {
         status_obj.my_node_port = global.cluster_server.socket_server.port;
         status_obj.my_node_name = global.cluster_server.socket_server.name;
         log.debug(`There are ${global.cluster_server.socket_client.length} socket clients.`);
-        for (let conn of global.cluster_server.socket_client) {
+        for(let conn of global.cluster_server.socket_client) {
             let new_status = new ClusterStatusObject.ConnectionStatus();
             new_status.direction = conn.direction;
             if (conn.other_node) {
@@ -418,13 +418,13 @@ function clusterMessageHandler(msg) {
                 break;
             case terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STARTED:
                 log.trace(`Got child started event`);
-                if (started_forks[msg.pid]) {
+                if(started_forks[msg.pid]) {
                     log.warn(`Got a duplicate child started event for pid ${msg.pid}`);
                 } else {
                     child_event_count++;
                     log.info(`Received ${child_event_count} child started event(s).`);
                     started_forks[msg.pid] = true;
-                    if (Object.keys(started_forks).length === global.forks.length) {
+                    if(Object.keys(started_forks).length === global.forks.length) {
                         //all children are started, kick off enterprise.
                         child_event_count = 0;
                         try {
@@ -439,16 +439,16 @@ function clusterMessageHandler(msg) {
                 break;
             case terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STOPPED:
                 log.trace(`Got child stopped event`);
-                if (started_forks[msg.pid] === false) {
+                if(started_forks[msg.pid] === false) {
                     log.warn(`Got a duplicate child started event for pid ${msg.pid}`);
                 } else {
                     child_event_count++;
                     log.info(`Received ${child_event_count} child stopped event(s).`);
                     log.info(`started forks: ${util.inspect(started_forks)}`);
                     started_forks[msg.pid] = false;
-                    for (let fork of Object.keys(started_forks)) {
+                    for(let fork of Object.keys(started_forks)) {
                         // We still have children running, break;
-                        if (started_forks[fork] === true) {
+                        if(started_forks[fork] === true) {
                             return;
                         }
                     }
@@ -460,20 +460,20 @@ function clusterMessageHandler(msg) {
                 break;
             case terms.CLUSTER_MESSAGE_TYPE_ENUM.RESTART:
                 log.info('Received restart event.');
-                if (!global.forks || global.forks.length === 0) {
+                if(!global.forks || global.forks.length === 0) {
                     log.info('No processes found');
                 } else {
                     log.info(`Shutting down ${global.forks.length} process.`);
                 }
 
-                if (msg.force_shutdown) {
+                if(msg.force_shutdown) {
                     restartHDB();
                     log.info('Force shutting down processes.');
                     break;
                 }
 
-                for (let i = 0; i < global.forks.length; i++) {
-                    if (global.forks[i]) {
+                for(let i = 0; i < global.forks.length; i++) {
+                    if(global.forks[i]) {
                         try {
                             log.debug(`Sending ${terms.RESTART_CODE} signal to process with pid:${global.forks[i].process.pid}`);
                             global.forks[i].send({type: terms.CLUSTER_MESSAGE_TYPE_ENUM.RESTART});
@@ -483,7 +483,7 @@ function clusterMessageHandler(msg) {
                     }
                 }
                 // Try to shutdown all SocketServer and SocketClient connections.
-                if (global.cluster_server) {
+                if(global.cluster_server) {
                     // Close server will emit an event once it is done
                     global.cluster_server.closeServer();
                 }
