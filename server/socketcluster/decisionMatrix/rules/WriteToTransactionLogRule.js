@@ -5,7 +5,7 @@ const log = require('../../../../utility/logging/harper_logger');
 const types = require('../../types');
 const env = require('../../../../utility/environment/environmentManager');
 env.initSync();
-const HDB_TRANSACTION_LOG_PATH = path.join(env.getHdbBasePath(),'clustering', 'transaction_log');
+const HDB_TRANSACTION_LOG_PATH = path.join(env.getHdbBasePath(), 'clustering', 'transaction_log');
 const RotatingFileWriteStream = require('../../../../utility/fs/RotatingFileWriteStream');
 const terms = require('../../../../utility/hdbTerms');
 const RotatingFileWriteStreamOptionsObject = require('../../socketClusterObjects').RotatingFileWriteStreamOptionsObject;
@@ -33,30 +33,30 @@ class WriteToTransactionLogRule extends RuleIF {
      * @returns {Promise<boolean>}
      */
     async evaluateRule(req, args, worker) {
-        if(req.data.__transacted !== true){
+        if (req.data.__transacted !== true) {
             return true;
         }
 
         log.trace('Evaluating write to transaction log rule');
-        if(!req || !req.channel || !req.data) {
+        if (!req || !req.channel || !req.data) {
             log.error('Invalid request data, not writing to transaction log.');
             return true;
         }
 
-        if(!req.data.transaction || VALID_OPERATIONS.indexOf(req.data.transaction.operation) < 0) {
+        if (!req.data.transaction || VALID_OPERATIONS.indexOf(req.data.transaction.operation) < 0) {
             log.debug('Invalid operation, not writing to transaction log.');
             return true;
         }
 
         try {
-            if(this.transaction_stream === undefined) {
+            if (this.transaction_stream === undefined) {
                 let log_filename = path.join(HDB_TRANSACTION_LOG_PATH, req.channel, req.channel);
                 let audit_filename = path.join(HDB_TRANSACTION_LOG_PATH, req.channel, types.ROTATING_TRANSACTION_LOG_ENUM.AUDIT_LOG_NAME);
                 let options = new RotatingFileWriteStreamOptionsObject(log_filename, types.ROTATING_TRANSACTION_LOG_ENUM.LOG_SIZE, types.ROTATING_TRANSACTION_LOG_ENUM.NUMBER_OF_LOGS, audit_filename);
 
                 this.transaction_stream = new RotatingFileWriteStream(options);
             }
-        } catch(e) {
+        } catch (e) {
             log.trace('unable to create transaction stream: ' + HDB_TRANSACTION_LOG_PATH + req.channel);
             log.error(e);
             return true;
@@ -67,15 +67,15 @@ class WriteToTransactionLogRule extends RuleIF {
             let transaction_csv = timestamp + ',' + req.data.transaction.operation + ',';
 
             //using the JS native encodeURIComponent is 3x faster than using regex to replace special character like \t \n \r, etc...
-            if(req.data.transaction.operation === terms.OPERATIONS_ENUM.INSERT || req.data.transaction.operation === terms.OPERATIONS_ENUM.UPDATE){
+            if (req.data.transaction.operation === terms.OPERATIONS_ENUM.INSERT || req.data.transaction.operation === terms.OPERATIONS_ENUM.UPDATE) {
                 transaction_csv += encodeURIComponent(JSON.stringify(req.data.transaction.records));
-            } else if(req.data.transaction.operation === terms.OPERATIONS_ENUM.DELETE) {
+            } else if (req.data.transaction.operation === terms.OPERATIONS_ENUM.DELETE) {
                 transaction_csv += encodeURIComponent(JSON.stringify(req.data.transaction.hash_values));
             }
 
             transaction_csv += LINE_DELIMITER;
             this.transaction_stream.write(transaction_csv);
-        } catch(err) {
+        } catch (err) {
             log.trace('failed write to transaction log: ' + req.channel);
             log.error(err);
             return false;
@@ -83,4 +83,5 @@ class WriteToTransactionLogRule extends RuleIF {
         return true;
     }
 }
+
 module.exports = WriteToTransactionLogRule;

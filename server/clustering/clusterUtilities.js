@@ -33,12 +33,13 @@ let child_event_count = 0;
 
 const STATUS_TIMEOUT_MS = 10000;
 const DUPLICATE_ERR_MSG = 'Cannot add a node that matches the hosts clustering config.';
-
+const TIMEOUT_ERR_MSG = 'Timeout trying to get cluster status.';
 const SUBSCRIPTIONS_MUST_BE_ARRAY = 'add_node subscriptions must be an array';
 
 // If we have more than 1 process, we need to get the status from the master process which has that info stored
 // in global.  We subscribe to an event that master will emit once it has gathered the data.  We want to build
 // in a timeout in case the event never comes.
+/*
 const timeout_promise = hdb_utils.timeoutPromise(STATUS_TIMEOUT_MS, 'Timeout trying to get cluster status.');
 const event_promise = new Promise((resolve) => {
     cluster_status_event.clusterEmitter.on(cluster_status_event.EVENT_NAME, (msg) => {
@@ -50,7 +51,7 @@ const event_promise = new Promise((resolve) => {
         }
         resolve(msg);
     });
-});
+});*/
 
 for (let k in iface) {
     for (let k2 in iface[k]) {
@@ -307,6 +308,8 @@ async function clusterStatus(cluster_status_json) {
         // Don't set originator so the message will be delivered to the worker rather than swallowed.
         hdb_utils.sendTransactionToSocketCluster( cluster_status_msg.requestor_channel, cluster_status_msg, null);
         // Wait for cluster status event to fire then respond to client
+        let timeout_promise = hdb_utils.timeoutPromise(STATUS_TIMEOUT_MS, TIMEOUT_ERR_MSG);
+        let event_promise = hdb_utils.createEventPromise(cluster_status_event.EVENT_NAME, cluster_status_event.clusterEmitter, timeout_promise);
         let result = await Promise.race([event_promise, timeout_promise.promise]);
         log.trace(`cluster status result: ${util.inspect(result)}`);
         response["status"] = result;
