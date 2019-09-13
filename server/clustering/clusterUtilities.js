@@ -36,23 +36,6 @@ const DUPLICATE_ERR_MSG = 'Cannot add a node that matches the hosts clustering c
 const TIMEOUT_ERR_MSG = 'Timeout trying to get cluster status.';
 const SUBSCRIPTIONS_MUST_BE_ARRAY = 'add_node subscriptions must be an array';
 
-// If we have more than 1 process, we need to get the status from the master process which has that info stored
-// in global.  We subscribe to an event that master will emit once it has gathered the data.  We want to build
-// in a timeout in case the event never comes.
-/*
-const timeout_promise = hdb_utils.timeoutPromise(STATUS_TIMEOUT_MS, 'Timeout trying to get cluster status.');
-const event_promise = new Promise((resolve) => {
-    cluster_status_event.clusterEmitter.on(cluster_status_event.EVENT_NAME, (msg) => {
-        log.info(`Got cluster status event response: ${util.inspect(msg)}`);
-        try {
-            timeout_promise.cancel();
-        } catch(err) {
-            log.error('Error trying to cancel timeout.');
-        }
-        resolve(msg);
-    });
-});*/
-
 for (let k in iface) {
     for (let k2 in iface[k]) {
         let address = iface[k][k2];
@@ -77,7 +60,7 @@ async function kickOffEnterprise() {
             const enterprise_util = require('../../utility/enterpriseInitialization');
             await enterprise_util.kickOffEnterprise();
         }
-    } catch(e){
+    } catch (e) {
         log.error(e);
     }
 }
@@ -90,12 +73,12 @@ async function addNode(new_node) {
     let results = undefined;
     try {
         results = await insert.insert(new_node_insert);
-    } catch(err) {
+    } catch (err) {
         log.error(`Error adding new cluster node ${new_node_insert}.  ${err}`);
         throw err;
     }
 
-    if (!hdb_utils.isEmptyOrZeroLength(results.skipped_hashes)) {
+    if(!hdb_utils.isEmptyOrZeroLength(results.skipped_hashes)) {
         log.info(`Node '${new_node.name}' has already been already added. Operation aborted.`);
         throw new Error(`Node '${new_node.name}' has already been already added. Operation aborted.`);
     }
@@ -104,7 +87,7 @@ async function addNode(new_node) {
         let add_node_msg = new terms.ClusterMessageObjects.HdbCoreAddNodeMessage();
         add_node_msg.add_node = new_node;
         hdb_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.HDB_NODES, add_node_msg, env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
-    } catch(e){
+    } catch (e) {
         throw new Error(e);
     }
 
@@ -115,7 +98,7 @@ async function addNode(new_node) {
  *
  * @param {./NodeObject} node_object
  */
-function nodeValidation(node_object){
+function nodeValidation(node_object) {
     // need to clean up new node as it hads operation and user on it
     let validation = node_validator(node_object);
     if(validation) {
@@ -126,37 +109,37 @@ function nodeValidation(node_object){
     let new_port = undefined;
     try {
         new_port = parseInt(node_object.port);
-    } catch(err) {
+    } catch (err) {
         throw new Error(`Invalid port: ${node_object.port} specified`);
     }
 
-    if(isNaN(new_port)){
+    if(isNaN(new_port)) {
         throw new Error(`Invalid port: ${node_object.port} specified`);
     }
 
     //TODO: We may need to expand this depending on what is decided in https://harperdb.atlassian.net/browse/HDB-638
     if(new_port === CLUSTER_PORT) {
-        if((node_object.host === 'localhost' || node_object.host === '127.0.0.1')) {
+        if ((node_object.host === 'localhost' || node_object.host === '127.0.0.1')) {
             throw new Error(DUPLICATE_ERR_MSG);
         }
-        if(addresses && addresses.includes(node_object.host)) {
+        if (addresses && addresses.includes(node_object.host)) {
             throw new Error(DUPLICATE_ERR_MSG);
         }
-        if(os.hostname() === node_object.host) {
+        if (os.hostname() === node_object.host) {
             throw new Error(DUPLICATE_ERR_MSG);
         }
     }
 
-    if(!hdb_utils.isEmptyOrZeroLength(node_object.subscriptions) && !Array.isArray(node_object.subscriptions)){
+    if(!hdb_utils.isEmptyOrZeroLength(node_object.subscriptions) && !Array.isArray(node_object.subscriptions)) {
         log.error(`${SUBSCRIPTIONS_MUST_BE_ARRAY}: ${node_object.subscriptions}`);
         throw new Error(SUBSCRIPTIONS_MUST_BE_ARRAY);
     }
 
     let subscription_validation = undefined;
-    if(!hdb_utils.isEmptyOrZeroLength(node_object.subscriptions)){
-        for(let b = 0; b < node_object.subscriptions.length; b++){
+    if(!hdb_utils.isEmptyOrZeroLength(node_object.subscriptions)) {
+        for (let b = 0; b < node_object.subscriptions.length; b++) {
             subscription_validation = node_subscription_validator(node_object.subscriptions[b]);
-            if(subscription_validation){
+            if (subscription_validation) {
                 throw new Error(subscription_validation);
             }
         }
@@ -168,8 +151,8 @@ function nodeValidation(node_object){
  * @param {./NodeObject} update_node
  * @returns {string}
  */
-async function updateNode(update_node){
-    if(hdb_utils.isEmpty(update_node.name)){
+async function updateNode(update_node) {
+    if(hdb_utils.isEmpty(update_node.name)) {
         throw new Error('name is required');
     }
 
@@ -183,7 +166,7 @@ async function updateNode(update_node){
 
     let node_search = await p_search_by_hash(search_object);
 
-    if (hdb_utils.isEmptyOrZeroLength(node_search)) {
+    if(hdb_utils.isEmptyOrZeroLength(node_search)) {
         log.info(`Node '${update_node.name}' does not exist. Operation aborted.`);
         throw new Error(`Node '${update_node.name}' does not exist. Operation aborted.`);
     }
@@ -198,7 +181,7 @@ async function updateNode(update_node){
     let results = undefined;
     try {
         results = await insert.update(update_node_object);
-    } catch(err) {
+    } catch (err) {
         log.error(`Error adding new cluster node ${update_node_object}.  ${err}`);
         throw new Error(err);
     }
@@ -212,7 +195,7 @@ async function updateNode(update_node){
         let update_node_msg = new terms.ClusterMessageObjects.HdbCoreUpdateNodeMessage();
         update_node_msg.update_node = merge_node;
         hdb_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.HDB_NODES, update_node_msg, env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
-    } catch(e){
+    } catch (e) {
         throw new Error(e);
     }
 
@@ -240,7 +223,7 @@ async function removeNode(remove_json_message) {
     let results = undefined;
     try {
         results = await p_delete_delete(delete_obj);
-    } catch(err) {
+    } catch (err) {
         log.error(`Error removing cluster node ${util.inspect(delete_obj)}.  ${err}`);
         throw err;
     }
@@ -271,7 +254,7 @@ async function configureCluster(enable_cluster_json) {
         env_mgr.setProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY, enable_cluster_json.clustering_port);
         env_mgr.setProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY, enable_cluster_json.clustering_node_name);
         await env_mgr.writeSettingsFileSync(true);
-    } catch(err) {
+    } catch (err) {
         log.error(err);
         throw err;
     }
@@ -290,7 +273,7 @@ async function clusterStatus(cluster_status_json) {
     try {
         let clustering_enabled = env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY);
         response["is_enabled"] = clustering_enabled;
-        if (!clustering_enabled) {
+        if(!clustering_enabled) {
             return response;
         }
 
@@ -306,14 +289,16 @@ async function clusterStatus(cluster_status_json) {
         cluster_status_msg.requesting_hdb_worker_id = process.pid;
         cluster_status_msg.requestor_channel = global.hdb_socket_client.socket.id;
         // Don't set originator so the message will be delivered to the worker rather than swallowed.
-        hdb_utils.sendTransactionToSocketCluster( cluster_status_msg.requestor_channel, cluster_status_msg, null);
-        // Wait for cluster status event to fire then respond to client
+        hdb_utils.sendTransactionToSocketCluster(cluster_status_msg.requestor_channel, cluster_status_msg, null);
+        // If we have more than 1 process, we need to get the status from the master process which has that info stored
+        // in global.  We subscribe to an event that master will emit once it has gathered the data.  We want to build
+        // in a timeout in case the event never comes.
         let timeout_promise = hdb_utils.timeoutPromise(STATUS_TIMEOUT_MS, TIMEOUT_ERR_MSG);
         let event_promise = hdb_utils.createEventPromise(cluster_status_event.EVENT_NAME, cluster_status_event.clusterEmitter, timeout_promise);
         let result = await Promise.race([event_promise, timeout_promise.promise]);
         log.trace(`cluster status result: ${util.inspect(result)}`);
         response["status"] = result;
-    } catch(err) {
+    } catch (err) {
         log.error(`Got an error getting cluster status ${err}`);
     }
     return response;
@@ -326,18 +311,18 @@ async function clusterStatus(cluster_status_json) {
 function selectProcess(target_process_id) {
     let backup_process = undefined;
     let specified_process = undefined;
-    for (let i = 0; i < global.forks.length; i++) {
-        if (!backup_process && global.forks[i].process.pid !== target_process_id) {
+    for(let i = 0; i < global.forks.length; i++) {
+        if(!backup_process && global.forks[i].process.pid !== target_process_id) {
             // Set a backup process to send the message to in case we don't find the specified process.
             backup_process = global.forks[i];
         }
-        if (global.forks[i].process.pid === target_process_id) {
+        if(global.forks[i].process.pid === target_process_id) {
             specified_process = global.forks[i];
             log.info(`Processing job on process: ${target_process_id}`);
             return specified_process;
         }
     }
-    if (!specified_process && backup_process) {
+    if(!specified_process && backup_process) {
         log.info(`The specified process ${target_process_id} was not found, sending to default process instead.`);
         return backup_process;
     }
@@ -380,7 +365,7 @@ function getClusterStatus() {
                     break;
             }
         }
-    } catch(err) {
+    } catch (err) {
         log.error(err);
     }
     return status_obj;
@@ -413,7 +398,7 @@ function clusterMessageHandler(msg) {
                     log.error(err);
                     status = err.message;
                 }
-                if(!target_process) {
+                if (!target_process) {
                     log.error(`Failed to select a process to respond to with cluster status.`);
                     target_process = global.forks[0];
                 }
@@ -424,7 +409,7 @@ function clusterMessageHandler(msg) {
                 if (!hdb_utils.isEmptyOrZeroLength(msg.target_process_id)) {
                     // If a process is specified in the message, send this job to that process.
                     let target_process = selectProcess(msg.target_process_id);
-                    if(!target_process) {
+                    if (!target_process) {
                         log.error(`Failed to select a process to send job message to.`);
                         return;
                     }
@@ -433,20 +418,20 @@ function clusterMessageHandler(msg) {
                 break;
             case terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STARTED:
                 log.trace(`Got child started event`);
-                if(started_forks[msg.pid]) {
+                if (started_forks[msg.pid]) {
                     log.warn(`Got a duplicate child started event for pid ${msg.pid}`);
                 } else {
                     child_event_count++;
                     log.info(`Received ${child_event_count} child started event(s).`);
                     started_forks[msg.pid] = true;
-                    if(Object.keys(started_forks).length === global.forks.length) {
+                    if (Object.keys(started_forks).length === global.forks.length) {
                         //all children are started, kick off enterprise.
                         child_event_count = 0;
                         try {
                             kickOffEnterprise().then(() => {
                                 log.info('clustering initialized');
                             });
-                        } catch(e){
+                        } catch (e) {
                             log.error('clustering failed to start: ' + e);
                         }
                     }
@@ -454,16 +439,16 @@ function clusterMessageHandler(msg) {
                 break;
             case terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STOPPED:
                 log.trace(`Got child stopped event`);
-                if(started_forks[msg.pid] === false) {
+                if (started_forks[msg.pid] === false) {
                     log.warn(`Got a duplicate child started event for pid ${msg.pid}`);
                 } else {
                     child_event_count++;
                     log.info(`Received ${child_event_count} child stopped event(s).`);
                     log.info(`started forks: ${util.inspect(started_forks)}`);
                     started_forks[msg.pid] = false;
-                    for(let fork of Object.keys(started_forks)) {
+                    for (let fork of Object.keys(started_forks)) {
                         // We still have children running, break;
-                        if(started_forks[fork] === true) {
+                        if (started_forks[fork] === true) {
                             return;
                         }
                     }
@@ -475,30 +460,30 @@ function clusterMessageHandler(msg) {
                 break;
             case terms.CLUSTER_MESSAGE_TYPE_ENUM.RESTART:
                 log.info('Received restart event.');
-                if(!global.forks || global.forks.length === 0) {
+                if (!global.forks || global.forks.length === 0) {
                     log.info('No processes found');
                 } else {
                     log.info(`Shutting down ${global.forks.length} process.`);
                 }
 
-                if(msg.force_shutdown) {
+                if (msg.force_shutdown) {
                     restartHDB();
                     log.info('Force shutting down processes.');
                     break;
                 }
 
-                for(let i=0; i<global.forks.length; i++) {
-                    if(global.forks[i]) {
+                for (let i = 0; i < global.forks.length; i++) {
+                    if (global.forks[i]) {
                         try {
                             log.debug(`Sending ${terms.RESTART_CODE} signal to process with pid:${global.forks[i].process.pid}`);
                             global.forks[i].send({type: terms.CLUSTER_MESSAGE_TYPE_ENUM.RESTART});
-                        } catch(err) {
+                        } catch (err) {
                             log.error(`Got an error trying to send ${terms.RESTART_CODE} to process ${global.forks[i].process.pid}.`);
                         }
                     }
                 }
                 // Try to shutdown all SocketServer and SocketClient connections.
-                if(global.cluster_server) {
+                if (global.cluster_server) {
                     // Close server will emit an event once it is done
                     global.cluster_server.closeServer();
                 }
@@ -512,13 +497,13 @@ function clusterMessageHandler(msg) {
     }
 }
 
-async function authHeaderToUser(json_body){
+async function authHeaderToUser(json_body) {
     let req = {};
     req.headers = {};
     req.headers.authorization = json_body.hdb_auth_header;
 
     let user = await p_auth_authorize(req, null)
-        .catch((e)=>{
+        .catch((e) => {
             throw e;
         });
     json_body.hdb_user = user;
@@ -544,7 +529,7 @@ function restartHDB() {
         child.on('data', () => {
             log.error('Restart successful');
         });
-    } catch(err) {
+    } catch (err) {
         let msg = `There was an error restarting HarperDB.  Please restart manually. ${err}`;
         console.log(msg);
         log.error(msg);
