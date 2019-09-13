@@ -5,6 +5,7 @@
  */
 
 const license = require('../registration/hdb_license');
+const license_generator = require('./licenseGenerator');
 const reg_handler = require('../registration/registrationHandler');
 const global_schema = require('../globalSchema');
 const env = require('../environment/environmentManager');
@@ -31,7 +32,7 @@ async function register(){
         exp_date: moment().add(1, 'year').format('YYYY-MM-DD')
     };
     console.log('generating license');
-    let generated_license = license.generateLicense(license_object);
+    let generated_license = license_generator.generateLicense(license_object);
     console.log('validating & writing license to hdb');
     await reg_handler.parseLicense(generated_license, 'harperdb.io');
     console.log('success!');
