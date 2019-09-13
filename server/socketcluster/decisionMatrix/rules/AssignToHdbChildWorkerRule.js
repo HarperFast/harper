@@ -45,6 +45,7 @@ class AssignToHdbChildWorkerRule extends RuleIF {
             }
             let rand = Math.floor(Math.random() * worker.hdb_workers.length);
             let random_worker = worker.hdb_workers[rand];
+            log.trace(`Assigning message to worker: ${random_worker}`);
             worker.exchange.publish(random_worker, req.data);
             log.debug(`Transacted flag not found, swallowing message.`);
             return true;

@@ -43,20 +43,20 @@ class WriteToTransactionLogRule extends RuleIF {
             return true;
         }
 
-        if(VALID_OPERATIONS.indexOf(req.data.transaction.operation) < 0){
+        if(!req.data.transaction || VALID_OPERATIONS.indexOf(req.data.transaction.operation) < 0) {
             log.debug('Invalid operation, not writing to transaction log.');
             return true;
         }
 
         try {
-            if(this.transaction_stream === undefined){
+            if(this.transaction_stream === undefined) {
                 let log_filename = path.join(HDB_TRANSACTION_LOG_PATH, req.channel, req.channel);
                 let audit_filename = path.join(HDB_TRANSACTION_LOG_PATH, req.channel, types.ROTATING_TRANSACTION_LOG_ENUM.AUDIT_LOG_NAME);
                 let options = new RotatingFileWriteStreamOptionsObject(log_filename, types.ROTATING_TRANSACTION_LOG_ENUM.LOG_SIZE, types.ROTATING_TRANSACTION_LOG_ENUM.NUMBER_OF_LOGS, audit_filename);
 
                 this.transaction_stream = new RotatingFileWriteStream(options);
             }
-        }catch(e){
+        } catch(e) {
             log.trace('unable to create transaction stream: ' + HDB_TRANSACTION_LOG_PATH + req.channel);
             log.error(e);
             return true;
