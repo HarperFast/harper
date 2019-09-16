@@ -8,9 +8,7 @@ module.exports = heCreateAttribute;
 function heCreateAttribute(create_attr_obj) {
     let datastore_name = `${create_attr_obj.schema}/${create_attr_obj.table}/${create_attr_obj.attribute}`;
     try {
-        let result = hdb_helium.createDataStores([datastore_name]);
-        console.log('## Create attribute ##');
-        console.log(result);
+        hdb_helium.createDataStores([datastore_name]);
     } catch(err) {
         throw err;
     }

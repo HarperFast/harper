@@ -3,6 +3,7 @@
 const insertUpdateValidate = require('../../bridgeUtility/insertUpdateValidate');
 const checkForNewAttributes = require('../../bridgeUtility/checkForNewAttr');
 const heProcessRows = require('../heUtility/heProcessRows');
+const heProcessInsertUpdateResponse = require('../heUtility/heProcessInsertUpdateResponse');
 const heCreateAttribute = require('./heCreateAttribute');
 const hdb_utils = require('../../../../utility/common_utils');
 const log = require('../../../../utility/logging/harper_logger');
@@ -27,7 +28,7 @@ async function heCreateRecords(insert_obj) {
         let { datastores, rows } = heProcessRows(insert_obj, attributes, schema_table);
         checkAttributes(insert_obj.hdb_auth_header, schema_table, attributes);
         let he_response = hdb_helium.insertRows(datastores, rows);
-        let { written_hashes, skipped_hashes } = processHeliumResponse(he_response);
+        let { written_hashes, skipped_hashes } = heProcessInsertUpdateResponse(he_response);
 
         let return_obj = {
             written_hashes,
@@ -129,24 +130,4 @@ function createAttribute(create_attribute_object) {
     } catch(err) {
         throw err;
     }
-}
-
-/**
- * Helium API returns a multi-dimensional array from the createRecords call. This function transforms that response
- * into two arrays, one with hashes of written records the other with hashes of skipped records due to them
- * already existing.
- * @param he_response
- * @returns {{skipped_hashes: *, written_hashes: *}}
- */
-function processHeliumResponse(he_response) {
-    let written_hashes = he_response[0];
-    let skipped_hashes = [];
-    for (let i = 0; i < he_response[1].length; i++) {
-        skipped_hashes.push(he_response[1][i][0]);
-    }
-
-    return {
-        written_hashes,
-        skipped_hashes
-    };
 }

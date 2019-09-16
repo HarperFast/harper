@@ -338,6 +338,10 @@ const CLUSTER_EVENTS_DEFS_ENUM = {
     DIRECTION_CHANGE: 'direction_change'
 };
 
+const HELIUM_RESPONSE_CODES = {
+    HE_ERR_ITEM_EXISTS: 'HE_ERR_ITEM_EXISTS',
+};
+
 const CLUSTERING_MESSAGE_TYPES = cluster_types.CORE_ROOM_MSG_TYPE_ENUM;
 
 module.exports = {
@@ -400,6 +404,7 @@ module.exports = {
     ClusterMessageObjects,
     CLUSTERING_FOLDER_NAME,
     CLUSTERING_PAYLOAD_FILE_NAME,
-    HELIUM_URL_PREFIX
+    HELIUM_URL_PREFIX,
+    HELIUM_RESPONSE_CODES
 };
 
