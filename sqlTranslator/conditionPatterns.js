@@ -22,7 +22,8 @@ function createPatterns(condition, table_schema, base_path){
         blob_search: false
     };
 
-    if(Buffer.byteLength(String(comparators[1])) > 255 || String(comparators[1]).startsWith('%')){
+    if(Buffer.byteLength(String(comparators[1])) > 255 || String(comparators[1]).startsWith('%') || String(comparators[1]).startsWith('*')
+        || String(comparators[1]).endsWith('%') || String(comparators[1]).endsWith('*')) {
         pattern.blob_search = true;
     }
 
