@@ -131,19 +131,18 @@ describe('Tests for Helium method heCreateRecords', () => {
             try {
                 result = await heCreateRecords(INSERT_OBJECT_TEST);
                 search_result = hdb_helium.searchByKeys(row_keys, DATASTORES_TEST);
+
             } catch(err) {
                 console.log(err);
             }
 
             expect(result).to.eql(expected_return_result);
             expect(search_result).eql(expected_search_result);
+            //dropTestDatastores();
         });
-        dropTestDatastores();
 
         it('Test inserting existing and non-existing rows', async () => {
             global.hdb_schema[SCHEMA_TABLE_TEST.schema][SCHEMA_TABLE_TEST.name]['attributes'] = NO_NEW_ATTR_TEST;
-            //let check_for_new_attr_stub = sandbox.stub().returns([]);
-            //heCreateRecords.__set__('checkForNewAttributes', check_for_new_attr_stub);
             let insert_obj = test_utils.deepClone(INSERT_OBJECT_TEST);
             let new_records = [
                 {
@@ -177,7 +176,7 @@ describe('Tests for Helium method heCreateRecords', () => {
                 written_hashes: [ '123', '1232' ],
                 skipped_hashes: [ '8', '9' ],
                 schema_table: {
-                    attributes: [],
+                    attributes: NO_NEW_ATTR_TEST,
                     hash_attribute: 'id',
                     residence: undefined,
                     schema: 'dev',
@@ -196,13 +195,13 @@ describe('Tests for Helium method heCreateRecords', () => {
             try {
                 result = await heCreateRecords(insert_obj);
                 search_result = hdb_helium.searchByKeys(['8', '9', '123', '1232'], DATASTORES_TEST);
+                dropTestDatastores();
             } catch(err) {
                 console.log(err);
             }
 
             expect(result).to.eql(expected_return_result);
             expect(search_result).to.eql(expected_search_result);
-            dropTestDatastores();
         });
     });
 });
