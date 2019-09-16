@@ -45,7 +45,8 @@ const BLOB_FOLDER_NAME = 'blob';
 const HDB_SCHEMA_DIR = 'schema';
 const HDB_TRASH_DIR = 'trash';
 
-const HELIUM_URL_PREFIX = 'he://localhost/';
+//const HELIUM_URL_PREFIX = 'he://localhost/';
+const HELIUM_URL_PREFIX = 'he://10.100.1.119/';
 
 const CLUSTERING_FOLDER_NAME = 'clustering';
 const CLUSTERING_PAYLOAD_FILE_NAME = '.scPayload.json';
@@ -337,6 +338,10 @@ const CLUSTER_EVENTS_DEFS_ENUM = {
     DIRECTION_CHANGE: 'direction_change'
 };
 
+const HELIUM_RESPONSE_CODES = {
+    HE_ERR_ITEM_EXISTS: 'HE_ERR_ITEM_EXISTS',
+};
+
 const CLUSTERING_MESSAGE_TYPES = cluster_types.CORE_ROOM_MSG_TYPE_ENUM;
 
 module.exports = {
@@ -399,6 +404,7 @@ module.exports = {
     ClusterMessageObjects,
     CLUSTERING_FOLDER_NAME,
     CLUSTERING_PAYLOAD_FILE_NAME,
-    HELIUM_URL_PREFIX
+    HELIUM_URL_PREFIX,
+    HELIUM_RESPONSE_CODES
 };
 

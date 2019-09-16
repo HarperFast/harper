@@ -1,34 +1,38 @@
 'use strict';
 
-const fsCreateAttribute = require('../fsMethods/fsCreateAttribute');
-const processData = require('../fsUtility/processData');
-const processRows = require('../fsUtility/processRows');
 const insertUpdateValidate = require('../../bridgeUtility/insertUpdateValidate');
 const checkForNewAttributes = require('../../bridgeUtility/checkForNewAttr');
-const log = require('../../../../utility/logging/harper_logger');
+const heProcessRows = require('../heUtility/heProcessRows');
+const heProcessInsertUpdateResponse = require('../heUtility/heProcessInsertUpdateResponse');
+const heCreateAttribute = require('./heCreateAttribute');
 const hdb_utils = require('../../../../utility/common_utils');
+const log = require('../../../../utility/logging/harper_logger');
 const hdb_terms = require('../../../../utility/hdbTerms');
 const signalling = require('../../../../utility/signalling');
+const heliumUtils = require('../../../../utility/helium/heliumUtils');
+const hdb_helium = heliumUtils.initializeHelium();
 
 const ATTRIBUTE_ALREADY_EXISTS = 'attribute already exists';
 
-module.exports = createRecords;
+module.exports = heCreateRecords;
 
 /**
- * Calls all the functions specifically responsible for writing data to the file system
+ * Orchestrates the insertion of data into Helium and the creation of new attributes/datastores
+ * if they do not already exist.
  * @param insert_obj
- * @returns {Promise<{skipped_hashes, written_hashes, schema_table}>}
+ * @returns {Promise<{skipped_hashes: *, written_hashes: *, schema_table: *}>}
  */
-async function createRecords(insert_obj) {
+async function heCreateRecords(insert_obj) {
     try {
-        let {schema_table, attributes} = insertUpdateValidate(insert_obj);
-        let data_wrapper = await processRows(insert_obj, attributes, schema_table);
-        await checkAttributes(insert_obj.hdb_auth_header, schema_table, attributes);
-        await processData(data_wrapper);
+        let { schema_table, attributes } = insertUpdateValidate(insert_obj);
+        let { datastores, rows } = heProcessRows(insert_obj, attributes, schema_table);
+        checkAttributes(insert_obj.hdb_auth_header, schema_table, attributes);
+        let he_response = hdb_helium.insertRows(datastores, rows);
+        let { written_hashes, skipped_hashes } = heProcessInsertUpdateResponse(he_response);
 
         let return_obj = {
-            written_hashes: data_wrapper.written_hashes,
-            skipped_hashes: data_wrapper.skipped_hashes,
+            written_hashes,
+            skipped_hashes,
             schema_table
         };
 
@@ -38,25 +42,32 @@ async function createRecords(insert_obj) {
     }
 }
 
-async function checkAttributes(hdb_auth_header, table_schema, data_attributes) {
+/**
+ * Uses a utility function to check if there are any new attributes that dont exist. Utility function
+ * references the global schema.
+ * @param hdb_auth_header
+ * @param table_schema
+ * @param data_attributes
+ */
+function checkAttributes(hdb_auth_header, table_schema, data_attributes) {
     let new_attributes = checkForNewAttributes(table_schema, data_attributes);
-
     if (hdb_utils.isEmptyOrZeroLength(new_attributes)) {
         return;
     }
 
-    try {
-        await Promise.all(
-            new_attributes.map(async attribute => {
-                await createNewAttribute(hdb_auth_header, table_schema.schema, table_schema.name, attribute);
-            })
-        );
-    } catch(err) {
-        throw err;
-    }
+    new_attributes.map(attribute => {
+        createNewAttribute(hdb_auth_header, table_schema.schema, table_schema.name, attribute);
+    });
 }
 
-async function createNewAttribute(hdb_auth_header,schema, table, attribute) {
+/**
+ * Starts the process of creating a new attribute and calls 'createAttribute' for each one
+ * @param hdb_auth_header
+ * @param schema
+ * @param table
+ * @param attribute
+ */
+function createNewAttribute(hdb_auth_header,schema, table, attribute) {
     let attribute_object = {
         schema:schema,
         table:table,
@@ -68,7 +79,7 @@ async function createNewAttribute(hdb_auth_header,schema, table, attribute) {
     }
 
     try {
-        await createAttribute(attribute_object);
+        createAttribute(attribute_object);
     } catch(e){
         //if the attribute already exists we do not want to stop the insert
         if(typeof e === 'object' && e.message !== undefined && e.message.includes(ATTRIBUTE_ALREADY_EXISTS)){
@@ -79,13 +90,19 @@ async function createNewAttribute(hdb_auth_header,schema, table, attribute) {
     }
 }
 
-async function createAttribute(create_attribute_object) {
+/**
+ * Handles the actual creation of the attribute/datastore by calling heMethod 'heCreateAttribute'
+ * Update cluster accordingly.
+ * @param create_attribute_object
+ * @returns {*}
+ */
+function createAttribute(create_attribute_object) {
     let attribute_structure;
     try {
         if(global.clustering_on
             && !create_attribute_object.delegated && create_attribute_object.schema !== 'system') {
 
-            attribute_structure = await fsCreateAttribute(create_attribute_object);
+            attribute_structure = heCreateAttribute(create_attribute_object);
             create_attribute_object.delegated = true;
             create_attribute_object.operation = 'create_attribute';
             create_attribute_object.id = attribute_structure.id;
@@ -103,7 +120,7 @@ async function createAttribute(create_attribute_object) {
 
             return attribute_structure;
         }
-        attribute_structure = await fsCreateAttribute(create_attribute_object);
+        attribute_structure = heCreateAttribute(create_attribute_object);
         let create_att_msg = hdb_utils.getClusterMessage(hdb_terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
         create_att_msg.transaction = create_attribute_object;
         hdb_utils.sendTransactionToSocketCluster(hdb_terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, create_att_msg);
