@@ -45,8 +45,8 @@ const BLOB_FOLDER_NAME = 'blob';
 const HDB_SCHEMA_DIR = 'schema';
 const HDB_TRASH_DIR = 'trash';
 
-//const HELIUM_URL_PREFIX = 'he://localhost/';
-const HELIUM_URL_PREFIX = 'he://10.100.1.119/';
+const HELIUM_URL_PREFIX = 'he://localhost/';
+//const HELIUM_URL_PREFIX = 'he://10.100.1.119/';
 
 const CLUSTERING_FOLDER_NAME = 'clustering';
 const CLUSTERING_PAYLOAD_FILE_NAME = '.scPayload.json';
