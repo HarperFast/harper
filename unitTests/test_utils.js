@@ -184,7 +184,7 @@ function validateMockFSArgs(argArray) {
  *          entries associated with the data passed in.
  * TODO: The method does not currently return paths for the system schema directory.
  */
-function createMockFS(hash_attribute, schema, table, test_data, set_global_boolean) {
+function createMockFS(hash_attribute, schema, table, test_data) {
     try {
         validateMockFSArgs([hash_attribute, schema, table, test_data]);
 

@@ -50,7 +50,7 @@ async function moveSchemaToTrash(drop_schema_obj, tables) {
         throw new Error('tables parameter was null.');
     }
 
-    let origin_path = `${env.getHdbBasePath()}/${terms.HDB_SCHEMA_DIR}/${drop_schema_obj.schema}`;
+    let origin_path = `${env.getHdbBasePath()}/${terms.SCHEMA_DIR_NAME}/${drop_schema_obj.schema}`;
     let destination_name = `${drop_schema_obj.schema}-${current_date}`;
     let trash_path = `${TRASH_BASE_PATH}/${destination_name}`;
 

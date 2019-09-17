@@ -42,10 +42,8 @@ const RESTART_TIMEOUT_MS = 60000;
 const HDB_FILE_PERMISSIONS = 0o700;
 const HDB_FILE_SUFFIX = '.hdb';
 const BLOB_FOLDER_NAME = 'blob';
-const HDB_SCHEMA_DIR = 'schema';
 const HDB_TRASH_DIR = 'trash';
 const SCHEMA_DIR_NAME = 'schema';
-
 
 const HELIUM_URL_PREFIX = 'he://localhost/';
 
@@ -408,7 +406,6 @@ module.exports = {
     CLUSTERING_MESSAGE_TYPES,
     HDB_FILE_SUFFIX,
     BLOB_FOLDER_NAME,
-    HDB_SCHEMA_DIR,
     HDB_TRASH_DIR,
     // Make the message objects available through hdbTerms to keep clustering as modular as possible.
     ClusterMessageObjects,
