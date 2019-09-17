@@ -66,9 +66,9 @@ function createSystemDataStores(){
             });
         });
 
-        helium.createDataStores(data_stores);
+        helium.createDataStores(['hi', 'ho']);
 
-        terminateHelium(helium);
+        //terminateHelium(helium);
         log.info('Created system level data stores');
     }catch(e){
         log.error(`Creating system data stores failed due to ${e}`);

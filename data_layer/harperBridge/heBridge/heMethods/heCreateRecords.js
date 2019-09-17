@@ -22,7 +22,7 @@ module.exports = heCreateRecords;
  * @param insert_obj
  * @returns {Promise<{skipped_hashes: *, written_hashes: *, schema_table: *}>}
  */
-async function heCreateRecords(insert_obj) {
+function heCreateRecords(insert_obj) {
     try {
         let { schema_table, attributes } = insertUpdateValidate(insert_obj);
         let { datastores, rows } = heProcessRows(insert_obj, attributes, schema_table);

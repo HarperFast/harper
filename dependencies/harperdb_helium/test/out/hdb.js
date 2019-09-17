@@ -14,7 +14,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 require('module-alias/register');
-var testUtils_1 = __importDefault(require("testUtils"));
+var testUtils_1 = __importDefault(require("../testUtils"));
 var moduleName = "node-hdb.node";
 
 let buildPath = '';
