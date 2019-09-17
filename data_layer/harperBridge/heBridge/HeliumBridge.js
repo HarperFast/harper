@@ -16,8 +16,6 @@ const heSearchByHash = require('./heMethods/heSearchByHash');
 // const heCreateTable = require('./heMethods/heCreateTable');
 // const heUpdateRecords = require('./heMethods/heUpdateRecords');
 
-
-
 class HeliumBridge extends BridgeMethods {
 
     async getDataByHash(search_object) {
