@@ -27,9 +27,10 @@ async function callOperationFunctionAsCallback(operation_function_as_callback, f
  * @param promisified_function - The operation which is in async/await format
  * @param function_input - The input needed for the operation_function_as_callback function.
  * @param followup_async_func - The response function that will be called with the operation function response as an input.  The function is expected to be promisifed, callbacks not supported.
+ * @param orig_req - The original request which may need to be accessed to propagate data.
  * @returns {Promise<void>}
  */
-async function callOperationFunctionAsAwait(promisified_function, function_input, followup_async_func) {
+async function callOperationFunctionAsAwait(promisified_function, function_input, followup_async_func, orig_req) {
     if(!promisified_function || !(typeof promisified_function === 'function')) {
         throw new Error('Invalid function parameter');
     }
@@ -40,10 +41,16 @@ async function callOperationFunctionAsAwait(promisified_function, function_input
         // necessary.
         if(followup_async_func) {
             //TODO: Passing result twice seems silly, why is this a thing?
-            return await followup_async_func(function_input, result, result);
+            result = await followup_async_func(function_input, result, orig_req);
         }
         return result;
     } catch(err) {
+        // This specific check was added to avoid an error message in the log which could make the error look worse than it
+        // seems when scanning a log.  In reality a schema already existing isn't really an error, just a failure.
+        if(err.message && err.message.includes('already exists')) {
+            log.info(err.message);
+            throw err;
+        }
         log.error(`Error calling operation: ${promisified_function.name}`);
         log.error(err);
         throw err;
