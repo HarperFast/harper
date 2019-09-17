@@ -26,17 +26,24 @@ function heCreateRecords(insert_obj) {
     try {
         let { schema_table, attributes } = insertUpdateValidate(insert_obj);
         let { datastores, rows } = heProcessRows(insert_obj, attributes, schema_table);
+
+        if (!attributes.includes(hdb_terms.HELIUM_TIME_STAMP_ENUM.CREATED_TIME)) {
+            attributes.push(hdb_terms.HELIUM_TIME_STAMP_ENUM.CREATED_TIME);
+        }
+
+        if (!attributes.includes(hdb_terms.HELIUM_TIME_STAMP_ENUM.UPDATED_TIME)) {
+            attributes.push(hdb_terms.HELIUM_TIME_STAMP_ENUM.UPDATED_TIME);
+        }
+
         checkAttributes(insert_obj.hdb_auth_header, schema_table, attributes);
         let he_response = hdb_helium.insertRows(datastores, rows);
         let { written_hashes, skipped_hashes } = heProcessInsertUpdateResponse(he_response);
 
-        let return_obj = {
+        return {
             written_hashes,
             skipped_hashes,
             schema_table
         };
-
-        return return_obj;
     } catch(err) {
         throw err;
     }

@@ -62,6 +62,12 @@ const NO_NEW_ATTR_TEST = [
     },
     {
         attribute: "height"
+    },
+    {
+        attribute: "__createdtime__"
+    },
+    {
+        attribute: "__updatedtime__"
     }
 ];
 
@@ -73,7 +79,7 @@ const SCHEMA_TABLE_TEST = {
     attributes: []
 };
 
-const DATASTORES_TEST = [ "dev/dog/name", "dev/dog/breed", "dev/dog/id", "dev/dog/age", "dev/dog/height" ];
+const DATASTORES_TEST = [ "dev/dog/name", "dev/dog/breed", "dev/dog/id", "dev/dog/age", "dev/dog/height", "dev/dog/__createdtime__", "dev/dog/__updatedtime__"];
 
 let ATTR_OBJ_TEST = {
     "schema": "dev",
@@ -93,6 +99,12 @@ let ATTR_OBJ_TEST = {
         },
         {
             "attribute": "height"
+        },
+        {
+            "attribute": "__createdtime__"
+        },
+        {
+            "attribute": "__updatedtime__"
         }
     ],
     "hdb_auth_header": "auth-header"
@@ -118,6 +130,7 @@ describe('Tests for Helium method heCreateRecords', () => {
         let row_keys = ['8', '9', '12', '10'];
 
         before(() => {
+            sandbox.stub(Date, 'now').returns('1943201');
             global.hdb_schema = {
                 [SCHEMA_TABLE_TEST.schema]: {
                     [SCHEMA_TABLE_TEST.name]: {
@@ -130,17 +143,18 @@ describe('Tests for Helium method heCreateRecords', () => {
                 }
             };
         });
-        
+
         after(() => {
             dropTestDatastores();
+            sandbox.restore();
         });
         
-        it('Test that rows are inserted correctly and return msg is correct ', async () => {
+        it('Test that rows are inserted correctly and return msg is correct ',  () => {
             let expected_search_result = [
-                [ '8', [ 'Harper', 'Mutt', '8', '5', null ] ],
-                [ '9', [ 'Penny', 'Mutt', '9', '5', '145' ] ],
-                [ '12', [ 'David', 'Mutt', '12', null, null ] ],
-                [ '10', [ 'Rob', 'Mutt', '10', '5', '145' ] ]
+                [ '8', [ 'Harper', 'Mutt', '8', '5', null, '1943201', '1943201'] ],
+                [ '9', [ 'Penny', 'Mutt', '9', '5', '145', '1943201', '1943201' ] ],
+                [ '12', [ 'David', 'Mutt', '12', null, null, '1943201', '1943201' ] ],
+                [ '10', [ 'Rob', 'Mutt', '10', '5', '145', '1943201', '1943201' ] ]
             ];
             let expected_return_result = {
                 written_hashes: [ '8', '9', '12', '10' ],
@@ -157,9 +171,8 @@ describe('Tests for Helium method heCreateRecords', () => {
             let search_result;
             
             try {
-                result = await heCreateRecords(INSERT_OBJECT_TEST);
+                result = heCreateRecords(INSERT_OBJECT_TEST);
                 search_result = hdb_helium.searchByKeys(row_keys, DATASTORES_TEST);
-
             } catch(err) {
                 console.log(err);
             }
@@ -168,7 +181,7 @@ describe('Tests for Helium method heCreateRecords', () => {
             expect(search_result).eql(expected_search_result);
         });
 
-        it('Test inserting existing and non-existing rows', async () => {
+        it('Test inserting existing and non-existing rows', () => {
             global.hdb_schema[SCHEMA_TABLE_TEST.schema][SCHEMA_TABLE_TEST.name]['attributes'] = NO_NEW_ATTR_TEST;
             let insert_obj = test_utils.deepClone(INSERT_OBJECT_TEST);
             let new_records = [
@@ -211,16 +224,16 @@ describe('Tests for Helium method heCreateRecords', () => {
                     }
             };
             let expected_search_result = [
-                [ '8', [ 'Harper', 'Mutt', '8', '5', null ] ],
-                [ '9', [ 'Penny', 'Mutt', '9', '5', '145' ] ],
-                [ '123', [ 'David', 'Mutt', '123', null, null ] ],
-                [ '1232', [ 'Rob', 'Mutt', '1232', '5', '145' ] ]
+                [ '8', [ 'Harper', 'Mutt', '8', '5', null, '1943201', '1943201' ] ],
+                [ '9', [ 'Penny', 'Mutt', '9', '5', '145', '1943201', '1943201' ] ],
+                [ '123', [ 'David', 'Mutt', '123', null, null, '1943201', '1943201' ] ],
+                [ '1232', [ 'Rob', 'Mutt', '1232', '5', '145', '1943201', '1943201' ] ]
             ];
             let result;
             let search_result;
 
             try {
-                result = await heCreateRecords(insert_obj);
+                result = heCreateRecords(insert_obj);
                 search_result = hdb_helium.searchByKeys(['8', '9', '123', '1232'], DATASTORES_TEST);
                 
             } catch(err) {
@@ -231,7 +244,7 @@ describe('Tests for Helium method heCreateRecords', () => {
             expect(search_result).to.eql(expected_search_result);
         });
         
-        it('Test inserting rows that already exist', async () => {
+        it('Test inserting rows that already exist',  () => {
             let expected_result = {
                 written_hashes: [],
                 skipped_hashes: [ '8', '9', '12', '10' ],
@@ -245,7 +258,7 @@ describe('Tests for Helium method heCreateRecords', () => {
             let result;
 
             try {
-                result = await heCreateRecords(INSERT_OBJECT_TEST);
+                result = heCreateRecords(INSERT_OBJECT_TEST);
             } catch(err) {
                 console.log(err);
             }
@@ -253,7 +266,7 @@ describe('Tests for Helium method heCreateRecords', () => {
             expect(result).to.eql(expected_result);
         });
 
-        it('Test that no hash error from processRows is thrown', async () => {
+        it('Test that no hash error from processRows is thrown', () => {
             let insert_obj = test_utils.deepClone(INSERT_OBJECT_TEST);
             let error;
             let records_no_hash = [
@@ -273,7 +286,7 @@ describe('Tests for Helium method heCreateRecords', () => {
             insert_obj.records = records_no_hash;
 
             try {
-                await heCreateRecords(insert_obj);
+                heCreateRecords(insert_obj);
             } catch(err) {
                 error = err;
             }
@@ -329,7 +342,6 @@ describe('Tests for Helium method heCreateRecords', () => {
         });
 
         it('Test nominal behaviour, createAttribute is called as expected', () => {
-
             create_new_attribute('auth-header', INSERT_OBJECT_TEST.schema, INSERT_OBJECT_TEST.table, NO_NEW_ATTR_TEST);
 
             expect(create_attribute_stub).to.have.been.calledWith(ATTR_OBJ_TEST);
