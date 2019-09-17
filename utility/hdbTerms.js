@@ -44,7 +44,7 @@ const HDB_FILE_SUFFIX = '.hdb';
 const BLOB_FOLDER_NAME = 'blob';
 const HDB_SCHEMA_DIR = 'schema';
 const HDB_TRASH_DIR = 'trash';
-//const SCHEMA_DIR_NAME = 'schema';
+const SCHEMA_DIR_NAME = 'schema';
 
 
 const HELIUM_URL_PREFIX = 'he://localhost/';
