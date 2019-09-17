@@ -253,7 +253,10 @@ const HDB_SETTINGS_NAMES = {
     CLUSTERING_ENABLED_KEY: 'CLUSTERING',
     ALLOW_SELF_SIGNED_SSL_CERTS: 'ALLOW_SELF_SIGNED_SSL_CERTS',
     MAX_HDB_PROCESSES: 'MAX_HDB_PROCESSES',
-    INSTALL_USER: 'install_user'
+    INSTALL_USER: 'install_user',
+    CLUSTERING_USER_KEY: 'CLUSTERING_USER',
+    HELIUM_VOLUME_PATH_KEY: 'HELIUM_VOLUME_PATH',
+    HELIUM_SERVER_HOST_KEY: 'HELIUM_SERVER_HOST'
 };
 
 // Default values for the Settings, some do not have a default.
@@ -273,7 +276,8 @@ const HDB_SETTINGS_DEFAULT_VALUES = {
     NODE_ENV: 'production',
     CLUSTERING_PORT: '5545',
     CLUSTERING: 'false',
-    MAX_HDB_PROCESSES: 4
+    MAX_HDB_PROCESSES: 4,
+    HELIUM_SERVER_HOST: 'localhost:41000'
 };
 
 // Describes all available job types
