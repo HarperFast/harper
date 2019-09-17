@@ -1,5 +1,6 @@
 'use strict';
 
+const heProcessInsertUpdateResponse = require('../heUtility/heProcessInsertUpdateResponse');
 const heProcessRows = require('../heUtility/heProcessRows');
 const insertUpdateValidate = require('../../bridgeUtility/insertUpdateValidate');
 const convertOperationToTransaction = require('../../bridgeUtility/convertOperationToTransaction');
@@ -79,9 +80,10 @@ function insertData(insert_obj){
         let { schema_table, attributes } = insertUpdateValidate(insert_obj);
         let { datastores, rows } = heProcessRows(insert_obj, attributes, schema_table);
         let he_response = hdb_helium.insertRows(datastores, rows);
-        convertOperationToTransaction(insert_obj, he_response.written_hashes, schema_table.hash_attribute);
+        let { written_hashes, skipped_hashes } = heProcessInsertUpdateResponse(he_response);
+        convertOperationToTransaction(insert_obj, written_hashes, schema_table.hash_attribute);
 
-        return returnObject(INSERT_ACTION, he_response.written_hashes, insert_obj, he_response.skipped_hashes);
+        return returnObject(INSERT_ACTION, written_hashes, insert_obj, skipped_hashes);
     } catch(err){
         throw (err);
     }

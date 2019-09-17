@@ -19,6 +19,7 @@ function processRows(insert_obj, attributes, schema_table) {
     let rows = [];
     let hash_attribute = schema_table.hash_attribute;
     let timestamp = Date.now();
+    let system_schema = insert_obj.schema === hdb_terms.SYSTEM_SCHEMA_NAME;
 
     for (let i = 0; i < attributes.length; i++) {
         validateAttribute(attributes[i]);
@@ -37,12 +38,16 @@ function processRows(insert_obj, attributes, schema_table) {
                 row_records.push(null);
             }
         }
-        row_records.push(timestamp, timestamp);
+        if (!system_schema) {
+            row_records.push(timestamp, timestamp);
+        }
         rows.push([records[x][hash_attribute],row_records]);
     }
 
-    datastores.push(`${schema}/${table}/${hdb_terms.HELIUM_TIME_STAMP_ENUM.CREATED_TIME}`);
-    datastores.push(`${schema}/${table}/${hdb_terms.HELIUM_TIME_STAMP_ENUM.UPDATED_TIME}`);
+    if (!system_schema) {
+        datastores.push(`${schema}/${table}/${hdb_terms.HELIUM_TIME_STAMP_ENUM.CREATED_TIME}`);
+        datastores.push(`${schema}/${table}/${hdb_terms.HELIUM_TIME_STAMP_ENUM.UPDATED_TIME}`);
+    }
 
     return {
         datastores,

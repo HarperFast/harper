@@ -3,7 +3,7 @@
 const utils = require('../common_utils');
 const _ = require('lodash');
 const terms = require('../hdbTerms');
-const harperdb_helium = require('../../dependencies/harperdb_helium/test/out/hdb').default;
+const harperdb_helium = require('../../dependencies/harperdb_helium/hdb').default;
 const system_schema = require('../../json/systemSchema');
 const log = require('../logging/harper_logger');
 const env = require('../environment/environmentManager');
@@ -65,9 +65,9 @@ function createSystemDataStores(){
             });
         });
 
-        helium.createDataStores(['hi', 'ho']);
+        helium.createDataStores(data_stores);
 
-        //terminateHelium(helium);
+        terminateHelium(helium);
         log.info('Created system level data stores');
     }catch(e){
         log.error(`Creating system data stores failed due to ${e}`);
