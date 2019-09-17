@@ -25,7 +25,6 @@ function initializeHelium(){
     }
 
     let volume_path = env.get('HELIUM_VOLUME_PATH');
-    //let volume_path = '/home/ubuntu/heVolume';
     //there is an instance if you do not have a property defined the Properties Reader library will return the string 'null'
     if(utils.isEmptyOrZeroLength(volume_path) || volume_path === 'null'){
         throw new Error('HELIUM_VOLUME_PATH must be defined in config settings.');
