@@ -342,6 +342,11 @@ const HELIUM_RESPONSE_CODES = {
     HE_ERR_ITEM_EXISTS: 'HE_ERR_ITEM_EXISTS',
 };
 
+const HELIUM_TIME_STAMP_ENUM = {
+    CREATED_TIME: '__createdtime__',
+    UPDATED_TIME: '__updatedtime__'
+};
+
 const CLUSTERING_MESSAGE_TYPES = cluster_types.CORE_ROOM_MSG_TYPE_ENUM;
 
 module.exports = {
@@ -405,6 +410,7 @@ module.exports = {
     CLUSTERING_FOLDER_NAME,
     CLUSTERING_PAYLOAD_FILE_NAME,
     HELIUM_URL_PREFIX,
-    HELIUM_RESPONSE_CODES
+    HELIUM_RESPONSE_CODES,
+    HELIUM_TIME_STAMP_ENUM
 };
 

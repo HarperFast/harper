@@ -7,7 +7,7 @@ module.exports = processRows;
 
 /**
  * Builds an array of datastores using passed attributes and a matching multi dimensional
- * array of row data
+ * array of row data. Adds current timestamp to created & updated columns.
  * @param insert_obj
  * @param attributes
  * @param schema_table
@@ -18,6 +18,7 @@ function processRows(insert_obj, attributes, schema_table) {
     let datastores = [];
     let rows = [];
     let hash_attribute = schema_table.hash_attribute;
+    let timestamp = Date.now();
 
     for (let i = 0; i < attributes.length; i++) {
         validateAttribute(attributes[i]);
@@ -26,7 +27,6 @@ function processRows(insert_obj, attributes, schema_table) {
 
     for (let x = 0; x < records.length; x++) {
         let row_records = [];
-
         validateHash(records[x], hash_attribute);
 
         for (let y = 0; y < attributes.length; y++) {
@@ -37,8 +37,12 @@ function processRows(insert_obj, attributes, schema_table) {
                 row_records.push(null);
             }
         }
+        row_records.push(timestamp, timestamp);
         rows.push([records[x][hash_attribute],row_records]);
     }
+
+    datastores.push(`${schema}/${table}/${hdb_terms.HELIUM_TIME_STAMP_ENUM.CREATED_TIME}`);
+    datastores.push(`${schema}/${table}/${hdb_terms.HELIUM_TIME_STAMP_ENUM.UPDATED_TIME}`);
 
     return {
         datastores,
