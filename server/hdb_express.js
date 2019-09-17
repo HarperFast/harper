@@ -220,7 +220,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         let forks = [];
         for (let i = 0; i < numCPUs; i++) {
             try {
-                let forked = cluster.fork({hdb_license: license_values});
+                let forked = cluster.fork({hdb_license: JSON.stringify(license_values)});
                 // assign handler for messages expected from child processes.
                 forked.on('message', cluster_utilities.clusterMessageHandler);
                 forked.on('error', (err) => {
