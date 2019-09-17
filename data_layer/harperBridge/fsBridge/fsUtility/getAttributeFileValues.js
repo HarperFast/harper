@@ -19,7 +19,10 @@ async function getAttributeFileValues(get_attributes, search_object, hash_result
         for (const attribute of get_attributes) {
             //evaluate if an array of strings or objects has been passed in and assign values accordingly
             let attribute_name = (typeof attribute === 'string') ? attribute : attribute.attribute;
-            attributes_data[attribute_name] = await readAttributeFiles(table_path, attribute_name, hash_values);
+            const attribute_file_values = await readAttributeFiles(table_path, attribute_name, hash_values);
+            if (!_.isEmpty(attribute_file_values)) {
+                attributes_data[attribute_name] = attribute_file_values;
+            }
         }
 
         return attributes_data;
@@ -51,7 +54,9 @@ async function readAttributeFiles(table_path, attribute, hash_files) {
         }
 
         await Promise.all(readFileOps);
-        return attribute_data;
+        if (!_.isEmpty(attribute_data)) {
+            return attribute_data;
+        }
     } catch(err) {
         throw err;
     }
