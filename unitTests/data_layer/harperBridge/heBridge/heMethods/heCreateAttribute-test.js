@@ -28,7 +28,7 @@ const CREATE_ATTR_OBJ_TEST = {
     attribute: "another_attribute",
 };
 
-const SYSTEM_ATTR_SCHEMA = ['system/hdb_attribute/id', 'system/hdb_attribute/', 'system/hdb_attribute/', 'system/hdb_attribute/', 'system/hdb_attribute/']
+const SYSTEM_ATTR_SCHEMA = ['system/hdb_attribute/id', 'system/hdb_attribute/schema', 'system/hdb_attribute/table', 'system/hdb_attribute/attribute', 'system/hdb_attribute/schema_table'];
 
 describe('Test for Helium method heCreateAttribute', () => {
     let sandbox = sinon.createSandbox();
@@ -39,8 +39,11 @@ describe('Test for Helium method heCreateAttribute', () => {
     });
 
     context('Tests for heCreateAttribute function', () => {
+        let uuidV4_stub_func = () => '83j243dz';
 
         before(() => {
+            heCreateAttribute.__set__('uuidV4', uuidV4_stub_func);
+
             global.hdb_schema = {
                 [CREATE_ATTR_OBJ_TEST.schema]: {
                     [CREATE_ATTR_OBJ_TEST.table]: {
@@ -78,8 +81,9 @@ describe('Test for Helium method heCreateAttribute', () => {
         it('', () => {
             try {
                 let result = heCreateAttribute(CREATE_ATTR_OBJ_TEST);
-                let search_result = hdb_helium.searchByKeys(['6f6a93a8-3d88-4e02-bb2d-7a38b4efd325'])
+                let search_result = hdb_helium.searchByKeys(['83j243dz'], SYSTEM_ATTR_SCHEMA);
                 console.log(result);
+                console.log(search_result);
             } catch(err) {
                 console.log(err);
             }
