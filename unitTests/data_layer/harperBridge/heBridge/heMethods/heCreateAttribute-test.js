@@ -23,7 +23,7 @@ const hdb_helium = heliumUtils.initializeHelium();
 
 const CREATE_ATTR_OBJ_TEST = {
     operation: "create_attribute",
-    schema: "attrUnitTest",
+    schema: "attrUnitTestAB",
     table: "dog",
     attribute: "another_attribute",
 };
@@ -82,8 +82,10 @@ describe('Test for Helium method heCreateAttribute', () => {
             try {
                 let result = heCreateAttribute(CREATE_ATTR_OBJ_TEST);
                 let search_result = hdb_helium.searchByKeys(['83j243dz'], SYSTEM_ATTR_SCHEMA);
+                let list_ds_result = hdb_helium.listDataStores();
                 console.log(result);
                 console.log(search_result);
+                console.log(list_ds_result);
             } catch(err) {
                 console.log(err);
             }

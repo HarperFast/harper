@@ -12,7 +12,7 @@ const log = require('../../../../utility/logging/harper_logger');
 const uuidV4 = require('uuid/v4');
 let hdb_helium = helium_utils.initializeHelium();
 
-const INSERT_ACTION = 'inserted';
+const ACTION = 'inserted';
 
 module.exports = heCreateAttribute;
 
@@ -80,10 +80,11 @@ function insertData(insert_obj){
         let { schema_table, attributes } = insertUpdateValidate(insert_obj);
         let { datastores, rows } = heProcessRows(insert_obj, attributes, schema_table);
         let he_response = hdb_helium.insertRows(datastores, rows);
+        console.log(he_response);
         let { written_hashes, skipped_hashes } = heProcessInsertUpdateResponse(he_response);
         convertOperationToTransaction(insert_obj, written_hashes, schema_table.hash_attribute);
 
-        return returnObject(INSERT_ACTION, written_hashes, insert_obj, skipped_hashes);
+        return returnObject(ACTION, written_hashes, insert_obj, skipped_hashes);
     } catch(err){
         throw (err);
     }

@@ -193,6 +193,14 @@ function dropAttributeFromGlobal(drop_attribute_object) {
 }
 
 async function createAttribute(create_attribute_object) {
+    if (!global.hdb_schema[create_attribute_object.schema]) {
+        throw new Error(`schema ${create_attribute_object.schema} does not exist`);
+    }
+
+    if (!global.hdb_schema[create_attribute_object.schema][create_attribute_object.table]) {
+        throw new Error(`table ${create_attribute_object.table} does not exists in schema ${create_attribute_object.schema}`);
+    }
+
     let attribute_structure;
     try {
         if(global.clustering_on
