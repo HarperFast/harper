@@ -17,7 +17,7 @@ class FSReadStream {
      * @param options - this is the options object passed to an fs read stream: https://nodejs.org/dist/latest-v10.x/docs/api/fs.html#fs_fs_createreadstream_path_options
      * @param line_delimiter - the delimiter used to define a new line.   typically \r\n
      */
-    constructor(file_path, options, line_delimiter){
+    constructor(file_path, options, line_delimiter) {
         this.file_path = file_path;
         this.fs_read_stream = fs.createReadStream(file_path, options);
 
@@ -26,17 +26,17 @@ class FSReadStream {
         this.has_end_break = true;
     }
 
-    async run(){
+    async run() {
         this.fs_read_stream.on('data', this.onData.bind(this));
         this.fs_read_stream.on('error', this.onError.bind(this));
         await p_finished(this.fs_read_stream);
     }
 
-    onError(error){
+    onError(error) {
         log.error(error);
     }
 
-    onData(data){
+    onData(data) {
         let data_string = this.data_part += data.toString();
         this.has_end_break = true;
         if(!data_string.endsWith(this.line_delimiter)){
@@ -56,4 +56,4 @@ class FSReadStream {
 
 }
 
-module .exports = FSReadStream;
+module.exports = FSReadStream;

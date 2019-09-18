@@ -1,5 +1,6 @@
 'use strict';
 
+const env = require('../../../../../utility/environment/environmentManager');
 const test_utils = require('../../../../test_utils');
 // try to move to /bin directory so our properties reader doesn't explode.
 test_utils.preTestPrep();
@@ -22,7 +23,7 @@ const fs = require('graceful-fs');
 const moment = require('moment');
 const log = require('../../../../../utility/logging/harper_logger');
 
-const TEST_FS_DIR = getMockFSPath();
+const TEST_FS_DIR = `${getMockFSPath()}/schema`;
 const TEST_SCHEMA = 'test';
 const TEST_SCHEMA_PATH = path.join(TEST_FS_DIR, TEST_SCHEMA);
 const HASH_ATTRIBUTE = 'id';
@@ -87,8 +88,8 @@ describe('Tests for file system module fsDeleteRecordsBefore', () => {
 
         tearDownMockFS();
         log_error_stub = sandbox.stub(log, 'error');
-        fsDeleteRecords_rw.__set__('getBasePath', test_utils.getMockFSPath);
-        fsDeleteRecordsBefore.__set__('getBasePath', test_utils.getMockFSPath);
+        // fsDeleteRecords_rw.__set__('getBasePath', test_utils.getMockFSPath);
+        // fsDeleteRecordsBefore.__set__('getBasePath', test_utils.getMockFSPath);
         fsDeleteRecordsBefore.__set__('fsDeleteRecords', fsDeleteRecords_rw);
         fsDeleteRecords_rw.__set__('fsSearchByHash', search_stub);
     });

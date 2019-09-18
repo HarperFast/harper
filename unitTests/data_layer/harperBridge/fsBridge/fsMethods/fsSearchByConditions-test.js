@@ -4,7 +4,6 @@ const test_utils = require('../../../../test_utils');
 const {
     createMockFS,
     deepClone,
-    getMockFSPath,
     mochaAsyncWrapper,
     tearDownMockFS,
     preTestPrep
@@ -13,10 +12,7 @@ const {
 preTestPrep();
 
 const rewire = require('rewire');
-const getAttributeFileValues_rw = rewire('../../../../../data_layer/harperBridge/fsBridge/fsUtility/getAttributeFileValues');
-getAttributeFileValues_rw.__set__('getBasePath', getMockFSPath);
 let fsSearchByConditions_rw = rewire('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsSearchByConditions');
-fsSearchByConditions_rw.__set__('getBasePath', getMockFSPath);
 const { expect } = require('chai');
 
 const { TEST_DATA_DOG } = require('../../../../test_data');
@@ -93,7 +89,6 @@ describe('fsSearchByCondition', () => {
 
     before(() => {
         setupTestData();
-        fsSearchByConditions_rw.__set__('getAttributeFileValues', getAttributeFileValues_rw);
     });
 
     after(() => {

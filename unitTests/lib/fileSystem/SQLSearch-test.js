@@ -33,7 +33,7 @@ const {
     TEST_DATA_LONGTEXT
 } = require('../../test_data');
 
-const TEST_FS_DIR = getMockFSPath();
+// const TEST_FS_DIR = getMockFSPath();
 const TEST_SCHEMA = 'dev';
 const TEST_SCHEMA_NORTHWND = 'northwnd';
 const HASH_ATTRIBUTE = 'id';
@@ -77,10 +77,10 @@ let error_logger_spy;
 
 function setClassMethodSpies() {
     sandbox = sinon.createSandbox();
-    const getHdbBasePath_stub = function() {
-        return `${TEST_FS_DIR}`;
-    };
-    FileSearch.__set__('base_path', getHdbBasePath_stub)
+    // const getHdbBasePath_stub = function() {
+    //     return `${TEST_FS_DIR}`;
+    // };
+    // FileSearch.__set__('base_path', getHdbBasePath_stub)
     _getColumns_spy = sandbox.spy(FileSearch.prototype, '_getColumns');
     _getTables_spy = sandbox.spy(FileSearch.prototype, '_getTables');
     _conditionsToFetchAttributeValues_spy = sandbox.spy(FileSearch.prototype, '_conditionsToFetchAttributeValues');
@@ -956,62 +956,6 @@ describe('Test FileSystem Class',function() {
             })
             expect(readdir_spy.calledTwice).to.equal(true);
             expect(_stripFileExtension_spy.callCount).to.equal(expected_result_id.length);
-        }));
-    });
-
-    describe('_checkHashValueExists()',function() {
-        it('should return valid hash values', mochaAsyncWrapper(async function() {
-            const test_hash_ids = sortAsc(TEST_DATA_DOG.reduce((acc, col) => {
-                if (col.id < 4) {
-                    acc.push(`${col.id}`);
-                }
-                return acc;
-            }, []));
-            const test_attr_path = path.join(getMockFSPath(), TEST_SCHEMA, TEST_TABLE_DOG, HASH_FOLDER_NAME, HASH_ATTRIBUTE);
-            setupTestInstance();
-
-            const test_result = await test_instance._checkHashValueExists(test_attr_path, test_hash_ids);
-
-            const test_result_sorted = sortAsc(test_result);
-            expect(test_result_sorted).to.deep.equal(test_hash_ids);
-        }));
-
-        it('should not return invalid hash values and log them as errors', mochaAsyncWrapper(async function() {
-            const test_hash_ids = TEST_DATA_DOG.reduce((acc, col) => {
-                if (col.id < 4) {
-                    acc.push(`${col.id}`);
-                }
-                return acc;
-            }, []);
-            const expected_results = deepClone(test_hash_ids);
-            test_hash_ids.push("444");
-            test_hash_ids.push("445");
-            const test_attr_path = path.join(getMockFSPath(), TEST_SCHEMA, TEST_TABLE_DOG, HASH_FOLDER_NAME, HASH_ATTRIBUTE);
-            setupTestInstance();
-
-            const test_result = await test_instance._checkHashValueExists(test_attr_path, test_hash_ids);
-
-            expect(test_result.length).to.equal(expected_results.length);
-            test_result.forEach(val => {
-                expect(expected_results.includes(val)).to.equal(true);
-            })
-            expect(error_logger_spy.callCount).to.equal(2);
-        }));
-
-        it('should return [] and log errors if an incorrect attribute path is passed in', mochaAsyncWrapper(async function() {
-            const test_hash_ids = TEST_DATA_DOG.reduce((acc, col) => {
-                if (col.id < 4) {
-                    acc.push(`${col.id}`);
-                }
-                return acc;
-            }, []);
-            const test_attr_path = path.join(getMockFSPath(), TEST_SCHEMA, TEST_TABLE_DOG, HASH_FOLDER_NAME, "snoopdog");
-            setupTestInstance();
-
-            const test_result = await test_instance._checkHashValueExists(test_attr_path, test_hash_ids);
-
-            expect(test_result.length).to.equal(0);
-            expect(error_logger_spy.callCount).to.equal(test_hash_ids.length);
         }));
     });
 

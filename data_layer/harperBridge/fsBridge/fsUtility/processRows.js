@@ -8,7 +8,7 @@ const hdb_terms = require('../../../../utility/hdbTerms');
 // Search is used in the installer, and the base path may be undefined when search is instantiated.  Dynamically
 // get the base path from the environment manager before using it.
 let hdb_path = function() {
-    return `${env.getHdbBasePath()}/${hdb_terms.HDB_SCHEMA_DIR}/`;
+    return `${env.getHdbBasePath()}/${hdb_terms.SCHEMA_DIR_NAME}/`;
 };
 
 module.exports = processRows;
