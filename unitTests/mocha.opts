@@ -4,6 +4,7 @@
 --exit
 ../unitTests/bin
 ../unitTests/data_layer
+../unitTests/lib
 ../unitTests/security
 ../unitTests/server
 ../unitTests/sqlTranslator
