@@ -1,9 +1,10 @@
 "use strict";
 
-const evaluateTableGetAttributes = require('../../fsBridge/fsUtility/evaluateTableGetAttributes');
-const heConsolidateSearchData = require('../heUtility/heConsolidateSearchData');
+const evaluateTableGetAttributes = require('../../bridgeUtility/evaluateTableGetAttributes');
+const heGenerateDataStoreName = require('../heUtility/heGenerateDataStoreName');
 const heGetAttributeValues = require('../heUtility/heGetAttributeValues');
 const search_validator = require('../../../../validation/searchValidator.js');
+const common_utils = require('../../../../utility/common_utils');
 
 module.exports = heGetDataByHash;
 
@@ -24,7 +25,7 @@ function heGetDataByHash(search_object) {
         const table_info = global.hdb_schema[search_object.schema][search_object.table];
         const final_get_attrs = evaluateTableGetAttributes(search_object.get_attributes, table_info.attributes);
 
-        const hash_values = search_object.hash_values.map(hash => `${hash}`)
+        const hash_values = search_object.hash_values.map(hash => `${hash}`);
         const data_stores = final_get_attrs.map(attr => heGenerateDataStoreName(table_info.schema, table_info.name, attr));
 
         const attributes_data = heGetAttributeValues(hash_values, data_stores);
@@ -45,7 +46,7 @@ function consolidateSearchData(attrs_keys, attrs_data) {
             row_obj[attrs_keys[i]] = common_utils.autoCast(data.toString());
         });
         final_data[row[0]] = row_obj;
-    })
+    });
 
     return final_data;
 }

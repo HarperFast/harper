@@ -56,4 +56,4 @@ class HeliumBridge extends BridgeMethods {
 
 }
 
-module.exports = new HeliumBridge();
+module.exports = HeliumBridge;
