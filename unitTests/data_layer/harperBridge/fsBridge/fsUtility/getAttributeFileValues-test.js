@@ -70,7 +70,6 @@ describe('getAttributeFileValues', () => {
     before(() => {
         setupTestData();
         setupTestSpies();
-        getAttributeFileValues_rw.__set__('getBasePath', getMockFSPath);
     });
 
     afterEach(() => {
@@ -115,12 +114,13 @@ describe('getAttributeFileValues', () => {
     }));
 
     context('Test readAttributeFilePromise function', () => {
-        const test_table_path = `${getMockFSPath()}/${TEST_SCHEMA}/${TEST_TABLE_DOG}`;
+        let test_table_path;
         let test_attr_name;
         let test_hash_val;
         let test_attr_data = {};
 
         before(() => {
+            test_table_path = `${getMockFSPath()}/schema/${TEST_SCHEMA}/${TEST_TABLE_DOG}`;
             test_attr_name = test_attr_names[0];
             test_hash_val = test_hash_values[0];
         });
@@ -182,7 +182,7 @@ describe('getAttributeFileValues', () => {
     });
 
     context('Test readAttributeFiles function', () => {
-        const test_table_path = `${getMockFSPath()}/${TEST_SCHEMA}/${TEST_TABLE_DOG}`;
+        const test_table_path = `${getMockFSPath()}/schema/${TEST_SCHEMA}/${TEST_TABLE_DOG}`;
         let test_attr_name;
 
         before(() => {

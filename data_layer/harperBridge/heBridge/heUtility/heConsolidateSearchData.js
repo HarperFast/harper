@@ -13,7 +13,7 @@ function heConsolidateSearchData(attrs_keys, attrs_data) {
             row_obj[attrs_keys[i]] = common_utils.autoCast(data.toString());
         });
         final_data[row[0]] = row_obj;
-    })
+    });
 
     return final_data;
 }

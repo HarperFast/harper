@@ -4,7 +4,6 @@ const test_utils = require('../../../../test_utils');
 const {
     createMockFS,
     deepClone,
-    getMockFSPath,
     mochaAsyncWrapper,
     tearDownMockFS,
     preTestPrep
@@ -13,10 +12,7 @@ const {
 preTestPrep();
 
 const rewire = require('rewire');
-const getAttributeFileValues_rw = rewire('../../../../../data_layer/harperBridge/fsBridge/fsUtility/getAttributeFileValues');
-getAttributeFileValues_rw.__set__('getBasePath', getMockFSPath);
 let fsGetDataByValue_rw = rewire('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsGetDataByValue');
-fsGetDataByValue_rw.__set__('getBasePath', getMockFSPath);
 const { expect } = require('chai');
 
 const { TEST_DATA_DOG } = require('../../../../test_data');
@@ -64,13 +60,11 @@ describe('fsGetDataByHash', () => {
 
     before(() => {
         setupTestData();
-        fsGetDataByValue_rw.__set__('getAttributeFileValues', getAttributeFileValues_rw);
     });
 
     after(() => {
         tearDownMockFS();
         rewire('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsGetDataByValue');
-        rewire('../../../../../data_layer/harperBridge/fsBridge/fsUtility/getAttributeFileValues');
     });
 
     it('Should return results for each hash value passed', mochaAsyncWrapper(async () => {

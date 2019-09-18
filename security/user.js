@@ -102,6 +102,7 @@ async function addUser(user){
     clean_user.role = search_role[0];
     let add_user_msg = new terms.ClusterMessageObjects.HdbCoreClusterAddUserRequestMessage();
     add_user_msg.user = clean_user;
+    // TODO: Check if this should be removed, postOperation
     hdb_utility.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.ADD_USER, add_user_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
     signalling.signalUserChange({type: 'user'});
     return `${clean_user.username} successfully added`;

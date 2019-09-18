@@ -26,6 +26,10 @@ class ChildStartedSignalObject {
     }
 }
 
+const SCHEMA_CHANGE_MESSAGE = {
+    type: terms.SCHEMA_DIR_NAME
+};
+
 function signalSchemaChange(message){
     try {
         if(!global.isMaster){
@@ -108,6 +112,7 @@ module.exports = {
     signalJobAdded: signalJobAdded,
     JobAddedSignalObject: JobAddedSignalObject,
     signalChildStarted: signalChildStarted,
-    signalRestart: signalRestart
+    signalRestart: signalRestart,
+    SCHEMA_CHANGE_MESSAGE
 };
 

@@ -61,7 +61,6 @@ describe('Tests for file system module fsDeleteRecords', () => {
     let log_error_stub;
 
     before(() => {
-        fs_delete_records.__set__('getBasePath', test_utils.getMockFSPath);
         log_error_stub = sandbox.stub(log, 'error');
     });
 
