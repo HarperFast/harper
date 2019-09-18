@@ -565,7 +565,7 @@ function createSettingsFile(mount_status, callback) {
             `${HDB_SETTINGS_NAMES.CLUSTERING_USER_KEY}=\n` +
             `   ;Specify the file system path to where the Helium volume will reside.  \n` +
             `${HDB_SETTINGS_NAMES.HELIUM_VOLUME_PATH_KEY}=\n` +
-            `   ;specify the host & port where your helium server is running. NOTE for most installs this will not change from loclahost:41000 \n` +
+            `   ;specify the host & port where your helium server is running. NOTE for most installs this will not change from ${hdb_terms.HDB_SETTINGS_DEFAULT_VALUES.HELIUM_SERVER_HOST} \n` +
             `${HDB_SETTINGS_NAMES.HELIUM_SERVER_HOST_KEY}=${hdb_terms.HDB_SETTINGS_DEFAULT_VALUES.HELIUM_SERVER_HOST}`;
 
         winston.info('info', `hdb_props_value ${JSON.stringify(hdb_props_value)}`);

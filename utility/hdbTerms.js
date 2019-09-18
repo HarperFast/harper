@@ -41,7 +41,7 @@ const RESTART_TIMEOUT_MS = 60000;
 const HDB_FILE_PERMISSIONS = 0o700;
 const SCHEMA_DIR_NAME = 'schema';
 
-const HELIUM_URL_PREFIX = 'he://localhost/';
+const HELIUM_URL_PREFIX = 'he://';
 
 const CLUSTERING_FOLDER_NAME = 'clustering';
 const CLUSTERING_PAYLOAD_FILE_NAME = '.scPayload.json';
