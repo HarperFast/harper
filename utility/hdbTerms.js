@@ -42,8 +42,8 @@ const RESTART_TIMEOUT_MS = 60000;
 const HDB_FILE_PERMISSIONS = 0o700;
 const HDB_FILE_SUFFIX = '.hdb';
 const BLOB_FOLDER_NAME = 'blob';
-const HDB_SCHEMA_DIR = 'schema';
 const HDB_TRASH_DIR = 'trash';
+const SCHEMA_DIR_NAME = 'schema';
 
 const HELIUM_URL_PREFIX = 'he://localhost/';
 
@@ -92,6 +92,7 @@ const INTERNAL_SC_CHANNELS = {
     HDB_USERS: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'hdb_users',
     HDB_WORKERS: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'hdb_workers',
     CATCHUP: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'catchup',
+    SCHEMA_CATCHUP: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'schema_catchup',
     WORKER_ROOM: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'cluster_workers'
 };
 
@@ -316,6 +317,16 @@ const CLUSTER_CONNECTION_DIRECTION_ENUM = {
     INBOUND: "INBOUND"
 };
 
+const STORAGE_TYPES_ENUM = {
+    FILE_SYSTEM: 'fs',
+    HELIUM: 'helium'
+};
+
+const LICENSE_VALUES = {
+    API_CALL_DEFAULT: 10000,
+    VERSION_DEFAULT: '2.0.0'
+};
+
 const CLUSTER_EVENTS_DEFS_ENUM = {
     IDENTIFY : 'identify',
     AUTHENTICATE : 'authenticate',
@@ -338,6 +349,7 @@ const CLUSTER_EVENTS_DEFS_ENUM = {
 };
 
 const CLUSTERING_MESSAGE_TYPES = cluster_types.CORE_ROOM_MSG_TYPE_ENUM;
+const ORIGINATOR_SET_VALUE = cluster_types.ORIGINATOR_SET_VALUE;
 
 module.exports = {
     LOCAL_HARPERDB_OPERATIONS,
@@ -382,6 +394,7 @@ module.exports = {
     REG_KEY_FILE_NAME,
     RESTART_TIMEOUT_MS,
     HDB_FILE_PERMISSIONS,
+    SCHEMA_DIR_NAME,
     INSERT_MODULE_ENUM,
     UPGRADE_JSON_FIELD_NAMES_ENUM,
     RESTART_CODE,
@@ -393,12 +406,14 @@ module.exports = {
     CLUSTERING_MESSAGE_TYPES,
     HDB_FILE_SUFFIX,
     BLOB_FOLDER_NAME,
-    HDB_SCHEMA_DIR,
     HDB_TRASH_DIR,
     // Make the message objects available through hdbTerms to keep clustering as modular as possible.
     ClusterMessageObjects,
+    ORIGINATOR_SET_VALUE,
     CLUSTERING_FOLDER_NAME,
     CLUSTERING_PAYLOAD_FILE_NAME,
-    HELIUM_URL_PREFIX
+    HELIUM_URL_PREFIX,
+    LICENSE_VALUES,
+    STORAGE_TYPES_ENUM
 };
 
