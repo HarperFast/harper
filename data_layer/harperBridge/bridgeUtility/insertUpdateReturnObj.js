@@ -2,6 +2,8 @@
 
 module.exports = returnObject;
 
+const INSERT_ACTION = 'inserted';
+
 /**
  * constructs return object for insert and update.
  * @param action
@@ -10,9 +12,6 @@ module.exports = returnObject;
  * @param skipped
  * @returns {{skipped_hashes: *, update_hashes: *, message: string}}
  */
-
-const INSERT_ACTION = 'inserted';
-
 function returnObject(action, written_hashes, object, skipped) {
     let return_object = {
         message: `${action} ${written_hashes.length} of ${object.records.length} records`,

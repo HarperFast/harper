@@ -53,8 +53,10 @@ function heCreateAttribute(create_attribute_obj) {
     let datastore_name = `${create_attribute_obj.schema}/${create_attribute_obj.table}/${create_attribute_obj.attribute}`;
 
     try {
-        hdb_helium.createDataStores([datastore_name]);
+        // add some better logging around this for when datastore already exists.
+        let create_datastore_result = hdb_helium.createDataStores([datastore_name]);
         let insert_response = insertData(insert_object);
+        log.info(create_datastore_result);
         log.info('insert object: ' + JSON.stringify(insert_object));
         log.info('attribute: ' + record.attribute);
         log.info(insert_response);
@@ -80,7 +82,6 @@ function insertData(insert_obj){
         let { schema_table, attributes } = insertUpdateValidate(insert_obj);
         let { datastores, rows } = heProcessRows(insert_obj, attributes, schema_table);
         let he_response = hdb_helium.insertRows(datastores, rows);
-        console.log(he_response);
         let { written_hashes, skipped_hashes } = heProcessInsertUpdateResponse(he_response);
         convertOperationToTransaction(insert_obj, written_hashes, schema_table.hash_attribute);
 
