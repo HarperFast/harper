@@ -1,11 +1,9 @@
 "use strict";
 
-const search_validator = require('../../../../validation/searchValidator.js');
-const common_utils = require('../../../../utility/common_utils');
-
-const evaluateTableGetAttributes = require('../../bridgeUtility/evaluateTableGetAttributes');
+const evaluateTableGetAttributes = require('../../fsBridge/fsUtility/evaluateTableGetAttributes');
+const heConsolidateSearchData = require('../heUtility/heConsolidateSearchData');
 const heGetAttributeValues = require('../heUtility/heGetAttributeValues');
-const heGenerateDataStoreName = require('../heUtility/heGenerateDataStoreName');
+const search_validator = require('../../../../validation/searchValidator.js');
 
 module.exports = heGetDataByHash;
 
