@@ -4,7 +4,6 @@ const test_utils = require('../../../../test_utils');
 const {
     createMockFS,
     deepClone,
-    getMockFSPath,
     mochaAsyncWrapper,
     tearDownMockFS,
     preTestPrep
@@ -14,10 +13,7 @@ preTestPrep();
 
 const { expect } = require('chai');
 const rewire = require('rewire');
-const getAttributeFileValues_rw = rewire('../../../../../data_layer/harperBridge/fsBridge/fsUtility/getAttributeFileValues');
-getAttributeFileValues_rw.__set__('getBasePath', getMockFSPath);
-let fsGetDataByHash_rw = rewire('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsGetDataByHash');
-fsGetDataByHash_rw.__set__('getAttributeFileValues', getAttributeFileValues_rw);
+const fsGetDataByHash_rw = rewire('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsGetDataByHash');
 
 const { TEST_DATA_DOG } = require('../../../../test_data');
 const TEST_SCHEMA = 'dev';

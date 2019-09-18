@@ -24,7 +24,7 @@ function heGetDataByHash(search_object) {
         let table_info = global.hdb_schema[search_object.schema][search_object.table];
         let final_get_attrs = evaluateTableGetAttributes(search_object.get_attributes, table_info.attributes);
 
-        let hash_values = search_object.hash_values.map(hash => `${hash}`)
+        let hash_values = search_object.hash_values.map(hash => `${hash}`);
         let data_stores = final_get_attrs.map(attr => `${table_info.schema}/${table_info.name}/${attr}`);
 
         const attributes_data = heGetAttributeValues(hash_values, data_stores);
