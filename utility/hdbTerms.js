@@ -339,7 +339,7 @@ const CLUSTER_EVENTS_DEFS_ENUM = {
     DIRECTION_CHANGE: 'direction_change'
 };
 
-const HDB_LICENCE_NAME = 'hdb_license';
+const HDB_LICENSE_NAME = 'hdb_license';
 
 const CLUSTERING_MESSAGE_TYPES = cluster_types.CORE_ROOM_MSG_TYPE_ENUM;
 const ORIGINATOR_SET_VALUE = cluster_types.ORIGINATOR_SET_VALUE;
@@ -403,6 +403,6 @@ module.exports = {
     HELIUM_URL_PREFIX,
     LICENSE_VALUES,
     STORAGE_TYPES_ENUM,
-    HDB_LICENCE_NAME
+    HDB_LICENSE_NAME
 };
 
