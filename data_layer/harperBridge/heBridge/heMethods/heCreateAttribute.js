@@ -24,7 +24,6 @@ function heCreateAttribute(create_attribute_obj) {
     }
 
     let attributes_obj_array = global.hdb_schema[create_attribute_obj.schema][create_attribute_obj.table]['attributes'];
-
     for (let attribute of attributes_obj_array) {
         if (attribute.attribute === create_attribute_obj.attribute) {
             throw new Error(`attribute '${attribute.attribute}' already exists in ${create_attribute_obj.schema}.${create_attribute_obj.table}`);
@@ -50,11 +49,14 @@ function heCreateAttribute(create_attribute_obj) {
         hash_attribute: hdb_terms.SYSTEM_TABLE_HASH,
         records: [record]
     };
-
     let datastore_name = heGenerateDataStoreName(create_attribute_obj.schema, create_attribute_obj.table, create_attribute_obj.attribute);
 
     try {
         let create_datastore_result = hdb_helium.createDataStores([datastore_name]);
+        if (create_datastore_result[0][1] !== hdb_terms.HELIUM_RESPONSE_CODES.HE_ERR_OK) {
+            throw new Error(`There was an error creating datastore: ${create_datastore_result[0][1]}`);
+        }
+
         let insert_response = insertData(insert_object);
         log.info(create_datastore_result);
         log.info('insert object: ' + JSON.stringify(insert_object));
