@@ -76,9 +76,9 @@ function checkAttributes(hdb_auth_header, table_schema, data_attributes) {
  */
 function createNewAttribute(hdb_auth_header,schema, table, attribute) {
     let attribute_object = {
-        schema:schema,
-        table:table,
-        attribute:attribute
+        schema,
+        table,
+        attribute
     };
 
     if(hdb_auth_header){
@@ -89,7 +89,7 @@ function createNewAttribute(hdb_auth_header,schema, table, attribute) {
         createAttribute(attribute_object);
     } catch(e){
         //if the attribute already exists we do not want to stop the insert
-        if(typeof e === 'object' && e.message !== undefined && e.message.includes(ATTRIBUTE_ALREADY_EXISTS)){
+        if(e.message.includes(ATTRIBUTE_ALREADY_EXISTS)){
             log.warn(e);
         } else {
             throw e;

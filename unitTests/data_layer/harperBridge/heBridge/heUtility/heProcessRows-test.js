@@ -7,6 +7,7 @@ const heProcessRows = require('../../../../../data_layer/harperBridge/heBridge/h
 const hdb_terms = require('../../../../../utility/hdbTerms');
 const chai = require('chai');
 const { expect } = chai;
+const sinon = require('sinon');
 
 const SCHEMA_TABLE_TEST = {
     id: "c43762be-4943-4d10-81fb-1b857ed6cf3a",
@@ -63,11 +64,22 @@ const LONG_CHAR_TEST = "z2xFuWBiQgjAAAzgAK80e35FCuFzNHpicBWzsWZW055mFHwBxdU5yE5K
 
 describe('Tests for Helium utility heProcessRows', () => {
     let insert_obj_single;
+    let sandbox = sinon.createSandbox()
+
+    before(() => {
+        sandbox.stub(Date, 'now').returns('80443');
+    });
 
     it('Test return obj is as expected for multiple uneven records', () => {
         let expected_result = {
-            datastores: [ "dev/dog/name", "dev/dog/breed", "dev/dog/id", "dev/dog/age", "dev/dog/height" ],
-            rows: [ [ "8", [ "Harper", "Mutt", "8", 5, null ] ], [ "9", [ "Penny", "Mutt", "9", 5, 145 ] ], [ "12", [ "David", "Mutt", "12", null, null ] ], [ "10", [ "Rob", "Mutt", "10", 5, 145 ] ] ]
+            datastores: [ "dev/dog/name", "dev/dog/breed", "dev/dog/id", "dev/dog/age",
+                "dev/dog/height",  "dev/dog/__createdtime__",  "dev/dog/__updatedtime__"],
+            rows: [
+                [ "8", [ "Harper", "Mutt", "8", 5, null, "80443", "80443" ] ],
+                [ "9", [ "Penny", "Mutt", "9", 5, 145, "80443", "80443" ] ],
+                [ "12", [ "David", "Mutt", "12", null, null, "80443", "80443" ] ],
+                [ "10", [ "Rob", "Mutt", "10", 5, 145, "80443", "80443" ] ]
+            ]
         };
         let result = heProcessRows(INSERT_OBJECT_TEST, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST);
 
@@ -85,8 +97,8 @@ describe('Tests for Helium utility heProcessRows', () => {
             },
         ];
         let expected_result = {
-            datastores: [ "dev/dog/name", "dev/dog/breed", "dev/dog/id", "dev/dog/age", "dev/dog/height" ],
-            rows: [ [ "8", [ "Harper", "Mutt", "8", 5, null ] ] ]
+            datastores: [ "dev/dog/name", "dev/dog/breed", "dev/dog/id", "dev/dog/age", "dev/dog/height", "dev/dog/__createdtime__",  "dev/dog/__updatedtime__" ],
+            rows: [ [ "8", [ "Harper", "Mutt", "8", 5, null, "80443", "80443" ] ] ]
         };
         let result = heProcessRows(insert_obj_single, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST);
 
@@ -95,10 +107,22 @@ describe('Tests for Helium utility heProcessRows', () => {
 
     it('Test return obj is as expected for a single datastore and row', () => {
         let expected_result = {
-            datastores: [ "dev/dog/id" ],
-            rows: [ [ "8", [ "8" ] ] ]
+            datastores: [ "dev/dog/id", "dev/dog/__createdtime__",  "dev/dog/__updatedtime__" ],
+            rows: [ [ "8", [ "8", "80443", "80443" ] ] ]
         };
         let result = heProcessRows(insert_obj_single, ["id"], SCHEMA_TABLE_TEST);
+
+        expect(result).to.eql(expected_result);
+    });
+
+    it('Test return obj is as expected for a single datastore and row', () => {
+        let update_obj = test_utils.deepClone(insert_obj_single);
+        update_obj.operation = 'update';
+        let expected_result = {
+            datastores: [ "dev/dog/id", "dev/dog/__createdtime__",  "dev/dog/__updatedtime__" ],
+            rows: [ [ "8", [ "8", null, "80443" ] ] ]
+        };
+        let result = heProcessRows(update_obj, ["id"], SCHEMA_TABLE_TEST);
 
         expect(result).to.eql(expected_result);
     });
@@ -120,7 +144,7 @@ describe('Tests for Helium utility heProcessRows', () => {
         }
 
         expect(error).to.be.an.instanceOf(Error);
-        expect(error.message).to.equal('transaction aborted due to record(s) with no hash value.');
+        expect(error.message).to.equal('transaction aborted due to record(s) with no hash value, check log for more info');
     });
 
     it('Test error is thrown if hash is over max size', () => {
@@ -141,7 +165,7 @@ describe('Tests for Helium utility heProcessRows', () => {
         }
 
         expect(error).to.be.an.instanceOf(Error);
-        expect(error.message).to.equal(`transaction aborted due to record(s) with a hash value that exceeds ${hdb_terms.INSERT_MODULE_ENUM.MAX_CHARACTER_SIZE} bytes.`);
+        expect(error.message).to.equal(`transaction aborted due to record(s) with a hash value that exceeds ${hdb_terms.INSERT_MODULE_ENUM.MAX_CHARACTER_SIZE} bytes, check log for more info`);
     });
 
     it('Test error is thrown if hash contains forward slash', () => {
@@ -162,7 +186,7 @@ describe('Tests for Helium utility heProcessRows', () => {
         }
 
         expect(error).to.be.an.instanceOf(Error);
-        expect(error.message).to.equal('transaction aborted due to record(s) with a hash value that contains a forward slash.');
+        expect(error.message).to.equal('transaction aborted due to record(s) with a hash value that contains a forward slash, check log for more info');
     });
 
     it('Test error is thrown if attribute name is over max size', () => {
