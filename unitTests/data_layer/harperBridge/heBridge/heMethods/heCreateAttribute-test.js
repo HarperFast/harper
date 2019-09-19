@@ -19,16 +19,6 @@ try {
 }
 
 const hdb_helium = heliumUtils.initializeHelium();
-const system_datastores = [ "system/hdb_table/id", "system/hdb_table/name", "system/hdb_table/hash_attribute",
-    "system/hdb_table/schema", "system/hdb_table/residence", "system/hdb_attribute/id", "system/hdb_attribute/schema",
-    "system/hdb_attribute/table", "system/hdb_attribute/attribute", "system/hdb_attribute/schema_table",
-    "system/hdb_schema/name", "system/hdb_schema/createddate", "system/hdb_user/username", "system/hdb_user/password",
-    "system/hdb_user/role", "system/hdb_user/active", "system/hdb_user/hash", "system/hdb_role/id", "system/hdb_role/role",
-    "system/hdb_role/permission", "system/hdb_job/id", "system/hdb_job/user", "system/hdb_job/type",
-    "system/hdb_job/status", "system/hdb_job/start_datetime", "system/hdb_job/end_datetime", "system/hdb_job/job_body",
-    "system/hdb_job/message", "system/hdb_job/created_datetime", "system/hdb_license/license_key", "system/hdb_license/company",
-    "system/hdb_info/info_id", "system/hdb_info/data_version_num", "system/hdb_info/hdb_version_num", "system/hdb_nodes/name",
-    "system/hdb_nodes/host", "system/hdb_nodes/operation", "system/hdb_nodes/port", "system/hdb_nodes/subscriptions" ];
 
 const CREATE_ATTR_OBJ_TEST = {
     operation: "create_attribute",
@@ -53,7 +43,7 @@ const INSERT_OBJ_TEST = {
 
 function dropTestDataStores() {
     try {
-        hdb_helium.deleteDataStores(system_datastores);
+        test_utils.deleteSystemDataStores(hdb_helium);
         hdb_helium.deleteDataStores([`${CREATE_ATTR_OBJ_TEST.schema}/${CREATE_ATTR_OBJ_TEST.table}/${CREATE_ATTR_OBJ_TEST.attribute}`]);
     } catch(err) {
         console.log(err);
