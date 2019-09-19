@@ -70,6 +70,10 @@ describe('Tests for Helium utility heProcessRows', () => {
         sandbox.stub(Date, 'now').returns('80443');
     });
 
+    after(() => {
+        sandbox.restore();
+    });
+
     it('Test return obj is as expected for multiple uneven records', () => {
         let expected_result = {
             datastores: [ "dev/dog/name", "dev/dog/breed", "dev/dog/id", "dev/dog/age",
