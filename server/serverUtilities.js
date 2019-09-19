@@ -42,6 +42,7 @@ module.exports = {
     chooseOperation,
     getOperationFunction,
     processLocalTransaction,
+    postOperationHandler,
     UNAUTH_RESPONSE,
     UNAUTHORIZED_TEXT
 };
@@ -127,8 +128,8 @@ function postOperationHandler(request_body, result, orig_req) {
     switch(request_body.operation) {
         case terms.OPERATIONS_ENUM.INSERT:
             try {
-                let cluster_msg = convertCRUDOperationToTransaction(request_body.records, result.inserted_hashes, global.hdb_schema[request_body.schema][request_body.table].hash_attribute);
-                if(cluster_msg) {
+                transaction_msg = convertCRUDOperationToTransaction(request_body.records, result.inserted_hashes, global.hdb_schema[request_body.schema][request_body.table].hash_attribute);
+                if(transaction_msg) {
                     if(orig_req) {
                         concatSourceMessageHeader(transaction_msg, orig_req);
                     }
@@ -141,8 +142,8 @@ function postOperationHandler(request_body, result, orig_req) {
             break;
         case terms.OPERATIONS_ENUM.DELETE:
             try {
-                let cluster_msg = convertCRUDOperationToTransaction(request_body.records, result.inserted_hashes, global.hdb_schema[request_body.schema][request_body.table].hash_attribute);
-                if(cluster_msg) {
+                transaction_msg = convertCRUDOperationToTransaction(request_body.records, result.inserted_hashes, global.hdb_schema[request_body.schema][request_body.table].hash_attribute);
+                if(transaction_msg) {
                     if(orig_req) {
                         concatSourceMessageHeader(transaction_msg, orig_req);
                     }
@@ -155,8 +156,8 @@ function postOperationHandler(request_body, result, orig_req) {
             break;
         case terms.OPERATIONS_ENUM.UPDATE:
             try {
-                let cluster_msg = convertCRUDOperationToTransaction(request_body, result.update_hashes, global.hdb_schema[request_body.schema][request_body.table].hash_attribute);
-                if(cluster_msg) {
+                transaction_msg = convertCRUDOperationToTransaction(request_body, result.update_hashes, global.hdb_schema[request_body.schema][request_body.table].hash_attribute);
+                if(transaction_msg) {
                     if(orig_req) {
                         concatSourceMessageHeader(transaction_msg, orig_req);
                     }
