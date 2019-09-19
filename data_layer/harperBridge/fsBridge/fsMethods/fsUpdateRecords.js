@@ -1,7 +1,7 @@
 'use strict';
 
 const fsSearchByHash = require('./fsSearchByHash');
-const insertUpdateValidate = require('../fsUtility/insertUpdateValidate');
+const insertUpdateValidate = require('../../bridgeUtility/insertUpdateValidate');
 const processRows = require('../fsUtility/processRows');
 const processData = require('../fsUtility/processData');
 const unlink = require('../../../../utility/fs/unlink');

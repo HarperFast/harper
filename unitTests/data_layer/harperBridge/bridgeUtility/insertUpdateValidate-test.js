@@ -1,8 +1,8 @@
 'use strict';
 
 const rewire = require('rewire');
-const test_utils = require('../../../../test_utils');
-const insertUpdateValidate = rewire('../../../../../data_layer/harperBridge/fsBridge/fsUtility/insertUpdateValidate');
+const test_utils = require('../../../test_utils');
+const insertUpdateValidate = rewire('../../../../data_layer/harperBridge/bridgeUtility/insertUpdateValidate');
 const chai = require('chai');
 const sinon = require('sinon');
 const sinon_chai = require('sinon-chai');
