@@ -427,4 +427,3 @@ module.exports = {
     HELIUM_RESPONSE_CODES,
     HELIUM_TIME_STAMP_ENUM
 };
-
