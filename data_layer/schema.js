@@ -58,8 +58,7 @@ async function createSchema(schema_create_object) {
         let schema_structure = await createSchemaStructure(schema_create_object);
         let create_schema_msg = hdb_util.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
         create_schema_msg.transaction = schema_create_object;
-        hdb_util.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_SCHEMA, create_schema_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
-        signalling.signalSchemaChange({type: 'schema'});
+        signalling.signalSchemaChange(signalling.SCHEMA_CHANGE_MESSAGE);
 
         return schema_structure;
     } catch(err) {
@@ -111,8 +110,7 @@ async function createTable(create_table_object) {
         let create_table_structure = await createTableStructure(create_table_object);
         let create_table_msg = hdb_util.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
         create_table_msg.transaction = create_table_object;
-        hdb_util.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_TABLE, create_table_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
-        signalling.signalSchemaChange({type: 'schema'});
+        signalling.signalSchemaChange(signalling.SCHEMA_CHANGE_MESSAGE);
 
         return create_table_structure;
     } catch(err) {
@@ -191,7 +189,7 @@ async function insertTable(table, create_table_object) {
 async function dropSchema(drop_schema_object) {
     try {
         let move_schema_struc_trash = await moveSchemaStructureToTrash(drop_schema_object);
-        signalling.signalSchemaChange({type: 'schema'});
+        signalling.signalSchemaChange(signalling.SCHEMA_CHANGE_MESSAGE);
         delete global.hdb_schema[drop_schema_object.schema];
 
         return move_schema_struc_trash;
@@ -243,7 +241,7 @@ async function moveSchemaStructureToTrash(drop_schema_object) {
 async function dropTable(drop_table_object) {
     try {
         let move_table_struc_trash = await moveTableStructureToTrash(drop_table_object);
-        signalling.signalSchemaChange({type: 'schema'});
+        signalling.signalSchemaChange(signalling.SCHEMA_CHANGE_MESSAGE);
 
         return move_table_struc_trash;
     } catch(err) {
@@ -672,15 +670,14 @@ async function createAttribute(create_attribute_object) {
             };
 
             hdb_util.callProcessSend(payload);
-            signalling.signalSchemaChange({type: 'schema'});
+            signalling.signalSchemaChange(signalling.SCHEMA_CHANGE_MESSAGE);
 
             return attribute_structure;
         }
         attribute_structure = await createAttributeStructure(create_attribute_object);
         let create_att_msg = hdb_util.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
         create_att_msg.transaction = create_attribute_object;
-        hdb_util.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, create_att_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
-        signalling.signalSchemaChange({type: 'schema'});
+        signalling.signalSchemaChange(signalling.SCHEMA_CHANGE_MESSAGE);
 
         return attribute_structure;
     } catch(err) {

@@ -140,7 +140,7 @@ class CoreRoom extends RoomIF {
                         if(!get_cluster_status_msg.hdb_header) {
                             get_cluster_status_msg.hdb_header = {};
                             get_cluster_status_msg.hdb_header['worker_originator_id'] = worker.id;
-                            get_cluster_status_msg.__originator[env.getProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)] = '';
+                            get_cluster_status_msg.__originator[env.getProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)] = hdb_terms.ORIGINATOR_SET_VALUE;
                             // copy the hdb_header since we can't use publishToRoom()
                             if(req.hdb_header) {
                                 let header_keys = Object.keys(req.hdb_header);
@@ -214,8 +214,6 @@ class CoreRoom extends RoomIF {
                 break;
             }
             case types.CORE_ROOM_MSG_TYPE_ENUM.HDB_TRANSACTION: {
-                // This is where we will send transactions to the cluster.
-                log.info(`Sending transaction to cluster.`);
                 break;
             }
 

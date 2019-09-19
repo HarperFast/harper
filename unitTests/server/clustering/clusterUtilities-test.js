@@ -10,7 +10,7 @@ test_util.preTestPrep();
 const path = require(`path`);
 
 const CLUSTERING_PORT = 12345;
-const ADD_NODE = {name:'test', host:"localhost", port:12345};
+const ADD_NODE = {name:'test', host:"192.161.0.1", port:12345};
 const SUBSCRIPTIONS_OBJECT = {channel:'dev:dog', publish:true, subscribe:true};
 const REMOVE_NODE = {name:'test'};
 const CONFIGURE_SUCCESS_RESPONSE = 'Successfully configured and loaded clustering configuration.  Some configurations may require a restart of HarperDB to take effect.';
@@ -23,6 +23,7 @@ describe('Test clusterUtilities' , ()=> {
         it('Pass in addNode with localhost and same port as server, expect error', () => {
             let revert = cluster_utils.__set__('CLUSTER_PORT', CLUSTERING_PORT);
             let add_node = test_util.deepClone(ADD_NODE);
+            add_node.host = 'localhost';
             assert.rejects(cluster_utils.addNode(add_node), {message: "Cannot add a node that matches the hosts clustering config."});
             revert();
         });
@@ -141,30 +142,39 @@ describe('Test clusterUtilities' , ()=> {
         });
 
         it('Pass in  subscription as empty array on node, get success', () => {
+            let port_revert = cluster_utils.__set__('CLUSTER_PORT', CLUSTERING_PORT);
+
             let obj = test_util.deepClone(ADD_NODE);
             obj.subscriptions = [];
             assert.doesNotThrow(() => {
                 cluster_utils_node_validation(obj);
             });
+
+            port_revert();
         });
 
         it('Pass in no subscription, get success', () => {
+            let port_revert = cluster_utils.__set__('CLUSTER_PORT', CLUSTERING_PORT);
             let obj = test_util.deepClone(ADD_NODE);
             delete obj.subscriptions;
             assert.doesNotThrow(() => {
                 cluster_utils_node_validation(obj);
             });
+            port_revert();
         });
 
         it('Pass in one good subscription, get success', () => {
+            let port_revert = cluster_utils.__set__('CLUSTER_PORT', CLUSTERING_PORT);
             let obj = test_util.deepClone(ADD_NODE);
             obj.subscriptions = [SUBSCRIPTIONS_OBJECT];
             assert.doesNotThrow(() => {
                 cluster_utils_node_validation(obj);
             });
+            port_revert();
         });
 
         it('Pass in two good subscription, get success', () => {
+            let port_revert = cluster_utils.__set__('CLUSTER_PORT', CLUSTERING_PORT);
             let second_object = test_util.deepClone(SUBSCRIPTIONS_OBJECT);
             second_object.channel = 'dev:breed';
             let obj = test_util.deepClone(ADD_NODE);
@@ -172,6 +182,7 @@ describe('Test clusterUtilities' , ()=> {
             assert.doesNotThrow(() => {
                 cluster_utils_node_validation(obj);
             });
+            port_revert();
         });
 
         it('Pass in empty subscription, get error', () => {
