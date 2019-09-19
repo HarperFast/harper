@@ -32,7 +32,6 @@ describe('Tests for file system module fsDropSchema', () => {
     });
 
     context('Tests for dropSchema function', () => {
-        let p_search_by_value_stub;
         let move_schema_to_trash_stub;
         let move_schema_to_trash_rw;
         let delete_attr_struc_stub;
@@ -43,21 +42,17 @@ describe('Tests for file system module fsDropSchema', () => {
             schema: terms.SYSTEM_SCHEMA_NAME,
             hash_values: [schema]
         };
-        let search_obj = {
-            schema: terms.SYSTEM_SCHEMA_NAME,
-            table: terms.SYSTEM_TABLE_NAMES.TABLE_TABLE_NAME,
-            hash_attribute: terms.SYSTEM_TABLE_HASH,
-            search_attribute: terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_SCHEMA_KEY,
-            search_value: schema,
-            get_attributes: ['id']
+
+        let search_results_tests = {
+            [DROP_SCHEMA_OBJ_TEST.schema]: [
+                {id: "12d34"}
+                ]
         };
-        let search_results_tests = [{id: "12d34"}];
         
         before(() => {
-            p_search_by_value_stub = sandbox.stub().resolves(search_results_tests);
             move_schema_to_trash_stub = sandbox.stub();
             delete_attr_struc_stub = sandbox.stub();
-            fsDropSchema.__set__('p_search_by_value', p_search_by_value_stub);
+            fsDropSchema.__set__('global.hdb_schema', search_results_tests);
             move_schema_to_trash_rw = fsDropSchema.__set__('moveSchemaToTrash', move_schema_to_trash_stub);
             fsDropSchema.__set__('deleteAttrStructure', delete_attr_struc_stub);
             log_error_spy = sandbox.spy(log, 'error');
@@ -72,14 +67,13 @@ describe('Tests for file system module fsDropSchema', () => {
             await fsDropSchema(DROP_SCHEMA_OBJ_TEST);
 
             expect(fs_delete_records_stub).to.have.been.calledWith(delete_schema_obj);
-            expect(p_search_by_value_stub).to.have.been.calledWith(search_obj);
-            expect(move_schema_to_trash_stub).to.have.been.calledWith(DROP_SCHEMA_OBJ_TEST, search_results_tests);
+            expect(move_schema_to_trash_stub).to.have.been.calledWith(DROP_SCHEMA_OBJ_TEST, search_results_tests[DROP_SCHEMA_OBJ_TEST.schema]);
             expect(delete_attr_struc_stub).to.have.been.calledWith(DROP_SCHEMA_OBJ_TEST);
         });
 
         it('Error from search is caught and logged', async () => {
             let error_msg = 'Error searching for records';
-            p_search_by_value_stub.throws(new Error(error_msg));
+            delete_attr_struc_stub.throws(new Error(error_msg));
             let test_err_result = await test_utils.testError(fsDropSchema(DROP_SCHEMA_OBJ_TEST), error_msg);
 
             expect(test_err_result).to.be.true;

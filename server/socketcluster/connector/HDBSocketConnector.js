@@ -1,12 +1,22 @@
 const SocketConnector = require('./SocketConnector');
-const get_operation_function = require('../../serverUtilities').getOperationFunction;
+const server_utilities = require('../../serverUtilities');
 const log = require('../../../utility/logging/harper_logger');
 const terms = require('../../../utility/hdbTerms');
 const ClusterStatusEmitter = require('../../../events/ClusterStatusEmitter');
-const {inspect} = require('util');
+const {promisify, inspect} = require('util');
+const global_schema = require('../../../utility/globalSchema');
 const operation_function_caller = require('../../../utility/OperationFunctionCaller');
 const common_utils = require(`../../../utility/common_utils`);
 const env = require('../../../utility/environment/environmentManager');
+const sc_utils = require('../util/socketClusterUtils');
+
+const p_set_schema_to_global = promisify(global_schema.setSchemaDataToGlobal);
+
+const ENTITY_TYPE_ENUM = {
+    SCHEMA: `schema`,
+    TABLE: `table`,
+    ATTRIBUTE: `attribute`
+};
 
 class HDBSocketConnector extends SocketConnector{
     constructor(socket_client, additional_info, options, credentials){
@@ -16,6 +26,7 @@ class HDBSocketConnector extends SocketConnector{
     }
 
     connectHandler(status){
+        // TODO: The worker watch function is now async, may need to callbackify this.
         this.subscribe(this.socket.id, this.hdbWorkerWatcher.bind(this));
     }
 
@@ -24,7 +35,7 @@ class HDBSocketConnector extends SocketConnector{
     }
 
     // When a response is sent from clustering, it ends up here.
-    hdbWorkerWatcher(req) {
+    async hdbWorkerWatcher(req) {
         try {
             // Assume the message contains an operation, but in the case of cluster status we need to act a little differently.
             if(req.type) {
@@ -36,14 +47,22 @@ class HDBSocketConnector extends SocketConnector{
                     case terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION: {
                         log.trace(`Received transaction message with operation: ${req.transaction.operation}`);
                         log.trace(`request: ${inspect(req)}`);
-                        let {operation_function} = get_operation_function(req.transaction);
-                        operation_function_caller.callOperationFunctionAsAwait(operation_function, req.transaction, this.postOperationHandler)
-                            .then((result) => {
+
+                        if(req && req.catchup_schema) {
+                            log.trace('Found schema in transaction message, processing.');
+                            await this.compareSchemas(req.catchup_schema);
+                        }
+
+                        if(req && req.transaction && Object.keys(req.transaction).length > 0) {
+                            let {operation_function} = server_utilities.getOperationFunction(req.transaction);
+                            try {
+                                let result = await operation_function_caller.callOperationFunctionAsAwait(operation_function, req.transaction, this.postOperationHandler, req);
                                 log.debug(result);
-                            })
-                            .catch((err) => {
+                            } catch(err) {
+                                log.info('There was an error processing an HDB_TRANSACTION');
                                 log.error(err);
-                            });
+                            }
+                        }
                         break;
                     }
                     default: {
@@ -52,40 +71,266 @@ class HDBSocketConnector extends SocketConnector{
                     }
                 }
             } else {
-                let {operation_function} = get_operation_function(req);
-                operation_function(req, (err, result) => {
-                    //TODO possibly would be good to have a queue on the SC side holding pending transactions, on error we send back stating a fail.
-                    if (err) {
-                        log.error(err);
-                    } else {
-                        log.debug(result);
-                    }
-                });
+                let {operation_function} = server_utilities.getOperationFunction(req);
+                try {
+                    let result = await operation_function(req);
+                    log.debug(result);
+                } catch(err) {
+                    log.error('There was an error processing a transaction');
+                    log.error(err);
+                }
             }
         } catch(e){
             log.error(e);
         }
     }
-    postOperationHandler(request_body, result) {
+
+    /**
+     * Compare the schemas stored in global.hdb_schema vs the schemas contained in the catchup response.  Create anything missing.
+     * @param message_schema_object
+     * @returns {Promise<void>}
+     */
+    async compareSchemas(message_schema_object) {
+        log.trace('in compareSchema');
+        if(!message_schema_object) {
+            let msg = 'Invalid parameter in compareSchemas';
+            log.error(msg);
+        }
+        try {
+            if (!global.hdb_schema) {
+                try {
+                    log.info('Empty global schema, setting schema.');
+                    await p_set_schema_to_global();
+                } catch (err) {
+                    log.error(`Error settings schema to global.`);
+                    log.error(err);
+                }
+            }
+            let schema_keys = Object.keys(message_schema_object);
+            for(let i=0; i<schema_keys.length; i++) {
+                let curr_schema_name = schema_keys[i];
+                if(!global.hdb_schema[curr_schema_name]) {
+                    let msg = this.generateOperationFunctionCall(ENTITY_TYPE_ENUM.SCHEMA, message_schema_object[curr_schema_name], curr_schema_name);
+                    let {operation_function} = server_utilities.getOperationFunction(msg);
+                    log.trace(`Calling operation in compare schema for schema: ${msg.schema}`);
+                    // Pass a null followup function so we don't send a schema update message back to the sender.
+                    let result = await operation_function_caller.callOperationFunctionAsAwait(operation_function, msg, null);
+                    // need to wait for the schema to be added to global.hdb_schema, or compareTableKeys will fail.
+                    await p_set_schema_to_global();
+                }
+                // no point in doing system schema.
+                if(curr_schema_name !== terms.SYSTEM_SCHEMA_NAME) {
+                    await this.compareTableKeys(message_schema_object[curr_schema_name], curr_schema_name);
+                }
+            }
+        } catch(err) {
+            log.error('Error comparing schemas.');
+            log.error(err);
+        }
+    }
+
+    async compareTableKeys(schema_object, schema_name) {
+        log.trace('in compareTableKeys');
+        if(!schema_object || !schema_name) {
+            let msg = 'Invalid parameters in compareTableKeys.';
+            log.error(msg);
+            throw new Error(msg);
+        }
+        try {
+            let table_keys = Object.keys(schema_object);
+            for(let i=0; i<table_keys.length; i++) {
+                let curr_table_name = table_keys[i];
+                if(!global.hdb_schema[schema_name] || !global.hdb_schema[schema_name][curr_table_name]) {
+                    let msg = this.generateOperationFunctionCall(ENTITY_TYPE_ENUM.TABLE, schema_object[curr_table_name], schema_name, curr_table_name);
+                    let {operation_function} = server_utilities.getOperationFunction(msg);
+                    log.trace(`Calling createTable for table: ${msg.table}`);
+                    let result = await operation_function_caller.callOperationFunctionAsAwait(operation_function, msg, null);
+                    // need to wait for the table to be added to global.hdb_schema, or compareAttributeKeys will fail.
+                    await p_set_schema_to_global();
+                }
+                await this.compareAttributeKeys(schema_object[curr_table_name], schema_name, curr_table_name);
+            }
+        } catch(err) {
+            log.error(err);
+        }
+    }
+
+    /**
+     * Compares the attributes with a table passed in with the matching table in global.hdb_schema.  If there are
+     * additional attributes in the passed table object, each new attribute will be created.
+     * @param table_object - A table description object
+     * @param schema_name - The schema the specified table should reside in
+     * @param table_name - The name of the table being compared.
+     * @returns {Promise<void>}
+     */
+    async compareAttributeKeys(table_object, schema_name, table_name) {
+        log.trace('In compareAttributeKeys');
+        if(!table_object || !schema_name || !table_name) {
+            throw new Error('Invalid parameter passed to compareAttributeKeys');
+        }
+
+        if(!global.hdb_schema[schema_name] || !global.hdb_schema[schema_name][table_name]) {
+            throw new Error(`Schema:${schema_name} or table: ${table_name} not found in compareAttributeKeys`);
+        }
+        try {
+            for(let i=0; i< table_object.attributes.length; i++) {
+                let curr_attribute_name = table_object.attributes[i].attribute;
+                // Attributes may not yet exist if this is a new table. If so,create the first one and then iterate in the
+                // else statement for all the rest of the attributes
+                if(!global.hdb_schema[schema_name][table_name].attributes) {
+                    let msg = this.generateOperationFunctionCall(ENTITY_TYPE_ENUM.ATTRIBUTE, table_object.attributes[i], schema_name, table_name);
+                    let {operation_function} = server_utilities.getOperationFunction(msg);
+                    if(!msg || !operation_function) {
+                        // OK to be caught locally, just want to exit processing.
+                        throw new Error('Invalid operation function in compareAttributeKeys.');
+                    }
+                    log.trace(`Calling create Attribute on attribute: ${msg.attribute}`);
+                    let result = await operation_function_caller.callOperationFunctionAsAwait(operation_function, msg, null);
+                } else {
+                    let create_attribute = true;
+                    if(!global.hdb_schema[schema_name][table_name].attributes) {
+                        // should never get here, but log an error if we do
+                        throw new Error(`attributes for schema: ${schema_name} and table: ${table_name} do not exist in compareAttributeKeys.`);
+                    }
+                    for(let i=0; i<global.hdb_schema[schema_name][table_name].attributes.length; i++) {
+                        if(global.hdb_schema[schema_name][table_name].attributes[i].attribute === curr_attribute_name) {
+                            // this attribute already exists, break out of the loop and move onto the next attribute.
+                            create_attribute = false;
+                            break;
+                        }
+                    }
+                    if(create_attribute) {
+                        log.trace(`compareAttributeKeys Creating attribute: ${table_object.attributes[i].attribute}`);
+                        let msg = this.generateOperationFunctionCall(ENTITY_TYPE_ENUM.ATTRIBUTE, table_object.attributes[i], schema_name, table_name);
+                        let {operation_function} = server_utilities.getOperationFunction(msg);
+                        try {
+                            let result = await operation_function_caller.callOperationFunctionAsAwait(operation_function, msg, null);
+                        } catch(err) {
+                            log.info(`There was a problem creating attribute ${msg.attribute}.  It probably already exists.`);
+                            // no-op, some attributes may already exist so do nothing
+                        }
+                    }
+                }
+            }
+        } catch(err) {
+            log.error(`Failed to create attribute in table: ${table_name}`);
+            log.error(err);
+        }
+    }
+
+    /**
+     This function generates an object that resembles an API message call in order to create schema/table/attributes that
+     are found missing during a catchup call.  Using this allows us to avoid importing all the create functions and just
+     use the api as it stands.
+     **/
+    generateOperationFunctionCall(entity_type_enum, new_entity_object, target_schema_name, target_table_name) {
+        log.trace(`Processing generateOperationFunctionCall`);
+        if(!entity_type_enum || !new_entity_object) {
+            log.info(`Invalid parameter for getOperationFunctionCall`);
+            return null;
+        }
+        let api_msg = {};
+        switch(entity_type_enum) {
+            case ENTITY_TYPE_ENUM.SCHEMA:
+                api_msg.operation = terms.OPERATIONS_ENUM.CREATE_SCHEMA;
+                api_msg.schema = target_schema_name;
+                log.trace(`Generated create schema call`);
+                break;
+            case ENTITY_TYPE_ENUM.TABLE:
+                api_msg.operation = terms.OPERATIONS_ENUM.CREATE_TABLE;
+                api_msg.schema = target_schema_name;
+                api_msg.table = target_table_name;
+                api_msg.hash_attribute = new_entity_object.hash_attribute;
+                log.trace(`Generated create table call`);
+                break;
+            case ENTITY_TYPE_ENUM.ATTRIBUTE:
+                api_msg.operation = terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE;
+                api_msg.schema = target_schema_name;
+                api_msg.table = target_table_name;
+                api_msg.attribute = new_entity_object.attribute;
+                log.trace(`Generated create attribute call`);
+                break;
+            default:
+                break;
+        }
+        return api_msg;
+    }
+
+    postOperationHandler(request_body, result, orig_req) {
+        let transaction_msg = common_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
+        transaction_msg.__originator[env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)] = terms.ORIGINATOR_SET_VALUE;
+        transaction_msg.__transacted = true;
         switch(request_body.operation) {
             case terms.OPERATIONS_ENUM.INSERT:
-                if(global.hdb_socket_client !== undefined && request_body.schema !== 'system' && Array.isArray(result.inserted_hashes) && result.inserted_hashes.length > 0){
-                    let transaction = {
-                        operation: "insert",
+                try {
+                    if (global.hdb_socket_client !== undefined && request_body.schema !== 'system' && Array.isArray(result.inserted_hashes) && result.inserted_hashes.length > 0) {
+                        transaction_msg.transaction = {
+                            operation: "insert",
+                            schema: request_body.schema,
+                            table: request_body.table,
+                            records: []
+                        };
+
+                        let hash_attribute = global.hdb_schema[request_body.schema][request_body.table].hash_attribute;
+                        request_body.records.forEach(record => {
+                            if(result.inserted_hashes.includes(common_utils.autoCast(record[hash_attribute]))) {
+                                transaction_msg.transaction.records.push(record);
+                            }
+                        });
+                        if(orig_req) {
+                            sc_utils.concatSourceMessageHeader(transaction_msg, orig_req);
+                        }
+                        common_utils.sendTransactionToSocketCluster(`${request_body.schema}:${request_body.table}`, transaction_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
+                    }
+                } catch(err) {
+                    log.error('There was an error calling insert followup function.');
+                    log.error(err);
+                }
+                break;
+            case terms.OPERATIONS_ENUM.CREATE_SCHEMA:
+                try {
+                    transaction_msg.transaction = {
+                        operation: terms.OPERATIONS_ENUM.CREATE_SCHEMA,
+                        schema: request_body.schema,
+                    };
+                    if(orig_req) {
+                        sc_utils.concatSourceMessageHeader(transaction_msg, orig_req);
+                    }
+                    common_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_SCHEMA, transaction_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
+                } catch(err) {
+                    log.error('There was a problem sending the create_schema transaction to the cluster.');
+                }
+                break;
+            case terms.OPERATIONS_ENUM.CREATE_TABLE:
+                try {
+                    transaction_msg.transaction = {
+                        operation: terms.OPERATIONS_ENUM.CREATE_TABLE,
                         schema: request_body.schema,
                         table: request_body.table,
-                        records:[]
+                        hash_attribute: request_body.hash_attribute
                     };
-
-                    result.inserted_hashes.forEach(record =>{
-                        transaction.records.push(record);
-                    });
-                    let insert_msg = common_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
-                    insert_msg.transaction = transaction;
-                    insert_msg.__originator[env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)] = '';
-                    insert_msg.__transacted = true;
-                    common_utils.sendTransactionToSocketCluster(`${request_body.schema}:${request_body.table}`, insert_msg);
-                    return result;
+                    if(orig_req) {
+                        sc_utils.concatSourceMessageHeader(transaction_msg, orig_req);
+                    }
+                    common_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_TABLE, transaction_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
+                } catch(err) {
+                    log.error('There was a problem sending the create_schema transaction to the cluster.');
+                }
+                break;
+            case terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE:
+                try {
+                    transaction_msg.transaction = {
+                        operation: terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE,
+                        schema: request_body.schema,
+                        table: request_body.table,
+                        attribute: request_body.attribute
+                    };
+                    if(orig_req) {
+                        sc_utils.concatSourceMessageHeader(transaction_msg, orig_req);
+                    }
+                    common_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, transaction_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
+                } catch(err) {
+                    log.error('There was a problem sending the create_schema transaction to the cluster.');
                 }
                 break;
             default:

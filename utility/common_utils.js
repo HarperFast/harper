@@ -9,6 +9,7 @@ const terms = require('./hdbTerms');
 const ps_list = require('./psList');
 const papa_parse = require('papaparse');
 const cluster_messages = require('../server/socketcluster/room/RoomMessageObjects');
+const {inspect} = require('util');
 
 const EMPTY_STRING = '';
 const FILE_EXTENSION_LENGTH = 4;
@@ -51,7 +52,8 @@ module.exports = {
     getPropsFilePath: getPropsFilePath,
     promisifyPapaParse,
     removeBOM,
-    getClusterMessage
+    getClusterMessage,
+    createEventPromise
 };
 
 /**
@@ -455,11 +457,17 @@ function isClusterOperation(operation_name) {
  * @param channel
  * @param transaction
  */
-function sendTransactionToSocketCluster(channel, transaction) {
+function sendTransactionToSocketCluster(channel, transaction, originator) {
     log.trace(`Sending transaction to channel: ${channel}`);
     if(global.hdb_socket_client !== undefined) {
-        transaction.__transacted = true;
         let {hdb_user, hdb_auth_header, ...data} = transaction;
+        if(!data.__originator) {
+            data.__originator = {};
+        }
+        data.__transacted = true;
+        if(originator) {
+            data.__originator[originator] = terms.ORIGINATOR_SET_VALUE;
+        }
         global.hdb_socket_client.publish(channel, data);
     }
 }
@@ -550,6 +558,22 @@ function removeBOM(data_string) {
     }
 
     return data_string;
+}
+
+function createEventPromise(event_name, event_emitter_object, timeout_promise) {
+    let event_promise = new Promise((resolve) => {
+        event_emitter_object.on(event_name, (msg) => {
+            let curr_timeout_promise = timeout_promise;
+            log.info(`Got cluster status event response: ${inspect(msg)}`);
+            try {
+                curr_timeout_promise.cancel();
+            } catch(err) {
+                log.error('Error trying to cancel timeout.');
+            }
+            resolve(msg);
+        });
+    });
+    return event_promise;
 }
 
 function getClusterMessage(cluster_msg_type_enum) {

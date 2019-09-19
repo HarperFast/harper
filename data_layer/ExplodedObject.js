@@ -9,11 +9,11 @@
  * @param unlinks
  */
 class ExplodedObject {
-    constructor(written_hashes, skipped, folders, raw_data, unlinks) {
-        this.written_hashes =  written_hashes;
+    constructor(written_hashes, skipped_hashes, folders, raw_data, unlinks) {
+        this.written_hashes = written_hashes;
         this.folders = folders;
         this.raw_data = raw_data;
-        this.skipped =  skipped;
+        this.skipped_hashes = skipped_hashes;
         this.unlinks = unlinks;
     }
 }

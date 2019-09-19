@@ -10,9 +10,17 @@ const fs = require('fs-extra');
 const promisify = require('util').promisify;
 const p_settimeout = promisify(setTimeout);
 
+const CATCHUP_INTERVAL = 10000;
+const WORKER_RESPONSE_HANDLER = 1000;
+
+const ENTITY_TYPE_ENUM = {
+    SCHEMA: `schema`,
+    TABLE: `table`,
+    ATTRIBUTE: `attribute`
+};
+
 class InterNodeSocketConnector extends SocketConnector{
     /**
-     *
      * @param socket_client
      * @param worker
      * @param additional_info
@@ -21,8 +29,9 @@ class InterNodeSocketConnector extends SocketConnector{
      */
     constructor(socket_client, worker, additional_info = {}, options = {}, credentials){
         super(socket_client, additional_info, options, credentials);
-        if(additional_info.name !== undefined && options.query !== undefined){
-            options.query.node_name = additional_info.name;
+        if(additional_info.client_name !== undefined && additional_info.server_name !== undefined) {
+            options.query.node_client_name = additional_info.client_name;
+            options.query.node_server_name = additional_info.server_name;
         }
         //TODO possibly change this to the node name, rather hostname / port?
         this.connection_path = hdb_clustering_connections_path + this.socket.options.hostname + ':' + this.socket.options.port;
@@ -42,27 +51,42 @@ class InterNodeSocketConnector extends SocketConnector{
         this.addEventListener('catchup_response', this.catchupResponseHandler.bind(this));
     }
 
-    connectHandler(status){
-        if(this.additional_info && this.connected_timestamp){
-            //check subscriptions so we can locally fetch catchup and ask for remote catchup
-            this.additional_info.subscriptions.forEach(async (subscription) => {
-                if (subscription.publish === true) {
-                    try{
-                        let catch_up_msg = await sc_util.catchupHandler(subscription.channel, parseInt(this.connected_timestamp));
-                        if(catch_up_msg) {
-                            this.socket.publish(hdb_terms.INTERNAL_SC_CHANNELS.CATCHUP, catch_up_msg);
+    async connectHandler(status) {
+        log.trace(`connect handler with status: ${status}`);
+        try {
+            // we always want to keep all schema/table/attribute info up to date, so always make a schema catchup request.
+            let schema_catch_up_msg = await sc_util.schemaCatchupHandler();
+            if (schema_catch_up_msg) {
+                this.socket.publish(hdb_terms.INTERNAL_SC_CHANNELS.SCHEMA_CATCHUP, schema_catch_up_msg);
+            }
+            if (this.additional_info && this.connected_timestamp) {
+                //check subscriptions so we can locally fetch catchup and ask for remote catchup
+                this.additional_info.subscriptions.forEach(async (subscription) => {
+                    if (subscription.publish === true) {
+                        try {
+                            let catch_up_msg = await sc_util.catchupHandler(subscription.channel, this.connected_timestamp, null);
+                            if (catch_up_msg) {
+                                this.socket.publish(hdb_terms.INTERNAL_SC_CHANNELS.CATCHUP, catch_up_msg);
+                            }
+                        } catch (e) {
+                            log.error(e);
                         }
-                    } catch(e){
-                        log.error(e);
                     }
-                } else if(subscription.subscribe === true){
-                    //TODO correct the emits with CORE-402
-                    this.socket.emit('catchup', {channel: subscription.channel, milis_since_connected: Date.now() - this.connected_timestamp}, this.catchupResponseHandler.bind(this));
-                }
-            });
-        }
+                    if (subscription.subscribe === true) {
+                        //TODO correct the emits with CORE-402
+                        this.socket.emit('catchup', {
+                            channel: subscription.channel,
+                            milis_since_connected: Date.now() - this.connected_timestamp
+                        }, this.catchupResponseHandler.bind(this));
+                    }
+                });
+            }
 
-        this.interval_id = setInterval(this.recordConnectionTimestamp.bind(this), 10000);
+            this.interval_id = setInterval(this.recordConnectionTimestamp.bind(this), CATCHUP_INTERVAL);
+        } catch(err) {
+            log.error('Error during catchup handler.');
+            log.error(err);
+        }
     }
 
     disconnectHandler(){
@@ -83,18 +107,21 @@ class InterNodeSocketConnector extends SocketConnector{
         }
     }
 
-    async catchupResponseHandler(error, catchup_msg){
-        if(error){
+    async catchupResponseHandler(error, catchup_msg) {
+        log.debug('Received catchup message');
+        if(error) {
+            log.info('Error in catchupResponseHandler');
             log.error(error);
             return;
         }
 
-        if(!catchup_msg){
+        if(!catchup_msg) {
+            log.info('empty catchup response message');
             return;
         }
 
         while(this.worker.hdb_workers.length === 0){
-            await p_settimeout(1000);
+            await p_settimeout(WORKER_RESPONSE_HANDLER);
         }
 
         try {
@@ -104,13 +131,13 @@ class InterNodeSocketConnector extends SocketConnector{
                 hdb_header: {}
             };
 
+            log.debug('Sending catchup message to hdb child.');
             let assign = new AssignToHdbChild();
             assign.evaluateRule(req, null, this.worker).then(()=>{});
         } catch (e) {
             log.error(e);
         }
     }
-
 }
 
 module.exports = InterNodeSocketConnector;

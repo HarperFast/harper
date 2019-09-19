@@ -55,7 +55,8 @@ class WorkerStub {
                         },
                         additional_info: {
                             subscriptions: {
-                                "name": "truck_1",
+                                "server_name": "truck_1",
+                                "client_name": "server",
                                 "subscriptions": [
                                     {
                                         "channel": "dev:dog",

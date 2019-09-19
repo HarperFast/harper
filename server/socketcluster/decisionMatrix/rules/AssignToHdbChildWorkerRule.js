@@ -3,7 +3,7 @@ const RuleIF = require('./RulesIF');
 const log = require('../../../../utility/logging/harper_logger');
 const types = require('../../types');
 const terms = require('../../../../utility/hdbTerms');
-
+const env = require('../../../../utility/environment/environmentManager');
 /**
  * This worker rule sends a request via socketcluster to an HDBChild for processing in core.
  */
@@ -39,19 +39,22 @@ class AssignToHdbChildWorkerRule extends RuleIF {
                 return false;
             }
 
-            if(!req.hdb_header.__transacted && !req.data.__transacted) {
-                let rand = Math.floor(Math.random() * worker.hdb_workers.length);
-                let random_worker = worker.hdb_workers[rand];
-                worker.exchange.publish(random_worker, req.data);
-                log.debug(`Transacted flag not found, swallowing message.`);
-                return(true);
+            if(req.data.__transacted) {
+                // Dont send this to core, it has already been processed.  We can't swallow it as it needs to go out to the cluster.
+                return true;
             }
+            let rand = Math.floor(Math.random() * worker.hdb_workers.length);
+            let random_worker = worker.hdb_workers[rand];
+            log.trace(`Assigning message to worker: ${random_worker}`);
+            worker.exchange.publish(random_worker, req.data);
+            log.debug(`Transacted flag not found, swallowing message.`);
+            return true;
+
         } catch(err) {
             log.trace('Failed Assign to Hdb Child worker rule');
             log.error(err);
             return false;
         }
-        return true;
     }
 }
 module.exports = AssignToHdbChildWorkerRule;

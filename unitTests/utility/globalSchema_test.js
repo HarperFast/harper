@@ -112,7 +112,6 @@ describe('Test returnSchema function', function () {
         assert.deepEqual(returnSchema('system', 'hdb_job'), system_schema['hdb_job']);
         assert.deepEqual(returnSchema('system', 'hdb_license'), system_schema['hdb_license']);
         assert.deepEqual(returnSchema('system', 'hdb_nodes'), system_schema['hdb_nodes']);
-        assert.deepEqual(returnSchema('system', 'hdb_queue'), system_schema['hdb_queue']);
         assert.deepEqual(returnSchema('system', 'emptyTable'), system_schema['emptyTable']);
         done();
     });
@@ -156,9 +155,6 @@ describe('Test getTableSchema function', function () {
 
     it('Can get table from system schema', function (done) {
         let getTableSchema = global_schema.__get__('getTableSchema');
-        getTableSchema('system', 'hdb_queue', function (err, result) {
-            assert.deepEqual(result, system_schema['hdb_queue']);
-        });
         getTableSchema('system', 'hdb_drop_schema', function (err, result) {
             assert.deepEqual(result, system_schema['hdb_drop_schema']);
         });
@@ -184,9 +180,6 @@ describe('Test getTableSchema function', function () {
         });
         getTableSchema('system', 'hdb_nodes', function (err, result) {
             assert.deepEqual(result, system_schema['hdb_nodes']);
-        });
-        getTableSchema('system', 'hdb_queue', function (err, result) {
-            assert.deepEqual(result, system_schema['hdb_queue']);
         });
         getTableSchema('system', 'emptyTable', function (err, result) {
             assert.deepEqual(result, system_schema['emptyTable']);

@@ -11,6 +11,11 @@ const MIDDLEWARE_TYPE = {
     MIDDLEWARE_AUTHENTICATE: 'authenticate',
 };
 
+const EMIT_TYPES = {
+  CATCHUP: 'catchup',
+  SCHEMA_CATCHUP: 'schema_catchup'
+};
+
 const ROOM_TYPE = {
     DEMO: 'ChannelSource',
     HDB_DEMO: 'CoreSource',
@@ -39,7 +44,9 @@ const PREMADE_MIDDLEWARE_TYPES = {
     REQUEST_DATA_VALID: 13,
     STAMP_REQUEST: 14,
     CORE_QUEUE_PUBLISH: 15,
-    MSG_PREP: 16
+    MSG_PREP: 16,
+    CONNECTION_NAME_CHECK: 17,
+    STAMP_ORIGINATOR: 18
 };
 
 const COMMAND_EVAL_ORDER_ENUM = {
@@ -96,6 +103,7 @@ const ROTATING_TRANSACTION_LOG_ENUM = {
 };
 
 const HDB_HEADER_NAME = 'hdb_header';
+const ORIGINATOR_SET_VALUE = 111;
 
 module.exports = {
     MIDDLEWARE_TYPE,
@@ -109,5 +117,7 @@ module.exports = {
     WORKER_ROOM_MSG_TYPE_ENUM,
     CORE_ROOM_MSG_TYPE_ENUM,
     HDB_HEADER_NAME,
-    ROTATING_TRANSACTION_LOG_ENUM
+    ROTATING_TRANSACTION_LOG_ENUM,
+    EMIT_TYPES,
+    ORIGINATOR_SET_VALUE
 };

@@ -22,6 +22,10 @@ directive.environment_variables.push(
 );
 
 directive.environment_variables.push(
+    new env_variable(`HELIUM_VOLUME_PATH`, `false`, [`Specify the file system path to where the Helium volume will reside.`])
+);
+
+directive.environment_variables.push(
     new env_variable(`LOG_MAX_DAILY_FILES`, `false`, [`Set the number of daily log files to maintain when LOG_DAILY_ROTATE is enabled`,
     'If no integer value is set, no limit will be set for',
     'daily log files which may consume a large amount of storage depending on your log settings'])

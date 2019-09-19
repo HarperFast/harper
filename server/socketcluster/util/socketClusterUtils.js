@@ -12,9 +12,13 @@ const utils = require('../../../utility/common_utils');
 const get_cluster_user = require('../../../utility/common_utils').getClusterUser;
 const password_utility = require('../../../utility/password');
 const types = require('../types');
+const global_schema = require('../../../utility/globalSchema');
+const {promisify} = require('util');
 
 const SC_TOKEN_EXPIRATION = '1d';
 const CATCHUP_OFFSET_MS = 100;
+
+const p_set_schema_to_global = promisify(global_schema.setSchemaDataToGlobal);
 
 class ConnectionDetails {
     constructor(id, host_address, host_port, state) {
@@ -43,7 +47,7 @@ function getWorkerStatus(status_response_msg, worker) {
                 let conn = new ConnectionDetails('', client.options.hostname, client.options.port, client.state);
                 if (client.additional_info) {
                     conn['subscriptions'] = [];
-                    conn.node_name = client.additional_info.name;
+                    conn.node_name = client.additional_info.server_name;
                     for (let i = 0; i < client.additional_info.subscriptions.length; i++) {
                         let sub = client.additional_info.subscriptions[i];
                         if (sub.channel.indexOf(hdb_terms.HDB_INTERNAL_SC_CHANNEL_PREFIX) === 0) {
@@ -102,6 +106,28 @@ function createEventPromise(event_name, event_emitter_object, timeout_promise) {
         });
     });
     return event_promise;
+}
+
+/**
+ * Calls the Catchup class to read a specific transaction log with a time range.
+ * Creates a catchup payload based on the results from Catchup and publishes to a socket
+ * @returns {Promise<void>}
+ */
+async function schemaCatchupHandler() {
+    if(!global.hdb_schema) {
+        try {
+            await p_set_schema_to_global();
+        } catch (err) {
+            log.error(`Error settings schema to global.`);
+            log.error(err);
+            throw err;
+        }
+    }
+    let catch_up_msg = utils.getClusterMessage(hdb_terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
+    catch_up_msg.transaction = {};
+    catch_up_msg.catchup_schema = global.hdb_schema;
+
+    return catch_up_msg;
 }
 
 /**
@@ -221,9 +247,34 @@ function handleLoginResponse(socket, credentials, hdb_users) {
     }
 }
 
+/**
+ * Add any relevant data from an original request into a newly created outbound message.
+ * @param outbound_message - The message about to be sent
+ * @param orig_req - An inbound request which may contain relevant data the outbound message needs to contain (such as originator).
+ */
+function concatSourceMessageHeader(outbound_message, orig_req) {
+    if(!outbound_message) {
+        log.error('Invalid message passed to concatSourceMessageHeader');
+        return;
+    }
+    if(!orig_req) {
+        log.error('no orig request data passed to concatSourceMessageHeader');
+        return;
+    }
+    // TODO: Do we need to include anything else in the hdb_header?
+    if(orig_req.__originator) {
+        if(!outbound_message.__originator) {
+            outbound_message.__originator = {};
+        }
+        outbound_message.__originator = orig_req.__originator;
+    }
+}
+
 module.exports = {
     getWorkerStatus,
     createEventPromise,
     catchupHandler,
-    requestAndHandleLogin
+    schemaCatchupHandler,
+    requestAndHandleLogin,
+    concatSourceMessageHeader
 };

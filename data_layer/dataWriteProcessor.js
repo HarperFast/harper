@@ -2,7 +2,7 @@
 
 const h_utils = require('../utility/common_utils');
 const hdb_terms = require('../utility/hdbTerms');
-const INSERT_ENUM =  hdb_terms.INSERT_MODULE_ENUM;
+const INSERT_ENUM = hdb_terms.INSERT_MODULE_ENUM;
 const FileObject = require('../utility/fs/FileObject');
 const ExplodedObject = require('./ExplodedObject');
 const {autoCast} = require('../utility/common_utils');

@@ -11,11 +11,6 @@ const DATE_SUBSTR_LENGTH = 19;
 let current_date = new Date().toISOString().substr(0, DATE_SUBSTR_LENGTH);
 const TRASH_BASE_PATH = `${env.getHdbBasePath()}/${terms.HDB_TRASH_DIR}`;
 
-//TODO: This is temporary. Once we have search by value bridge func built, we will use that.
-const util = require('util');
-const search_by_value = require('../../../search').searchByValue;
-let p_search_by_value = (util.promisify(search_by_value));
-
 module.exports = dropSchema;
 
 async function dropSchema(drop_schema_obj) {
@@ -26,19 +21,15 @@ async function dropSchema(drop_schema_obj) {
         hash_values: [schema]
     };
 
-    let search_obj = {
-        schema: terms.SYSTEM_SCHEMA_NAME,
-        table: terms.SYSTEM_TABLE_NAMES.TABLE_TABLE_NAME,
-        hash_attribute: terms.SYSTEM_TABLE_HASH,
-        search_attribute: terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_SCHEMA_KEY,
-        search_value: schema,
-        get_attributes: ['id']
-    };
-
     try {
+        let tables = global.hdb_schema[schema];
+        let table_ids = [];
+        for (let table_name in tables) {
+            table_ids.push({id: tables[table_name].id});
+        }
+
         await fsDeleteRecords(delete_schema_obj);
-        let search_result = await p_search_by_value(search_obj);
-        await moveSchemaToTrash(drop_schema_obj, search_result);
+        await moveSchemaToTrash(drop_schema_obj, table_ids);
         await deleteAttrStructure(drop_schema_obj);
     } catch(err) {
         log.error(err);
@@ -59,7 +50,7 @@ async function moveSchemaToTrash(drop_schema_obj, tables) {
         throw new Error('tables parameter was null.');
     }
 
-    let origin_path = `${env.getHdbBasePath()}/${terms.HDB_SCHEMA_DIR}/${drop_schema_obj.schema}`;
+    let origin_path = `${env.getHdbBasePath()}/${terms.SCHEMA_DIR_NAME}/${drop_schema_obj.schema}`;
     let destination_name = `${drop_schema_obj.schema}-${current_date}`;
     let trash_path = `${TRASH_BASE_PATH}/${destination_name}`;
 

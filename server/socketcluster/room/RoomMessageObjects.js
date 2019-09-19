@@ -1,7 +1,6 @@
 "use strict";
 
 const types = require('../types');
-const hdb_terms = require('../../../utility/hdbTerms');
 const uuid = require('uuid/v4');
 
 /**
@@ -126,23 +125,13 @@ class HdbCoreClusterDropUserRequestMessage extends HdbCoreBaseMessageIF {
 }
 
 /**
- * A message sent to or from socket cluster which contains an operation that happened in the database that needs to be
- * replicated.
- */
-class HdbCoreOperationMessage extends HdbCoreBaseMessageIF {
-    constructor() {
-        super(types.CORE_ROOM_MSG_TYPE_ENUM.HDB_OPERATION);
-        this.operation = undefined;
-    }
-}
-
-/**
  * A message that is sent by an HDB Child when a node is added in HDB Core
  */
 class HdbCoreAddNodeMessage extends HdbCoreBaseMessageIF {
     constructor() {
         super(types.CORE_ROOM_MSG_TYPE_ENUM.ADD_NODE);
         this.add_node = undefined;
+        this.__transacted = true;
     }
 }
 
@@ -153,6 +142,7 @@ class HdbCoreUpdateNodeMessage extends HdbCoreBaseMessageIF {
     constructor() {
         super(types.CORE_ROOM_MSG_TYPE_ENUM.UPDATE_NODE);
         this.node = undefined;
+        this.__transacted = true;
     }
 }
 
@@ -163,6 +153,7 @@ class HdbCoreRemoveNodeMessage extends HdbCoreBaseMessageIF {
     constructor() {
         super(types.CORE_ROOM_MSG_TYPE_ENUM.REMOVE_NODE);
         this.remove_node = undefined;
+        this.__transacted = true;
     }
 }
 
@@ -173,6 +164,7 @@ class HdbCoreTransactionMessage extends HdbCoreBaseMessageIF {
     constructor() {
         super(types.CORE_ROOM_MSG_TYPE_ENUM.HDB_TRANSACTION);
         this.hdb_header.timestamp = Date.now();
+        this.schema = undefined;
     }
 }
 
@@ -186,9 +178,8 @@ module.exports = {
     HdbCoreClusterAlterUserRequestMessage,
     HdbCoreClusterDropUserRequestMessage,
     HdbCoreTransactionMessage,
-    HdbCoreOperationMessage,
     HdbCoreAddNodeMessage,
-    HdbCoreUdateNodeMessage: HdbCoreUpdateNodeMessage,
+    HdbCoreUpdateNodeMessage,
     HdbCoreRemoveNodeMessage,
     SyncHdbUsersMessage
 };

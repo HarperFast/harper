@@ -9,6 +9,7 @@
     "maxDelay": 20000
   },
   "query": {
-    "node_name":null
+    "node_client_name": null,
+    "node_server_name": null
   }
 }

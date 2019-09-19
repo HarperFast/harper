@@ -10,6 +10,8 @@ const SubscriptionObject = sc_objects.SubscriptionObject;
 const NodeObject = sc_objects.NodeObject;
 const promisify = require('util').promisify;
 const terms = require('../../../utility/hdbTerms');
+const types = require('../types');
+const env = require('../../../utility/environment/environmentManager');
 
 class NodeConnectionsHandler {
     constructor(nodes, cluster_user, worker){
@@ -77,21 +79,22 @@ class NodeConnectionsHandler {
     async createNewConnection(node){
         // eslint-disable-next-line global-require
         let options = require('../../../json/interNodeConnectorOptions');
+        log.trace(`Creating new connection to ${node.host}`);
         options.hostname = node.host;
         options.port = node.port;
         let additional_info = {
-            name: node.name,
+            server_name: node.name,
+            client_name: env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY),
             subscriptions: node.subscriptions,
             connected_timestamp: null
         };
         let connection = new InterNodeSocketConnector(socket_client, this.worker, additional_info,options, this.creds, this.connection_timestamps);
         await connection.initialize();
-        if(node.subscriptions){
-            node.subscriptions.push(this.HDB_Schema_Subscription);
-            node.subscriptions.push(this.HDB_Table_Subscription);
-            node.subscriptions.push(this.HDB_Attribute_Subscription);
-            node.subscriptions.forEach(this.subscriptionManager.bind(this, connection));
-        }
+        log.trace(`Done initializing new connection to ${node.host}`);
+        node.subscriptions.push(this.HDB_Schema_Subscription);
+        node.subscriptions.push(this.HDB_Table_Subscription);
+        node.subscriptions.push(this.HDB_Attribute_Subscription);
+        node.subscriptions.forEach(this.subscriptionManager.bind(this, connection));
     }
 
     /**
@@ -106,7 +109,7 @@ class NodeConnectionsHandler {
             for (let x = 0; x < connect_keys.length; x++) {
                 let key = connect_keys[x];
                 let socket = this.connections.clients[key];
-                if (socket.additional_info && socket.additional_info.name === new_node.name) {
+                if (socket.additional_info && socket.additional_info.server_name === new_node.name) {
                     node_exists = true;
                     return;
                 }
@@ -133,7 +136,7 @@ class NodeConnectionsHandler {
             for (let x = 0; x < connect_keys.length; x++) {
                 let key = connect_keys[x];
                 let socket = this.connections.clients[key];
-                if (socket.additional_info && socket.additional_info.name === remove_node.name) {
+                if (socket.additional_info && socket.additional_info.server_name === remove_node.name) {
                     this.connections.destroy(socket);
                 }
 
@@ -161,7 +164,7 @@ class NodeConnectionsHandler {
             for (let x = 0; x < connect_keys.length; x++) {
                 let key = connect_keys[x];
                 let connection = this.connections.clients[key];
-                if (connection.additional_info.name === update_node.name) {
+                if (connection.additional_info.server_name === update_node.name) {
                     this.removeNode(update_node);
                     await this.addNewNode(update_node);
                     return;
@@ -188,11 +191,12 @@ class NodeConnectionsHandler {
                 }
 
                 //add the connection to the channel map
-                this.publish_channel_connections[subscription.channel][connection.additional_info.name] = connection;
+                this.publish_channel_connections[subscription.channel][connection.additional_info.server_name] = connection;
             }
 
             if (subscription.subscribe === true) {
                 //we need to observe the channel remotely and send the data locally
+                log.trace(`Worker is subscribing to ${subscription.channel}`);
                 connection.subscribe(subscription.channel, this.assignTransactionToChild.bind(this, subscription.channel, connection.socket));
             }
         } catch(e){
@@ -205,15 +209,26 @@ class NodeConnectionsHandler {
      * @param channel
      * @param data
      */
-    subscriptionChannelWatcher(channel, data){
+    subscriptionChannelWatcher(channel, data) {
         try {
-            let connections = Object.values(this.publish_channel_connections[channel]);
-            connections.forEach(connection => {
-                if (connection.socket.state === connection.socket.OPEN && connection.socket.authState === connection.socket.AUTHENTICATED) {
-                    log.trace('publishing out');
-                    connection.publish(channel, data);
+                // We need to delete the transacted flag here so it isn't evaluated on the remote side.
+                if(data.__transacted) {
+                    delete data.__transacted;
                 }
-            });
+                let connections = Object.values(this.publish_channel_connections[channel]);
+                for(let i=0; i<connections.length; ++i) {
+                    let connection = connections[i];
+                    if (connection && connection.socket.state === connection.socket.OPEN && connection.socket.authState === connection.socket.AUTHENTICATED) {
+                        let remote_host_name = (env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY) === connection.socket.additional_info.client_name ?
+                            connection.socket.additional_info.server_name : connection.socket.additional_info.client_name);
+                        if(data.__originator && data.__originator[remote_host_name] === types.ORIGINATOR_SET_VALUE) {
+                            log.info('Message contains originator matching remote host, swallowing message.');
+                            continue;
+                        }
+                        log.trace(`Worker is publishing to ${channel}`);
+                        connection.publish(channel, data);
+                    }
+                }
         } catch(e){
             log.error(e);
         }
@@ -226,15 +241,23 @@ class NodeConnectionsHandler {
             socket: socket
         };
 
-        await this.runMiddleware(req);
+        try {
+            await this.runPublishInMiddleware(req);
+        } catch(err) {
+            log.info(`Middleware objection found on channel: ${channel}. Not consuming message.`);
+        }
     }
 
-    async runMiddleware(request){
+    async runPublishInMiddleware(request) {
+        let result = undefined;
         for (let x = 0; x < this.publishin_promises.length; x++) {
             try {
-                await this.publishin_promises[x](request);
-            } catch(e){
+                result = await this.publishin_promises[x](request);
+            } catch(e) {
                 log.error(e);
+            }
+            if(result) {
+                throw new Error('Got objection from publishin middleware');
             }
         }
     }
