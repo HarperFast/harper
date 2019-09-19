@@ -144,7 +144,7 @@ describe('Tests for Helium utility heProcessRows', () => {
         }
 
         expect(error).to.be.an.instanceOf(Error);
-        expect(error.message).to.equal('transaction aborted due to record(s) with no hash value.');
+        expect(error.message).to.equal('transaction aborted due to record(s) with no hash value, check log for more info');
     });
 
     it('Test error is thrown if hash is over max size', () => {
@@ -165,7 +165,7 @@ describe('Tests for Helium utility heProcessRows', () => {
         }
 
         expect(error).to.be.an.instanceOf(Error);
-        expect(error.message).to.equal(`transaction aborted due to record(s) with a hash value that exceeds ${hdb_terms.INSERT_MODULE_ENUM.MAX_CHARACTER_SIZE} bytes.`);
+        expect(error.message).to.equal(`transaction aborted due to record(s) with a hash value that exceeds ${hdb_terms.INSERT_MODULE_ENUM.MAX_CHARACTER_SIZE} bytes, check log for more info`);
     });
 
     it('Test error is thrown if hash contains forward slash', () => {
@@ -186,7 +186,7 @@ describe('Tests for Helium utility heProcessRows', () => {
         }
 
         expect(error).to.be.an.instanceOf(Error);
-        expect(error.message).to.equal('transaction aborted due to record(s) with a hash value that contains a forward slash.');
+        expect(error.message).to.equal('transaction aborted due to record(s) with a hash value that contains a forward slash, check log for more info');
     });
 
     it('Test error is thrown if attribute name is over max size', () => {

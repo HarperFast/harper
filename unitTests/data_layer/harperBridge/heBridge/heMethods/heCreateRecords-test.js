@@ -291,7 +291,7 @@ describe('Tests for Helium method heCreateRecords', () => {
                 error = err;
             }
 
-            expect(error.message).to.equal('transaction aborted due to record(s) with no hash value.');
+            expect(error.message).to.equal('transaction aborted due to record(s) with no hash value, check log for more info');
             expect(error).to.be.an.instanceOf(Error);
         });
     });
@@ -303,7 +303,7 @@ describe('Tests for Helium method heCreateRecords', () => {
 
         before(() => {
             heCreateRecords.__set__('createNewAttribute', create_new_attr_stub);
-            heCreateRecords.__set__('checkForNewAttributes', check_for_new_attr_stub)
+            heCreateRecords.__set__('checkForNewAttributes', check_for_new_attr_stub);
         });
 
         after(() => {

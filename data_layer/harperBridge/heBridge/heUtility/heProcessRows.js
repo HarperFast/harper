@@ -66,16 +66,16 @@ function processRows(insert_obj, attributes, schema_table) {
 function validateHash(record, hash_attribute) {
     if (!record.hasOwnProperty(hash_attribute)) {
         log.error(record);
-        throw new Error('transaction aborted due to record(s) with no hash value.');
+        throw new Error('transaction aborted due to record(s) with no hash value, check log for more info');
     }
 
     if (Buffer.byteLength(String(record[hash_attribute])) > hdb_terms.INSERT_MODULE_ENUM.MAX_CHARACTER_SIZE) {
         log.error(record);
-        throw new Error(`transaction aborted due to record(s) with a hash value that exceeds ${hdb_terms.INSERT_MODULE_ENUM.MAX_CHARACTER_SIZE} bytes.`);
+        throw new Error(`transaction aborted due to record(s) with a hash value that exceeds ${hdb_terms.INSERT_MODULE_ENUM.MAX_CHARACTER_SIZE} bytes, check log for more info`);
     }
 
     if (hdb_terms.FORWARD_SLASH_REGEX.test(record[hash_attribute])) {
         log.error(record);
-        throw new Error('transaction aborted due to record(s) with a hash value that contains a forward slash.');
+        throw new Error('transaction aborted due to record(s) with a hash value that contains a forward slash, check log for more info');
     }
 }
