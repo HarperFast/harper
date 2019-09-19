@@ -63,7 +63,10 @@ async function unlink_delete_object(delete_object) {
     try {
         await Promise.all(
             delete_hash_ids.map(async hash_id => {
-                unlink_failure_array = await unlink(delete_object[hash_id]);
+                let unlink_failures = await unlink(delete_object[hash_id]);
+                unlink_failures.forEach((id) => {
+                   unlink_failure_array.push(id);
+                });
             })
         );
         // if there are any failures, we need to report the id for that file as not removed.
