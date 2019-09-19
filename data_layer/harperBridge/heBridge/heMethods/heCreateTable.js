@@ -2,7 +2,7 @@
 
 module.exports = heCreateTable;
 
-function heCreateTable(create_table_obj) {
+function heCreateTable(table, table_create_obj) {
     let insert_object = {
         operation: terms.OPERATIONS_ENUM.INSERT,
         schema: terms.SYSTEM_SCHEMA_NAME,
@@ -10,6 +10,8 @@ function heCreateTable(create_table_obj) {
         hash_attribute: terms.SYSTEM_TABLE_HASH,
         records: [table_system_data]
     };
+
+
 
 
 

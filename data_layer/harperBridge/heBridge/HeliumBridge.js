@@ -25,9 +25,9 @@ class HeliumBridge extends BridgeMethods {
         }
     }
 
-    async createTable(create_schema_obj) {
+    async createTable(table, table_create_obj) {
         try {
-            return heCreateTable(create_schema_obj);
+            return heCreateTable(table, table_create_obj);
         } catch(err) {
             log.error(err);
             throw err;
