@@ -402,7 +402,7 @@ function deleteRecord(delete_object, callback){
             }
 
             if(common_utils.isEmptyOrZeroLength(delete_result_object.message)) {
-                delete_result_object.message = `${delete_result_object.deleted_hashes.length} ${SUCCESS_MESSAGE}`;
+                delete_result_object.message = `${delete_result_object.deleted_hashes.length} of ${delete_object.hash_values.length} ${SUCCESS_MESSAGE}`;
             }
             return callback(null, delete_result_object);
         });

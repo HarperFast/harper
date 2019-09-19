@@ -12,9 +12,10 @@ const ENOENT_ERROR_CODE = 'ENOENT';
 /**
  * removes files from the file system
  * @param {Array.<string>} paths
- * @returns {Promise<void>}
+ * @returns {Promise<array>}
  */
 async function unlink(paths) {
+    let failed_path_array = [];
     await Promise.all(
         paths.map(async file_path => {
             try {
@@ -22,7 +23,7 @@ async function unlink(paths) {
             } catch(e){
                 if(e.code !== ENOENT_ERROR_CODE){
                     logger.error(e);
-                    return file_path;
+                    failed_path_array.push(file_path);
                 }
             }
 
@@ -42,6 +43,7 @@ async function unlink(paths) {
             }
         })
     );
+    return failed_path_array;
 }
 
 /**
@@ -61,10 +63,7 @@ async function unlink_delete_object(delete_object) {
     try {
         await Promise.all(
             delete_hash_ids.map(async hash_id => {
-                let result = await unlink(delete_object[hash_id]);
-                if(!hdb_utils.isEmptyOrZeroLength(result)) {
-                    unlink_failure_array.push(result);
-                }
+                unlink_failure_array = await unlink(delete_object[hash_id]);
             })
         );
         // if there are any failures, we need to report the id for that file as not removed.
@@ -75,7 +74,7 @@ async function unlink_delete_object(delete_object) {
                 for(let d=0; d<delete_hash_ids.length; ++d) {
                     let curr_hash_id = delete_hash_ids[d];
                     let curr_path_array = delete_object[curr_hash_id];
-                    if(curr_path_array.contains(unlink_failure_array[i])) {
+                    if(curr_path_array.includes(unlink_failure_array[i])) {
                         failed_hash_ids_array.push(curr_hash_id);
                         let failure_id_index = delete_hash_ids.indexOf(curr_hash_id);
                         if(failure_id_index > -1) {

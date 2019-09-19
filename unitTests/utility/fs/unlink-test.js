@@ -32,7 +32,7 @@ describe('Test unlink module', ()=>{
     });
 
     it('test deleting lone file in folder, verify file & parent dir is deleted', async ()=>{
-        await unlink([FILE_IN_FOLDER_1_FILE_PATH]);
+        await unlink.unlink([FILE_IN_FOLDER_1_FILE_PATH]);
         //check file is gone
         assert.rejects(async ()=>{
             await fs.access(FILE_IN_FOLDER_1_FILE_PATH);
@@ -45,7 +45,7 @@ describe('Test unlink module', ()=>{
     });
 
     it('test deleting 1 file in folder with another file, verify file is deleted, but parent dir & other file exist', async ()=>{
-        await unlink([FILE_1_IN_FOLDER_2_FILES_PATH]);
+        await unlink.unlink([FILE_1_IN_FOLDER_2_FILES_PATH]);
         //check file is gone
         assert.rejects(async ()=>{
             await fs.access(FILE_1_IN_FOLDER_2_FILES_PATH);
