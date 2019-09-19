@@ -188,7 +188,6 @@ async function updateData(update_object){
         await checkForNewAttributes(update_object.hdb_auth_header, table_schema, attributes);
         await unlinkFiles(unlinks);
         await processData(data_wrapper);
-        convertOperationToTransaction(update_object, written_hashes, table_schema.hash_attribute);
 
         return returnObject(UPDATE_ACTION, written_hashes, update_object, skipped);
     } catch(e){
