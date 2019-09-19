@@ -39,7 +39,8 @@ const TABLE_SYSTEM_DATA_TEST_B = {
     name: CREATE_TABLE_OBJ_TEST_B.table,
     schema: CREATE_TABLE_OBJ_TEST_B.schema,
     id: 'fd23fds',
-    hash_attribute: CREATE_TABLE_OBJ_TEST_B.hash_attribute
+    hash_attribute: CREATE_TABLE_OBJ_TEST_B.hash_attribute,
+    residence: '*'
 };
 
 const SYSTEM_HDB_TABLES = ['system/hdb_table/id', 'system/hdb_table/name', 'system/hdb_table/hash_attribute', 'system/hdb_table/schema', 'system/hdb_table/residence'];
@@ -159,5 +160,39 @@ describe('Test for Helium method heCreateAttribute', () => {
         expect(search_attr_table).to.eql(expected_attr_table_createdtime);
         expect(datastore_list.includes(heGenerateDataStoreName(CREATE_TABLE_OBJ_TEST_A.schema, CREATE_TABLE_OBJ_TEST_A.table, '__createdtime__'))).to.be.true;
         expect(datastore_list.includes(heGenerateDataStoreName(CREATE_TABLE_OBJ_TEST_A.schema, CREATE_TABLE_OBJ_TEST_A.table, '__updatedtime__'))).to.be.true;
+    });
+
+    it('Test that table B is successfully created', () => {
+        let expected_sys_table = [ [ 'fd23fds', [ 'fd23fds', 'coolDogNames', 'name', 'dogsrule', '*' ] ] ];
+        let search_sys_table;
+        let datastore_list;
+
+        try {
+            heCreateTable(TABLE_SYSTEM_DATA_TEST_B, CREATE_TABLE_OBJ_TEST_B);
+            search_sys_table = hdb_helium.searchByKeys([TABLE_SYSTEM_DATA_TEST_B.id], SYSTEM_HDB_TABLES );
+            datastore_list = hdb_helium.listDataStores();
+        } catch(err) {
+            console.log(err);
+        }
+
+        expect(search_sys_table).to.eql(expected_sys_table);
+        expect(datastore_list.includes(heGenerateDataStoreName(CREATE_TABLE_OBJ_TEST_B.schema, CREATE_TABLE_OBJ_TEST_B.table, '__createdtime__'))).to.be.true;
+        expect(datastore_list.includes(heGenerateDataStoreName(CREATE_TABLE_OBJ_TEST_B.schema, CREATE_TABLE_OBJ_TEST_B.table, '__updatedtime__'))).to.be.true;
+    });
+
+    it('Test that error from heCreateRecords is caught', () => {
+        let error_msg = 'I am broken';
+        let he_create_records_stub = sandbox.stub().throws(new Error(error_msg));
+        heCreateTable.__set__('heCreateRecords', he_create_records_stub);
+        let error;
+
+        try {
+            heCreateTable(TABLE_SYSTEM_DATA_TEST_B, CREATE_TABLE_OBJ_TEST_B);
+        } catch(err) {
+            error = err;
+        }
+
+        expect(error.message).to.equal(error_msg);
+        expect(error).to.be.an.instanceOf(Error);
     });
 });

@@ -8,7 +8,7 @@ module.exports = heCreateTable;
 
 /**
  * Writes new table data to the system tables and creates two datastores to track created and updated
- * timestamps.
+ * timestamps for new table data.
  * @param table_system_data
  * @param table_create_obj
  */
