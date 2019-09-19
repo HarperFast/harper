@@ -30,6 +30,7 @@ const SYSTEM_SCHEMA_NAME = 'system';
 const HASH_FOLDER_NAME = '__hdb_hash';
 const CLUSTERING_VERSION_HEADER_NAME = 'hdb_version';
 const HDB_HOME_DIR_NAME = '.harperdb';
+const HDB_FILE_SUFFIX = '.hdb';
 const LICENSE_KEY_DIR_NAME = 'keys';
 const BOOT_PROPS_FILE_NAME = 'hdb_boot_properties.file';
 const UPDATE_FILE_NAME = '.updateConfig.json';
@@ -403,6 +404,7 @@ module.exports = {
     HELIUM_URL_PREFIX,
     LICENSE_VALUES,
     STORAGE_TYPES_ENUM,
-    HDB_LICENSE_NAME
+    HDB_LICENSE_NAME,
+    HDB_FILE_SUFFIX
 };
 
