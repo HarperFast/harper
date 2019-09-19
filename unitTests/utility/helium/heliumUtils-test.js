@@ -4,6 +4,8 @@ const rewire = require('rewire');
 const helium_utils = rewire('../../../utility/helium/heliumUtils');
 const assert = require('assert');
 
+const env = require('../../../utility/environment/environmentManager');
+env.initSync();
 class HarperDBHelium {
     constructor(debug){
 
@@ -36,16 +38,6 @@ class HarperDBHeliumBad {
     }
 }
 
-class EnvMngr{
-    constructor(props){
-        this.props = props;
-    }
-
-    get(prop){
-        return this.props[prop];
-    }
-}
-
 const ENV_MNGR_PROPS = {
     HELIUM_VOLUME_PATH: '/tmp/hdb',
     HELIUM_SERVER_HOST: 'localhost:41000'
@@ -60,27 +52,25 @@ const FS_CONSTANTS = {
 describe('test heliumUtils', ()=>{
     describe('test getHeliumServerURL', ()=>{
         it('test no HELIUM_VOLUME_PATH', ()=>{
-            let revert = helium_utils.__set__('env', new EnvMngr({}));
+            env.setProperty("HELIUM_VOLUME_PATH", null);
+
             assert.rejects(async ()=>{
                 await helium_utils.getHeliumServerURL();
             }, new Error('HELIUM_VOLUME_PATH must be defined in config settings.'));
-
-            revert();
         });
 
         it('test no HELIUM_SERVER_HOST', ()=>{
-            let props = Object.assign({}, ENV_MNGR_PROPS);
-            delete props.HELIUM_SERVER_HOST;
-            let revert = helium_utils.__set__('env', new EnvMngr(props));
+            env.setProperty("HELIUM_VOLUME_PATH", ENV_MNGR_PROPS.HELIUM_VOLUME_PATH);
+            env.setProperty("HELIUM_SERVER_HOST", null);
+
             assert.rejects(async ()=>{
                 await helium_utils.getHeliumServerURL();
             }, new Error('HELIUM_SERVER_HOST must be defined in config settings.'));
-
-            revert();
         });
 
         it('test invalid volume path', ()=>{
-            let revert = helium_utils.__set__('env', new EnvMngr(ENV_MNGR_PROPS));
+            env.setProperty("HELIUM_VOLUME_PATH", ENV_MNGR_PROPS.HELIUM_VOLUME_PATH);
+            env.setProperty("HELIUM_SERVER_HOST", ENV_MNGR_PROPS.HELIUM_SERVER_HOST);
 
             let error = new Error('not found');
             error.code = 'ENOENT';
@@ -94,13 +84,12 @@ describe('test heliumUtils', ()=>{
             assert.rejects(async ()=>{
                 await helium_utils.getHeliumServerURL();
             }, new Error('invalid path defined in HELIUM_VOLUME_PATH'));
-
-            revert();
             revert_fs();
         });
 
         it('test fs access fail', ()=>{
-            let revert = helium_utils.__set__('env', new EnvMngr(ENV_MNGR_PROPS));
+            env.setProperty("HELIUM_VOLUME_PATH", ENV_MNGR_PROPS.HELIUM_VOLUME_PATH);
+            env.setProperty("HELIUM_SERVER_HOST", ENV_MNGR_PROPS.HELIUM_SERVER_HOST);
 
             let error_msg = 'i failed';
             let error = new Error(error_msg);
@@ -114,33 +103,12 @@ describe('test heliumUtils', ()=>{
             assert.rejects(async ()=>{
                 await helium_utils.getHeliumServerURL();
             }, new Error(error_msg));
-
-            revert();
-            revert_fs();
-        });
-
-        it('test invalid volume path', ()=>{
-            let revert = helium_utils.__set__('env', new EnvMngr(ENV_MNGR_PROPS));
-
-            let error = new Error('not found');
-            error.code = 'ENOENT';
-
-            let revert_fs = helium_utils.__set__('fs', {
-                constants:FS_CONSTANTS,
-                access:(path)=>{
-                    throw error;
-                }
-            });
-            assert.rejects(async ()=>{
-                await helium_utils.getHeliumServerURL();
-            }, new Error('invalid path defined in HELIUM_VOLUME_PATH'));
-
-            revert();
             revert_fs();
         });
 
         it('test happy path', async ()=>{
-            let revert = helium_utils.__set__('env', new EnvMngr(ENV_MNGR_PROPS));
+            env.setProperty("HELIUM_VOLUME_PATH", ENV_MNGR_PROPS.HELIUM_VOLUME_PATH);
+            env.setProperty("HELIUM_SERVER_HOST", ENV_MNGR_PROPS.HELIUM_SERVER_HOST);
 
             let revert_fs = helium_utils.__set__('fs', {
                 constants:FS_CONSTANTS,
@@ -151,7 +119,7 @@ describe('test heliumUtils', ()=>{
             let helium_url = await helium_utils.getHeliumServerURL();
 
             assert.equal(helium_url, 'he://' + ENV_MNGR_PROPS.HELIUM_SERVER_HOST + '/' + ENV_MNGR_PROPS.HELIUM_VOLUME_PATH);
-            revert();
+
             revert_fs();
         });
     });
@@ -159,7 +127,8 @@ describe('test heliumUtils', ()=>{
     describe('test initializeHelium', ()=>{
 
         it('test all good', ()=>{
-            let revert = helium_utils.__set__('env', new EnvMngr(ENV_MNGR_PROPS));
+            env.setProperty("HELIUM_VOLUME_PATH", ENV_MNGR_PROPS.HELIUM_VOLUME_PATH);
+            env.setProperty("HELIUM_SERVER_HOST", ENV_MNGR_PROPS.HELIUM_SERVER_HOST);
 
             let revert_fs = helium_utils.__set__('fs', {
                 constants:FS_CONSTANTS,
@@ -177,14 +146,14 @@ describe('test heliumUtils', ()=>{
 
             assert.deepEqual(helium instanceof HarperDBHelium, true);
 
-            revert();
             revert_helium();
             revert_fs();
         });
     });
 
     it('test terminateHelium', ()=>{
-        let revert = helium_utils.__set__('env', new EnvMngr(ENV_MNGR_PROPS));
+        env.setProperty("HELIUM_VOLUME_PATH", ENV_MNGR_PROPS.HELIUM_VOLUME_PATH);
+        env.setProperty("HELIUM_SERVER_HOST", ENV_MNGR_PROPS.HELIUM_SERVER_HOST);
 
         let revert_fs = helium_utils.__set__('fs', {
             constants:FS_CONSTANTS,
@@ -197,6 +166,8 @@ describe('test heliumUtils', ()=>{
         assert.doesNotThrow(()=> {
             helium_utils.terminateHelium(helium);
         });
+
+        revert_fs();
     });
 
     describe('test createSystemDataStores', ()=>{
@@ -211,18 +182,14 @@ describe('test heliumUtils', ()=>{
         });
 
         it('test all good', ()=>{
-            let revert = helium_utils.__set__('env', {
-                get:()=>{
-                    return '/tmp/hdb';
-                }
-            });
+            env.setProperty("HELIUM_VOLUME_PATH", ENV_MNGR_PROPS.HELIUM_VOLUME_PATH);
+            env.setProperty("HELIUM_SERVER_HOST", ENV_MNGR_PROPS.HELIUM_SERVER_HOST);
 
             let revert_helium = helium_utils.__set__('harperdb_helium', HarperDBHelium);
 
             assert.doesNotThrow(()=>{
                 helium_utils.createSystemDataStores();
             });
-            revert();
             revert_helium();
         });
     });
