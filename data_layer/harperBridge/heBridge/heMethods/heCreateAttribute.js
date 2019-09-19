@@ -54,7 +54,6 @@ function heCreateAttribute(create_attribute_obj) {
     let datastore_name = heGenerateDataStoreName(create_attribute_obj.schema, create_attribute_obj.table, create_attribute_obj.attribute);
 
     try {
-        // add some better logging around this for when datastore already exists.
         let create_datastore_result = hdb_helium.createDataStores([datastore_name]);
         let insert_response = insertData(insert_object);
         log.info(create_datastore_result);
