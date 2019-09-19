@@ -357,6 +357,8 @@ const HELIUM_TIME_STAMP_ENUM = {
     UPDATED_TIME: '__updatedtime__'
 };
 
+const HDB_LICENSE_NAME = 'hdb_license';
+
 const CLUSTERING_MESSAGE_TYPES = cluster_types.CORE_ROOM_MSG_TYPE_ENUM;
 const ORIGINATOR_SET_VALUE = cluster_types.ORIGINATOR_SET_VALUE;
 
@@ -425,6 +427,7 @@ module.exports = {
     LICENSE_VALUES,
     STORAGE_TYPES_ENUM,
     HELIUM_RESPONSE_CODES,
-    HELIUM_TIME_STAMP_ENUM
+    HELIUM_TIME_STAMP_ENUM,
+    HDB_LICENSE_NAME
 };
 
