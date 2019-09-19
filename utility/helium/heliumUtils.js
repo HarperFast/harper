@@ -7,7 +7,6 @@ const harperdb_helium = require('../../dependencies/harperdb_helium/test/out/hdb
 const system_schema = require('../../json/systemSchema');
 const log = require('../logging/harper_logger');
 const env = require('../environment/environmentManager');
-const fs = require('fs-extra');
 if(!env.isInitialized()){
     env.initSync();
 }
@@ -22,7 +21,7 @@ module.exports = {
     getHeliumServerURL: getHeliumServerURL
 };
 
-async function getHeliumServerURL(){
+function getHeliumServerURL(){
     if(helium_server_url !== undefined){
         return helium_server_url;
     }
@@ -36,15 +35,6 @@ async function getHeliumServerURL(){
     let helium_host = env.get(terms.HDB_SETTINGS_NAMES.HELIUM_SERVER_HOST_KEY);
     if(utils.isEmptyOrZeroLength(helium_host) || helium_host === 'null'){
         throw new Error(`${terms.HDB_SETTINGS_NAMES.HELIUM_SERVER_HOST_KEY} must be defined in config settings.`);
-    }
-
-    try {
-        await fs.access(volume_path, fs.constants.F_OK | fs.constants.R_OK | fs.constants.W_OK);
-    }catch(e){
-        if(e.code === 'ENOENT'){
-            throw new Error(`invalid path defined in ${terms.HDB_SETTINGS_NAMES.HELIUM_VOLUME_PATH_KEY}`);
-        }
-        throw e;
     }
 
     helium_server_url = terms.HELIUM_URL_PREFIX + helium_host + '/' + volume_path;
@@ -66,8 +56,9 @@ function initializeHelium(){
         throw e;
     }
 
+
     if(!_.isEqual(start_result, START_SESSION_OK)){
-        throw new Error(`Unable to access Helium volume with error code: ${start_result[1]}`);
+        throw new Error(`Unable to initialize Helium due to error code: ${start_result[1]}`);
     }
 
     return global.hdb_helium;
@@ -83,10 +74,10 @@ function terminateHelium(helium){
     }
 }
 
-function createSystemDataStores(){
+function createSystemDataStores(helium){
     try {
         log.info('Creating HarperDB System datastores');
-        let helium = initializeHelium();
+
         let data_stores = [];
         //build the attribute array list from the systemSchema.json
         Object.keys(system_schema).forEach(table_key=>{
@@ -99,7 +90,6 @@ function createSystemDataStores(){
 
         helium.createDataStores(data_stores);
 
-        terminateHelium(helium);
         log.info('Created system level data stores');
     }catch(e){
         log.error(`Creating system data stores failed due to ${e}`);
