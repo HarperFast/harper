@@ -13,14 +13,6 @@ const sinon_chai = require('sinon-chai');
 const { expect } = chai;
 chai.use(sinon_chai);
 
-try {
-    heliumUtils.createSystemDataStores();
-} catch(err) {
-    console.log(err);
-}
-
-const hdb_helium = heliumUtils.initializeHelium();
-
 const INSERT_OBJECT_TEST = {
     operation: "insert",
     schema: "dev",
@@ -117,6 +109,8 @@ let ATTR_OBJ_TEST = {
     "hdb_auth_header": "auth-header"
 };
 
+let hdb_helium;
+
 function dropTestDatastores() {
     try {
         test_utils.deleteSystemDataStores(hdb_helium);
@@ -128,6 +122,15 @@ function dropTestDatastores() {
 
 describe('Tests for Helium method heCreateRecords', () => {
     let sandbox = sinon.createSandbox();
+
+    before(() => {
+        try {
+            heliumUtils.createSystemDataStores();
+            hdb_helium = heliumUtils.initializeHelium();
+        } catch(err) {
+            console.log(err);
+        }
+    });
 
     after(() => {
         sandbox.restore();

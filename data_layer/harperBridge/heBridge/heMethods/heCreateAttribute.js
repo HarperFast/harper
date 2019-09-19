@@ -2,6 +2,7 @@
 
 const heProcessInsertUpdateResponse = require('../heUtility/heProcessInsertUpdateResponse');
 const heProcessRows = require('../heUtility/heProcessRows');
+const heGenerateDataStoreName = require('../heUtility/heGenerateDataStoreName');
 const insertUpdateValidate = require('../../bridgeUtility/insertUpdateValidate');
 const convertOperationToTransaction = require('../../bridgeUtility/convertOperationToTransaction');
 const returnObject = require('../../bridgeUtility/insertUpdateReturnObj');
@@ -50,7 +51,7 @@ function heCreateAttribute(create_attribute_obj) {
         records: [record]
     };
 
-    let datastore_name = `${create_attribute_obj.schema}/${create_attribute_obj.table}/${create_attribute_obj.attribute}`;
+    let datastore_name = heGenerateDataStoreName(create_attribute_obj.schema, create_attribute_obj.table, create_attribute_obj.attribute);
 
     try {
         // add some better logging around this for when datastore already exists.
