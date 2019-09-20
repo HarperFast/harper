@@ -641,6 +641,53 @@ describe('Test DELETE', () => {
             });
         });
 
+        it('Nominal check return value', () => {
+            const files_to_check = [...test_data[TEST_TABLE_DOG][0].paths.files];
+            const request = deepClone(JSON_OBJECT_DELETE);
+            request.hash_values = [TEST_DOG_HASH_VALUES[0]];
+            for (let i = 0; i < files_to_check.length; i++) {
+                assert.equal(fs.existsSync(files_to_check[i]), true, `SETUP FAILURE: file ${files_to_check[i]} was not created.`);
+            }
+            delete_rewire.delete(request, (err, result) => {
+                for (let i = 0; i < files_to_check.length; i++) {
+                    assert.equal(fs.existsSync(files_to_check[i]), false, `FAILURE: file ${files_to_check[i]} still exists.`);
+                }
+                assert.strictEqual(result.deleted_hashes.length, 1, `expected deleted hashes to be 1`);
+                assert.strictEqual(result.skipped_hashes.length, 0, `expected skipped hashes to be 0`);
+            });
+        });
+
+        it('Nominal check no records found', () => {
+            const files_to_check = [...test_data[TEST_TABLE_DOG][0].paths.files];
+            const request = deepClone(JSON_OBJECT_DELETE);
+            request.hash_values = [TEST_DOG_HASH_VALUES[0]];
+            search_stub.yields(null, []);
+            request.hash_values = [23423423423];
+
+            delete_rewire.delete(request, (err, result) => {
+                assert.strictEqual((err instanceof Error), true, `expected error message`);
+                assert.strictEqual(result, undefined, `expected error message`);
+            });
+        });
+
+        it('Nominal path 1 record found, 1 not found', () => {
+            const files_to_check = [...test_data[TEST_TABLE_DOG][1].paths.files];
+            const request = deepClone(JSON_OBJECT_DELETE);
+            request.hash_values = [TEST_DOG_HASH_VALUES[1], 1234];
+            search_stub.yields(null, [TEST_DATA_DOG[1]]);
+
+            for (let i = 0; i < files_to_check.length; i++) {
+                assert.equal(fs.existsSync(files_to_check[i]), true, `SETUP FAILURE: file ${files_to_check[i]} was not created.`);
+            }
+            delete_rewire.delete(request, (err, result) => {
+                for (let i = 0; i < files_to_check.length; i++) {
+                    assert.equal(fs.existsSync(files_to_check[i]), false, `FAILURE: file ${files_to_check[i]} still exists.`);
+                }
+                assert.strictEqual(result.deleted_hashes.length, 1, `expected deleted hashes to be 1`);
+                assert.strictEqual(result.skipped_hashes.length, 1, `expected skipped hashes to be 0`);
+            });
+        });
+
         it('test deleteRecord with bad deleteObject parameter', () => {
             delete_rewire.delete(null, (e) => {
                 err = e;
