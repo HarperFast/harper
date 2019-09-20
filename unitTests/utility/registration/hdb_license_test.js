@@ -40,7 +40,7 @@ describe(`Test generateLicense`, function () {
         const license_generator = rewire('../../../utility/devops/licenseGenerator');
         // prepare license key obj which expire tomorrow with dummy fingerprint (no fingerprint validation in generate license process)
         let licenseKeyObject = {
-            exp_date: moment().add(1, 'day').format('YYYY-MM-DD'),
+            exp_date: moment().add(1, 'day').utc().format('YYYY-MM-DD'),
             company: 'hdb',
             fingerprint: 'whatever',
             storage_type: 'helium',
@@ -63,7 +63,7 @@ describe(`Test generateLicense`, function () {
         // rewire hdb_license instance locally to keep internal cipher const fresh from another test
         const license_generator = rewire('../../../utility/devops/licenseGenerator');
         // prepare license key obj which *expire today* with dummy fingerprint (no fingerprint validation in generate license process)
-        let licenseKeyObject = { exp_date: moment().format('YYYY-MM-DD'), company: 'hdb', fingerprint: 'whatever',
+        let licenseKeyObject = { exp_date: moment().subtract(1, 'day').format('YYYY-MM-DD'), company: 'hdb', fingerprint: 'whatever',
             storage_type: 'helium',
             api_call: 90000,
             version: '2.0.0'};
@@ -77,14 +77,14 @@ describe(`Test generateLicense`, function () {
         }
 
         assert.notEqual(err, null, 'generate license should get error');
-        assert.equal(err, "Error: Exp date must be no earlier than " + moment().format('YYYY-MM-DD'), 'error message should mention that license key is expired');
+        assert.equal(err, "Error: Exp date must be no earlier than " + moment().utc().format('YYYY-MM-DD'), 'error message should mention that license key is expired');
         assert.equal(license, null, 'license value should be null');
     });
     it('Pass null company, expect failed to generate license with proper error message', function () {
         // rewire hdb_license instance locally to keep internal cipher const fresh from another test
         const license_generator = rewire('../../../utility/devops/licenseGenerator');
         // prepare license key obj which expire tomorrow with *blank company* and dummy fingerprint (no fingerprint validation in generate license process)
-        let licenseKeyObject = { exp_date: moment().add(1, 'day').format('YYYY-MM-DD'), company: null, fingerprint: 'whatever',
+        let licenseKeyObject = { exp_date: moment().add(1, 'day').utc().format('YYYY-MM-DD'), company: null, fingerprint: 'whatever',
             storage_type: 'helium',
             api_call: 90000,
             version: '2.0.0'};
@@ -127,7 +127,7 @@ describe(`Test generateLicense`, function () {
         // rewire hdb_license instance locally to keep internal cipher const fresh from another test
         const license_generator = rewire('../../../utility/devops/licenseGenerator');
         // prepare license key obj which *expire date is blank* with dummy fingerprint (no fingerprint validation in generate license process)
-        let licenseKeyObject = { exp_date: moment().add(1, 'day').format('YYYY-MM-DD'), company: 'hdb', fingerprint: 'whatever',
+        let licenseKeyObject = { exp_date: moment().add(1, 'day').utc().format('YYYY-MM-DD'), company: 'hdb', fingerprint: 'whatever',
             api_call: 90000,
             version: '2.0.0'};
 
@@ -148,7 +148,7 @@ describe(`Test generateLicense`, function () {
         // rewire hdb_license instance locally to keep internal cipher const fresh from another test
         const license_generator = rewire('../../../utility/devops/licenseGenerator');
         // prepare license key obj which *expire date is blank* with dummy fingerprint (no fingerprint validation in generate license process)
-        let licenseKeyObject = { exp_date: moment().add(1, 'day').format('YYYY-MM-DD'), company: 'hdb', fingerprint: 'whatever',
+        let licenseKeyObject = { exp_date: moment().add(1, 'day').utc().format('YYYY-MM-DD'), company: 'hdb', fingerprint: 'whatever',
             storage_type: 'blorp',
             api_call: 90000,
             version: '2.0.0'};
@@ -170,7 +170,7 @@ describe(`Test generateLicense`, function () {
         // rewire hdb_license instance locally to keep internal cipher const fresh from another test
         const license_generator = rewire('../../../utility/devops/licenseGenerator');
         // prepare license key obj which *expire date is blank* with dummy fingerprint (no fingerprint validation in generate license process)
-        let licenseKeyObject = { exp_date: moment().add(1, 'day').format('YYYY-MM-DD'), company: 'hdb', fingerprint: 'whatever',
+        let licenseKeyObject = { exp_date: moment().add(1, 'day').utc().format('YYYY-MM-DD'), company: 'hdb', fingerprint: 'whatever',
             storage_type: 'fs',
             version: '2.0.0'};
 
@@ -191,7 +191,7 @@ describe(`Test generateLicense`, function () {
         // rewire hdb_license instance locally to keep internal cipher const fresh from another test
         const license_generator = rewire('../../../utility/devops/licenseGenerator');
         // prepare license key obj which *expire date is blank* with dummy fingerprint (no fingerprint validation in generate license process)
-        let licenseKeyObject = { exp_date: moment().add(1, 'day').format('YYYY-MM-DD'), company: 'hdb', fingerprint: 'whatever',
+        let licenseKeyObject = { exp_date: moment().add(1, 'day').utc().format('YYYY-MM-DD'), company: 'hdb', fingerprint: 'whatever',
             storage_type: 'fs',
             api_call: "thousand",
             version: '2.0.0'};
@@ -215,7 +215,7 @@ describe(`Test validateLicense`, function () {
         // rewire hdb_license instance locally to keep internal cipher const fresh from another test
         const hdb_license = rewire('../../../utility/registration/hdb_license');
         const license_generator = rewire('../../../utility/devops/licenseGenerator');
-        let licenseKeyObject = { exp_date: moment().add(1, 'day').format('YYYY-MM-DD'), company: 'hdb',
+        let licenseKeyObject = { exp_date: moment().add(1, 'day').utc().format('YYYY-MM-DD'), company: 'hdb',
             storage_type: 'helium',
             api_call: 90000,
             version: '2.0.0'};
@@ -237,7 +237,7 @@ describe(`Test validateLicense`, function () {
         // rewire hdb_license instance locally to keep internal cipher const fresh from another test
         const hdb_license = rewire('../../../utility/registration/hdb_license');
         const license_generator = rewire('../../../utility/devops/licenseGenerator');
-        let licenseKeyObject = { exp_date: moment().add(1, 'day').format('YYYY-MM-DD'), company: 'hdb',
+        let licenseKeyObject = { exp_date: moment().add(1, 'day').utc().format('YYYY-MM-DD'), company: 'hdb',
             storage_type: 'fs',
             api_call: 90000,
             version: '2.0.0'};
@@ -259,7 +259,7 @@ describe(`Test validateLicense`, function () {
         // rewire hdb_license instance locally to keep internal cipher const fresh from another test
         const hdb_license = rewire('../../../utility/registration/hdb_license');
         const license_generator = rewire('../../../utility/devops/licenseGenerator');
-        let licenseKeyObject = { exp_date: moment().add(1, 'day').format('YYYY-MM-DD'), company: 'hdb',
+        let licenseKeyObject = { exp_date: moment().subtract(1, 'day').utc().format('YYYY-MM-DD'), company: 'hdb',
             storage_type: 'helium',
             api_call: 90000,
             version: '2.0.0'};
@@ -268,6 +268,11 @@ describe(`Test validateLicense`, function () {
         let fingerprint = await hdb_license.generateFingerPrint().catch((e) => {
             err = e;
         }) ;
+
+        let val_revert = license_generator.__set__('validation', licence_object=>{
+            return null;
+        });
+
         licenseKeyObject.fingerprint = fingerprint;
         let license = license_generator.generateLicense(licenseKeyObject);
         let moment_tomorrow_mock = function () {
@@ -280,12 +285,14 @@ describe(`Test validateLicense`, function () {
         assert.equal(validation.valid_date, false, 'date validation should not be valid');
         assert.equal(validation.valid_license, true, 'license validation should be valid');
         assert.equal(validation.valid_machine, true, 'machine validation should be valid');
+
+        val_revert();
     });
     it('Pass invalid company, expect invalid license from validation', async function () {
         // rewire hdb_license instance locally to keep internal cipher const fresh from another test
         const hdb_license = rewire('../../../utility/registration/hdb_license');
         const license_generator = rewire('../../../utility/devops/licenseGenerator');
-        let licenseKeyObject = { exp_date: moment().add(1, 'day').format('YYYY-MM-DD'), company: 'hdb',
+        let licenseKeyObject = { exp_date: moment().add(1, 'day').utc().format('YYYY-MM-DD'), company: 'hdb',
             storage_type: 'helium',
             api_call: 90000,
             version: '2.0.0'};
@@ -307,7 +314,7 @@ describe(`Test validateLicense`, function () {
         // rewire hdb_license instance locally to keep internal cipher const fresh from another test
         const hdb_license = rewire('../../../utility/registration/hdb_license');
         const license_generator = rewire('../../../utility/devops/licenseGenerator');
-        let licenseKeyObject = { exp_date: moment().add(1, 'day').format('YYYY-MM-DD'), company: 'hdb',
+        let licenseKeyObject = { exp_date: moment().add(1, 'day').utc().format('YYYY-MM-DD'), company: 'hdb',
             storage_type: 'helium',
             api_call: 90000,
             version: '2.0.0'};
@@ -329,7 +336,7 @@ describe(`Test validateLicense`, function () {
         // rewire hdb_license instance locally to keep internal cipher const fresh from another test
         const hdb_license = rewire('../../../utility/registration/hdb_license');
         const license_generator = rewire('../../../utility/devops/licenseGenerator');
-        let licenseKeyObject = { exp_date: moment().add(1, 'day').format('YYYY-MM-DD'), company: 'hdb',
+        let licenseKeyObject = { exp_date: moment().add(1, 'day').utc().format('YYYY-MM-DD'), company: 'hdb',
             storage_type: 'helium',
             api_call: 90000,
             version: '2.0.0'};
