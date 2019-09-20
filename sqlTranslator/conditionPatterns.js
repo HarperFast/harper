@@ -27,6 +27,7 @@ function createPatterns(condition, table_schema, base_path){
         pattern.blob_search = true;
     }
 
+    //if search attribute is hash_attr, search by primary index (i.e. '__hdb_hash' dir) - if not, search on secondary index (i.e. attr value directory)
     pattern.folder_search_path = attribute_name === table_schema.hash_attribute ? pattern.hash_path : `${table_path + attribute_name}/`;
 
     let hdb_extension = attribute_name === table_schema.hash_attribute ? '\.hdb' : '';
