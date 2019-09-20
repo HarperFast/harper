@@ -15,6 +15,7 @@ const SC_PROC_DESCRIPTOR = 'Cluster Server';
 const HDB_SUPPORT_ADDRESS = 'support@harperdb.io';
 const HDB_SUPPORT_URL = 'https://harperdbhelp.zendesk.com/hc/en-us';
 const SUPPORT_HELP_MSG = `For support, please submit a support request at ${HDB_SUPPORT_URL} or contact ${HDB_SUPPORT_ADDRESS}`;
+const SEARCH_NOT_FOUND_MESSAGE = "Item not found";
 
 const PERIOD_REGEX = /^\.$/;
 const DOUBLE_PERIOD_REGEX = /^\.\.$/;
@@ -405,6 +406,7 @@ module.exports = {
     LICENSE_VALUES,
     STORAGE_TYPES_ENUM,
     HDB_LICENSE_NAME,
-    HDB_FILE_SUFFIX
+    HDB_FILE_SUFFIX,
+    SEARCH_NOT_FOUND_MESSAGE
 };
 

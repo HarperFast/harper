@@ -59,7 +59,12 @@ async function unlink_delete_object(delete_object) {
     }
 
     let unlink_failure_array = [];
-    let delete_hash_ids = Object.keys(delete_object);
+    //let delete_hash_ids = Object.keys(delete_object);
+    let delete_hash_ids = [];
+    Object.keys(delete_object).forEach((rec) => {
+       delete_hash_ids.push(hdb_utils.autoCast(rec));
+    });
+
     try {
         await Promise.all(
             delete_hash_ids.map(async hash_id => {
@@ -88,6 +93,7 @@ async function unlink_delete_object(delete_object) {
                 }
             }
         }
+
         delete_response.deleted_hashes = delete_hash_ids;
         delete_response.skipped_hashes = failed_hash_ids_array;
         return delete_response;

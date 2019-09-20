@@ -13,6 +13,7 @@ const harper_logger = require('../utility/logging/harper_logger');
 const { promisify, callbackify } = require('util');
 const unlink = require('../utility/fs/unlink');
 const terms = require('../utility/hdbTerms');
+const {DeleteResponseObject} = require('./DataLayerObjects');
 
 // callbackified functions.
 const c_unlink_delete_object = callbackify(unlink.unlink_delete_object);
@@ -325,7 +326,6 @@ function isFileTimeBeforeParameterTime(parameter_date, file_name) {
  * @param date_unix_ms - The date to compare files found in dirPath.
  */
 async function getDirectoriesInPath(dirPath, found_dirs, date_unix_ms) {
-
     if(!(date_unix_ms) || !moment(date_unix_ms).isValid()) {
         harper_logger.info(`An invalid date ${date_unix_ms} was passed `);
         return;
@@ -382,19 +382,32 @@ function deleteRecord(delete_object, callback){
                 hash_values: delete_object.hash_values,
                 get_attributes: ['*']
             };
-
+        let not_found_hashes = [];
         async.waterfall([
             global_schema.getTableSchema.bind(null, delete_object.schema, delete_object.table),
             (table_info, callback) => {
                 callback();
             },
             search.searchByHash.bind(null, search_obj),
+            compareSearchResultsWithRequest.bind(null, not_found_hashes, delete_object),
             deleteRecords.bind(null, delete_object.schema, delete_object.table)
         ], (err, delete_result_object) => {
             if (err) {
+                if(err.message === terms.SEARCH_NOT_FOUND_MESSAGE) {
+                    let return_msg = new DeleteResponseObject();
+                    return_msg.message = `None of the specified records were found.`;
+                    return_msg.skipped_hashes = delete_object.hash_values.length;
+                    return_msg.deleted_hashes = 0;
+                    return callback(return_msg);
+                }
                 return callback(err);
             }
-
+            // append records not found to skipped
+            if(not_found_hashes && not_found_hashes.length > 0) {
+                for(let i=0; i<not_found_hashes.length; ++i) {
+                    delete_result_object.skipped_hashes.push(not_found_hashes[i]);
+                }
+            }
             if(delete_object.schema !== 'system') {
                 let delete_msg = common_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
                 delete_msg.transaction = delete_object;
@@ -411,9 +424,40 @@ function deleteRecord(delete_object, callback){
     }
 }
 
+/**
+ * Used in a waterfall to compare search results vs hashes specified in a request.  Any hashes not found in records
+ * will be added to not_found_hashes.
+ * @param not_found_hashes - array that is populated with skipped hash id values
+ * @param delete_object - The object that will be passed to the delete function
+ * @param records - records found during a search
+ * @param callback
+ * @returns {Object}
+ */
+function compareSearchResultsWithRequest(not_found_hashes, delete_object, records, callback) {
+    // check for records specified in the request, but were not found in the search.  Need to report those as
+    // skipped.
+    let table_hash_attribute = global.hdb_schema[delete_object.schema][delete_object.table].hash_attribute;
+    if(!table_hash_attribute) {
+        return callback('Table not found', null);
+    }
+    for(let i=0; i<delete_object.hash_values.length; ++i) {
+        let was_returned = false;
+        for(let search_result_index = 0; search_result_index < records.length; ++search_result_index) {
+            if(records[search_result_index][table_hash_attribute] === delete_object.hash_values[i]) {
+                was_returned = true;
+                break;
+            }
+        }
+        if(!was_returned) {
+            not_found_hashes.push(delete_object.hash_values[i]);
+        }
+    }
+    callback(null, records);
+}
+
 function deleteRecords(schema, table, records, callback){
     if(common_utils.isEmptyOrZeroLength(records)){
-        return callback(common_utils.errorizeMessage("Item not found!"));
+        return callback(common_utils.errorizeMessage(terms.SEARCH_NOT_FOUND_MESSAGE));
     }
     let hash_attribute = null;
     try {
