@@ -7,6 +7,7 @@ const harperdb_helium = require('../../dependencies/harperdb_helium/test/out/hdb
 const system_schema = require('../../json/systemSchema');
 const log = require('../logging/harper_logger');
 const env = require('../environment/environmentManager');
+const ps_list = require('../../utility/psList');
 if(!env.isInitialized()){
     env.initSync();
 }
@@ -94,5 +95,22 @@ function createSystemDataStores(helium){
     }catch(e){
         log.error(`Creating system data stores failed due to ${e}`);
         throw e;
+    }
+}
+
+function checkHeliumServerRunning(){
+    //first check if the helium server host is localhost or 127.0.0.1, if so check for the helium process
+    let helium_host = env.getProperty(terms.HDB_SETTINGS_NAMES.HELIUM_SERVER_HOST_KEY);
+    if(helium_host.startsWith('localhost') || helium_host.startsWith('127.0.0.1')){
+        const list = await ps_list.findPs('helium');
+        if(!utils.isEmptyOrZeroLength(list)) {
+            log.info('helium server not running, attempting to start helium server');
+            fork(path.join(__dirname, '../server/hdb_express.js'), {
+                detached: true,
+                stdio: 'ignore'
+            });
+        }
+    } else{
+        //attempt to create session
     }
 }
