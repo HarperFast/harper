@@ -395,7 +395,7 @@ function deleteRecord(delete_object, callback){
             if (err) {
                 if(err.message === terms.SEARCH_NOT_FOUND_MESSAGE) {
                     let return_msg = new DeleteResponseObject();
-                    return_msg.message = `None of the specified records were found.`;
+                    return_msg.message = terms.SEARCH_NOT_FOUND_MESSAGE;
                     return_msg.skipped_hashes = delete_object.hash_values.length;
                     return_msg.deleted_hashes = 0;
                     return callback(return_msg);
@@ -436,10 +436,14 @@ function deleteRecord(delete_object, callback){
 function compareSearchResultsWithRequest(not_found_hashes, delete_object, records, callback) {
     // check for records specified in the request, but were not found in the search.  Need to report those as
     // skipped.
-    let table_hash_attribute = global.hdb_schema[delete_object.schema][delete_object.table].hash_attribute;
-    if(!table_hash_attribute) {
-        return callback('Table not found', null);
+    //'hash attribute not found'
+    let table_hash_attribute = undefined;
+    try {
+        table_hash_attribute = global.hdb_schema[delete_object.schema][delete_object.table].hash_attribute;
+    } catch(err) {
+        return callback(common_utils.errorizeMessage(`hash attribute not found`));
     }
+
     for(let i=0; i<delete_object.hash_values.length; ++i) {
         let was_returned = false;
         for(let search_result_index = 0; search_result_index < records.length; ++search_result_index) {

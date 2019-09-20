@@ -21,6 +21,7 @@ const fs = require('graceful-fs');
 const moment = require('moment');
 const global_schema = require('../../utility/globalSchema');
 const search = require('../../data_layer/search');
+const terms = require('../../utility/hdbTerms');
 
 const DELETE_MOD_BASE_PATH_NAME = 'BASE_PATH';
 const TEST_FS_DIR = getMockFSPath();
@@ -672,7 +673,7 @@ describe('Test DELETE', () => {
             delete_rewire.delete(JSON_OBJECT_DELETE, (e) => {
                 err = e;
             });
-            assert.equal(err.message, "Item not found!");
+            assert.equal(err.message, terms.SEARCH_NOT_FOUND_MESSAGE);
             assert.ok(err.message.length > 0);
         });
     });
@@ -728,7 +729,7 @@ describe('Test DELETE', () => {
                 err = e;
             });
             assert.ok(err.message.length > 0);
-            assert.equal(err.message, "Item not found!");
+            assert.equal(err.message, terms.SEARCH_NOT_FOUND_MESSAGE);
         });
     });
 
