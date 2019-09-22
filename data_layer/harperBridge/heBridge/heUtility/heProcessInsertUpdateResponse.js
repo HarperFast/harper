@@ -1,14 +1,13 @@
 'use strict';
 
 const hdb_terms = require('../../../../utility/hdbTerms');
-const hdb_utils = require('../../../../utility/common_utils');
 
 module.exports = heProcessInsertUpdateResponse;
 
 /**
  * Helium API returns a multi-dimensional array from the createRecords and updateRecords call. This function transforms that response
  * into two arrays, one with hashes of written records the other with hashes of skipped records due to them
- * already existing. The only error code accepted it if the item already exists.
+ * already existing. The only error code accepted is if the item already exists.
  * @param he_response
  * @returns {{skipped_hashes: *, written_hashes: *}}
  */
