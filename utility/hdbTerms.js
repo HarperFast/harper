@@ -348,6 +348,17 @@ const CLUSTER_EVENTS_DEFS_ENUM = {
     DIRECTION_CHANGE: 'direction_change'
 };
 
+const HELIUM_RESPONSE_CODES = {
+    HE_ERR_ITEM_EXISTS: 'HE_ERR_ITEM_EXISTS',
+};
+
+const HELIUM_TIME_STAMP_ENUM = {
+    CREATED_TIME: '__createdtime__',
+    UPDATED_TIME: '__updatedtime__'
+};
+
+const HDB_LICENSE_NAME = 'hdb_license';
+
 const CLUSTERING_MESSAGE_TYPES = cluster_types.CORE_ROOM_MSG_TYPE_ENUM;
 const ORIGINATOR_SET_VALUE = cluster_types.ORIGINATOR_SET_VALUE;
 
@@ -414,6 +425,8 @@ module.exports = {
     CLUSTERING_PAYLOAD_FILE_NAME,
     HELIUM_URL_PREFIX,
     LICENSE_VALUES,
-    STORAGE_TYPES_ENUM
+    STORAGE_TYPES_ENUM,
+    HELIUM_RESPONSE_CODES,
+    HELIUM_TIME_STAMP_ENUM,
+    HDB_LICENSE_NAME
 };
-
