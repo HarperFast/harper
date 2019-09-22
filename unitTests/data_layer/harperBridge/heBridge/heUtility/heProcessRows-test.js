@@ -3,6 +3,8 @@
 const test_utils = require('../../../../test_utils');
 test_utils.preTestPrep();
 
+const heliumUtils = require('../../../../../utility/helium/heliumUtils');
+const hdb_helium = heliumUtils.initializeHelium();
 const heProcessRows = require('../../../../../data_layer/harperBridge/heBridge/heUtility/heProcessRows');
 const hdb_terms = require('../../../../../utility/hdbTerms');
 const chai = require('chai');
@@ -50,6 +52,27 @@ const INSERT_OBJECT_TEST = {
     ]
 };
 
+const UPDATE_OBJECT_TEST = {
+    operation: "update",
+    schema: "dev",
+    table: "dog",
+    records: [
+        {
+            name: "Brian",
+            breed: "Griffin",
+            id: "88",
+            age: 5
+        },
+        {
+            name: "Penny",
+            breed: "Pure",
+            id: "9",
+            age: 5,
+            height: 145
+        }
+    ]
+};
+
 const ATTRIBUTES_TEST = [
     "name",
     "breed",
@@ -62,16 +85,37 @@ const LONG_CHAR_TEST = "z2xFuWBiQgjAAAzgAK80e35FCuFzNHpicBWzsWZW055mFHwBxdU5yE5K
     "faotQUlygf8Hv3E89f2v3KRzAX5FylEKwv4GJpSoZbXpgJ1mhmOjGUCAh3sipI5rVV0yvz6dbkXOw7xE5XlCHBRnc3T6BVyHIlUmFdlBowy" +
     "vAy7MT49mg6wn5yCqPEPFkcva2FNRYSNxljmu1XxN65mTKiTw2lvM0Yl2o0";
 
+function buildTestData(insert_obj, attributes, schema_table) {
+    try {
+        let { datastores, rows } = heProcessRows(insert_obj, attributes, schema_table);
+        hdb_helium.createDataStores(datastores);
+        hdb_helium.insertRows(datastores, rows);
+    } catch(err) {
+        console.log(err);
+    }
+}
+
+function teardownTestData(insert_obj, attributes, schema_table) {
+    try {
+        let { datastores } = heProcessRows(insert_obj, attributes, schema_table);
+        hdb_helium.deleteDataStores(datastores);
+    } catch(err) {
+        console.log(err);
+    }
+}
+
 describe('Tests for Helium utility heProcessRows', () => {
     let insert_obj_single;
     let sandbox = sinon.createSandbox();
 
     before(() => {
         sandbox.stub(Date, 'now').returns('80443');
+        buildTestData(INSERT_OBJECT_TEST, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST);
     });
 
     after(() => {
         sandbox.restore();
+       teardownTestData(INSERT_OBJECT_TEST, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST);
     });
 
     it('Test return obj is as expected for multiple uneven records', () => {
@@ -119,7 +163,7 @@ describe('Tests for Helium utility heProcessRows', () => {
         expect(result).to.eql(expected_result);
     });
 
-    it('Test return obj is as expected for a single datastore and row', () => {
+    it('Test return obj is as expected for a single datastore and row update', () => {
         let update_obj = test_utils.deepClone(insert_obj_single);
         update_obj.operation = 'update';
         let expected_result = {
@@ -127,6 +171,15 @@ describe('Tests for Helium utility heProcessRows', () => {
             rows: [ [ "8", [ "8", null, "80443" ] ] ]
         };
         let result = heProcessRows(update_obj, ["id"], SCHEMA_TABLE_TEST);
+
+        expect(result).to.eql(expected_result);
+    });
+
+    it('Test return obj is as expected for update when value does not exist', () => {
+        let expected_result = {
+            datastores: [ 'dev/dog/name', 'dev/dog/breed', 'dev/dog/id', 'dev/dog/age', 'dev/dog/height', 'dev/dog/__createdtime__', 'dev/dog/__updatedtime__' ],
+            rows: [ [ '88', [ 'Brian', 'Griffin', '88', 5, null, '80443', '80443' ] ], [ '9', [ 'Penny', 'Pure', '9', 5, 145, null, '80443' ] ] ] };
+        let result = heProcessRows(UPDATE_OBJECT_TEST, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST);
 
         expect(result).to.eql(expected_result);
     });
