@@ -148,7 +148,7 @@ describe('Tests for Helium method heCreateRecords', () => {
             dropTestDatastores();
             sandbox.restore();
         });
-        
+
         it('Test that rows are inserted correctly and return msg is correct ',  () => {
             let expected_search_result = [
                 [ '8', [ 'Harper', 'Mutt', '8', '5', null, '1943201', '1943201'] ],
@@ -169,7 +169,7 @@ describe('Tests for Helium method heCreateRecords', () => {
             };
             let result;
             let search_result;
-            
+
             try {
                 result = heCreateRecords(INSERT_OBJECT_TEST);
                 search_result = hdb_helium.searchByKeys(row_keys, DATASTORES_TEST);
@@ -235,7 +235,7 @@ describe('Tests for Helium method heCreateRecords', () => {
             try {
                 result = heCreateRecords(insert_obj);
                 search_result = hdb_helium.searchByKeys(['8', '9', '123', '1232'], DATASTORES_TEST);
-                
+
             } catch(err) {
                 console.log(err);
             }
@@ -243,7 +243,7 @@ describe('Tests for Helium method heCreateRecords', () => {
             expect(result).to.eql(expected_return_result);
             expect(search_result).to.eql(expected_search_result);
         });
-        
+
         it('Test inserting rows that already exist',  () => {
             let expected_result = {
                 written_hashes: [],

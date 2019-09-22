@@ -54,7 +54,7 @@ async function fsGetDataByValue(search_object) {
         }, getBasePath());
 
         const final_get_attrs = evaluateTableGetAttributes(search_object.get_attributes, table_info.attributes);
-        const final_hash_results = await p_find_ids_by_regex(patterns.folder_search_path, patterns.folder_search, patterns.blob_search);
+        const final_hash_results = await p_find_ids_by_regex(patterns.folder_search_path, patterns.folder_search, patterns.blob_search, patterns.blob_regex);
 
         const final_attributes_data = await getAttributeFileValues(final_get_attrs, search_object, final_hash_results, table_info.hash_attribute);
         const final_results = consolidateSearchData(table_info.hash_attribute, final_attributes_data);

@@ -63,7 +63,7 @@ function multiConditionSearch(conditions, table_schema, callback) {
 
             let pattern = condition_patterns.createPatterns(condition, table_schema, getBasePath());
 
-            file_search.findIDsByRegex(pattern.folder_search_path, pattern.folder_search, pattern.blob_search, (err, results) => {
+            file_search.findIDsByRegex(pattern.folder_search_path, pattern.folder_search, pattern.blob_search, pattern.blob_regex, (err, results) => {
                 if (err) {
                     logger.error(err);
                 } else {

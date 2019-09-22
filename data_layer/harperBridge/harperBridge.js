@@ -2,7 +2,6 @@
 
 const BridgeMethods = require("./BridgeMethods.js");
 const FileSystemBridge = require('./fsBridge/FileSystemBridge');
-const HeliumBridge = require('./heBridge/HeliumBridge');
 
 const terms = require('../../utility/hdbTerms');
 
@@ -25,6 +24,7 @@ function getBridge() {
             harper_bridge = new FileSystemBridge();
             break;
         case terms.HDB_DATA_STORE_TYPES.HELIUM:
+            const HeliumBridge = require('./heBridge/HeliumBridge');
             harper_bridge = new HeliumBridge();
             break;
         default:
