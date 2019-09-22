@@ -2,9 +2,11 @@
 
 const evaluateTableGetAttributes = require('../../bridgeUtility/evaluateTableGetAttributes');
 const heGenerateDataStoreName = require('../heUtility/heGenerateDataStoreName');
-const heGetAttributeValues = require('../heUtility/heGetAttributeValues');
 const search_validator = require('../../../../validation/searchValidator.js');
 const common_utils = require('../../../../utility/common_utils');
+
+const heliumUtil = require('../../../../utility/helium/heliumUtils');
+const hdb_helium = heliumUtil.initializeHelium();
 
 module.exports = heGetDataByHash;
 
@@ -27,9 +29,9 @@ function heGetDataByHash(search_object) {
 
         const hash_values = search_object.hash_values.map(hash => `${hash}`);
         const data_stores = final_get_attrs.map(attr => heGenerateDataStoreName(table_info.schema, table_info.name, attr));
+        const final_attributes_data = hdb_helium.searchByKeys(hash_values, data_stores);
 
-        const attributes_data = heGetAttributeValues(hash_values, data_stores);
-        const final_results = consolidateSearchData(final_get_attrs, attributes_data);
+        const final_results = consolidateSearchData(final_get_attrs, final_attributes_data);
 
         return final_results;
     } catch(err) {

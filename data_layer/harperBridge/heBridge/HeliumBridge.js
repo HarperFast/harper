@@ -1,3 +1,4 @@
+/* eslint-disable require-await */
 "use strict";
 
 const log = require('../../../utility/logging/harper_logger');
@@ -36,7 +37,7 @@ class HeliumBridge extends BridgeMethods {
 
     async getDataByHash(search_object) {
         try {
-            return await heGetDataByHash(search_object);
+            return heGetDataByHash(search_object);
         } catch (err) {
             log.error(err);
             throw err;
@@ -45,7 +46,7 @@ class HeliumBridge extends BridgeMethods {
 
     async searchByHash(search_object) {
         try {
-            return await heSearchByHash(search_object);
+            return heSearchByHash(search_object);
         } catch(err) {
             log.error(err);
             throw err;
@@ -54,7 +55,7 @@ class HeliumBridge extends BridgeMethods {
 
     async getDataByValue(search_object) {
         try {
-            return await heGetDataByValue(search_object);
+            return heGetDataByValue(search_object);
         } catch (err) {
             log.error(err);
             throw err;
@@ -63,7 +64,7 @@ class HeliumBridge extends BridgeMethods {
 
     async searchByValue(search_object) {
         try {
-            return await heSearchByValue(search_object);
+            return heSearchByValue(search_object);
         } catch(err) {
             log.error(err);
             throw err;
