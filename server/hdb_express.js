@@ -126,6 +126,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     global.isMaster = cluster.isMaster;
     const search = require('../data_layer/search');
     const p_search_by_value = promisify(search.searchByValue);
+    const License = require('../utility/registration/licenseObjects').ExtendedLicense;
 
     process.on('uncaughtException', function (err) {
         let os = require('os');
@@ -135,7 +136,6 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         process.exit(1);
     });
 
-    let enterprise = false;
     let licenseKeySearch = {
         operation: 'search_by_value',
         schema: 'system',
@@ -187,27 +187,23 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     }
 
     async function launch(){
-        let clustering = false;
         await p_schema_to_global();
         await p_users_to_global();
         let licenses = await p_search_by_value(licenseKeySearch);
+
+        global.clustering_on = env.get('CLUSTERING');
+        let license_values = new License();
+
         const hdb_license = require('../utility/registration/hdb_license');
 
         await Promise.all(licenses.map(async (license) => {
             try {
                 let license_validation = await hdb_license.validateLicense(license.license_key, license.company);
                 if (license_validation.valid_machine && license_validation.valid_date && license_validation.valid_license) {
-                    this.enterprise = true;
-                    clustering = env.get('CLUSTERING');
-                    global.clustering_on = clustering;
-                    cluster_utilities.setEnterprise(true);
-                    if (num_workers > numCPUs) {
-                        if (numCPUs === 4) {
-                            numCPUs = 16;
-                        } else {
-                            numCPUs += 16;
-                        }
-                    }
+                    license_values.exp_date = license_validation.exp_date;
+                    license_values.api_call = license_validation.api_call;
+                    license_values.storage_type = license_validation.storage_type;
+                    license_values.enterprise = true;
                 }
             } catch(e){
                 harper_logger.error(e);
@@ -224,7 +220,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         let forks = [];
         for (let i = 0; i < numCPUs; i++) {
             try {
-                let forked = cluster.fork({enterprise:this.enterprise, clustering:clustering});
+                let forked = cluster.fork({hdb_license: JSON.stringify(license_values)});
                 // assign handler for messages expected from child processes.
                 forked.on('message', cluster_utilities.clusterMessageHandler);
                 forked.on('error', (err) => {
@@ -260,12 +256,13 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     const pjson = require(`${__dirname}/../package.json`);
     const server_utilities = require('./serverUtilities');
     const cors = require('cors');
+    const license = require('../utility/environment/LicenseManager').license;
 
     const app = express();
 
     const SC_WORKER_NAME_PREFIX = 'worker_';
-    let enterprise = process.env['enterprise'] === undefined ? false : (process.env['enterprise'] === 'true');
-    global.clustering_on = process.env['clustering'] === undefined ? false : (process.env['clustering'] === 'true');
+    global.clustering_on = false;
+
 
     let props_cors = env.get(PROPS_CORS_KEY);
     let props_cors_whitelist = env.get(PROPS_CORS_WHITELIST_KEY);
@@ -315,10 +312,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         if(!req.body || Object.keys(req.body).length === 0) {
             return res.status(terms.HTTP_STATUS_CODES.BAD_REQUEST).send({error: "Invalid JSON."});
         }
-        let enterprise_operations = [terms.OPERATIONS_ENUM.ADD_NODE, terms.OPERATIONS_ENUM.UPDATE_NODE, terms.OPERATIONS_ENUM.REMOVE_NODE, terms.OPERATIONS_ENUM.CLUSTER_STATUS];
-        if ((req.headers.harperdb_connection || enterprise_operations.indexOf(req.body.operation) > -1) && !enterprise) {
-            return res.status(terms.HTTP_STATUS_CODES.UNAUTHORIZED).json({"error": "This feature requires an enterprise license.  Please register or contact us at hello@harperdb.io for more info."});
-        }
+
         auth.authorize(req, res, function (err, user) {
             if (err) {
                 harper_logger.warn(`{"ip":"${req.connection.remoteAddress}", "error":"${err.stack}"`);
@@ -401,7 +395,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     });
 
     function spawnSCConnection(){
-        if(enterprise !== true || global.clustering_on !== true){
+        if(env.get('CLUSTERING') !== true){
             return;
         }
 
@@ -424,7 +418,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
             harper_logger.warn('No CLUSTERING_USER found, unable connect to local clustering server');
             return;
         }
-
+        global.clustering_on = true;
         let creds = {
             username: cluster_user.username,
             password: crypto_hash.decrypt(cluster_user.hash)

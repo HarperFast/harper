@@ -2,12 +2,17 @@ const alasql = require('alasql');
 const async = require('async');
 const search = require('../data_layer/search');
 const _delete = require('../data_layer/delete');
-
-const SUCCESS_MESSAGE = 'records successfully deleted';
+const hdb_util = require(`../utility/common_utils`);
+const RECORD = 'record';
+const SUCCESS = 'successfully deleted';
 
 module.exports = {
     convertDelete:convertDelete
 };
+
+function generateReturnMessage(delete_results_object) {
+    return `${delete_results_object.deleted_hashes.length} ${RECORD}${delete_results_object.deleted_hashes.length === 1 ? `` : `s`} ${SUCCESS}`;
+}
 
 function convertDelete(statement, callback){
     try{
@@ -23,7 +28,7 @@ function convertDelete(statement, callback){
         async.waterfall([
             search.search.bind(null, search_statement),
             _delete.deleteRecords.bind(null, from.databaseid, from.tableid),
-        ], (err)=>{
+        ], (err, result)=>{
             if(err){
                 if(err.hdb_code){
                     return callback(null, err.message);
@@ -31,7 +36,10 @@ function convertDelete(statement, callback){
                 return callback(err);
             }
 
-            callback(null, SUCCESS_MESSAGE);
+            if(hdb_util.isEmptyOrZeroLength(result.message)) {
+                result.message = generateReturnMessage(result);
+            }
+            callback(null, result);
         });
 
     } catch(e){

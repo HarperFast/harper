@@ -250,9 +250,9 @@ async function processRows(insert_object, attributes, table_schema, epoch, exist
  */
 async function unlinkFiles(unlink_paths) {
     try {
-        await unlink(unlink_paths);
+        await unlink.unlink(unlink_paths);
     } catch(e) {
-        logger.error(e);
+        logger.error(e.message);
     }
 }
 
