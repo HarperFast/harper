@@ -7,11 +7,13 @@ const cluster_utils = rewire('../../../server/clustering/clusterUtilities');
 const cluster_utils_node_validation = cluster_utils.__get__('nodeValidation');
 const test_util = require('../../test_utils');
 test_util.preTestPrep();
+const path = require(`path`);
 
 const CLUSTERING_PORT = 12345;
 const ADD_NODE = {name:'test', host:"192.161.0.1", port:12345};
 const SUBSCRIPTIONS_OBJECT = {channel:'dev:dog', publish:true, subscribe:true};
 const REMOVE_NODE = {name:'test'};
+const CONFIGURE_SUCCESS_RESPONSE = 'Successfully configured and loaded clustering configuration.  Some configurations may require a restart of HarperDB to take effect.';
 
 describe('Test clusterUtilities' , ()=> {
     describe('Test addNode', () => {
@@ -328,5 +330,135 @@ describe('Test clusterUtilities' , ()=> {
             assert.ok(result.length > 0, 'success!');
 
         });
+    });
+});
+
+/**
+ * Since there are common validators across most settings values, only testing a subset of the validators.
+ */
+describe('Test configureCluster', () => {
+    it(`Test nominal project dir path`, async () => {
+        let test_msg = {
+            "operation": "configure_cluster",
+            "PROJECT_DIR": __dirname
+        };
+        let result = await cluster_utils.configureCluster(test_msg);
+        assert.strictEqual(result, CONFIGURE_SUCCESS_RESPONSE, 'Expected success message');
+    });
+    it(`Test bad windows path`, async () => {
+        let test_msg = {
+            "operation": "configure_cluster",
+            "PROJECT_DIR": "\\LOLWindows"
+        };
+        let result = undefined;
+        try {
+            result = await cluster_utils.configureCluster(test_msg);
+        } catch(err) {
+            result = err;
+        }
+        assert.strictEqual(result instanceof Error, true, 'Expected error');
+    });
+    it(`Test nominal integer validation for HTTP Port`, async () => {
+        let test_msg = {
+            "operation": "configure_cluster",
+            "HTTP_PORT": "12345"
+        };
+        let result = await cluster_utils.configureCluster(test_msg);
+        assert.strictEqual(result, CONFIGURE_SUCCESS_RESPONSE, 'Expected success message');
+    });
+    it(`Test http port non integer`, async () => {
+        let test_msg = {
+            "operation": "configure_cluster",
+            "HTTP_PORT": "asdf"
+        };
+        let result = undefined;
+        try {
+            result = await cluster_utils.configureCluster(test_msg);
+        } catch(err) {
+            result = err;
+        }
+        assert.strictEqual(result instanceof Error, true, 'Expected error');
+    });
+    it(`Test nominal pem file path`, async () => {
+        let cert_path = path.join(__dirname, `envDir`, `utilities`, `keys`, 'certificate.pem');
+        let test_msg = {
+            "operation": "configure_cluster",
+            "CERTIFICATE": `${cert_path}`
+        };
+        let result = await cluster_utils.configureCluster(test_msg);
+        assert.strictEqual(result, CONFIGURE_SUCCESS_RESPONSE, 'Expected success message');
+    });
+    it(`Test non pem file path`, async () => {
+        let cert_path = path.join(__dirname, `settings.test`);
+        let test_msg = {
+            "operation": "configure_cluster",
+            "CERTIFICATE": `${cert_path}`
+        };
+        let result = undefined;
+        try {
+            result = await cluster_utils.configureCluster(test_msg);
+        } catch(err) {
+            result = err;
+        }
+        assert.strictEqual(result instanceof Error, true, 'Expected error');
+    });
+    it(`Test nominal true false validation for ALLOW_SELF_SIGNED_SSL_CERTS`, async () => {
+        let test_msg = {
+            "operation": "configure_cluster",
+            "ALLOW_SELF_SIGNED_SSL_CERTS": `true`
+        };
+        let result = await cluster_utils.configureCluster(test_msg);
+        assert.strictEqual(result, CONFIGURE_SUCCESS_RESPONSE, 'Expected success message');
+    });
+    it(`Test invalid true false validation for ALLOW_SELF_SIGNED_SSL_CERTS`, async () => {
+        let test_msg = {
+            "operation": "configure_cluster",
+            "ALLOW_SELF_SIGNED_SSL_CERTS": 1234
+        };
+        let result = undefined;
+        try {
+            result = await cluster_utils.configureCluster(test_msg);
+        } catch(err) {
+            result = err;
+        }
+        assert.strictEqual(result instanceof Error, true, 'Expected error');
+    });
+    it(`Test nominal test for NODE_NAME, all numbers`, async () => {
+        let test_msg = {
+            "operation": "configure_cluster",
+            "NODE_NAME": 12314123123
+        };
+        let result = await cluster_utils.configureCluster(test_msg);
+        assert.strictEqual(result, CONFIGURE_SUCCESS_RESPONSE, 'Expected success message');
+    });
+    it(`Test nominal test for NODE_NAME, mix of numbers, chars`, async () => {
+        let test_msg = {
+            "operation": "configure_cluster",
+            "NODE_NAME": "1231412de213"
+        };
+        let result = await cluster_utils.configureCluster(test_msg);
+        assert.strictEqual(result, CONFIGURE_SUCCESS_RESPONSE, 'Expected success message');
+    });
+    it(`Test nominal test lower case field being replaced with upper case`, async () => {
+        let field_name = "node_name";
+        let test_msg = {
+            "operation": "configure_cluster",
+            "node_name": "1231412de213"
+        };
+        let result = await cluster_utils.configureCluster(test_msg);
+        assert.strictEqual(result, CONFIGURE_SUCCESS_RESPONSE, 'Expected success message');
+        assert.strictEqual(test_msg[field_name], undefined, 'expected lower case field to be deleted');
+        assert.strictEqual(test_msg[field_name.toUpperCase()], "1231412de213", 'expected lower case field to be deleted');
+    });
+    it(`Test nominal test mix of lower and upper case field being replaced with upper case`, async () => {
+        let field_name = "nodE_nAme";
+        let test_msg = {
+            "operation": "configure_cluster",
+            "nodE_nAme": "1231412de213"
+        };
+        let result = await cluster_utils.configureCluster(test_msg);
+        assert.strictEqual(result, CONFIGURE_SUCCESS_RESPONSE, 'Expected success message');
+        assert.strictEqual(test_msg[field_name], undefined, 'expected lower case field to be deleted');
+        assert.strictEqual(test_msg[field_name.toUpperCase()], "1231412de213", 'expected lower case field to be deleted');
     });
 });
