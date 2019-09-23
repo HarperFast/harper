@@ -19,6 +19,7 @@ const InsertObject = require('../../data_layer/DataLayerObjects').InsertObject;
 const search = require('../../data_layer/search');
 
 const CLUSTER_PORT = env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY);
+const CONFIGURE_SUCCESS_RESPONSE = 'Successfully configured and loaded clustering configuration.  Some configurations may require a restart of HarperDB to take effect.';
 
 //Promisified functions
 const p_delete_delete = util.promisify(del.delete);
@@ -33,24 +34,8 @@ let child_event_count = 0;
 
 const STATUS_TIMEOUT_MS = 10000;
 const DUPLICATE_ERR_MSG = 'Cannot add a node that matches the hosts clustering config.';
-
+const TIMEOUT_ERR_MSG = 'Timeout trying to get cluster status.';
 const SUBSCRIPTIONS_MUST_BE_ARRAY = 'add_node subscriptions must be an array';
-
-// If we have more than 1 process, we need to get the status from the master process which has that info stored
-// in global.  We subscribe to an event that master will emit once it has gathered the data.  We want to build
-// in a timeout in case the event never comes.
-const timeout_promise = hdb_utils.timeoutPromise(STATUS_TIMEOUT_MS, 'Timeout trying to get cluster status.');
-const event_promise = new Promise((resolve) => {
-    cluster_status_event.clusterEmitter.on(cluster_status_event.EVENT_NAME, (msg) => {
-        log.info(`Got cluster status event response: ${util.inspect(msg)}`);
-        try {
-            timeout_promise.cancel();
-        } catch(err) {
-            log.error('Error trying to cancel timeout.');
-        }
-        resolve(msg);
-    });
-});
 
 for (let k in iface) {
     for (let k2 in iface[k]) {
@@ -76,7 +61,7 @@ async function kickOffEnterprise() {
             const enterprise_util = require('../../utility/enterpriseInitialization');
             await enterprise_util.kickOffEnterprise();
         }
-    } catch(e){
+    } catch (e) {
         log.error(e);
     }
 }
@@ -94,7 +79,7 @@ async function addNode(new_node) {
         throw err;
     }
 
-    if (!hdb_utils.isEmptyOrZeroLength(results.skipped_hashes)) {
+    if(!hdb_utils.isEmptyOrZeroLength(results.skipped_hashes)) {
         log.info(`Node '${new_node.name}' has already been already added. Operation aborted.`);
         throw new Error(`Node '${new_node.name}' has already been already added. Operation aborted.`);
     }
@@ -114,7 +99,7 @@ async function addNode(new_node) {
  *
  * @param {./NodeObject} node_object
  */
-function nodeValidation(node_object){
+function nodeValidation(node_object) {
     // need to clean up new node as it hads operation and user on it
     let validation = node_validator(node_object);
     if(validation) {
@@ -129,7 +114,7 @@ function nodeValidation(node_object){
         throw new Error(`Invalid port: ${node_object.port} specified`);
     }
 
-    if(isNaN(new_port)){
+    if(isNaN(new_port)) {
         throw new Error(`Invalid port: ${node_object.port} specified`);
     }
 
@@ -146,16 +131,16 @@ function nodeValidation(node_object){
         }
     }
 
-    if(!hdb_utils.isEmptyOrZeroLength(node_object.subscriptions) && !Array.isArray(node_object.subscriptions)){
+    if(!hdb_utils.isEmptyOrZeroLength(node_object.subscriptions) && !Array.isArray(node_object.subscriptions)) {
         log.error(`${SUBSCRIPTIONS_MUST_BE_ARRAY}: ${node_object.subscriptions}`);
         throw new Error(SUBSCRIPTIONS_MUST_BE_ARRAY);
     }
 
     let subscription_validation = undefined;
-    if(!hdb_utils.isEmptyOrZeroLength(node_object.subscriptions)){
-        for(let b = 0; b < node_object.subscriptions.length; b++){
+    if(!hdb_utils.isEmptyOrZeroLength(node_object.subscriptions)) {
+        for (let b = 0; b < node_object.subscriptions.length; b++) {
             subscription_validation = node_subscription_validator(node_object.subscriptions[b]);
-            if(subscription_validation){
+            if (subscription_validation) {
                 throw new Error(subscription_validation);
             }
         }
@@ -167,8 +152,8 @@ function nodeValidation(node_object){
  * @param {./NodeObject} update_node
  * @returns {string}
  */
-async function updateNode(update_node){
-    if(hdb_utils.isEmpty(update_node.name)){
+async function updateNode(update_node) {
+    if(hdb_utils.isEmpty(update_node.name)) {
         throw new Error('name is required');
     }
 
@@ -182,7 +167,7 @@ async function updateNode(update_node){
 
     let node_search = await p_search_by_hash(search_object);
 
-    if (hdb_utils.isEmptyOrZeroLength(node_search)) {
+    if(hdb_utils.isEmptyOrZeroLength(node_search)) {
         log.info(`Node '${update_node.name}' does not exist. Operation aborted.`);
         throw new Error(`Node '${update_node.name}' does not exist. Operation aborted.`);
     }
@@ -211,7 +196,7 @@ async function updateNode(update_node){
         let update_node_msg = new terms.ClusterMessageObjects.HdbCoreUpdateNodeMessage();
         update_node_msg.update_node = merge_node;
         hdb_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.HDB_NODES, update_node_msg, env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
-    } catch(e){
+    } catch (e) {
         throw new Error(e);
     }
 
@@ -260,19 +245,57 @@ async function removeNode(remove_json_message) {
  * @returns {Promise<void>}
  */
 async function configureCluster(enable_cluster_json) {
-    let validation = configure_validator(enable_cluster_json);
-    if(validation) {
+    log.debug('In configureCluster');
+    let {operation, hdb_user, hdb_auth_header, ...config_fields} = enable_cluster_json;
+
+    // We need to make all fields upper case so they will match in the validator.  It is less efficient to do this in its
+    // own loop, but we dont want to update the file unless all fields pass validation, and we can't validate until all
+    // fields are converted.
+    let field_keys = Object.keys(config_fields);
+    for(let i=0; i<field_keys.length; ++i) {
+        let orig_field_name = field_keys[i];
+
+        // if the field is not all uppercase in the config_fields object, then add the all uppercase field
+        // and remove the old not uppercase field.
+        if(config_fields[orig_field_name.toUpperCase()] === undefined) {
+            config_fields[orig_field_name.toUpperCase()] = config_fields[orig_field_name];
+            delete config_fields[orig_field_name];
+        }
+
+        // if the field is not all uppercase in the config_fields object, then add the all uppercase field
+        // and remove the old not uppercase field.
+        if(enable_cluster_json[orig_field_name.toUpperCase()] === undefined) {
+            enable_cluster_json[orig_field_name.toUpperCase()] = enable_cluster_json[orig_field_name];
+            delete enable_cluster_json[orig_field_name];
+        }
+    }
+
+    let validation = await configure_validator(config_fields);
+    let should_reload = false;
+    if (validation) {
         log.error(`Validation error in configureCluster validation. ${validation}`);
         throw new Error(validation);
     }
+
     try {
-        env_mgr.setProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY, enable_cluster_json.clustering_enabled);
-        env_mgr.setProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY, enable_cluster_json.clustering_port);
-        env_mgr.setProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY, enable_cluster_json.clustering_node_name);
-        await env_mgr.writeSettingsFileSync(true);
+        let msg_keys = Object.keys(config_fields);
+        for(let i=0; i<msg_keys.length; ++i) {
+            let curr = msg_keys[i];
+
+            if(curr && !hdb_utils.isEmptyOrZeroLength(terms.HDB_SETTINGS_NAMES_REVERSE_LOOKUP[curr])) {
+                log.info(`Setting property ${curr} to value ${enable_cluster_json[curr]}`);
+                env_mgr.setProperty(curr, enable_cluster_json[curr]);
+                should_reload = true;
+            }
+        }
+        if(should_reload) {
+            await env_mgr.writeSettingsFileSync(true);
+            log.info('Completed writing new settings to file and reloading the manager.');
+        }
+        return CONFIGURE_SUCCESS_RESPONSE;
     } catch(err) {
         log.error(err);
-        throw err;
+        throw 'There was an error storing the configuration information.  Please check the logs and try again.';
     }
 }
 
@@ -289,7 +312,7 @@ async function clusterStatus(cluster_status_json) {
     try {
         let clustering_enabled = env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY);
         response["is_enabled"] = clustering_enabled;
-        if (!clustering_enabled) {
+        if(!clustering_enabled) {
             return response;
         }
 
@@ -304,12 +327,17 @@ async function clusterStatus(cluster_status_json) {
         }
         cluster_status_msg.requesting_hdb_worker_id = process.pid;
         cluster_status_msg.requestor_channel = global.hdb_socket_client.socket.id;
-        hdb_utils.sendTransactionToSocketCluster( cluster_status_msg.requestor_channel, cluster_status_msg, env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
-        // Wait for cluster status event to fire then respond to client
+        // Don't set originator so the message will be delivered to the worker rather than swallowed.
+        hdb_utils.sendTransactionToSocketCluster(cluster_status_msg.requestor_channel, cluster_status_msg, null);
+        // If we have more than 1 process, we need to get the status from the master process which has that info stored
+        // in global.  We subscribe to an event that master will emit once it has gathered the data.  We want to build
+        // in a timeout in case the event never comes.
+        let timeout_promise = hdb_utils.timeoutPromise(STATUS_TIMEOUT_MS, TIMEOUT_ERR_MSG);
+        let event_promise = hdb_utils.createEventPromise(cluster_status_event.EVENT_NAME, cluster_status_event.clusterEmitter, timeout_promise);
         let result = await Promise.race([event_promise, timeout_promise.promise]);
         log.trace(`cluster status result: ${util.inspect(result)}`);
         response["status"] = result;
-    } catch(err) {
+    } catch (err) {
         log.error(`Got an error getting cluster status ${err}`);
     }
     return response;
@@ -322,18 +350,18 @@ async function clusterStatus(cluster_status_json) {
 function selectProcess(target_process_id) {
     let backup_process = undefined;
     let specified_process = undefined;
-    for (let i = 0; i < global.forks.length; i++) {
-        if (!backup_process && global.forks[i].process.pid !== target_process_id) {
+    for(let i = 0; i < global.forks.length; i++) {
+        if(!backup_process && global.forks[i].process.pid !== target_process_id) {
             // Set a backup process to send the message to in case we don't find the specified process.
             backup_process = global.forks[i];
         }
-        if (global.forks[i].process.pid === target_process_id) {
+        if(global.forks[i].process.pid === target_process_id) {
             specified_process = global.forks[i];
             log.info(`Processing job on process: ${target_process_id}`);
             return specified_process;
         }
     }
-    if (!specified_process && backup_process) {
+    if(!specified_process && backup_process) {
         log.info(`The specified process ${target_process_id} was not found, sending to default process instead.`);
         return backup_process;
     }
@@ -353,7 +381,7 @@ function getClusterStatus() {
         status_obj.my_node_port = global.cluster_server.socket_server.port;
         status_obj.my_node_name = global.cluster_server.socket_server.name;
         log.debug(`There are ${global.cluster_server.socket_client.length} socket clients.`);
-        for (let conn of global.cluster_server.socket_client) {
+        for(let conn of global.cluster_server.socket_client) {
             let new_status = new ClusterStatusObject.ConnectionStatus();
             new_status.direction = conn.direction;
             if (conn.other_node) {
@@ -442,7 +470,7 @@ function clusterMessageHandler(msg) {
                             kickOffEnterprise().then(() => {
                                 log.info('clustering initialized');
                             });
-                        } catch(e){
+                        } catch(e) {
                             log.error('clustering failed to start: ' + e);
                         }
                     }
@@ -508,13 +536,13 @@ function clusterMessageHandler(msg) {
     }
 }
 
-async function authHeaderToUser(json_body){
+async function authHeaderToUser(json_body) {
     let req = {};
     req.headers = {};
     req.headers.authorization = json_body.hdb_auth_header;
 
     let user = await p_auth_authorize(req, null)
-        .catch((e)=>{
+        .catch((e) => {
             throw e;
         });
     json_body.hdb_user = user;
@@ -552,7 +580,7 @@ module.exports = {
     addNode: addNode,
     updateNode: updateNode,
     // The reference to the callback functions can be removed once processLocalTransaction has been refactored
-    configureCluster: configureCluster,
+    configureCluster,
     clusterStatus,
     removeNode: removeNode,
     clusterMessageHandler: clusterMessageHandler,

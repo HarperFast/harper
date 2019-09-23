@@ -50,6 +50,7 @@ const CLUSTERING_PAYLOAD_FILE_NAME = '.scPayload.json';
 // inside of the socketcluster types module.
 const cluster_types = require('../server/socketcluster/types');
 const ClusterMessageObjects = require('../server/socketcluster/room/RoomMessageObjects');
+const _ = require('lodash');
 
 const INSERT_MODULE_ENUM = {
     HDB_PATH_KEY: 'HDB_INTERNAL_PATH',
@@ -259,6 +260,12 @@ const HDB_SETTINGS_NAMES = {
     HELIUM_SERVER_HOST_KEY: 'HELIUM_SERVER_HOST'
 };
 
+/**
+ * Used for looking up key names by the actual setting field name.
+ */
+
+const HDB_SETTINGS_NAMES_REVERSE_LOOKUP = _.invert(HDB_SETTINGS_NAMES);
+
 // Default values for the Settings, some do not have a default.
 const HDB_SETTINGS_DEFAULT_VALUES = {
     HTTP_PORT: '9925',
@@ -312,6 +319,16 @@ const CLUSTER_CONNECTION_DIRECTION_ENUM = {
     INBOUND: "INBOUND"
 };
 
+const STORAGE_TYPES_ENUM = {
+    FILE_SYSTEM: 'fs',
+    HELIUM: 'helium'
+};
+
+const LICENSE_VALUES = {
+    API_CALL_DEFAULT: 10000,
+    VERSION_DEFAULT: '2.0.0'
+};
+
 const CLUSTER_EVENTS_DEFS_ENUM = {
     IDENTIFY : 'identify',
     AUTHENTICATE : 'authenticate',
@@ -332,6 +349,8 @@ const CLUSTER_EVENTS_DEFS_ENUM = {
     VERSION_MISMATCH: 'version_mismatch',
     DIRECTION_CHANGE: 'direction_change'
 };
+
+const HDB_LICENSE_NAME = 'hdb_license';
 
 const CLUSTERING_MESSAGE_TYPES = cluster_types.CORE_ROOM_MSG_TYPE_ENUM;
 const ORIGINATOR_SET_VALUE = cluster_types.ORIGINATOR_SET_VALUE;
@@ -361,6 +380,7 @@ module.exports = {
     HTTP_STATUS_CODES,
     GEO_CONVERSION_ENUM,
     HDB_SETTINGS_NAMES,
+    HDB_SETTINGS_NAMES_REVERSE_LOOKUP,
     HDB_SETTINGS_DEFAULT_VALUES,
     SERVICE_ACTIONS_ENUM,
     CLUSTER_MESSAGE_TYPE_ENUM,
@@ -392,6 +412,9 @@ module.exports = {
     ORIGINATOR_SET_VALUE,
     CLUSTERING_FOLDER_NAME,
     CLUSTERING_PAYLOAD_FILE_NAME,
-    HELIUM_URL_PREFIX
+    HELIUM_URL_PREFIX,
+    LICENSE_VALUES,
+    STORAGE_TYPES_ENUM,
+    HDB_LICENSE_NAME
 };
 
