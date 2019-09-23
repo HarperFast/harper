@@ -1496,7 +1496,8 @@
 					},
 					"response": []
 				}
-			]
+			],
+			"protocolProfileBehavior": {}
 		},
 		{
 			"name": "2. Data Load",
@@ -2360,6 +2361,7 @@
 							}
 						}
 					],
+					"protocolProfileBehavior": {},
 					"_postman_isSubFolder": true
 				},
 				{
@@ -2853,6 +2855,7 @@
 							"response": []
 						}
 					],
+					"protocolProfileBehavior": {},
 					"_postman_isSubFolder": true
 				},
 				{
@@ -3120,6 +3123,7 @@
 									}
 								}
 							],
+							"protocolProfileBehavior": {},
 							"_postman_isSubFolder": true
 						},
 						{
@@ -3466,6 +3470,7 @@
 						}
 					],
 					"description": "Test a designated and random row from bulk CSV upload",
+					"protocolProfileBehavior": {},
 					"_postman_isSubFolder": true
 				},
 				{
@@ -3995,7 +4000,8 @@
 					},
 					"response": []
 				}
-			]
+			],
+			"protocolProfileBehavior": {}
 		},
 		{
 			"name": "3. SQLTests",
@@ -4346,6 +4352,7 @@
 							}
 						}
 					],
+					"protocolProfileBehavior": {},
 					"_postman_isSubFolder": true
 				},
 				{
@@ -4566,6 +4573,7 @@
 						}
 					],
 					"description": "Test that response from search is object array ",
+					"protocolProfileBehavior": {},
 					"_postman_isSubFolder": true
 				},
 				{
@@ -4905,7 +4913,7 @@
 									"",
 									"pm.test(\"SQL delete successful reponse\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.message).to.eql(\"successfully deleted\");",
+									"    pm.expect(jsonData.message).to.include(\"successfully deleted\");",
 									"});",
 									""
 								],
@@ -7139,7 +7147,8 @@
 					},
 					"response": []
 				}
-			]
+			],
+			"protocolProfileBehavior": {}
 		},
 		{
 			"name": "4. NoSQL Tests",
@@ -7468,6 +7477,7 @@
 							}
 						]
 					},
+					"protocolProfileBehavior": {},
 					"_postman_isSubFolder": true
 				},
 				{
@@ -7917,6 +7927,7 @@
 							}
 						}
 					],
+					"protocolProfileBehavior": {},
 					"_postman_isSubFolder": true
 				},
 				{
@@ -8910,7 +8921,8 @@
 					},
 					"response": []
 				}
-			]
+			],
+			"protocolProfileBehavior": {}
 		},
 		{
 			"name": "5. NoSQL Role Testing",
@@ -10794,7 +10806,8 @@
 					},
 					"response": []
 				}
-			]
+			],
+			"protocolProfileBehavior": {}
 		},
 		{
 			"name": "6. SQL Role Testing",
@@ -12435,7 +12448,8 @@
 						]
 					}
 				}
-			]
+			],
+			"protocolProfileBehavior": {}
 		},
 		{
 			"name": "7. Jobs & Job Role Testing",
@@ -14840,7 +14854,8 @@
 						]
 					}
 				}
-			]
+			],
+			"protocolProfileBehavior": {}
 		},
 		{
 			"name": "8. Delete Tests",
@@ -15172,7 +15187,8 @@
 					},
 					"response": []
 				}
-			]
+			],
+			"protocolProfileBehavior": {}
 		},
 		{
 			"name": "9. Alter Role Tests",
@@ -15593,7 +15609,8 @@
 					},
 					"response": []
 				}
-			]
+			],
+			"protocolProfileBehavior": {}
 		},
 		{
 			"name": "10. Alter User Tests",
@@ -16076,7 +16093,8 @@
 					},
 					"response": []
 				}
-			]
+			],
+			"protocolProfileBehavior": {}
 		},
 		{
 			"name": "11. Configuration",
@@ -17171,8 +17189,8 @@
 							"script": {
 								"id": "5e4e982a-c39d-43eb-8496-fa6a0b0f20fd",
 								"exec": [
-									"pm.test(\"Status code is 200\", function () {",
-									"    pm.response.to.have.status(200);",
+									"pm.test(\"Status code is 500\", function () {",
+									"    pm.response.to.have.status(500);",
 									"});"
 								],
 								"type": "text/javascript"
@@ -17208,7 +17226,9 @@
 						"header": [
 							{
 								"key": "Content-Type",
-								"value": "application/json"
+								"name": "Content-Type",
+								"value": "application/json",
+								"type": "text"
 							},
 							{
 								"key": "Authorization",
@@ -17217,7 +17237,12 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\": \"configure_cluster\",\n\t\"clustering_enabled\": \"true\",\n\t\"clustering_port\": \"12345\",\n\t\"clustering_node_name\":\"some_name\"\n}"
+							"raw": "{\n\t\"operation\": \"configure_cluster\",\n\t\"clustering_enabled\": \"true\",\n\t\"clustering_port\": \"123451231\",\n\t\"clustering_node_name\":\"some_name\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
 						},
 						"url": {
 							"raw": "http://localhost:9925",
@@ -17339,7 +17364,8 @@
 						]
 					}
 				}
-			]
+			],
+			"protocolProfileBehavior": {}
 		},
 		{
 			"name": "12. Environment Clean Up",
@@ -17614,7 +17640,9 @@
 						]
 					}
 				}
-			]
+			],
+			"protocolProfileBehavior": {}
 		}
-	]
+	],
+	"protocolProfileBehavior": {}
 }
