@@ -176,21 +176,21 @@ describe('Tests for Helium method heUpdateRecords', () => {
         expect(search_result).eql(expected_search_result);
     });
 
-    // it('Test that inserting same data as test above...', () => {
-    //     let result;
-    //     let search_result;
-    //     try {
-    //         result = heUpdateRecords(UPDATE_OBJECT_TEST);
-    //         search_result = hdb_helium.searchByKeys(row_keys, DATASTORES_TEST);
-    //         console.log(result);
-    //         console.log(search_result);
-    //     } catch(err) {
-    //         console.log(err);
-    //     }
-    //
-    // });
+    it('Test that inserting same data as test above...', () => {
+        let result;
+        let search_result;
+        try {
+            result = heUpdateRecords(UPDATE_OBJECT_TEST);
+            search_result = hdb_helium.searchByKeys(row_keys, DATASTORES_TEST);
+            console.log(result);
+            console.log(search_result);
+        } catch(err) {
+            console.log(err);
+        }
 
-    it('Test updating one record', () => {
+    });
+
+   /* it('Test updating one record', () => {
         const update_obj = {
             operation: "update",
             schema: "dev",
@@ -215,7 +215,7 @@ describe('Tests for Helium method heUpdateRecords', () => {
         } catch(err) {
             console.log(err);
         }
-    });
+    });*/
 
    /* it('Test inserting existing and non-existing rows', () => {
         global.hdb_schema[SCHEMA_TABLE_TEST.schema][SCHEMA_TABLE_TEST.name]['attributes'] = ATTRIBUTES_TEST;

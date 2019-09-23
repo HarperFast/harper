@@ -6,7 +6,13 @@ const heCheckForNewAttributes = require('../heUtility/heCheckForNewAttributes');
 const heProcessInsertUpdateResponse = require('../heUtility/heProcessInsertUpdateResponse');
 const hdb_terms = require('../../../../utility/hdbTerms');
 const heliumUtils = require('../../../../utility/helium/heliumUtils');
-const hdb_helium = heliumUtils.initializeHelium();
+
+let hdb_helium;
+try {
+    hdb_helium = heliumUtils.initializeHelium();
+} catch(err) {
+    throw err;
+}
 
 module.exports = heUpdateRecords;
 
