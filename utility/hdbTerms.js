@@ -50,6 +50,7 @@ const CLUSTERING_PAYLOAD_FILE_NAME = '.scPayload.json';
 // inside of the socketcluster types module.
 const cluster_types = require('../server/socketcluster/types');
 const ClusterMessageObjects = require('../server/socketcluster/room/RoomMessageObjects');
+const _ = require('lodash');
 
 const INSERT_MODULE_ENUM = {
     HDB_PATH_KEY: 'HDB_INTERNAL_PATH',
@@ -260,33 +261,8 @@ const HDB_SETTINGS_NAMES = {
 /**
  * Used for looking up key names by the actual setting field name.
  */
-const HDB_SETTINGS_NAMES_REVERSE_LOOKUP = {
-    PROJECT_DIR: 'PROJECT_DIR_KEY',
-    HDB_ROOT: 'HDB_ROOT_KEY',
-    HTTP_PORT: 'HTTP_PORT_KEY',
-    HTTPS_PORT: 'HTTP_SECURE_PORT_KEY',
-    CERTIFICATE: 'CERT_KEY',
-    PRIVATE_KEY: 'PRIVATE_KEY_KEY',
-    HTTPS_ON: 'HTTP_SECURE_ENABLED_KEY',
-    HTTP_ON: 'HTTP_ENABLED_KEY',
-    CORS_ON: 'CORS_ENABLED_KEY',
-    CORS_WHITELIST: 'CORS_WHITELIST_KEY',
-    SERVER_TIMEOUT_MS: 'PROPS_SERVER_TIMEOUT_KEY',
-    LOG_LEVEL: 'LOG_LEVEL_KEY',
-    LOGGER: 'LOGGER_KEY',
-    LOG_PATH: 'LOG_PATH_KEY',
-    LOG_DAILY_ROTATE: 'LOG_DAILY_ROTATE_KEY',
-    LOG_MAX_DAILY_FILES: 'LOG_MAX_DAILY_FILES_KEY',
-    NODE_ENV: 'PROPS_ENV_KEY',
-    settings_path: 'SETTINGS_PATH_KEY',
-    CLUSTERING_PORT: 'CLUSTERING_PORT_KEY',
-    NODE_NAME: 'CLUSTERING_NODE_NAME_KEY',
-    CLUSTERING: 'CLUSTERING_ENABLED_KEY',
-    ALLOW_SELF_SIGNED_SSL_CERTS: 'ALLOW_SELF_SIGNED_SSL_CERTS',
-    MAX_HDB_PROCESSES: 'MAX_HDB_PROCESSES',
-    CLUSTERING_USER: 'CLUSTER_USER',
-    install_user: 'INSTALL_USER'
-};
+
+const HDB_SETTINGS_NAMES_REVERSE_LOOKUP = _.invert(HDB_SETTINGS_NAMES);
 
 // Default values for the Settings, some do not have a default.
 const HDB_SETTINGS_DEFAULT_VALUES = {
