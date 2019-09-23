@@ -30,7 +30,7 @@ module.exports = {
     initSync,
     setProperty: setProperty,
     append: append,
-    writeSettingsFileSync: writeSettingsFileSync,
+    writeSettingsFileSync,
     initTestEnvironment : initTestEnvironment,
     isInitialized: isInitialized
 };
