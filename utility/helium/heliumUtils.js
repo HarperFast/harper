@@ -125,7 +125,7 @@ async function checkHeliumServerRunning(){
 
         initializeHelium();
     } catch(e) {
-        throw new Error(`unable to access helium due to ${e.message},  please check that ${helium_host} is available and running`);
+        throw new Error(`unable to access helium due to '${e.message}',  please check that ${helium_host} is available and running`);
     }
 }
 
