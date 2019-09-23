@@ -3,6 +3,8 @@
 const test_util = require('../../test_utils');
 test_util.preTestPrep();
 const rewire = require('rewire');
+const utils = require('../../../utility/common_utils');
+
 const helium_utils = rewire('../../../utility/helium/heliumUtils');
 const assert = require('assert');
 
@@ -46,6 +48,18 @@ const ENV_MNGR_PROPS = {
     HELIUM_VOLUME_PATH: '/tmp/hdb',
     HELIUM_SERVER_HOST: 'localhost:41000'
 };
+
+const PSLIST_HELIUM_RETURN = [
+    {
+        "pid": 30112,
+        "name": "helium",
+        "cmd": "helium --server",
+        "ppid": 1,
+        "uid": 1000,
+        "cpu": 0.2,
+        "memory": 0
+    }
+];
 
 describe('test heliumUtils', ()=>{
     describe('test getHeliumServerURL', ()=>{
@@ -132,6 +146,70 @@ describe('test heliumUtils', ()=>{
             assert.doesNotThrow(()=>{
                 helium_utils.createSystemDataStores(new HarperDBHelium(false));
             });
+        });
+    });
+
+    describe('Test checkHeliumServerRunning', ()=>{
+        it('Test helium already running on localhost successfully', async ()=>{
+            env.setProperty("HELIUM_VOLUME_PATH", ENV_MNGR_PROPS.HELIUM_VOLUME_PATH);
+            env.setProperty("HELIUM_SERVER_HOST", ENV_MNGR_PROPS.HELIUM_SERVER_HOST);
+
+            let pslist_rewire = helium_utils.__set__('ps_list', {
+                findPs: async (name)=>{
+                    return PSLIST_HELIUM_RETURN;
+                }
+            });
+
+            let init_helium_rewire = helium_utils.__set__('initializeHelium', ()=>{
+                return new HarperDBHelium(false);
+            });
+
+            let err = undefined;
+            try {
+                await helium_utils.checkHeliumServerRunning();
+            } catch(e){
+                err = e;
+            }
+
+            assert.equal(err, undefined);
+
+            pslist_rewire();
+            init_helium_rewire();
+        });
+
+        it('Test helium not running on localhost successfully', async ()=>{
+            env.setProperty("HELIUM_VOLUME_PATH", ENV_MNGR_PROPS.HELIUM_VOLUME_PATH);
+            env.setProperty("HELIUM_SERVER_HOST", ENV_MNGR_PROPS.HELIUM_SERVER_HOST);
+
+            let pslist_rewire = helium_utils.__set__('ps_list', {
+                findPs: async (name)=>{
+                    return [];
+                }
+            });
+
+            let init_helium_rewire = helium_utils.__set__('initializeHelium', ()=>{
+                return new HarperDBHelium(false);
+            });
+
+            let utils_rewire = helium_utils.__set__('utils', {
+                isEmptyOrZeroLength: utils.isEmptyOrZeroLength,
+                checkProcessRunning: async(name)=>{
+
+                }
+            });
+
+            let err = undefined;
+            try {
+                await helium_utils.checkHeliumServerRunning();
+            } catch(e){
+                err = e;
+            }
+
+            assert.equal(err, undefined);
+
+            pslist_rewire();
+            init_helium_rewire();
+            utils_rewire();
         });
     });
 });

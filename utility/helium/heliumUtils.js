@@ -8,6 +8,8 @@ const system_schema = require('../../json/systemSchema');
 const log = require('../logging/harper_logger');
 const env = require('../environment/environmentManager');
 const ps_list = require('../../utility/psList');
+const spawn = require('child_process').spawn;
+
 if(!env.isInitialized()){
     env.initSync();
 }
@@ -19,7 +21,8 @@ module.exports = {
     initializeHelium: initializeHelium,
     terminateHelium: terminateHelium,
     createSystemDataStores: createSystemDataStores,
-    getHeliumServerURL: getHeliumServerURL
+    getHeliumServerURL: getHeliumServerURL,
+    checkHeliumServerRunning: checkHeliumServerRunning
 };
 
 function getHeliumServerURL(){
@@ -98,19 +101,31 @@ function createSystemDataStores(helium){
     }
 }
 
-function checkHeliumServerRunning(){
-    //first check if the helium server host is localhost or 127.0.0.1, if so check for the helium process
+/**
+ * checks if the helium server is running / available
+ * @returns {Promise<void>}
+ */
+async function checkHeliumServerRunning(){
     let helium_host = env.getProperty(terms.HDB_SETTINGS_NAMES.HELIUM_SERVER_HOST_KEY);
-    if(helium_host.startsWith('localhost') || helium_host.startsWith('127.0.0.1')){
-        const list = await ps_list.findPs('helium');
-        if(!utils.isEmptyOrZeroLength(list)) {
-            log.info('helium server not running, attempting to start helium server');
-            fork(path.join(__dirname, '../server/hdb_express.js'), {
-                detached: true,
-                stdio: 'ignore'
-            });
+    try {
+        //first check if the helium server host is localhost or 127.0.0.1, if so check for the helium process
+        if (helium_host.startsWith('localhost') || helium_host.startsWith('127.0.0.1')) {
+            let instances = await ps_list.findPs(terms.HELIUM_PROCESS_NAME);
+            if(utils.isEmptyOrZeroLength(instances)) {
+                log.info('helium server not running, attempting to start helium server');
+                spawn(terms.HELIUM_PROCESS_NAME, [terms.HELIUM_START_SERVER_COMMAND], {
+                    detached: true,
+                    stdio: 'ignore'
+                }).unref();
+
+                await utils.checkProcessRunning(terms.HELIUM_PROCESS_NAME);
+                log.info('helium server successfully started');
+            }
         }
-    } else{
-        //attempt to create session
+
+        initializeHelium();
+    } catch(e) {
+        throw new Error(`unable to access helium due to ${e.message},  please check that ${helium_host} is available and running`);
     }
 }
+
