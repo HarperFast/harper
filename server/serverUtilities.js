@@ -122,12 +122,13 @@ function concatSourceMessageHeader(outbound_message, orig_req) {
 function postOperationHandler(request_body, result, orig_req) {
     let transaction_msg = common_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
     transaction_msg.__transacted = true;
-    if(request_body.schema === terms.SYSTEM_SCHEMA_NAME) {
-        return;
-    }
+
     switch(request_body.operation) {
         case terms.OPERATIONS_ENUM.INSERT:
             try {
+                if(request_body.schema === terms.SYSTEM_SCHEMA_NAME) {
+                    return;
+                }
                 transaction_msg = convertCRUDOperationToTransaction(request_body.records, result.inserted_hashes, global.hdb_schema[request_body.schema][request_body.table].hash_attribute);
                 if(transaction_msg) {
                     if(orig_req) {
@@ -142,6 +143,9 @@ function postOperationHandler(request_body, result, orig_req) {
             break;
         case terms.OPERATIONS_ENUM.DELETE:
             try {
+                if(request_body.schema === terms.SYSTEM_SCHEMA_NAME) {
+                    return;
+                }
                 transaction_msg = convertCRUDOperationToTransaction(request_body.records, result.deleted_hashes, global.hdb_schema[request_body.schema][request_body.table].hash_attribute);
                 if(transaction_msg) {
                     if(orig_req) {
@@ -156,6 +160,9 @@ function postOperationHandler(request_body, result, orig_req) {
             break;
         case terms.OPERATIONS_ENUM.UPDATE:
             try {
+                if(request_body.schema === terms.SYSTEM_SCHEMA_NAME) {
+                    return;
+                }
                 transaction_msg = convertCRUDOperationToTransaction(request_body, result.update_hashes, global.hdb_schema[request_body.schema][request_body.table].hash_attribute);
                 if(transaction_msg) {
                     if(orig_req) {
