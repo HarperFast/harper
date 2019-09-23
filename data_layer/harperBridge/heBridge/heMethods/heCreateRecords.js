@@ -25,7 +25,7 @@ module.exports = heCreateRecords;
 function heCreateRecords(insert_obj) {
     try {
         let { schema_table, attributes } = insertUpdateValidate(insert_obj);
-        let { datastores, rows } = heProcessRows(insert_obj, attributes, schema_table);
+        let { datastores, processed_rows } = heProcessRows(insert_obj, attributes, schema_table);
 
         if (!attributes.includes(hdb_terms.HELIUM_TIME_STAMP_ENUM.CREATED_TIME)) {
             attributes.push(hdb_terms.HELIUM_TIME_STAMP_ENUM.CREATED_TIME);
@@ -36,7 +36,7 @@ function heCreateRecords(insert_obj) {
         }
 
         checkAttributes(insert_obj.hdb_auth_header, schema_table, attributes);
-        let he_response = hdb_helium.insertRows(datastores, rows);
+        let he_response = hdb_helium.insertRows(datastores, processed_rows);
         let { written_hashes, skipped_hashes } = heProcessInsertUpdateResponse(he_response);
 
         return {

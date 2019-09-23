@@ -430,4 +430,3 @@ module.exports = {
     HELIUM_TIME_STAMP_ENUM,
     HDB_LICENSE_NAME
 };
-
