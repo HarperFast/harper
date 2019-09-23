@@ -1,7 +1,6 @@
 'use strict';
 
 const hdb_terms = require('../../../../utility/hdbTerms');
-const hdb_utils = require('../../../../utility/common_utils');
 
 module.exports = heProcessInsertUpdateResponse;
 
