@@ -3,9 +3,9 @@
 const test_utils = require('../../../../test_utils');
 test_utils.preTestPrep();
 
+const heliumUtils = require('../../../../../utility/helium/heliumUtils');
 const rewire = require('rewire');
 const heCreateRecords = rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heCreateRecords');
-const heliumUtils = require('../../../../../utility/helium/heliumUtils');
 const log = require('../../../../../utility/logging/harper_logger');
 const chai = require('chai');
 const sinon = require('sinon');
