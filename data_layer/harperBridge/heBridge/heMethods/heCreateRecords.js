@@ -10,7 +10,13 @@ const log = require('../../../../utility/logging/harper_logger');
 const hdb_terms = require('../../../../utility/hdbTerms');
 const signalling = require('../../../../utility/signalling');
 const heliumUtils = require('../../../../utility/helium/heliumUtils');
-const hdb_helium = heliumUtils.initializeHelium();
+
+let hdb_helium;
+try {
+    hdb_helium = heliumUtils.initializeHelium();
+} catch(err) {
+    console.log(err);
+}
 
 const ATTRIBUTE_ALREADY_EXISTS = 'attribute already exists';
 

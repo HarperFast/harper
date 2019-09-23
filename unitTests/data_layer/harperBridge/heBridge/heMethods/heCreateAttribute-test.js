@@ -2,6 +2,7 @@
 
 const test_utils = require('../../../../test_utils');
 test_utils.preTestPrep();
+test_utils.buildHeliumTestVolume();
 
 const heliumUtils = require('../../../../../utility/helium/heliumUtils');
 const rewire = require('rewire');
@@ -12,13 +13,13 @@ const sinon_chai = require('sinon-chai');
 const { expect } = chai;
 chai.use(sinon_chai);
 
-try {
+let hdb_helium;
+/*try {
     heliumUtils.createSystemDataStores();
+    hdb_helium = heliumUtils.initializeHelium();
 } catch(err) {
     console.log(err);
-}
-
-const hdb_helium = heliumUtils.initializeHelium();
+}*/
 
 const CREATE_ATTR_OBJ_TEST = {
     operation: "create_attribute",
@@ -43,7 +44,6 @@ const INSERT_OBJ_TEST = {
 
 function dropTestDataStores() {
     try {
-        test_utils.deleteSystemDataStores(hdb_helium);
         hdb_helium.deleteDataStores([`${CREATE_ATTR_OBJ_TEST.schema}/${CREATE_ATTR_OBJ_TEST.table}/${CREATE_ATTR_OBJ_TEST.attribute}`]);
     } catch(err) {
         console.log(err);
@@ -56,6 +56,13 @@ describe('Test for Helium method heCreateAttribute', () => {
     let sandbox = sinon.createSandbox();
 
     before(() => {
+        try {
+            heliumUtils.createSystemDataStores();
+            hdb_helium = heliumUtils.initializeHelium();
+        } catch(err) {
+            console.log(err);
+        }
+
         global.hdb_schema = {
             [CREATE_ATTR_OBJ_TEST.schema]: {
                 [CREATE_ATTR_OBJ_TEST.table]: {
@@ -91,9 +98,10 @@ describe('Test for Helium method heCreateAttribute', () => {
     });
 
     after(() => {
+        dropTestDataStores();
+        test_utils.teardownHeliumTestVolume(global.hdb_helium);
         sandbox.restore();
         rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heCreateAttribute');
-        dropTestDataStores();
     });
 
     context('Tests for heCreateAttribute function', () => {

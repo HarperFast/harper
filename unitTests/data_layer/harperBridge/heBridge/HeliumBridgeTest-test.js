@@ -2,6 +2,7 @@
 
 const test_utils = require('../../../test_utils');
 test_utils.preTestPrep();
+test_utils.buildHeliumTestVolume();
 
 const rewire = require('rewire');
 let HeliumBridge = rewire('../../../../data_layer/harperBridge/heBridge/HeliumBridge');

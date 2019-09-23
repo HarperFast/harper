@@ -11,13 +11,13 @@ const schema_validator = require('../../../../validation/schema_validator');
 const hdb_terms = require('../../../../utility/hdbTerms');
 const log = require('../../../../utility/logging/harper_logger');
 const uuidV4 = require('uuid/v4');
+
 let hdb_helium;
 try {
     hdb_helium = helium_utils.initializeHelium();
 } catch(err) {
     throw err;
 }
-
 
 const ACTION = 'inserted';
 

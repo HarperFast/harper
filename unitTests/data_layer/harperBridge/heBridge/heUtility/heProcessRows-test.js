@@ -64,7 +64,7 @@ const LONG_CHAR_TEST = "z2xFuWBiQgjAAAzgAK80e35FCuFzNHpicBWzsWZW055mFHwBxdU5yE5K
 
 describe('Tests for Helium utility heProcessRows', () => {
     let insert_obj_single;
-    let sandbox = sinon.createSandbox()
+    let sandbox = sinon.createSandbox();
 
     before(() => {
         sandbox.stub(Date, 'now').returns('80443');
