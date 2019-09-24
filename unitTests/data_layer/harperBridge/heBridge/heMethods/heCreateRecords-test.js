@@ -118,10 +118,8 @@ let ATTR_OBJ_TEST = {
     "hdb_auth_header": "auth-header"
 };
 
-
 function dropTestDatastores() {
     try {
-        test_utils.deleteSystemDataStores(hdb_helium);
         hdb_helium.deleteDataStores(DATASTORES_TEST);
     } catch(err) {
         console.log(err);
@@ -207,9 +205,7 @@ describe('Tests for Helium method heCreateRecords', () => {
             let search_result;
             
             try {
-                console.log(hdb_helium.listDataStores());
                 result = heCreateRecords(INSERT_OBJECT_TEST);
-
                 search_result = hdb_helium.searchByKeys(row_keys, DATASTORES_TEST);
             } catch(err) {
                 console.log(err);

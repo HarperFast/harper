@@ -1,5 +1,8 @@
 "use strict";
 
+const test_utils = require('../../test_utils');
+test_utils.buildHeliumTestVolume();
+
 const rewire = require('rewire');
 const helium_utils = rewire('../../../utility/helium/heliumUtils');
 const assert = require('assert');
@@ -37,6 +40,11 @@ class HarperDBHeliumBad {
 }
 
 describe('test heliumUtils', ()=>{
+
+    after(() => {
+        test_utils.teardownHeliumTestVolume(global.hdb_helium);
+    });
+
     describe('test initializeHelium', ()=>{
         it('test no HELIUM_VOLUME_PATH', ()=>{
            let revert = helium_utils.__set__('env', {

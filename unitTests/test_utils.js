@@ -745,7 +745,6 @@ function deleteSystemDataStores(helium_instance) {
     }
 }
 
-
 /**
  * Makes a temporary folder to hold the Helium volumes while testing helium modules. Sets Helium volume path environment
  * variable to temporary folder.

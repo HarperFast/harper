@@ -14,12 +14,12 @@ const { expect } = chai;
 chai.use(sinon_chai);
 
 let hdb_helium;
-/*try {
+try {
     heliumUtils.createSystemDataStores();
     hdb_helium = heliumUtils.initializeHelium();
 } catch(err) {
     console.log(err);
-}*/
+}
 
 const CREATE_ATTR_OBJ_TEST = {
     operation: "create_attribute",
@@ -56,13 +56,6 @@ describe('Test for Helium method heCreateAttribute', () => {
     let sandbox = sinon.createSandbox();
 
     before(() => {
-        try {
-            heliumUtils.createSystemDataStores();
-            hdb_helium = heliumUtils.initializeHelium();
-        } catch(err) {
-            console.log(err);
-        }
-
         global.hdb_schema = {
             [CREATE_ATTR_OBJ_TEST.schema]: {
                 [CREATE_ATTR_OBJ_TEST.table]: {
