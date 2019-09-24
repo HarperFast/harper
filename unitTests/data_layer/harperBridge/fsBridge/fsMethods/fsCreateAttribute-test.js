@@ -170,39 +170,4 @@ describe('Tests for file system module fsCreateAttribute', () => {
             expect(test_err_result).to.be.true;
         });
     });
-
-
-    context('Test returnObject function', () => {
-        let return_object = fsCreateAttribute.__get__('returnObject');
-
-        it('Test that an insert object is returned', () => {
-            let expected_result = {
-                message: "inserted 1 of 1 records",
-                skipped_hashes: [
-                    "13md39"
-                ],
-                inserted_hashes: [
-                    "7d0181"
-                ]
-            };
-            let result = return_object(INSERT_ACTION_TEST, WRITTEN_HASH_TEST, INSERT_OBJ_TEST, SKIPPED_HASH_TEST);
-
-            expect(result).to.eql(expected_result);
-        });
-
-        it('Test that an update object is returned', () => {
-            let expected_result = {
-                message: "updated 1 of 1 records",
-                skipped_hashes: [
-                    "13md39"
-                ],
-                update_hashes: [
-                    "7d0181"
-                ]
-            };
-            let result = return_object(UPDATE_ACTION_TEST, WRITTEN_HASH_TEST, INSERT_OBJ_TEST, SKIPPED_HASH_TEST);
-
-            expect(result).to.eql(expected_result);
-        });
-    });
 });

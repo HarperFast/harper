@@ -1,6 +1,6 @@
 "use strict";
 const path = require('path');
-const fs = require('fs');
+const fs = require('fs-extra');
 const moment = require('moment');
 const sinon = require('sinon');
 const uuid = require('uuid/v4');
@@ -11,6 +11,7 @@ const SelectValidator = require('../sqlTranslator/SelectValidator');
 const env = require('../utility/environment/environmentManager');
 const terms = require('../utility/hdbTerms');
 const common_utils = require('../utility/common_utils');
+const helium_utils = require('../utility/helium/heliumUtils');
 
 let env_mgr_init_sync_stub = undefined;
 const {
@@ -40,12 +41,25 @@ const MOCK_FS_ARGS_ERROR_MSG = "Null, undefined, and/or empty string argument va
 const UNIT_TEST_DIR = __dirname;
 const TEST_FS_DIR = "envDir/schema";
 const ENV_DIR_NAME = 'envDir';
+const HELIUM_VOLUME_PATH = `${UNIT_TEST_DIR}/envDir/helium`;
+const HELIUM_TEARDOWN_PATH = `${UNIT_TEST_DIR}/envDir`;
 const ATTR_PATH_OBJECT = {
     "files": [],
     "journals": [],
     "system": []
 };
 const SCHEMA_DIR_NAME = 'schema';
+
+const SYSTEM_DATASTORES = [ "system/hdb_table/id", "system/hdb_table/name", "system/hdb_table/hash_attribute",
+    "system/hdb_table/schema", "system/hdb_table/residence", "system/hdb_attribute/id", "system/hdb_attribute/schema",
+    "system/hdb_attribute/table", "system/hdb_attribute/attribute", "system/hdb_attribute/schema_table",
+    "system/hdb_schema/name", "system/hdb_schema/createddate", "system/hdb_user/username", "system/hdb_user/password",
+    "system/hdb_user/role", "system/hdb_user/active", "system/hdb_user/hash", "system/hdb_role/id", "system/hdb_role/role",
+    "system/hdb_role/permission", "system/hdb_job/id", "system/hdb_job/user", "system/hdb_job/type",
+    "system/hdb_job/status", "system/hdb_job/start_datetime", "system/hdb_job/end_datetime", "system/hdb_job/job_body",
+    "system/hdb_job/message", "system/hdb_job/created_datetime", "system/hdb_license/license_key", "system/hdb_license/company",
+    "system/hdb_info/info_id", "system/hdb_info/data_version_num", "system/hdb_info/hdb_version_num", "system/hdb_nodes/name",
+    "system/hdb_nodes/host", "system/hdb_nodes/operation", "system/hdb_nodes/port", "system/hdb_nodes/subscriptions" ];
 
 /**
  * This needs to be called near the top of our unit tests.  Most will fail when loading harper modules due to the
@@ -718,6 +732,44 @@ async function testError(test_func, error_msg) {
     return error instanceof Error && error.message === error_msg;
 }
 
+/**
+ * Helium specific function to delete system datastores after they have been used for testing.
+ * @param helium_instance
+ */
+function deleteSystemDataStores(helium_instance) {
+    try {
+        helium_instance.deleteDataStores(SYSTEM_DATASTORES)
+    } catch(err) {
+        console.log(err);
+    }
+}
+
+/**
+ * Makes a temporary folder to hold the Helium volumes while testing helium modules. Sets Helium volume path environment
+ * variable to temporary folder.
+ */
+function buildHeliumTestVolume() {
+    try {
+        fs.mkdirpSync(HELIUM_VOLUME_PATH);
+        env.setProperty("HELIUM_VOLUME_PATH", HELIUM_VOLUME_PATH);
+    } catch(err) {
+        console.log(err);
+    }
+}
+
+/**
+ * Stops the Helium session and removes all files & folders below the temporary folder path.
+ * @param he_instance - current instance of Helium
+ */
+function teardownHeliumTestVolume(he_instance) {
+    try {
+        he_instance.stopSession(HELIUM_VOLUME_PATH);
+        fs.removeSync(HELIUM_TEARDOWN_PATH);
+    } catch(err) {
+        console.log(err);
+    }
+}
+
 module.exports = {
     changeProcessToBinDir,
     deepClone,
@@ -735,5 +787,8 @@ module.exports = {
     sortAsc,
     sortDesc,
     testError,
-    generateAPIMessage
+    generateAPIMessage,
+    deleteSystemDataStores,
+    buildHeliumTestVolume,
+    teardownHeliumTestVolume
 };

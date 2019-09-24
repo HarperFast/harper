@@ -2,17 +2,25 @@
 
 const test_utils = require('../../../../test_utils');
 test_utils.preTestPrep();
+test_utils.buildHeliumTestVolume();
 
+const heliumUtils = require('../../../../../utility/helium/heliumUtils');
 const rewire = require('rewire');
 const heCreateRecords = rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heCreateRecords');
-const heliumUtils = require('../../../../../utility/helium/heliumUtils');
 const log = require('../../../../../utility/logging/harper_logger');
-const hdb_helium = heliumUtils.initializeHelium();
 const chai = require('chai');
 const sinon = require('sinon');
 const sinon_chai = require('sinon-chai');
 const { expect } = chai;
 chai.use(sinon_chai);
+
+let hdb_helium;
+try {
+    heliumUtils.createSystemDataStores();
+    hdb_helium = heliumUtils.initializeHelium();
+} catch(err) {
+    console.log(err);
+}
 
 const INSERT_OBJECT_TEST = {
     operation: "insert",
@@ -110,18 +118,11 @@ let ATTR_OBJ_TEST = {
     "hdb_auth_header": "auth-header"
 };
 
-function dropTestDatastores() {
-    try {
-        hdb_helium.deleteDataStores(DATASTORES_TEST);
-    } catch(err) {
-        console.log(err);
-    }
-}
-
 describe('Tests for Helium method heCreateRecords', () => {
     let sandbox = sinon.createSandbox();
 
     after(() => {
+        test_utils.teardownHeliumTestVolume(global.hdb_helium);
         sandbox.restore();
         rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heCreateAttribute');
     });
@@ -140,12 +141,36 @@ describe('Tests for Helium method heCreateRecords', () => {
                         schema: SCHEMA_TABLE_TEST.schema,
                         name: SCHEMA_TABLE_TEST.name
                     }
+                },
+                system: {
+                    hdb_attribute: {
+                        hash_attribute:"id",
+                        name:"hdb_attribute",
+                        schema:"system",
+                        residence:["*"],
+                        attributes: [
+                            {
+                                attribute: "id"
+                            },
+                            {
+                                attribute: "schema"
+                            },
+                            {
+                                attribute: "table"
+                            },
+                            {
+                                attribute: "attribute"
+                            },
+                            {
+                                attribute: "schema_table"
+                            }
+                        ]
+                    }
                 }
             };
         });
 
         after(() => {
-            dropTestDatastores();
             sandbox.restore();
         });
         
