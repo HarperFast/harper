@@ -11,6 +11,9 @@ const logger = require('../utility/logging/harper_logger');
 const papa_parse = require('papaparse');
 const fs = require('fs-extra');
 hdb_utils.promisifyPapaParse();
+const env = require('../utility/environment/environmentManager');
+const socket_cluster_util = require('../server/socketcluster/util/socketClusterUtils');
+const op_func_caller = require('../utility/OperationFunctionCaller');
 
 const NEWLINE = '\n';
 const unix_filename_regex = new RegExp(/[^-_.A-Za-z0-9]/);
@@ -18,9 +21,9 @@ const ALASQL_MIDDLEWARE_PARSE_PARAMETERS = 'SELECT * FROM CSV(?, {headers:true, 
 const HIGHWATERMARK = 1024*1024*5;
 
 module.exports = {
-    csvDataLoad: csvDataLoad,
-    csvURLLoad: csvURLLoad,
-    csvFileLoad: csvFileLoad
+    csvDataLoad,
+    csvURLLoad,
+    csvFileLoad
 };
 
 /**
@@ -47,7 +50,14 @@ async function csvDataLoad(json_message) {
     }
     try {
         csv_records = await callMiddleware(ALASQL_MIDDLEWARE_PARSE_PARAMETERS, [json_message.data]);
-        bulk_load_result = await callBulkLoad(csv_records, json_message.schema, json_message.table, json_message.action);
+        let converted_msg = {
+            schema: json_message.schema,
+            table: json_message.table,
+            action: json_message.action,
+            csv_records: csv_records
+        };
+        bulk_load_result = op_func_caller.callOperationFunctionAsAwait(callBulkLoadRf, converted_msg, postCSVLoadFunction);
+        //bulk_load_result = await callBulkLoad(csv_records, json_message.schema, json_message.table, json_message.action);
     } catch(e) {
         throw e;
     }
@@ -270,6 +280,24 @@ async function callMiddleware(parameter_string, data) {
     }
 }
 
+async function callBulkLoadRf(json_msg) {
+    let bulk_load_result = {};
+
+    try {
+        if (json_msg.csv_records && json_msg.csv_records.length > 0 && validateColumnNames(json_msg.csv_records[0])) {
+            bulk_load_result = await bulkLoad(json_msg.csv_records, json_msg.schema, json_msg.table, json_msg.action);
+        } else {
+            bulk_load_result.message = 'No records parsed from csv file.';
+            logger.info(bulk_load_result.message);
+        }
+
+        return bulk_load_result;
+    } catch(err) {
+        logger.error(err);
+        throw err;
+    }
+}
+
 async function callBulkLoad(csv_records, schema, table, action) {
     let bulk_load_result = {};
 
@@ -351,4 +379,19 @@ async function bulkLoad(records, schema, table, action){
     } catch(err) {
         throw err;
     }
+}
+
+async function postCSVLoadFunction(orig_bulk_msg, result, orig_req) {
+    let transaction_msg = hdb_utils.getClusterMessage(hdb_terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
+    transaction_msg.__transacted = true;
+    transaction_msg.transaction = {
+        operation: hdb_terms.OPERATIONS_ENUM.CSV_DATA_LOAD,
+        schema: orig_bulk_msg.schema,
+        table: orig_bulk_msg.table,
+        records:orig_bulk_msg.csv_records
+    };
+    if(orig_req) {
+        socket_cluster_util.concatSourceMessageHeader(transaction_msg, orig_req);
+    }
+    hdb_utils.sendTransactionToSocketCluster(`${orig_bulk_msg.schema}:${orig_bulk_msg.table}`, transaction_msg, env.getProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
 }

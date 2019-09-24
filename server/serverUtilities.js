@@ -74,7 +74,9 @@ function processLocalTransaction(req, res, operation_function, callback) {
         setResponseStatus(res, terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, e);
     }
 
-    operation_function_caller.callOperationFunctionAsAwait(operation_function, req.body, postOperationHandler)
+    let post_op_function = (terms.CLUSTER_OPERATIONS[req.body.operation] === undefined ? null : postOperationHandler);
+
+    operation_function_caller.callOperationFunctionAsAwait(operation_function, req.body, post_op_function)
         .then((data) => {
             if (typeof data !== 'object') {
                 data = {"message": data};
