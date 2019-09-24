@@ -18,11 +18,11 @@ const START_SESSION_OK = [0, "HE_ERR_OK"];
 
 let helium_server_url = undefined;
 module.exports = {
-    initializeHelium: initializeHelium,
-    terminateHelium: terminateHelium,
-    createSystemDataStores: createSystemDataStores,
-    getHeliumServerURL: getHeliumServerURL,
-    checkHeliumServerRunning: checkHeliumServerRunning
+    initializeHelium,
+    terminateHelium,
+    createSystemDataStores,
+    getHeliumServerURL,
+    checkHeliumServerRunning
 };
 
 function getHeliumServerURL(){
