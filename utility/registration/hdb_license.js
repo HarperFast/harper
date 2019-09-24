@@ -33,7 +33,7 @@ try {
 module.exports = {
     validateLicense: validateLicense,
     generateFingerPrint: generateFingerPrint,
-    licenseSearch: licenseSearch
+    licenseSearch
 };
 
 async function generateFingerPrint() {
