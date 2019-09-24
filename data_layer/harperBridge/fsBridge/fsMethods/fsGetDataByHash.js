@@ -1,7 +1,7 @@
 "use strict";
 
 const consolidateSearchData = require('../fsUtility/consolidateSearchData');
-const evaluateTableGetAttributes = require('../fsUtility/evaluateTableGetAttributes');
+const evaluateTableGetAttributes = require('../../bridgeUtility/evaluateTableGetAttributes');
 const getAttributeFileValues = require('../fsUtility/getAttributeFileValues');
 const search_validator = require('../../../../validation/searchValidator.js');
 

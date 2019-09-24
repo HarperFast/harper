@@ -2,6 +2,7 @@
 
 const test_utils = require('../../../test_utils');
 test_utils.preTestPrep();
+test_utils.buildHeliumTestVolume();
 
 const rewire = require('rewire');
 let HeliumBridge = rewire('../../../../data_layer/harperBridge/heBridge/HeliumBridge');
@@ -65,6 +66,7 @@ describe('Tests for the Helium bridge class', () => {
     after(() => {
         sandbox.restore();
         rewire('../../../../data_layer/harperBridge/heBridge/HeliumBridge');
+        test_utils.teardownHeliumTestVolume(global.hdb_helium);
     });
 
     context('Test heCreateRecords method', () => {
