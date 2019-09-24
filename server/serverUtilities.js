@@ -129,7 +129,7 @@ function postOperationHandler(request_body, result, orig_req) {
                 if(request_body.schema === terms.SYSTEM_SCHEMA_NAME) {
                     return;
                 }
-                transaction_msg = convertCRUDOperationToTransaction(request_body.records, result.inserted_hashes, global.hdb_schema[request_body.schema][request_body.table].hash_attribute);
+                transaction_msg = convertCRUDOperationToTransaction(request_body, result.inserted_hashes, global.hdb_schema[request_body.schema][request_body.table].hash_attribute);
                 if(transaction_msg) {
                     if(orig_req) {
                         concatSourceMessageHeader(transaction_msg, orig_req);
@@ -146,7 +146,7 @@ function postOperationHandler(request_body, result, orig_req) {
                 if(request_body.schema === terms.SYSTEM_SCHEMA_NAME) {
                     return;
                 }
-                transaction_msg = convertCRUDOperationToTransaction(request_body.records, result.deleted_hashes, global.hdb_schema[request_body.schema][request_body.table].hash_attribute);
+                transaction_msg = convertCRUDOperationToTransaction(request_body, result.deleted_hashes, global.hdb_schema[request_body.schema][request_body.table].hash_attribute);
                 if(transaction_msg) {
                     if(orig_req) {
                         concatSourceMessageHeader(transaction_msg, orig_req);
