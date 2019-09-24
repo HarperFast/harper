@@ -1,6 +1,6 @@
 "use strict";
 const path = require('path');
-const fs = require('fs');
+const fs = require('fs-extra');
 const moment = require('moment');
 const sinon = require('sinon');
 const uuid = require('uuid/v4');
@@ -11,6 +11,7 @@ const SelectValidator = require('../sqlTranslator/SelectValidator');
 const env = require('../utility/environment/environmentManager');
 const terms = require('../utility/hdbTerms');
 const common_utils = require('../utility/common_utils');
+const helium_utils = require('../utility/helium/heliumUtils');
 
 let env_mgr_init_sync_stub = undefined;
 const {
@@ -40,6 +41,8 @@ const MOCK_FS_ARGS_ERROR_MSG = "Null, undefined, and/or empty string argument va
 const UNIT_TEST_DIR = __dirname;
 const TEST_FS_DIR = "envDir/schema";
 const ENV_DIR_NAME = 'envDir';
+const HELIUM_VOLUME_PATH = `${UNIT_TEST_DIR}/envDir/helium`;
+const HELIUM_TEARDOWN_PATH = `${UNIT_TEST_DIR}/envDir`;
 const ATTR_PATH_OBJECT = {
     "files": [],
     "journals": [],
@@ -741,6 +744,32 @@ function deleteSystemDataStores(helium_instance) {
     }
 }
 
+/**
+ * Makes a temporary folder to hold the Helium volumes while testing helium modules. Sets Helium volume path environment
+ * variable to temporary folder.
+ */
+function buildHeliumTestVolume() {
+    try {
+        fs.mkdirpSync(HELIUM_VOLUME_PATH);
+        env.setProperty("HELIUM_VOLUME_PATH", HELIUM_VOLUME_PATH);
+    } catch(err) {
+        console.log(err);
+    }
+}
+
+/**
+ * Stops the Helium session and removes all files & folders below the temporary folder path.
+ * @param he_instance - current instance of Helium
+ */
+function teardownHeliumTestVolume(he_instance) {
+    try {
+        he_instance.stopSession(HELIUM_VOLUME_PATH);
+        fs.removeSync(HELIUM_TEARDOWN_PATH);
+    } catch(err) {
+        console.log(err);
+    }
+}
+
 module.exports = {
     changeProcessToBinDir,
     deepClone,
@@ -759,5 +788,7 @@ module.exports = {
     sortDesc,
     testError,
     generateAPIMessage,
-    deleteSystemDataStores
+    deleteSystemDataStores,
+    buildHeliumTestVolume,
+    teardownHeliumTestVolume
 };

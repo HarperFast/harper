@@ -2,7 +2,7 @@
 
 const test_utils = require('../../../../test_utils');
 
-let evaluateTableGetAttributes = require('../../../../../data_layer/harperBridge/fsBridge/fsUtility/evaluateTableGetAttributes');
+let evaluateTableGetAttributes = require('../../../../../data_layer/harperBridge/bridgeUtility/evaluateTableGetAttributes');
 const chai = require('chai');
 const { expect } = chai;
 
