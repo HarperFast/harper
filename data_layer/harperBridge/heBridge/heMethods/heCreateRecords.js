@@ -15,7 +15,7 @@ let hdb_helium;
 try {
     hdb_helium = heliumUtils.initializeHelium();
 } catch(err) {
-    console.log(err);
+    throw err;
 }
 
 const ATTRIBUTE_ALREADY_EXISTS = 'attribute already exists';

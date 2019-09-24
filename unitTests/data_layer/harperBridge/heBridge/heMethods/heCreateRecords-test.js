@@ -118,19 +118,10 @@ let ATTR_OBJ_TEST = {
     "hdb_auth_header": "auth-header"
 };
 
-function dropTestDatastores() {
-    try {
-        hdb_helium.deleteDataStores(DATASTORES_TEST);
-    } catch(err) {
-        console.log(err);
-    }
-}
-
 describe('Tests for Helium method heCreateRecords', () => {
     let sandbox = sinon.createSandbox();
 
     after(() => {
-        dropTestDatastores();
         test_utils.teardownHeliumTestVolume(global.hdb_helium);
         sandbox.restore();
         rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heCreateAttribute');
