@@ -1,8 +1,10 @@
 'use strict';
 
 const heGenerateDataStoreName = require('../heUtility/heGenerateDataStoreName');
+const heProcessResponse = require('../heUtility/heProcessResponse');
 const hdb_utils = require('../../../../utility/common_utils');
 const helium_utils = require('../../../../utility/helium/heliumUtils');
+const hdb_terms = require('../../../../utility/hdbTerms');
 const log = require('../../../../utility/logging/harper_logger');
 let hdb_helium = helium_utils.initializeHelium();
 
@@ -33,7 +35,7 @@ let DELETE_OBJ_TEST = {
 };
 
 /**
- * Deletes a full table row at a certain hash. Hle
+ * Deletes a full table row at a certain hash.
  * @param delete_obj
  */
 function heDeleteRecords(delete_obj) {
@@ -46,8 +48,9 @@ function heDeleteRecords(delete_obj) {
         try {
 
             // TODO: what should we do with the response? currently FS will throw error if not exist
-            let result = hdb_helium.deleteRows(buildTableDataStores(delete_obj, schema_table), delete_obj.hash_values);
-            log.info(`Result from heDeleteRecords: ${result}`);
+            let he_response = hdb_helium.deleteRows(buildTableDataStores(delete_obj, schema_table), delete_obj.hash_values);
+            let response = heProcessResponse(he_response, hdb_terms.OPERATIONS_ENUM.DELETE);
+
         } catch(err) {
             throw err;
         }

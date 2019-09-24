@@ -2,7 +2,7 @@
 
 const hdb_terms = require('../../../../utility/hdbTerms');
 
-module.exports = heProcessInsertUpdateResponse;
+module.exports = heProcessResponse;
 
 /**
  * Helium API returns a multi-dimensional array from the createRecords and updateRecords call. This function transforms that response
@@ -11,8 +11,8 @@ module.exports = heProcessInsertUpdateResponse;
  * @param he_response
  * @returns {{skipped_hashes: *, written_hashes: *}}
  */
-function heProcessInsertUpdateResponse(he_response) {
-    let written_hashes = he_response[0];
+function heProcessResponse(he_response, action) {
+    let processed_hashes = he_response[0];
     let skipped_hashes = [];
 
     for (let i = 0; i < he_response[1].length; i++) {
@@ -23,8 +23,19 @@ function heProcessInsertUpdateResponse(he_response) {
         skipped_hashes.push(he_response[1][i][0]);
     }
 
-    return {
-        written_hashes,
-        skipped_hashes
-    };
+    if (action === hdb_terms.OPERATIONS_ENUM.INSERT) {
+        return {
+            written_hashes: processed_hashes,
+            skipped_hashes
+        };
+    } else if (action === hdb_terms.OPERATIONS_ENUM.DELETE) {
+        let records_count = processed_hashes.length;
+        let plural = (records_count === 1) ? 'record' : 'records';
+
+        return {
+            message: `${records_count} ${plural} successfully deleted`,
+            deleted_hashes: processed_hashes,
+            skipped_hashes
+        };
+    }
 }
