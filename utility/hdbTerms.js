@@ -50,6 +50,7 @@ const CLUSTERING_PAYLOAD_FILE_NAME = '.scPayload.json';
 // inside of the socketcluster types module.
 const cluster_types = require('../server/socketcluster/types');
 const ClusterMessageObjects = require('../server/socketcluster/room/RoomMessageObjects');
+const _ = require('lodash');
 
 const INSERT_MODULE_ENUM = {
     HDB_PATH_KEY: 'HDB_INTERNAL_PATH',
@@ -259,6 +260,12 @@ const HDB_SETTINGS_NAMES = {
     HELIUM_SERVER_HOST_KEY: 'HELIUM_SERVER_HOST'
 };
 
+/**
+ * Used for looking up key names by the actual setting field name.
+ */
+
+const HDB_SETTINGS_NAMES_REVERSE_LOOKUP = _.invert(HDB_SETTINGS_NAMES);
+
 // Default values for the Settings, some do not have a default.
 const HDB_SETTINGS_DEFAULT_VALUES = {
     HTTP_PORT: '9925',
@@ -376,6 +383,7 @@ module.exports = {
     HTTP_STATUS_CODES,
     GEO_CONVERSION_ENUM,
     HDB_SETTINGS_NAMES,
+    HDB_SETTINGS_NAMES_REVERSE_LOOKUP,
     HDB_SETTINGS_DEFAULT_VALUES,
     SERVICE_ACTIONS_ENUM,
     CLUSTER_MESSAGE_TYPE_ENUM,
