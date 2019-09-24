@@ -28,13 +28,9 @@ function createPatterns(condition, table_schema, base_path){
     };
 
     const starts_with_wildcard = String(comparators[1]).startsWith('%') || String(comparators[1]).startsWith('*');
-    const ends_with_wildcard = String(comparators[1]).startsWith('%') || String(comparators[1]).startsWith('*');
+    const ends_with_wildcard = String(comparators[1]).endsWith('%') || String(comparators[1]).endsWith('*');
 
-    if(
-        (Buffer.byteLength(String(comparators[1])) > MAX_CHARACTER_SIZE)
-        || (!starts_with_wildcard && ends_with_wildcard && Buffer.byteLength(String(comparators[1])) > MAX_CHARACTER_SIZE)
-        || starts_with_wildcard
-    ) {
+    if(Buffer.byteLength(String(comparators[1])) > MAX_CHARACTER_SIZE || starts_with_wildcard || ends_with_wildcard) {
         pattern.blob_search = true;
     }
 
@@ -45,11 +41,11 @@ function createPatterns(condition, table_schema, base_path){
 
     switch(operation){
         case '=':
-            stripped_search_string = comparators[1] === '*' ? '*' : RegExp.escape(h_utils.escapeRawValue(comparators[1]));
-            stripped_folder_string = comparators[1] === '*' ? new RegExp('.*') : new RegExp(`^${stripped_search_string+hdb_extension}$`);
+            stripped_search_string = (comparators[1] === '*' || comparators[1] === '%') ? '*' : RegExp.escape(h_utils.escapeRawValue(comparators[1]));
+            stripped_folder_string = (comparators[1] === '*' || comparators[1] === '%') ? new RegExp('.*') : new RegExp(`^${stripped_search_string+hdb_extension}$`);
             pattern.folder_search = stripped_folder_string;
             if (pattern.blob_search) {
-                pattern.blob_regex = comparators[1] === '*' ? new RegExp('.*') : new RegExp(`^${stripped_search_string}$`);
+                pattern.blob_regex = (comparators[1] === '*' || comparators[1] === '%') ? new RegExp('.*') : new RegExp(`^${stripped_search_string}$`);
             }
             break;
         case '>':
@@ -81,12 +77,11 @@ function createPatterns(condition, table_schema, base_path){
             // stripped_search_string = h_utils.escapeRawValue(comparators[1]);
             // stripped_folder_string = new RegExp(`${stripped_search_string.replace(/[\*%]/g, '.*?')}`);
             // pattern.folder_search = stripped_folder_string;
-            pattern.folder_search = buildLikeRegex(comparators[1]);
+            pattern.folder_search = buildLikeRegex(comparators[1], 'folder');
             if (pattern.blob_search) {
-                // const blob_string = RegExp.escape(comparators[1]);
-                // pattern.blob_regex = new RegExp(blob_string.replace(/[\*%]/g, '.*?'));
-                const blob_string = String(comparators[1]).replace(/[\*%]/g, '.*?');
-                pattern.blob_regex = new RegExp(`${blob_string}`);
+                // const blob_string = String(comparators[1]).replace(/[\*%]/g, '.*?');
+                // pattern.blob_regex = new RegExp(`${blob_string}`);
+                pattern.blob_regex = buildLikeRegex(comparators[1], 'blob');
             }
             break;
         default:
@@ -100,7 +95,7 @@ RegExp.escape= function(s) {
     return s.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
 };
 
-function buildLikeRegex(search_string) {
+function buildLikeRegex(search_string, regex_type) {
     const starts_w_wildcard = search_string.startsWith('*') || search_string.startsWith('%');
     const ends_w_wildcard = search_string.length > 1 && (search_string.endsWith('*') || search_string.endsWith('%'));
     let split_string = search_string.split('');
@@ -111,7 +106,12 @@ function buildLikeRegex(search_string) {
         split_string.pop();
     }
 
-    let final_search_string = RegExp.escape(h_utils.escapeRawValue(split_string.join('')));
+    let final_search_string;
+    if (regex_type === 'folder') {
+        final_search_string = RegExp.escape(h_utils.escapeRawValue(split_string.join('')));
+    } else {
+        final_search_string = RegExp.escape(split_string.join(''));
+    }
 
     if (starts_w_wildcard) {
         final_search_string = '.*?' + final_search_string;
