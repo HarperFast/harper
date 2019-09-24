@@ -13,6 +13,14 @@ const sinon_chai = require('sinon-chai');
 const { expect } = chai;
 chai.use(sinon_chai);
 
+let hdb_helium;
+try {
+    helium_utils.createSystemDataStores();
+    hdb_helium = helium_utils.initializeHelium();
+} catch(err) {
+    console.log(err);
+}
+
 const CREATE_TABLE_OBJ_TEST_A = {
     operation: 'create_table',
     schema: 'dogsrule',
@@ -46,31 +54,11 @@ const TABLE_SYSTEM_DATA_TEST_B = {
 const SYSTEM_HDB_TABLES = ['system/hdb_table/id', 'system/hdb_table/name', 'system/hdb_table/hash_attribute', 'system/hdb_table/schema', 'system/hdb_table/residence'];
 const SYSTEM_ATTR_SCHEMA = ['system/hdb_attribute/id', 'system/hdb_attribute/schema', 'system/hdb_attribute/table', 'system/hdb_attribute/attribute', 'system/hdb_attribute/schema_table'];
 
-let table_test_a = heGenerateDataStoreName(CREATE_TABLE_OBJ_TEST_A.schema, CREATE_TABLE_OBJ_TEST_A.table, '_createdtime_');
-let table_test_b = heGenerateDataStoreName(CREATE_TABLE_OBJ_TEST_B.schema, CREATE_TABLE_OBJ_TEST_B.table, '_updatetime_');
-let hdb_helium;
-
-function dropTestDataStores() {
-    try {
-        test_utils.deleteSystemDataStores(hdb_helium);
-        hdb_helium.deleteDataStores([table_test_a, table_test_b]);
-    } catch(err) {
-        console.log(err);
-    }
-}
-
 describe('Test for Helium method heCreateAttribute', () => {
     let sandbox = sinon.createSandbox();
     let uuidV4_stub_func = () => '1234';
 
     before(() => {
-        try {
-            helium_utils.createSystemDataStores();
-            hdb_helium = helium_utils.initializeHelium();
-        } catch(err) {
-            console.log(err);
-        }
-
         he_create_attribute_rw.__set__('uuidV4', uuidV4_stub_func);
         heCreateTable.__set__('heCreateAttribute', he_create_attribute_rw);
         global.hdb_schema = {
@@ -137,7 +125,7 @@ describe('Test for Helium method heCreateAttribute', () => {
         global.hdb_schema = {};
         sandbox.restore();
         rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heCreateAttribute');
-        dropTestDataStores();
+        test_utils.teardownHeliumTestVolume(global.hdb_helium);
     });
     
     it('Test that table A is successfully created', () => {

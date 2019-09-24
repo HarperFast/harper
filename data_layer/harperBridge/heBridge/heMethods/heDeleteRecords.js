@@ -5,34 +5,15 @@ const heProcessResponse = require('../heUtility/heProcessResponse');
 const hdb_utils = require('../../../../utility/common_utils');
 const helium_utils = require('../../../../utility/helium/heliumUtils');
 const hdb_terms = require('../../../../utility/hdbTerms');
-const log = require('../../../../utility/logging/harper_logger');
-let hdb_helium = helium_utils.initializeHelium();
+
+let hdb_helium;
+try {
+    hdb_helium = helium_utils.initializeHelium();
+} catch(err) {
+    throw err;
+}
 
 module.exports = heDeleteRecords;
-
-let DELETE_OBJ_TEST = {
-    operation: "delete",
-    table: "doggo",
-    schema: "deleteTest",
-    hash_values: [
-        8,
-        9
-    ],
-    records: [
-        {
-            age: 5,
-            breed: "Mutt",
-            id: 8,
-            name: "Harper"
-        },
-        {
-            age: 5,
-            breed: "Mutt",
-            id: 9,
-            name: "Penny"
-        }
-    ]
-};
 
 /**
  * Deletes a full table row at a certain hash.
@@ -41,16 +22,14 @@ let DELETE_OBJ_TEST = {
 function heDeleteRecords(delete_obj) {
         let schema_table = global.hdb_schema[delete_obj.schema][delete_obj.table];
         if (hdb_utils.isEmpty(schema_table.hash_attribute)) {
-            log.error(`could not retrieve hash attribute for schema:${delete_obj.schema} and table ${delete_obj.table}`);
-            throw new Error(`hash attribute not found`);
+            throw new Error(`could not retrieve hash attribute for schema:${delete_obj.schema} and table ${delete_obj.table}`);
         }
 
         try {
-
-            // TODO: what should we do with the response? currently FS will throw error if not exist
             let he_response = hdb_helium.deleteRows(buildTableDataStores(delete_obj, schema_table), delete_obj.hash_values);
             let response = heProcessResponse(he_response, hdb_terms.OPERATIONS_ENUM.DELETE);
 
+            return response;
         } catch(err) {
             throw err;
         }
