@@ -17081,7 +17081,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\": \"configure_cluster\",\n\t\"clustering_enabled\": \"true\",\n\t\"clustering_port\": \"12345\",\n\t\"clustering_node_name\":\"some_name\"\n}"
+							"raw": "{\n\t\"operation\": \"configure_cluster\",\n\t\"clustering\": \"true\",\n\t\"clustering_PORT\": \"12345\",\n\t\"NODE_NAME\":\"server\"\n}"
 						},
 						"url": {
 							"raw": "http://localhost:9925",
@@ -17237,12 +17237,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\": \"configure_cluster\",\n\t\"clustering_enabled\": \"true\",\n\t\"clustering_port\": \"123451231\",\n\t\"clustering_node_name\":\"some_name\"\n}",
-							"options": {
-								"raw": {
-									"language": "json"
-								}
-							}
+							"raw": "{\n\t\"operation\": \"configure_cluster\",\n\t\"clustering\": \"true\",\n\t\"clustering_PORT\": \"1\",\n\t\"NODE_NAME\":\"some_name\"\n}"
 						},
 						"url": {
 							"raw": "http://localhost:9925",

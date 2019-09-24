@@ -44,7 +44,7 @@ const RESTART_TIMEOUT_MS = 60000;
 const HDB_FILE_PERMISSIONS = 0o700;
 const SCHEMA_DIR_NAME = 'schema';
 
-const HELIUM_URL_PREFIX = 'he://localhost/';
+const HELIUM_URL_PREFIX = 'he://';
 
 const CLUSTERING_FOLDER_NAME = 'clustering';
 const CLUSTERING_PAYLOAD_FILE_NAME = '.scPayload.json';
@@ -53,6 +53,7 @@ const CLUSTERING_PAYLOAD_FILE_NAME = '.scPayload.json';
 // inside of the socketcluster types module.
 const cluster_types = require('../server/socketcluster/types');
 const ClusterMessageObjects = require('../server/socketcluster/room/RoomMessageObjects');
+const _ = require('lodash');
 
 const INSERT_MODULE_ENUM = {
     HDB_PATH_KEY: 'HDB_INTERNAL_PATH',
@@ -256,8 +257,17 @@ const HDB_SETTINGS_NAMES = {
     CLUSTERING_ENABLED_KEY: 'CLUSTERING',
     ALLOW_SELF_SIGNED_SSL_CERTS: 'ALLOW_SELF_SIGNED_SSL_CERTS',
     MAX_HDB_PROCESSES: 'MAX_HDB_PROCESSES',
-    INSTALL_USER: 'install_user'
+    INSTALL_USER: 'install_user',
+    CLUSTERING_USER_KEY: 'CLUSTERING_USER',
+    HELIUM_VOLUME_PATH_KEY: 'HELIUM_VOLUME_PATH',
+    HELIUM_SERVER_HOST_KEY: 'HELIUM_SERVER_HOST'
 };
+
+/**
+ * Used for looking up key names by the actual setting field name.
+ */
+
+const HDB_SETTINGS_NAMES_REVERSE_LOOKUP = _.invert(HDB_SETTINGS_NAMES);
 
 // Default values for the Settings, some do not have a default.
 const HDB_SETTINGS_DEFAULT_VALUES = {
@@ -276,7 +286,8 @@ const HDB_SETTINGS_DEFAULT_VALUES = {
     NODE_ENV: 'production',
     CLUSTERING_PORT: '5545',
     CLUSTERING: 'false',
-    MAX_HDB_PROCESSES: 4
+    MAX_HDB_PROCESSES: 4,
+    HELIUM_SERVER_HOST: 'localhost:41000'
 };
 
 // Describes all available job types
@@ -372,6 +383,7 @@ module.exports = {
     HTTP_STATUS_CODES,
     GEO_CONVERSION_ENUM,
     HDB_SETTINGS_NAMES,
+    HDB_SETTINGS_NAMES_REVERSE_LOOKUP,
     HDB_SETTINGS_DEFAULT_VALUES,
     SERVICE_ACTIONS_ENUM,
     CLUSTER_MESSAGE_TYPE_ENUM,

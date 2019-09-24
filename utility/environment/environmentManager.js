@@ -30,7 +30,7 @@ module.exports = {
     initSync,
     setProperty: setProperty,
     append: append,
-    writeSettingsFileSync: writeSettingsFileSync,
+    writeSettingsFileSync,
     initTestEnvironment : initTestEnvironment,
     isInitialized: isInitialized
 };
@@ -355,6 +355,8 @@ function initTestEnvironment() {
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY, 'TRUE');
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY, 'test_node');
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, `${props_path}/envDir/`);
+        setProperty(hdb_terms.HDB_SETTINGS_NAMES.HELIUM_SERVER_HOST_KEY, 'localhost:41000');
+        setProperty(hdb_terms.HDB_SETTINGS_NAMES.HELIUM_VOLUME_PATH_KEY, '/tmp/hdb');
 
     } catch(err) {
         let msg = `Error reading in HDB environment variables from path ${BOOT_PROPS_FILE_PATH}.  Please check your boot props and settings files`;
