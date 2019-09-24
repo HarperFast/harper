@@ -111,6 +111,8 @@ const SYSTEM_DEFAULT_ATTRIBUTE_NAMES = {
 // Registration key file name
 const REG_KEY_FILE_NAME = '060493.ks';
 
+const LICENSE_FILE_NAME = '.license';
+
 // Describes the available statuses for jobs
 const JOB_STATUS_ENUM = {
 	CREATED: 'CREATED',
@@ -415,6 +417,7 @@ module.exports = {
     HELIUM_URL_PREFIX,
     LICENSE_VALUES,
     STORAGE_TYPES_ENUM,
-    HDB_LICENSE_NAME
+    HDB_LICENSE_NAME,
+    LICENSE_FILE_NAME
 };
 

@@ -8,10 +8,14 @@ const insert = require('../../data_layer/insert');
 const env_mgr = require('../environment/environmentManager');
 const terms = require('../hdbTerms');
 const fs = require('fs-extra');
+const path = require('path');
+const os = require('os');
 
 //Promisified function
 let p_insert_insert = insert.insert;
 let p_prompt_get = promisify(prompt.get);
+
+const LICENSE_FILE = path.join(os.homedir(), terms.HDB_HOME_DIR_NAME, terms.LICENSE_KEY_DIR_NAME, terms.LICENSE_FILE_NAME);
 
 module.exports = {
     getFingerprint: getFingerprint,
@@ -92,17 +96,13 @@ async function parseLicense(license, company) {
         throw new Error('This license is in use on another machine.');
     }
 
-    let insert_object = {
-        operation: 'insert',
-        schema: 'system',
-        table: 'hdb_license',
-        hash_attribute: 'license_key',
-        records: [{"license_key": license, "company":company}]
-    };
-
-    await p_insert_insert(insert_object).catch((err) => {
-        throw err;
-    });
+    try {
+        log.info('writing license to disk');
+        await fs.appendFile(LICENSE_FILE, JSON.stringify({"license_key": license, "company": company}) + '\r\n');
+    }catch(e){
+        log.error('Failed to write License');
+        throw e;
+    }
 
     return license;
 }
