@@ -3,6 +3,7 @@ const path = require('path');
 const env_variable = require('../EnvironmentVariable');
 const upgrade_directive = require('../UpgradeDirective');
 const fs = require('fs');
+const {HDB_SETTINGS_NAMES, HDB_SETTINGS_DEFAULT_VALUES} = require('../../utility/hdbTerms');
 let directive = new upgrade_directive('2.0.000');
 
 const KEYS_FILE_NAME = '060493.ks';
@@ -14,21 +15,26 @@ directive.explicit_directory_paths.push(`${home_dir}/.harperdb`);
 directive.explicit_directory_paths.push(new_keys_dir_path);
 
 directive.environment_variables.push(
-    new env_variable(`CLUSTERING_USER`, ``, [`The user used to connect to other instances of HarperDB, this user must have a role of cluster_user`])
+    new env_variable(`${HDB_SETTINGS_NAMES.CLUSTERING_USER_KEY}`, ``, [`The user used to connect to other instances of HarperDB, this user must have a role of cluster_user`])
 );
 
 directive.environment_variables.push(
-    new env_variable(`LOG_DAILY_ROTATE`, `false`, [`Set to true to enable daily log file rotations - each log file name will be prepended with YYYY-MM-DD (for WINSTON logger only)=`])
+    new env_variable(`${HDB_SETTINGS_NAMES.LOG_DAILY_ROTATE_KEY}`, `false`, [`Set to true to enable daily log file rotations - each log file name will be prepended with YYYY-MM-DD (for WINSTON logger only)=`])
 );
 
 directive.environment_variables.push(
-    new env_variable(`HELIUM_VOLUME_PATH`, `false`, [`Specify the file system path to where the Helium volume will reside.`])
+    new env_variable(`${HDB_SETTINGS_NAMES.HELIUM_VOLUME_PATH_KEY}`, ``, [`Specify the file system path to where the Helium volume will reside.`])
 );
 
 directive.environment_variables.push(
-    new env_variable(`LOG_MAX_DAILY_FILES`, `false`, [`Set the number of daily log files to maintain when LOG_DAILY_ROTATE is enabled`,
+    new env_variable(`${HDB_SETTINGS_NAMES.LOG_MAX_DAILY_FILES_KEY}`, `false`, [`Set the number of daily log files to maintain when LOG_DAILY_ROTATE is enabled`,
     'If no integer value is set, no limit will be set for',
     'daily log files which may consume a large amount of storage depending on your log settings'])
+);
+
+directive.environment_variables.push(
+    new env_variable(`${HDB_SETTINGS_NAMES.HELIUM_SERVER_HOST}`, HDB_SETTINGS_DEFAULT_VALUES.HELIUM_SERVER_HOST,
+        [`specify the host & port where your helium server is running. NOTE for most installs this will not change from ${HDB_SETTINGS_DEFAULT_VALUES.HELIUM_SERVER_HOST}`])
 );
 
 // Move the utilities/keys/060493.ks file to its new home in ~/.harperdb/keys/
