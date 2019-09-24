@@ -16,8 +16,9 @@ module.exports = processRows;
  * @returns {{datastores: *, rows: *}}
  */
 function processRows(insert_obj, attributes, schema_table) {
+    const is_system_schema = insert_obj.schema === hdb_terms.SYSTEM_SCHEMA_NAME;
     let {schema, table, records} = insert_obj;
-    let rows = [];
+    let processed_rows = [];
     let hash_attribute = schema_table.hash_attribute;
     let timestamp = Date.now();
     let datastores = heBuildDataStoreArray(attributes, schema, table);
@@ -36,26 +37,30 @@ function processRows(insert_obj, attributes, schema_table) {
                 row_records.push(null);
             }
         }
+        if (!is_system_schema) {
+            // If inserting pushes two identical timestamps to end of row array. These correspond created time & updated time attributes.
+            // On updated created time is skipped
+            if (insert_obj.operation === hdb_terms.OPERATIONS_ENUM.INSERT) {
+                row_records.push(timestamp, timestamp);
+            } else {
+                row_records.push(null, timestamp);
+            }
 
-        // If inserting pushes two identical timestamps to end of row array. These correspond created time & updated time attributes.
-        // On updated created time is skipped
-        if (insert_obj.operation === hdb_terms.OPERATIONS_ENUM.INSERT) {
-            row_records.push(timestamp, timestamp);
-        } else {
-            row_records.push(null, timestamp);
         }
 
         // Pushes (nests) completed row inside array of all rows returned by function.
-        rows.push([records[x][hash_attribute],row_records]);
+        processed_rows.push([records[x][hash_attribute],row_records]);
     }
 
-    // Pushes created time and updated time attributes to datastores array
-    datastores.push(heGenerateDataStoreName(schema, table, hdb_terms.HELIUM_TIME_STAMP_ENUM.CREATED_TIME));
-    datastores.push(heGenerateDataStoreName(schema, table, hdb_terms.HELIUM_TIME_STAMP_ENUM.UPDATED_TIME));
+    if (!is_system_schema) {
+        // Pushes created time and updated time attributes to datastores array
+        datastores.push(`${schema}/${table}/${hdb_terms.HELIUM_TIME_STAMP_ENUM.CREATED_TIME}`);
+        datastores.push(`${schema}/${table}/${hdb_terms.HELIUM_TIME_STAMP_ENUM.UPDATED_TIME}`);
+    }
 
     return {
         datastores,
-        rows
+        processed_rows
     };
 }
 

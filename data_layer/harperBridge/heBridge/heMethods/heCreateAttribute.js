@@ -1,17 +1,103 @@
 'use strict';
 
-const heliumUtils = require('../../../../utility/helium/heliumUtils');
-let hdb_helium = heliumUtils.initializeHelium();
+const heProcessInsertUpdateResponse = require('../heUtility/heProcessInsertUpdateResponse');
+const heProcessRows = require('../heUtility/heProcessRows');
+const heGenerateDataStoreName = require('../heUtility/heGenerateDataStoreName');
+const insertUpdateValidate = require('../../bridgeUtility/insertUpdateValidate');
+const convertOperationToTransaction = require('../../bridgeUtility/convertOperationToTransaction');
+const returnObject = require('../../bridgeUtility/insertUpdateReturnObj');
+const helium_utils = require('../../../../utility/helium/heliumUtils');
+const schema_validator = require('../../../../validation/schema_validator');
+const hdb_terms = require('../../../../utility/hdbTerms');
+const log = require('../../../../utility/logging/harper_logger');
+const uuidV4 = require('uuid/v4');
+
+let hdb_helium;
+try {
+    hdb_helium = helium_utils.initializeHelium();
+} catch(err) {
+    throw err;
+}
+
+const ACTION = 'inserted';
 
 module.exports = heCreateAttribute;
 
+/**
+ * First adds the attribute to the system attribute table, then creates the datastore.
+ * @param create_attribute_obj
+ * @returns {{skipped_hashes: *, update_hashes: *, message: string}}
+ */
+function heCreateAttribute(create_attribute_obj) {
+    let validation_error = schema_validator.attribute_object(create_attribute_obj);
+    if (validation_error) {
+        throw validation_error;
+    }
 
-// TODO: This is a temporary fix to get heCreateRecords working
-function heCreateAttribute(create_attr_obj) {
-    let datastore_name = `${create_attr_obj.schema}/${create_attr_obj.table}/${create_attr_obj.attribute}`;
+    let attributes_obj_array = global.hdb_schema[create_attribute_obj.schema][create_attribute_obj.table]['attributes'];
+
+    for (let attribute of attributes_obj_array) {
+        if (attribute.attribute === create_attribute_obj.attribute) {
+            throw new Error(`attribute '${attribute.attribute}' already exists in ${create_attribute_obj.schema}.${create_attribute_obj.table}`);
+        }
+    }
+
+    let record = {
+        schema: create_attribute_obj.schema,
+        table: create_attribute_obj.table,
+        attribute: create_attribute_obj.attribute,
+        id: uuidV4(),
+        schema_table: create_attribute_obj.schema + '.' + create_attribute_obj.table
+    };
+
+    if(create_attribute_obj.id){
+        record.id = create_attribute_obj.id;
+    }
+
+    let insert_object = {
+        operation: hdb_terms.OPERATIONS_ENUM.INSERT,
+        schema: hdb_terms.SYSTEM_SCHEMA_NAME,
+        table: hdb_terms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME,
+        hash_attribute: hdb_terms.SYSTEM_TABLE_HASH,
+        records: [record]
+    };
+
+    let datastore_name = heGenerateDataStoreName(create_attribute_obj.schema, create_attribute_obj.table, create_attribute_obj.attribute);
+
     try {
-        hdb_helium.createDataStores([datastore_name]);
+        let create_datastore_result = hdb_helium.createDataStores([datastore_name]);
+        log.info(create_datastore_result);
+        let insert_response = insertData(insert_object);
+        log.info('insert object: ' + JSON.stringify(insert_object));
+        log.info('attribute: ' + record.attribute);
+        log.info(insert_response);
+
+        return insert_response;
     } catch(err) {
         throw err;
+    }
+}
+
+/** NOTE **
+ * Due to circular dependencies with insertData in insert.js we have a duplicate version
+ * of insertData in this file. It should only be used by createAttribute.
+ * **/
+
+/**
+ * Inserts data specified in the insert_object parameter.
+ * @param insert_obj
+ * @returns {{skipped_hashes: *, update_hashes: *, message: string}}
+ */
+function insertData(insert_obj){
+    try {
+        let { schema_table, attributes } = insertUpdateValidate(insert_obj);
+        let { datastores, processed_rows } = heProcessRows(insert_obj, attributes, schema_table);
+        let he_response = hdb_helium.insertRows(datastores, processed_rows);
+        let { written_hashes, skipped_hashes } = heProcessInsertUpdateResponse(he_response);
+        convertOperationToTransaction(insert_obj, written_hashes, schema_table.hash_attribute);
+
+        return returnObject(ACTION, written_hashes, insert_obj, skipped_hashes);
+    } catch(err){
+        throw (err);
     }
 }

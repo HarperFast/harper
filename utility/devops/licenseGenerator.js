@@ -8,6 +8,7 @@ const password = require('../password');
 const LICENSE_HASH_PREFIX = '061183';
 const LICENSE_KEY_DELIMITER = 'mofi25';
 const validation = require('../../validation/registration/license_key_object.js');
+const License = require('../registration/licenseObjects').BaseLicense;
 
 module.exports={
     generateLicense: generateLicense
@@ -34,12 +35,7 @@ function generateLicense(license_object) {
         let fingerprint = license_object.fingerprint,
             company = license_object.company;
 
-        let obj = {
-            exp_date: moment(license_object.exp_date).unix(),
-            storage_type: license_object.storage_type ? license_object.storage_type : terms.STORAGE_TYPES_ENUM.FILE_SYSTEM,
-            api_call: license_object.api_call ? license_object.api_call : terms.LICENSE_VALUES.API_CALL_DEFAULT,
-            version: license_object.version ? license_object.version : terms.LICENSE_VALUES.VERSION_DEFAULT
-        };
+        let obj = new License(moment(license_object.exp_date).unix(), license_object.storage_type, license_object.api_call, license_object.version);
 
         let encrypted_exp = hashDate(obj, fingerprint);
 

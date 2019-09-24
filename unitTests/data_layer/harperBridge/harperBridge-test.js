@@ -3,6 +3,7 @@
 const test_utils = require('../../test_utils');
 // try to move to /bin directory so our properties reader doesn't explode.
 test_utils.preTestPrep();
+test_utils.buildHeliumTestVolume();
 
 const chai = require('chai');
 const { expect } = chai;
@@ -29,7 +30,8 @@ describe('Test harperBridge', () => {
 
     after(() => {
         rewire('../../../data_layer/harperBridge/harperBridge');
-    })
+        test_utils.teardownHeliumTestVolume(global.hdb_helium);
+    });
 
     //High level tests for harperBridge will get updated as we have a dynamic mechanism for determining the correct store to enable
     it("should export the correct instantiated bridge methods class based on the enabled data store", () => {
