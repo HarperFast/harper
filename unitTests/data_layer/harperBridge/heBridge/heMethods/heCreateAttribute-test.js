@@ -34,21 +34,13 @@ const INSERT_OBJ_TEST = {
     table: "hdb_attribute",
     hash_attribute: "id",
     records: [
-    {
+        {
         "schema": "I am a test",
         "table": "Not really a table",
         "id": 45
-    }
-]
+        }
+    ]
 };
-
-function dropTestDataStores() {
-    try {
-        hdb_helium.deleteDataStores([`${CREATE_ATTR_OBJ_TEST.schema}/${CREATE_ATTR_OBJ_TEST.table}/${CREATE_ATTR_OBJ_TEST.attribute}`]);
-    } catch(err) {
-        console.log(err);
-    }
-}
 
 const SYSTEM_ATTR_SCHEMA = ['system/hdb_attribute/id', 'system/hdb_attribute/schema', 'system/hdb_attribute/table', 'system/hdb_attribute/attribute', 'system/hdb_attribute/schema_table'];
 
@@ -91,7 +83,6 @@ describe('Test for Helium method heCreateAttribute', () => {
     });
 
     after(() => {
-        dropTestDataStores();
         test_utils.teardownHeliumTestVolume(global.hdb_helium);
         sandbox.restore();
         rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heCreateAttribute');
