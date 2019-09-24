@@ -33,12 +33,14 @@ function heCreateRecords(insert_obj) {
         let { schema_table, attributes } = insertUpdateValidate(insert_obj);
         let { datastores, processed_rows } = heProcessRows(insert_obj, attributes, schema_table);
 
-        if (!attributes.includes(hdb_terms.HELIUM_TIME_STAMP_ENUM.CREATED_TIME)) {
-            attributes.push(hdb_terms.HELIUM_TIME_STAMP_ENUM.CREATED_TIME);
-        }
+        if (insert_obj.schema !== hdb_terms.SYSTEM_SCHEMA_NAME) {
+            if (!attributes.includes(hdb_terms.HELIUM_TIME_STAMP_ENUM.CREATED_TIME)) {
+                attributes.push(hdb_terms.HELIUM_TIME_STAMP_ENUM.CREATED_TIME);
+            }
 
-        if (!attributes.includes(hdb_terms.HELIUM_TIME_STAMP_ENUM.UPDATED_TIME)) {
-            attributes.push(hdb_terms.HELIUM_TIME_STAMP_ENUM.UPDATED_TIME);
+            if (!attributes.includes(hdb_terms.HELIUM_TIME_STAMP_ENUM.UPDATED_TIME)) {
+                attributes.push(hdb_terms.HELIUM_TIME_STAMP_ENUM.UPDATED_TIME);
+            }
         }
 
         checkAttributes(insert_obj.hdb_auth_header, schema_table, attributes);
