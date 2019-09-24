@@ -4,7 +4,6 @@ const fs = require('fs-extra');
 const moment = require('moment');
 const sinon = require('sinon');
 const uuid = require('uuid/v4');
-const child_process = require('child_process');
 
 const sql = require('../sqlTranslator/index');
 const SelectValidator = require('../sqlTranslator/SelectValidator');

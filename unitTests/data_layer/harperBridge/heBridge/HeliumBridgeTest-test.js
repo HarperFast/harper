@@ -66,6 +66,7 @@ describe('Tests for the Helium bridge class', () => {
     after(() => {
         sandbox.restore();
         rewire('../../../../data_layer/harperBridge/heBridge/HeliumBridge');
+        test_utils.teardownHeliumTestVolume(global.hdb_helium);
     });
 
     context('Test heCreateRecords method', () => {
