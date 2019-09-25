@@ -62,6 +62,13 @@ describe('Tests for file system module fsDeleteRecords', () => {
 
     before(() => {
         log_error_stub = sandbox.stub(log, 'error');
+        global.hdb_schema = {
+            [DELETE_OBJ_TEST.schema]: {
+                [DELETE_OBJ_TEST.table]: {
+                    name: DELETE_OBJ_TEST.table
+                }
+            }
+        };
     });
 
     after(() => {
@@ -81,15 +88,7 @@ describe('Tests for file system module fsDeleteRecords', () => {
     it('Test mock file system is successfully deleted', async () => {
         let mock_fs = test_utils.createMockFS(HASH_ATTRIBUTE, SCHEMA_TEST, TABLE_TEST, TEST_DATA_DOG);
         let files_to_check = [...mock_fs[0].paths.files, ...mock_fs[1].paths.files];
-
-        global.hdb_schema = {
-            [DELETE_OBJ_TEST.schema]: {
-                [DELETE_OBJ_TEST.table]: {
-                    name: DELETE_OBJ_TEST.table,
-                    hash_attribute: 'id'
-                }
-            }
-        };
+        global.hdb_schema[DELETE_OBJ_TEST.schema][DELETE_OBJ_TEST.table].hash_attribute = 'id';
 
         await fs_delete_records(DELETE_OBJ_TEST);
         for (let i = 0; i < files_to_check.length; i++) {

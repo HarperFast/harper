@@ -24,17 +24,15 @@ function insertUpdateValidate(write_object){
         throw new Error('invalid table specified.');
     }
 
-    let schema_table;
-    try {
-        schema_table = global.hdb_schema[write_object.schema][write_object.table];
-    } catch(err) {
-        throw new Error(err);
-    }
-
     //validate insert_object for required attributes
     let validator = insert_validator(write_object);
     if (validator) {
         throw validator;
+    }
+
+    let schema_table = global.hdb_schema[write_object.schema][write_object.table];
+    if (hdb_utils.isEmpty(schema_table)) {
+        throw new Error(`could not retrieve schema:${write_object.schema} and table ${write_object.table}`);
     }
 
     if (!Array.isArray(write_object.records)) {
