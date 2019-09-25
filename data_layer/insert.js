@@ -141,25 +141,6 @@ async function insertData(insert_object){
     }
 }
 
-function convertOperationToTransaction(write_object, written_hashes, hash_attribute){
-    if(global.hdb_socket_client !== undefined && write_object.schema !== 'system' && Array.isArray(written_hashes) && written_hashes.length > 0){
-        let transaction = {
-            operation: write_object.operation,
-            schema: write_object.schema,
-            table: write_object.table,
-            records:[]
-        };
-
-        write_object.records.forEach(record =>{
-            if(written_hashes.indexOf(h_utils.autoCast(record[hash_attribute])) >= 0) {
-                transaction.records.push(record);
-            }
-        });
-        let insert_msg = h_utils.getClusterMessage(hdb_terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
-        insert_msg.transaction = transaction;
-    }
-}
-
 /**
  * Updates the data in the update_object parameter.
  * @param update_object - The data that will be updated in the database
@@ -188,7 +169,6 @@ async function updateData(update_object){
         await checkForNewAttributes(update_object.hdb_auth_header, table_schema, attributes);
         await unlinkFiles(unlinks);
         await processData(data_wrapper);
-        convertOperationToTransaction(update_object, written_hashes, table_schema.hash_attribute);
 
         return returnObject(UPDATE_ACTION, written_hashes, update_object, skipped);
     } catch(e){

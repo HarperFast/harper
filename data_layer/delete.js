@@ -20,11 +20,9 @@ const c_unlink_delete_object = callbackify(unlink.unlink_delete_object);
 
 const slash_regex = /\//g;
 const BASE_PATH = common_utils.buildFolderPath(env.get('HDB_ROOT'), "schema");
-
 const BLOB_FOLDER_NAME = 'blob';
 const MAX_BYTES = '255';
 const SUCCESS_MESSAGE = 'records successfully deleted';
-
 const MOMENT_UNIX_TIMESTAMP_FLAG = 'x';
 const SYSTEM_SCHEMA_NAME = 'system';
 
