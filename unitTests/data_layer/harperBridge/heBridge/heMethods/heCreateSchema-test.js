@@ -4,7 +4,8 @@ const test_utils = require('../../../../test_utils');
 test_utils.preTestPrep();
 test_utils.buildHeliumTestVolume();
 
-const heCreateSchema = require('../../../../../data_layer/harperBridge/heBridge/heMethods/heCreateSchema');
+const rewire = require('rewire');
+const heCreateSchema = rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heCreateSchema');
 const heliumUtils = require('../../../../../utility/helium/heliumUtils');
 const chai = require('chai');
 const sinon = require('sinon');
@@ -29,7 +30,6 @@ const CREATE_SCHEMA_OBJ_TEST_B = {
     operation: 'create_schema',
     schema: 'cows'
 };
-
 
 describe('Tests for Helium method heCreateSchema', () => {
     let sandbox = sinon.createSandbox();
@@ -75,5 +75,20 @@ describe('Tests for Helium method heCreateSchema', () => {
         let search_result = hdb_helium.searchByKeys([CREATE_SCHEMA_OBJ_TEST_B.schema], ['system/hdb_schema/name', 'system/hdb_schema/createddate']);
 
         expect(search_result).to.eql(expected_search_result);
+    });
+
+    it('Test that error from heCreateRecords it caught and thrown', () => {
+        let error_msg = 'Error creating the record';
+        let he_create_records_stub = sandbox.stub().throws(new Error(error_msg));
+        heCreateSchema.__set__('heCreateRecords', he_create_records_stub);
+        let error;
+
+        try {
+            heCreateSchema(CREATE_SCHEMA_OBJ_TEST_B);
+        } catch(err) {
+            error = err;
+        }
+
+        expect(error.message).to.equal(error_msg);
     });
 });

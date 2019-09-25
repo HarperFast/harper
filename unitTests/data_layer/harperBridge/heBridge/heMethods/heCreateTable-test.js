@@ -1,12 +1,14 @@
 'use strict';
+
 const test_utils = require('../../../../test_utils');
 test_utils.preTestPrep();
+test_utils.buildHeliumTestVolume();
 
+const heliumUtils = require('../../../../../utility/helium/heliumUtils');
 const rewire = require('rewire');
 const heCreateTable = rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heCreateTable');
 const he_create_attribute_rw = rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heCreateAttribute');
 const heGenerateDataStoreName = require('../../../../../data_layer/harperBridge/heBridge/heUtility/heGenerateDataStoreName');
-const helium_utils = require('../../../../../utility/helium/heliumUtils');
 const chai = require('chai');
 const sinon = require('sinon');
 const sinon_chai = require('sinon-chai');
@@ -15,8 +17,8 @@ chai.use(sinon_chai);
 
 let hdb_helium;
 try {
-    helium_utils.createSystemDataStores();
-    hdb_helium = helium_utils.initializeHelium();
+    heliumUtils.createSystemDataStores();
+    hdb_helium = heliumUtils.initializeHelium();
 } catch(err) {
     console.log(err);
 }
@@ -54,7 +56,7 @@ const TABLE_SYSTEM_DATA_TEST_B = {
 const SYSTEM_HDB_TABLES = ['system/hdb_table/id', 'system/hdb_table/name', 'system/hdb_table/hash_attribute', 'system/hdb_table/schema', 'system/hdb_table/residence'];
 const SYSTEM_ATTR_SCHEMA = ['system/hdb_attribute/id', 'system/hdb_attribute/schema', 'system/hdb_attribute/table', 'system/hdb_attribute/attribute', 'system/hdb_attribute/schema_table'];
 
-describe('Test for Helium method heCreateAttribute', () => {
+describe('Test for Helium method heCreateTable', () => {
     let sandbox = sinon.createSandbox();
     let uuidV4_stub_func = () => '1234';
 
@@ -122,10 +124,10 @@ describe('Test for Helium method heCreateAttribute', () => {
     });
 
     after(() => {
+        test_utils.teardownHeliumTestVolume(global.hdb_helium);
         global.hdb_schema = {};
         sandbox.restore();
         rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heCreateAttribute');
-        test_utils.teardownHeliumTestVolume(global.hdb_helium);
     });
     
     it('Test that table A is successfully created', () => {
