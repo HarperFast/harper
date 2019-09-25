@@ -9,6 +9,39 @@ const fs = require('fs-extra');
 const moment = require('moment');
 const test_utils = require('../../test_utils');
 test_utils.preTestPrep();
+const license_objects = require('../../../utility/registration/licenseObjects');
+
+const LICENSES = [
+    {license_key: {
+        exp_date: moment().add(1, 'year').unix(),
+        storage_type: 'helium',
+        api_call: 10000,
+        version: '2.0.0',
+        enterprise: true
+    },
+    company:'harperdb'
+    },
+    {license_key: {
+            exp_date: moment().add(2, 'year').unix(),
+            storage_type: 'helium',
+            api_call: 10000,
+            version: '2.0.0',
+            enterprise: true
+        },
+        company:'harperdb'
+    }];
+
+const VALID_LICENSE_FLAGS = {
+    valid_license:true,
+    valid_date: true,
+    valid_machine: true,
+};
+
+const INVALID_LICENSE_FLAGS = {
+    valid_license:false,
+    valid_date: true,
+    valid_machine: false,
+};
 
 describe(`Test generateFingerPrint`, function () {
     it('Nominal, generate new finger print with hash and write finger print file', async function () {
@@ -358,5 +391,133 @@ describe(`Test validateLicense`, function () {
         assert.equal(validation.valid_date, false, 'date validation should not valid');
         assert.equal(validation.valid_license, false, 'license validation should not valid');
         assert.equal(validation.valid_machine, false, 'machine validation should not valid');
+    });
+});
+
+describe('test licenseSearch', ()=>{
+    it('test no license in hdb_license', async()=>{
+        const hdb_license = rewire('../../../utility/registration/hdb_license');
+        hdb_license.__set__('p_search_by_value', async(search_object)=>{
+            return [];
+        });
+
+        let err = undefined;
+        let license = undefined;
+        try {
+            license = await hdb_license.licenseSearch();
+        } catch(e){
+            let err = e;
+        }
+
+        assert.equal(err, undefined);
+        assert.deepEqual(license, new license_objects.ExtendedLicense());
+    });
+
+    it('test one license in hdb_license & license is valid', async()=>{
+        const hdb_license = rewire('../../../utility/registration/hdb_license');
+        hdb_license.__set__('p_search_by_value', async(search_object)=>{
+            return [LICENSES[0]];
+        });
+
+        hdb_license.__set__('validateLicense', async (license_key, company)=>{
+            return Object.assign({}, license_key, VALID_LICENSE_FLAGS);
+        });
+
+        let err = undefined;
+        let license = undefined;
+        try {
+            license = await hdb_license.licenseSearch();
+        } catch(e){
+            let err = e;
+        }
+
+        assert.equal(err, undefined);
+        assert.deepEqual(license, LICENSES[0].license_key);
+    });
+
+    it('test one license in hdb_license & license is invalid', async()=>{
+        const hdb_license = rewire('../../../utility/registration/hdb_license');
+        hdb_license.__set__('p_search_by_value', async(search_object)=>{
+            return [LICENSES[0]];
+        });
+
+        hdb_license.__set__('validateLicense', async (license_key, company)=>{
+            return Object.assign({}, license_key, INVALID_LICENSE_FLAGS);
+        });
+
+        let err = undefined;
+        let license = undefined;
+        try {
+            license = await hdb_license.licenseSearch();
+        } catch(e){
+            let err = e;
+        }
+
+        assert.equal(err, undefined);
+        assert.deepEqual(license, new license_objects.ExtendedLicense());
+    });
+
+    it('test multiple valid licenses in hdb_license', async()=>{
+        const hdb_license = rewire('../../../utility/registration/hdb_license');
+        hdb_license.__set__('p_search_by_value', async(search_object)=>{
+            return LICENSES;
+        });
+
+        hdb_license.__set__('validateLicense', async (license_key, company)=>{
+            return Object.assign({}, license_key, VALID_LICENSE_FLAGS);
+        });
+
+        let err = undefined;
+        let license = undefined;
+        try {
+            license = await hdb_license.licenseSearch();
+        } catch(e){
+            let err = e;
+        }
+
+        let compare_license = LICENSES[1];
+        compare_license.license_key.api_call += LICENSES[0].license_key.api_call;
+        assert.equal(err, undefined);
+        assert.deepEqual(license, compare_license.license_key);
+    });
+
+    it('test with search failing', async()=>{
+        const hdb_license = rewire('../../../utility/registration/hdb_license');
+        hdb_license.__set__('p_search_by_value', async(search_object)=>{
+            throw new Error('FAIL!');
+        });
+
+        let err = undefined;
+        let license = undefined;
+        try {
+            license = await hdb_license.licenseSearch();
+        } catch(e){
+            let err = e;
+        }
+
+        assert.equal(err, undefined);
+        assert.deepEqual(license, new license_objects.ExtendedLicense());
+    });
+
+    it('test with validate failing', async()=>{
+        const hdb_license = rewire('../../../utility/registration/hdb_license');
+        hdb_license.__set__('p_search_by_value', async(search_object)=>{
+            return LICENSES;
+        });
+
+        hdb_license.__set__('validateLicense', async (license_key, company)=>{
+            throw new Error('FAIL!');
+        });
+
+        let err = undefined;
+        let license = undefined;
+        try {
+            license = await hdb_license.licenseSearch();
+        } catch(e){
+            let err = e;
+        }
+
+        assert.equal(err, undefined);
+        assert.deepEqual(license, new license_objects.ExtendedLicense());
     });
 });

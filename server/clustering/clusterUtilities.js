@@ -270,6 +270,9 @@ async function configureCluster(enable_cluster_json) {
         }
     }
 
+    if(config_fields.NODE_NAME !== undefined){
+        config_fields.NODE_NAME = config_fields.NODE_NAME.toString();
+    }
     let validation = await configure_validator(config_fields);
     let should_reload = false;
     if (validation) {
