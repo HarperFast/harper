@@ -6,7 +6,13 @@ const heProcessInsertUpdateResponse = require('../heUtility/heProcessInsertUpdat
 const heCheckForNewAttributes = require('../heUtility/heCheckForNewAttributes');
 const hdb_terms = require('../../../../utility/hdbTerms');
 const heliumUtils = require('../../../../utility/helium/heliumUtils');
-const hdb_helium = heliumUtils.initializeHelium();
+
+let hdb_helium;
+try {
+    hdb_helium = heliumUtils.initializeHelium();
+} catch(err) {
+    throw err;
+}
 
 module.exports = heCreateRecords;
 
@@ -19,7 +25,7 @@ module.exports = heCreateRecords;
 function heCreateRecords(insert_obj) {
     try {
         let { schema_table, attributes } = insertUpdateValidate(insert_obj);
-        let { datastores, rows } = heProcessRows(insert_obj, attributes, schema_table);
+        let { datastores, processed_rows } = heProcessRows(insert_obj, attributes, schema_table);
 
         if (insert_obj.schema !== hdb_terms.SYSTEM_SCHEMA_NAME) {
             if (!attributes.includes(hdb_terms.HELIUM_TIME_STAMP_ENUM.CREATED_TIME)) {

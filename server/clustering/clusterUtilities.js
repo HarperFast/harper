@@ -19,6 +19,7 @@ const InsertObject = require('../../data_layer/DataLayerObjects').InsertObject;
 const search = require('../../data_layer/search');
 
 const CLUSTER_PORT = env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY);
+const CONFIGURE_SUCCESS_RESPONSE = 'Successfully configured and loaded clustering configuration.  Some configurations may require a restart of HarperDB to take effect.';
 
 //Promisified functions
 const p_delete_delete = util.promisify(del.delete);
@@ -73,7 +74,7 @@ async function addNode(new_node) {
     let results = undefined;
     try {
         results = await insert.insert(new_node_insert);
-    } catch (err) {
+    } catch(err) {
         log.error(`Error adding new cluster node ${new_node_insert}.  ${err}`);
         throw err;
     }
@@ -87,7 +88,7 @@ async function addNode(new_node) {
         let add_node_msg = new terms.ClusterMessageObjects.HdbCoreAddNodeMessage();
         add_node_msg.add_node = new_node;
         hdb_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.HDB_NODES, add_node_msg, env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
-    } catch (e) {
+    } catch(e){
         throw new Error(e);
     }
 
@@ -109,7 +110,7 @@ function nodeValidation(node_object) {
     let new_port = undefined;
     try {
         new_port = parseInt(node_object.port);
-    } catch (err) {
+    } catch(err) {
         throw new Error(`Invalid port: ${node_object.port} specified`);
     }
 
@@ -119,13 +120,13 @@ function nodeValidation(node_object) {
 
     //TODO: We may need to expand this depending on what is decided in https://harperdb.atlassian.net/browse/HDB-638
     if(new_port === CLUSTER_PORT) {
-        if ((node_object.host === 'localhost' || node_object.host === '127.0.0.1')) {
+        if((node_object.host === 'localhost' || node_object.host === '127.0.0.1')) {
             throw new Error(DUPLICATE_ERR_MSG);
         }
-        if (addresses && addresses.includes(node_object.host)) {
+        if(addresses && addresses.includes(node_object.host)) {
             throw new Error(DUPLICATE_ERR_MSG);
         }
-        if (os.hostname() === node_object.host) {
+        if(os.hostname() === node_object.host) {
             throw new Error(DUPLICATE_ERR_MSG);
         }
     }
@@ -181,12 +182,12 @@ async function updateNode(update_node) {
     let results = undefined;
     try {
         results = await insert.update(update_node_object);
-    } catch (err) {
+    } catch(err) {
         log.error(`Error adding new cluster node ${update_node_object}.  ${err}`);
         throw new Error(err);
     }
 
-    if(!hdb_utils.isEmptyOrZeroLength(results.skipped_hashes)) {
+    if (!hdb_utils.isEmptyOrZeroLength(results.skipped_hashes)) {
         log.info(`Node '${update_node.name}' does not exist. Operation aborted.`);
         throw new Error(`Node '${update_node.name}' does not exist. Operation aborted.`);
     }
@@ -223,7 +224,7 @@ async function removeNode(remove_json_message) {
     let results = undefined;
     try {
         results = await p_delete_delete(delete_obj);
-    } catch (err) {
+    } catch(err) {
         log.error(`Error removing cluster node ${util.inspect(delete_obj)}.  ${err}`);
         throw err;
     }
@@ -244,19 +245,57 @@ async function removeNode(remove_json_message) {
  * @returns {Promise<void>}
  */
 async function configureCluster(enable_cluster_json) {
-    let validation = configure_validator(enable_cluster_json);
-    if(validation) {
+    log.debug('In configureCluster');
+    let {operation, hdb_user, hdb_auth_header, ...config_fields} = enable_cluster_json;
+
+    // We need to make all fields upper case so they will match in the validator.  It is less efficient to do this in its
+    // own loop, but we dont want to update the file unless all fields pass validation, and we can't validate until all
+    // fields are converted.
+    let field_keys = Object.keys(config_fields);
+    for(let i=0; i<field_keys.length; ++i) {
+        let orig_field_name = field_keys[i];
+
+        // if the field is not all uppercase in the config_fields object, then add the all uppercase field
+        // and remove the old not uppercase field.
+        if(config_fields[orig_field_name.toUpperCase()] === undefined) {
+            config_fields[orig_field_name.toUpperCase()] = config_fields[orig_field_name];
+            delete config_fields[orig_field_name];
+        }
+
+        // if the field is not all uppercase in the config_fields object, then add the all uppercase field
+        // and remove the old not uppercase field.
+        if(enable_cluster_json[orig_field_name.toUpperCase()] === undefined) {
+            enable_cluster_json[orig_field_name.toUpperCase()] = enable_cluster_json[orig_field_name];
+            delete enable_cluster_json[orig_field_name];
+        }
+    }
+
+    let validation = await configure_validator(config_fields);
+    let should_reload = false;
+    if (validation) {
         log.error(`Validation error in configureCluster validation. ${validation}`);
         throw new Error(validation);
     }
+
     try {
-        env_mgr.setProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY, enable_cluster_json.clustering_enabled);
-        env_mgr.setProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY, enable_cluster_json.clustering_port);
-        env_mgr.setProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY, enable_cluster_json.clustering_node_name);
-        await env_mgr.writeSettingsFileSync(true);
-    } catch (err) {
+        let msg_keys = Object.keys(config_fields);
+        for(let i=0; i<msg_keys.length; ++i) {
+            let curr = msg_keys[i];
+
+            if(curr && !hdb_utils.isEmptyOrZeroLength(terms.HDB_SETTINGS_NAMES_REVERSE_LOOKUP[curr])) {
+                log.info(`Setting property ${curr} to value ${enable_cluster_json[curr]}`);
+                env_mgr.setProperty(curr, enable_cluster_json[curr]);
+                should_reload = true;
+            }
+        }
+        if(should_reload) {
+            await env_mgr.writeSettingsFileSync(true);
+            log.info('Completed writing new settings to file and reloading the manager.');
+        }
+        return CONFIGURE_SUCCESS_RESPONSE;
+    } catch(err) {
         log.error(err);
-        throw err;
+        throw 'There was an error storing the configuration information.  Please check the logs and try again.';
     }
 }
 
@@ -365,7 +404,7 @@ function getClusterStatus() {
                     break;
             }
         }
-    } catch (err) {
+    } catch(err) {
         log.error(err);
     }
     return status_obj;
@@ -398,7 +437,7 @@ function clusterMessageHandler(msg) {
                     log.error(err);
                     status = err.message;
                 }
-                if (!target_process) {
+                if(!target_process) {
                     log.error(`Failed to select a process to respond to with cluster status.`);
                     target_process = global.forks[0];
                 }
@@ -409,7 +448,7 @@ function clusterMessageHandler(msg) {
                 if (!hdb_utils.isEmptyOrZeroLength(msg.target_process_id)) {
                     // If a process is specified in the message, send this job to that process.
                     let target_process = selectProcess(msg.target_process_id);
-                    if (!target_process) {
+                    if(!target_process) {
                         log.error(`Failed to select a process to send job message to.`);
                         return;
                     }
@@ -431,7 +470,7 @@ function clusterMessageHandler(msg) {
                             kickOffEnterprise().then(() => {
                                 log.info('clustering initialized');
                             });
-                        } catch (e) {
+                        } catch(e) {
                             log.error('clustering failed to start: ' + e);
                         }
                     }
@@ -472,12 +511,12 @@ function clusterMessageHandler(msg) {
                     break;
                 }
 
-                for(let i = 0; i < global.forks.length; i++) {
+                for(let i=0; i<global.forks.length; i++) {
                     if(global.forks[i]) {
                         try {
                             log.debug(`Sending ${terms.RESTART_CODE} signal to process with pid:${global.forks[i].process.pid}`);
                             global.forks[i].send({type: terms.CLUSTER_MESSAGE_TYPE_ENUM.RESTART});
-                        } catch (err) {
+                        } catch(err) {
                             log.error(`Got an error trying to send ${terms.RESTART_CODE} to process ${global.forks[i].process.pid}.`);
                         }
                     }
@@ -529,7 +568,7 @@ function restartHDB() {
         child.on('data', () => {
             log.error('Restart successful');
         });
-    } catch (err) {
+    } catch(err) {
         let msg = `There was an error restarting HarperDB.  Please restart manually. ${err}`;
         console.log(msg);
         log.error(msg);
@@ -541,7 +580,7 @@ module.exports = {
     addNode: addNode,
     updateNode: updateNode,
     // The reference to the callback functions can be removed once processLocalTransaction has been refactored
-    configureCluster: configureCluster,
+    configureCluster,
     clusterStatus,
     removeNode: removeNode,
     clusterMessageHandler: clusterMessageHandler,

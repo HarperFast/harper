@@ -19,7 +19,7 @@ module.exports = processRows;
  */
 function processRows(insert_obj, attributes, schema_table) {
     let {schema, table, records} = insert_obj;
-    let rows = [];
+    let processed_rows = [];
     let hash_attribute = schema_table.hash_attribute;
     let timestamp = Date.now();
     let datastores = heBuildDataStoreArray(attributes, schema, table);
@@ -57,7 +57,7 @@ function processRows(insert_obj, attributes, schema_table) {
         }
 
         // Pushes (nests) completed row inside array of all rows returned by function.
-        rows.push([records[x][hash_attribute],row_records]);
+        processed_rows.push([records[x][hash_attribute],row_records]);
     }
 
     if (!is_system_schema) {
@@ -68,7 +68,7 @@ function processRows(insert_obj, attributes, schema_table) {
 
     return {
         datastores,
-        rows
+        processed_rows
     };
 }
 

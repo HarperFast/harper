@@ -2,23 +2,24 @@
 
 const test_utils = require('../../../../test_utils');
 test_utils.preTestPrep();
+test_utils.buildHeliumTestVolume();
 
+const heliumUtils = require('../../../../../utility/helium/heliumUtils');
 const rewire = require('rewire');
 const heCreateAttribute = rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heCreateAttribute');
-const heliumUtils = require('../../../../../utility/helium/heliumUtils');
 const chai = require('chai');
 const sinon = require('sinon');
 const sinon_chai = require('sinon-chai');
 const { expect } = chai;
 chai.use(sinon_chai);
 
+let hdb_helium;
 try {
     heliumUtils.createSystemDataStores();
+    hdb_helium = heliumUtils.initializeHelium();
 } catch(err) {
     console.log(err);
 }
-
-const hdb_helium = heliumUtils.initializeHelium();
 
 const CREATE_ATTR_OBJ_TEST = {
     operation: "create_attribute",
@@ -33,22 +34,13 @@ const INSERT_OBJ_TEST = {
     table: "hdb_attribute",
     hash_attribute: "id",
     records: [
-    {
+        {
         "schema": "I am a test",
         "table": "Not really a table",
         "id": 45
-    }
-]
+        }
+    ]
 };
-
-function dropTestDataStores() {
-    try {
-        test_utils.deleteSystemDataStores(hdb_helium);
-        hdb_helium.deleteDataStores([`${CREATE_ATTR_OBJ_TEST.schema}/${CREATE_ATTR_OBJ_TEST.table}/${CREATE_ATTR_OBJ_TEST.attribute}`]);
-    } catch(err) {
-        console.log(err);
-    }
-}
 
 const SYSTEM_ATTR_SCHEMA = ['system/hdb_attribute/id', 'system/hdb_attribute/schema', 'system/hdb_attribute/table', 'system/hdb_attribute/attribute', 'system/hdb_attribute/schema_table'];
 
@@ -91,9 +83,9 @@ describe('Test for Helium method heCreateAttribute', () => {
     });
 
     after(() => {
+        test_utils.teardownHeliumTestVolume(global.hdb_helium);
         sandbox.restore();
         rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heCreateAttribute');
-        dropTestDataStores();
     });
 
     context('Tests for heCreateAttribute function', () => {

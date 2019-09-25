@@ -122,7 +122,7 @@ describe('Tests for Helium utility heProcessRows', () => {
         let expected_result = {
             datastores: [ "dev/dog/name", "dev/dog/breed", "dev/dog/id", "dev/dog/age",
                 "dev/dog/height",  "dev/dog/__createdtime__",  "dev/dog/__updatedtime__"],
-            rows: [
+            processed_rows: [
                 [ "8", [ "Harper", "Mutt", "8", 5, null, "80443", "80443" ] ],
                 [ "9", [ "Penny", "Mutt", "9", 5, 145, "80443", "80443" ] ],
                 [ "12", [ "David", "Mutt", "12", null, null, "80443", "80443" ] ],
@@ -146,7 +146,7 @@ describe('Tests for Helium utility heProcessRows', () => {
         ];
         let expected_result = {
             datastores: [ "dev/dog/name", "dev/dog/breed", "dev/dog/id", "dev/dog/age", "dev/dog/height", "dev/dog/__createdtime__",  "dev/dog/__updatedtime__" ],
-            rows: [ [ "8", [ "Harper", "Mutt", "8", 5, null, "80443", "80443" ] ] ]
+            processed_rows: [ [ "8", [ "Harper", "Mutt", "8", 5, null, "80443", "80443" ] ] ]
         };
         let result = heProcessRows(insert_obj_single, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST);
 
@@ -156,7 +156,7 @@ describe('Tests for Helium utility heProcessRows', () => {
     it('Test return obj is as expected for a single datastore and row', () => {
         let expected_result = {
             datastores: [ "dev/dog/id", "dev/dog/__createdtime__",  "dev/dog/__updatedtime__" ],
-            rows: [ [ "8", [ "8", "80443", "80443" ] ] ]
+            processed_rows: [ [ "8", [ "8", "80443", "80443" ] ] ]
         };
         let result = heProcessRows(insert_obj_single, ["id"], SCHEMA_TABLE_TEST);
 
@@ -168,7 +168,7 @@ describe('Tests for Helium utility heProcessRows', () => {
         update_obj.operation = 'update';
         let expected_result = {
             datastores: [ "dev/dog/id", "dev/dog/__createdtime__",  "dev/dog/__updatedtime__" ],
-            rows: [ [ "8", [ "8", null, "80443" ] ] ]
+            processed_rows: [ [ "8", [ "8", null, "80443" ] ] ]
         };
         let result = heProcessRows(update_obj, ["id"], SCHEMA_TABLE_TEST);
 
