@@ -11,12 +11,23 @@ const schema_validator = require('../../../../validation/schema_validator');
 const hdb_terms = require('../../../../utility/hdbTerms');
 const log = require('../../../../utility/logging/harper_logger');
 const uuidV4 = require('uuid/v4');
-let hdb_helium = helium_utils.initializeHelium();
+
+let hdb_helium;
+try {
+    hdb_helium = helium_utils.initializeHelium();
+} catch(err) {
+    throw err;
+}
 
 const ACTION = 'inserted';
 
 module.exports = heCreateAttribute;
 
+/**
+ * First adds the attribute to the system attribute table, then creates the datastore.
+ * @param create_attribute_obj
+ * @returns {{skipped_hashes: *, update_hashes: *, message: string}}
+ */
 function heCreateAttribute(create_attribute_obj) {
     let validation_error = schema_validator.attribute_object(create_attribute_obj);
     if (validation_error) {
@@ -57,8 +68,8 @@ function heCreateAttribute(create_attribute_obj) {
             throw new Error(`There was an error creating datastore: ${create_datastore_result[0][1]}`);
         }
 
-        let insert_response = insertData(insert_object);
         log.info(create_datastore_result);
+        let insert_response = insertData(insert_object);
         log.info('insert object: ' + JSON.stringify(insert_object));
         log.info('attribute: ' + record.attribute);
         log.info(insert_response);
@@ -82,8 +93,8 @@ function heCreateAttribute(create_attribute_obj) {
 function insertData(insert_obj){
     try {
         let { schema_table, attributes } = insertUpdateValidate(insert_obj);
-        let { datastores, rows } = heProcessRows(insert_obj, attributes, schema_table);
-        let he_response = hdb_helium.insertRows(datastores, rows);
+        let { datastores, processed_rows } = heProcessRows(insert_obj, attributes, schema_table);
+        let he_response = hdb_helium.insertRows(datastores, processed_rows);
         let { written_hashes, skipped_hashes } = heProcessInsertUpdateResponse(he_response);
         convertOperationToTransaction(insert_obj, written_hashes, schema_table.hash_attribute);
 
