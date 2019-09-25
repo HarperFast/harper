@@ -2,14 +2,22 @@
 
 const test_utils = require('../../../../test_utils');
 test_utils.preTestPrep();
+test_utils.buildHeliumTestVolume();
 
 const heliumUtils = require('../../../../../utility/helium/heliumUtils');
-const hdb_helium = heliumUtils.initializeHelium();
 const heProcessRows = require('../../../../../data_layer/harperBridge/heBridge/heUtility/heProcessRows');
 const hdb_terms = require('../../../../../utility/hdbTerms');
 const chai = require('chai');
 const { expect } = chai;
 const sinon = require('sinon');
+
+let hdb_helium;
+try {
+    heliumUtils.createSystemDataStores();
+    hdb_helium = heliumUtils.initializeHelium();
+} catch(err) {
+    console.log(err);
+}
 
 const SCHEMA_TABLE_TEST = {
     id: "c43762be-4943-4d10-81fb-1b857ed6cf3a",
@@ -95,15 +103,6 @@ function buildTestData(insert_obj, attributes, schema_table) {
     }
 }
 
-function teardownTestData(insert_obj, attributes, schema_table) {
-    try {
-        let { datastores } = heProcessRows(insert_obj, attributes, schema_table);
-        hdb_helium.deleteDataStores(datastores);
-    } catch(err) {
-        console.log(err);
-    }
-}
-
 describe('Tests for Helium utility heProcessRows', () => {
     let insert_obj_single;
     let sandbox = sinon.createSandbox();
@@ -115,7 +114,7 @@ describe('Tests for Helium utility heProcessRows', () => {
 
     after(() => {
         sandbox.restore();
-       teardownTestData(INSERT_OBJECT_TEST, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST);
+        test_utils.teardownHeliumTestVolume(global.hdb_helium);
     });
 
     it('Test return obj is as expected for multiple uneven records', () => {

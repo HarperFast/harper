@@ -24,8 +24,8 @@ module.exports = heUpdateRecords;
  */
 function heUpdateRecords(update_obj) {
     try {
-        let { schema_table, attributes } = insertUpdateValidate(update_obj);
-        let { datastores, rows } = heProcessRows(update_obj, attributes, schema_table);
+        let { schema_table, hashes, attributes } = insertUpdateValidate(update_obj);
+        let { datastores, rows } = heProcessRows(update_obj, attributes, schema_table, hashes);
 
         if (update_obj.schema !== hdb_terms.SYSTEM_SCHEMA_NAME) {
             if (!attributes.includes(hdb_terms.HELIUM_TIME_STAMP_ENUM.CREATED_TIME)) {

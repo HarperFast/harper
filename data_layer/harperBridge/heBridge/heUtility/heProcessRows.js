@@ -4,8 +4,6 @@ const hdb_terms = require('../../../../utility/hdbTerms');
 const hdb_utils = require('../../../../utility/common_utils');
 const log = require('../../../../utility/logging/harper_logger');
 const heGenerateDataStoreName = require('../heUtility/heGenerateDataStoreName');
-const heliumUtils = require('../../../../utility/helium/heliumUtils');
-const hdb_helium = heliumUtils.initializeHelium();
 
 module.exports = processRows;
 
@@ -17,14 +15,13 @@ module.exports = processRows;
  * @param schema_table
  * @returns {{datastores: *, rows: *}}
  */
-function processRows(insert_obj, attributes, schema_table) {
+function processRows(insert_obj, attributes, schema_table, hashes) {
     let {schema, table, records} = insert_obj;
     let processed_rows = [];
     let hash_attribute = schema_table.hash_attribute;
     let timestamp = Date.now();
     let datastores = heBuildDataStoreArray(attributes, schema, table);
     let is_system_schema = insert_obj.schema === hdb_terms.SYSTEM_SCHEMA_NAME;
-    let hash_datastore = `${insert_obj.schema}/${insert_obj.table}/${hash_attribute}`;
 
     // Iterates through array of record objects and validates their hash
     for (let x = 0; x < records.length; x++) {
@@ -48,7 +45,7 @@ function processRows(insert_obj, attributes, schema_table) {
             } else {
                 // Because update will insert record if it doesn't exist, we need to know if record we are updating exists. If it doesn't
                 // Exist the record needs a timestamp in the created time column. If it does exist we only add value to updated column.
-                if (doesUpdateRecordExist(hash_datastore, records[x][hash_attribute])) {
+                if (hashes.includes(records[x][hash_attribute])) {
                     row_records.push(null, timestamp);
                 } else {
                     row_records.push(timestamp, timestamp);
@@ -70,28 +67,6 @@ function processRows(insert_obj, attributes, schema_table) {
         datastores,
         processed_rows
     };
-}
-
-/**
- * For update we need to know if the record we are updating exists already. The reason for this is because
- * if it does not exist, we need to add a value to created timestamp attribute.
- * @param datastore
- * @param update_hash
- * @returns {boolean}
- */
-function doesUpdateRecordExist(datastore, update_hash) {
-    try {
-        let search_result = hdb_helium.searchByKeys([update_hash], [datastore]);
-        return search_result.length !== 0;
-    } catch(err) {
-        // If update is called before any attributes have been created search by keys will throw 'failed to open' error
-        // because it can't find the hash attribute. In that situation we should catch error and proceed with creating
-        // attributes for schema.table.
-        if (err.message.includes('errno: -118')) {
-            return false;
-        }
-        throw err;
-    }
 }
 
 /**

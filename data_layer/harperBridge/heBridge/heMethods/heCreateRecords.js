@@ -3,10 +3,6 @@
 const insertUpdateValidate = require('../../bridgeUtility/insertUpdateValidate');
 const heProcessRows = require('../heUtility/heProcessRows');
 const heProcessResponse = require('../heUtility/heProcessResponse');
-const heCreateAttribute = require('./heCreateAttribute');
-const hdb_utils = require('../../../../utility/common_utils');
-const log = require('../../../../utility/logging/harper_logger');
-const heProcessInsertUpdateResponse = require('../heUtility/heProcessInsertUpdateResponse');
 const heCheckForNewAttributes = require('../heUtility/heCheckForNewAttributes');
 const hdb_terms = require('../../../../utility/hdbTerms');
 const heliumUtils = require('../../../../utility/helium/heliumUtils');
@@ -28,8 +24,8 @@ module.exports = heCreateRecords;
  */
 function heCreateRecords(insert_obj) {
     try {
-        let { schema_table, attributes } = insertUpdateValidate(insert_obj);
-        let { datastores, processed_rows } = heProcessRows(insert_obj, attributes, schema_table);
+        let { schema_table, hashes, attributes } = insertUpdateValidate(insert_obj);
+        let { datastores, processed_rows } = heProcessRows(insert_obj, attributes, schema_table, hashes);
 
         if (insert_obj.schema !== hdb_terms.SYSTEM_SCHEMA_NAME) {
             if (!attributes.includes(hdb_terms.HELIUM_TIME_STAMP_ENUM.CREATED_TIME)) {

@@ -7,8 +7,6 @@ test_utils.buildHeliumTestVolume();
 const heliumUtils = require('../../../../../utility/helium/heliumUtils');
 const rewire = require('rewire');
 const heCreateRecords = rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heCreateRecords');
-const log = require('../../../../../utility/logging/harper_logger');
-const heliumUtils = require('../../../../../utility/helium/heliumUtils');
 const chai = require('chai');
 const sinon = require('sinon');
 const sinon_chai = require('sinon-chai');
@@ -89,17 +87,6 @@ const SCHEMA_TABLE_TEST = {
 };
 
 const DATASTORES_TEST = [ "dev/dog/name", "dev/dog/breed", "dev/dog/id", "dev/dog/age", "dev/dog/height", "dev/dog/__createdtime__", "dev/dog/__updatedtime__"];
-
-let hdb_helium;
-
-function dropTestDatastores() {
-    try {
-        test_utils.deleteSystemDataStores(hdb_helium);
-        hdb_helium.deleteDataStores(DATASTORES_TEST);
-    } catch(err) {
-        console.log(err);
-    }
-}
 
 describe('Tests for Helium method heCreateRecords', () => {
     let sandbox = sinon.createSandbox();
