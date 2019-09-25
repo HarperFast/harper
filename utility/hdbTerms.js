@@ -43,7 +43,6 @@ const RESTART_CODE = 'SIGTSTP';
 const RESTART_CODE_NUM = 24;
 const RESTART_TIMEOUT_MS = 60000;
 const HDB_FILE_PERMISSIONS = 0o700;
-const HDB_FILE_SUFFIX = '.hdb';
 const BLOB_FOLDER_NAME = 'blob';
 const HDB_TRASH_DIR = 'trash';
 const SCHEMA_DIR_NAME = 'schema';

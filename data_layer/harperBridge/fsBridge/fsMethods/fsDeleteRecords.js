@@ -59,7 +59,7 @@ async function deleteRecords(delete_obj){
     });
 
     try {
-        await unlink(paths);
+        await unlink.unlink_delete_object(paths);
     } catch(err) {
         log.error(err);
         throw common_utils.errorizeMessage(err);
