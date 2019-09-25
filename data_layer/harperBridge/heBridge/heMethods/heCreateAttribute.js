@@ -1,6 +1,6 @@
 'use strict';
 
-const heProcessInsertUpdateResponse = require('../heUtility/heProcessInsertUpdateResponse');
+const heProcessResponse = require('../heUtility/heProcessResponse');
 const heProcessRows = require('../heUtility/heProcessRows');
 const heGenerateDataStoreName = require('../heUtility/heGenerateDataStoreName');
 const insertUpdateValidate = require('../../bridgeUtility/insertUpdateValidate');
@@ -60,6 +60,7 @@ function heCreateAttribute(create_attribute_obj) {
         hash_attribute: hdb_terms.SYSTEM_TABLE_HASH,
         records: [record]
     };
+
     let datastore_name = heGenerateDataStoreName(create_attribute_obj.schema, create_attribute_obj.table, create_attribute_obj.attribute);
 
     try {
@@ -95,7 +96,7 @@ function insertData(insert_obj){
         let { schema_table, attributes } = insertUpdateValidate(insert_obj);
         let { datastores, processed_rows } = heProcessRows(insert_obj, attributes, schema_table);
         let he_response = hdb_helium.insertRows(datastores, processed_rows);
-        let { written_hashes, skipped_hashes } = heProcessInsertUpdateResponse(he_response);
+        let { written_hashes, skipped_hashes } = heProcessResponse(he_response, hdb_terms.OPERATIONS_ENUM.INSERT);
         convertOperationToTransaction(insert_obj, written_hashes, schema_table.hash_attribute);
 
         return returnObject(ACTION, written_hashes, insert_obj, skipped_hashes);

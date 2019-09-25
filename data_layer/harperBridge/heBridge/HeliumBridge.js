@@ -6,7 +6,7 @@ const BridgeMethods = require("../BridgeMethods.js");
 const heCreateRecords = require('./heMethods/heCreateRecords');
 const heCreateAttribute = require('./heMethods/heCreateAttribute');
 const heCreateSchema = require('./heMethods/heCreateSchema');
-// const heDeleteRecords = require('./heMethods/heDeleteRecords');
+const heDeleteRecords = require('./heMethods/heDeleteRecords');
 const heGetDataByHash = require('./heMethods/heGetDataByHash');
 const heSearchByHash = require('./heMethods/heSearchByHash');
 const heGetDataByValue = require('./heMethods/heGetDataByValue');
@@ -98,6 +98,14 @@ class HeliumBridge extends BridgeMethods {
         }
     }
 
+    async deleteRecords(delete_obj) {
+        try {
+            return heDeleteRecords(delete_obj);
+        } catch(err) {
+            log.error(err);
+            throw err;
+        }
+    }
 }
 
 module.exports = HeliumBridge;

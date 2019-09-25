@@ -2,6 +2,10 @@
 
 const insertUpdateValidate = require('../../bridgeUtility/insertUpdateValidate');
 const heProcessRows = require('../heUtility/heProcessRows');
+const heProcessResponse = require('../heUtility/heProcessResponse');
+const heCreateAttribute = require('./heCreateAttribute');
+const hdb_utils = require('../../../../utility/common_utils');
+const log = require('../../../../utility/logging/harper_logger');
 const heProcessInsertUpdateResponse = require('../heUtility/heProcessInsertUpdateResponse');
 const heCheckForNewAttributes = require('../heUtility/heCheckForNewAttributes');
 const hdb_terms = require('../../../../utility/hdbTerms');
@@ -38,8 +42,8 @@ function heCreateRecords(insert_obj) {
         }
 
         heCheckForNewAttributes(insert_obj.hdb_auth_header, schema_table, attributes);
-        let he_response = hdb_helium.insertRows(datastores, rows);
-        let { written_hashes, skipped_hashes } = heProcessInsertUpdateResponse(he_response);
+        let he_response = hdb_helium.insertRows(datastores, processed_rows);
+        let { written_hashes, skipped_hashes } = heProcessResponse(he_response, hdb_terms.OPERATIONS_ENUM.INSERT);
 
         return {
             written_hashes,

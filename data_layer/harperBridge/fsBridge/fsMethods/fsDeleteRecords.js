@@ -6,6 +6,7 @@ const log = require('../../../../utility/logging/harper_logger');
 const common_utils = require('../../../../utility/common_utils');
 const unlink = require('../../../../utility/fs/unlink');
 const terms = require('../../../../utility/hdbTerms');
+const hdb_utils = require('../../../../utility/common_utils');
 const truncate = require('truncate-utf8-bytes');
 
 const slash_regex = /\//g;
@@ -35,9 +36,8 @@ async function deleteRecords(delete_obj){
         throw err;
     }
 
-    try {
-        hash_attribute = global.hdb_schema[delete_obj.schema][delete_obj.table].hash_attribute;
-    } catch (e) {
+    hash_attribute = global.hdb_schema[delete_obj.schema][delete_obj.table].hash_attribute;
+    if (hdb_utils.isEmpty(hash_attribute)) {
         log.error(`could not retrieve hash attribute for schema:${delete_obj.schema} and table ${delete_obj.table}`);
         throw new Error(`hash attribute not found`);
     }
