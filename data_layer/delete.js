@@ -1,7 +1,6 @@
 "use strict";
 const env = require('../utility/environment/environmentManager');
 const bulk_delete_validator = require('../validation/bulkDeleteValidator');
-const conditional_delete_validator = require('../validation/conditionalDeleteValidator');
 const search = require('./search');
 const common_utils = require('../utility/common_utils');
 const async = require('async');
@@ -13,17 +12,19 @@ const moment = require('moment');
 const harper_logger = require('../utility/logging/harper_logger');
 const { promisify, callbackify } = require('util');
 const unlink = require('../utility/fs/unlink');
-const c_unlink = callbackify(unlink);
 const terms = require('../utility/hdbTerms');
+const {DeleteResponseObject} = require('./DataLayerObjects');
+
+// callbackified functions.
+const c_unlink_delete_object = callbackify(unlink.unlink_delete_object);
 
 const slash_regex = /\//g;
 const BASE_PATH = common_utils.buildFolderPath(env.get('HDB_ROOT'), "schema");
-const HDB_HASH_FOLDER_NAME = '__hdb_hash';
+
 const BLOB_FOLDER_NAME = 'blob';
 const MAX_BYTES = '255';
-const ENOENT_ERROR_CODE = 'ENOENT';
 const SUCCESS_MESSAGE = 'records successfully deleted';
-const HDB_FILE_SUFFIX = '.hdb';
+
 const MOMENT_UNIX_TIMESTAMP_FLAG = 'x';
 const SYSTEM_SCHEMA_NAME = 'system';
 
@@ -36,8 +37,7 @@ const p_fs_rmdir = promisify(fs.rmdir);
 
 module.exports = {
     delete: deleteRecord,
-    conditionalDelete: conditionalDelete,
-    deleteRecords: deleteRecords,
+    deleteRecords,
     deleteFilesBefore: deleteFilesBefore
 };
 
@@ -326,7 +326,6 @@ function isFileTimeBeforeParameterTime(parameter_date, file_name) {
  * @param date_unix_ms - The date to compare files found in dirPath.
  */
 async function getDirectoriesInPath(dirPath, found_dirs, date_unix_ms) {
-
     if(!(date_unix_ms) || !moment(date_unix_ms).isValid()) {
         harper_logger.info(`An invalid date ${date_unix_ms} was passed `);
         return;
@@ -341,7 +340,7 @@ async function getDirectoriesInPath(dirPath, found_dirs, date_unix_ms) {
     if(!list) { return; }
 
     for(let found in list) {
-        if(list[found] === HDB_HASH_FOLDER_NAME) {
+        if(list[found] === terms.HASH_FOLDER_NAME) {
             continue;
         }
         let file = path.resolve(dirPath, list[found]);
@@ -383,70 +382,85 @@ function deleteRecord(delete_object, callback){
                 hash_values: delete_object.hash_values,
                 get_attributes: ['*']
             };
-
+        let not_found_hashes = [];
         async.waterfall([
             global_schema.getTableSchema.bind(null, delete_object.schema, delete_object.table),
             (table_info, callback) => {
                 callback();
             },
             search.searchByHash.bind(null, search_obj),
+            compareSearchResultsWithRequest.bind(null, not_found_hashes, delete_object),
             deleteRecords.bind(null, delete_object.schema, delete_object.table)
-        ], (err) => {
+        ], (err, delete_result_object) => {
             if (err) {
+                if(err.message === terms.SEARCH_NOT_FOUND_MESSAGE) {
+                    let return_msg = new DeleteResponseObject();
+                    return_msg.message = terms.SEARCH_NOT_FOUND_MESSAGE;
+                    return_msg.skipped_hashes = delete_object.hash_values.length;
+                    return_msg.deleted_hashes = 0;
+                    return callback(return_msg);
+                }
                 return callback(err);
             }
-
+            // append records not found to skipped
+            if(not_found_hashes && not_found_hashes.length > 0) {
+                for(let i=0; i<not_found_hashes.length; ++i) {
+                    delete_result_object.skipped_hashes.push(not_found_hashes[i]);
+                }
+            }
             if(delete_object.schema !== 'system') {
                 let delete_msg = common_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
                 delete_msg.transaction = delete_object;
                 common_utils.sendTransactionToSocketCluster(`${delete_object.schema}:${delete_object.table}`, delete_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
             }
 
-            return callback(null, SUCCESS_MESSAGE);
+            if(common_utils.isEmptyOrZeroLength(delete_result_object.message)) {
+                delete_result_object.message = `${delete_result_object.deleted_hashes.length} of ${delete_object.hash_values.length} ${SUCCESS_MESSAGE}`;
+            }
+            return callback(null, delete_result_object);
         });
     } catch(e){
         return callback(e);
     }
 }
 
-function conditionalDelete(delete_object, callback){
+/**
+ * Used in a waterfall to compare search results vs hashes specified in a request.  Any hashes not found in records
+ * will be added to not_found_hashes.
+ * @param not_found_hashes - array that is populated with skipped hash id values
+ * @param delete_object - The object that will be passed to the delete function
+ * @param records - records found during a search
+ * @param callback
+ * @returns {Object}
+ */
+function compareSearchResultsWithRequest(not_found_hashes, delete_object, records, callback) {
+    // check for records specified in the request, but were not found in the search.  Need to report those as
+    // skipped.
+    let table_hash_attribute = undefined;
     try {
-        let validation = conditional_delete_validator(delete_object);
-        if (validation) {
-            callback(validation);
-            return;
-        }
-
-        async.waterfall([
-            global_schema.getTableSchema.bind(null, delete_object.schema, delete_object.table),
-            (table_info, callback) => {
-                callback(null, delete_object.conditions, table_info);
-            },
-            search.multiConditionSearch,
-            (ids, callback) => {
-                let delete_wrapper = {
-                    schema: delete_object.schema,
-                    table: delete_object.table,
-                    hash_values: ids
-                };
-                callback(null, delete_wrapper);
-            },
-            deleteRecord
-        ], (err) => {
-            if (err) {
-                callback(err);
-                return;
-            }
-            callback(null, SUCCESS_MESSAGE);
-        });
-    } catch(e) {
-        callback(e);
+        table_hash_attribute = global.hdb_schema[delete_object.schema][delete_object.table].hash_attribute;
+    } catch(err) {
+        return callback(common_utils.errorizeMessage(terms.SEARCH_ATTRIBUTE_NOT_FOUND));
     }
+
+    for(let i=0; i<delete_object.hash_values.length; ++i) {
+        let was_returned = false;
+        for(let search_result_index = 0; search_result_index < records.length; ++search_result_index) {
+            if(records[search_result_index][table_hash_attribute] === delete_object.hash_values[i]) {
+                was_returned = true;
+                break;
+            }
+        }
+        if(!was_returned) {
+            not_found_hashes.push(delete_object.hash_values[i]);
+        }
+    }
+    callback(null, records);
 }
 
 function deleteRecords(schema, table, records, callback){
     if(common_utils.isEmptyOrZeroLength(records)){
-        return callback(common_utils.errorizeMessage("Item not found!"));
+        return callback(common_utils.errorizeMessage(terms.SEARCH_NOT_FOUND_MESSAGE));
     }
     let hash_attribute = null;
     try {
@@ -455,27 +469,39 @@ function deleteRecords(schema, table, records, callback){
         harper_logger.error(`could not retrieve hash attribute for schema:${schema} and table ${table}`);
         return callback(common_utils.errorizeMessage(`hash attribute not found`));
     }
-    let paths = [];
     let table_path = common_utils.buildFolderPath(BASE_PATH, schema, table);
 
-    //generate the paths for each file to delete
+    //generate the paths for each file to delete.  Store these in a map from hash_attribute to paths so we can determine
+    // if there were any failures and report back.
+    let hash_attribute_path_map = Object.create(null);
     records.forEach((record)=>{
         Object.keys(record).forEach((attribute)=>{
             let hash_value = record[hash_attribute];
+
             if(!common_utils.isEmptyOrZeroLength(hash_value)) {
-                paths.push(common_utils.buildFolderPath(table_path, HDB_HASH_FOLDER_NAME, attribute, `${hash_value}${HDB_FILE_SUFFIX}`));
+                if(!hash_attribute_path_map[hash_value]) {
+                    hash_attribute_path_map[hash_value] = [];
+                }
+                hash_attribute_path_map[hash_value].push(common_utils.buildFolderPath(table_path, terms.HASH_FOLDER_NAME, attribute, `${hash_value}${terms.HDB_FILE_SUFFIX}`));
                 let stripped_value = String(record[attribute]).replace(slash_regex, '');
                 stripped_value = stripped_value.length > MAX_BYTES ? common_utils.buildFolderPath(truncate(stripped_value, MAX_BYTES), BLOB_FOLDER_NAME) : stripped_value;
-                paths.push(common_utils.buildFolderPath(table_path, attribute, stripped_value, `${hash_value}${HDB_FILE_SUFFIX}`));
+                let path = common_utils.buildFolderPath(table_path, attribute, stripped_value, `${hash_value}${terms.HDB_FILE_SUFFIX}`);
+                // This `includes` is icky and slow, but we need to make sure we don`t have duplicate paths, as a failure to remove
+                // an already removed file will be reported as a failure to delete.  The alternative
+                // is to keep a separate path `index` object which we can compare to before the push, but that could lead
+                // to memory bloat.  Just gonna have to swallow the inefficiency.
+                if(!hash_attribute_path_map[hash_value].includes(path)) {
+                    hash_attribute_path_map[hash_value].push(path);
+                }
             }
         });
     });
 
-    c_unlink(paths, (err)=>{
+    c_unlink_delete_object(hash_attribute_path_map, (err, delete_response_object)=>{
         if(err){
             return callback(common_utils.errorizeMessage(err));
         }
 
-        return callback();
+        return callback(null, delete_response_object);
     });
 }

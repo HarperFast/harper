@@ -1,3 +1,5 @@
+"use strict";
+
 const fs = require('fs-extra');
 const password = require('../password');
 const crypto = require('crypto');
@@ -7,11 +9,15 @@ const log = require('../logging/harper_logger');
 const path = require('path');
 const hdb_utils = require('../common_utils');
 const terms = require('../hdbTerms');
-
+const License = require('../../utility/registration/licenseObjects').ExtendedLicense;
 const INVALID_LICENSE_FORMAT_MSG = 'invalid license key format';
 const LICENSE_HASH_PREFIX = '061183';
 const LICENSE_KEY_DELIMITER = 'mofi25';
 const env = require('../../utility/environment/environmentManager');
+
+const promisify = require('util').promisify;
+const search = require('../../data_layer/search');
+const p_search_by_value = promisify(search.searchByValue);
 
 let FINGER_PRINT_FILE = undefined;
 try {
@@ -26,7 +32,8 @@ try {
 
 module.exports = {
     validateLicense: validateLicense,
-    generateFingerPrint: generateFingerPrint
+    generateFingerPrint: generateFingerPrint,
+    licenseSearch
 };
 
 async function generateFingerPrint() {
@@ -134,4 +141,46 @@ async function validateLicense(license_key, company) {
         license_validation_object.valid_machine = false;
     }
     return license_validation_object;
+}
+
+/**
+ * search for the hdb license, validate & return
+ */
+async function licenseSearch(){
+    let licenseKeySearch = {
+        operation: 'search_by_value',
+        schema: 'system',
+        table: 'hdb_license',
+        search_attribute: "license_key",
+        search_value: "*",
+        get_attributes: ["*"]
+    };
+
+    let license_values = new License();
+    license_values.api_call = 0;
+    let licenses = [];
+    try {
+        licenses = await p_search_by_value(licenseKeySearch);
+    } catch (e) {
+        log.error(`could not search for licenses due to: '${e.message}`);
+    }
+
+    await Promise.all(licenses.map(async (license) => {
+        try {
+            let license_validation = await validateLicense(license.license_key, license.company);
+            if (license_validation.valid_machine === true && license_validation.valid_date === true && license_validation.valid_license === true) {
+                license_values.exp_date = license_validation.exp_date > license_values.exp_date ? license_validation.exp_date : license_values.exp_date;
+                license_values.api_call += license_validation.api_call;
+                license_values.storage_type = license_validation.storage_type;
+                license_values.enterprise = true;
+            }
+        } catch(e){
+            log.error(e);
+        }
+    }));
+
+    if(license_values.api_call === 0){
+        license_values.api_call = terms.LICENSE_VALUES.API_CALL_DEFAULT;
+    }
+    return license_values;
 }

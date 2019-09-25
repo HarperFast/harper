@@ -12,7 +12,8 @@ const stream = require('stream');
 const papa_parse = require('papaparse');
 // try to move to /bin directory so our properties reader doesn't explode.
 test_utils.changeProcessToBinDir();
-
+const rewire = require('rewire');
+const cu_rewire = rewire('../../utility/common_utils');
 const upgrade_directive = require('../../upgrade/UpgradeDirective');
 const env_variable = require('../../upgrade/EnvironmentVariable');
 const ps_list = require('../../utility/psList');
@@ -52,6 +53,18 @@ const USERS = [
             "role": "cluster_user3"
         },
         "username": "cluster_test"
+    }
+];
+
+const PSLIST_HELIUM_RETURN = [
+    {
+        "pid": 30112,
+        "name": "helium",
+        "cmd": "helium --server",
+        "ppid": 1,
+        "uid": 1000,
+        "cpu": 0.2,
+        "memory": 0
     }
 ];
 
@@ -605,6 +618,45 @@ describe('Test removeBOM function', () => {
 
         expect(error.message).to.equal('Expected a string, got boolean');
         expect(error).to.be.instanceof(Error);
+    });
+});
+
+describe('Test checkProcessRunning', ()=>{
+    it('Test happy path', async ()=>{
+        let pslist_rewire = cu_rewire.__set__('ps_list', {
+            findPs: async (name)=>{
+                return PSLIST_HELIUM_RETURN;
+            }
+        });
+
+        let err = undefined;
+        try{
+            await cu_rewire.checkProcessRunning('helium');
+        } catch(e){
+            err = e;
+        }
+
+        assert.equal(err, undefined);
+
+        pslist_rewire();
+    });
+
+    it('Test no process running', async ()=>{
+        let pslist_rewire = cu_rewire.__set__('ps_list', {
+            findPs: async (name)=>{
+                return [];
+            }
+        });
+
+        let err = undefined;
+        try{
+            await cu_rewire.checkProcessRunning('helium');
+        } catch(e){
+            err = e;
+        }
+
+        assert.deepEqual(err, new Error('process helium was not started'));
+        pslist_rewire();
     });
 });
 

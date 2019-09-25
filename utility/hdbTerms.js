@@ -15,6 +15,8 @@ const SC_PROC_DESCRIPTOR = 'Cluster Server';
 const HDB_SUPPORT_ADDRESS = 'support@harperdb.io';
 const HDB_SUPPORT_URL = 'https://harperdbhelp.zendesk.com/hc/en-us';
 const SUPPORT_HELP_MSG = `For support, please submit a support request at ${HDB_SUPPORT_URL} or contact ${HDB_SUPPORT_ADDRESS}`;
+const SEARCH_NOT_FOUND_MESSAGE = "None of the specified records were found.";
+const SEARCH_ATTRIBUTE_NOT_FOUND = `hash attribute not found`;
 
 const PERIOD_REGEX = /^\.$/;
 const DOUBLE_PERIOD_REGEX = /^\.\.$/;
@@ -30,6 +32,7 @@ const SYSTEM_SCHEMA_NAME = 'system';
 const HASH_FOLDER_NAME = '__hdb_hash';
 const CLUSTERING_VERSION_HEADER_NAME = 'hdb_version';
 const HDB_HOME_DIR_NAME = '.harperdb';
+const HDB_FILE_SUFFIX = '.hdb';
 const LICENSE_KEY_DIR_NAME = 'keys';
 const BOOT_PROPS_FILE_NAME = 'hdb_boot_properties.file';
 const UPDATE_FILE_NAME = '.updateConfig.json';
@@ -326,6 +329,9 @@ const STORAGE_TYPES_ENUM = {
     HELIUM: 'helium'
 };
 
+const HELIUM_PROCESS_NAME = 'helium';
+const HELIUM_START_SERVER_COMMAND = '--server';
+
 const LICENSE_VALUES = {
     API_CALL_DEFAULT: 10000,
     VERSION_DEFAULT: '2.0.0'
@@ -418,6 +424,11 @@ module.exports = {
     LICENSE_VALUES,
     STORAGE_TYPES_ENUM,
     HDB_LICENSE_NAME,
+    HDB_FILE_SUFFIX,
+    SEARCH_NOT_FOUND_MESSAGE,
+    SEARCH_ATTRIBUTE_NOT_FOUND,
+    HELIUM_PROCESS_NAME,
+    HELIUM_START_SERVER_COMMAND,
     LICENSE_FILE_NAME
 };
 
