@@ -257,7 +257,7 @@ async function createReadStreamFromURL(url) {
 }
 
 /**
- * Genericize the call to the middlware used for parsing (currently alasql);
+ * Genericize the call to the middleware used for parsing (currently alasql);
  * @param parameter_string - The parameters to be passed into the middleware
  * @param data - The data that needs to be parsed.
  * @returns {Promise<any>}

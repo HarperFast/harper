@@ -223,6 +223,22 @@ function postOperationHandler(request_body, result, orig_req) {
                 harper_logger.error('There was a problem sending the create_schema transaction to the cluster.');
             }
             break;
+        case terms.OPERATIONS_ENUM.CSV_DATA_LOAD:
+            try {
+                transaction_msg.transaction = {
+                    operation: terms.OPERATIONS_ENUM.CSV_DATA_LOAD,
+                    schema: request_body.schema,
+                    table: request_body.table,
+                    attribute: request_body.attribute
+                };
+                if(orig_req) {
+                    concatSourceMessageHeader(transaction_msg, orig_req);
+                }
+                common_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, transaction_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
+            } catch(err) {
+                harper_logger.error('There was a problem sending the create_schema transaction to the cluster.');
+            }
+            break;
         default:
             //do nothing
             break;
