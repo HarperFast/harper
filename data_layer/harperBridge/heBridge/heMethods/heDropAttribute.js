@@ -15,29 +15,8 @@ try {
 
 module.exports = heDropAttribute;
 
-const DROP_ATTR_OBJ_TEST = {
-    operation: "drop_attribute",
-    schema: "dev",
-    table: "dog",
-    attribute: "another_attribute"
-};
-
-const INSERT_OBJ_TEST = {
-    operation: "insert",
-    schema: "system",
-    table: "hdb_attribute",
-    hash_attribute: "id",
-    records: [
-        {
-            "schema": "I am a test",
-            "table": "Not really a table",
-            "id": 45
-        }
-    ]
-};
-
 function heDropAttribute(drop_attribute_obj) {
-    let datastore = [heGenerateDataStoreName(drop_attribute_obj.schema, drop_attribute_obj.table)];
+    let datastore = [heGenerateDataStoreName(drop_attribute_obj.schema, drop_attribute_obj.table, drop_attribute_obj.attribute)];
 
     try {
         let he_response = hdb_helium.deleteDataStores(datastore);
@@ -54,12 +33,12 @@ function heDropAttribute(drop_attribute_obj) {
 
 function dropAttributeFromSystem(drop_attribute_obj) {
     let search_obj = {
-        schema: 'system',
-        table: 'hdb_attribute',
-        hash_attribute: 'id',
-        search_attribute: 'attribute',
+        schema: hdb_terms.SYSTEM_SCHEMA_NAME,
+        table: hdb_terms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME,
+        hash_attribute: hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_ID_KEY,
+        search_attribute: hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_ATTRIBUTE_KEY,
         search_value: drop_attribute_obj.attribute,
-        get_attributes: ['id']
+        get_attributes: [hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_ID_KEY]
     };
 
     try {
@@ -69,9 +48,9 @@ function dropAttributeFromSystem(drop_attribute_obj) {
         }
 
         let delete_table_obj = {
-            table: "hdb_attribute",
-            schema: "system",
-            hash_attribute: "id",
+            table: hdb_terms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME,
+            schema: hdb_terms.SYSTEM_SCHEMA_NAME,
+            hash_attribute: hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_ID_KEY,
             hash_values: [attributes[0].id]
         };
 

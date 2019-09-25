@@ -4,8 +4,9 @@ const test_utils = require('../../../../test_utils');
 test_utils.preTestPrep();
 test_utils.buildHeliumTestVolume();
 
+const rewire = require('rewire');
 const heCreateAttribute = require('../../../../../data_layer/harperBridge/heBridge/heMethods/heCreateAttribute');
-const heDropAttribute = require('../../../../../data_layer/harperBridge/heBridge/heMethods/heDropAttribute');
+const heDropAttribute = rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heDropAttribute');
 const heGenerateDataStoreName = require('../../../../../data_layer/harperBridge/heBridge/heUtility/heGenerateDataStoreName');
 const heliumUtils = require('../../../../../utility/helium/heliumUtils');
 const chai = require('chai');
@@ -23,7 +24,7 @@ const DROP_ATTR_OBJ_TEST = {
     operation: "drop_attribute",
     schema: "dropAttr",
     table: "dog",
-    attribute: "another_attribute"
+    attribute: "weight"
 };
 
 // const CREATE_ATTR_OBJ_TEST = {
@@ -33,7 +34,7 @@ const DROP_ATTR_OBJ_TEST = {
 //     attribute: "",
 // };
 
-const ATTRIBUTES = ['age', 'height', 'weight'];
+const ATTRIBUTES = ['age', 'height', 'weight', 'name', 'id'];
 const DATASTORES = ['dropAttr/dog/age', 'dropAttr/dog/height', 'dropAttr/dog/weight'];
 
 function setupTest() {
@@ -48,8 +49,8 @@ function setupTest() {
             heCreateAttribute(create_attr);
         });
 
-        // setTimeout(() => {hdb_helium.createDataStores(DATASTORES);}, 1000);
-        hdb_helium.createDataStores(DATASTORES);
+        // TODO: this timeout is a temporary fix. GitHub issue - harperdb_helium #33
+        setTimeout(() => {hdb_helium.createDataStores(DATASTORES);}, 500);
     } catch(err) {
         throw err;
     }
@@ -97,17 +98,89 @@ describe('Tests for Helium method heDropAttribute', () => {
         test_utils.teardownHeliumTestVolume(global.hdb_helium);
     });
 
-
     context('Test heDropAttribute function', () => {
-        it('ds', () => {
-            console.log('Test');
-            // try {
-            //     console.log(heDropAttribute(DROP_ATTR_OBJ_TEST));
-            // } catch(err) {
-            //     console.log(err);
-            // }
+
+        it('Test dropping a single attribute', () => {
+            let result;
+            let list_ds_result;
+            let search_result;
+
+            try {
+                result = heDropAttribute(DROP_ATTR_OBJ_TEST);
+                list_ds_result = hdb_helium.listDataStores();
+                search_result = hdb_helium.searchByValues('system/hdb_attribute/attribute', 'exact', ['weight'], ['system/hdb_attribute/attribute']);
+            } catch(err) {
+                console.log(err);
+            }
+
+            expect(result.message).to.equal('1 record successfully deleted');
+            expect(list_ds_result.includes(heGenerateDataStoreName(DROP_ATTR_OBJ_TEST.schema, DROP_ATTR_OBJ_TEST.table, DROP_ATTR_OBJ_TEST.attribute))).to.be.false;
+            expect(search_result.length).to.equal(0);
         });
 
+        it('Test dropping an attribute that does not exist', () => {
+            let error;
+            try {
+                heDropAttribute(DROP_ATTR_OBJ_TEST);
+            } catch(err) {
+                error = err;
+            }
+
+            expect(error.message).to.equal('HE_ERR_DATASTORE_NOT_FOUND');
+        });
+        
+        it('Test dropping another attribute', () => {
+            let drop_attr_obj = test_utils.deepClone(DROP_ATTR_OBJ_TEST);
+            drop_attr_obj.attribute = 'age';
+            let result;
+            let list_ds_result;
+            let search_result;
+
+            try {
+                result = heDropAttribute(drop_attr_obj);
+                list_ds_result = hdb_helium.listDataStores();
+                search_result = hdb_helium.searchByValues('system/hdb_attribute/attribute', 'exact', ['age'], ['system/hdb_attribute/attribute']);
+            } catch(err) {
+                console.log(err);
+            }
+
+            expect(result.message).to.equal('1 record successfully deleted');
+            expect(list_ds_result.includes(heGenerateDataStoreName(drop_attr_obj.schema, drop_attr_obj.table, drop_attr_obj.attribute))).to.be.false;
+            expect(search_result.length).to.equal(0);
+        });
     });
 
+    context('Test dropAttributeFromSystem function', () => {
+        let drop_attr_from_system = heDropAttribute.__get__('dropAttributeFromSystem');
+
+        it('Test that an attribute is removed from the system attribute table', () => {
+            let drop_attr_obj = test_utils.deepClone(DROP_ATTR_OBJ_TEST);
+            drop_attr_obj.attribute = 'name';
+            let result;
+            let search_result;
+
+            try {
+                result = drop_attr_from_system(drop_attr_obj);
+                search_result = hdb_helium.searchByValues('system/hdb_attribute/attribute', 'exact', ['name'], ['system/hdb_attribute/attribute']);
+            } catch(err) {
+                console.log(err);
+            }
+
+            expect(result.message).to.equal('1 record successfully deleted');
+            expect(search_result.length).to.equal(0);
+        });
+
+        it('Test that an error is thrown if the attribute does not exist', () => {
+            let drop_attr_obj = test_utils.deepClone(DROP_ATTR_OBJ_TEST);
+            drop_attr_obj.attribute = 'notOne';
+            let error;
+            try {
+                drop_attr_from_system(drop_attr_obj);
+            } catch(err) {
+                error = err;
+            }
+
+            expect(error.message).to.equal(`Attribute ${drop_attr_obj.attribute} was not found.`)
+        });
+    });
 });
