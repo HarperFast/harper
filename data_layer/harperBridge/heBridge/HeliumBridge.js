@@ -13,13 +13,22 @@ const heGetDataByValue = require('./heMethods/heGetDataByValue');
 const heSearchByValue = require('./heMethods/heSearchByValue');
 // const heSearchByConditions = require('./heMethods/heSearchByConditions');
 // const heDropSchema = require('./heMethods/heDropSchema');
-//const heCreateTable = require('./heMethods/heCreateTable');
+const heCreateTable = require('./heMethods/heCreateTable');
 // const heUpdateRecords = require('./heMethods/heUpdateRecords');
 
 class HeliumBridge extends BridgeMethods {
     async createSchema(create_schema_obj) {
         try {
             return heCreateSchema(create_schema_obj);
+        } catch(err) {
+            log.error(err);
+            throw err;
+        }
+    }
+
+    async createTable(table, table_create_obj) {
+        try {
+            return heCreateTable(table, table_create_obj);
         } catch(err) {
             log.error(err);
             throw err;
