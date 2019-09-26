@@ -42,7 +42,7 @@ function setupTest() {
             heCreateAttribute(create_attr);
         });
 
-        // TODO: this timeout is a temporary fix. GitHub issue - harperdb_helium #33
+        // TODO: this timeout is a temporary fix. GitHub issue - harperdb_helium #33 THIS IS CAUSING OTHER UNIT TESTS TO FAIL
         setTimeout(() => {hdb_helium.createDataStores(DATASTORES);}, 500);
     } catch(err) {
         throw err;
@@ -89,6 +89,7 @@ describe('Tests for Helium method heDropAttribute', () => {
 
     after(() => {
         test_utils.teardownHeliumTestVolume(global.hdb_helium);
+        global.hdb_schema = {};
     });
 
     context('Test heDropAttribute function', () => {
@@ -121,7 +122,7 @@ describe('Tests for Helium method heDropAttribute', () => {
 
             expect(error.message).to.equal('HE_ERR_DATASTORE_NOT_FOUND');
         });
-        
+
         it('Test dropping another attribute', () => {
             let drop_attr_obj = test_utils.deepClone(DROP_ATTR_OBJ_TEST);
             drop_attr_obj.attribute = 'owner';
