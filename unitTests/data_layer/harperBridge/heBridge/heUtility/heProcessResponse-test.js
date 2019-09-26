@@ -12,7 +12,7 @@ const HE_RESPONSE_A = [ [ "123", "1232" ], [ [ "8", [ -122, "HE_ERR_ITEM_EXISTS"
 const HE_RESPONSE_B = [ ['34', '43', '77'] , []];
 const HE_RESPONSE_BAD = [ [ "6" ], [ [ "5", [ -101, "Row[0] contains different number of elements(3) than the number of columns(4) specified." ] ] ] ];
 
-describe('Tests for heUtility module heProcessInsertUpdateResponse', () => {
+describe('Tests for heUtility module heProcessResponse', () => {
     
     it('Test for nominal behaviour from Helium response A', () => {
         let expected_result = {

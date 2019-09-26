@@ -27,8 +27,8 @@ const DROP_ATTR_OBJ_TEST = {
     attribute: "weight"
 };
 
-const ATTRIBUTES = ['age', 'height', 'weight', 'name', 'id'];
-const DATASTORES = ['dropAttr/dog/age', 'dropAttr/dog/height', 'dropAttr/dog/weight'];
+const ATTRIBUTES = ['age', 'height', 'weight', 'address', 'id', 'owner'];
+const DATASTORES = ['dropAttr/dog/age', 'dropAttr/dog/height', 'dropAttr/dog/weight', 'dropAttr/dog/address', 'dropAttr/dog/id', 'dropAttr/dog/owner'];
 
 function setupTest() {
     try {
@@ -124,7 +124,7 @@ describe('Tests for Helium method heDropAttribute', () => {
         
         it('Test dropping another attribute', () => {
             let drop_attr_obj = test_utils.deepClone(DROP_ATTR_OBJ_TEST);
-            drop_attr_obj.attribute = 'age';
+            drop_attr_obj.attribute = 'owner';
             let result;
             let list_ds_result;
             let search_result;
@@ -132,8 +132,7 @@ describe('Tests for Helium method heDropAttribute', () => {
             try {
                 result = heDropAttribute(drop_attr_obj);
                 list_ds_result = hdb_helium.listDataStores();
-                search_result = hdb_helium.searchByValues('system/hdb_attribute/attribute', 'exact', ['age'], ['system/hdb_attribute/attribute']);
-                console.log(search_result);
+                search_result = hdb_helium.searchByValues('system/hdb_attribute/attribute', 'exact', ['owner'], ['system/hdb_attribute/attribute']);
             } catch(err) {
                 console.log(err);
             }
@@ -149,13 +148,13 @@ describe('Tests for Helium method heDropAttribute', () => {
 
         it('Test that an attribute is removed from the system attribute table', () => {
             let drop_attr_obj = test_utils.deepClone(DROP_ATTR_OBJ_TEST);
-            drop_attr_obj.attribute = 'name';
+            drop_attr_obj.attribute = 'address';
             let result;
             let search_result;
 
             try {
                 result = drop_attr_from_system(drop_attr_obj);
-                search_result = hdb_helium.searchByValues('system/hdb_attribute/attribute', 'exact', ['name'], ['system/hdb_attribute/attribute']);
+                search_result = hdb_helium.searchByValues('system/hdb_attribute/attribute', 'exact', ['address'], ['system/hdb_attribute/attribute']);
             } catch(err) {
                 console.log(err);
             }
