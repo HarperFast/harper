@@ -144,7 +144,7 @@ async function addJob(json_body) {
     let new_job = new JobObject();
     new_job.type = json_body.operation;
     new_job.user = json_body.hdb_user.username;
-	let search_obj = new Search_Object(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME, 'id', new_job.id, 'id', 'id');
+	let search_obj = new Search_Object(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME, 'id', new_job.id, 'id', ['id']);
 	
 	let found_job = undefined;
 	try {

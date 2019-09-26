@@ -40,7 +40,7 @@ async function fsSearchByConditions(search_object) {
         const final_get_attrs = evaluateTableGetAttributes(search_object.get_attributes, table_info.attributes);
         const final_hash_results = await p_multiConditionSearch(search_object.conditions, table_info);
 
-        const final_attributes_data = await getAttributeFileValues(final_get_attrs, search_object, final_hash_results);
+        const final_attributes_data = await getAttributeFileValues(final_get_attrs, search_object, table_info.hash_attribute, final_hash_results);
         const final_results = consolidateSearchData(table_info.hash_attribute, final_attributes_data);
 
         return Object.values(final_results);
@@ -63,7 +63,7 @@ function multiConditionSearch(conditions, table_schema, callback) {
 
             let pattern = condition_patterns.createPatterns(condition, table_schema, getBasePath());
 
-            file_search.findIDsByRegex(pattern.folder_search_path, pattern.folder_search, pattern.blob_search, pattern.blob_regex, (err, results) => {
+            file_search.findIDsByRegex(pattern.folder_search_path, pattern.folder_search, pattern.blob_regex, (err, results) => {
                 if (err) {
                     logger.error(err);
                 } else {

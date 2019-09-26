@@ -9,21 +9,34 @@ const hdb_terms = require('../../../../utility/hdbTerms');
 
 module.exports = getAttributeFileValues;
 
-async function getAttributeFileValues(get_attributes, search_object, hash_results, hash_attr) {
+async function getAttributeFileValues(get_attributes, search_object, hash_attr, hash_results) {
     try {
-        const { schema, table } = search_object;
-        const hash_values = hash_results ? hash_results : search_object.hash_values;
-        let table_path = `${getBasePath()}/${schema}/${table}`;
         let attributes_data = {};
+        let hash_values = [];
+
+        const { schema, table } = search_object;
+        let table_path = `${getBasePath()}/${schema}/${table}`;
+
+        if (hash_results) {
+            hash_values = hash_results;
+        } else {
+            hash_values = await validateHashValuesExist(table_path, hash_attr, search_object.hash_values);
+        }
+
+        //if there are no valid hash values to find attribute values for, return an empty attr data obj
+        if (common_utils.isEmptyOrZeroLength(hash_values)) {
+            return attributes_data;
+        }
 
         for (const attribute of get_attributes) {
             //evaluate if an array of strings or objects has been passed in and assign values accordingly
-            let attribute_name = (typeof attribute === 'string') ? attribute : attribute.attribute;
+            const attribute_name = (typeof attribute === 'string') ? attribute : attribute.attribute;
+            const is_hash = attribute_name === hash_attr;
             //if attribute is the hash value, assign hash_result values to hash
-            if (attribute_name === hash_attr) {
+            if (is_hash) {
                 let hash_attr_data = {};
                 for (const file of hash_values) {
-                    hash_attr_data[file] = file;
+                    hash_attr_data[file] = common_utils.autoCast(file);
                 }
                 attributes_data[attribute_name] = hash_attr_data;
             } else {
@@ -33,39 +46,46 @@ async function getAttributeFileValues(get_attributes, search_object, hash_result
                 }
             }
         }
-
         return attributes_data;
     } catch(err) {
         throw err;
     }
 }
 
-async function readAttributeFilePromise(table_path, attribute, file, attribute_data) {
+async function readAttributeFilePromise(table_path, attribute, file, attribute_data, is_hash) {
     try {
         const data = await fs.readFile(`${table_path}/${hdb_terms.HASH_FOLDER_NAME}/${attribute}/${file}${hdb_terms.HDB_FILE_SUFFIX}`, 'utf-8');
         const value = common_utils.autoCast(data.toString());
         attribute_data[file] = value;
     } catch (err) {
-        if (err.code !== 'ENOENT') {
+        if (err.code === 'ENOENT') {
+            if (!is_hash) {
+                attribute_data[file] = null;
+            }
+        } else {
             throw(err);
         }
     }
 }
 
-async function readAttributeFiles(table_path, attribute, hash_files) {
+async function readAttributeFiles(table_path, attribute, hash_files, is_hash) {
     try {
         let attribute_data = {};
         const readFileOps = [];
 
         for (const file of hash_files) {
-            readFileOps.push(readAttributeFilePromise(table_path, attribute, file, attribute_data));
+            readFileOps.push(readAttributeFilePromise(table_path, attribute, file, attribute_data, is_hash));
         }
 
         await Promise.all(readFileOps);
-        // if (!_.isEmpty(attribute_data)) {
-            return attribute_data;
-        // }
+
+        return attribute_data;
     } catch(err) {
         throw err;
     }
+}
+
+async function validateHashValuesExist(table_path, hash_attr, hash_files) {
+    const valid_hashes = await readAttributeFiles(table_path, hash_attr, hash_files, true);
+    return Object.keys(valid_hashes);
 }

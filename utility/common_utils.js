@@ -17,10 +17,11 @@ const CHARACTER_LIMIT = 255;
 
 const HDB_PROC_NAME = 'hdb_express.js';
 
+//Because undefined will not return in a JSON response, we convert undefined to null when autocasting
 const AUTOCAST_COMMON_STRINGS = {
     'true': true,
     'false': false,
-    'undefined': undefined,
+    'undefined': null,
     'null': null,
     'NaN': NaN
 };

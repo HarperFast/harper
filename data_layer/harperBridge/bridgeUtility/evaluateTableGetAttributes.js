@@ -21,8 +21,10 @@ function evaluateTableGetAttributes(get_attributes, table_attributes) {
             get_attributes.push(attribute.attribute);
         });
 
-        return _.uniqBy(get_attributes);
+        //TODO - remove this toString step after schema is always string
+        return _.uniqBy(get_attributes.map(attr => attr.toString()));
+        // return _.uniqBy(get_attributes);
     }
 
-    return get_attributes;
+    return get_attributes.map(attr => attr.toString());
 }

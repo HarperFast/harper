@@ -1,5 +1,4 @@
-const fill = require('fill-range'),
-    daterange = require('daterange');
+const fill = require('fill-range');
 const h_utils = require('../utility/common_utils');
 const hdb_terms = require('../utility/hdbTerms');
 const { MAX_CHARACTER_SIZE } = hdb_terms.INSERT_MODULE_ENUM;
@@ -23,15 +22,15 @@ function createPatterns(condition, table_schema, base_path){
     let pattern = {
         table_path: table_path,
         hash_path: `${table_path}__hdb_hash/${attribute_name}/`,
-        blob_search: false,
         blob_regex: null
     };
 
+    let blob_search = false;
     const starts_with_wildcard = String(comparators[1]).startsWith('%') || String(comparators[1]).startsWith('*');
     const ends_with_wildcard = String(comparators[1]).endsWith('%') || String(comparators[1]).endsWith('*');
 
-    if(Buffer.byteLength(String(comparators[1])) > MAX_CHARACTER_SIZE || starts_with_wildcard || ends_with_wildcard) {
-        pattern.blob_search = true;
+    if (Buffer.byteLength(String(comparators[1])) > MAX_CHARACTER_SIZE || starts_with_wildcard || ends_with_wildcard) {
+        blob_search = true;
     }
 
     //if search attribute is hash_attr, search by primary index (i.e. '__hdb_hash' dir) - if not, search on secondary index (i.e. attr value directory)
@@ -44,7 +43,7 @@ function createPatterns(condition, table_schema, base_path){
             stripped_search_string = (comparators[1] === '*' || comparators[1] === '%') ? '*' : RegExp.escape(h_utils.escapeRawValue(comparators[1]));
             stripped_folder_string = (comparators[1] === '*' || comparators[1] === '%') ? new RegExp('.*') : new RegExp(`^${stripped_search_string+hdb_extension}$`);
             pattern.folder_search = stripped_folder_string;
-            if (pattern.blob_search) {
+            if (blob_search) {
                 pattern.blob_regex = (comparators[1] === '*' || comparators[1] === '%') ? new RegExp('.*') : new RegExp(`^${stripped_search_string}$`);
             }
             break;
@@ -71,23 +70,14 @@ function createPatterns(condition, table_schema, base_path){
             pattern.folder_search = new RegExp(folder_searches.join('|'));
             break;
         case 'like':
-            // stripped_search_string = h_utils.escapeRawValue(String(comparators[1]))
-            //     .replace(/[\*%]/g, '.*?');
-            // pattern.folder_search = new RegExp(`^${stripped_search_string+hdb_extension}$`);
-            // stripped_search_string = h_utils.escapeRawValue(comparators[1]);
-            // stripped_folder_string = new RegExp(`${stripped_search_string.replace(/[\*%]/g, '.*?')}`);
-            // pattern.folder_search = stripped_folder_string;
             pattern.folder_search = buildLikeRegex(comparators[1], 'folder');
-            if (pattern.blob_search) {
-                // const blob_string = String(comparators[1]).replace(/[\*%]/g, '.*?');
-                // pattern.blob_regex = new RegExp(`${blob_string}`);
+            if (blob_search) {
                 pattern.blob_regex = buildLikeRegex(comparators[1], 'blob');
             }
             break;
         default:
             break;
     }
-
     return pattern;
 }
 
@@ -126,5 +116,4 @@ function buildLikeRegex(search_string, regex_type) {
     }
 
     return new RegExp(final_search_string);
-
 }
