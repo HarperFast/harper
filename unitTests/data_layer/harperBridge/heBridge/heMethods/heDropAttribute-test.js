@@ -27,13 +27,6 @@ const DROP_ATTR_OBJ_TEST = {
     attribute: "weight"
 };
 
-// const CREATE_ATTR_OBJ_TEST = {
-//     operation: "create_attribute",
-//     schema: "attrUnitTest",
-//     table: "dog",
-//     attribute: "",
-// };
-
 const ATTRIBUTES = ['age', 'height', 'weight', 'name', 'id'];
 const DATASTORES = ['dropAttr/dog/age', 'dropAttr/dog/height', 'dropAttr/dog/weight'];
 
@@ -140,6 +133,7 @@ describe('Tests for Helium method heDropAttribute', () => {
                 result = heDropAttribute(drop_attr_obj);
                 list_ds_result = hdb_helium.listDataStores();
                 search_result = hdb_helium.searchByValues('system/hdb_attribute/attribute', 'exact', ['age'], ['system/hdb_attribute/attribute']);
+                console.log(search_result);
             } catch(err) {
                 console.log(err);
             }
