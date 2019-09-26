@@ -34,7 +34,7 @@ function processRows(insert_obj, attributes, schema_table, hashes) {
     let is_system_schema = insert_obj.schema === hdb_terms.SYSTEM_SCHEMA_NAME;
     let existing_hashes;
 
-    // If updating we need to know if the value exists already so we can timestamp it accordingly, for this we
+    // When updating we need to know if the value exists already so we can timestamp it accordingly, for this we
     // need an array of existing attributes.
     if (insert_obj.operation === hdb_terms.OPERATIONS_ENUM.UPDATE) {
         existing_hashes = getExistingHashes(hashes, hash_datastore);
@@ -87,7 +87,7 @@ function processRows(insert_obj, attributes, schema_table, hashes) {
 }
 
 /**
- * Builds single-dimensional array of existing hashes in Helium.
+ * Builds single-dimensional array of existing hashes in Helium at a given datastore.
  * @param hashes
  * @param hash_datastore
  * @returns {[]}
@@ -102,7 +102,7 @@ function getExistingHashes(hashes, hash_datastore) {
 
         return existing_hashes;
     } catch(err) {
-        // In the case that update is called and the datastores have't been created just return empty array
+        // In the case that update is called and the datastores have't been created yet, return an empty array
         if (err.message.includes('errno: -118')) {
             return existing_hashes;
         }

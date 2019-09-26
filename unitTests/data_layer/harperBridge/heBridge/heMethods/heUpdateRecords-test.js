@@ -167,7 +167,7 @@ describe('Tests for Helium method heUpdateRecords', () => {
         expect(result).to.eql(expected_return_result);
         expect(search_result).eql(expected_search_result);
     });
-    //
+
     // it('Test that inserting same data as test above...', () => {
     //     let result;
     //     let search_result;
@@ -182,7 +182,7 @@ describe('Tests for Helium method heUpdateRecords', () => {
     //
     // });
 
-   /* it('Test updating one record', () => {
+    it('Test updating one record', () => {
         const update_obj = {
             operation: "update",
             schema: "dev",
@@ -207,7 +207,7 @@ describe('Tests for Helium method heUpdateRecords', () => {
         } catch(err) {
             console.log(err);
         }
-    });*/
+    });
 
    /* it('Test inserting existing and non-existing rows', () => {
         global.hdb_schema[SCHEMA_TABLE_TEST.schema][SCHEMA_TABLE_TEST.name]['attributes'] = ATTRIBUTES_TEST;

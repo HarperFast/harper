@@ -100,7 +100,6 @@ function buildTestData(insert_obj, attributes, schema_table) {
         let { datastores, processed_rows } = heProcessRows(insert_obj, attributes, schema_table, HASHES_TEST);
         hdb_helium.createDataStores(datastores);
         hdb_helium.insertRows(datastores, processed_rows);
-       //console.log(hdb_helium.searchByKeys(HASHES_TEST, datastores));
     } catch(err) {
         console.log(err);
     }
