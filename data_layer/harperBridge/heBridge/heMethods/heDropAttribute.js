@@ -15,6 +15,11 @@ try {
 
 module.exports = heDropAttribute;
 
+/**
+ * First deletes the attribute/datastore from helium then removes its record from system table
+ * @param drop_attribute_obj
+ * @returns {undefined}
+ */
 function heDropAttribute(drop_attribute_obj) {
     let datastore = [heGenerateDataStoreName(drop_attribute_obj.schema, drop_attribute_obj.table, drop_attribute_obj.attribute)];
 
@@ -31,6 +36,11 @@ function heDropAttribute(drop_attribute_obj) {
 
 }
 
+/**
+ * Searches the system attributes table for attribute record then sends record to delete to be removed from system table.
+ * @param drop_attribute_obj
+ * @returns {undefined}
+ */
 function dropAttributeFromSystem(drop_attribute_obj) {
     let search_obj = {
         schema: hdb_terms.SYSTEM_SCHEMA_NAME,
