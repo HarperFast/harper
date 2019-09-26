@@ -2,14 +2,23 @@
 
 const test_utils = require('../../../../test_utils');
 test_utils.preTestPrep();
+test_utils.buildHeliumTestVolume();
 
-const heUpdateRecords = require('../../../../../data_layer/harperBridge/heBridge/heMethods/heUpdateRecords');
 const heliumUtils = require('../../../../../utility/helium/heliumUtils');
+const heUpdateRecords = require('../../../../../data_layer/harperBridge/heBridge/heMethods/heUpdateRecords');
 const chai = require('chai');
 const sinon = require('sinon');
 const sinon_chai = require('sinon-chai');
 const { expect } = chai;
 chai.use(sinon_chai);
+
+let hdb_helium;
+try {
+    heliumUtils.createSystemDataStores();
+    hdb_helium = heliumUtils.initializeHelium();
+} catch(err) {
+    console.log(err);
+}
 
 const UPDATE_OBJECT_TEST = {
     operation: "update",
@@ -77,29 +86,12 @@ const SCHEMA_TABLE_TEST = {
 };
 
 const DATASTORES_TEST = [ "dev/dog/name", "dev/dog/breed", "dev/dog/id", "dev/dog/age", "dev/dog/height", "dev/dog/__createdtime__", "dev/dog/__updatedtime__"];
-let hdb_helium;
-
-function dropTestDataStores() {
-    try {
-        test_utils.deleteSystemDataStores(hdb_helium);
-        hdb_helium.deleteDataStores(DATASTORES_TEST);
-    } catch(err) {
-        console.log(err);
-    }
-}
 
 describe('Tests for Helium method heUpdateRecords', () => {
     let sandbox = sinon.createSandbox();
     let row_keys = ['34', '35', '36', '37'];
 
     before(() => {
-        try {
-            heliumUtils.createSystemDataStores();
-            hdb_helium = heliumUtils.initializeHelium();
-        } catch(err) {
-            console.log(err);
-        }
-
         sandbox.stub(Date, 'now').returns('1943201');
         global.hdb_schema = {
             [SCHEMA_TABLE_TEST.schema]: {
@@ -140,7 +132,7 @@ describe('Tests for Helium method heUpdateRecords', () => {
     });
 
     after(() => {
-        dropTestDataStores();
+        test_utils.teardownHeliumTestVolume(global.hdb_helium);
         sandbox.restore();
     });
 
@@ -152,7 +144,7 @@ describe('Tests for Helium method heUpdateRecords', () => {
             [ '37', [ 'Brian', 'Cartoon', '37', '5', '145', '1943201', '1943201' ] ]
         ];
         let expected_return_result = {
-            written_hashes: [ '34', '35', '36', '37' ],
+            updated_hashes: [ '34', '35', '36', '37' ],
             skipped_hashes: [],
             schema_table: {
                 attributes: [],
@@ -175,20 +167,20 @@ describe('Tests for Helium method heUpdateRecords', () => {
         expect(result).to.eql(expected_return_result);
         expect(search_result).eql(expected_search_result);
     });
-
-    it('Test that inserting same data as test above...', () => {
-        let result;
-        let search_result;
-        try {
-            result = heUpdateRecords(UPDATE_OBJECT_TEST);
-            search_result = hdb_helium.searchByKeys(row_keys, DATASTORES_TEST);
-            console.log(result);
-            console.log(search_result);
-        } catch(err) {
-            console.log(err);
-        }
-
-    });
+    //
+    // it('Test that inserting same data as test above...', () => {
+    //     let result;
+    //     let search_result;
+    //     try {
+    //         result = heUpdateRecords(UPDATE_OBJECT_TEST);
+    //         search_result = hdb_helium.searchByKeys(row_keys, DATASTORES_TEST);
+    //         console.log(result);
+    //         console.log(search_result);
+    //     } catch(err) {
+    //         console.log(err);
+    //     }
+    //
+    // });
 
    /* it('Test updating one record', () => {
         const update_obj = {

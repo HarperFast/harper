@@ -4,6 +4,14 @@ const hdb_terms = require('../../../../utility/hdbTerms');
 const hdb_utils = require('../../../../utility/common_utils');
 const log = require('../../../../utility/logging/harper_logger');
 const heGenerateDataStoreName = require('../heUtility/heGenerateDataStoreName');
+const heliumUtils = require('../../../../utility/helium/heliumUtils');
+
+let hdb_helium;
+try {
+    hdb_helium = heliumUtils.initializeHelium();
+} catch(err) {
+    throw err;
+}
 
 module.exports = processRows;
 
@@ -13,15 +21,24 @@ module.exports = processRows;
  * @param insert_obj
  * @param attributes
  * @param schema_table
- * @returns {{datastores: *, rows: *}}
+ * @param hashes
+ * @returns {{datastores: *, processed_rows: *}}
  */
 function processRows(insert_obj, attributes, schema_table, hashes) {
     let {schema, table, records} = insert_obj;
     let processed_rows = [];
     let hash_attribute = schema_table.hash_attribute;
+    let hash_datastore = heGenerateDataStoreName(schema, table, hash_attribute)
     let timestamp = Date.now();
     let datastores = heBuildDataStoreArray(attributes, schema, table);
     let is_system_schema = insert_obj.schema === hdb_terms.SYSTEM_SCHEMA_NAME;
+    let existing_hashes;
+
+    // If updating we need to know if the value exists already so we can timestamp it accordingly, for this we
+    // need an array of existing attributes.
+    if (insert_obj.operation === hdb_terms.OPERATIONS_ENUM.UPDATE) {
+        existing_hashes = getExistingHashes(hashes, hash_datastore);
+    }
 
     // Iterates through array of record objects and validates their hash
     for (let x = 0; x < records.length; x++) {
@@ -45,7 +62,7 @@ function processRows(insert_obj, attributes, schema_table, hashes) {
             } else {
                 // Because update will insert record if it doesn't exist, we need to know if record we are updating exists. If it doesn't
                 // Exist the record needs a timestamp in the created time column. If it does exist we only add value to updated column.
-                if (hashes.includes(records[x][hash_attribute])) {
+                if (existing_hashes.includes(hdb_utils.autoCast(records[x][hash_attribute]))) {
                     row_records.push(null, timestamp);
                 } else {
                     row_records.push(timestamp, timestamp);
@@ -67,6 +84,32 @@ function processRows(insert_obj, attributes, schema_table, hashes) {
         datastores,
         processed_rows
     };
+}
+
+/**
+ * Builds single-dimensional array of existing hashes in Helium.
+ * @param hashes
+ * @param hash_datastore
+ * @returns {[]}
+ */
+function getExistingHashes(hashes, hash_datastore) {
+    let existing_hashes = [];
+    try {
+        let search_result = hdb_helium.searchByKeys(hashes, [hash_datastore]);
+        for (let i = 0; i < search_result.length; i++) {
+            existing_hashes.push(hdb_utils.autoCast(search_result[i][0]));
+        }
+
+        return existing_hashes;
+    } catch(err) {
+        // In the case that update is called and the datastores have't been created just return empty array
+        if (err.message.includes('errno: -118')) {
+            return existing_hashes;
+        }
+
+        log.error(`Process rows error searching for keys: ${err}`);
+        throw err;
+    }
 }
 
 /**

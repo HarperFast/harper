@@ -3,7 +3,7 @@
 const insertUpdateValidate = require('../../bridgeUtility/insertUpdateValidate');
 const heProcessRows = require('../heUtility/heProcessRows');
 const heCheckForNewAttributes = require('../heUtility/heCheckForNewAttributes');
-const heProcessInsertUpdateResponse = require('../heUtility/heProcessInsertUpdateResponse');
+const heProcessResponse = require('../heUtility/heProcessResponse');
 const hdb_terms = require('../../../../utility/hdbTerms');
 const heliumUtils = require('../../../../utility/helium/heliumUtils');
 
@@ -25,7 +25,7 @@ module.exports = heUpdateRecords;
 function heUpdateRecords(update_obj) {
     try {
         let { schema_table, hashes, attributes } = insertUpdateValidate(update_obj);
-        let { datastores, rows } = heProcessRows(update_obj, attributes, schema_table, hashes);
+        let { datastores, processed_rows } = heProcessRows(update_obj, attributes, schema_table, hashes);
 
         if (update_obj.schema !== hdb_terms.SYSTEM_SCHEMA_NAME) {
             if (!attributes.includes(hdb_terms.HELIUM_TIME_STAMP_ENUM.CREATED_TIME)) {
@@ -38,11 +38,11 @@ function heUpdateRecords(update_obj) {
         }
 
         heCheckForNewAttributes(update_obj.hdb_auth_header, schema_table, attributes);
-        let he_response = hdb_helium.updateRows(datastores, rows);
-        let { written_hashes, skipped_hashes } = heProcessInsertUpdateResponse(he_response);
+        let he_response = hdb_helium.updateRows(datastores, processed_rows);
+        let { updated_hashes, skipped_hashes } = heProcessResponse(he_response, hdb_terms.OPERATIONS_ENUM.UPDATE);
 
         return {
-            written_hashes,
+            updated_hashes,
             skipped_hashes,
             schema_table
         };

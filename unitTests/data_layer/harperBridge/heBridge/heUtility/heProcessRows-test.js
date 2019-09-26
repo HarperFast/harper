@@ -60,6 +60,8 @@ const INSERT_OBJECT_TEST = {
     ]
 };
 
+const HASHES_TEST = [8, 9, 12, 10];
+
 const UPDATE_OBJECT_TEST = {
     operation: "update",
     schema: "dev",
@@ -95,9 +97,10 @@ const LONG_CHAR_TEST = "z2xFuWBiQgjAAAzgAK80e35FCuFzNHpicBWzsWZW055mFHwBxdU5yE5K
 
 function buildTestData(insert_obj, attributes, schema_table) {
     try {
-        let { datastores, rows } = heProcessRows(insert_obj, attributes, schema_table);
+        let { datastores, processed_rows } = heProcessRows(insert_obj, attributes, schema_table, HASHES_TEST);
         hdb_helium.createDataStores(datastores);
-        hdb_helium.insertRows(datastores, rows);
+        hdb_helium.insertRows(datastores, processed_rows);
+       //console.log(hdb_helium.searchByKeys(HASHES_TEST, datastores));
     } catch(err) {
         console.log(err);
     }
@@ -128,7 +131,7 @@ describe('Tests for Helium utility heProcessRows', () => {
                 [ "10", [ "Rob", "Mutt", "10", 5, 145, "80443", "80443" ] ]
             ]
         };
-        let result = heProcessRows(INSERT_OBJECT_TEST, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST);
+        let result = heProcessRows(INSERT_OBJECT_TEST, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST, HASHES_TEST);
 
         expect(result).to.eql(expected_result);
     });
@@ -147,7 +150,7 @@ describe('Tests for Helium utility heProcessRows', () => {
             datastores: [ "dev/dog/name", "dev/dog/breed", "dev/dog/id", "dev/dog/age", "dev/dog/height", "dev/dog/__createdtime__",  "dev/dog/__updatedtime__" ],
             processed_rows: [ [ "8", [ "Harper", "Mutt", "8", 5, null, "80443", "80443" ] ] ]
         };
-        let result = heProcessRows(insert_obj_single, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST);
+        let result = heProcessRows(insert_obj_single, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST, HASHES_TEST);
 
         expect(result).to.eql(expected_result);
     });
@@ -157,7 +160,7 @@ describe('Tests for Helium utility heProcessRows', () => {
             datastores: [ "dev/dog/id", "dev/dog/__createdtime__",  "dev/dog/__updatedtime__" ],
             processed_rows: [ [ "8", [ "8", "80443", "80443" ] ] ]
         };
-        let result = heProcessRows(insert_obj_single, ["id"], SCHEMA_TABLE_TEST);
+        let result = heProcessRows(insert_obj_single, ["id"], SCHEMA_TABLE_TEST, HASHES_TEST);
 
         expect(result).to.eql(expected_result);
     });
@@ -169,7 +172,7 @@ describe('Tests for Helium utility heProcessRows', () => {
             datastores: [ "dev/dog/id", "dev/dog/__createdtime__",  "dev/dog/__updatedtime__" ],
             processed_rows: [ [ "8", [ "8", null, "80443" ] ] ]
         };
-        let result = heProcessRows(update_obj, ["id"], SCHEMA_TABLE_TEST);
+        let result = heProcessRows(update_obj, ["id"], SCHEMA_TABLE_TEST, HASHES_TEST);
 
         expect(result).to.eql(expected_result);
     });
@@ -177,8 +180,8 @@ describe('Tests for Helium utility heProcessRows', () => {
     it('Test return obj is as expected for update when value does not exist', () => {
         let expected_result = {
             datastores: [ 'dev/dog/name', 'dev/dog/breed', 'dev/dog/id', 'dev/dog/age', 'dev/dog/height', 'dev/dog/__createdtime__', 'dev/dog/__updatedtime__' ],
-            rows: [ [ '88', [ 'Brian', 'Griffin', '88', 5, null, '80443', '80443' ] ], [ '9', [ 'Penny', 'Pure', '9', 5, 145, null, '80443' ] ] ] };
-        let result = heProcessRows(UPDATE_OBJECT_TEST, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST);
+            processed_rows: [ [ '88', [ 'Brian', 'Griffin', '88', 5, null, '80443', '80443' ] ], [ '9', [ 'Penny', 'Pure', '9', 5, 145, null, '80443' ] ] ] };
+        let result = heProcessRows(UPDATE_OBJECT_TEST, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST, HASHES_TEST);
 
         expect(result).to.eql(expected_result);
     });
@@ -194,7 +197,7 @@ describe('Tests for Helium utility heProcessRows', () => {
         ];
         let error;
         try {
-            heProcessRows(insert_obj, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST);
+            heProcessRows(insert_obj, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST, HASHES_TEST);
         } catch(err) {
             error = err;
         }
@@ -215,7 +218,7 @@ describe('Tests for Helium utility heProcessRows', () => {
         ];
         let error;
         try {
-            heProcessRows(insert_obj, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST);
+            heProcessRows(insert_obj, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST, HASHES_TEST);
         } catch(err) {
             error = err;
         }
@@ -236,7 +239,7 @@ describe('Tests for Helium utility heProcessRows', () => {
         ];
         let error;
         try {
-            heProcessRows(insert_obj, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST);
+            heProcessRows(insert_obj, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST, HASHES_TEST);
         } catch(err) {
             error = err;
         }
@@ -251,7 +254,7 @@ describe('Tests for Helium utility heProcessRows', () => {
 
         let error;
         try {
-            heProcessRows(INSERT_OBJECT_TEST, attributes, SCHEMA_TABLE_TEST);
+            heProcessRows(INSERT_OBJECT_TEST, attributes, SCHEMA_TABLE_TEST, HASHES_TEST);
         } catch(err) {
             error = err;
         }
@@ -266,7 +269,7 @@ describe('Tests for Helium utility heProcessRows', () => {
 
         let error;
         try {
-            heProcessRows(INSERT_OBJECT_TEST, attributes, SCHEMA_TABLE_TEST);
+            heProcessRows(INSERT_OBJECT_TEST, attributes, SCHEMA_TABLE_TEST, HASHES_TEST);
         } catch(err) {
             error = err;
         }
@@ -281,7 +284,7 @@ describe('Tests for Helium utility heProcessRows', () => {
 
         let error;
         try {
-            heProcessRows(INSERT_OBJECT_TEST, attributes, SCHEMA_TABLE_TEST);
+            heProcessRows(INSERT_OBJECT_TEST, attributes, SCHEMA_TABLE_TEST, HASHES_TEST);
         } catch(err) {
             error = err;
         }
@@ -296,7 +299,7 @@ describe('Tests for Helium utility heProcessRows', () => {
 
         let error;
         try {
-            heProcessRows(INSERT_OBJECT_TEST, attributes, SCHEMA_TABLE_TEST);
+            heProcessRows(INSERT_OBJECT_TEST, attributes, SCHEMA_TABLE_TEST, HASHES_TEST);
         } catch(err) {
             error = err;
         }
