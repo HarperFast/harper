@@ -18,6 +18,7 @@ const env = require('../../utility/environment/environmentManager');
 const promisify = require('util').promisify;
 const search = require('../../data_layer/search');
 const p_search_by_value = promisify(search.searchByValue);
+const LICENSE_FILE = path.join(hdb_utils.getHomeDir(), terms.HDB_HOME_DIR_NAME, terms.LICENSE_KEY_DIR_NAME, terms.LICENSE_FILE_NAME);
 
 let FINGER_PRINT_FILE = undefined;
 try {
@@ -147,26 +148,24 @@ async function validateLicense(license_key, company) {
  * search for the hdb license, validate & return
  */
 async function licenseSearch(){
-    let licenseKeySearch = {
-        operation: 'search_by_value',
-        schema: 'system',
-        table: 'hdb_license',
-        search_attribute: "license_key",
-        search_value: "*",
-        get_attributes: ["*"]
-    };
-
     let license_values = new License();
     license_values.api_call = 0;
     let licenses = [];
+
     try {
-        licenses = await p_search_by_value(licenseKeySearch);
-    } catch (e) {
-        log.error(`could not search for licenses due to: '${e.message}`);
+        let file_licenses = await fs.readFile(LICENSE_FILE, 'utf-8');
+        licenses = file_licenses.split(terms.NEW_LINE);
+    } catch(e){
+        if(e.code === 'ENOENT'){
+            log.info('no license file found');
+        } else {
+            log.error(`could not search for licenses due to: '${e.message}`);
+        }
     }
 
-    await Promise.all(licenses.map(async (license) => {
+    await Promise.all(licenses.map(async (license_string) => {
         try {
+            let license = JSON.parse(license_string);
             let license_validation = await validateLicense(license.license_key, license.company);
             if (license_validation.valid_machine === true && license_validation.valid_date === true && license_validation.valid_license === true) {
                 license_values.exp_date = license_validation.exp_date > license_values.exp_date ? license_validation.exp_date : license_values.exp_date;
