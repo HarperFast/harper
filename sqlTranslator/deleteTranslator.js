@@ -4,7 +4,8 @@ const log = require('../utility/logging/harper_logger');
 const harperBridge = require('../data_layer/harperBridge/harperBridge');
 const util = require('util');
 
-const SUCCESS_MESSAGE = 'records successfully deleted';
+const RECORD = 'record';
+const SUCCESS = 'successfully deleted';
 
 const cb_convert_delete = util.callbackify(convertDelete);
 const p_search_search = util.promisify(search.search);
@@ -12,6 +13,10 @@ const p_search_search = util.promisify(search.search);
 module.exports = {
     convertDelete:cb_convert_delete
 };
+
+function generateReturnMessage(delete_results_object) {
+    return `${delete_results_object.deleted_hashes.length} ${RECORD}${delete_results_object.deleted_hashes.length === 1 ? `` : `s`} ${SUCCESS}`;
+}
 
 async function convertDelete(statement){
     //convert this update statement to a search capable statement
@@ -29,9 +34,12 @@ async function convertDelete(statement){
 
     try{
         delete_obj.records = await p_search_search(search_statement);
-        await harperBridge.deleteRecords(delete_obj);
+        let result = await harperBridge.deleteRecords(delete_obj);
 
-        return SUCCESS_MESSAGE;
+        if(util.isEmptyOrZeroLength(result.message)) {
+            result.message = generateReturnMessage(result);
+        }
+        return result;
     } catch(err){
         log.error(err);
         if (err.hdb_code) {

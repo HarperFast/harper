@@ -1,6 +1,5 @@
 "use strict";
 
-const uuidv1 = require('uuid/v1');
 const search = require('../data_layer/search');
 const sql = require('../sqlTranslator/index');
 const csv = require('../data_layer/csvBulkLoad');
@@ -10,7 +9,6 @@ const delete_ = require('../data_layer/delete');
 const user = require('../security/user');
 const role = require('../security/role');
 const cluster_utilities = require('./clustering/clusterUtilities');
-const auth = require('../security/auth');
 const harper_logger = require('../utility/logging/harper_logger');
 const export_ = require('../data_layer/export');
 const op_auth = require('../utility/operation_authorization');
@@ -30,7 +28,6 @@ const env = require(`../utility/environment/environmentManager`);
 
 const UNAUTH_RESPONSE = 403;
 const UNAUTHORIZED_TEXT = 'You are not authorized to perform the operation specified';
-let OPERATION_PARAM_ERROR_MSG = `operation parameter is undefined`;
 
 const p_search_search_by_hash = util.promisify(search.searchByHash);
 const p_search_search_by_value = util.promisify(search.searchByValue);
@@ -54,6 +51,7 @@ module.exports = {
     chooseOperation,
     getOperationFunction,
     processLocalTransaction,
+    postOperationHandler,
     UNAUTH_RESPONSE,
     UNAUTHORIZED_TEXT
 };
@@ -148,46 +146,63 @@ function concatSourceMessageHeader(outbound_message, orig_req) {
     }
 }
 
+function sendOperationTransaction(transaction_msg, request_body, hashes_to_send, orig_req) {
+    if(request_body.schema === terms.SYSTEM_SCHEMA_NAME) {
+        return;
+    }
+    transaction_msg = convertCRUDOperationToTransaction(request_body, hashes_to_send, global.hdb_schema[request_body.schema][request_body.table].hash_attribute);
+    if(transaction_msg) {
+        if(orig_req) {
+            concatSourceMessageHeader(transaction_msg, orig_req);
+        }
+        common_utils.sendTransactionToSocketCluster(`${request_body.schema}:${request_body.table}`, transaction_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
+    }
+}
+
+function sendSchemaTransaction(transaction_msg, operation, request_body, orig_req) {
+    if(orig_req) {
+        concatSourceMessageHeader(transaction_msg, orig_req);
+    }
+    common_utils.sendTransactionToSocketCluster(operation, transaction_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
+}
+
 function postOperationHandler(request_body, result, orig_req) {
     let transaction_msg = common_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
     transaction_msg.__transacted = true;
+
     switch(request_body.operation) {
         case terms.OPERATIONS_ENUM.INSERT:
             try {
-                if (global.hdb_socket_client !== undefined && request_body.schema !== 'system' && Array.isArray(result.inserted_hashes) && result.inserted_hashes.length > 0) {
-                    transaction_msg.transaction = {
-                        operation: "insert",
-                        schema: request_body.schema,
-                        table: request_body.table,
-                        records: []
-                    };
-
-                    let hash_attribute = global.hdb_schema[request_body.schema][request_body.table].hash_attribute;
-                    request_body.records.forEach(record => {
-                        if(result.inserted_hashes.includes(common_utils.autoCast(record[hash_attribute]))) {
-                            transaction_msg.transaction.records.push(record);
-                        }
-                        if(orig_req) {
-                            concatSourceMessageHeader(transaction_msg, orig_req);
-                        }
-                    });
-                    common_utils.sendTransactionToSocketCluster(`${request_body.schema}:${request_body.table}`, transaction_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
-                }
+                sendOperationTransaction(transaction_msg, request_body, result.inserted_hashes, orig_req);
             } catch(err) {
                 harper_logger.error('There was an error calling insert followup function.');
                 harper_logger.error(err);
             }
             break;
+        case terms.OPERATIONS_ENUM.DELETE:
+            try {
+                sendOperationTransaction(transaction_msg, request_body, result.deleted_hashes, orig_req);
+            } catch(err) {
+                harper_logger.error('There was an error calling delete followup function.');
+                harper_logger.error(err);
+            }
+            break;
+        case terms.OPERATIONS_ENUM.UPDATE:
+            try {
+                sendOperationTransaction(transaction_msg, request_body, result.update_hashes, orig_req);
+            } catch(err) {
+                harper_logger.error('There was an error calling delete followup function.');
+                harper_logger.error(err);
+            }
+            break;
         case terms.OPERATIONS_ENUM.CREATE_SCHEMA:
             try {
+
                 transaction_msg.transaction = {
                     operation: terms.OPERATIONS_ENUM.CREATE_SCHEMA,
                     schema: request_body.schema,
                 };
-                if(orig_req) {
-                    concatSourceMessageHeader(transaction_msg, orig_req);
-                }
-                common_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_SCHEMA, transaction_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
+                sendSchemaTransaction(transaction_msg, terms.OPERATIONS_ENUM.CREATE_SCHEMA, request_body, orig_req);
             } catch(err) {
                 harper_logger.error('There was a problem sending the create_schema transaction to the cluster.');
             }
@@ -200,10 +215,7 @@ function postOperationHandler(request_body, result, orig_req) {
                     table: request_body.table,
                     hash_attribute: request_body.hash_attribute
                 };
-                if(orig_req) {
-                    concatSourceMessageHeader(transaction_msg, orig_req);
-                }
-                common_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_TABLE, transaction_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
+                sendSchemaTransaction(transaction_msg, terms.OPERATIONS_ENUM.CREATE_TABLE, request_body, orig_req);
             } catch(err) {
                 harper_logger.error('There was a problem sending the create_schema transaction to the cluster.');
             }
@@ -216,10 +228,7 @@ function postOperationHandler(request_body, result, orig_req) {
                     table: request_body.table,
                     attribute: request_body.attribute
                 };
-                if(orig_req) {
-                    concatSourceMessageHeader(transaction_msg, orig_req);
-                }
-                common_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, transaction_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
+                sendSchemaTransaction(transaction_msg, terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE, request_body, orig_req);
             } catch(err) {
                 harper_logger.error('There was a problem sending the create_schema transaction to the cluster.');
             }
@@ -229,6 +238,34 @@ function postOperationHandler(request_body, result, orig_req) {
             break;
     }
     return result;
+}
+
+/**
+ * Converts a core CRUD operation to a cluster read message.
+ * @param source_json - The source message body
+ * @param affected_hashes - Affected (successful) CRUD hashes
+ * @param hash_attribute - hash attribute of the target table.
+ * @returns {*}
+ */
+function convertCRUDOperationToTransaction(source_json, affected_hashes, hash_attribute) {
+    if (global.hdb_socket_client === undefined || Array.isArray(affected_hashes) && affected_hashes.length === 0) {
+        return null;
+    }
+    let transaction = {
+        operation: source_json.operation,
+        schema: source_json.schema,
+        table: source_json.table,
+        records:[]
+    };
+
+    source_json.records.forEach(record =>{
+        if(affected_hashes.indexOf(common_utils.autoCast(record[hash_attribute])) >= 0) {
+            transaction.records.push(record);
+        }
+    });
+    let transaction_msg = common_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
+    transaction_msg.transaction = transaction;
+    return transaction_msg;
 }
 
 /**
