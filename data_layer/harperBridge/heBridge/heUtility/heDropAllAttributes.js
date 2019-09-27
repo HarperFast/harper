@@ -23,7 +23,7 @@ function heDropAllAttributes(drop_obj) {
 
     try {
         for (let i = 0; i < schema_table.attributes.length; i++) {
-            current_attribute = schema_table.attributes[i];
+            current_attribute = schema_table.attributes[i].attribute;
             drop_attr_object.attribute = current_attribute;
             heDropAttribute(drop_attr_object);
         }

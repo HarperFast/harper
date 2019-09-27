@@ -7,49 +7,7 @@ const hdb_utils = require('../../../../utility/common_utils');
 const hdb_terms = require('../../../../utility/hdbTerms');
 const log = require('../../../../utility/logging/harper_logger');
 
-// Regex must be compliant with the C++11 regex syntax
-const EVERYTHING_RX = '(.*)';
-
 module.exports = heDropTable;
-
-const DROP_TABLE_OBJ_TEST = {
-    operation: "drop_table",
-    schema: "dev",
-    table: "dog"
-};
-
-const DROP_ATTR_OBJ_TEST = {
-    operation: "drop_attribute",
-    schema: "dropAttr",
-    table: "dog",
-    attribute: "weight"
-};
-
-const SCEMA_TABLE_TEST = {
-    hash_attribute: "id",
-    name: "hdb_attribute",
-    schema: "system",
-    residence: [
-        "*"
-    ],
-    attributes: [
-        {
-            attribute: "id"
-        },
-        {
-            attribute: "schema"
-        },
-        {
-            attribute: "table"
-        },
-        {
-            attribute: "attribute"
-        },
-        {
-            attribute: "schema_table"
-        }
-    ]
-};
 
 /**
  * Calls heDropAttribute on each attribute in the table. This will delete the actual attribute/datastore
