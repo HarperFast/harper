@@ -74,7 +74,7 @@ async function readAttributeFiles(table_path, attribute, hash_files, is_hash) {
         const readFileOps = [];
 
         for (const file of hash_files) {
-            readFileOps.push(readAttributeFilePromise(table_path, attribute, file, attribute_data, is_hash));
+            readFileOps.push(readAttributeFilePromise(table_path, attribute, file, attribute_data, !!is_hash));
         }
 
         await Promise.all(readFileOps);
