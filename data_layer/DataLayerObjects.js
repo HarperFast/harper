@@ -21,7 +21,17 @@ class NoSQLSeachObject {
     }
 }
 
+class DeleteResponseObject {
+    constructor() {
+        this.message = undefined;
+        this.deleted_hashes = [];
+        this.skipped_hashes = [];
+    }
+}
+
+
 module.exports = {
     InsertObject,
-    NoSQLSeachObject
+    NoSQLSeachObject,
+    DeleteResponseObject
 };

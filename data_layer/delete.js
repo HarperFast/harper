@@ -2,17 +2,15 @@
 
 const env = require('../utility/environment/environmentManager');
 const bulk_delete_validator = require('../validation/bulkDeleteValidator');
-const conditional_delete_validator = require('../validation/conditionalDeleteValidator');
 const common_utils = require('../utility/common_utils');
-const async = require('async');
 const moment = require('moment');
 const harper_logger = require('../utility/logging/harper_logger');
 const { promisify, callbackify } = require('util');
 const terms = require('../utility/hdbTerms');
 const global_schema = require('../utility/globalSchema');
 const p_global_schema = promisify(global_schema.getTableSchema);
-const search = require('./search');
 const harperBridge = require('./harperBridge/harperBridge');
+const {DeleteResponseObject} = require('./DataLayerObjects');
 
 const SUCCESS_MESSAGE = 'records successfully deleted';
 
@@ -22,7 +20,6 @@ const cb_delete_record = callbackify(deleteRecord);
 module.exports = {
     delete: cb_delete_record,
     deleteRecord,
-    conditionalDelete: conditionalDelete,
     deleteFilesBefore: deleteFilesBefore
 };
 
@@ -71,7 +68,7 @@ async function deleteRecord(delete_object){
 
     try {
         await p_global_schema(delete_object.schema, delete_object.table);
-        await harperBridge.deleteRecords(delete_object);
+        let delete_result_object = await harperBridge.deleteRecords(delete_object);
 
         if(delete_object.schema !== terms.SYSTEM_SCHEMA_NAME) {
             let delete_msg = common_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
@@ -79,44 +76,17 @@ async function deleteRecord(delete_object){
             common_utils.sendTransactionToSocketCluster(`${delete_object.schema}:${delete_object.table}`, delete_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
         }
 
-        return SUCCESS_MESSAGE;
-    } catch(err){
-        harper_logger.error(err);
-        throw err;
-    }
-}
-
-function conditionalDelete(delete_object, callback){
-    try {
-        let validation = conditional_delete_validator(delete_object);
-        if (validation) {
-            callback(validation);
-            return;
+        if(common_utils.isEmptyOrZeroLength(delete_result_object.message)) {
+            delete_result_object.message = `${delete_result_object.deleted_hashes.length} of ${delete_object.hash_values.length} ${SUCCESS_MESSAGE}`;
         }
-
-        async.waterfall([
-            global_schema.getTableSchema.bind(null, delete_object.schema, delete_object.table),
-            (table_info, callback) => {
-                callback(null, delete_object.conditions, table_info);
-            },
-            search.multiConditionSearch,
-            (ids, callback) => {
-                let delete_wrapper = {
-                    schema: delete_object.schema,
-                    table: delete_object.table,
-                    hash_values: ids
-                };
-                callback(null, delete_wrapper);
-            },
-            deleteRecord
-        ], (err) => {
-            if (err) {
-                callback(err);
-                return;
-            }
-            callback(null, SUCCESS_MESSAGE);
-        });
-    } catch(e) {
-        callback(e);
+        return delete_result_object;
+    } catch(err){
+        if(err.message === terms.SEARCH_NOT_FOUND_MESSAGE) {
+            let return_msg = new DeleteResponseObject();
+            return_msg.message = terms.SEARCH_NOT_FOUND_MESSAGE;
+            return_msg.skipped_hashes = delete_object.hash_values.length;
+            return_msg.deleted_hashes = 0;
+            return return_msg;
+        }
     }
 }
