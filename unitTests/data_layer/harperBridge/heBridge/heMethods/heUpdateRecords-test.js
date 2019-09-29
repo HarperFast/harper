@@ -148,29 +148,53 @@ describe('Tests for Helium method heUpdateRecords', () => {
         let result;
         let search_result;
 
+        let error = undefined;
         try {
             result = heUpdateRecords(UPDATE_OBJECT_TEST);
             search_result = hdb_helium.searchByKeys(row_keys, DATASTORES_TEST);
         } catch(err) {
-            console.log(err);
+            error = err;
         }
 
         expect(result).to.eql(expected_return_result);
         expect(search_result).eql(expected_search_result);
+        expect(error).to.eql(undefined);
     });
 
      it('Test that inserting same data as test above...', () => {
+         let expected_search_result = [
+             [ '34', [ 'Beethoven', 'St. Bernard', '34', '5', null, '1943201', '1943201' ] ],
+             [ '35', [ 'Elvis', 'Mutt', '35', '5', '145', '1943201', '1943201' ] ],
+             [ '36', [ 'David', 'Husky', '36', null, null, '1943201', '1943201' ] ],
+             [ '37', [ 'Brian', 'Cartoon', '37', '5', '145', '1943201', '1943201' ] ]
+         ];
+         let expected_return_result = {
+             updated_hashes: [ '34', '35', '36', '37' ],
+             skipped_hashes: [],
+             schema_table: {
+                 attributes: [],
+                 hash_attribute: 'id',
+                 residence: undefined,
+                 schema: 'dev',
+                 name: 'dog'
+             }
+         };
+
          let result;
          let search_result;
+         let error = undefined;
          try {
              result = heUpdateRecords(UPDATE_OBJECT_TEST);
              search_result = hdb_helium.searchByKeys(row_keys, DATASTORES_TEST);
              console.log(result);
              console.log(search_result);
          } catch(err) {
-             console.log(err);
+             error = err;
          }
 
+         expect(error).to.eql(undefined);
+         expect(result).to.eql(expected_return_result);
+         expect(search_result).to.eql(expected_search_result);
      });
 
     it('Test updating one record', () => {
@@ -188,16 +212,49 @@ describe('Tests for Helium method heUpdateRecords', () => {
             ]
         };
 
+        let expected_result = {
+            "updated_hashes": [
+                "34"
+            ],
+            "skipped_hashes": [],
+            "schema_table": {
+                "attributes": [],
+                "hash_attribute": "id",
+                "residence": undefined,
+                "schema": "dev",
+                "name": "dog"
+            }
+        };
+
+        let expected_search_result = [
+            [
+                "34",
+                [
+                    "Beethoven",
+                    "St. Bernard",
+                    "34",
+                    "10",
+                    null,
+                    "1943201",
+                    "1943201"
+                ]
+            ]
+        ];
+
         let result;
         let search_result;
+        let error = undefined;
         try {
-            result = heUpdateRecords(UPDATE_OBJECT_TEST);
-            search_result = hdb_helium.searchByKeys(row_keys, DATASTORES_TEST);
-            console.log(result);
-            console.log(search_result);
+            result = heUpdateRecords(update_obj);
+            search_result = hdb_helium.searchByKeys([update_obj.records[0].id], DATASTORES_TEST);
+
+            expect(result).to.eql(expected_result);
+            expect(search_result).to.eql(expected_search_result);
         } catch(err) {
-            console.log(err);
+            error = err;
         }
+
+        expect(error).to.eql(undefined);
     });
 
    /* it('Test inserting existing and non-existing rows', () => {
