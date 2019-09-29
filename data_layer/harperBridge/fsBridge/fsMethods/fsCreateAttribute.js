@@ -26,9 +26,11 @@ async function createAttribute(create_attribute_object) {
     }
     let attributes_obj_array = global.hdb_schema[create_attribute_object.schema][create_attribute_object.table]['attributes'];
 
-    for (let attribute of attributes_obj_array) {
-        if (attribute.attribute === create_attribute_object.attribute) {
-            throw new Error(`attribute '${attribute.attribute}' already exists in ${create_attribute_object.schema}.${create_attribute_object.table}`);
+    if(Array.isArray(attributes_obj_array) && attributes_obj_array.length > 0) {
+        for (let attribute of attributes_obj_array) {
+            if (attribute.attribute === create_attribute_object.attribute) {
+                throw new Error(`attribute '${attribute.attribute}' already exists in ${create_attribute_object.schema}.${create_attribute_object.table}`);
+            }
         }
     }
 
