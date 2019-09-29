@@ -28,7 +28,7 @@ function processRows(insert_obj, attributes, schema_table, hashes) {
     let {schema, table, records} = insert_obj;
     let processed_rows = [];
     let hash_attribute = schema_table.hash_attribute;
-    let hash_datastore = heGenerateDataStoreName(schema, table, hash_attribute)
+    let hash_datastore = heGenerateDataStoreName(schema, table, hash_attribute);
     let timestamp = Date.now();
     let datastores = heBuildDataStoreArray(attributes, schema, table);
     let is_system_schema = insert_obj.schema === hdb_terms.SYSTEM_SCHEMA_NAME;

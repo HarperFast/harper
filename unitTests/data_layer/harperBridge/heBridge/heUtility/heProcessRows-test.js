@@ -2,22 +2,13 @@
 
 const test_utils = require('../../../../test_utils');
 test_utils.preTestPrep();
-test_utils.buildHeliumTestVolume();
+let hdb_helium = test_utils.buildHeliumTestVolume();
 
-const heliumUtils = require('../../../../../utility/helium/heliumUtils');
 const heProcessRows = require('../../../../../data_layer/harperBridge/heBridge/heUtility/heProcessRows');
 const hdb_terms = require('../../../../../utility/hdbTerms');
 const chai = require('chai');
 const { expect } = chai;
 const sinon = require('sinon');
-
-let hdb_helium;
-try {
-    heliumUtils.createSystemDataStores();
-    hdb_helium = heliumUtils.initializeHelium();
-} catch(err) {
-    console.log(err);
-}
 
 const SCHEMA_TABLE_TEST = {
     id: "c43762be-4943-4d10-81fb-1b857ed6cf3a",

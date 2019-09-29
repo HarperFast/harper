@@ -2,23 +2,14 @@
 
 const test_utils = require('../../../../test_utils');
 test_utils.preTestPrep();
-test_utils.buildHeliumTestVolume();
+let hdb_helium = test_utils.buildHeliumTestVolume();
 
-const heliumUtils = require('../../../../../utility/helium/heliumUtils');
 const heUpdateRecords = require('../../../../../data_layer/harperBridge/heBridge/heMethods/heUpdateRecords');
 const chai = require('chai');
 const sinon = require('sinon');
 const sinon_chai = require('sinon-chai');
 const { expect } = chai;
 chai.use(sinon_chai);
-
-let hdb_helium;
-try {
-    heliumUtils.createSystemDataStores();
-    hdb_helium = heliumUtils.initializeHelium();
-} catch(err) {
-    console.log(err);
-}
 
 const UPDATE_OBJECT_TEST = {
     operation: "update",
@@ -168,19 +159,19 @@ describe('Tests for Helium method heUpdateRecords', () => {
         expect(search_result).eql(expected_search_result);
     });
 
-    // it('Test that inserting same data as test above...', () => {
-    //     let result;
-    //     let search_result;
-    //     try {
-    //         result = heUpdateRecords(UPDATE_OBJECT_TEST);
-    //         search_result = hdb_helium.searchByKeys(row_keys, DATASTORES_TEST);
-    //         console.log(result);
-    //         console.log(search_result);
-    //     } catch(err) {
-    //         console.log(err);
-    //     }
-    //
-    // });
+     it('Test that inserting same data as test above...', () => {
+         let result;
+         let search_result;
+         try {
+             result = heUpdateRecords(UPDATE_OBJECT_TEST);
+             search_result = hdb_helium.searchByKeys(row_keys, DATASTORES_TEST);
+             console.log(result);
+             console.log(search_result);
+         } catch(err) {
+             console.log(err);
+         }
+
+     });
 
     it('Test updating one record', () => {
         const update_obj = {
