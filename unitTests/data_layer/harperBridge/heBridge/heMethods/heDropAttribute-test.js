@@ -33,9 +33,7 @@ function setupTest() {
             };
             heCreateAttribute(create_attr);
         });
-
-        // TODO: this timeout is a temporary fix. GitHub issue - harperdb_helium #33 THIS IS CAUSING OTHER UNIT TESTS TO FAIL
-        setTimeout(() => {hdb_helium.createDataStores(DATASTORES);}, 500);
+        hdb_helium.createDataStores(DATASTORES);
     } catch(err) {
         throw err;
     }
