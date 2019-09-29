@@ -2,23 +2,15 @@
 
 const test_utils = require('../../../../test_utils');
 test_utils.preTestPrep();
-test_utils.buildHeliumTestVolume();
+let hdb_helium = test_utils.buildHeliumTestVolume();
 
 const rewire = require('rewire');
 const heCreateAttribute = require('../../../../../data_layer/harperBridge/heBridge/heMethods/heCreateAttribute');
 const heDropAttribute = rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heDropAttribute');
 const heGenerateDataStoreName = require('../../../../../data_layer/harperBridge/heBridge/heUtility/heGenerateDataStoreName');
-const heliumUtils = require('../../../../../utility/helium/heliumUtils');
+
 const chai = require('chai');
 const { expect } = chai;
-
-let hdb_helium;
-try {
-    heliumUtils.createSystemDataStores();
-    hdb_helium = heliumUtils.initializeHelium();
-} catch(err) {
-    console.log(err);
-}
 
 const DROP_ATTR_OBJ_TEST = {
     operation: "drop_attribute",
@@ -174,7 +166,7 @@ describe('Tests for Helium method heDropAttribute', () => {
                 error = err;
             }
 
-            expect(error.message).to.equal(`Attribute ${drop_attr_obj.attribute} was not found.`)
+            expect(error.message).to.equal(`Attribute ${drop_attr_obj.attribute} was not found.`);
         });
     });
 });

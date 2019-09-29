@@ -724,7 +724,7 @@ function generateAPIMessage(msg_type_enum) {
 async function testError(test_func, error_msg) {
     let error;
     try {
-        await test_func;
+        console.log(await test_func);
     } catch(err) {
         error = err;
     }
@@ -752,6 +752,10 @@ function buildHeliumTestVolume() {
     try {
         fs.mkdirpSync(HELIUM_VOLUME_PATH);
         env.setProperty("HELIUM_VOLUME_PATH", HELIUM_VOLUME_PATH);
+        let  helium = helium_utils.initializeHelium();
+        helium_utils.createSystemDataStores(helium);
+
+        return helium;
     } catch(err) {
         console.log(err);
     }
