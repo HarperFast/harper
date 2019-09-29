@@ -116,6 +116,6 @@ describe('Tests for delete.js', () => {
             let test_err_result = await test_utils.testError(_delete.deleteRecord(DELETE_OBJ_TEST), error_msg);
 
             expect(test_err_result).to.be.true;
-        });
+        });bridge_delete_records_stub
     });
 });

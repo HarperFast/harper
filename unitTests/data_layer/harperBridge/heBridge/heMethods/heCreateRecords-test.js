@@ -2,9 +2,8 @@
 
 const test_utils = require('../../../../test_utils');
 test_utils.preTestPrep();
-test_utils.buildHeliumTestVolume();
+let hdb_helium = test_utils.buildHeliumTestVolume();
 
-const heliumUtils = require('../../../../../utility/helium/heliumUtils');
 const rewire = require('rewire');
 const heCreateRecords = rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heCreateRecords');
 const chai = require('chai');
@@ -12,14 +11,6 @@ const sinon = require('sinon');
 const sinon_chai = require('sinon-chai');
 const { expect } = chai;
 chai.use(sinon_chai);
-
-let hdb_helium;
-try {
-    heliumUtils.createSystemDataStores();
-    hdb_helium = heliumUtils.initializeHelium();
-} catch(err) {
-    console.log(err);
-}
 
 const INSERT_OBJECT_TEST = {
     operation: "insert",

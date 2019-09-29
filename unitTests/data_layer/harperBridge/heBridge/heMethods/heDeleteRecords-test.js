@@ -2,21 +2,12 @@
 
 const test_utils = require('../../../../test_utils');
 test_utils.preTestPrep();
-test_utils.buildHeliumTestVolume();
+let hdb_helium = test_utils.buildHeliumTestVolume();
 
-const heliumUtils = require('../../../../../utility/helium/heliumUtils');
 const rewire = require('rewire');
 const heDeleteRecords = rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heDeleteRecords');
 const chai = require('chai');
 const { expect } = chai;
-
-let hdb_helium;
-try {
-    heliumUtils.createSystemDataStores();
-    hdb_helium = heliumUtils.initializeHelium();
-} catch(err) {
-    console.log(err);
-}
 
 let DELETE_OBJ_TEST = {
     operation: "delete",
