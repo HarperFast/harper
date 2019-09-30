@@ -1,9 +1,7 @@
 'use strict';
 
 const test_utils = require('../../../../test_utils');
-test_utils.preTestPrep();
-let hdb_helium = test_utils.buildHeliumTestVolume();
-
+let hdb_helium;
 const rewire = require('rewire');
 const heCreateRecords = rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heCreateRecords');
 const chai = require('chai');
@@ -81,6 +79,11 @@ const DATASTORES_TEST = [ "dev/dog/name", "dev/dog/breed", "dev/dog/id", "dev/do
 
 describe('Tests for Helium method heCreateRecords', () => {
     let sandbox = sinon.createSandbox();
+
+    before(()=>{
+        test_utils.preTestPrep();
+        hdb_helium = test_utils.buildHeliumTestVolume();
+    });
 
     after(() => {
         test_utils.teardownHeliumTestVolume(global.hdb_helium);

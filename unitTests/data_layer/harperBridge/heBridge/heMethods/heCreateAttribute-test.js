@@ -1,8 +1,7 @@
 'use strict';
 
 const test_utils = require('../../../../test_utils');
-test_utils.preTestPrep();
-let hdb_helium = test_utils.buildHeliumTestVolume();
+let hdb_helium;
 
 const rewire = require('rewire');
 const heCreateAttribute = rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heCreateAttribute');
@@ -39,6 +38,9 @@ describe('Test for Helium method heCreateAttribute', () => {
     let sandbox = sinon.createSandbox();
 
     before(() => {
+        test_utils.preTestPrep();
+        hdb_helium = test_utils.buildHeliumTestVolume();
+
         global.hdb_schema = {
             [CREATE_ATTR_OBJ_TEST.schema]: {
                 [CREATE_ATTR_OBJ_TEST.table]: {

@@ -1,8 +1,7 @@
 'use strict';
 
 const test_utils = require('../../../../test_utils');
-test_utils.preTestPrep();
-let hdb_helium = test_utils.buildHeliumTestVolume();
+let hdb_helium;
 
 const heProcessRows = require('../../../../../data_layer/harperBridge/heBridge/heUtility/heProcessRows');
 const hdb_terms = require('../../../../../utility/hdbTerms');
@@ -101,6 +100,8 @@ describe('Tests for Helium utility heProcessRows', () => {
     let sandbox = sinon.createSandbox();
 
     before(() => {
+        test_utils.preTestPrep();
+        hdb_helium = test_utils.buildHeliumTestVolume();
         sandbox.stub(Date, 'now').returns('80443');
         buildTestData(INSERT_OBJECT_TEST, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST);
     });

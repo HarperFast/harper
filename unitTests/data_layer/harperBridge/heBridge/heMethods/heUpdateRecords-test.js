@@ -255,7 +255,7 @@ describe('Tests for Helium method heUpdateRecords', () => {
         expect(error).to.eql(undefined);
     });
 
-    it('Test updateing existing and non-existing rows', () => {
+    it('Test updating existing and non-existing rows', () => {
         global.hdb_schema[SCHEMA_TABLE_TEST.schema][SCHEMA_TABLE_TEST.name]['attributes'] = ATTRIBUTES_TEST;
         let update_obj = test_utils.deepClone(UPDATE_OBJECT_TEST);
         let new_records = [
@@ -275,19 +275,19 @@ describe('Tests for Helium method heUpdateRecords', () => {
             {
                 name: "David",
                 breed: "Mutt",
-                id: "123"
+                id: "34"
             },
             {
                 name: "Rob",
                 breed: "Mutt",
-                id: "1232",
+                id: "35",
                 age: 5,
                 height: 145
             }
         ];
         update_obj.records = new_records;
         let expected_return_result = {
-            written_hashes: [ '8', '9', '123', '1232' ],
+            updated_hashes: [ '8', '9', '34', '35' ],
             skipped_hashes: [],
             schema_table: {
                 attributes: ATTRIBUTES_TEST,
@@ -300,15 +300,15 @@ describe('Tests for Helium method heUpdateRecords', () => {
         let expected_search_result = [
             [ '8', [ 'Harper', 'Mutt', '8', '5', null, '1943201', '1943201' ] ],
             [ '9', [ 'Penny', 'Mutt', '9', '5', '145', '1943201', '1943201' ] ],
-            [ '123', [ 'David', 'Mutt', '123', null, null, '1943201', '1943201' ] ],
-            [ '1232', [ 'Rob', 'Mutt', '1232', '5', '145', '1943201', '1943201' ] ]
+            [ '34', [ 'David', 'Mutt', '34', '10', null, '1943201', '1943201' ] ],
+            [ '35', [ 'Rob', 'Mutt', '35', '5', '145', '1943201', '1943201' ] ]
         ];
         let result;
         let search_result;
 
         try {
             result = heUpdateRecords(update_obj);
-            search_result = hdb_helium.searchByKeys(['8', '9', '123', '1232'], DATASTORES_TEST);
+            search_result = hdb_helium.searchByKeys(['8', '9', '34', '35'], DATASTORES_TEST);
 
         } catch(err) {
             console.log(err);
@@ -317,31 +317,9 @@ describe('Tests for Helium method heUpdateRecords', () => {
         expect(result).to.eql(expected_return_result);
         expect(search_result).to.eql(expected_search_result);
     });
-/*
-    it('Test inserting rows that already exist',  () => {
-        let expected_result = {
-            written_hashes: [],
-            skipped_hashes: [ '8', '9', '12', '10' ],
-            schema_table:
-                { attributes: ATTRIBUTES_TEST,
-                    hash_attribute: 'id',
-                    residence: undefined,
-                    schema: 'dev',
-                    name: 'dog' }
-        };
-        let result;
-
-        try {
-            result = heUpdateRecords(INSERT_OBJECT_TEST);
-        } catch(err) {
-            console.log(err);
-        }
-
-        expect(result).to.eql(expected_result);
-    });
 
     it('Test that no hash error from processRows is thrown', () => {
-        let insert_obj = test_utils.deepClone(INSERT_OBJECT_TEST);
+        let insert_obj = test_utils.deepClone(UPDATE_OBJECT_TEST);
         let error;
         let records_no_hash = [
             {
@@ -365,8 +343,8 @@ describe('Tests for Helium method heUpdateRecords', () => {
             error = err;
         }
 
-        expect(error.message).to.equal('transaction aborted due to record(s) with no hash value, check log for more info');
+        expect(error.message).to.equal('a valid hash attribute must be provided with update record');
         expect(error).to.be.an.instanceOf(Error);
-    });*/
+    });
 
 });
