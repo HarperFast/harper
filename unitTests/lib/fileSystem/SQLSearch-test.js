@@ -56,6 +56,7 @@ let test_instance;
 
 let sandbox;
 let _getColumns_spy;
+let _findColumn_spy;
 let _getTables_spy;
 let _conditionsToFetchAttributeValues_spy;
 let _backtickAllSchemaItems_spy;
@@ -87,6 +88,7 @@ function setClassMethodSpies() {
     // };
     // SQLSearch.__set__('base_path', getHdbBasePath_stub)
     _getColumns_spy = sandbox.spy(SQLSearch.prototype, '_getColumns');
+    _findColumn_spy = sandbox.spy(SQLSearch.prototype, '_findColumn');
     _getTables_spy = sandbox.spy(SQLSearch.prototype, '_getTables');
     _conditionsToFetchAttributeValues_spy = sandbox.spy(SQLSearch.prototype, '_conditionsToFetchAttributeValues');
     _backtickAllSchemaItems_spy = sandbox.spy(SQLSearch.prototype, '_backtickAllSchemaItems');
@@ -982,167 +984,155 @@ describe('Test FileSystem Class',function() {
         }));
     });
 
-    // describe('_retrieveIds()',function() {
-    //     const uniq_shortened_longtext = TEST_DATA_LONGTEXT.reduce((acc, row) => {
-    //         const clone = deepClone(row.remarks);
-    //         clone.slice(0, 254);
-    //         if (!acc.includes(clone)) {
-    //             acc.push(clone);
-    //         }
-    //         return acc;
-    //     },[]);
-    //
-    //     it('should set data property with hash attributes values', mochaAsyncWrapper(async function() {
-    //         const expected_hash_ids = TEST_DATA_DOG.map(col => col.id);
-    //         setupTestInstance();
-    //         await test_instance._getFetchAttributeValues();
-    //
-    //         const test_result = await test_instance._retrieveIds();
-    //
-    //         const test_instance_data = test_instance.data[dog_schema_table_id];
-    //         expect(test_result).to.deep.equal({});
-    //         expect(test_instance_data.__has_hash).to.equal(true);
-    //         expect(Object.keys(test_instance_data.__merged_data).length).to.equal(TEST_DATA_DOG.length);
-    //         expect(Object.keys(test_instance_data.id).length).to.equal(expected_hash_ids.length);
-    //         Object.keys(test_instance_data.id).forEach(val => {
-    //             expect(expected_hash_ids.includes(test_instance_data.id[val])).to.equal(true);
-    //         });
-    //     }));
-    //
-    //     it('should set data property for dog and cat table attributes', mochaAsyncWrapper(async function() {
-    //         const expected_hash_ids_d = TEST_DATA_DOG.map(col => col.id);
-    //         const expected_names_d = TEST_DATA_DOG.reduce((acc, col) => {
-    //             acc[col.id] = col.name;
-    //             return acc;
-    //         }, {});
-    //         const expected_hash_ids_c = TEST_DATA_CAT.map(col => col.id);
-    //         const test_sql_statement = `SELECT d.id, d.name AS name, d.breed, c.age FROM dev.dog d JOIN dev.cat c ON d.id = c.id ORDER BY name`;
-    //         setupTestInstance(test_sql_statement);
-    //         await test_instance._getFetchAttributeValues();
-    //
-    //         const test_result = await test_instance._retrieveIds();
-    //
-    //         const test_instance_data_d = test_instance.data[dog_schema_table_id];
-    //         const test_instance_data_c = test_instance.data[cat_schema_table_id];
-    //         expect(test_result).to.deep.equal({});
-    //         //check this.data for dog table
-    //         expect(test_instance_data_d.__has_hash).to.equal(true);
-    //         expect(Object.keys(test_instance_data_d.__merged_data).length).to.equal(TEST_DATA_DOG.length);
-    //         expect(Object.keys(test_instance_data_d.id).length).to.equal(expected_hash_ids_d.length);
-    //         expect(Object.keys(test_instance_data_d.name).length).to.equal(TEST_DATA_DOG.length);
-    //         Object.keys(test_instance_data_d.id).forEach(val => {
-    //             expect(expected_hash_ids_d.includes(test_instance_data_d.id[val])).to.equal(true);
-    //         });
-    //         Object.keys(test_instance_data_d.name).forEach(val => {
-    //             expect(test_instance_data_d.name[val]).to.equal(expected_names_d[val]);
-    //         });
-    //         //check this.data for cat table
-    //         expect(test_instance_data_c.__has_hash).to.equal(true);
-    //         expect(Object.keys(test_instance_data_c.__merged_data).length).to.equal(TEST_DATA_CAT.length);
-    //         expect(Object.keys(test_instance_data_c.id).length).to.equal(expected_hash_ids_c.length);
-    //         Object.keys(test_instance_data_c.id).forEach(val => {
-    //             expect(expected_hash_ids_c.includes(test_instance_data_c.id[val])).to.equal(true);
-    //         });
-    //     }));
-    //
-    //     it('should set data property hash values in WHERE clause', mochaAsyncWrapper(async function() {
-    //         const test_sql_statement = `${sql_basic_dog_select} WHERE id IN(${sql_where_in_ids.toString()})`;
-    //         setupTestInstance(test_sql_statement);
-    //         await test_instance._getFetchAttributeValues();
-    //
-    //         const test_results = await test_instance._retrieveIds();
-    //
-    //         const test_instance_data = test_instance.data[dog_schema_table_id];
-    //         expect(test_results).to.deep.equal({});
-    //         expect(test_instance_data.__has_hash).to.equal(true);
-    //         expect(Object.keys(test_instance_data.__merged_data).length).to.equal(sql_where_in_ids.length);
-    //         expect(Object.keys(test_instance_data.id).length).to.equal(sql_where_in_ids.length);
-    //         Object.keys(test_instance_data.id).forEach(val => {
-    //             expect(sql_where_in_ids.includes(test_instance_data.id[val])).to.equal(true);
-    //         });
-    //     }));
-    //
-    //     it('should return blob dir paths for unique char-limited long text values and set ids in data property', mochaAsyncWrapper(async function() {
-    //         const test_sql_statement = `SELECT * FROM dev.longtext ORDER BY remarks`;
-    //         setupTestInstance(test_sql_statement);
-    //         await test_instance._getFetchAttributeValues();
-    //
-    //         const test_results = await test_instance._retrieveIds();
-    //
-    //         const test_instance_data = test_instance.data[longtext_schema_table_id];
-    //         expect(test_instance_data.__has_hash).to.equal(true);
-    //         expect(test_instance_data.__hash_name).to.equal(HASH_ATTRIBUTE);
-    //         expect(Object.keys(test_instance_data.__merged_data).length).to.equal(TEST_DATA_LONGTEXT.length);
-    //         expect(Object.keys(test_results).length).to.equal(uniq_shortened_longtext.length);
-    //     }));
-    //
-    //     it('should return blob data for hash values in WHERE clause', mochaAsyncWrapper(async function() {
-    //         const test_sql_statement = `SELECT * FROM dev.longtext WHERE id IN(${sql_where_in_ids.toString()}) ORDER BY remarks`;
-    //         setupTestInstance(test_sql_statement);
-    //         await test_instance._getFetchAttributeValues();
-    //
-    //         const test_results = await test_instance._retrieveIds();
-    //
-    //         const test_results_keys = Object.keys(test_results);
-    //         const test_instance_data = test_instance.data[longtext_schema_table_id];
-    //         expect(test_instance_data.__has_hash).to.equal(true);
-    //         expect(test_instance_data.__hash_name).to.equal(HASH_ATTRIBUTE);
-    //         expect(Object.keys(test_instance_data.__merged_data).length).to.equal(sql_where_in_ids.length);
-    //         expect(test_results_keys.length).to.equal(uniq_shortened_longtext.length);
-    //     }));
-    //
-    //     it('should set a remarks property on this.data and return all unique file paths for remarks blob dirs', mochaAsyncWrapper(async function() {
-    //         const test_regex = "dock";
-    //         const test_sql_statement = `SELECT * FROM dev.longtext WHERE remarks regexp '${test_regex}'`;
-    //         setupTestInstance(test_sql_statement);
-    //         await test_instance._getFetchAttributeValues();
-    //
-    //         const test_results = await test_instance._retrieveIds();
-    //
-    //         const test_results_keys = Object.keys(test_results);
-    //         const test_instance_data = test_instance.data[longtext_schema_table_id];
-    //         expect(test_instance_data.__has_hash).to.equal(false);
-    //         expect(test_instance_data.__hash_name).to.equal(HASH_ATTRIBUTE);
-    //         expect(test_instance_data.__merged_data).to.deep.equal({});
-    //         expect(test_instance_data.remarks).to.deep.equal({});
-    //         expect(test_results_keys.length).to.equal(uniq_shortened_longtext.length);
-    //     }));
-    // });
+    describe('_getFinalAttributeData()', function() {
+        it('should return/skip if row_count equals 0', mochaAsyncWrapper(async function() {
+            const existing_attrs = { dog: ['id']};
+            const joined_length = 0;
+            setupTestInstance();
+            sandbox.resetHistory();
+            await test_instance._getFinalAttributeData(existing_attrs, joined_length);
 
-    // describe('_readBlobFilesForSetup()',function() {
-    //     it('should break if blob_paths argument is an empty object', mochaAsyncWrapper(async function() {
-    //         setupTestInstance();
-    //         const initial_data_val = deepClone(test_instance.data);
-    //
-    //         await test_instance._readBlobFilesForSetup({});
-    //
-    //         expect(test_instance.data).to.deep.equal(initial_data_val);
-    //         expect(readdir_spy.called).to.equal(false);
-    //     }));
-    //
-    //     it('should collect full blob value and assign it to hash value', mochaAsyncWrapper(async function() {
-    //         const test_regex = "dock";
-    //         const test_sql_statement = `SELECT * FROM dev.longtext WHERE remarks regexp '${test_regex}'`;
-    //         setupTestInstance(test_sql_statement);
-    //         await test_instance._getFetchAttributeValues();
-    //         const blob_paths = await test_instance._retrieveIds();
-    //         const test_instance_data = test_instance.data[longtext_schema_table_id];
-    //
-    //         //validate that remarks property has not been set w/ values
-    //         expect(Object.keys(test_instance_data.remarks).length).to.equal(0);
-    //
-    //         await test_instance._readBlobFilesForSetup(blob_paths);
-    //
-    //         //validate that remarks data has been set w/ full values
-    //         expect(Object.keys(test_instance_data.remarks).length).to.equal(TEST_DATA_LONGTEXT.length);
-    //         TEST_DATA_LONGTEXT.forEach(row => {
-    //             expect(row.remarks).to.equal(test_instance_data.remarks[row.id]);
-    //         })
-    //         expect(test_instance_data.__has_hash).to.equal(false);
-    //         expect(test_instance_data.__hash_name).to.equal(HASH_ATTRIBUTE);
-    //         expect(Object.keys(test_instance_data.__merged_data).length).to.equal(TEST_DATA_LONGTEXT.length);
-    //     }));
-    // });
+            expect(_findColumn_spy.called).to.equal(false);
+            expect(_getData_spy.called).to.equal(false);
+        }));
+
+        it('should consolidate unique columns/attributes and pass them to _getData()', mochaAsyncWrapper( async function() {
+            const existing_attrs = { dog: ['id']};
+            const joined_length = 6;
+            const expected_columns = [
+                {"attribute": "age", "table": {"databaseid": "dev", "tableid": "dog"}},
+                {"attribute": "breed", "table": {"databaseid": "dev", "tableid": "dog"}},
+                {"attribute": "name", "table": {"databaseid": "dev", "tableid": "dog"}}
+            ];
+            const columns = {
+                "columns": [
+                        {"columnid": "*"}, {"columnid": "age", "tableid": "dog"}, {"columnid": "breed", "tableid": "dog"},
+                        {"columnid": "id", "tableid": "dog"}, {"columnid": "name", "tableid": "dog"}
+                    ],
+                "order": [ {"columnid": "id"}, {"columnid": "name"}]
+            };
+            const all_attrs = [
+                {"attribute": "age", "table": {"databaseid": "dev", "tableid": "dog"}},
+                {"attribute": "breed", "table": {"databaseid": "dev", "tableid": "dog"}},
+                {"attribute": "id", "table": {"databaseid": "dev", "tableid": "dog"}},
+                {"attribute": "name", "table": {"databaseid": "dev", "tableid": "dog"}}
+            ];
+            setupTestInstance();
+            _getData_spy = _getData_spy.returns();
+            test_instance.all_table_attributes = all_attrs;
+            test_instance.columns = columns;
+
+            await test_instance._getFinalAttributeData(existing_attrs, joined_length);
+
+            expect(_getData_spy.calledOnce).to.equal(true);
+            expect(_getData_spy.calledWith(expected_columns)).to.equal(true);
+            _getData_spy.reset();
+        }));
+    });
+
+    describe('_getData()',function() {
+
+        it('should set data.merged_data property with hash attributes values', mochaAsyncWrapper(async function() {
+            const all_columns = [
+                {"attribute": "age", "table": {"databaseid": "dev", "tableid": "dog"}},
+                {"attribute": "breed", "table": {"databaseid": "dev", "tableid": "dog"}},
+                {"attribute": "name", "table": {"databaseid": "dev", "tableid": "dog"}}
+            ];
+
+            setupTestInstance();
+            await test_instance._getFetchAttributeValues();
+            await test_instance._consolidateData();
+            _getDataByHash_spy.resetHistory();
+
+            await test_instance._getData(all_columns);
+
+            const test_merged_data = test_instance.data[dog_schema_table_id].__merged_data;
+
+            expect(_getDataByHash_spy.calledOnce).to.equal(true);
+            Object.keys(test_merged_data).forEach(key => {
+                expect(Object.keys(test_merged_data[key]).length).to.equal(4);
+            });
+            TEST_DATA_DOG.forEach(row => {
+                const hash_id = row.id;
+                const attr_keys = Object.keys(row);
+                expect(Object.keys(test_merged_data[hash_id]).length).to.equal(attr_keys.length);
+                attr_keys.forEach(attr => {
+                    expect(test_merged_data[hash_id][attr]).to.equal(row[attr]);
+                });
+            });
+        }));
+
+        it('should set data.merged_data property with hash attributes values for multiple tables', mochaAsyncWrapper(async function() {
+            const test_sql_statement = "SELECT d.id, d.name, d.breed, c.id, c.age FROM dev.dog d JOIN dev.cat c ON d.id = c.id";
+            const all_columns = [
+                {"attribute": "name", "table": {"databaseid": "dev", "tableid": "dog", "as": "d"}},
+                {"attribute": "breed", "table": {"databaseid": "dev", "tableid": "dog", "as": "d"}},
+                {"attribute": "age", "table": {"databaseid": "dev", "tableid": "cat", "as": "c"}}
+            ];
+
+            setupTestInstance(test_sql_statement);
+            await test_instance._getFetchAttributeValues();
+            await test_instance._consolidateData();
+            _getDataByHash_spy.resetHistory();
+            await test_instance._getData(all_columns);
+
+            const test_merged_data_dog = test_instance.data[dog_schema_table_id].__merged_data;
+            const test_merged_data_cat = test_instance.data[cat_schema_table_id].__merged_data;
+
+            expect(_getDataByHash_spy.calledTwice).to.equal(true);
+            Object.keys(test_merged_data_dog).forEach(key => {
+                expect(Object.keys(test_merged_data_dog[key]).length).to.equal(3);
+            });
+            Object.keys(test_merged_data_cat).forEach(key => {
+                expect(Object.keys(test_merged_data_cat[key]).length).to.equal(2);
+            });
+            TEST_DATA_DOG.forEach(row => {
+                const hash_id = row.id;
+                const attr_keys = Object.keys(test_merged_data_dog[1]);
+                expect(Object.keys(test_merged_data_dog[hash_id]).length).to.equal(3);
+                attr_keys.forEach(attr => {
+                    expect(test_merged_data_dog[hash_id][attr]).to.equal(row[attr]);
+                });
+            });
+            TEST_DATA_CAT.forEach(row => {
+                const hash_id = row.id;
+                const attr_keys = Object.keys(test_merged_data_cat[1]);
+                expect(Object.keys(test_merged_data_cat[hash_id]).length).to.equal(2);
+                attr_keys.forEach(attr => {
+                    expect(test_merged_data_cat[hash_id][attr]).to.equal(row[attr]);
+                });
+            });
+        }));
+
+        it('should set longtext/blob values in the data.__merged_data property', mochaAsyncWrapper(async function() {
+            const test_sql_statement = `SELECT * FROM dev.longtext WHERE id IN(${sql_where_in_ids.toString()})`;
+            const all_columns = [{"attribute": "remarks", "table": {"databaseid": "dev", "tableid": "longtext"}}];
+            const expected_results = TEST_DATA_LONGTEXT.filter(row => row.id < 4);
+
+            setupTestInstance(test_sql_statement);
+            await test_instance._getFetchAttributeValues();
+            await test_instance._consolidateData();
+
+            _getDataByHash_spy.resetHistory();
+            await test_instance._getData(all_columns);
+
+            const test_merged_data = test_instance.data[longtext_schema_table_id].__merged_data;
+
+            expect(_getDataByHash_spy.calledOnce).to.equal(true);
+            Object.keys(test_merged_data).forEach(key => {
+                expect(Object.keys(test_merged_data[key]).length).to.equal(2);
+            });
+
+            expected_results.forEach(row => {
+                const hash_id = row.id;
+                const attr_keys = Object.keys(row);
+                expect(Object.keys(test_merged_data[hash_id]).length).to.equal(attr_keys.length);
+                attr_keys.forEach(attr => {
+                    expect(test_merged_data[hash_id][attr]).to.equal(row[attr]);
+                });
+            });
+        }));
+    });
 
     describe('_consolidateData()',function() {
         it('should collect all id and name attribute values for table into __merged_data', mochaAsyncWrapper(async function() {
@@ -1272,249 +1262,6 @@ describe('Test FileSystem Class',function() {
         }));
     });
 
-    // describe('_decideReadPattern()',function() {
-    //     it('should consolidate additional attr columns to pull for 2nd/final sql query', mochaAsyncWrapper(async function() {
-    //         const sql_attr_keys = ['id', 'name'];
-    //         const test_sql_statement = `SELECT * FROM dev.dog WHERE id IN(${sql_where_in_ids}) ORDER BY ${sql_attr_keys.toString()}`;
-    //         const expected_attr_keys = Object.keys(TEST_DATA_DOG[0]).filter(key => !sql_attr_keys.includes(key));
-    //         setupTestInstance(test_sql_statement);
-    //         await test_instance._getFetchAttributeValues();
-    //         await test_instance._retrieveIds();
-    //         await test_instance._consolidateData();
-    //         const join_results = await test_instance._processJoins();
-    //
-    //         await test_instance._decideReadPattern(join_results.existing_attributes, join_results.joined_length);
-    //
-    //         expect(_readRawFiles_spy.called).to.equal(true);
-    //         const spy_args = _readRawFiles_spy.args[0][0];
-    //         expect(spy_args.length).to.equal(expected_attr_keys.length);
-    //         spy_args.forEach(arg => {
-    //             expect(expected_attr_keys.includes(arg.attribute)).to.equal(true);
-    //         });
-    //     }));
-    //
-    //     it('should call _readRawFiles if row count is <= 1000', mochaAsyncWrapper(async function() {
-    //         setupTestInstance();
-    //         await test_instance._getFetchAttributeValues();
-    //         await test_instance._retrieveIds();
-    //         await test_instance._consolidateData();
-    //         const join_results = await test_instance._processJoins();
-    //
-    //         await test_instance._decideReadPattern(join_results.existing_attributes, 500);
-    //
-    //         expect(_readRawFiles_spy.called).to.equal(true);
-    //     }));
-    //
-    //     it('should call _readAttributeValues if row count is > 1000', mochaAsyncWrapper(async function() {
-    //         setupTestInstance();
-    //         await test_instance._getFetchAttributeValues();
-    //         await test_instance._retrieveIds();
-    //         await test_instance._consolidateData();
-    //         const join_results = await test_instance._processJoins();
-    //
-    //         await test_instance._decideReadPattern(join_results.existing_attributes, 1005);
-    //
-    //         expect(_readAttributeValues_spy.called).to.equal(true);
-    //     }));
-    // });
-    //
-    // describe('_readRawFiles()',function() {
-    //     it('should collect ids for each column and call _readAttributeFilesByIds for each column', mochaAsyncWrapper(async function() {
-    //         setupTestInstance();
-    //         await test_instance._getFetchAttributeValues();
-    //         await test_instance._retrieveIds();
-    //         await test_instance._consolidateData();
-    //         const test_columns_data = test_instance.all_table_attributes.filter(data => data.attribute !== HASH_ATTRIBUTE);
-    //         const test_merged_data = test_instance.data[dog_schema_table_id].__merged_data;
-    //
-    //         await test_instance._readRawFiles(test_columns_data);
-    //
-    //         expect(_readAttributeFilesByIds_spy.callCount).to.equal(test_columns_data.length);
-    //         _readAttributeFilesByIds_spy.args.forEach((data, i) => {
-    //             expect(data[0].attribute).to.deep.equal(test_columns_data[i].attribute);
-    //             expect(data[0].table).to.deep.equal(test_columns_data[i].table);
-    //             expect(data[1].length).to.equal(Object.keys(test_merged_data).length);
-    //         });
-    //     }));
-    //
-    //     it('should log an error if column data is not found', mochaAsyncWrapper(async function() {
-    //         setupTestInstance();
-    //         await test_instance._getFetchAttributeValues();
-    //         await test_instance._retrieveIds();
-    //         await test_instance._consolidateData();
-    //         const test_columns_data = test_instance.all_table_attributes.filter(data => data.attribute !== HASH_ATTRIBUTE);
-    //         test_columns_data[0].table.databaseid = "dogzz";
-    //
-    //         await test_instance._readRawFiles(test_columns_data);
-    //
-    //         expect(error_logger_spy.calledOnce).to.equal(true);
-    //         expect(error_logger_spy.args[0][0].message).to.equal(`Cannot read property '__merged_data' of undefined`);
-    //         expect(_readAttributeFilesByIds_spy.callCount).to.equal(test_columns_data.length - 1);
-    //     }));
-    // });
-    //
-    // describe('_readAttributeFilesByIds()',function() {
-    //     it('should query and set attr value for ids provided', mochaAsyncWrapper(async function() {
-    //         setupTestInstance();
-    //         await test_instance._getFetchAttributeValues();
-    //         await test_instance._retrieveIds();
-    //         await test_instance._consolidateData();
-    //         const test_columns_data = test_instance.all_table_attributes.filter(data => data.attribute !== HASH_ATTRIBUTE);
-    //         const test_column = test_columns_data[0];
-    //         const { attribute } = test_column;
-    //         const test_ids = TEST_DATA_DOG.map(row => `${row.id}`);
-    //
-    //         await test_instance._readAttributeFilesByIds(test_column, test_ids);
-    //
-    //         expect(readFile_spy.callCount).to.equal(test_ids.length);
-    //         const test_merged_data = test_instance.data[dog_schema_table_id].__merged_data;
-    //         Object.keys(test_merged_data).forEach(key => {
-    //             const row_data = TEST_DATA_DOG.filter(row => key === `${row.id}`)[0];
-    //             expect(test_merged_data[key][attribute]).to.equal(row_data[attribute]);
-    //         });
-    //     }));
-    // });
-    //
-    // describe('_readAttributeValues()',function() {
-    //     before(() => {
-    //         _readBlobFiles_spy.resolves();
-    //     });
-    //
-    //     after(() => {
-    //         _readBlobFiles_spy.reset();
-    //         _readBlobFiles_spy.callThrough();
-    //     });
-    //
-    //     it('should set values for all non-hash attrs in data property', mochaAsyncWrapper(async function() {
-    //         setupTestInstance();
-    //         await test_instance._getFetchAttributeValues();
-    //         await test_instance._retrieveIds();
-    //         await test_instance._consolidateData();
-    //         const test_columns_data = test_instance.all_table_attributes.filter(data => data.attribute !== HASH_ATTRIBUTE);
-    //         const test_merged_data = test_instance.data[dog_schema_table_id].__merged_data;
-    //
-    //         Object.keys(test_merged_data).forEach(row => {
-    //            expect(Object.keys(test_merged_data[row]).length).to.equal(1);
-    //         });
-    //
-    //         await test_instance._readAttributeValues(test_columns_data);
-    //
-    //         TEST_DATA_DOG.forEach(row => {
-    //             const hash_id = row.id;
-    //             const attr_keys = Object.keys(row);
-    //             expect(Object.keys(test_merged_data[hash_id]).length).to.equal(attr_keys.length);
-    //             attr_keys.forEach(attr => {
-    //                 expect(test_merged_data[hash_id][attr]).to.equal(row[attr]);
-    //             });
-    //         });
-    //     }));
-    //
-    //     it('should set values for all non-hash attrs not processed in initial pass', mochaAsyncWrapper(async function() {
-    //         const sql_attr_keys = ['id', 'name'];
-    //         const test_sql_statement = `SELECT * FROM dev.dog WHERE id IN(${sql_where_in_ids}) ORDER BY ${sql_attr_keys.toString()}`;
-    //
-    //         setupTestInstance(test_sql_statement);
-    //         await test_instance._getFetchAttributeValues();
-    //         await test_instance._retrieveIds();
-    //         await test_instance._consolidateData();
-    //         const test_columns_data = test_instance.all_table_attributes.filter(data => data.attribute !== HASH_ATTRIBUTE);
-    //         const test_merged_data = test_instance.data[dog_schema_table_id].__merged_data;
-    //
-    //         Object.keys(test_merged_data).forEach(row => {
-    //            expect(Object.keys(test_merged_data[row]).length).to.equal(sql_attr_keys.length);
-    //         });
-    //
-    //         await test_instance._readAttributeValues(test_columns_data);
-    //
-    //         expect(_readBlobFiles_spy.called).to.equal(false);
-    //         TEST_DATA_DOG.forEach(row => {
-    //             const hash_id = row.id;
-    //             const attr_keys = Object.keys(row);
-    //             expect(Object.keys(test_merged_data[hash_id]).length).to.equal(attr_keys.length);
-    //             attr_keys.forEach(attr => {
-    //                 expect(test_merged_data[hash_id][attr]).to.equal(row[attr]);
-    //             });
-    //         });
-    //     }));
-    //
-    //     it('should call readBlobFiles to set values for all non-hash longtext attrs not processed in initial pass', mochaAsyncWrapper(async function() {
-    //         const test_sql_statement = `SELECT * FROM dev.longtext`;
-    //
-    //         setupTestInstance(test_sql_statement);
-    //         await test_instance._getFetchAttributeValues();
-    //         const blob_paths = await test_instance._retrieveIds();
-    //         await test_instance._readBlobFilesForSetup(blob_paths);
-    //         await test_instance._consolidateData();
-    //         const test_columns_data = test_instance.all_table_attributes.filter(data => data.attribute !== HASH_ATTRIBUTE);
-    //         const test_merged_data = test_instance.data[longtext_schema_table_id].__merged_data;
-    //
-    //         Object.keys(test_merged_data).forEach(row => {
-    //            expect(Object.keys(test_merged_data[row]).length).to.equal(1);
-    //         });
-    //
-    //         await test_instance._readAttributeValues(test_columns_data);
-    //
-    //         expect(_readBlobFiles_spy.calledOnce).to.equal(true);
-    //         expect(Object.keys(_readBlobFiles_spy.args[0][0]).length).to.equal(24);
-    //         Object.keys(test_merged_data).forEach(row => {
-    //             expect(Object.keys(test_merged_data[row]).length).to.equal(1);
-    //         });
-    //     }));
-    // });
-    //
-    // describe('_readBlobFiles()',function() {
-    //     const expected_results = TEST_DATA_LONGTEXT.filter(row => row.id < 4);
-    //
-    //     //blob paths that should be passed to the method for the test rows with ids 1, 2, or 3
-    //     const test_blob_paths = {
-    //         "dev/longtext/remarks/RIVERFRONT LIFESTYLE! New dock, new roof and new appliances. For sale fully furnished. Beautiful custom-built 2-story home with pool. Panoramic river views and open floor plan -- great for entertaining. Hardwood floors flow throughout. Enjoy sunsets over ": {
-    //             attribute: "remarks",
-    //             table: {
-    //                 databaseid: "dev",
-    //                 tableid: "longtext"
-    //             }
-    //         },
-    //         "dev/longtext/remarks/Come see the kitchen remodel and new wood flooring.  Custom built by Howard White in 2007, this immaculate Deerwood home enjoys a view of the 18th fairway. From the moment you step into the foyer, you will be impressed with the bright, open floor plan. Th": {
-    //             attribute: "remarks",
-    //             table: {
-    //                 databaseid: "dev",
-    //                 tableid: "longtext"
-    //             }
-    //         },
-    //         "dev/longtext/remarks/This custom built dream home is stunningly gorgeous!  It is a 5+ acres luxury equestrian property with access to Jennings State Forest from your backyard, no need to trailer your horses anywhere for a beautifully scenic peaceful ride.  This amazing home i": {
-    //             attribute: "remarks",
-    //             table: {
-    //                 databaseid: "dev",
-    //                 tableid: "longtext"
-    //             }
-    //         }
-    //     };
-    //
-    //     it('should set longtext/blob values in the data property', mochaAsyncWrapper(async function() {
-    //         const test_sql_statement = `SELECT * FROM dev.longtext WHERE id IN(${sql_where_in_ids.toString()})`;
-    //         setupTestInstance(test_sql_statement);
-    //         await test_instance._getFetchAttributeValues();
-    //         const blob_paths = await test_instance._retrieveIds();
-    //         await test_instance._readBlobFilesForSetup(blob_paths);
-    //         await test_instance._consolidateData();
-    //         const test_merged_data = test_instance.data[longtext_schema_table_id].__merged_data;
-    //         Object.keys(test_merged_data).forEach(key => {
-    //             expect(Object.keys(test_merged_data[key]).length).to.equal(1);
-    //         });
-    //
-    //         await test_instance._readBlobFiles(test_blob_paths);
-    //
-    //         expected_results.forEach(row => {
-    //             const hash_id = row.id;
-    //             const attr_keys = Object.keys(row);
-    //             expect(Object.keys(test_merged_data[hash_id]).length).to.equal(attr_keys.length);
-    //             attr_keys.forEach(attr => {
-    //                 expect(test_merged_data[hash_id][attr]).to.equal(row[attr]);
-    //             });
-    //         });
-    //     }));
-    // });
-
     describe('_finalSQL()',function() {
         it('should return final sql results sorted by id in DESC order', mochaAsyncWrapper(async function() {
             const expected_hashes = TEST_DATA_DOG.reduce((acc, row) => {
@@ -1526,7 +1273,6 @@ describe('Test FileSystem Class',function() {
             setupTestInstance(test_sql_statement);
             await test_instance._getFetchAttributeValues();
             await test_instance._consolidateData();
-            const join_results = await test_instance._processJoins();
             const existing_attrs = { dog: ['id']};
             const joined_length = 6;
             await test_instance._getFinalAttributeData(existing_attrs, joined_length);
@@ -1563,27 +1309,6 @@ describe('Test FileSystem Class',function() {
             expect(test_result).to.equal(initial_statement_string);
         });
     });
-
-    // describe('_stripFileExtension()',function() {
-    //     it('should remove `.hdb` from the argument passed',function() {
-    //         const file_name = "very_important_file";
-    //         const file_ext_name = ".hdb";
-    //         const test_file_name = file_name + file_ext_name;
-    //         setupTestInstance();
-    //
-    //         const test_result = test_instance._stripFileExtension(test_file_name);
-    //
-    //         expect(test_result).to.equal(file_name);
-    //     });
-    //
-    //     it('should return undefined if no argument is passed',function() {
-    //         setupTestInstance();
-    //
-    //         const test_result = test_instance._stripFileExtension();
-    //
-    //         expect(test_result).to.equal(undefined);
-    //     });
-    // });
 });
 
 // Methods for parsing and organizing data from SQL csv test data for tests above
