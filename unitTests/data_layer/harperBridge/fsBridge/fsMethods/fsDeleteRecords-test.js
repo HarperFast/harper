@@ -127,8 +127,8 @@ describe('Tests for file system module fsDeleteRecords', () => {
         //let test_err_result = await test_utils.testError(fs_delete_records(DELETE_OBJ_TEST), 'Item not found');
         let result = await fs_delete_records(DELETE_OBJ_TEST);
         let compare_object = new DeleteResponseObject();
-        compare_object.message = '0 of 2 records successfully deleted';
-        compare_object.skipped_hashes =  [ 8, 9 ];
+        //compare_object.message = '0 of 2 records successfully deleted';
+        compare_object.skipped_hashes =  [8,9];
         assert.deepStrictEqual(result, compare_object);
     });
 });
