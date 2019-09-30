@@ -186,7 +186,14 @@ async function insertChunk(json_message, insert_results, reject, results, parser
     parser.pause();
 
     try {
-        let bulk_load_chunk_result = await callBulkLoad(results.data, json_message.schema, json_message.table, json_message.action);
+        let converted_msg = {
+            schema: json_message.schema,
+            table: json_message.table,
+            action: json_message.action,
+            csv_records: results.data
+        };
+        //let bulk_load_chunk_result = await callBulkLoad(results.data, json_message.schema, json_message.table, json_message.action);
+        let bulk_load_chunk_result = op_func_caller.callOperationFunctionAsAwait(callBulkLoadRf, converted_msg, postCSVLoadFunction);
         insert_results.records += bulk_load_chunk_result.records;
         insert_results.number_written += bulk_load_chunk_result.number_written;
         parser.resume();
