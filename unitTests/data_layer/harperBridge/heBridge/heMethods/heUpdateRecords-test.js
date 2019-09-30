@@ -186,8 +186,6 @@ describe('Tests for Helium method heUpdateRecords', () => {
          try {
              result = heUpdateRecords(UPDATE_OBJECT_TEST);
              search_result = hdb_helium.searchByKeys(row_keys, DATASTORES_TEST);
-             console.log(result);
-             console.log(search_result);
          } catch(err) {
              error = err;
          }
@@ -257,9 +255,9 @@ describe('Tests for Helium method heUpdateRecords', () => {
         expect(error).to.eql(undefined);
     });
 
-   /* it('Test inserting existing and non-existing rows', () => {
+    it('Test updateing existing and non-existing rows', () => {
         global.hdb_schema[SCHEMA_TABLE_TEST.schema][SCHEMA_TABLE_TEST.name]['attributes'] = ATTRIBUTES_TEST;
-        let insert_obj = test_utils.deepClone(INSERT_OBJECT_TEST);
+        let update_obj = test_utils.deepClone(UPDATE_OBJECT_TEST);
         let new_records = [
             {
                 name: "Harper",
@@ -287,10 +285,10 @@ describe('Tests for Helium method heUpdateRecords', () => {
                 height: 145
             }
         ];
-        insert_obj.records = new_records;
+        update_obj.records = new_records;
         let expected_return_result = {
-            written_hashes: [ '123', '1232' ],
-            skipped_hashes: [ '8', '9' ],
+            written_hashes: [ '8', '9', '123', '1232' ],
+            skipped_hashes: [],
             schema_table: {
                 attributes: ATTRIBUTES_TEST,
                 hash_attribute: 'id',
@@ -309,7 +307,7 @@ describe('Tests for Helium method heUpdateRecords', () => {
         let search_result;
 
         try {
-            result = heUpdateRecords(insert_obj);
+            result = heUpdateRecords(update_obj);
             search_result = hdb_helium.searchByKeys(['8', '9', '123', '1232'], DATASTORES_TEST);
 
         } catch(err) {
@@ -319,7 +317,7 @@ describe('Tests for Helium method heUpdateRecords', () => {
         expect(result).to.eql(expected_return_result);
         expect(search_result).to.eql(expected_search_result);
     });
-
+/*
     it('Test inserting rows that already exist',  () => {
         let expected_result = {
             written_hashes: [],
