@@ -87,5 +87,5 @@ async function readAttributeFiles(table_path, attribute, hash_files, is_hash) {
 
 async function validateHashValuesExist(table_path, hash_attr, hash_files) {
     const valid_hashes = await readAttributeFiles(table_path, hash_attr, hash_files, true);
-    return Object.keys(valid_hashes);
+    return Object.values(valid_hashes);
 }
