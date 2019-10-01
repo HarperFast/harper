@@ -8,14 +8,14 @@
 
 const _ = require('lodash');
 const alasql = require('alasql');
-const alasql_function_importer = require('../../sqlTranslator/alasqlFunctionImporter');
+const alasql_function_importer = require('../sqlTranslator/alasqlFunctionImporter');
 const fs = require('fs-extra');
 const clone = require('clone');
 const RecursiveIterator = require('recursive-iterator');
-const env = require('../../utility/environment/environmentManager');
-const log = require('../../utility/logging/harper_logger');
-const common_utils = require('../../utility/common_utils');
-const harperBridge = require('../../data_layer/harperBridge/harperBridge');
+const env = require('../utility/environment/environmentManager');
+const log = require('../utility/logging/harper_logger');
+const common_utils = require('../utility/common_utils');
+const harperBridge = require('./harperBridge/harperBridge');
 
 
 const exclude_attributes = ['__hash_values','__hash_name','__merged_data','__has_hash'];

@@ -1,6 +1,6 @@
 'use strict';
 
-const test_utils = require('../../test_utils');
+const test_utils = require('../test_utils');
 test_utils.preTestPrep();
 const {
     createMockFS,
@@ -20,16 +20,16 @@ const fs = require('fs-extra');
 const path = require('path');
 const Papa = require('papaparse');
 const rewire = require('rewire');
-const SQLSearch = rewire('../../../lib/fileSystem/SQLSearch');
-const harperBridge = require('../../../data_layer/harperBridge/harperBridge');
-const log = require('../../../utility/logging/harper_logger');
+const SQLSearch = require('../../data_layer/SQLSearch');
+const harperBridge = require('../../data_layer/harperBridge/harperBridge');
+const log = require('../../utility/logging/harper_logger');
 
 const {
     TEST_DATA_AGGR,
     TEST_DATA_CAT,
     TEST_DATA_DOG,
     TEST_DATA_LONGTEXT
-} = require('../../test_data');
+} = require('../test_data');
 
 const TEST_SCHEMA = 'dev';
 const TEST_SCHEMA_NORTHWND = 'northwnd';
@@ -143,7 +143,6 @@ describe('Test FileSystem Class',function() {
     after(function() {
         tearDownMockFS();
         sandbox.restore();
-        rewire('../../../lib/fileSystem/SQLSearch');
     });
 
     describe('constructor()',function() {

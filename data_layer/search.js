@@ -14,7 +14,7 @@ const util = require('util');
 const c_search_by_hash = util.callbackify(harperBridge.searchByHash);
 const c_search_by_value = util.callbackify(harperBridge.searchByValue);
 const c_search_by_conditions = util.callbackify(harperBridge.searchByConditions);
-const SQLSearch = require('../lib/fileSystem/SQLSearch');
+const SQLSearch = require('./SQLSearch');
 
 function searchByHash(search_object, callback){
     try {
