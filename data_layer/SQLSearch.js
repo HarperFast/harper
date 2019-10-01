@@ -30,7 +30,6 @@ const WHERE_CLAUSE_IS_NULL = 'IS NULL';
 //here we call to define and import custom functions to alasql
 alasql_function_importer(alasql);
 
-//TODO - move SQLSearch out of fileSystem dir and into data layer?
 class SQLSearch {
     /**
      * Constructor for FileSearch class
@@ -424,8 +423,6 @@ class SQLSearch {
                 try {
                     search_object.search_attribute = attribute.attribute;
                     search_object.search_value = '*';
-                    //TODO: need to clean this up - too many iterations and transformations - can we set this data somewhere else since we are getting the full results back now?
-                    // can we do a bigger getDataByValue request with all attributes for each individual tables?
                     const matching_data = await harperBridge.getDataByValue(search_object);
                     if (is_hash) {
                         this.data[schema_table].__has_hash = true;
@@ -460,7 +457,6 @@ class SQLSearch {
                 let hash_name = this.data[table].__hash_name;
                 let object_keys = Object.keys(this.data[table].__merged_data);
 
-                // TODO: Can I do this above?
                 object_keys.forEach(id_value => {
                     this.data[table].__merged_data[id_value][hash_name] = common_utils.autoCast(id_value);
                 });
@@ -469,7 +465,7 @@ class SQLSearch {
                     if (exclude_attributes.indexOf(attribute) >= 0 || attribute === hash_name) {
                         return;
                     }
-                    // TODO: This is another loop through the data
+
                     object_keys.forEach(value => {
                         value = value.replace(escaped_slash_regex, '/');
                         if (this.data[table][attribute][value] === null || this.data[table][attribute][value] === undefined) {
