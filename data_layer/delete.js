@@ -88,5 +88,8 @@ async function deleteRecord(delete_object){
             return_msg.deleted_hashes = 0;
             return return_msg;
         }
+
+        throw err;
+
     }
 }
