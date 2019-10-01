@@ -54,7 +54,7 @@ async function csvDataLoad(json_message) {
             schema: json_message.schema,
             table: json_message.table,
             action: json_message.action,
-            csv_records: csv_records
+            data: csv_records
         };
         bulk_load_result = op_func_caller.callOperationFunctionAsAwait(callBulkLoadRf, converted_msg, postCSVLoadFunction);
         //bulk_load_result = await callBulkLoad(csv_records, json_message.schema, json_message.table, json_message.action);
@@ -190,7 +190,7 @@ async function insertChunk(json_message, insert_results, reject, results, parser
             schema: json_message.schema,
             table: json_message.table,
             action: json_message.action,
-            csv_records: results.data
+            data: results.data
         };
         //let bulk_load_chunk_result = await callBulkLoad(results.data, json_message.schema, json_message.table, json_message.action);
         let bulk_load_chunk_result = op_func_caller.callOperationFunctionAsAwait(callBulkLoadRf, converted_msg, postCSVLoadFunction);
@@ -291,8 +291,8 @@ async function callBulkLoadRf(json_msg) {
     let bulk_load_result = {};
 
     try {
-        if (json_msg.csv_records && json_msg.csv_records.length > 0 && validateColumnNames(json_msg.csv_records[0])) {
-            bulk_load_result = await bulkLoad(json_msg.csv_records, json_msg.schema, json_msg.table, json_msg.action);
+        if (json_msg.data && json_msg.data.length > 0 && validateColumnNames(json_msg.data[0])) {
+            bulk_load_result = await bulkLoad(json_msg.data, json_msg.schema, json_msg.table, json_msg.action);
         } else {
             bulk_load_result.message = 'No records parsed from csv file.';
             logger.info(bulk_load_result.message);
@@ -395,7 +395,7 @@ async function postCSVLoadFunction(orig_bulk_msg, result, orig_req) {
         operation: hdb_terms.OPERATIONS_ENUM.CSV_DATA_LOAD,
         schema: orig_bulk_msg.schema,
         table: orig_bulk_msg.table,
-        records:orig_bulk_msg.csv_records
+        records:orig_bulk_msg.data
     };
     if(orig_req) {
         socket_cluster_util.concatSourceMessageHeader(transaction_msg, orig_req);
