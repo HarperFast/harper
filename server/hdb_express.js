@@ -124,9 +124,6 @@ cluster.on('exit', (dead_worker, code, signal) => {
 
 if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     global.isMaster = cluster.isMaster;
-    const search = require('../data_layer/search');
-    const p_search_by_value = promisify(search.searchByValue);
-    const License = require('../utility/registration/licenseObjects').ExtendedLicense;
 
     process.on('uncaughtException', function (err) {
         let os = require('os');
@@ -135,16 +132,6 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         harper_logger.fatal(message);
         process.exit(1);
     });
-
-    let licenseKeySearch = {
-        operation: 'search_by_value',
-        schema: 'system',
-        table: 'hdb_license',
-        hash_attribute: 'license_key',
-        search_attribute: "license_key",
-        search_value: "*",
-        get_attributes: ["*"]
-    };
 
     let restart_event_tracker = new RestartEventObject();
     let restart_in_progress = false;
@@ -187,28 +174,19 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     }
 
     async function launch(){
+        const hdb_license = require('../utility/registration/hdb_license');
+        const helium_utils = require('../utility/helium/heliumUtils');
         await p_schema_to_global();
         await p_users_to_global();
-        let licenses = await p_search_by_value(licenseKeySearch);
 
         global.clustering_on = env.get('CLUSTERING');
-        let license_values = new License();
 
-        const hdb_license = require('../utility/registration/hdb_license');
+        let license_values = await hdb_license.licenseSearch();
 
-        await Promise.all(licenses.map(async (license) => {
-            try {
-                let license_validation = await hdb_license.validateLicense(license.license_key, license.company);
-                if (license_validation.valid_machine && license_validation.valid_date && license_validation.valid_license) {
-                    license_values.exp_date = license_validation.exp_date;
-                    license_values.api_call = license_validation.api_call;
-                    license_values.storage_type = license_validation.storage_type;
-                    license_values.enterprise = true;
-                }
-            } catch(e){
-                harper_logger.error(e);
-            }
-        }));
+        if(license_values.storage_type === terms.STORAGE_TYPES_ENUM.HELIUM){
+            await helium_utils.checkHeliumServerRunning();
+        }
+
         harper_logger.notify(`HarperDB successfully started`);
         harper_logger.info(`Master ${process.pid} is running`);
         harper_logger.info(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);

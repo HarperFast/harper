@@ -15,6 +15,8 @@ const SC_PROC_DESCRIPTOR = 'Cluster Server';
 const HDB_SUPPORT_ADDRESS = 'support@harperdb.io';
 const HDB_SUPPORT_URL = 'https://harperdbhelp.zendesk.com/hc/en-us';
 const SUPPORT_HELP_MSG = `For support, please submit a support request at ${HDB_SUPPORT_URL} or contact ${HDB_SUPPORT_ADDRESS}`;
+const SEARCH_NOT_FOUND_MESSAGE = "None of the specified records were found.";
+const SEARCH_ATTRIBUTE_NOT_FOUND = `hash attribute not found`;
 
 const PERIOD_REGEX = /^\.$/;
 const DOUBLE_PERIOD_REGEX = /^\.\.$/;
@@ -31,6 +33,7 @@ const HASH_FOLDER_NAME = '__hdb_hash';
 const SYSTEM_TABLE_HASH = 'id';
 const CLUSTERING_VERSION_HEADER_NAME = 'hdb_version';
 const HDB_HOME_DIR_NAME = '.harperdb';
+const HDB_FILE_SUFFIX = '.hdb';
 const LICENSE_KEY_DIR_NAME = 'keys';
 const BOOT_PROPS_FILE_NAME = 'hdb_boot_properties.file';
 const UPDATE_FILE_NAME = '.updateConfig.json';
@@ -40,12 +43,11 @@ const RESTART_CODE = 'SIGTSTP';
 const RESTART_CODE_NUM = 24;
 const RESTART_TIMEOUT_MS = 60000;
 const HDB_FILE_PERMISSIONS = 0o700;
-const HDB_FILE_SUFFIX = '.hdb';
 const BLOB_FOLDER_NAME = 'blob';
 const HDB_TRASH_DIR = 'trash';
 const SCHEMA_DIR_NAME = 'schema';
 
-const HELIUM_URL_PREFIX = 'he://localhost/';
+const HELIUM_URL_PREFIX = 'he://';
 
 const CLUSTERING_FOLDER_NAME = 'clustering';
 const CLUSTERING_PAYLOAD_FILE_NAME = '.scPayload.json';
@@ -263,8 +265,10 @@ const HDB_SETTINGS_NAMES = {
     CLUSTERING_ENABLED_KEY: 'CLUSTERING',
     ALLOW_SELF_SIGNED_SSL_CERTS: 'ALLOW_SELF_SIGNED_SSL_CERTS',
     MAX_HDB_PROCESSES: 'MAX_HDB_PROCESSES',
-    CLUSTER_USER: 'CLUSTERING_USER',
-    INSTALL_USER: 'install_user'
+    INSTALL_USER: 'install_user',
+    CLUSTERING_USER_KEY: 'CLUSTERING_USER',
+    HELIUM_VOLUME_PATH_KEY: 'HELIUM_VOLUME_PATH',
+    HELIUM_SERVER_HOST_KEY: 'HELIUM_SERVER_HOST'
 };
 
 /**
@@ -290,7 +294,8 @@ const HDB_SETTINGS_DEFAULT_VALUES = {
     NODE_ENV: 'production',
     CLUSTERING_PORT: '5545',
     CLUSTERING: 'false',
-    MAX_HDB_PROCESSES: 4
+    MAX_HDB_PROCESSES: 4,
+    HELIUM_SERVER_HOST: 'localhost:41000'
 };
 
 // Describes all available job types
@@ -330,6 +335,9 @@ const STORAGE_TYPES_ENUM = {
     HELIUM: 'helium'
 };
 
+const HELIUM_PROCESS_NAME = 'helium';
+const HELIUM_START_SERVER_COMMAND = '--server';
+
 const LICENSE_VALUES = {
     API_CALL_DEFAULT: 10000,
     VERSION_DEFAULT: '2.0.0'
@@ -358,6 +366,9 @@ const CLUSTER_EVENTS_DEFS_ENUM = {
 
 const HELIUM_RESPONSE_CODES = {
     HE_ERR_ITEM_EXISTS: 'HE_ERR_ITEM_EXISTS',
+    HE_ERR_DATASTORE_EXISTS: 'HE_ERR_DATASTORE_EXISTS',
+    HE_ERR_OK: 'HE_ERR_OK',
+    HE_ERR_ITEM_NOT_FOUND: 'HE_ERR_ITEM_NOT_FOUND'
 };
 
 const HELIUM_TIME_STAMP_ENUM = {
@@ -437,5 +448,9 @@ module.exports = {
     STORAGE_TYPES_ENUM,
     HELIUM_RESPONSE_CODES,
     HELIUM_TIME_STAMP_ENUM,
-    HDB_LICENSE_NAME
+    HDB_LICENSE_NAME,
+    SEARCH_NOT_FOUND_MESSAGE,
+    SEARCH_ATTRIBUTE_NOT_FOUND,
+    HELIUM_PROCESS_NAME,
+    HELIUM_START_SERVER_COMMAND
 };

@@ -1,10 +1,8 @@
 'use strict';
 
 const test_utils = require('../../../../test_utils');
-test_utils.preTestPrep();
-test_utils.buildHeliumTestVolume();
+let hdb_helium;
 
-const heliumUtils = require('../../../../../utility/helium/heliumUtils');
 const rewire = require('rewire');
 const heCreateAttribute = rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heCreateAttribute');
 const chai = require('chai');
@@ -12,14 +10,6 @@ const sinon = require('sinon');
 const sinon_chai = require('sinon-chai');
 const { expect } = chai;
 chai.use(sinon_chai);
-
-let hdb_helium;
-try {
-    heliumUtils.createSystemDataStores();
-    hdb_helium = heliumUtils.initializeHelium();
-} catch(err) {
-    console.log(err);
-}
 
 const CREATE_ATTR_OBJ_TEST = {
     operation: "create_attribute",
@@ -48,6 +38,9 @@ describe('Test for Helium method heCreateAttribute', () => {
     let sandbox = sinon.createSandbox();
 
     before(() => {
+        test_utils.preTestPrep();
+        hdb_helium = test_utils.buildHeliumTestVolume();
+
         global.hdb_schema = {
             [CREATE_ATTR_OBJ_TEST.schema]: {
                 [CREATE_ATTR_OBJ_TEST.table]: {
@@ -125,8 +118,7 @@ describe('Test for Helium method heCreateAttribute', () => {
             expect(list_ds_result.includes('attrUnitTest/dog/another_attribute')).to.be.true;
         });
 
-        // TODO: right now this is throwing a bad error if datastore already exists. It shouldn't do that. Waiting on update from levyx
-       /* it('Test that datastore is not created because it already exists', () => {
+        it('Test that datastore is not created because it already exists', () => {
             let expected_result = {
                 message: 'inserted 0 of 1 records',
                 skipped_hashes: ['83j243dz'],
@@ -141,7 +133,7 @@ describe('Test for Helium method heCreateAttribute', () => {
             }
 
             expect(result).to.eql(expected_result);
-        });*/
+        });
 
        it('Test that validation error is thrown', () => {
            let create_attr_obj = test_utils.deepClone(CREATE_ATTR_OBJ_TEST);

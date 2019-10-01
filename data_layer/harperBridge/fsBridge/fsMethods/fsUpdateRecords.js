@@ -105,7 +105,7 @@ function checkForExistingAttributes(schema_table, data_attributes){
  */
 async function unlinkFiles(unlink_paths) {
     try {
-        await unlink(unlink_paths);
+        await unlink.unlink(unlink_paths);
     } catch(err) {
         log.error(err);
     }

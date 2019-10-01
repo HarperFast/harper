@@ -1,6 +1,6 @@
 'use strict';
 
-const heProcessInsertUpdateResponse = require('../heUtility/heProcessInsertUpdateResponse');
+const heProcessResponse = require('../heUtility/heProcessResponse');
 const heProcessRows = require('../heUtility/heProcessRows');
 const heGenerateDataStoreName = require('../heUtility/heGenerateDataStoreName');
 const insertUpdateValidate = require('../../bridgeUtility/insertUpdateValidate');
@@ -35,10 +35,11 @@ function heCreateAttribute(create_attribute_obj) {
     }
 
     let attributes_obj_array = global.hdb_schema[create_attribute_obj.schema][create_attribute_obj.table]['attributes'];
-
-    for (let attribute of attributes_obj_array) {
-        if (attribute.attribute === create_attribute_obj.attribute) {
-            throw new Error(`attribute '${attribute.attribute}' already exists in ${create_attribute_obj.schema}.${create_attribute_obj.table}`);
+    if(Array.isArray(attributes_obj_array) && attributes_obj_array.length > 0) {
+        for (let attribute of attributes_obj_array) {
+            if (attribute.attribute === create_attribute_obj.attribute) {
+                throw new Error(`attribute '${attribute.attribute}' already exists in ${create_attribute_obj.schema}.${create_attribute_obj.table}`);
+            }
         }
     }
 
@@ -66,6 +67,10 @@ function heCreateAttribute(create_attribute_obj) {
 
     try {
         let create_datastore_result = hdb_helium.createDataStores([datastore_name]);
+        if ([hdb_terms.HELIUM_RESPONSE_CODES.HE_ERR_OK, hdb_terms.HELIUM_RESPONSE_CODES.HE_ERR_DATASTORE_EXISTS].indexOf(create_datastore_result[0][1]) < 0) {
+            throw new Error(`There was an error creating datastore: ${create_datastore_result[0][1]}`);
+        }
+
         log.info(create_datastore_result);
         let insert_response = insertData(insert_object);
         log.info('insert object: ' + JSON.stringify(insert_object));
@@ -93,7 +98,7 @@ function insertData(insert_obj){
         let { schema_table, attributes } = insertUpdateValidate(insert_obj);
         let { datastores, processed_rows } = heProcessRows(insert_obj, attributes, schema_table);
         let he_response = hdb_helium.insertRows(datastores, processed_rows);
-        let { written_hashes, skipped_hashes } = heProcessInsertUpdateResponse(he_response);
+        let { written_hashes, skipped_hashes } = heProcessResponse(he_response, hdb_terms.OPERATIONS_ENUM.INSERT);
         convertOperationToTransaction(insert_obj, written_hashes, schema_table.hash_attribute);
 
         return returnObject(ACTION, written_hashes, insert_obj, skipped_hashes);

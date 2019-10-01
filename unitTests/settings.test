@@ -1,9 +1,66 @@
-PRIVATE_KEY=/Users/elipalmer/harperdb/unitTests/envDir/utility/keys/privateKey.pem
-CERTIFICATE=/Users/elipalmer/harperdb/unitTests/envDir/utility/keys/certificate.pem
-LOGGER=1
+	;Settings for the HarperDB process
+	;The directory harperdb has been installed in
+PROJECT_DIR=/home/kyle/WebstormProjects/harperdb/unitTests/server/clustering
+	;The directory selected during install where the database files reside
+HDB_ROOT=/home/kyle/WebstormProjects/harperdb/unitTests/envDir
+	;The port the HarperDB REST interface will listen on
+HTTP_PORT=12345
+	;If HTTPS is enabled, the port the HarperDB REST interface will listen on
+HTTPS_PORT=31283
+	;The path to the SSL certificate used when running with HTTPS enabled
+CERTIFICATE=/home/kyle/WebstormProjects/harperdb/unitTests/server/clustering/envDir/utilities/keys/certificate.pem
+	;The path to the SSL private key used when running with HTTPS enabled
+PRIVATE_KEY=/home/kyle/WebstormProjects/harperdb/unitTests/envDir/utility/keys/privateKey.pem
+	;Set to true to enable HTTPS on the HarperDB REST endpoint
+Requires a valid certificate and key=
+HTTPS_ON=FALSE
+	;Set to true to have HarperDB run using standard HTTP
+HTTP_ON=TRUE
+	;Set to true to enable Cross Origin Resource Sharing, which allows requests across a domain
+CORS_ON=TRUE
+	;Allows for setting allowable domains with CORS
+Comma separated list=
+CORS_WHITELIST=
+	;Length of time in milliseconds after which a request will timeout
+Defaults to 120,000 ms (2 minutes)=
+SERVER_TIMEOUT_MS=120000
+	;Set to control amount of logging generated
+Accepted levels are trace, debug, warn, error, fatal=
 LOG_LEVEL=debug
-LOG_PATH=/Users/elipalmer/harperdb/unitTests/envDir/log/hdb_log.log
+	;Setting LOGGER to 1 uses the WINSTON logger
+	; 2 Uses the more performant PINO logger
+LOGGER=1
+	;The path where log files will be written
+LOG_PATH=/home/kyle/WebstormProjects/harperdb/unitTests/envDir/log/hdb_log.log
+	;Set to true to enable daily log file rotations - each log file name will be prepended with YYYY-MM-DD (for WINSTON logger only)
 LOG_DAILY_ROTATE=false
-PROJECT_DIR=/Users/elipalmer/harperdb/unitTests/envDir/
+	;Set the number of daily log files to maintain when LOG_DAILY_ROTATE is enabled
+If no integer value is set, no limit will be set for=
+	;daily log files which may consume a large amount of storage depending on your log settings
+LOG_MAX_DAILY_FILES=
+	;The environment used by NodeJS
+Setting to production will be the most performant, settings to development will generate more logging=
+NODE_ENV=production
+	;This allows self signed certificates to be used in clustering
+This is a security risk=
+	;as clustering will not validate the cert, so should only be used internally
+	;The HDB install creates a self signed certificate, if you use that cert this must be set to true
+ALLOW_SELF_SIGNED_SSL_CERTS=true
+	;Set the max number of processes HarperDB will start
+This can also be limited by number of cores and licenses=
+MAX_HDB_PROCESSES=8
+	;Set to true to enable clustering
+Requires a valid enterprise license=
 CLUSTERING=TRUE
+	;The port that will be used for HarperDB clustering
+CLUSTERING_PORT=12345
+	;The name of this node in your HarperDB cluster topology
+This must be a value unique from the rest of your cluster node names=
 NODE_NAME=1231412de213
+	;The user used to connect to other instances of HarperDB, this user must have a role of cluster_user
+CLUSTERING_USER=test_cluster_user
+	;Specify the file system path to where the Helium volume will reside
+HELIUM_VOLUME_PATH=/home/kyle/WebstormProjects/harperdb/unitTests/envDir/helium
+HELIUM_SERVER_HOST=localhost:41000
+PROCESS_DIR_TEST=I'm A Test
+VERSION=1.1.1

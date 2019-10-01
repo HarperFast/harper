@@ -5034,7 +5034,7 @@
 									"",
 									"pm.test(\"SQL delete successful reponse\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.message).to.eql(\"records successfully deleted\");",
+									"    pm.expect(jsonData.message).to.include(\"successfully deleted\");",
 									"});",
 									""
 								],
@@ -18886,7 +18886,9 @@
 						"header": [
 							{
 								"key": "Content-Type",
-								"value": "application/json"
+								"name": "Content-Type",
+								"value": "application/json",
+								"type": "text"
 							},
 							{
 								"key": "Authorization",

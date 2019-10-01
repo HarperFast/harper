@@ -275,7 +275,7 @@ var HDB = /** @class */ (function () {
     */
     HDB.prototype.listDataStores = function (regex) {
         var ret;
-        if (regex === undefined) {
+        if (regex !== undefined) {
             ret = HDBjs.listDataStores(regex);
         }
         else {

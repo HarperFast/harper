@@ -237,7 +237,7 @@ describe('Test for file system module fsUpdateRecords', () => {
         let log_error_spy;
 
         before(() => {
-            fsUpdateRecords.__set__('unlink', unlink_stub);
+            fsUpdateRecords.__set__('unlink', {unlink:unlink_stub});
             log_error_spy = sandbox.spy(log, 'error');
         });
 

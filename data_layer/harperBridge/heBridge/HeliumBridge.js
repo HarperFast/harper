@@ -5,21 +5,48 @@ const log = require('../../../utility/logging/harper_logger');
 const BridgeMethods = require("../BridgeMethods.js");
 const heCreateRecords = require('./heMethods/heCreateRecords');
 const heCreateAttribute = require('./heMethods/heCreateAttribute');
-// const heCreateSchema = require('./heMethods/heCreateSchema');
-// const heDeleteRecords = require('./heMethods/heDeleteRecords');
+const heCreateSchema = require('./heMethods/heCreateSchema');
+const heDeleteRecords = require('./heMethods/heDeleteRecords');
 const heGetDataByHash = require('./heMethods/heGetDataByHash');
 const heSearchByHash = require('./heMethods/heSearchByHash');
 const heGetDataByValue = require('./heMethods/heGetDataByValue');
 const heSearchByValue = require('./heMethods/heSearchByValue');
 // const heSearchByConditions = require('./heMethods/heSearchByConditions');
 // const heDropSchema = require('./heMethods/heDropSchema');
-// const heCreateTable = require('./heMethods/heCreateTable');
-// const heUpdateRecords = require('./heMethods/heUpdateRecords');
+const heCreateTable = require('./heMethods/heCreateTable');
+const heUpdateRecords = require('./heMethods/heUpdateRecords');
 
 class HeliumBridge extends BridgeMethods {
+    async createSchema(create_schema_obj) {
+        try {
+            return heCreateSchema(create_schema_obj);
+        } catch(err) {
+            log.error(err);
+            throw err;
+        }
+    }
+
+    async createTable(table, table_create_obj) {
+        try {
+            return heCreateTable(table, table_create_obj);
+        } catch(err) {
+            log.error(err);
+            throw err;
+        }
+    }
+
     async createRecords(insert_obj) {
         try {
             return heCreateRecords(insert_obj);
+        } catch(err) {
+            log.error(err);
+            throw err;
+        }
+    }
+
+    async updateRecords(update_obj) {
+        try {
+            return heUpdateRecords(update_obj);
         } catch(err) {
             log.error(err);
             throw err;
@@ -71,6 +98,14 @@ class HeliumBridge extends BridgeMethods {
         }
     }
 
+    async deleteRecords(delete_obj) {
+        try {
+            return heDeleteRecords(delete_obj);
+        } catch(err) {
+            log.error(err);
+            throw err;
+        }
+    }
 }
 
 module.exports = HeliumBridge;
