@@ -60,7 +60,7 @@ async function csvDataLoad(json_message) {
         } else {
             converted_msg.data = json_message.data;
         }
-        bulk_load_result = op_func_caller.callOperationFunctionAsAwait(callBulkLoad, converted_msg, postCSVLoadFunction);
+        bulk_load_result = await op_func_caller.callOperationFunctionAsAwait(callBulkLoad, converted_msg, postCSVLoadFunction);
     } catch(e) {
         throw e;
     }
@@ -104,7 +104,7 @@ async function csvURLLoad(json_message) {
             throw new Error(url_response.message);
         }
         converted_msg.data = await callMiddleware(ALASQL_MIDDLEWARE_PARSE_PARAMETERS, [url_response.body]);
-        bulk_load_result = op_func_caller.callOperationFunctionAsAwait(callBulkLoad, converted_msg, postCSVLoadFunction);
+        bulk_load_result = await op_func_caller.callOperationFunctionAsAwait(callBulkLoad, converted_msg, postCSVLoadFunction);
     } catch(e) {
         throw new Error(e);
     }
@@ -376,7 +376,7 @@ async function bulkLoad(records, schema, table, action){
 
 async function postCSVLoadFunction(orig_bulk_msg, result, orig_req) {
     if(!orig_bulk_msg.transact_to_cluster) {
-        return;
+        return result;
     }
     let transaction_msg = hdb_utils.getClusterMessage(hdb_terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
     transaction_msg.__transacted = true;
