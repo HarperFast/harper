@@ -1,7 +1,7 @@
 'use strict';
 
 const test_utils = require('../../../../test_utils');
-test_utils.preTestPrep();
+let hdb_helium;
 
 const heProcessRows = require('../../../../../data_layer/harperBridge/heBridge/heUtility/heProcessRows');
 const hdb_terms = require('../../../../../utility/hdbTerms');
@@ -50,6 +50,29 @@ const INSERT_OBJECT_TEST = {
     ]
 };
 
+const HASHES_TEST = [8, 9, 12, 10];
+
+const UPDATE_OBJECT_TEST = {
+    operation: "update",
+    schema: "dev",
+    table: "dog",
+    records: [
+        {
+            name: "Brian",
+            breed: "Griffin",
+            id: "88",
+            age: 5
+        },
+        {
+            name: "Penny",
+            breed: "Pure",
+            id: "9",
+            age: 5,
+            height: 145
+        }
+    ]
+};
+
 const ATTRIBUTES_TEST = [
     "name",
     "breed",
@@ -62,16 +85,30 @@ const LONG_CHAR_TEST = "z2xFuWBiQgjAAAzgAK80e35FCuFzNHpicBWzsWZW055mFHwBxdU5yE5K
     "faotQUlygf8Hv3E89f2v3KRzAX5FylEKwv4GJpSoZbXpgJ1mhmOjGUCAh3sipI5rVV0yvz6dbkXOw7xE5XlCHBRnc3T6BVyHIlUmFdlBowy" +
     "vAy7MT49mg6wn5yCqPEPFkcva2FNRYSNxljmu1XxN65mTKiTw2lvM0Yl2o0";
 
+function buildTestData(insert_obj, attributes, schema_table) {
+    try {
+        let { datastores, processed_rows } = heProcessRows(insert_obj, attributes, schema_table, HASHES_TEST);
+        hdb_helium.createDataStores(datastores);
+        hdb_helium.insertRows(datastores, processed_rows);
+    } catch(err) {
+        console.log(err);
+    }
+}
+
 describe('Tests for Helium utility heProcessRows', () => {
     let insert_obj_single;
     let sandbox = sinon.createSandbox();
 
     before(() => {
+        test_utils.preTestPrep();
+        hdb_helium = test_utils.buildHeliumTestVolume();
         sandbox.stub(Date, 'now').returns('80443');
+        buildTestData(INSERT_OBJECT_TEST, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST);
     });
 
     after(() => {
         sandbox.restore();
+        test_utils.teardownHeliumTestVolume(global.hdb_helium);
     });
 
     it('Test return obj is as expected for multiple uneven records', () => {
@@ -85,7 +122,7 @@ describe('Tests for Helium utility heProcessRows', () => {
                 [ "10", [ "Rob", "Mutt", "10", 5, 145, "80443", "80443" ] ]
             ]
         };
-        let result = heProcessRows(INSERT_OBJECT_TEST, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST);
+        let result = heProcessRows(INSERT_OBJECT_TEST, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST, HASHES_TEST);
 
         expect(result).to.eql(expected_result);
     });
@@ -104,7 +141,7 @@ describe('Tests for Helium utility heProcessRows', () => {
             datastores: [ "dev/dog/name", "dev/dog/breed", "dev/dog/id", "dev/dog/age", "dev/dog/height", "dev/dog/__createdtime__",  "dev/dog/__updatedtime__" ],
             processed_rows: [ [ "8", [ "Harper", "Mutt", "8", 5, null, "80443", "80443" ] ] ]
         };
-        let result = heProcessRows(insert_obj_single, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST);
+        let result = heProcessRows(insert_obj_single, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST, HASHES_TEST);
 
         expect(result).to.eql(expected_result);
     });
@@ -114,19 +151,28 @@ describe('Tests for Helium utility heProcessRows', () => {
             datastores: [ "dev/dog/id", "dev/dog/__createdtime__",  "dev/dog/__updatedtime__" ],
             processed_rows: [ [ "8", [ "8", "80443", "80443" ] ] ]
         };
-        let result = heProcessRows(insert_obj_single, ["id"], SCHEMA_TABLE_TEST);
+        let result = heProcessRows(insert_obj_single, ["id"], SCHEMA_TABLE_TEST, HASHES_TEST);
 
         expect(result).to.eql(expected_result);
     });
 
-    it('Test return obj is as expected for a single datastore and row', () => {
+    it('Test return obj is as expected for a single datastore and row update', () => {
         let update_obj = test_utils.deepClone(insert_obj_single);
         update_obj.operation = 'update';
         let expected_result = {
             datastores: [ "dev/dog/id", "dev/dog/__createdtime__",  "dev/dog/__updatedtime__" ],
             processed_rows: [ [ "8", [ "8", null, "80443" ] ] ]
         };
-        let result = heProcessRows(update_obj, ["id"], SCHEMA_TABLE_TEST);
+        let result = heProcessRows(update_obj, ["id"], SCHEMA_TABLE_TEST, HASHES_TEST);
+
+        expect(result).to.eql(expected_result);
+    });
+
+    it('Test return obj is as expected for update when value does not exist', () => {
+        let expected_result = {
+            datastores: [ 'dev/dog/name', 'dev/dog/breed', 'dev/dog/id', 'dev/dog/age', 'dev/dog/height', 'dev/dog/__createdtime__', 'dev/dog/__updatedtime__' ],
+            processed_rows: [ [ '88', [ 'Brian', 'Griffin', '88', 5, null, '80443', '80443' ] ], [ '9', [ 'Penny', 'Pure', '9', 5, 145, null, '80443' ] ] ] };
+        let result = heProcessRows(UPDATE_OBJECT_TEST, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST, HASHES_TEST);
 
         expect(result).to.eql(expected_result);
     });
@@ -142,7 +188,7 @@ describe('Tests for Helium utility heProcessRows', () => {
         ];
         let error;
         try {
-            heProcessRows(insert_obj, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST);
+            heProcessRows(insert_obj, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST, HASHES_TEST);
         } catch(err) {
             error = err;
         }
@@ -163,7 +209,7 @@ describe('Tests for Helium utility heProcessRows', () => {
         ];
         let error;
         try {
-            heProcessRows(insert_obj, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST);
+            heProcessRows(insert_obj, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST, HASHES_TEST);
         } catch(err) {
             error = err;
         }
@@ -184,7 +230,7 @@ describe('Tests for Helium utility heProcessRows', () => {
         ];
         let error;
         try {
-            heProcessRows(insert_obj, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST);
+            heProcessRows(insert_obj, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST, HASHES_TEST);
         } catch(err) {
             error = err;
         }
@@ -199,7 +245,7 @@ describe('Tests for Helium utility heProcessRows', () => {
 
         let error;
         try {
-            heProcessRows(INSERT_OBJECT_TEST, attributes, SCHEMA_TABLE_TEST);
+            heProcessRows(INSERT_OBJECT_TEST, attributes, SCHEMA_TABLE_TEST, HASHES_TEST);
         } catch(err) {
             error = err;
         }
@@ -214,7 +260,7 @@ describe('Tests for Helium utility heProcessRows', () => {
 
         let error;
         try {
-            heProcessRows(INSERT_OBJECT_TEST, attributes, SCHEMA_TABLE_TEST);
+            heProcessRows(INSERT_OBJECT_TEST, attributes, SCHEMA_TABLE_TEST, HASHES_TEST);
         } catch(err) {
             error = err;
         }
@@ -229,7 +275,7 @@ describe('Tests for Helium utility heProcessRows', () => {
 
         let error;
         try {
-            heProcessRows(INSERT_OBJECT_TEST, attributes, SCHEMA_TABLE_TEST);
+            heProcessRows(INSERT_OBJECT_TEST, attributes, SCHEMA_TABLE_TEST, HASHES_TEST);
         } catch(err) {
             error = err;
         }
@@ -244,7 +290,7 @@ describe('Tests for Helium utility heProcessRows', () => {
 
         let error;
         try {
-            heProcessRows(INSERT_OBJECT_TEST, attributes, SCHEMA_TABLE_TEST);
+            heProcessRows(INSERT_OBJECT_TEST, attributes, SCHEMA_TABLE_TEST, HASHES_TEST);
         } catch(err) {
             error = err;
         }

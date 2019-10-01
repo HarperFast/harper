@@ -5,13 +5,15 @@ const hdb_terms = require('../../../../utility/hdbTerms');
 module.exports = heProcessResponse;
 
 /**
- * The Helium API returns a multi-dimensional array. This function transforms that response
- * into two arrays, written or deleted hashes and skipped. The only response error code accepted is if the item already exists.
+ * The Helium API returns a multi-dimensional array. This function transforms that response into appropriate message
+ * The only response error codes accepted is if the item does or does not exist.
  * @param he_response
  * @param action
  * @returns {{skipped_hashes: *, written_hashes: *}}
  */
 function heProcessResponse(he_response, action) {
+    let records_count;
+    let plural;
     let processed_hashes = he_response[0];
     let skipped_hashes = [];
 
@@ -23,19 +25,24 @@ function heProcessResponse(he_response, action) {
         skipped_hashes.push(he_response[1][i][0]);
     }
 
-    if (action === hdb_terms.OPERATIONS_ENUM.INSERT) {
-        return {
-            written_hashes: processed_hashes,
-            skipped_hashes
-        };
-    } else if (action === hdb_terms.OPERATIONS_ENUM.DELETE) {
-        let records_count = processed_hashes.length;
-        let plural = (records_count === 1) ? 'record' : 'records';
-
-        return {
-            message: `${records_count} ${plural} successfully deleted`,
-            deleted_hashes: processed_hashes,
-            skipped_hashes
-        };
+    switch (action) {
+        case hdb_terms.OPERATIONS_ENUM.INSERT:
+            return {
+                written_hashes: processed_hashes,
+                skipped_hashes
+            };
+        case hdb_terms.OPERATIONS_ENUM.UPDATE:
+            return {
+                updated_hashes: processed_hashes,
+                skipped_hashes
+            };
+        case hdb_terms.OPERATIONS_ENUM.DELETE:
+            records_count = processed_hashes.length;
+            plural = (records_count === 1) ? 'record' : 'records';
+            return {
+                message: `${records_count} ${plural} successfully deleted`,
+                deleted_hashes: processed_hashes,
+                skipped_hashes
+            };
     }
 }

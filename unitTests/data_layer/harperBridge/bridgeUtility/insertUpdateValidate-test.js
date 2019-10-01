@@ -25,7 +25,7 @@ const WRITE_OBJECT_TEST = {
     ]
 };
 
-const SCEMA_TABLE_TEST = {
+const SCHEMA_TABLE_TEST = {
     hash_attribute: "id",
     name: "hdb_attribute",
     schema: "system",
@@ -56,20 +56,20 @@ describe('Tests for fsUtility function insertUpdateValidate', () => {
 
     before(() => {
         global.hdb_schema = {
-            [SCEMA_TABLE_TEST.schema]: {
-                [SCEMA_TABLE_TEST.name]: {
-                    attributes: SCEMA_TABLE_TEST.attributes,
-                    hash_attribute: SCEMA_TABLE_TEST.hash_attribute,
-                    residence: SCEMA_TABLE_TEST.residence,
-                    schema: SCEMA_TABLE_TEST.schema,
-                    name: SCEMA_TABLE_TEST.name
+            [SCHEMA_TABLE_TEST.schema]: {
+                [SCHEMA_TABLE_TEST.name]: {
+                    attributes: SCHEMA_TABLE_TEST.attributes,
+                    hash_attribute: SCHEMA_TABLE_TEST.hash_attribute,
+                    residence: SCHEMA_TABLE_TEST.residence,
+                    schema: SCHEMA_TABLE_TEST.schema,
+                    name: SCHEMA_TABLE_TEST.name
                 }
             }
         };
     });
 
     after(() => {
-        delete global.hdb_schema[SCEMA_TABLE_TEST.schema];
+        delete global.hdb_schema[SCHEMA_TABLE_TEST.schema];
         sandbox.restore();
     });
 
@@ -149,7 +149,7 @@ describe('Tests for fsUtility function insertUpdateValidate', () => {
         ];
         let hashes_expected = ["6d9bdde4-2a82-4f96-bc85-4515fda0be0b"];
 
-        expect(result.schema_table).to.eql(SCEMA_TABLE_TEST);
+        expect(result.schema_table).to.eql(SCHEMA_TABLE_TEST);
         expect(result.attributes).to.eql(attributes_expected);
         expect(result.hashes).to.eql(hashes_expected);
     });

@@ -2,8 +2,8 @@
 
 const insertUpdateValidate = require('../../bridgeUtility/insertUpdateValidate');
 const heProcessRows = require('../heUtility/heProcessRows');
-const heProcessResponse = require('../heUtility/heProcessResponse');
 const heCheckForNewAttributes = require('../heUtility/heCheckForNewAttributes');
+const heProcessResponse = require('../heUtility/heProcessResponse');
 const hdb_terms = require('../../../../utility/hdbTerms');
 const heliumUtils = require('../../../../utility/helium/heliumUtils');
 
@@ -14,20 +14,20 @@ try {
     throw err;
 }
 
-module.exports = heCreateRecords;
+module.exports = heUpdateRecords;
 
 /**
- * Orchestrates the insertion of data into Helium and the creation of new attributes/datastores
+ * Orchestrates the update of data in Helium and the creation of new attributes/datastores
  * if they do not already exist.
- * @param insert_obj
- * @returns {Promise<{skipped_hashes: *, written_hashes: *, schema_table: *}>}
+ * @param update_obj
+ * @returns {{skipped_hashes: *, written_hashes: *, schema_table: *}}
  */
-function heCreateRecords(insert_obj) {
+function heUpdateRecords(update_obj) {
     try {
-        let { schema_table, hashes, attributes } = insertUpdateValidate(insert_obj);
-        let { datastores, processed_rows } = heProcessRows(insert_obj, attributes, schema_table, hashes);
+        let { schema_table, hashes, attributes } = insertUpdateValidate(update_obj);
+        let { datastores, processed_rows } = heProcessRows(update_obj, attributes, schema_table, hashes);
 
-        if (insert_obj.schema !== hdb_terms.SYSTEM_SCHEMA_NAME) {
+        if (update_obj.schema !== hdb_terms.SYSTEM_SCHEMA_NAME) {
             if (!attributes.includes(hdb_terms.HELIUM_TIME_STAMP_ENUM.CREATED_TIME)) {
                 attributes.push(hdb_terms.HELIUM_TIME_STAMP_ENUM.CREATED_TIME);
             }
@@ -37,12 +37,12 @@ function heCreateRecords(insert_obj) {
             }
         }
 
-        heCheckForNewAttributes(insert_obj.hdb_auth_header, schema_table, attributes);
-        let he_response = hdb_helium.insertRows(datastores, processed_rows);
-        let { written_hashes, skipped_hashes } = heProcessResponse(he_response, hdb_terms.OPERATIONS_ENUM.INSERT);
+        heCheckForNewAttributes(update_obj.hdb_auth_header, schema_table, attributes);
+        let he_response = hdb_helium.updateRows(datastores, processed_rows);
+        let { updated_hashes, skipped_hashes } = heProcessResponse(he_response, hdb_terms.OPERATIONS_ENUM.UPDATE);
 
         return {
-            written_hashes,
+            updated_hashes,
             skipped_hashes,
             schema_table
         };

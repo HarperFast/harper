@@ -67,7 +67,7 @@ function heCreateAttribute(create_attribute_obj) {
 
     try {
         let create_datastore_result = hdb_helium.createDataStores([datastore_name]);
-        if (create_datastore_result[0][1] !== hdb_terms.HELIUM_RESPONSE_CODES.HE_ERR_OK) {
+        if ([hdb_terms.HELIUM_RESPONSE_CODES.HE_ERR_OK, hdb_terms.HELIUM_RESPONSE_CODES.HE_ERR_DATASTORE_EXISTS].indexOf(create_datastore_result[0][1]) < 0) {
             throw new Error(`There was an error creating datastore: ${create_datastore_result[0][1]}`);
         }
 

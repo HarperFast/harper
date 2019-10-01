@@ -1,8 +1,7 @@
 'use strict';
 
 const test_utils = require('../../../../test_utils');
-test_utils.preTestPrep();
-let hdb_helium = test_utils.buildHeliumTestVolume();
+let hdb_helium;
 
 const rewire = require('rewire');
 const heCreateAttribute = require('../../../../../data_layer/harperBridge/heBridge/heMethods/heCreateAttribute');
@@ -42,6 +41,9 @@ function setupTest() {
 describe('Tests for Helium method heDropAttribute', () => {
 
     before(() => {
+        test_utils.preTestPrep();
+        hdb_helium = test_utils.buildHeliumTestVolume();
+
         global.hdb_schema = {
             [DROP_ATTR_OBJ_TEST.schema]: {
                 [DROP_ATTR_OBJ_TEST.table]: {

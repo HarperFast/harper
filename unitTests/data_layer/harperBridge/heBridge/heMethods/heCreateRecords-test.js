@@ -1,12 +1,9 @@
 'use strict';
 
 const test_utils = require('../../../../test_utils');
-test_utils.preTestPrep();
-let hdb_helium = test_utils.buildHeliumTestVolume();
-
+let hdb_helium;
 const rewire = require('rewire');
 const heCreateRecords = rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heCreateRecords');
-const log = require('../../../../../utility/logging/harper_logger');
 const chai = require('chai');
 const sinon = require('sinon');
 const sinon_chai = require('sinon-chai');
@@ -80,42 +77,17 @@ const SCHEMA_TABLE_TEST = {
 
 const DATASTORES_TEST = [ "dev/dog/name", "dev/dog/breed", "dev/dog/id", "dev/dog/age", "dev/dog/height", "dev/dog/__createdtime__", "dev/dog/__updatedtime__"];
 
-let ATTR_OBJ_TEST = {
-    "schema": "dev",
-    "table": "dog",
-    "attribute": [
-        {
-            "attribute": "name"
-        },
-        {
-            "attribute": "breed"
-        },
-        {
-            "attribute": "age"
-        },
-        {
-            "attribute": "id"
-        },
-        {
-            "attribute": "height"
-        },
-        {
-            "attribute": "__createdtime__"
-        },
-        {
-            "attribute": "__updatedtime__"
-        }
-    ],
-    "hdb_auth_header": "auth-header"
-};
-
 describe('Tests for Helium method heCreateRecords', () => {
     let sandbox = sinon.createSandbox();
+
+    before(()=>{
+        test_utils.preTestPrep();
+        hdb_helium = test_utils.buildHeliumTestVolume();
+    });
 
     after(() => {
         test_utils.teardownHeliumTestVolume(global.hdb_helium);
         sandbox.restore();
-        rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heCreateAttribute');
     });
 
     context('Test createRecords function', () => {
@@ -309,93 +281,6 @@ describe('Tests for Helium method heCreateRecords', () => {
 
             expect(error.message).to.equal('transaction aborted due to record(s) with no hash value, check log for more info');
             expect(error).to.be.an.instanceOf(Error);
-        });
-    });
-
-    context('Test checkAttributes function', () => {
-        let check_attributes = heCreateRecords.__get__('checkAttributes');
-        let create_new_attr_stub = sandbox.stub();
-        let check_for_new_attr_stub = sandbox.stub();
-
-        before(() => {
-            heCreateRecords.__set__('createNewAttribute', create_new_attr_stub);
-            heCreateRecords.__set__('checkForNewAttributes', check_for_new_attr_stub);
-        });
-
-        after(() => {
-            sandbox.restore();
-        });
-
-        it('Test that it returns if no new attributes present', () => {
-            check_for_new_attr_stub.returns([]);
-            let result = check_attributes('auth-header', SCHEMA_TABLE_TEST, NO_NEW_ATTR_TEST);
-
-            expect(result).to.be.undefined;
-            expect(create_new_attr_stub).to.have.not.been.called;
-        });
-
-        it('Test that it calls createNewAttribute if new attributes found', () => {
-            let new_attr = ['height'];
-            check_for_new_attr_stub.returns(new_attr);
-            check_attributes('auth-header', SCHEMA_TABLE_TEST, NO_NEW_ATTR_TEST);
-
-            expect(create_new_attr_stub).to.have.been.called;
-        });
-    });
-
-    context('Test createNewAttribute function', () => {
-        let create_new_attribute = heCreateRecords.__get__('createNewAttribute');
-        let create_attribute_stub = sandbox.stub();
-        let log_warn_spy;
-
-        before(() => {
-            heCreateRecords.__set__('createAttribute', create_attribute_stub);
-            log_warn_spy = sandbox.spy(log, 'warn');
-        });
-
-        after(() => {
-            sandbox.restore();
-        });
-
-        it('Test nominal behaviour, createAttribute is called as expected', () => {
-            create_new_attribute('auth-header', INSERT_OBJECT_TEST.schema, INSERT_OBJECT_TEST.table, NO_NEW_ATTR_TEST);
-
-            expect(create_attribute_stub).to.have.been.calledWith(ATTR_OBJ_TEST);
-        });
-
-        it('Test that attribute already exists error is caught and not thrown', () => {
-            create_attribute_stub.throws(new Error('attribute already exists'));
-            create_new_attribute('auth-header', INSERT_OBJECT_TEST.schema, INSERT_OBJECT_TEST.table, NO_NEW_ATTR_TEST);
-
-            expect(log_warn_spy).to.have.been.called;
-        });
-    });
-
-    context('Test createAttribute function', () => {
-        let create_attribute = heCreateRecords.__get__('createAttribute');
-        let he_create_attr_stub = sandbox.stub();
-
-        before(() => {
-            heCreateRecords.__set__('heCreateAttribute', he_create_attr_stub);
-        });
-
-        it('Test for nominal behaviour, heCreateAttribute called as expected', () => {
-            create_attribute(ATTR_OBJ_TEST);
-
-            expect(he_create_attr_stub).to.have.been.calledWith(ATTR_OBJ_TEST);
-        });
-
-        it('Test that error from heCreateAttribute is caught and thrown', () => {
-            let error_msg = 'Error creating attribute in Helium';
-            he_create_attr_stub.throws(new Error(error_msg));
-            let error;
-            try {
-                create_attribute(ATTR_OBJ_TEST);
-            } catch(err) {
-                error = err;
-            }
-
-            expect(error.message).to.equal(error_msg);
         });
     });
 });
