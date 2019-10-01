@@ -114,6 +114,8 @@ const SYSTEM_DEFAULT_ATTRIBUTE_NAMES = {
 // Registration key file name
 const REG_KEY_FILE_NAME = '060493.ks';
 
+const LICENSE_FILE_NAME = '.license';
+
 // Describes the available statuses for jobs
 const JOB_STATUS_ENUM = {
 	CREATED: 'CREATED',
@@ -336,6 +338,9 @@ const STORAGE_TYPES_ENUM = {
     HELIUM: 'helium'
 };
 
+const HELIUM_PROCESS_NAME = 'helium';
+const HELIUM_START_SERVER_COMMAND = '--server';
+
 const LICENSE_VALUES = {
     API_CALL_DEFAULT: 10000,
     VERSION_DEFAULT: '2.0.0'
@@ -366,6 +371,8 @@ const HDB_LICENSE_NAME = 'hdb_license';
 
 const CLUSTERING_MESSAGE_TYPES = cluster_types.CORE_ROOM_MSG_TYPE_ENUM;
 const ORIGINATOR_SET_VALUE = cluster_types.ORIGINATOR_SET_VALUE;
+
+const NEW_LINE = '\r\n';
 
 module.exports = {
     LOCAL_HARPERDB_OPERATIONS,
@@ -430,6 +437,10 @@ module.exports = {
     HDB_LICENSE_NAME,
     HDB_FILE_SUFFIX,
     SEARCH_NOT_FOUND_MESSAGE,
-    SEARCH_ATTRIBUTE_NOT_FOUND
+    SEARCH_ATTRIBUTE_NOT_FOUND,
+    HELIUM_PROCESS_NAME,
+    HELIUM_START_SERVER_COMMAND,
+    LICENSE_FILE_NAME,
+    NEW_LINE
 };
 

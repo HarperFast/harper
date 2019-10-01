@@ -17,6 +17,8 @@ const os = require('os');
 const upgrade_prompt = require('../utility/userInterface/upgradePrompt');
 const upgrade = require('./upgrade');
 const version = require('./version');
+const hdb_license = require('../utility/registration/hdb_license');
+const helium_utils = require('../utility/helium/heliumUtils');
 
 // These may change to match unix return codes (i.e. 0, 1)
 const SUCCESS_CODE = 'success';
@@ -310,6 +312,13 @@ async function checkPermission() {
 
 async function kickOffExpress() {
     try {
+        let license = await hdb_license.licenseSearch();
+
+        if(license.storage_type === terms.STORAGE_TYPES_ENUM.HELIUM){
+            await helium_utils.checkHeliumServerRunning();
+            await helium_utils.createSystemDataStores();
+        }
+
         if (env.get('MAX_MEMORY')) {
             child = fork(path.join(__dirname, '../server/hdb_express.js'), [`--max-old-space-size=${env.get('MAX_MEMORY')}`, `${env.get('PROJECT_DIR')}/server/hdb_express.js`], {
                 detached: true,

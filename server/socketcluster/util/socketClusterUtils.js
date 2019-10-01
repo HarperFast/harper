@@ -160,7 +160,7 @@ async function catchupHandler(channel, start_timestamp, end_timestamp = Date.now
         await fs.access(channel_log_path, fs.constants.R_OK | fs.constants.F_OK);
         await fs.access(channel_audit_path, fs.constants.R_OK | fs.constants.F_OK);
     } catch(e){
-        log.info(`transacion log path for channel ${channel} does not exist`);
+        log.info(`transaction log path for channel ${channel} does not exist`);
         //doesn't exist so we exit
         return;
     }

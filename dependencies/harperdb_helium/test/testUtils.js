@@ -8,7 +8,7 @@ const MODE = "Release";
 
 
 function createVolume(volume_path){
-    child_process.execSync(`dd if=/dev/zero of=${volume_path} bs=1k count=$((2 * 1024 * 1024))`);
+    child_process.execSync(`dd if=/dev/zero of=${volume_path} bs=1k count=1 seek=$((2 * 1024 * 1024 - 1))`);
 }
 
 function removeVolume(volume_path){
