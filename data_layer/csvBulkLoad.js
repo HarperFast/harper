@@ -86,6 +86,7 @@ async function csvURLLoad(json_message) {
         schema: json_message.schema,
         table: json_message.table,
         action: json_message.action,
+        transact_to_cluster: json_message.transact_to_cluster,
         data: []
     };
     let bulk_load_result = undefined;
@@ -197,6 +198,7 @@ async function insertChunk(json_message, insert_results, reject, results, parser
             schema: json_message.schema,
             table: json_message.table,
             action: json_message.action,
+            transact_to_cluster: json_message.transact_to_cluster,
             data: results.data
         };
         let bulk_load_chunk_result = await op_func_caller.callOperationFunctionAsAwait(callBulkLoad, converted_msg, postCSVLoadFunction);
