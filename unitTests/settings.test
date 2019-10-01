@@ -1,3 +1,4 @@
+	;Settings for the HarperDB process
 	;The directory harperdb has been installed in
 PROJECT_DIR=/home/kyle/WebstormProjects/harperdb/unitTests/server/clustering
 	;The directory selected during install where the database files reside

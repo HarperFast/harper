@@ -3,6 +3,7 @@ const search = require('../data_layer/search');
 const log = require('../utility/logging/harper_logger');
 const harperBridge = require('../data_layer/harperBridge/harperBridge');
 const util = require('util');
+const hdb_utils = require('../utility/common_utils');
 
 const RECORD = 'record';
 const SUCCESS = 'successfully deleted';
@@ -36,7 +37,7 @@ async function convertDelete(statement){
         delete_obj.records = await p_search_search(search_statement);
         let result = await harperBridge.deleteRecords(delete_obj);
 
-        if(util.isEmptyOrZeroLength(result.message)) {
+        if(hdb_utils.isEmptyOrZeroLength(result.message)) {
             result.message = generateReturnMessage(result);
         }
         return result;

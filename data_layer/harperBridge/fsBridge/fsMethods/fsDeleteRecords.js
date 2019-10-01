@@ -6,7 +6,6 @@ const log = require('../../../../utility/logging/harper_logger');
 const common_utils = require('../../../../utility/common_utils');
 const unlink = require('../../../../utility/fs/unlink');
 const terms = require('../../../../utility/hdbTerms');
-const hdb_utils = require('../../../../utility/common_utils');
 const truncate = require('truncate-utf8-bytes');
 
 const slash_regex = /\//g;
@@ -36,7 +35,7 @@ async function deleteRecords(delete_obj){
     }
 
     hash_attribute = global.hdb_schema[delete_obj.schema][delete_obj.table].hash_attribute;
-    if (hdb_utils.isEmpty(hash_attribute)) {
+    if (common_utils.isEmpty(hash_attribute)) {
         log.error(`could not retrieve hash attribute for schema:${delete_obj.schema} and table ${delete_obj.table}`);
         throw new Error(`hash attribute not found`);
     }
@@ -76,15 +75,14 @@ async function deleteRecords(delete_obj){
 
     try {
         delete_response_object = await unlink.unlink_delete_object(hash_attribute_path_map);
-        compareSearchResultsWithRequest(not_found_hashes, delete_obj, delete_obj.records);
+        if(!common_utils.isEmptyOrZeroLength(delete_obj.hash_values)) {
+            compareSearchResultsWithRequest(not_found_hashes, delete_obj, delete_obj.records);
+        }
         // append records not found to skipped
         if(not_found_hashes && not_found_hashes.length > 0) {
             for(let i=0; i<not_found_hashes.length; ++i) {
                 delete_response_object.skipped_hashes.push(not_found_hashes[i]);
             }
-        }
-        if(common_utils.isEmptyOrZeroLength(delete_response_object.message)) {
-            delete_response_object.message = `${delete_response_object.deleted_hashes.length} of ${delete_obj.hash_values.length} ${SUCCESS_MESSAGE}`;
         }
 
     } catch(err) {
