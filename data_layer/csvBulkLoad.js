@@ -395,7 +395,7 @@ async function postCSVLoadFunction(orig_bulk_msg, result, orig_req) {
         operation: hdb_terms.OPERATIONS_ENUM.CSV_DATA_LOAD,
         schema: orig_bulk_msg.schema,
         table: orig_bulk_msg.table,
-        records:orig_bulk_msg.data
+        data:orig_bulk_msg.data
     };
     if(orig_req) {
         socket_cluster_util.concatSourceMessageHeader(transaction_msg, orig_req);
