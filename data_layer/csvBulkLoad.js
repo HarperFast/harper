@@ -46,6 +46,7 @@ async function csvDataLoad(json_message) {
             schema: json_message.schema,
             table: json_message.table,
             action: json_message.action,
+            transact_to_cluster: json_message.transact_to_cluster,
             data: []
         };
 
@@ -374,15 +375,19 @@ async function bulkLoad(records, schema, table, action){
 }
 
 async function postCSVLoadFunction(orig_bulk_msg, result, orig_req) {
+    if(!orig_bulk_msg.transact_to_cluster) {
+        return;
+    }
     let transaction_msg = hdb_utils.getClusterMessage(hdb_terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
     transaction_msg.__transacted = true;
     transaction_msg.transaction = {
         operation: hdb_terms.OPERATIONS_ENUM.CSV_DATA_LOAD,
         schema: orig_bulk_msg.schema,
         table: orig_bulk_msg.table,
-        data:orig_bulk_msg.data
+        transact_to_cluster: orig_bulk_msg.transact_to_cluster,
+        data: orig_bulk_msg.data
     };
-    if(orig_req) {
+    if (orig_req) {
         socket_cluster_util.concatSourceMessageHeader(transaction_msg, orig_req);
     }
     hdb_utils.sendTransactionToSocketCluster(`${orig_bulk_msg.schema}:${orig_bulk_msg.table}`, transaction_msg, env.getProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
