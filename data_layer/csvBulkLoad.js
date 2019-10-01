@@ -1,7 +1,6 @@
 "use strict";
 
 const insert = require('./insert');
-const _ = require('lodash');
 const validator = require('../validation/csvLoadValidator');
 const request_promise = require('request-promise-native');
 const hdb_terms = require('../utility/hdbTerms');
@@ -41,23 +40,26 @@ async function csvDataLoad(json_message) {
         throw new Error(validation_msg);
     }
 
-    let csv_records = [];
     let bulk_load_result = {};
-    // alasql csv parsing looks for the existence of at least 1 newline.  if not found, it will try to load a file which
-    // results in a swallowed error written to the console, so we cram a newline at the end to avoid that error.
-    if(json_message.data.indexOf(NEWLINE) < 0) {
-        json_message.data = json_message.data + NEWLINE;
-    }
     try {
-        csv_records = await callMiddleware(ALASQL_MIDDLEWARE_PARSE_PARAMETERS, [json_message.data]);
         let converted_msg = {
             schema: json_message.schema,
             table: json_message.table,
             action: json_message.action,
-            data: csv_records
+            data: []
         };
-        bulk_load_result = op_func_caller.callOperationFunctionAsAwait(callBulkLoadRf, converted_msg, postCSVLoadFunction);
-        //bulk_load_result = await callBulkLoad(csv_records, json_message.schema, json_message.table, json_message.action);
+
+        if(!Array.isArray(json_message.data)) {
+            // alasql csv parsing looks for the existence of at least 1 newline.  if not found, it will try to load a file which
+            // results in a swallowed error written to the console, so we cram a newline at the end to avoid that error.
+            if (json_message.data.indexOf(NEWLINE) < 0) {
+                json_message.data = json_message.data + NEWLINE;
+            }
+            converted_msg.data = await callMiddleware(ALASQL_MIDDLEWARE_PARSE_PARAMETERS, (Array.isArray(json_message.data) ? json_message.data : [json_message.data]));
+        } else {
+            converted_msg.data = json_message.data;
+        }
+        bulk_load_result = op_func_caller.callOperationFunctionAsAwait(callBulkLoad, converted_msg, postCSVLoadFunction);
     } catch(e) {
         throw e;
     }
@@ -79,8 +81,12 @@ async function csvURLLoad(json_message) {
     if (validation_msg) {
         throw new Error(validation_msg);
     }
-
-    let csv_records = [];
+    let converted_msg = {
+        schema: json_message.schema,
+        table: json_message.table,
+        action: json_message.action,
+        data: []
+    };
     let bulk_load_result = undefined;
 
     // check passed url to see if its live and valid data
@@ -96,8 +102,8 @@ async function csvURLLoad(json_message) {
         if(!url_response.body) {
             throw new Error(url_response.message);
         }
-        csv_records = await callMiddleware(ALASQL_MIDDLEWARE_PARSE_PARAMETERS, [url_response.body]);
-        bulk_load_result = await callBulkLoad(csv_records, json_message.schema, json_message.table, json_message.action);
+        converted_msg.data = await callMiddleware(ALASQL_MIDDLEWARE_PARSE_PARAMETERS, [url_response.body]);
+        bulk_load_result = op_func_caller.callOperationFunctionAsAwait(callBulkLoad, converted_msg, postCSVLoadFunction);
     } catch(e) {
         throw new Error(e);
     }
@@ -192,8 +198,7 @@ async function insertChunk(json_message, insert_results, reject, results, parser
             action: json_message.action,
             data: results.data
         };
-        //let bulk_load_chunk_result = await callBulkLoad(results.data, json_message.schema, json_message.table, json_message.action);
-        let bulk_load_chunk_result = op_func_caller.callOperationFunctionAsAwait(callBulkLoadRf, converted_msg, postCSVLoadFunction);
+        let bulk_load_chunk_result = await op_func_caller.callOperationFunctionAsAwait(callBulkLoad, converted_msg, postCSVLoadFunction);
         insert_results.records += bulk_load_chunk_result.records;
         insert_results.number_written += bulk_load_chunk_result.number_written;
         parser.resume();
@@ -287,9 +292,8 @@ async function callMiddleware(parameter_string, data) {
     }
 }
 
-async function callBulkLoadRf(json_msg) {
+async function callBulkLoad(json_msg) {
     let bulk_load_result = {};
-
     try {
         if (json_msg.data && json_msg.data.length > 0 && validateColumnNames(json_msg.data[0])) {
             bulk_load_result = await bulkLoad(json_msg.data, json_msg.schema, json_msg.table, json_msg.action);
@@ -297,30 +301,11 @@ async function callBulkLoadRf(json_msg) {
             bulk_load_result.message = 'No records parsed from csv file.';
             logger.info(bulk_load_result.message);
         }
-
-        return bulk_load_result;
     } catch(err) {
         logger.error(err);
         throw err;
     }
-}
-
-async function callBulkLoad(csv_records, schema, table, action) {
-    let bulk_load_result = {};
-
-    try {
-        if (csv_records && csv_records.length > 0 && validateColumnNames(csv_records[0])) {
-            bulk_load_result = await bulkLoad(csv_records, schema, table, action);
-        } else {
-            bulk_load_result.message = 'No records parsed from csv file.';
-            logger.info(bulk_load_result.message);
-        }
-
-        return bulk_load_result;
-    } catch(err) {
-        logger.error(err);
-        throw err;
-    }
+    return bulk_load_result;
 }
 
 /**
