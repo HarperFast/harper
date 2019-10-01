@@ -5,7 +5,6 @@ test_utils.preTestPrep();
 const {
     createMockFS,
     deepClone,
-    getMockFSPath,
     mochaAsyncWrapper,
     tearDownMockFS,
     generateMockAST,
@@ -24,8 +23,6 @@ const rewire = require('rewire');
 const SQLSearch = rewire('../../../lib/fileSystem/SQLSearch');
 const harperBridge = require('../../../data_layer/harperBridge/harperBridge');
 const log = require('../../../utility/logging/harper_logger');
-const terms = require('../../../utility/hdbTerms');
-const { HASH_FOLDER_NAME } = terms;
 
 const {
     TEST_DATA_AGGR,
@@ -34,7 +31,6 @@ const {
     TEST_DATA_LONGTEXT
 } = require('../../test_data');
 
-// const TEST_FS_DIR = getMockFSPath();
 const TEST_SCHEMA = 'dev';
 const TEST_SCHEMA_NORTHWND = 'northwnd';
 const HASH_ATTRIBUTE = 'id';
@@ -63,30 +59,15 @@ let _backtickAllSchemaItems_spy;
 let _getFetchAttributeValues_spy;
 let _getDataByValue_spy;
 let _getDataByHash_spy;
-// let _checkHashValueExists_spy;
-// let _retrieveIds_spy;
-// let _readBlobFilesForSetup_spy;
 let _consolidateData_spy;
-// let _decideReadPattern_spy;
-let _readRawFiles_spy;
-let _readAttributeFilesByIds_spy;
-let _readAttributeValues_spy;
-let _readBlobFiles_spy;
 let _getFinalAttributeData_spy;
 let _getData_spy;
 let _finalSQL_spy;
 let _buildSQL_spy;
-let _stripFileExtension_spy;
-// let readdir_spy;
-let readFile_spy;
 let error_logger_spy;
 
 function setClassMethodSpies() {
     sandbox = sinon.createSandbox();
-    // const getHdbBasePath_stub = function() {
-    //     return `${TEST_FS_DIR}`;
-    // };
-    // SQLSearch.__set__('base_path', getHdbBasePath_stub)
     _getColumns_spy = sandbox.spy(SQLSearch.prototype, '_getColumns');
     _findColumn_spy = sandbox.spy(SQLSearch.prototype, '_findColumn');
     _getTables_spy = sandbox.spy(SQLSearch.prototype, '_getTables');
@@ -95,22 +76,11 @@ function setClassMethodSpies() {
     _getFetchAttributeValues_spy = sandbox.spy(SQLSearch.prototype, '_getFetchAttributeValues');
     _getDataByValue_spy = sandbox.spy(harperBridge, 'getDataByValue');
     _getDataByHash_spy = sandbox.spy(harperBridge, 'getDataByHash');
-    // _checkHashValueExists_spy = sandbox.spy(SQLSearch.prototype, '_checkHashValueExists');
-    // _retrieveIds_spy = sandbox.spy(SQLSearch.prototype, '_retrieveIds');
-    // _readBlobFilesForSetup_spy = sandbox.spy(SQLSearch.prototype, '_readBlobFilesForSetup');
     _consolidateData_spy = sandbox.spy(SQLSearch.prototype, '_consolidateData');
-    // _decideReadPattern_spy = sandbox.spy(SQLSearch.prototype, '_decideReadPattern');
-    // _readRawFiles_spy = sandbox.spy(SQLSearch.prototype, '_readRawFiles');
-    // _readAttributeFilesByIds_spy = sandbox.spy(SQLSearch.prototype, '_readAttributeFilesByIds');
-    // _readAttributeValues_spy = sandbox.spy(SQLSearch.prototype, '_readAttributeValues');
-    // _readBlobFiles_spy = sandbox.stub(SQLSearch.prototype, '_readBlobFiles').callThrough();
     _getFinalAttributeData_spy = sandbox.stub(SQLSearch.prototype, '_getFinalAttributeData').callThrough();
     _getData_spy = sandbox.stub(SQLSearch.prototype, '_getData').callThrough();
     _finalSQL_spy = sandbox.spy(SQLSearch.prototype, '_finalSQL');
     _buildSQL_spy = sandbox.spy(SQLSearch.prototype, '_buildSQL');
-    // _stripFileExtension_spy = sandbox.spy(SQLSearch.prototype, '_stripFileExtension');
-    // readdir_spy = sandbox.spy(fs, 'readdir');
-    // readFile_spy = sandbox.spy(fs, 'readFile');
     error_logger_spy = sandbox.spy(log, 'error');
 }
 
@@ -177,6 +147,7 @@ describe('Test FileSystem Class',function() {
     });
 
     describe('constructor()',function() {
+
         it('should call four class methods when instantiated',function() {
             setupTestInstance();
             expect(_getColumns_spy.calledOnce).to.equal(true);
@@ -197,6 +168,7 @@ describe('Test FileSystem Class',function() {
     });
 
     describe('search()',function() {
+
         it('should return all rows when there is no WHERE clause', mochaAsyncWrapper(async function() {
             setupTestInstance();
 
@@ -257,6 +229,7 @@ describe('Test FileSystem Class',function() {
 
     // Note: These SELECT statements scenarios were developed from the SQL integration tests scenarios
     describe('search() - testing variety of SQL statements',function() {
+
         before(function() {
             setupCSVSqlData();
         });
@@ -539,6 +512,7 @@ describe('Test FileSystem Class',function() {
     });
 
     describe('_checkEmptySQL()',function() {
+
         it('should return undefined if attributes and columns are set in class instance', mochaAsyncWrapper(async function() {
             setupTestInstance();
 
@@ -558,6 +532,7 @@ describe('Test FileSystem Class',function() {
     });
 
     describe('_getColumns()',function() {
+
         it('should collect column data from the statement and set it to column property on class',function() {
             const test_sql_statement = "SELECT * FROM dev.dog";
             setupTestInstance(test_sql_statement);
@@ -628,6 +603,7 @@ describe('Test FileSystem Class',function() {
     });
 
     describe('_getTables()',function() {
+
         function checkTestInstanceData(data, table_id, hash_name, has_hash, merged_data) {
             const test_table_obj = data[table_id];
             const { __hash_name, __has_hash, __merged_data } = test_table_obj;
@@ -674,6 +650,7 @@ describe('Test FileSystem Class',function() {
     });
 
     describe('_conditionsToFetchAttributeValues()',function() {
+
         const test_attr_path = `${TEST_SCHEMA}/${TEST_TABLE_DOG}/${HASH_ATTRIBUTE}`;
 
         it('should NOT set exact_search_values property when there is no WHERE clause',function() {
@@ -727,6 +704,7 @@ describe('Test FileSystem Class',function() {
     });
 
     describe('_backtickAllSchemaItems()',function() {
+
         function backtickString(string_val) {
           return `\`${string_val}\``;
         };
@@ -784,6 +762,7 @@ describe('Test FileSystem Class',function() {
     });
 
     describe('_findColumn()',function() {
+
         it('should return full column data for requested column',function() {
             const test_column = { columnid: HASH_ATTRIBUTE, tableid: TEST_TABLE_DOG };
             setupTestInstance();
@@ -819,6 +798,7 @@ describe('Test FileSystem Class',function() {
     });
 
     describe('_addFetchColumns()',function() {
+
         it('should add columns from JOIN clause to fetch_attributes property',function() {
             const test_sql_statement = `SELECT d.id AS id, d.name, d.breed, c.age FROM dev.dog d JOIN dev.cat c ON d.id = c.id`;
             setupTestInstance(test_sql_statement);
@@ -872,6 +852,7 @@ describe('Test FileSystem Class',function() {
     });
 
     describe('_getFetchAttributeValues()',function() {
+
         it('should set hash values to the data property for basic full table select', mochaAsyncWrapper(async function() {
             const expected_result = TEST_DATA_DOG.map(col => col.id);
             const test_sql_basic = sql_basic_dog_select;
@@ -985,6 +966,11 @@ describe('Test FileSystem Class',function() {
     });
 
     describe('_getFinalAttributeData()', function() {
+
+        after(function() {
+            _getData_spy.restore();
+        })
+
         it('should return/skip if row_count equals 0', mochaAsyncWrapper(async function() {
             const existing_attrs = { dog: ['id']};
             const joined_length = 0;
@@ -1026,7 +1012,6 @@ describe('Test FileSystem Class',function() {
 
             expect(_getData_spy.calledOnce).to.equal(true);
             expect(_getData_spy.calledWith(expected_columns)).to.equal(true);
-            _getData_spy.reset();
         }));
     });
 
@@ -1042,13 +1027,13 @@ describe('Test FileSystem Class',function() {
             setupTestInstance();
             await test_instance._getFetchAttributeValues();
             await test_instance._consolidateData();
-            _getDataByHash_spy.resetHistory();
+            sandbox.resetHistory();
 
             await test_instance._getData(all_columns);
 
             const test_merged_data = test_instance.data[dog_schema_table_id].__merged_data;
 
-            expect(_getDataByHash_spy.calledOnce).to.equal(true);
+            expect(_getDataByHash_spy.callCount).to.equal(1);
             Object.keys(test_merged_data).forEach(key => {
                 expect(Object.keys(test_merged_data[key]).length).to.equal(4);
             });
@@ -1073,13 +1058,14 @@ describe('Test FileSystem Class',function() {
             setupTestInstance(test_sql_statement);
             await test_instance._getFetchAttributeValues();
             await test_instance._consolidateData();
-            _getDataByHash_spy.resetHistory();
+            sandbox.resetHistory();
+
             await test_instance._getData(all_columns);
 
             const test_merged_data_dog = test_instance.data[dog_schema_table_id].__merged_data;
             const test_merged_data_cat = test_instance.data[cat_schema_table_id].__merged_data;
 
-            expect(_getDataByHash_spy.calledTwice).to.equal(true);
+            expect(_getDataByHash_spy.callCount).to.equal(2);
             Object.keys(test_merged_data_dog).forEach(key => {
                 expect(Object.keys(test_merged_data_dog[key]).length).to.equal(3);
             });
@@ -1113,12 +1099,12 @@ describe('Test FileSystem Class',function() {
             await test_instance._getFetchAttributeValues();
             await test_instance._consolidateData();
 
-            _getDataByHash_spy.resetHistory();
+            sandbox.resetHistory();
             await test_instance._getData(all_columns);
 
             const test_merged_data = test_instance.data[longtext_schema_table_id].__merged_data;
 
-            expect(_getDataByHash_spy.calledOnce).to.equal(true);
+            expect(_getDataByHash_spy.callCount).to.equal(1);
             Object.keys(test_merged_data).forEach(key => {
                 expect(Object.keys(test_merged_data[key]).length).to.equal(2);
             });
@@ -1135,6 +1121,7 @@ describe('Test FileSystem Class',function() {
     });
 
     describe('_consolidateData()',function() {
+
         it('should collect all id and name attribute values for table into __merged_data', mochaAsyncWrapper(async function() {
             const expected_values = TEST_DATA_DOG.reduce((acc, col) => {
                 acc[col.id] = {
@@ -1182,6 +1169,7 @@ describe('Test FileSystem Class',function() {
     });
 
     describe('_processJoins()',function() {
+
         it('should remove rows from `__merged_data` that do not meet WHERE clause', mochaAsyncWrapper(async function() {
             const expected_attr_keys = ['id', 'name', 'breed'];
             const test_sql_statement = `SELECT * FROM dev.dog WHERE id IN(${sql_where_in_ids}) ORDER BY ${expected_attr_keys.toString()}`;
@@ -1263,6 +1251,7 @@ describe('Test FileSystem Class',function() {
     });
 
     describe('_finalSQL()',function() {
+
         it('should return final sql results sorted by id in DESC order', mochaAsyncWrapper(async function() {
             const expected_hashes = TEST_DATA_DOG.reduce((acc, row) => {
                 acc.push(row.id);
@@ -1287,6 +1276,7 @@ describe('Test FileSystem Class',function() {
     });
 
     describe('_buildSQL()',function() {
+
         it('should parse columns to remove extra alias in UPPER function clause',() => {
             const test_sql_statement = `SELECT id AS hash, UPPER(name) AS first_name, AVG(age) as ave_age FROM dev.dog`;
             setupTestInstance(test_sql_statement);
