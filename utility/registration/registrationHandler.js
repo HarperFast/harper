@@ -75,10 +75,7 @@ async function parseLicense(license, company) {
     }
 
     console.log('Validating license input...');
-    let validation = await hdb_license.validateLicense(license, company).catch((err) => {
-        log.error(err);
-        throw err;
-    });
+    let validation = hdb_license.validateLicense(license, company);
 
     console.log(`checking for valid license...`);
     if (!validation.valid_license) {

@@ -100,7 +100,11 @@ function createSystemDataStores(helium){
                 missing_stores.push(ds);
             }
         });
-        helium.createDataStores(missing_stores);
+
+        if(missing_stores.length > 0){
+            helium.createDataStores(missing_stores);
+        }
+
         log.info('Created system level data stores');
     }catch(e){
         log.error(`Creating system data stores failed due to ${e}`);
@@ -130,7 +134,7 @@ async function checkHeliumServerRunning(){
             }
         }
 
-        initializeHelium();
+        return initializeHelium();
     } catch(e) {
         throw new Error(`unable to access helium due to '${e.message}',  please check that ${helium_host} is available and running`);
     }
