@@ -26,6 +26,10 @@ class HarperDBHelium {
     }
 
     createDataStores(data_stores){}
+
+    listDataStores(regex){
+        return [];
+    }
 }
 
 class HarperDBHeliumBad {
@@ -43,6 +47,16 @@ class HarperDBHeliumBad {
 
     createDataStores(data_stores){
         throw new Error('FAIL!');
+    }
+
+    listDataStores(regex){
+        throw new Error('FAIL TO CREATE DATASTORES!');
+    }
+}
+
+class HeliumBad extends HarperDBHeliumBad{
+    startSession() {
+        return [0, "HE_ERR_OK"];
     }
 }
 
@@ -137,17 +151,15 @@ describe('test heliumUtils', ()=>{
     });
 
     describe('test createSystemDataStores', ()=>{
-        it('test with fail', ()=>{
-
-
+        it('test with fail to create data stores', ()=>{
             let err = undefined;
             try {
-                helium_utils.createSystemDataStores(new HarperDBHeliumBad(false));
+                helium_utils.createSystemDataStores(new HeliumBad(false));
             }catch(e){
                 err = e;
             }
 
-            assert.deepEqual(err, new Error('FAIL!'));
+            assert.deepStrictEqual(err, new Error('FAIL TO CREATE DATASTORES!'));
         });
 
         it('test all good', ()=>{
