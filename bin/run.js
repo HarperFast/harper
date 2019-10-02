@@ -316,6 +316,7 @@ async function kickOffExpress() {
 
         if(license.storage_type === terms.STORAGE_TYPES_ENUM.HELIUM){
             await helium_utils.checkHeliumServerRunning();
+            await helium_utils.createSystemDataStores();
         }
 
         if (env.get('MAX_MEMORY')) {
