@@ -181,11 +181,11 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
 
         global.clustering_on = env.get('CLUSTERING');
 
-        let license_values = await hdb_license.licenseSearch();
+        let license_values = hdb_license.licenseSearch();
 
         if(license_values.storage_type === terms.STORAGE_TYPES_ENUM.HELIUM){
-            await helium_utils.checkHeliumServerRunning();
-            await helium_utils.createSystemDataStores();
+            let helium = await helium_utils.checkHeliumServerRunning();
+            await helium_utils.createSystemDataStores(helium);
         }
 
         harper_logger.notify(`HarperDB successfully started`);

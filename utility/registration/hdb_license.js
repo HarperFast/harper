@@ -65,7 +65,7 @@ async function writeFingerprint(){
     return hashed_hash;
 }
 
-async function validateLicense(license_key, company) {
+function validateLicense(license_key, company) {
     let license_validation_object = {
         valid_license: false,
         valid_date: false,
@@ -79,13 +79,19 @@ async function validateLicense(license_key, company) {
         log.error(`empty license key passed to validate.`);
         return license_validation_object;
     }
-    let is_exist = await fs.stat(FINGER_PRINT_FILE).catch((err) => {
+
+    let is_exist = false;
+
+    try {
+        is_exist = fs.statSync(FINGER_PRINT_FILE);
+    } catch(err) {
         log.error(err);
-    });
+    }
+
     if (is_exist) {
         let fingerprint;
         try {
-            fingerprint = await fs.readFile(FINGER_PRINT_FILE, 'utf8');
+            fingerprint = fs.readFileSync(FINGER_PRINT_FILE, 'utf8');
         } catch (e) {
             log.error('error validating this machine in the license');
             license_validation_object.valid_machine = false;
@@ -147,13 +153,13 @@ async function validateLicense(license_key, company) {
 /**
  * search for the hdb license, validate & return
  */
-async function licenseSearch(){
+function licenseSearch(){
     let license_values = new License();
     license_values.api_call = 0;
     let licenses = [];
 
     try {
-        let file_licenses = await fs.readFile(LICENSE_FILE, 'utf-8');
+        let file_licenses = fs.readFileSync(LICENSE_FILE, 'utf-8');
         licenses = file_licenses.split(terms.NEW_LINE);
     } catch(e){
         if(e.code === 'ENOENT'){
@@ -163,10 +169,10 @@ async function licenseSearch(){
         }
     }
 
-    await Promise.all(licenses.map(async (license_string) => {
+    licenses.forEach((license_string) => {
         try {
             let license = JSON.parse(license_string);
-            let license_validation = await validateLicense(license.license_key, license.company);
+            let license_validation = validateLicense(license.license_key, license.company);
             if (license_validation.valid_machine === true && license_validation.valid_date === true && license_validation.valid_license === true) {
                 license_values.exp_date = license_validation.exp_date > license_values.exp_date ? license_validation.exp_date : license_values.exp_date;
                 license_values.api_call += license_validation.api_call;
@@ -176,7 +182,7 @@ async function licenseSearch(){
         } catch(e){
             log.error(e);
         }
-    }));
+    });
 
     if(license_values.api_call === 0){
         license_values.api_call = terms.LICENSE_VALUES.API_CALL_DEFAULT;
