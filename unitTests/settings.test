@@ -60,7 +60,7 @@ NODE_NAME=1231412de213
 	;The user used to connect to other instances of HarperDB, this user must have a role of cluster_user
 CLUSTERING_USER=test_cluster_user
 	;Specify the file system path to where the Helium volume will reside
-HELIUM_VOLUME_PATH=/home/kyle/WebstormProjects/harperdb/unitTests/envDir/helium
+HELIUM_VOLUME_PATH=/tmp/hdb
 HELIUM_SERVER_HOST=localhost:41000
 PROCESS_DIR_TEST=I'm A Test
 VERSION=1.1.1

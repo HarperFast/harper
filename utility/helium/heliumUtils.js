@@ -100,7 +100,7 @@ function createSystemDataStores(helium){
                 missing_stores.push(ds);
             }
         });
-
+        helium.createDataStores(missing_stores);
         log.info('Created system level data stores');
     }catch(e){
         log.error(`Creating system data stores failed due to ${e}`);
