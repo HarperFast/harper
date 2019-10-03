@@ -5,12 +5,11 @@ const heGenerateDataStoreName = require('../heUtility/heGenerateDataStoreName');
 const search_validator = require('../../../../validation/searchValidator.js');
 const common_utils = require('../../../../utility/common_utils');
 
-const heliumUtil = require('../../../../utility/helium/heliumUtils');
+const helium_utils = require('../../../../utility/helium/heliumUtils');
 let hdb_helium;
 try {
-    hdb_helium = heliumUtil.initializeHelium();
+    hdb_helium = helium_utils.initializeHelium();
 } catch(err) {
-    console.log(err);
     throw err;
 }
 

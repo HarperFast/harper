@@ -376,6 +376,30 @@ const HELIUM_TIME_STAMP_ENUM = {
     UPDATED_TIME: '__updatedtime__'
 };
 
+const HELIUM_VALUE_SEARCH_OPS = {
+    EXACT: 'exact',
+    STARTS_WITH: 'startsWith',
+    ENDS_WITH: 'endsWith',
+    INCLUDES: 'includes',
+    EXACT_NO_CASE: 'exactNoCase',
+    STARTS_WITH_NO_CASE: 'startsWithNoCase',
+    ENDS_WITH_NO_CASE: 'endsWithNoCase',
+    INCLUDES_NO_CASE: 'includesNoCase'
+};
+
+const HELIUM_VALUE_RANGE_SEARCH_OPS = {
+    LESS: "<",
+    LESS_OR_EQ: "<=",
+    GREATER: ">",
+    GREATER_OR_EQ: ">=",
+    EQUAL: "==",
+    NOT_EQUAL: "!=",
+    RANGE_INC: "[]",
+    RANGE_NON_INC: "()",
+    RANGE_LOWER: "[)",
+    RANGE_UPPER: "(]"
+}
+
 const HDB_LICENSE_NAME = 'hdb_license';
 
 const CLUSTERING_MESSAGE_TYPES = cluster_types.CORE_ROOM_MSG_TYPE_ENUM;
@@ -452,5 +476,7 @@ module.exports = {
     SEARCH_NOT_FOUND_MESSAGE,
     SEARCH_ATTRIBUTE_NOT_FOUND,
     HELIUM_PROCESS_NAME,
-    HELIUM_START_SERVER_COMMAND
+    HELIUM_START_SERVER_COMMAND,
+    HELIUM_VALUE_SEARCH_OPS,
+    HELIUM_VALUE_RANGE_SEARCH_OPS
 };

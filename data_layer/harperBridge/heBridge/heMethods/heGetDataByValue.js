@@ -3,23 +3,20 @@
 const common_utils = require('../../../../utility/common_utils');
 const hdb_terms = require('../../../../utility/hdbTerms');
 const search_validator = require('../../../../validation/searchValidator.js');
+const SEARCH_VALUE_OPS = hdb_terms.HELIUM_VALUE_SEARCH_OPS;
+const SEARCH_RANGE_OPS = hdb_terms.HELIUM_VALUE_RANGE_SEARCH_OPS;
 const system_schema = require('../../../../json/systemSchema.json');
 
-const heliumUtil = require('../../../../utility/helium/heliumUtils');
 const evaluateTableGetAttributes = require('../../bridgeUtility/evaluateTableGetAttributes');
 const heGenerateDataStoreName = require('../heUtility/heGenerateDataStoreName');
-const hdb_helium = heliumUtil.initializeHelium();
 
-const HE_SEARCH_OPERATIONS = {
-    EXACT: 'exact',
-    STARTS_WITH: 'startsWith',
-    ENDS_WITH: 'endsWith',
-    INCLUDES: 'includes',
-    EXACT_NO_CASE: 'exactNoCase',
-    STARTS_WITH_NO_CASE: 'startsWithNoCase',
-    ENDS_WITH_NO_CASE: 'endsWithNoCase',
-    INCLUDES_NO_CASE: 'includesNoCase'
-};
+const helium_utils = require('../../../../utility/helium/heliumUtils');
+let hdb_helium;
+try {
+    hdb_helium = helium_utils.initializeHelium();
+} catch(err) {
+    throw err;
+}
 
 module.exports = heGetDataByValue;
 
@@ -40,7 +37,16 @@ function heGetDataByValue(search_object) {
             throw validation_error;
         }
 
-        let operation = HE_SEARCH_OPERATIONS.EXACT;
+        let operation = SEARCH_VALUE_OPS.EXACT;
+        let is_range_search = false;
+        let search_value = search_object.search_value;
+
+        if (search_object.search_value === '*') {
+            operation = SEARCH_RANGE_OPS.GREATER_OR_EQ;
+            is_range_search = true;
+            search_value = "";
+        }
+
         // TODO: Add functionality for determining search value search operations logic
         // if (search_object.search_value !== '*' && search_object.search_value !== '%' && (search_object.search_value.includes('*') || search_object.search_value.includes('%'))) {
         //     operation = 'like';
@@ -56,14 +62,20 @@ function heGetDataByValue(search_object) {
         }
 
         const value_store = heGenerateDataStoreName(table_info.schema, table_info.name, search_object.search_attribute);
-        const search_values = [search_object.search_value];
 
         const final_get_attrs = evaluateTableGetAttributes(search_object.get_attributes, table_info.attributes);
         //TODO: figure out better way to ensure we get the hash value included in results when not included in get_attrs
         final_get_attrs.unshift(table_info.hash_attribute);
 
         const data_stores = final_get_attrs.map(attr => heGenerateDataStoreName(table_info.schema, table_info.name, attr));
-        const final_attributes_data = hdb_helium.searchByValues(value_store, operation, search_values, data_stores);
+
+        let final_attributes_data;
+
+        if (is_range_search) {
+            final_attributes_data = hdb_helium.searchByValueRange(value_store, operation, search_value, null, data_stores);
+        } else {
+            final_attributes_data = hdb_helium.searchByValues(value_store, operation, [search_value], data_stores);
+        }
 
         const final_results = consolidateSearchData(final_get_attrs, final_attributes_data);
 
@@ -82,7 +94,7 @@ function consolidateSearchData(attrs_keys, data) {
         const hash = row[1].shift();
         final_data[hash] = {};
         row[1].forEach((data, i) => {
-            final_data[hash][attrs_keys[i]] = common_utils.autoCast(data.toString());
+            final_data[hash][attrs_keys[i]] = common_utils.autoCast(data);
         });
     });
 

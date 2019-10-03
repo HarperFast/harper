@@ -174,7 +174,7 @@ function stripFileExtension(file_name) {
  * @returns
  */
 function autoCast(data){
-    if(isEmpty(data)){
+    if(isEmpty(data) || data === ""){
         return data;
     }
 
