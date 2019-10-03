@@ -1,19 +1,19 @@
 'use strict';
 
-const test_utils = require('../../../../test_utils');
-const { mochaAsyncWrapper } = test_utils;
+const harperdb_helium = require('../../../../../dependencies/harperdb_helium/hdb').default;
+global.hdb_helium = new harperdb_helium(false);
 
 const rewire = require('rewire');
-let fsSearchByHash_rw = rewire('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsSearchByHash');
+let heSearchByHash_rw = rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heSearchByHash');
 const { expect } = require('chai');
 const sinon = require('sinon');
 
 let sandbox;
-let fsGetDataByHash_stub;
+let heGetDataByHash_stub;
 
 const TEST_SCHEMA = 'dev';
 const TEST_TABLE_DOG = 'dog';
-let test_hash_values = [1,2,3];
+let test_hash_values;
 
 const TEST_SEARCH_OBJ = {
     operation: "search_by_hash",
@@ -30,44 +30,44 @@ const test_search_result_stub = {
     '4': { stuff: 'things'}
 };
 
-function setupTestStub() {
+function setupTestData() {
     sandbox = sinon.createSandbox()
-    fsGetDataByHash_stub = sandbox.stub().returns(test_search_result_stub);
-    fsSearchByHash_rw.__set__('fsGetDataByHash', fsGetDataByHash_stub);
+    heGetDataByHash_stub = sandbox.stub().returns(test_search_result_stub);
+    heSearchByHash_rw.__set__('heGetDataByHash', heGetDataByHash_stub);
 }
 
-describe('fsSearchByHash', () => {
+describe('heSearchByHash', () => {
     before(() => {
-        setupTestStub();
+        setupTestData();
     });
 
     after(() => {
         sandbox.reset();
-        rewire('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsSearchByHash');
+        rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heSearchByHash');
+        global.harperdb_helium = undefined;
     });
 
-    it('Should return an array with objects from object of objects returned from fsGetDataByHash', mochaAsyncWrapper(async () => {
+    it('Should return an array with objects from object of objects returned from heGetDataByHash',() => {
         const test_expected_result = Object.values(test_search_result_stub);
-        const test_search_result = await fsSearchByHash_rw(TEST_SEARCH_OBJ);
+        const test_search_result = heSearchByHash_rw(TEST_SEARCH_OBJ);
 
         expect(test_search_result).to.deep.equal(test_expected_result);
         expect(test_search_result.length).to.equal(test_expected_result.length);
-    }));
+    });
 
-    it('Should catch throw error from fsGetDataByHash', mochaAsyncWrapper(async () => {
+    it('Should catch throw error from heGetDataByHash',() => {
         const error_msg = "This is an error msg";
-        fsGetDataByHash_stub = sandbox.stub().throws(new Error(error_msg));
-        fsSearchByHash_rw.__set__('fsGetDataByHash', fsGetDataByHash_stub);
+        heGetDataByHash_stub = sandbox.stub().throws(new Error(error_msg));
+        heSearchByHash_rw.__set__('heGetDataByHash', heGetDataByHash_stub);
 
         let test_search_result;
         try {
-            await fsSearchByHash_rw(TEST_SEARCH_OBJ);
+            heSearchByHash_rw(TEST_SEARCH_OBJ);
         } catch(err) {
             test_search_result = err;
         }
 
         expect(test_search_result.message).to.equal(error_msg);
         expect(test_search_result instanceof Error).to.equal(true);
-    }));
-
+    });
 });
