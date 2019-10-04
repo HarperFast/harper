@@ -1,17 +1,16 @@
 "use strict";
 
-const util = require('util');
-
 const consolidateSearchData = require('../fsUtility/consolidateSearchData');
 const evaluateTableGetAttributes = require('../../bridgeUtility/evaluateTableGetAttributes');
 const getAttributeFileValues = require('../fsUtility/getAttributeFileValues');
 const getBasePath = require('../fsUtility/getBasePath');
 
-const hdb_terms = require('../../../../utility/hdbTerms');
 const condition_patterns = require('../../../../sqlTranslator/conditionPatterns');
+const hdb_terms = require('../../../../utility/hdbTerms');
 const search_validator = require('../../../../validation/searchValidator.js');
 const system_schema = require('../../../../json/systemSchema.json');
 
+const util = require('util');
 const file_search = require('../../../../lib/fileSystem/fileSearch');
 const p_find_ids_by_regex = util.promisify(file_search.findIDsByRegex);
 
@@ -54,9 +53,9 @@ async function fsGetDataByValue(search_object) {
         }, getBasePath());
 
         const final_get_attrs = evaluateTableGetAttributes(search_object.get_attributes, table_info.attributes);
-        const final_hash_results = await p_find_ids_by_regex(patterns.folder_search_path, patterns.folder_search, patterns.blob_search);
+        const final_hash_results = await p_find_ids_by_regex(patterns.folder_search_path, patterns.folder_search, patterns.blob_regex);
 
-        const final_attributes_data = await getAttributeFileValues(final_get_attrs, search_object, final_hash_results);
+        const final_attributes_data = await getAttributeFileValues(final_get_attrs, search_object, table_info.hash_attribute, final_hash_results);
         const final_results = consolidateSearchData(table_info.hash_attribute, final_attributes_data);
 
         return final_results;
