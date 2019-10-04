@@ -7,20 +7,15 @@
 const license = require('../registration/hdb_license');
 const license_generator = require('./licenseGenerator');
 const reg_handler = require('../registration/registrationHandler');
-const global_schema = require('../globalSchema');
 const env = require('../environment/environmentManager');
 const moment = require('moment');
 if(!env.isInitialized()) {
     env.initSync();
 }
 const terms = require('../hdbTerms');
-const promisify = require('util').promisify;
-const p_schema_to_global = promisify(global_schema.setSchemaDataToGlobal);
 
 
 async function register(){
-    console.log('setting global schema');
-    await p_schema_to_global();
     console.log('creating fingerprint');
     let fingerprint = await license.generateFingerPrint();
     let license_object = {

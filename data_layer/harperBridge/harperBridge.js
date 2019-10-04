@@ -4,6 +4,7 @@ const BridgeMethods = require("./BridgeMethods.js");
 const license = require('../../utility/environment/LicenseManager').license;
 const terms = require('../../utility/hdbTerms');
 
+const FileSystemBridge = require('./fsBridge/FileSystemBridge');
 let harper_bridge = undefined;
 
 function getDataStoreType() {
@@ -19,7 +20,7 @@ function getBridge() {
     const data_store = getDataStoreType();
     switch (data_store) {
         case terms.STORAGE_TYPES_ENUM.FILE_SYSTEM:
-            const FileSystemBridge = require('./fsBridge/FileSystemBridge');
+
             harper_bridge = new FileSystemBridge();
             break;
         case terms.STORAGE_TYPES_ENUM.HELIUM:
@@ -27,8 +28,8 @@ function getBridge() {
             harper_bridge = new HeliumBridge();
             break;
         default:
-            const FSystemBridge = require('./fsBridge/FileSystemBridge');
-            harper_bridge = new FSystemBridge();
+
+            harper_bridge = new FileSystemBridge();
     }
     return harper_bridge;
 }
