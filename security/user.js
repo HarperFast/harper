@@ -14,11 +14,11 @@ module.exports = {
     listUsers: listUsers,
     listUsersExternal : listUsersExternal,
     setUsersToGlobal: setUsersToGlobal,
-    USERNAME_REQUIRED: USERNAME_REQUIRED,
-    ALTERUSER_NOTHING_TO_UPDATE: ALTERUSER_NOTHING_TO_UPDATE,
-    EMPTY_PASSWORD: EMPTY_PASSWORD,
-    EMPTY_ROLE: EMPTY_ROLE,
-    ACTIVE_BOOLEAN: ACTIVE_BOOLEAN
+    USERNAME_REQUIRED,
+    ALTERUSER_NOTHING_TO_UPDATE,
+    EMPTY_PASSWORD,
+    EMPTY_ROLE,
+    ACTIVE_BOOLEAN
 };
 
 //requires must be declared after module.exports to avoid cyclical dependency
@@ -47,7 +47,7 @@ const p_search_search_by_value = promisify(search.searchByValue);
 const p_search_search_by_hash = promisify(search.searchByHash);
 const p_delete_delete = promisify(delete_.delete);
 
-async function addUser(user){
+async function addUser(user) {
     let clean_user = validate.cleanAttributes(user, USER_ATTRIBUTE_WHITELIST);
 
     let validation_resp = validation.addUserValidation(clean_user);

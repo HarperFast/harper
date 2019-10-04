@@ -5,7 +5,8 @@ const validation = require('../validation/role_validation');
 const signalling = require('../utility/signalling');
 const uuidV4 = require('uuid/v4');
 const util = require('util');
-
+const license = require('../utility/registration/hdb_license');
+const terms = require('../utility/hdbTerms');
 const p_search_search_by_value = util.promisify(search.searchByValue);
 const p_search_search_by_conditions = util.promisify(search.searchByConditions);
 const p_delete_delete = util.promisify(delete_.delete);
@@ -14,7 +15,7 @@ module.exports = {
     addRole: addRole,
     alterRole:alterRole,
     dropRole: dropRole,
-    listRoles: listRoles
+    listRoles
 };
 
 function scrubRoleDetails(role) {
@@ -41,6 +42,14 @@ async function addRole(role){
     let validation_resp = validation.addRoleValidation(role);
     if(validation_resp) {
         throw new Error(validation_resp);
+    }
+
+    let license_details = await license.getLicense();
+    if(!license_details.enterprise) {
+        let role_count = await listRoles().length;
+        if(role_count > 0) {
+            throw new Error(`Your current license only supports ${terms.BASIC_LICENSE_MAX_NON_CU_ROLES} role.  ${terms.SUPPORT_HELP_MSG}`);
+        }
     }
 
     role = scrubRoleDetails(role);
