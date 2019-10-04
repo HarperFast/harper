@@ -77,7 +77,7 @@ function heGetDataByValue(search_object) {
             final_attributes_data = hdb_helium.searchByValues(value_store, operation, [search_value], data_stores);
         }
 
-        const final_results = consolidateSearchData(final_get_attrs, final_attributes_data);
+        const final_results = consolidateValueSearchData(final_get_attrs, final_attributes_data);
 
         return final_results;
 
@@ -86,17 +86,22 @@ function heGetDataByValue(search_object) {
     }
 }
 
-function consolidateSearchData(attrs_keys, data) {
+function consolidateValueSearchData(attrs_keys, data) {
     let final_data = {};
+    //we add the hash datastore to the search to ensure we have the hash value for each row
+    //- we remove the attr_key here and the actual value below after we grab it for the final data obj
     attrs_keys.shift();
 
-    data.forEach(row => {
+    for (const row of data) {
+        //as noted above, we remove the hash value after grabbing it for the final_data row obj key
         const hash = row[1].shift();
         final_data[hash] = {};
-        row[1].forEach((data, i) => {
+
+        for (let i = 0; i < row[1].length; i++) {
+            const data = row[1][i];
             final_data[hash][attrs_keys[i]] = common_utils.autoCast(data);
-        });
-    });
+        };
+    };
 
     return final_data;
 }
