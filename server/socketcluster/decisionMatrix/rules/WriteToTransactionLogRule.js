@@ -10,7 +10,6 @@ const RotatingFileWriteStream = require('../../../../utility/fs/RotatingFileWrit
 const terms = require('../../../../utility/hdbTerms');
 const RotatingFileWriteStreamOptionsObject = require('../../socketClusterObjects').RotatingFileWriteStreamOptionsObject;
 
-const LINE_DELIMITER = '\r\n';
 const VALID_OPERATIONS = ['insert', 'update', 'delete'];
 
 /**
@@ -73,7 +72,7 @@ class WriteToTransactionLogRule extends RuleIF {
                 transaction_csv += encodeURIComponent(JSON.stringify(req.data.transaction.hash_values));
             }
 
-            transaction_csv += LINE_DELIMITER;
+            transaction_csv += terms.NEW_LINE;
             this.transaction_stream.write(transaction_csv);
         } catch (err) {
             log.trace('failed write to transaction log: ' + req.channel);

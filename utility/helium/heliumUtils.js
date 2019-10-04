@@ -92,7 +92,18 @@ function createSystemDataStores(helium){
             });
         });
 
-        helium.createDataStores(data_stores);
+        let existing_stores = helium.listDataStores('system/(.*)');
+
+        let missing_stores = [];
+        data_stores.forEach(ds=>{
+            if(existing_stores.indexOf(ds) < 0){
+                missing_stores.push(ds);
+            }
+        });
+
+        if(missing_stores.length > 0){
+            helium.createDataStores(missing_stores);
+        }
 
         log.info('Created system level data stores');
     }catch(e){
@@ -123,7 +134,7 @@ async function checkHeliumServerRunning(){
             }
         }
 
-        initializeHelium();
+        return initializeHelium();
     } catch(e) {
         throw new Error(`unable to access helium due to '${e.message}',  please check that ${helium_host} is available and running`);
     }

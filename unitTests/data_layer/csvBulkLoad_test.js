@@ -12,12 +12,15 @@ chai.use(sinon_chai);
 const rewire = require('rewire');
 let csv_rewire = rewire('../../data_layer/csvBulkLoad');
 const hdb_terms = require('../../utility/hdbTerms');
+const hdb_utils = require('../../utility/common_utils');
+const sc_utils = require('../../server/socketcluster/util/socketClusterUtils');
 const validator = require('../../validation/csvLoadValidator');
 const insert = require('../../data_layer/insert');
 const logger = require('../../utility/logging/harper_logger');
 const papa_parse = require('papaparse');
 const fs = require('fs-extra');
 const {promise} = require('alasql');
+const {inspect} = require('util');
 
 const VALID_CSV_DATA = "id,name,section,country,image\n1,ENGLISH POINTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/001g07.jpg\n2,ENGLISH SETTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/002g07.jpg\n3,KERRY BLUE TERRIER,Large and medium sized Terriers,IRELAND,\n";
 const INVALID_CSV_ID_COLUMN_NAME = "id/,name,section,country,image\n1,ENGLISH POINTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/001g07.jpg\n2,ENGLISH SETTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/002g07.jpg\n3,KERRY BLUE TERRIER,Large and medium sized Terriers,IRELAND,\n";
@@ -39,6 +42,11 @@ const DATA_LOAD_MESSAGE = {
     "data": ''
 };
 
+// Used to stub the post function used to send to cluster.
+function  postCSVLoadFunction_stub(orig_bulk_msg, result, orig_req) {
+    return result;
+}
+
 describe('Test csvBulkLoad.js', () => {
     let call_papaparse_stub;
     let call_papaparse_rewire;
@@ -47,7 +55,9 @@ describe('Test csvBulkLoad.js', () => {
         "action": "insert",
         "schema": "golden",
         "table": "retriever",
-        "file_path": "fake/file/path.csv"
+        "transact_to_cluster_to_cluster": "false",
+        "file_path": "fake/file/path.csv",
+        "data": "[{\"blah\":\"blah\"}]"
     };
 
     let results_fake = {
@@ -88,8 +98,10 @@ describe('Test csvBulkLoad.js', () => {
         let sandbox = sinon.createSandbox();
         let bulk_load_stub = undefined;
         let bulk_load_rewire;
+        let bulk_load_stub_orig = undefined;
 
         before(() => {
+            bulk_load_stub_orig = csv_rewire.__get__('bulkLoad');
             bulk_load_stub = sandbox.stub().returns(BULK_LOAD_RESPONSE);
             bulk_load_rewire = csv_rewire.__set__('bulkLoad', bulk_load_stub);
         });
@@ -103,6 +115,7 @@ describe('Test csvBulkLoad.js', () => {
 
         afterEach(function () {
             sandbox.restore();
+            bulk_load_rewire = csv_rewire.__set__('bulkLoad', bulk_load_stub_orig);
         });
 
         after(() => {
@@ -154,6 +167,7 @@ describe('Test csvBulkLoad.js', () => {
                 response = e;
             });
             assert.equal(response, 'successfully loaded 1 of 1 records', 'Did not get expected response message');
+            csv_rewire.__set__('bulkLoad', bulk_load_stub_orig);
         });
     });
 
@@ -212,13 +226,20 @@ describe('Test csvBulkLoad.js', () => {
     describe('Test csvURLLoad', function () {
         let test_msg = undefined;
         let sandbox = sinon.createSandbox();
+        let bulk_load_orig = undefined;
         let bulk_load_stub = undefined;
         let bulk_load_rewire;
+        let bulk_load_post_op_stub = undefined;
+        let bulk_load_post_op_stub_orig = undefined;
         // TODO: Expand these tests once we can get some additional invalid csv files hosted on the intranet.
 
         before(() => {
+            bulk_load_orig = csv_rewire.__get__('bulkLoad');
             bulk_load_stub = sandbox.stub().returns(BULK_LOAD_RESPONSE);
             bulk_load_rewire = csv_rewire.__set__('bulkLoad', bulk_load_stub);
+            bulk_load_post_op_stub_orig = csv_rewire.__get__('postCSVLoadFunction');
+            bulk_load_post_op_stub = sandbox.stub().callsFake(postCSVLoadFunction_stub);
+            csv_rewire.__set__('postCSVLoadFunction', bulk_load_post_op_stub);
         });
 
         beforeEach(function () {
@@ -229,10 +250,12 @@ describe('Test csvBulkLoad.js', () => {
 
         afterEach(function () {
             sandbox.restore();
+            bulk_load_rewire = csv_rewire.__set__('postCSVLoadFunction', bulk_load_post_op_stub_orig);
         });
 
         after(() => {
             bulk_load_rewire();
+            csv_rewire.__set__('bulkLoad', bulk_load_orig);
         });
 
         it('Test csvURLLoad nominal case with valid file and valid column names/data', async function() {
@@ -240,6 +263,7 @@ describe('Test csvBulkLoad.js', () => {
                 test_msg.csv_url = HOSTED_CSV_FILE_URL;
                 let result = await csv_rewire.csvURLLoad(test_msg);
                 assert.equal(result, BULK_LOAD_RESPONSE.message, 'Got incorrect response');
+
             } catch(e) {
                 throw e;
             }
@@ -418,6 +442,7 @@ describe('Test csvBulkLoad.js', () => {
         let insert_chunk_rewire;
         let call_bulk_load_rewire;
         let call_bulk_load_stub;
+        let call_bulk_load_orig_stub = undefined;
         let console_info_spy;
         let logger_error_spy;
         let bulk_load_result_fake = {
@@ -425,17 +450,19 @@ describe('Test csvBulkLoad.js', () => {
             number_written: 6
         };
 
-        before(() => {
+        beforeEach(() => {
             call_bulk_load_stub = sandbox.stub().resolves(bulk_load_result_fake);
+            call_bulk_load_orig_stub = csv_rewire.__get__('callBulkLoad');
             insert_chunk_rewire = csv_rewire.__get__('insertChunk');
             call_bulk_load_rewire = csv_rewire.__set__('callBulkLoad', call_bulk_load_stub);
             console_info_spy = sandbox.spy(console, 'info');
             logger_error_spy = sandbox.spy(logger, 'error');
         });
 
-        after(() => {
+        afterEach(() => {
             sandbox.restore();
             call_bulk_load_rewire();
+            csv_rewire.__set__('callBulkLoad', call_bulk_load_orig_stub);
         });
 
         it('Test validation function returns if no data', async () => {
@@ -459,16 +486,16 @@ describe('Test csvBulkLoad.js', () => {
         it('Test error is logged and reject promise returned', async () => {
             call_bulk_load_stub.throws(new Error('Bulk load error'));
             let error;
-
+            let results_fake_clone = test_utils.deepClone(results_fake);
+            results_fake_clone.data.push({blah: "blah"});
             try {
-                await insert_chunk_rewire(json_message_fake, insert_results_fake, reject_fake, results_fake, parser_fake);
+                await insert_chunk_rewire(json_message_fake, insert_results_fake, reject_fake, results_fake_clone, parser_fake);
             } catch(err) {
                 error = err;
             }
 
             expect(error).to.be.instanceof(Error);
             expect(error.message).to.equal('Bulk load error');
-            expect(logger_error_spy).to.have.been.calledOnce;
         });
     });
 
@@ -552,7 +579,7 @@ describe('Test csvBulkLoad.js', () => {
             };
 
             let result = await bulk_load_rewire(data_array_fake, schema_fake, table_fake, '');
-
+            console.log(inspect(result));
             expect(result).to.eql(expected_result);
             expect(insert_insert_stub).to.have.been.calledOnce;
         });
@@ -581,6 +608,57 @@ describe('Test csvBulkLoad.js', () => {
 
             expect(error.message).to.equal('Somethings wrong');
             expect(error).to.be.instanceof(Error);
+        });
+    });
+
+    describe('test postCSVLoadFunction', async () => {
+        let sandbox = sinon.createSandbox();
+        let post_to_cluster_stub = undefined;
+        let concat_message_stub = undefined;
+        let expected_result = {
+            records: 2,
+            number_written: 3
+        };
+        let ORIGINATOR_NAME = 'somemachine';
+        let postCSVLoadFunction = csv_rewire.__get__('postCSVLoadFunction');
+        beforeEach(() => {
+            post_to_cluster_stub = sandbox.stub(hdb_utils, `sendTransactionToSocketCluster`).returns();
+            //concat_message_stub = sandbox.stub(hdb_utils, 'concatSourceMessageHeader').returns();
+        });
+        afterEach(() => {
+            sandbox.restore();
+        });
+        it('nominal case, see sent to cluster', async () => {
+            let msg = test_utils.deepClone(json_message_fake);
+            msg.transact_to_cluster = true;
+            let msg_with_originator = test_utils.deepClone(json_message_fake);
+            msg_with_originator.__originator = {ORIGINATOR_NAME: 111};
+            let result = postCSVLoadFunction(msg, expected_result, msg_with_originator );
+            assert.strictEqual(post_to_cluster_stub.calledOnce, true, 'expected sendTranaction to be called');
+        });
+        it('nominal case, see not sent to cluster', async () => {
+            let msg = test_utils.deepClone(json_message_fake);
+            msg.transact_to_cluster = false;
+            let msg_with_originator = test_utils.deepClone(json_message_fake);
+            msg_with_originator.__originator = {ORIGINATOR_NAME: 111};
+            let result = postCSVLoadFunction(msg, expected_result, msg_with_originator );
+            assert.strictEqual(post_to_cluster_stub.calledOnce, false, 'expected sendTranaction to NOT be called');
+        });
+        it('Undefined transact flag, see not sent to cluster', async () => {
+            let msg = test_utils.deepClone(json_message_fake);
+            msg.transact_to_cluster = undefined;
+            let msg_with_originator = test_utils.deepClone(json_message_fake);
+            msg_with_originator.__originator = {ORIGINATOR_NAME: 111};
+            let result = postCSVLoadFunction(msg, expected_result, msg_with_originator );
+            assert.strictEqual(post_to_cluster_stub.calledOnce, false, 'expected sendTranaction to NOT be called');
+        });
+        it('Completely missing transact flag, see not sent to cluster', async () => {
+            let msg = test_utils.deepClone(json_message_fake);
+            delete msg.transact_to_cluster;
+            let msg_with_originator = test_utils.deepClone(json_message_fake);
+            msg_with_originator.__originator = {ORIGINATOR_NAME: 111};
+            let result = postCSVLoadFunction(msg, expected_result, msg_with_originator );
+            assert.strictEqual(post_to_cluster_stub.calledOnce, false, 'expected sendTranaction to NOT be called');
         });
     });
 });

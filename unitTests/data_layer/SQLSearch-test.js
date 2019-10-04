@@ -512,12 +512,12 @@ describe('Test FileSystem Class',function() {
 
     describe('_checkEmptySQL()',function() {
 
-        it('should return undefined if attributes and columns are set in class instance', mochaAsyncWrapper(async function() {
+        it('should return empty array if attributes and columns are set in class instance', mochaAsyncWrapper(async function() {
             setupTestInstance();
 
             const method_results = await test_instance._checkEmptySQL();
 
-            expect(method_results).to.equal(undefined);
+            expect(method_results).to.deep.equal([]);
         }));
 
         it('should return the result of a sql operation if sql is only calculation', mochaAsyncWrapper(async function() {
