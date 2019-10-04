@@ -13,7 +13,7 @@ module.exports = {
     userInfo: userInfo,
     listUsers: listUsers,
     listUsersExternal : listUsersExternal,
-    setUsersToGlobal: setUsersToGlobal,
+    setUsersToGlobal,
     USERNAME_REQUIRED,
     ALTERUSER_NOTHING_TO_UPDATE,
     EMPTY_PASSWORD,

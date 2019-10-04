@@ -177,7 +177,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         const hdb_license = require('../utility/registration/hdb_license');
         const helium_utils = require('../utility/helium/heliumUtils');
         await p_schema_to_global();
-        await p_users_to_global();
+        await user_schema.setUsersToGlobal();
 
         global.clustering_on = env.get('CLUSTERING');
 
@@ -412,7 +412,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         try {
             harper_logger.trace('Configuring child process.');
             await p_schema_to_global();
-            await p_users_to_global();
+            await user_schema.setUsersToGlobal();
             spawnSCConnection();
 
         } catch(e) {

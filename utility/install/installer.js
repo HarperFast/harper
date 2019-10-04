@@ -237,11 +237,11 @@ function prepForReinstall(callback) {
             if (err) {
                 winston.error(err);
                 return callback(err, null);
-            }
-            for (let i = 0; i < global.hdb_users.length; i++) {
-                existing_users.push(global.hdb_users[i].username);
-            }
-            schema.setSchemaDataToGlobal(() => callback(null, true));
+            }}).then(() => {
+                for (let i = 0; i < global.hdb_users.length; i++) {
+                    existing_users.push(global.hdb_users[i].username);
+                }
+                schema.setSchemaDataToGlobal(() => callback(null, true));
         });
     } else {
         return callback(null, null);
