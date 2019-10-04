@@ -35,6 +35,7 @@ const {promisify} = require('util');
 const crypto_hash = require('./cryptoHash');
 const terms = require('../utility/hdbTerms');
 const env = require('../utility/environment/environmentManager');
+const license = require('../utility/registration/hdb_license');
 
 const USER_ATTRIBUTE_WHITELIST = {
     username: true,
@@ -335,13 +336,73 @@ async function listUsers() {
         for(let u in users){
             users[u].role = roleMapObj[users[u].role];
         }
+        if(!license.enterprise) {
+            let filtered_users = nonEnterpriseFilter(users);
+            return filtered_users;
+        }
         return users;
     }
     return null;
 }
 
-async function setUsersToGlobal() {
-    global.hdb_users = await listUsers().catch((err) => {
-       throw err;
+/**
+ * Should return array of users
+ * @param search_results
+ * @returns {Array}
+ */
+function nonEnterpriseFilter(search_results) {
+    logger.info('No enterprise license found.  System is limited to 1 clustering role and 1 user role');
+    let user_map = Object.create(null);
+    let found_users = [];
+    let cluster_users = [];
+    // bucket users by role.  We will pick the role with the most users to enable
+    Object.keys(search_results).forEach((user_id) => {
+        let user = search_results[user_id];
+        if (user.role.permission.cluster_user === undefined) {
+            if (!user_map[user.role.id]) {
+                user_map[user.role.id] = {};
+                user_map[user.role.id].users = [];
+            }
+            user_map[user.role.id].users.push(user);
+        } else {
+            cluster_users.push(user);
+        }
     });
+
+    let most_users_tuple = { role: undefined, count: 0};
+    Object.keys(user_map).forEach((role_id) => {
+        let curr_role = user_map[role_id];
+        if(curr_role.users.length >= most_users_tuple.count) {
+            most_users_tuple.role = role_id;
+            most_users_tuple.count = curr_role.users.length;
+        }
+    });
+    if(most_users_tuple.role === undefined) {
+        logger.error('No roles found with active users.  This is bad.');
+        return found_users;
+    }
+    //Object.assign(found_users, user_map[most_users_tuple.role]);
+    //found_users.concat(user_map[most_users_tuple.role]);
+    found_users = user_map[most_users_tuple.role].users.concat(cluster_users);
+    //found_users.concat(cluster_users);
+
+    return found_users;
+}
+
+async function setUsersToGlobal() {
+    try {
+        let users = await listUsers();
+        let curr_license = await license.getLicense();
+
+        // No enterprise license limits roles to 2 (1 su, 1 cu).  If a license has expired, we need to allow the cluster role
+        // and the role with the most users.
+        /*if(!curr_license.enterprise) {
+            logger.info('No enterprise license found.  System is limited to 1 clustering role and 1 user role');
+            users = nonEnterpriseFilter(users);
+        }*/
+        global.hdb_users = users;
+    } catch(err) {
+        logger.error(err);
+        throw err;
+    }
 }

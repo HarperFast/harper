@@ -9,7 +9,7 @@ try {
     harper_logger.error(`Got an error loading the environment.  Exiting.${err}`);
     process.exit(0);
 }
-const user_schema = require('../utility/user_schema');
+const user_schema = require('../security/user');
 const os = require('os');
 const job_runner = require('./jobRunner');
 const hdb_util = require('../utility/common_utils');
@@ -27,7 +27,6 @@ const util = require('util');
 const promisify = util.promisify;
 
 const p_schema_to_global = promisify(global_schema.setSchemaDataToGlobal);
-const p_users_to_global = promisify(user_schema.setUsersToGlobal);
 
 const DEFAULT_SERVER_TIMEOUT = 120000;
 const PROPS_SERVER_TIMEOUT_KEY = 'SERVER_TIMEOUT_MS';
