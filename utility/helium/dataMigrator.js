@@ -15,6 +15,11 @@ const terms = require('../hdbTerms');
 const hdb_utils = require('../common_utils');
 const BATCH_SIZE = 1000;
 
+module.exports = {
+    migrateTableToHelium,
+    migrateSystemTablesToHelium
+};
+
 /**
  *
  * @param schema
