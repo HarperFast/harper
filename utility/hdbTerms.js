@@ -398,7 +398,7 @@ const HELIUM_VALUE_RANGE_SEARCH_OPS = {
     RANGE_NON_INC: "()",
     RANGE_LOWER: "[)",
     RANGE_UPPER: "(]"
-}
+};
 
 const HDB_LICENSE_NAME = 'hdb_license';
 
