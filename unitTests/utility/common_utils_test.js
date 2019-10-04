@@ -238,7 +238,7 @@ describe(`Test autoCast`, function(){
     });
 
     it(`Pass in undefined, expect undefined`, function(){
-        assert.equal(cu.autoCast(undefined), undefined);
+        assert.strictEqual(cu.autoCast(undefined), undefined);
     });
 
     it(`Pass in empty string, expect empty string`, function(){
@@ -250,11 +250,11 @@ describe(`Test autoCast`, function(){
     });
 
     it(`Pass in string of null, expect null`, function(){
-        assert.equal(cu.autoCast("null"), null);
+        assert.strictEqual(cu.autoCast("null"), null);
     });
 
     it(`Pass in string of undefined, expect undefined`, function(){
-        assert.equal(cu.autoCast("undefined"), undefined);
+        assert.strictEqual(cu.autoCast("undefined"), null);
     });
 
     it(`Pass in string of true, expect boolean true`, function(){

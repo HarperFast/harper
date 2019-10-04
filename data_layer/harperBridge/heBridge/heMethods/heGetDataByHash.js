@@ -5,8 +5,13 @@ const heGenerateDataStoreName = require('../heUtility/heGenerateDataStoreName');
 const search_validator = require('../../../../validation/searchValidator.js');
 const common_utils = require('../../../../utility/common_utils');
 
-const heliumUtil = require('../../../../utility/helium/heliumUtils');
-const hdb_helium = heliumUtil.initializeHelium();
+const helium_utils = require('../../../../utility/helium/heliumUtils');
+let hdb_helium;
+try {
+    hdb_helium = helium_utils.initializeHelium();
+} catch(err) {
+    throw err;
+}
 
 module.exports = heGetDataByHash;
 
@@ -29,9 +34,10 @@ function heGetDataByHash(search_object) {
 
         const hash_values = search_object.hash_values.map(hash => `${hash}`);
         const data_stores = final_get_attrs.map(attr => heGenerateDataStoreName(table_info.schema, table_info.name, attr));
+
         const final_attributes_data = hdb_helium.searchByKeys(hash_values, data_stores);
 
-        const final_results = consolidateSearchData(final_get_attrs, final_attributes_data);
+        const final_results = consolidateHashSearchData(final_get_attrs, final_attributes_data);
 
         return final_results;
     } catch(err) {
@@ -39,16 +45,18 @@ function heGetDataByHash(search_object) {
     }
 }
 
-function consolidateSearchData(attrs_keys, attrs_data) {
+function consolidateHashSearchData(attrs_keys, attrs_data) {
     let final_data = {};
 
-    attrs_data.forEach(row => {
-        let row_obj = {};
-        row[1].forEach((data, i) => {
-            row_obj[attrs_keys[i]] = common_utils.autoCast(data.toString());
-        });
-        final_data[row[0]] = row_obj;
-    });
+    for (const row of attrs_data) {
+        const hash = row[0];
+        final_data[hash] = {};
+
+        for (let i = 0; i < row[1].length; i++) {
+            const data = row[1][i];
+            final_data[hash][attrs_keys[i]] = common_utils.autoCast(data);
+        }
+    }
 
     return final_data;
 }

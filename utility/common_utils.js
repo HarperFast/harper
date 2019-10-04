@@ -21,10 +21,11 @@ const CHARACTER_LIMIT = 255;
 
 const HDB_PROC_NAME = 'hdb_express.js';
 
+//Because undefined will not return in a JSON response, we convert undefined to null when autocasting
 const AUTOCAST_COMMON_STRINGS = {
     'true': true,
     'false': false,
-    'undefined': undefined,
+    'undefined': null,
     'null': null,
     'NaN': NaN
 };
@@ -173,7 +174,7 @@ function stripFileExtension(file_name) {
  * @returns
  */
 function autoCast(data){
-    if(isEmpty(data)){
+    if(isEmpty(data) || data === ""){
         return data;
     }
 
@@ -183,7 +184,7 @@ function autoCast(data){
     }
 
     // Try to make it a common string
-    if ((data === 'undefined' && AUTOCAST_COMMON_STRINGS[data] === undefined) || AUTOCAST_COMMON_STRINGS[data] !== undefined) {
+    if (AUTOCAST_COMMON_STRINGS[data] !== undefined) {
         return AUTOCAST_COMMON_STRINGS[data];
     }
 

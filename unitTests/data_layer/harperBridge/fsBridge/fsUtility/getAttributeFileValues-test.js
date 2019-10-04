@@ -83,7 +83,7 @@ describe('getAttributeFileValues', () => {
     });
 
     it('Should return all get_attr data for hashes in search_object', mochaAsyncWrapper(async () => {
-        const test_result = await getAttributeFileValues_rw(test_attr_names, TEST_SEARCH_OBJ);
+        const test_result = await getAttributeFileValues_rw(test_attr_names, TEST_SEARCH_OBJ, HASH_ATTRIBUTE);
 
         const test_result_keys = Object.keys(test_result);
         expect(test_result_keys.length).to.equal(test_attr_names.length);
@@ -91,7 +91,7 @@ describe('getAttributeFileValues', () => {
     }));
 
     it('Should call readAttributeFiles() for each get_attr passed in', mochaAsyncWrapper(async () => {
-        await getAttributeFileValues_rw(test_attr_names, TEST_SEARCH_OBJ);
+        await getAttributeFileValues_rw(test_attr_names, TEST_SEARCH_OBJ, HASH_ATTRIBUTE);
 
         expect(readAttributeFiles_spy.callCount).to.equal(test_attr_names.length);
     }));
@@ -103,7 +103,7 @@ describe('getAttributeFileValues', () => {
 
         let test_results;
         try {
-            test_results = await getAttributeFileValues_rw(test_attr_names, TEST_SEARCH_OBJ);
+            test_results = await getAttributeFileValues_rw(test_attr_names, TEST_SEARCH_OBJ, HASH_ATTRIBUTE);
         } catch(e) {
             expect(e.message).to.equal(error_msg);
         }
@@ -157,7 +157,7 @@ describe('getAttributeFileValues', () => {
             expect(test_result).to.equal(test_error);
         }));
 
-        it('Should NOT throw an error if e.code equals ENOENT', mochaAsyncWrapper(async () => {
+        it('Should NOT throw an error if e.code equals ENOENT and return attr w/ null value', mochaAsyncWrapper(async () => {
             const test_error = new Error("readFile error!");
             test_error.code = "ENOENT";
             const error_stub = {
@@ -177,7 +177,7 @@ describe('getAttributeFileValues', () => {
 
             expect(test_result).to.equal(undefined);
             const test_result_keys = Object.values(test_attr_data);
-            expect(test_result_keys.length).to.equal(0);
+            expect(test_result_keys.length).to.equal(1);
         }));
     });
 
@@ -190,7 +190,8 @@ describe('getAttributeFileValues', () => {
         });
 
         it('Should return an object of attr value/pairs for each hash value passed in', mochaAsyncWrapper(async () => {
-            const test_results = await readAttributeFiles_rw(test_table_path, test_attr_name, test_hash_values);
+            const is_hash = test_attr_name === HASH_ATTRIBUTE;
+            const test_results = await readAttributeFiles_rw(test_table_path, test_attr_name, test_hash_values, is_hash);
 
             const test_result_keys = Object.keys(test_results);
             expect(test_result_keys.length).to.equal(test_hash_values.length);
