@@ -1,7 +1,8 @@
 'use strict';
 
 const test_utils = require('../../../../test_utils');
-let hdb_helium;
+test_utils.preTestPrep();
+let hdb_helium = test_utils.buildHeliumTestVolume();
 
 const rewire = require('rewire');
 const heDeleteRecords = rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heDeleteRecords');
@@ -77,8 +78,6 @@ function setupTest() {
 describe('Test Helium method heDeleteRecords', () => {
 
     before(() => {
-        test_utils.preTestPrep();
-        hdb_helium = test_utils.buildHeliumTestVolume();
 
         setupTest();
         global.hdb_schema = {

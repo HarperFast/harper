@@ -69,7 +69,7 @@ class SQLSearch {
         let search_results = undefined;
         try {
             let empty_sql_results = await this._checkEmptySQL();
-            if (empty_sql_results && empty_sql_results.length > 0) {
+            if (!common_utils.isEmptyOrZeroLength(empty_sql_results)) {
                 return empty_sql_results;
             }
             await this._getFetchAttributeValues();
@@ -281,7 +281,7 @@ class SQLSearch {
         });
 
         //this is to handle aliases.  if we did not find the actual column we look at the aliases in the select columns
-        if (!found_columns || found_columns.length === 0) {
+        if (common_utils.isEmptyOrZeroLength(found_columns)) {
             found_columns = this.columns.columns.filter(select_column => column.columnid === select_column.as);
         }
 
@@ -291,11 +291,11 @@ class SQLSearch {
     /**
      * This function check to see if there is no from and no columns, or the table has been created but no data has been entered yet
      * if there are not then this is a SELECT used to solely perform a calculation such as SELECT 2*4, or SELECT SQRT(4)
-     * @returns {Promise<results/undefined>}
+     * @returns {Promise<[]>}
      * @private
      */
     async _checkEmptySQL() {
-        let results = undefined;
+        let results = [];
         //the scenario that allows this to occur is the table has been created but no data has been entered yet, in this case we return an empty array
         if (common_utils.isEmptyOrZeroLength(this.all_table_attributes) && !common_utils.isEmptyOrZeroLength(this.columns.columns)) {
             //purpose of this is to break out of the waterfall but return an empty array
