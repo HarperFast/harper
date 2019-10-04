@@ -359,11 +359,14 @@ function nonEnterpriseFilter(search_results) {
     Object.keys(search_results).forEach((user_id) => {
         let user = search_results[user_id];
         if (user.role.permission.cluster_user === undefined) {
-            if (!user_map[user.role.id]) {
-                user_map[user.role.id] = {};
-                user_map[user.role.id].users = [];
+            // only add super users
+            if(user.role.permission.super_user === true) {
+                if (!user_map[user.role.id]) {
+                    user_map[user.role.id] = {};
+                    user_map[user.role.id].users = [];
+                }
+                user_map[user.role.id].users.push(user);
             }
-            user_map[user.role.id].users.push(user);
         } else {
             cluster_users.push(user);
         }
@@ -381,10 +384,7 @@ function nonEnterpriseFilter(search_results) {
         logger.error('No roles found with active users.  This is bad.');
         return found_users;
     }
-    //Object.assign(found_users, user_map[most_users_tuple.role]);
-    //found_users.concat(user_map[most_users_tuple.role]);
     found_users = user_map[most_users_tuple.role].users.concat(cluster_users);
-    //found_users.concat(cluster_users);
 
     return found_users;
 }

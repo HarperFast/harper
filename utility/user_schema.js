@@ -22,7 +22,7 @@ async function setUsersToGlobal() {
             // bucket users by role.  We will pick the role with the most users to enable
             users.forEach((user) => {
                 if (user.role.permission.cluster_user === undefined) {
-                    if (!user_map[user.role.id]) {
+                    if (!user_map[user.role.id] ) {
                         user_map[user.role.id] = {};
                         user_map[user.role.id].users = [];
                     }
