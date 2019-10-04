@@ -185,6 +185,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
 
         if(license_values.storage_type === terms.STORAGE_TYPES_ENUM.HELIUM){
             await helium_utils.checkHeliumServerRunning();
+            await helium_utils.createSystemDataStores();
         }
 
         harper_logger.notify(`HarperDB successfully started`);

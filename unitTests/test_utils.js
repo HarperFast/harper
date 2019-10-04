@@ -753,8 +753,9 @@ function buildHeliumTestVolume() {
         fs.mkdirpSync(HELIUM_VOLUME_PATH);
         env.setProperty("HELIUM_VOLUME_PATH", HELIUM_VOLUME_PATH);
         let  helium = helium_utils.initializeHelium();
-        helium_utils.createSystemDataStores(helium);
-
+        try {
+            helium_utils.createSystemDataStores(helium);
+        } catch(e){}
         return helium;
     } catch(err) {
         console.log(err);

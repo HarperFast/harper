@@ -17,7 +17,7 @@ async function getAttributeFileValues(get_attributes, search_object, hash_attr, 
         const { schema, table } = search_object;
         let table_path = `${getBasePath()}/${schema}/${table}`;
 
-        if (hash_results) {
+        if (!common_utils.isEmpty(hash_results)) {
             hash_values = hash_results;
         } else {
             hash_values = await validateHashValuesExist(table_path, hash_attr, search_object.hash_values);

@@ -415,8 +415,10 @@ describe('test licenseSearch', ()=>{
 
     it('test one license in hdb_license & license is valid', async()=>{
         const hdb_license = rewire('../../../utility/registration/hdb_license');
-        hdb_license.__set__('p_search_by_value', async(search_object)=>{
-            return [LICENSES[0]];
+        hdb_license.__set__('fs',{
+            readFile:async(file, format)=>{
+                return JSON.stringify(LICENSES[0]) + '\r\n';
+            }
         });
 
         hdb_license.__set__('validateLicense', async (license_key, company)=>{
@@ -437,8 +439,10 @@ describe('test licenseSearch', ()=>{
 
     it('test one license in hdb_license & license is invalid', async()=>{
         const hdb_license = rewire('../../../utility/registration/hdb_license');
-        hdb_license.__set__('p_search_by_value', async(search_object)=>{
-            return [LICENSES[0]];
+        hdb_license.__set__('fs',{
+            readFile:async(file, format)=>{
+                return JSON.stringify(LICENSES[0]) + '\r\n';
+            }
         });
 
         hdb_license.__set__('validateLicense', async (license_key, company)=>{
@@ -459,8 +463,10 @@ describe('test licenseSearch', ()=>{
 
     it('test multiple valid licenses in hdb_license', async()=>{
         const hdb_license = rewire('../../../utility/registration/hdb_license');
-        hdb_license.__set__('p_search_by_value', async(search_object)=>{
-            return LICENSES;
+        hdb_license.__set__('fs',{
+            readFile:async(file, format)=>{
+                return JSON.stringify(LICENSES[0]) + '\r\n' + JSON.stringify(LICENSES[1]) + '\r\n';
+            }
         });
 
         hdb_license.__set__('validateLicense', async (license_key, company)=>{
@@ -483,8 +489,10 @@ describe('test licenseSearch', ()=>{
 
     it('test with search failing', async()=>{
         const hdb_license = rewire('../../../utility/registration/hdb_license');
-        hdb_license.__set__('p_search_by_value', async(search_object)=>{
-            throw new Error('FAIL!');
+        hdb_license.__set__('fs', {
+            readFile: async(file, format)=> {
+                throw new Error('FAIL!');
+            }
         });
 
         let err = undefined;
@@ -501,8 +509,10 @@ describe('test licenseSearch', ()=>{
 
     it('test with validate failing', async()=>{
         const hdb_license = rewire('../../../utility/registration/hdb_license');
-        hdb_license.__set__('p_search_by_value', async(search_object)=>{
-            return LICENSES;
+        hdb_license.__set__('fs',{
+            readFile:async(file, format)=>{
+                return JSON.stringify(LICENSES[0]) + '\r\n' + JSON.stringify(LICENSES[1]) + '\r\n';
+            }
         });
 
         hdb_license.__set__('validateLicense', async (license_key, company)=>{
