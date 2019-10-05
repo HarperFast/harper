@@ -204,3 +204,5 @@ async function migrateSystemTablesToHelium(){
         await migrateTableToHelium(terms.SYSTEM_SCHEMA_NAME, tbl);
     }
 }
+
+migrateSystemTablesToHelium().then();
