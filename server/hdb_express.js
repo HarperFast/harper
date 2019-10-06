@@ -188,8 +188,6 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
 
         global.clustering_on = env.get('CLUSTERING');
 
-
-
         harper_logger.notify(`HarperDB successfully started`);
         harper_logger.info(`Master ${process.pid} is running`);
         harper_logger.info(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
