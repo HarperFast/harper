@@ -34,7 +34,7 @@ async function parseMessage(runner_message) {
     let response = new RunnerResponse(false,"","");
 
     if(!runner_message || Object.keys(runner_message).length === 0) {
-        throw new Error('Empty runner message passed to parseMessage');
+        throw new Error('Empty runner passed to parseMessage');
     }
     if(!runner_message.json || Object.keys(runner_message.json).length === 0) {
         throw new Error('Empty JSON passed to parseMessage');
