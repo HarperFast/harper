@@ -194,7 +194,9 @@ async function insertChunk(json_message, insert_results, reject, results, parser
     parser.pause();
 
     results.data.forEach(record=>{
-        delete record['__parsed_extra'];
+        if(!hdb_utils.isEmpty(record) && !hdb_utils.isEmpty(record['__parsed_extra'])){
+            delete record['__parsed_extra'];
+        }
     });
 
     try {
