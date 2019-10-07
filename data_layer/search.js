@@ -265,7 +265,7 @@ function consolidateData(hash_attribute, attributes_data, callback) {
     }
 
     if (!ids) {
-        let id_map = {};
+        let id_map = Object.create(null);
         data_keys.forEach(key=>{
             Object.keys(attributes_data[key]).forEach(id=>{
                 id_map[id] = null;
