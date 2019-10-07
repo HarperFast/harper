@@ -256,7 +256,7 @@ function consolidateData(hash_attribute, attributes_data, callback) {
     if (attributes_data[hash_attribute]) {
         ids = Object.keys(attributes_data[hash_attribute]);
     } else {
-        Object.keys(attributes_data).forEach(key => {
+        data_keys.forEach(key => {
             let split_key = key.split('.');
             if (split_key.length > 1 && split_key[1] === hash_attribute) {
                 ids = Object.keys(attributes_data[key]);
@@ -265,14 +265,21 @@ function consolidateData(hash_attribute, attributes_data, callback) {
     }
 
     if (!ids) {
-        ids = Object.keys(attributes_data[Object.keys(attributes_data)[0]]);
+        let id_map = {};
+        data_keys.forEach(key=>{
+            Object.keys(attributes_data[key]).forEach(id=>{
+                id_map[id] = null;
+            });
+        });
+
+        ids = Object.keys(id_map);
     }
 
     ids.forEach(function(key) {
         let data_object = {};
 
         data_keys.forEach(function(attribute) {
-            data_object[attribute] = attributes_data[attribute][key];
+            data_object[attribute] = attributes_data[attribute][key] === undefined ? null : attributes_data[attribute][key];
         });
         data_array.push(data_object);
     });
