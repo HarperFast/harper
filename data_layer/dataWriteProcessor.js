@@ -111,6 +111,10 @@ async function processData(process_wrapper) {
                 continue;
             }
 
+            if(h_utils.isEmpty(record[property]) || record[property] === ''){
+                continue;
+            }
+
             let {value, value_path} = h_utils.valueConverter(record[property]);
             let attribute_file_name = hash_value + '.hdb';
             let attribute_path = base_path + property + '/' + value_path;
