@@ -47,7 +47,7 @@ async function addRole(role){
     let license_details = await license.getLicense();
     //TODO: Restore this after setting up roles
     if(!license_details.enterprise) {
-        let role_count = await listRoles().length;
+        let role_count = Object.keys(await listRoles()).length;
         if(role_count > 0) {
             throw new Error(`Your current license only supports ${terms.BASIC_LICENSE_MAX_NON_CU_ROLES} role.  ${terms.SUPPORT_HELP_MSG}`);
         }
