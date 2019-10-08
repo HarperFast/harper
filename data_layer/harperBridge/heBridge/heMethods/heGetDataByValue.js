@@ -37,15 +37,17 @@ function heGetDataByValue(search_object) {
             throw validation_error;
         }
 
-        let operation = SEARCH_VALUE_OPS.EXACT;
-        let is_range_search = false;
-        let search_value = search_object.search_value;
+        // let operation = SEARCH_VALUE_OPS.EXACT;
+        // let is_range_search = false;
+        // let search_value = search_object.search_value;
+        //
+        // if (search_object.search_value === '*') {
+        //     operation = SEARCH_RANGE_OPS.GREATER_OR_EQ;
+        //     is_range_search = true;
+        //     search_value = "";
+        // }
 
-        if (search_object.search_value === '*') {
-            operation = SEARCH_RANGE_OPS.GREATER_OR_EQ;
-            is_range_search = true;
-            search_value = "";
-        }
+        const { is_range_search, search_operation, search_value } = generateSearchPattern(search_object.search_value);
 
         // TODO: Add functionality for determining search value search operations logic
         // if (search_object.search_value !== '*' && search_object.search_value !== '%' && (search_object.search_value.includes('*') || search_object.search_value.includes('%'))) {
@@ -72,9 +74,9 @@ function heGetDataByValue(search_object) {
         let final_attributes_data;
 
         if (is_range_search) {
-            final_attributes_data = hdb_helium.searchByValueRange(value_store, operation, search_value, null, data_stores);
+            final_attributes_data = hdb_helium.searchByValueRange(value_store, search_operation, search_value, null, data_stores);
         } else {
-            final_attributes_data = hdb_helium.searchByValues(value_store, operation, [search_value], data_stores);
+            final_attributes_data = hdb_helium.searchByValues(value_store, search_operation, [search_value], data_stores);
         }
 
         const final_results = consolidateValueSearchData(final_get_attrs, final_attributes_data);
@@ -104,4 +106,50 @@ function consolidateValueSearchData(attrs_keys, data) {
     };
 
     return final_data;
+}
+
+function generateSearchPattern(search_val) {
+    let search_pattern = {
+        search_operation: SEARCH_VALUE_OPS.EXACT,
+        search_value: search_val,
+        is_range_search: false
+    };
+
+    if (search_val === "*" || search_val === "%") {
+        search_pattern.search_operation = SEARCH_RANGE_OPS.GREATER_OR_EQ;
+        search_pattern.search_value = "";
+        search_pattern.is_range_search = true;
+
+        return search_pattern;
+    } else {
+        const starts_with_wildcard = String(search_val).startsWith('%') || String(search_val).startsWith('*');
+        const ends_with_wildcard = String(search_val).endsWith('%') || String(search_val).endsWith('*');
+
+        if (!starts_with_wildcard && !ends_with_wildcard) {
+            return search_pattern;
+        } else {
+            search_pattern.search_value = getFinalSearchString(search_val, starts_with_wildcard, ends_with_wildcard);
+            if (starts_with_wildcard && ends_with_wildcard) {
+                search_pattern.search_operation = SEARCH_VALUE_OPS.INCLUDES;
+                return search_pattern;
+            } else if (starts_with_wildcard) {
+                search_pattern.search_operation = SEARCH_VALUE_OPS.ENDS_WITH;
+                return search_pattern;
+            } else if (ends_with_wildcard) {
+                search_pattern.search_operation = SEARCH_VALUE_OPS.STARTS_WITH;
+                return search_pattern;
+            }
+        }
+    }
+}
+
+function getFinalSearchString(search_val, starts_with_wildcard, ends_with_wildcard) {
+    let split_string = search_val.split('');
+    if (starts_with_wildcard) {
+        split_string.shift();
+    }
+    if (ends_with_wildcard) {
+        split_string.pop();
+    }
+    return split_string.join('')
 }
