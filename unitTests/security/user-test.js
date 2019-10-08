@@ -10,12 +10,6 @@ const validation = require('../../validation/user_validation');
 const signalling = require('../../utility/signalling');
 const util = require('util');
 let license = require('../../utility/registration/hdb_license');
-/*const cb_user_add_user = util.callbackify(user.addUser);
-const cb_user_alter_user = util.callbackify(user.alterUser);
-const cb_user_drop_user = util.callbackify(user.dropUser);
-const cb_user_user_info = util.callbackify(user.userInfo);
-const cb_user_list_users = util.callbackify(user.listUsers);
-const cb_user_list_user_external = util.callbackify(user.listUsersExternal);*/
 
 let USER_SEARCH_RESULT = [
     {
