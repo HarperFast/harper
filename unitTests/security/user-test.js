@@ -688,7 +688,7 @@ describe('Test nonEnterpriseFilter', function () {
         sandbox.restore();
     });
 
-    it('Nominal test, expect nothing filtered', () => {
+    it('Nominal test, expect non su user filtered', () => {
         let error, res;
         license_stub = sandbox.stub(license, "getLicense").resolves({enterprise: true});
         try {
@@ -696,7 +696,7 @@ describe('Test nonEnterpriseFilter', function () {
         } catch(err) {
             error = err;
         }
-        assert.strictEqual(res.length, USER_SEARCH_RESULT.length, "expected nothing filtered");
+        assert.strictEqual(res.length, USER_SEARCH_RESULT.length-1, "expected nothing filtered");
     });
 
     it('Nominal test, expect filtered', () => {
