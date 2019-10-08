@@ -87,7 +87,7 @@
     });
 
     socket.on('login', (data, res)=>{
-        res(null, {username: 'test_cluster_user2', password: '1400'});
+        res(null, {username: 'test_cluster_user', password: '1400'});
     });
 
     socket.on('connect', (data, res)=>{
@@ -96,6 +96,18 @@
     });
 
     function publish(channel, data){
+        let schema_table = channel.split(':');
+        let transaction_object = {
+            type:"HDB_TRANSACTION"
+            schema: schema_table[0],
+            table: schema_table[1],
+            transaction:{
+                operation:'insert',
+                schema: schema_table[0],
+                table: schema_table[1],
+                records:[]
+            }
+        };
         socket.publish(channel, data, (err, ackData)=>{
             if(err){
                 console.error(err);
