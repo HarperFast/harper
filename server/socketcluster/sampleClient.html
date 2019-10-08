@@ -70,7 +70,7 @@
         hostname: "localhost",
         port: 12345,
         "secure": true,
-        "connectTimeout": 10000,
+        "connectTimeout": 100000,
         "ackTimeout": 10000,
         "autoReconnectOptions": {
             "initialDelay": 1000,
@@ -99,9 +99,11 @@
 
         let schema_table = channel.split(':');
         let transaction_object = {
+            hdb_header:{__data_source:6},
             type: "HDB_TRANSACTION",
             schema: schema_table[0],
             table: schema_table[1],
+            __originator:{},
             transaction: {
                 operation: 'insert',
                 schema: schema_table[0],
@@ -109,7 +111,7 @@
                 records: records
             }
         };
-
+        transaction_object.__originator[socket.id] = 111;
         socket.publish(channel, transaction_object);
     }
 
