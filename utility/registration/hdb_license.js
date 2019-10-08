@@ -169,8 +169,12 @@ function licenseSearch(){
         }
     }
 
-    licenses.forEach((license_string) => {
+    for(let i=0; i<licenses.length; ++i) {
+        let license_string = licenses[i];
         try {
+            if(hdb_utils.isEmptyOrZeroLength(license_string)) {
+                continue;
+            }
             let license = JSON.parse(license_string);
             let license_validation = validateLicense(license.license_key, license.company);
             if (license_validation.valid_machine === true && license_validation.valid_date === true && license_validation.valid_license === true) {
@@ -186,7 +190,7 @@ function licenseSearch(){
             license_values.storage_type = terms.STORAGE_TYPES_ENUM.FILE_SYSTEM;
             license_values.enterprise = false;
         }
-    });
+    };
 
     if(license_values.api_call === 0){
         license_values.api_call = terms.LICENSE_VALUES.API_CALL_DEFAULT;
