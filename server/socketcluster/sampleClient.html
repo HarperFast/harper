@@ -78,43 +78,60 @@
         }
     });
 
-    socket.name = 'test';
-
-
+    let credentials = {username: 'test_cluster_user', password: '1400'};
 
     socket.on('error', function (err) {
         console.error(err);
     });
 
     socket.on('login', (data, res)=>{
-        res(null, {username: 'test_cluster_user', password: '1400'});
+        res(null, credentials);
     });
 
     socket.on('connect', (data, res)=>{
-        //subscribe(socket.id);
 
     });
 
-    function publish(channel, data){
+    function publishInsert(channel, records){
+        if(!Array.isArray(records) || records.length === 0){
+            throw new Error('records must be an array with at least one entry');
+        }
+
         let schema_table = channel.split(':');
         let transaction_object = {
-            type:"HDB_TRANSACTION"
+            type: "HDB_TRANSACTION",
             schema: schema_table[0],
             table: schema_table[1],
-            transaction:{
-                operation:'insert',
+            transaction: {
+                operation: 'insert',
                 schema: schema_table[0],
                 table: schema_table[1],
-                records:[]
+                records: records
             }
         };
-        socket.publish(channel, data, (err, ackData)=>{
-            if(err){
-                console.error(err);
-            }
 
-            console.log(ackData);
-        });
+        socket.publish(channel, transaction_object);
+    }
+
+    function publishUpdate(channel, records){
+        if(!Array.isArray(records) || records.length === 0){
+            throw new Error('records must be an array with at least one entry');
+        }
+
+        let schema_table = channel.split(':');
+        let transaction_object = {
+            type: "HDB_TRANSACTION",
+            schema: schema_table[0],
+            table: schema_table[1],
+            transaction: {
+                operation: 'update',
+                schema: schema_table[0],
+                table: schema_table[1],
+                records: records
+            }
+        };
+
+        socket.publish(channel, transaction_object);
     }
 
     function subscribe(channel){
