@@ -183,8 +183,12 @@ function licenseSearch(){
                 license_values.storage_type = license_validation.storage_type;
                 license_values.enterprise = true;
             }
-        } catch(e){
+        } catch(e) {
+            log.error('There was an error parsing the license string.');
             log.error(e);
+            license_values.api_call = terms.LICENSE_VALUES.API_CALL_DEFAULT;
+            license_values.storage_type = terms.STORAGE_TYPES_ENUM.FILE_SYSTEM;
+            license_values.enterprise = false;
         }
     });
 
