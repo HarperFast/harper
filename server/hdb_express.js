@@ -25,6 +25,8 @@ const terms = require('../utility/hdbTerms');
 const RestartEventObject = require('./RestartEventObject');
 const util = require('util');
 const promisify = util.promisify;
+// Rate limiter
+const {RateLimiterClusterMaster, RateLimiterCluster} = require('rate-limiter-flexible');
 
 const p_schema_to_global = promisify(global_schema.setSchemaDataToGlobal);
 const p_users_to_global = promisify(user_schema.setUsersToGlobal);
@@ -69,6 +71,8 @@ let num_hdb_processes = undefined;
 let numCPUs = 4;
 let num_workers = undefined;
 let os_cpus = undefined;
+// rate limiter
+let rate_limiter = undefined;
 
 //in an instance of having HDB installed on an android devices we don't have access to the cpu info so we need to handle the error and move on
 try {
@@ -124,7 +128,7 @@ cluster.on('exit', (dead_worker, code, signal) => {
 
 if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     global.isMaster = cluster.isMaster;
-
+    new RateLimiterClusterMaster();
     process.on('uncaughtException', function (err) {
         let os = require('os');
         let message = `Found an uncaught exception with message: os.EOL ${err.message}.  Stack: ${err.stack} ${os.EOL} Terminating HDB.`;
@@ -236,6 +240,19 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     const server_utilities = require('./serverUtilities');
     const cors = require('cors');
     const license = require('../utility/environment/LicenseManager').license;
+    // rate limiter
+    rate_limiter = new RateLimiterCluster({
+        keyPrefix: 'hdbclusterapilimiter',
+        points: 5,
+        duration, 1,
+        timeoutMs: 3000
+    });
+
+    rate_limiter.consume(`localhost`, 1).then((reateLimiterRes) => {
+
+    }).catch((rateLimiterRes) => {
+        log.notify(`You have reached your API limit within 24 hours. ${terms.SUPPORT_HELP_MSG}`)
+    });
 
     const app = express();
 
