@@ -92,53 +92,76 @@
 
     });
 
-    function publishInsert(channel, records){
+    function publishValidation(channel, records){
         if(!Array.isArray(records) || records.length === 0){
             throw new Error('records must be an array with at least one entry');
         }
-
         let schema_table = channel.split(':');
-        let transaction_object = {
-            hdb_header:{__data_source:6},
-            type: "HDB_TRANSACTION",
+        if(schema_table.length !== 2){
+            throw new Error('invalid channel name');
+        }
+        return schema_table;
+    }
+
+    function publishInsert(channel, records){
+        let schema_table = publishValidation(channel, records);
+
+        let transaction = {
+            operation: 'insert',
             schema: schema_table[0],
             table: schema_table[1],
-            __originator:{},
-            transaction: {
-                operation: 'insert',
-                schema: schema_table[0],
-                table: schema_table[1],
-                records: records
-            }
+            records: records
         };
-        transaction_object.__originator[socket.id] = 111;
-        socket.publish(channel, transaction_object);
+
+        let publish_object = createTransaction(transaction, schema_table[0], schema_table[1]);
+        socket.publish(channel, publish_object);
     }
 
     function publishUpdate(channel, records){
-        if(!Array.isArray(records) || records.length === 0){
-            throw new Error('records must be an array with at least one entry');
-        }
+        let schema_table = publishValidation(channel, records);
 
-        let schema_table = channel.split(':');
-        let transaction_object = {
-            type: "HDB_TRANSACTION",
+        let transaction = {
+            operation: 'update',
             schema: schema_table[0],
             table: schema_table[1],
-            transaction: {
-                operation: 'update',
-                schema: schema_table[0],
-                table: schema_table[1],
-                records: records
-            }
+            records: records
         };
 
-        socket.publish(channel, transaction_object);
+        let publish_object = createTransaction(transaction, schema_table[0], schema_table[1]);
+        socket.publish(channel, publish_object);
+    }
+
+    function publishDelete(channel, records){
+        let schema_table = publishValidation(channel, records);
+
+        let transaction = {
+            operation: 'delete',
+            schema: schema_table[0],
+            table: schema_table[1],
+            hash_values: records
+        };
+
+        let publish_object = createTransaction(transaction, schema_table[0], schema_table[1]);
+        socket.publish(channel, publish_object);
+    }
+
+    function createTransaction(transaction, schema, table){
+        let transaction_object = {
+            hdb_header:{__data_source:6},
+            type: "HDB_TRANSACTION",
+            schema: schema,
+            table: table,
+            __originator:{},
+            transaction: transaction
+        };
+        transaction_object.__originator[socket.id] = 111;
+        return transaction_object;
     }
 
     function subscribe(channel){
         socket.subscribe(channel).watch(data => {
-            console.log( data);
+
+            console.log( data.timestamp, data.transaction);
         });
     }
 </script>
