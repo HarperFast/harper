@@ -170,6 +170,18 @@ describe('test heliumUtils', ()=>{
     });
 
     describe('Test checkHeliumServerRunning', ()=>{
+        let spawn_rewire;
+
+        before(()=>{
+            spawn_rewire = helium_utils.__set__('spawn', (command, arg, options)=>{
+                return {unref:()=>{}};
+            });
+        });
+
+        after(()=>{
+            spawn_rewire();
+        });
+
         it('Test helium already running on localhost successfully', async ()=>{
             env.setProperty("HELIUM_VOLUME_PATH", ENV_MNGR_PROPS.HELIUM_VOLUME_PATH);
             env.setProperty("HELIUM_SERVER_HOST", ENV_MNGR_PROPS.HELIUM_SERVER_HOST_LOCAL);
