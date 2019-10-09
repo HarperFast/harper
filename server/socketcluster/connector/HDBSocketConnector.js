@@ -56,7 +56,7 @@ class HDBSocketConnector extends SocketConnector{
                         if(req && req.transaction && Object.keys(req.transaction).length > 0) {
                             let operation_function = undefined;
                             let found_operation = server_utilities.getOperationFunction(req.transaction);
-                            operation_function = (found_operation.job_operation_function ? found_operation.job_operation_function : operation_function);
+                            operation_function = (found_operation.job_operation_function ? found_operation.job_operation_function : found_operation.operation_function);
                             try {
                                 // csv loading and other jobs need to use a different postOp handler
                                 if(found_operation.job_operation_function) {
