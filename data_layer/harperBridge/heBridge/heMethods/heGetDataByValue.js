@@ -37,24 +37,7 @@ function heGetDataByValue(search_object) {
             throw validation_error;
         }
 
-        // let operation = SEARCH_VALUE_OPS.EXACT;
-        // let is_range_search = false;
-        // let search_value = search_object.search_value;
-        //
-        // if (search_object.search_value === '*') {
-        //     operation = SEARCH_RANGE_OPS.GREATER_OR_EQ;
-        //     is_range_search = true;
-        //     search_value = "";
-        // }
-
         const { is_range_search, search_operation, search_value } = generateSearchPattern(search_object.search_value);
-
-        // TODO: Add functionality for determining search value search operations logic
-        // if (search_object.search_value !== '*' && search_object.search_value !== '%' && (search_object.search_value.includes('*') || search_object.search_value.includes('%'))) {
-        //     operation = 'like';
-        // }
-        // const condition = {};
-        // condition[operation] = [search_object.search_attribute, search_object.search_value];
 
         let table_info = null;
         if (search_object.schema === hdb_terms.SYSTEM_SCHEMA_NAME) {
@@ -66,13 +49,12 @@ function heGetDataByValue(search_object) {
         const value_store = heGenerateDataStoreName(table_info.schema, table_info.name, search_object.search_attribute);
 
         const final_get_attrs = evaluateTableGetAttributes(search_object.get_attributes, table_info.attributes);
-        //TODO: figure out better way to ensure we get the hash value included in results when not included in get_attrs
+        // We add hash_attribute to the beginning of the array to ensure first arr value returned is always hash value for
+        // consolidate data step where the value is popped off results array and not be included in final results object
         final_get_attrs.unshift(table_info.hash_attribute);
-
         const data_stores = final_get_attrs.map(attr => heGenerateDataStoreName(table_info.schema, table_info.name, attr));
 
         let final_attributes_data;
-
         if (is_range_search) {
             final_attributes_data = hdb_helium.searchByValueRange(value_store, search_operation, search_value, null, data_stores);
         } else {
@@ -90,12 +72,12 @@ function heGetDataByValue(search_object) {
 
 function consolidateValueSearchData(attrs_keys, data) {
     let final_data = {};
-    //we add the hash datastore to the search to ensure we have the hash value for each row
-    //- we remove the attr_key here and the actual value below after we grab it for the final data obj
+    // Bc we added the hash datastore to the search - we remove the attr_key here and the actual value below
+    // after we grab it for the final data obj
     attrs_keys.shift();
 
     for (const row of data) {
-        //as noted above, we remove the hash value after grabbing it for the final_data row obj key
+        //As noted above, we remove the hash value after grabbing it for the final_data row obj key so it is not looped over
         const hash = row[1].shift();
         final_data[hash] = {};
 
@@ -128,7 +110,7 @@ function generateSearchPattern(search_val) {
         if (!starts_with_wildcard && !ends_with_wildcard) {
             return search_pattern;
         } else {
-            search_pattern.search_value = getFinalSearchString(search_val, starts_with_wildcard, ends_with_wildcard);
+            search_pattern.search_value = generateFinalSearchString(search_val, starts_with_wildcard, ends_with_wildcard);
             if (starts_with_wildcard && ends_with_wildcard) {
                 search_pattern.search_operation = SEARCH_VALUE_OPS.INCLUDES;
                 return search_pattern;
@@ -143,7 +125,7 @@ function generateSearchPattern(search_val) {
     }
 }
 
-function getFinalSearchString(search_val, starts_with_wildcard, ends_with_wildcard) {
+function generateFinalSearchString(search_val, starts_with_wildcard, ends_with_wildcard) {
     let split_string = search_val.split('');
     if (starts_with_wildcard) {
         split_string.shift();
