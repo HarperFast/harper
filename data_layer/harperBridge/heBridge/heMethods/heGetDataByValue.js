@@ -70,13 +70,13 @@ function heGetDataByValue(search_object) {
     }
 }
 
-function consolidateValueSearchData(attrs_keys, data) {
+function consolidateValueSearchData(attrs_keys, attrs_data) {
     let final_data = {};
     // Bc we added the hash datastore to the search - we remove the attr_key here and the actual value below
     // after we grab it for the final data obj
     attrs_keys.shift();
 
-    for (const row of data) {
+    for (const row of attrs_data) {
         //As noted above, we remove the hash value after grabbing it for the final_data row obj key so it is not looped over
         const hash = row[1].shift();
         final_data[hash] = {};
@@ -133,5 +133,5 @@ function generateFinalSearchString(search_val, starts_with_wildcard, ends_with_w
     if (ends_with_wildcard) {
         split_string.pop();
     }
-    return split_string.join('')
+    return split_string.join('');
 }
