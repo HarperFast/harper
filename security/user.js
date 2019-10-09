@@ -336,9 +336,10 @@ async function listUsers() {
             for (let u in users) {
                 users[u].role = roleMapObj[users[u].role];
             }
+            // No enterprise license limits roles to 2 (1 su, 1 cu).  If a license has expired, we need to allow the cluster role
+            // and the role with the most users.
             if (!(await license.getLicense()).enterprise) {
-                let filtered_users = nonEnterpriseFilter(users);
-                return filtered_users;
+                return nonEnterpriseFilter(users);
             }
             return users;
         }
@@ -405,14 +406,6 @@ function nonEnterpriseFilter(search_results) {
 async function setUsersToGlobal() {
     try {
         let users = await listUsers();
-        let curr_license = await license.getLicense();
-
-        // No enterprise license limits roles to 2 (1 su, 1 cu).  If a license has expired, we need to allow the cluster role
-        // and the role with the most users.
-        /*if(!curr_license.enterprise) {
-            logger.info('No enterprise license found.  System is limited to 1 clustering role and 1 user role');
-            users = nonEnterpriseFilter(users);
-        }*/
         global.hdb_users = users;
     } catch(err) {
         logger.error(err);
