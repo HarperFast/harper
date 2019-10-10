@@ -37,22 +37,7 @@ function heGetDataByValue(search_object) {
             throw validation_error;
         }
 
-        let operation = SEARCH_VALUE_OPS.EXACT;
-        let is_range_search = false;
-        let search_value = search_object.search_value;
-
-        if (search_object.search_value === '*') {
-            operation = SEARCH_RANGE_OPS.GREATER_OR_EQ;
-            is_range_search = true;
-            search_value = "";
-        }
-
-        // TODO: Add functionality for determining search value search operations logic
-        // if (search_object.search_value !== '*' && search_object.search_value !== '%' && (search_object.search_value.includes('*') || search_object.search_value.includes('%'))) {
-        //     operation = 'like';
-        // }
-        // const condition = {};
-        // condition[operation] = [search_object.search_attribute, search_object.search_value];
+        const { is_range_search, search_operation, search_value } = generateSearchPattern(search_object.search_value);
 
         let table_info = null;
         if (search_object.schema === hdb_terms.SYSTEM_SCHEMA_NAME) {
@@ -64,17 +49,16 @@ function heGetDataByValue(search_object) {
         const value_store = heGenerateDataStoreName(table_info.schema, table_info.name, search_object.search_attribute);
 
         const final_get_attrs = evaluateTableGetAttributes(search_object.get_attributes, table_info.attributes);
-        //TODO: figure out better way to ensure we get the hash value included in results when not included in get_attrs
+        // We add hash_attribute to the beginning of the array to ensure first arr value returned is always hash value for
+        // consolidate data step where the value is popped off results array and not be included in final results object
         final_get_attrs.unshift(table_info.hash_attribute);
-
         const data_stores = final_get_attrs.map(attr => heGenerateDataStoreName(table_info.schema, table_info.name, attr));
 
         let final_attributes_data;
-
         if (is_range_search) {
-            final_attributes_data = hdb_helium.searchByValueRange(value_store, operation, search_value, null, data_stores);
+            final_attributes_data = hdb_helium.searchByValueRange(value_store, search_operation, search_value, null, data_stores);
         } else {
-            final_attributes_data = hdb_helium.searchByValues(value_store, operation, [search_value], data_stores);
+            final_attributes_data = hdb_helium.searchByValues(value_store, search_operation, [search_value], data_stores);
         }
 
         const final_results = consolidateValueSearchData(final_get_attrs, final_attributes_data);
@@ -86,14 +70,14 @@ function heGetDataByValue(search_object) {
     }
 }
 
-function consolidateValueSearchData(attrs_keys, data) {
+function consolidateValueSearchData(attrs_keys, attrs_data) {
     let final_data = {};
-    //we add the hash datastore to the search to ensure we have the hash value for each row
-    //- we remove the attr_key here and the actual value below after we grab it for the final data obj
+    // Bc we added the hash datastore to the search - we remove the attr_key here and the actual value below
+    // after we grab it for the final data obj
     attrs_keys.shift();
 
-    for (const row of data) {
-        //as noted above, we remove the hash value after grabbing it for the final_data row obj key
+    for (const row of attrs_data) {
+        //As noted above, we remove the hash value after grabbing it for the final_data row obj key so it is not looped over
         const hash = row[1].shift();
         final_data[hash] = {};
 
@@ -104,4 +88,50 @@ function consolidateValueSearchData(attrs_keys, data) {
     };
 
     return final_data;
+}
+
+function generateSearchPattern(search_val) {
+    let search_pattern = {
+        search_operation: SEARCH_VALUE_OPS.EXACT,
+        search_value: search_val,
+        is_range_search: false
+    };
+
+    if (search_val === "*" || search_val === "%") {
+        search_pattern.search_operation = SEARCH_RANGE_OPS.GREATER_OR_EQ;
+        search_pattern.search_value = "";
+        search_pattern.is_range_search = true;
+
+        return search_pattern;
+    } else {
+        const starts_with_wildcard = String(search_val).startsWith('%') || String(search_val).startsWith('*');
+        const ends_with_wildcard = String(search_val).endsWith('%') || String(search_val).endsWith('*');
+
+        if (!starts_with_wildcard && !ends_with_wildcard) {
+            return search_pattern;
+        } else {
+            search_pattern.search_value = generateFinalSearchString(search_val, starts_with_wildcard, ends_with_wildcard);
+            if (starts_with_wildcard && ends_with_wildcard) {
+                search_pattern.search_operation = SEARCH_VALUE_OPS.INCLUDES;
+                return search_pattern;
+            } else if (starts_with_wildcard) {
+                search_pattern.search_operation = SEARCH_VALUE_OPS.ENDS_WITH;
+                return search_pattern;
+            } else if (ends_with_wildcard) {
+                search_pattern.search_operation = SEARCH_VALUE_OPS.STARTS_WITH;
+                return search_pattern;
+            }
+        }
+    }
+}
+
+function generateFinalSearchString(search_val, starts_with_wildcard, ends_with_wildcard) {
+    let split_string = search_val.split('');
+    if (starts_with_wildcard) {
+        split_string.shift();
+    }
+    if (ends_with_wildcard) {
+        split_string.pop();
+    }
+    return split_string.join('');
 }
