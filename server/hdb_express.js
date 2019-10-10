@@ -1,3 +1,5 @@
+"use strict";
+
 const cluster = require('cluster');
 const DEBUG = false;
 const harper_logger = require('../utility/logging/harper_logger');
@@ -175,12 +177,11 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     async function launch(){
         const hdb_license = require('../utility/registration/hdb_license');
         const helium_utils = require('../utility/helium/heliumUtils');
-        await p_schema_to_global();
-        await user_schema.setUsersToGlobal();
-
+        let license_values = hdb_license.licenseSearch();
         global.clustering_on = env.get('CLUSTERING');
 
-        let license_values = hdb_license.licenseSearch();
+        await p_schema_to_global();
+        await user_schema.setUsersToGlobal();
 
         if(license_values.storage_type === terms.STORAGE_TYPES_ENUM.HELIUM){
             let helium = await helium_utils.checkHeliumServerRunning();
