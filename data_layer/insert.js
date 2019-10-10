@@ -157,7 +157,7 @@ async function updateData(update_object){
         if (!h_utils.isEmpty(bridge_update_result.existing_rows)) {
             return returnObject(bridge_update_result.update_action, [], update_object, bridge_update_result.hashes);
         }
-        convertOperationToTransaction(update_object, bridge_update_result.written_hashes, bridge_update_result.schema_table.hash_attribute);
+        convertOperationToTransaction(update_object, bridge_update_result.updated_hashes, bridge_update_result.schema_table.hash_attribute);
 
         return returnObject(UPDATE_ACTION, bridge_update_result.updated_hashes, update_object, bridge_update_result.skipped_hashes);
     } catch(e){
