@@ -193,6 +193,12 @@ async function insertChunk(json_message, insert_results, reject, results, parser
     // parser pause and resume prevent the parser from getting ahead of insert.
     parser.pause();
 
+    results.data.forEach(record=>{
+        if(!hdb_utils.isEmpty(record) && !hdb_utils.isEmpty(record['__parsed_extra'])){
+            delete record['__parsed_extra'];
+        }
+    });
+
     try {
         let converted_msg = {
             schema: json_message.schema,

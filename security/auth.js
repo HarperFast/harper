@@ -56,25 +56,31 @@ function findAndValidateUser(username, password, done) {
     }
 
     function handleResponse() {
-        let user_tmp = global.hdb_users.filter((user) => {
-            return user.username === username;
-        })[0];
+        try {
+            let user_tmp = global.hdb_users.filter((user) => {
+                return user.username === username;
+            })[0];
 
-        if (!user_tmp) {
+            if (!user_tmp) {
+                return done(`Cannot complete request: User '${username}' not found`, null);
+            }
+
+            if (user_tmp && !user_tmp.active) {
+                return done('Cannot complete request: User is inactive', null);
+            }
+            let user = clone(user_tmp);
+            if (!password_function.validate(user.password, password)) {
+                return done('Cannot complete request:  Invalid password', false);
+            }
+            delete user.password;
+            delete user.hash;
+            appendSystemTablesToRole(user.role);
+            return done(null, user);
+        } catch(err) {
+            log.error('There was an error authenicating user.');
+            log.error(err);
             return done(`Cannot complete request: User '${username}' not found`, null);
         }
-
-        if (user_tmp && !user_tmp.active) {
-            return done('Cannot complete request: User is inactive', null);
-        }
-        let user = clone(user_tmp);
-        if (!password_function.validate(user.password, password)) {
-            return done('Cannot complete request:  Invalid password', false);
-        }
-        delete user.password;
-        delete user.hash;
-        appendSystemTablesToRole(user.role);
-        return done(null, user);
     }
 
 }
