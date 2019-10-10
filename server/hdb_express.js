@@ -240,21 +240,29 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     const cors = require('cors');
     const license = require('../utility/environment/LicenseManager').license;
     // rate limiter
-    rate_limiter = new RateLimiterCluster({
-        keyPrefix: 'hdbclusterapilimiter',
-        points: 5,
-        duration, 1,
+    const api_limiter = require('./apiLimiter/apiLimiter');
+
+    /*rate_limiter = new RateLimiterCluster({
+        keyPrefix: 'hdblicenseapilimiter',
+        points: 20,
+        duration: 86400,
         timeoutMs: 3000
     });
 
-    rate_limiter.consume(`localhost`, 1).then((reateLimiterRes) => {
-
-    }).catch((rateLimiterRes) => {
-        log.notify(`You have reached your API limit within 24 hours. ${terms.SUPPORT_HELP_MSG}`)
-    });
-
+    const rateLimiterMiddleware = (req, res, next) => {
+        rate_limiter.consume('localhost',1)
+            .then(() => {
+                harper_logger.info('Using 1 point');
+                next();
+            })
+            .catch(() => {
+                harper_logger.notify(`You have reached your API limit within 24 hours. ${terms.SUPPORT_HELP_MSG}`);
+                res.status(429).send('Too Many Requests');
+            });
+    };*/
     const app = express();
 
+    app.use(api_limiter.rateLimiter);
     const SC_WORKER_NAME_PREFIX = 'worker_';
     global.clustering_on = false;
 
