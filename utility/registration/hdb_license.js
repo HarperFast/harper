@@ -21,6 +21,9 @@ const p_search_by_value = promisify(search.searchByValue);
 const LICENSE_FILE = path.join(hdb_utils.getHomeDir(), terms.HDB_HOME_DIR_NAME, terms.LICENSE_KEY_DIR_NAME, terms.LICENSE_FILE_NAME);
 
 let FINGER_PRINT_FILE = undefined;
+
+let current_license = undefined;
+
 try {
     FINGER_PRINT_FILE = `${env.get('PROJECT_DIR')}/utility/keys/${terms.REG_KEY_FILE_NAME}`;
     if(!fs.existsSync(FINGER_PRINT_FILE)) {
@@ -34,7 +37,8 @@ try {
 module.exports = {
     validateLicense: validateLicense,
     generateFingerPrint: generateFingerPrint,
-    licenseSearch
+    licenseSearch,
+    getLicense
 };
 
 async function generateFingerPrint() {
@@ -195,5 +199,18 @@ function licenseSearch(){
     if(license_values.api_call === 0){
         license_values.api_call = terms.LICENSE_VALUES.API_CALL_DEFAULT;
     }
+    current_license = license_values;
     return license_values;
+}
+
+/**
+ * Returns the value of the most recently parsed license (likely during start up).  If the license has not yet been parsed,
+ * the function will call licenseSearch to determine the current license.
+ * @returns {Promise<undefined>}
+ */
+async function getLicense() {
+    if(!current_license) {
+        await licenseSearch();
+    }
+    return current_license;
 }

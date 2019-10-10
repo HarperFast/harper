@@ -17,6 +17,8 @@ const HDB_SUPPORT_URL = 'https://harperdbhelp.zendesk.com/hc/en-us';
 const SUPPORT_HELP_MSG = `For support, please submit a support request at ${HDB_SUPPORT_URL} or contact ${HDB_SUPPORT_ADDRESS}`;
 const SEARCH_NOT_FOUND_MESSAGE = "None of the specified records were found.";
 const SEARCH_ATTRIBUTE_NOT_FOUND = `hash attribute not found`;
+const LICENSE_ROLE_DENIED_RESPONSE = 'Your current license only supports 1 role.';
+const BASIC_LICENSE_MAX_NON_CU_ROLES = 1;
 
 const PERIOD_REGEX = /^\.$/;
 const DOUBLE_PERIOD_REGEX = /^\.\.$/;
@@ -438,6 +440,8 @@ module.exports = {
     HDB_FILE_SUFFIX,
     SEARCH_NOT_FOUND_MESSAGE,
     SEARCH_ATTRIBUTE_NOT_FOUND,
+    LICENSE_ROLE_DENIED_RESPONSE,
+    BASIC_LICENSE_MAX_NON_CU_ROLES,
     HELIUM_PROCESS_NAME,
     HELIUM_START_SERVER_COMMAND,
     LICENSE_FILE_NAME,
