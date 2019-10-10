@@ -235,7 +235,6 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     const pjson = require(`${__dirname}/../package.json`);
     const server_utilities = require('./serverUtilities');
     const cors = require('cors');
-    const license = require('../utility/environment/LicenseManager').license;
 
     const app = express();
 
