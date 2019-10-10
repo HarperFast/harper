@@ -2,23 +2,15 @@
 
 const test_utils = require('../../../../test_utils');
 test_utils.preTestPrep();
-test_utils.buildHeliumTestVolume();
+let hdb_helium = test_utils.buildHeliumTestVolume();
 
 const rewire = require('rewire');
 const heCreateAttribute = require('../../../../../data_layer/harperBridge/heBridge/heMethods/heCreateAttribute');
 const heDropAttribute = rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heDropAttribute');
 const heGenerateDataStoreName = require('../../../../../data_layer/harperBridge/heBridge/heUtility/heGenerateDataStoreName');
-const heliumUtils = require('../../../../../utility/helium/heliumUtils');
+
 const chai = require('chai');
 const { expect } = chai;
-
-let hdb_helium;
-try {
-    heliumUtils.createSystemDataStores();
-    hdb_helium = heliumUtils.initializeHelium();
-} catch(err) {
-    console.log(err);
-}
 
 const DROP_ATTR_OBJ_TEST = {
     operation: "drop_attribute",
@@ -41,9 +33,7 @@ function setupTest() {
             };
             heCreateAttribute(create_attr);
         });
-
-        // TODO: this timeout is a temporary fix. GitHub issue - harperdb_helium #33 THIS IS CAUSING OTHER UNIT TESTS TO FAIL
-        setTimeout(() => {hdb_helium.createDataStores(DATASTORES);}, 500);
+        hdb_helium.createDataStores(DATASTORES);
     } catch(err) {
         throw err;
     }
@@ -52,6 +42,8 @@ function setupTest() {
 describe('Tests for Helium method heDropAttribute', () => {
 
     before(() => {
+
+
         global.hdb_schema = {
             [DROP_ATTR_OBJ_TEST.schema]: {
                 [DROP_ATTR_OBJ_TEST.table]: {
@@ -174,7 +166,7 @@ describe('Tests for Helium method heDropAttribute', () => {
                 error = err;
             }
 
-            expect(error.message).to.equal(`Attribute ${drop_attr_obj.attribute} was not found.`)
+            expect(error.message).to.equal(`Attribute ${drop_attr_obj.attribute} was not found.`);
         });
     });
 });

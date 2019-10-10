@@ -34,10 +34,16 @@ function heCreateAttribute(create_attribute_obj) {
         throw validation_error;
     }
 
-    let attributes_obj_array = global.hdb_schema[create_attribute_obj.schema][create_attribute_obj.table]['attributes'];
-    for (let attribute of attributes_obj_array) {
-        if (attribute.attribute === create_attribute_obj.attribute) {
-            throw new Error(`attribute '${attribute.attribute}' already exists in ${create_attribute_obj.schema}.${create_attribute_obj.table}`);
+    let attributes_obj_array = [];
+    //on initial creation of a table it will not exist in hdb_schema yet
+    if(global.hdb_schema[create_attribute_obj.schema] && global.hdb_schema[create_attribute_obj.schema][create_attribute_obj.table]) {
+        attributes_obj_array = global.hdb_schema[create_attribute_obj.schema][create_attribute_obj.table]['attributes'];
+    }
+    if(Array.isArray(attributes_obj_array) && attributes_obj_array.length > 0) {
+        for (let attribute of attributes_obj_array) {
+            if (attribute.attribute === create_attribute_obj.attribute) {
+                throw new Error(`attribute '${attribute.attribute}' already exists in ${create_attribute_obj.schema}.${create_attribute_obj.table}`);
+            }
         }
     }
 
@@ -65,7 +71,7 @@ function heCreateAttribute(create_attribute_obj) {
 
     try {
         let create_datastore_result = hdb_helium.createDataStores([datastore_name]);
-        if (create_datastore_result[0][1] !== hdb_terms.HELIUM_RESPONSE_CODES.HE_ERR_OK) {
+        if ([hdb_terms.HELIUM_RESPONSE_CODES.HE_ERR_OK, hdb_terms.HELIUM_RESPONSE_CODES.HE_ERR_DATASTORE_EXISTS].indexOf(create_datastore_result[0][1]) < 0) {
             throw new Error(`There was an error creating datastore: ${create_datastore_result[0][1]}`);
         }
 

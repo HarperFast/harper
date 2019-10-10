@@ -45,7 +45,6 @@ function dropAttributeFromSystem(drop_attribute_obj) {
     let search_obj = {
         schema: hdb_terms.SYSTEM_SCHEMA_NAME,
         table: hdb_terms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME,
-        hash_attribute: hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_ID_KEY,
         search_attribute: hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_ATTRIBUTE_KEY,
         search_value: drop_attribute_obj.attribute,
         get_attributes: [hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_ID_KEY]

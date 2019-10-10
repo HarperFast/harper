@@ -8,13 +8,15 @@
 
 const _ = require('lodash');
 const alasql = require('alasql');
-const alasql_function_importer = require('../../sqlTranslator/alasqlFunctionImporter');
+const alasql_function_importer = require('../sqlTranslator/alasqlFunctionImporter');
 const fs = require('fs-extra');
 const clone = require('clone');
 const RecursiveIterator = require('recursive-iterator');
-const env = require('../../utility/environment/environmentManager');
-const log = require('../../utility/logging/harper_logger');
-const common_utils = require('../../utility/common_utils');
+const env = require('../utility/environment/environmentManager');
+const log = require('../utility/logging/harper_logger');
+const common_utils = require('../utility/common_utils');
+const harperBridge = require('./harperBridge/harperBridge');
+
 
 const exclude_attributes = ['__hash_values','__hash_name','__merged_data','__has_hash'];
 const escaped_slash_regex = /U\+002F/g;
@@ -23,19 +25,12 @@ const escaped_slash_regex = /U\+002F/g;
 let base_path = function() {
     return `${env.getHdbBasePath()}/schema/`;
 };
-const HDB_HASH_FOLDER_NAME = '__hdb_hash';
-//used to determine when we just want to read the raw files files vs traverse indices
-const RAW_FILE_READ_LIMIT = 1000;
-const ENOENT_CODE = 'ENOENT';
-const HDB_EXTENSION = '.hdb';
-const BLOB_FOLDER_NAME = 'blob';
 const WHERE_CLAUSE_IS_NULL = 'IS NULL';
-const FILE_EXTENSION_LENGTH = 4;
 
 //here we call to define and import custom functions to alasql
 alasql_function_importer(alasql);
 
-class FileSearch {
+class SQLSearch {
     /**
      * Constructor for FileSearch class
      *
@@ -68,18 +63,16 @@ class FileSearch {
 
     /**
      * Starting point function to execute the search
-     * @returns {Promise<[results]|undefined>}
+     * @returns {Promise<results|final_results[]|Array>}
      */
     async search() {
         let search_results = undefined;
         try {
             let empty_sql_results = await this._checkEmptySQL();
-            if (empty_sql_results && empty_sql_results.length > 0) {
+            if (!common_utils.isEmptyOrZeroLength(empty_sql_results)) {
                 return empty_sql_results;
             }
             await this._getFetchAttributeValues();
-            let blob_paths = await this._retrieveIds();
-            await this._readBlobFilesForSetup(blob_paths);
 
             //In the instance of null data this.data would not have schema/table defined or created as there is no data backing up what would sit in data.
             if (Object.keys(this.data).length === 0) {
@@ -91,58 +84,13 @@ class FileSearch {
             let join_results = await this._processJoins();
 
             // Decide the most efficient way to make the second/final pass for collecting all additional data needed for sql request
-            await this._decideReadPattern(join_results.existing_attributes,join_results.joined_length);
+            await this._getFinalAttributeData(join_results.existing_attributes,join_results.joined_length);
             search_results = await this._finalSQL();
         } catch(e) {
             log.error(e);
             throw new Error('There was a problem performing this search.  Please check the logs and try again.');
         }
         return search_results;
-    }
-
-    /**
-     * This function check to see if there is no from and no columns, or the table has been created but no data has been entered yet
-     * if there are not then this is a SELECT used to solely perform a calculation such as SELECT 2*4, or SELECT SQRT(4)
-     * @returns {Promise<results/undefined>}
-     * @private
-     */
-    async _checkEmptySQL() {
-        let results = undefined;
-        //the scenario that allows this to occur is the table has been created but no data has been entered yet, in this case we return an empty array
-        if (common_utils.isEmptyOrZeroLength(this.all_table_attributes) && !common_utils.isEmptyOrZeroLength(this.columns.columns)) {
-            //purpose of this is to break out of the waterfall but return an empty array
-            return results;
-        } else if (common_utils.isEmptyOrZeroLength(this.all_table_attributes) && common_utils.isEmptyOrZeroLength(this.statement.from)) {
-            //this scenario is reached by doing a select with only calculations
-            try {
-                results = await alasql.promise(this.statement.toString());
-
-            } catch(e) {
-                log.error(e);
-                throw new Error('There was a problem with the SQL statement');
-            }
-        }
-        return results;
-    }
-
-    /**
-     * Extracts the table info from the attributes
-     * @private
-     */
-    _getTables() {
-        let tbls = [];
-        this.all_table_attributes.forEach(attribute => {
-            tbls.push(attribute.table);
-        });
-
-        this.tables = _.uniqBy(tbls, tbl => [tbl.databaseid, tbl.tableid, tbl.as].join());
-        this.tables.forEach(table => {
-            const schema_table = `${table.databaseid}_${table.tableid}`;
-            this.data[schema_table] = {};
-            this.data[schema_table].__hash_name = global.hdb_schema[table.databaseid][table.tableid].hash_attribute;
-            this.data[schema_table].__merged_data = {};
-            this.data[schema_table].__has_hash = false;
-        });
     }
 
     /**
@@ -177,45 +125,23 @@ class FileSearch {
     }
 
     /**
-     * Searches the attributes for the matching column based on attribute & table name/alias
-     *
-     * @param column - the column to search for
-     * @returns {found_columns}
+     * Extracts the table info from the attributes
      * @private
      */
-    _findColumn(column) {
-        //look to see if this attribute exists on one of the tables we are selecting from
-        let found_columns = this.all_table_attributes.filter(attribute => {
-            if (column.tableid) {
-                return (attribute.table.as === column.tableid || attribute.table.tableid === column.tableid) && attribute.attribute === column.columnid;
-            }
-
-            return attribute.attribute === column.columnid;
+    _getTables() {
+        let tbls = [];
+        this.all_table_attributes.forEach(attribute => {
+            tbls.push(attribute.table);
         });
 
-        //this is to handle aliases.  if we did not find the actual column we look at the aliases in the select columns
-        if (!found_columns || found_columns.length === 0) {
-            found_columns = this.columns.columns.filter(select_column => column.columnid === select_column.as);
-        }
-
-        return found_columns[0];
-    }
-
-    /**
-     * Iterates an ast segment columns and returns the found column.  Typically fetch columns are columns specified in a
-     * join, where, or orderby clause.
-     * @param segment_attributes
-     * @private
-     */
-    _addFetchColumns(segment_attributes) {
-        if (segment_attributes && segment_attributes.length > 0) {
-            segment_attributes.forEach(attribute => {
-                let found = this._findColumn(attribute);
-                if (found) {
-                    this.fetch_attributes.push(clone(found));
-                }
-            });
-        }
+        this.tables = _.uniqBy(tbls, tbl => [tbl.databaseid, tbl.tableid, tbl.as].join());
+        this.tables.forEach(table => {
+            const schema_table = `${table.databaseid}_${table.tableid}`;
+            this.data[schema_table] = {};
+            this.data[schema_table].__hash_name = global.hdb_schema[table.databaseid][table.tableid].hash_attribute;
+            this.data[schema_table].__merged_data = {};
+            this.data[schema_table].__has_hash = false;
+        });
     }
 
     /**
@@ -249,6 +175,7 @@ class FileSearch {
                 if(!found_column) {
                     continue;
                 }
+                //buildFolderPath returns the needed key for FS (attribute dir key) and for Helium (datastore key)
                 let attribute_key = common_utils.buildFolderPath(found_column.table.databaseid, found_column.table.tableid, found_column.attribute);
                 if (common_utils.isEmpty(this.exact_search_values[attribute_key])) {
                     this.exact_search_values[attribute_key] = {
@@ -295,7 +222,6 @@ class FileSearch {
                 }
             }
         }
-
     }
 
     /**
@@ -338,12 +264,78 @@ class FileSearch {
     }
 
     /**
-     * Gets the list of all attribute values for the where, join, & order by attributes
+     * Searches the attributes for the matching column based on attribute & table name/alias
+     *
+     * @param column - the column to search for
+     * @returns {found_columns}
+     * @private
+     */
+    _findColumn(column) {
+        //look to see if this attribute exists on one of the tables we are selecting from
+        let found_columns = this.all_table_attributes.filter(attribute => {
+            if (column.tableid) {
+                return (attribute.table.as === column.tableid || attribute.table.tableid === column.tableid) && attribute.attribute === column.columnid;
+            }
+
+            return attribute.attribute === column.columnid;
+        });
+
+        //this is to handle aliases.  if we did not find the actual column we look at the aliases in the select columns
+        if (common_utils.isEmptyOrZeroLength(found_columns)) {
+            found_columns = this.columns.columns.filter(select_column => column.columnid === select_column.as);
+        }
+
+        return found_columns[0];
+    }
+
+    /**
+     * This function check to see if there is no from and no columns, or the table has been created but no data has been entered yet
+     * if there are not then this is a SELECT used to solely perform a calculation such as SELECT 2*4, or SELECT SQRT(4)
+     * @returns {Promise<[]>}
+     * @private
+     */
+    async _checkEmptySQL() {
+        let results = [];
+        //the scenario that allows this to occur is the table has been created but no data has been entered yet, in this case we return an empty array
+        if (common_utils.isEmptyOrZeroLength(this.all_table_attributes) && !common_utils.isEmptyOrZeroLength(this.columns.columns)) {
+            //purpose of this is to break out of the waterfall but return an empty array
+            return results;
+        } else if (common_utils.isEmptyOrZeroLength(this.all_table_attributes) && common_utils.isEmptyOrZeroLength(this.statement.from)) {
+            //this scenario is reached by doing a select with only calculations
+            try {
+                results = await alasql.promise(this.statement.toString());
+
+            } catch(e) {
+                log.error(e);
+                throw new Error('There was a problem with the SQL statement');
+            }
+        }
+        return results;
+    }
+
+    /**
+     * Iterates an ast segment columns and returns the found column.  Typically fetch columns are columns specified in a
+     * join, where, or orderby clause.
+     * @param segment_attributes
+     * @private
+     */
+    _addFetchColumns(segment_attributes) {
+        if (segment_attributes && segment_attributes.length > 0) {
+            segment_attributes.forEach(attribute => {
+                let found = this._findColumn(attribute);
+                if (found) {
+                    this.fetch_attributes.push(clone(found));
+                }
+            });
+        }
+    }
+
+    /**
+     * Gets all values for the where, join, & order by attributes and also the associated hashes for those rows
      * @returns {Promise<void>}
      * @private
      */
     async _getFetchAttributeValues() {
-        let blob_paths = {};
         //get all unique attributes
         this._addFetchColumns(this.columns.joins);
 
@@ -372,24 +364,32 @@ class FileSearch {
             });
         }
 
-        this._addFetchColumns(this.columns.order);
+        if (this.columns.order) {
+            this._addFetchColumns(this.columns.order);
+        }
 
         // do we need this uniqueby, could just use object as map
         this.fetch_attributes = _.uniqBy(this.fetch_attributes, attribute => [attribute.table.databaseid, attribute.table.tableid, attribute.attribute].join());
 
         for (const attribute of this.fetch_attributes) {
-            let attribute_path = '';
+            const schema_table = `${attribute.table.databaseid}_${attribute.table.tableid}`;
+            this.data[schema_table][`${attribute.attribute}`] = {};
+            let hash_name = this.data[schema_table].__hash_name;
+
+            let search_object = {
+                schema: attribute.table.databaseid,
+                table: attribute.table.tableid,
+                get_attributes: [attribute.attribute]
+            };
             let is_hash = false;
+            let object_path = common_utils.buildFolderPath(attribute.table.databaseid, attribute.table.tableid, attribute.attribute);
             //check if this attribute is the hash attribute for a table, if it is we need to read the files from the __hdh_hash
             // folder, otherwise pull from the value index
-            if (attribute.attribute === global.hdb_schema[attribute.table.databaseid][attribute.table.tableid].hash_attribute) {
+
+            if (attribute.attribute === hash_name) {
                 is_hash = true;
-                attribute_path = common_utils.buildFolderPath(base_path(), attribute.table.databaseid, attribute.table.tableid, HDB_HASH_FOLDER_NAME, attribute.attribute);
-            } else {
-                attribute_path = common_utils.buildFolderPath(base_path(), attribute.table.databaseid, attribute.table.tableid, attribute.attribute);
             }
 
-            let object_path = common_utils.buildFolderPath(attribute.table.databaseid, attribute.table.tableid, attribute.attribute);
             // if there exact match values for this attribute we just assign them to the attribute, otherwise we pull the
             // index to get all values.  This query will test the if statement below
             // "sql":"select weight_lbs, age, owner_name from dev.dog where owner_name = 'Kyle'"
@@ -397,139 +397,52 @@ class FileSearch {
                 !common_utils.isEmptyOrZeroLength(this.exact_search_values[object_path].values)) {
                 if (is_hash) {
                     try {
-                        let existing_values = await this._checkHashValueExists(attribute_path, Array.from(this.exact_search_values[object_path].values));
-                        attribute.values = existing_values;
+                        this.data[schema_table].__has_hash = true;
+                        search_object.hash_values = Array.from(this.exact_search_values[object_path].values);
+                        const attribute_values = Object.values(await harperBridge.getDataByHash(search_object));
+                        attribute_values.forEach(hash_obj => {
+                            const hash_val = hash_obj[hash_name];
+                            this.data[schema_table].__merged_data[hash_val] = {};
+                            this.data[schema_table][`${attribute.attribute}`][hash_val] = hash_val;
+                        });
                     } catch (e) {
                         log.error(e);
                     }
                 } else {
-                    attribute.values = Array.from(this.exact_search_values[object_path].values);
+                    search_object.search_attribute = attribute.attribute;
+                    await Promise.all(Array.from(this.exact_search_values[object_path].values).map(async (value) => {
+                        search_object.search_value = value;
+                        const attr_vals = await harperBridge.getDataByValue(search_object);
+                        Object.keys(attr_vals).forEach(hash_val => {
+                            this.data[schema_table].__merged_data[hash_val] = {};
+                            this.data[schema_table][`${attribute.attribute}`][hash_val] = attr_vals[hash_val][attribute.attribute];
+                        });
+                    }));
                 }
             } else {
                 try {
-                    let values = await fs.readdir(attribute_path);
+                    search_object.search_attribute = attribute.attribute;
+                    search_object.search_value = '*';
+                    const matching_data = await harperBridge.getDataByValue(search_object);
                     if (is_hash) {
-                        attribute.values = [];
-                        values.forEach((value) => {
-                            attribute.values.push(this._stripFileExtension(value));
+                        this.data[schema_table].__has_hash = true;
+                        Object.values(matching_data).forEach(hash_obj => {
+                            const hash_val = hash_obj[hash_name];
+                            this.data[schema_table].__merged_data[hash_val] = {};
+                            this.data[schema_table][`${attribute.attribute}`][hash_val] = hash_val;
                         });
                     } else {
-                        attribute.values = values;
+                        Object.keys(matching_data).forEach(hash_val => {
+                            this.data[schema_table].__merged_data[hash_val] = {};
+                            this.data[schema_table][`${attribute.attribute}`][hash_val] = matching_data[hash_val][attribute.attribute];
+                        });
                     }
                 } catch (e) {
+                    console.log(e);
                     // no-op
                 }
             }
         }
-        return blob_paths;
-    }
-
-    /**
-     * Checks to make sure the hash value exists, especially important for when people do search based on primary key
-     * @param attribute_path
-     * @param values
-     * @returns {Promise<Array>}
-     * @private
-     */
-    async _checkHashValueExists(attribute_path, values) {
-        let existing_values = [];
-        await Promise.all(values.map(async value => {
-            try {
-                await fs.access(common_utils.buildFolderPath(attribute_path, value + HDB_EXTENSION), fs.constants.F_OK);
-                existing_values.push(value);
-            } catch (e) {
-                log.error(e);
-                // no-op
-            }
-        }));
-        return existing_values;
-    }
-
-    /**
-     * Initializes this.data and retrieves the ids for each attribute value
-     * @returns {Promise<void>}
-     * @private
-     */
-    async _retrieveIds() {
-        let blob_paths = {};
-
-        for (const attribute of this.fetch_attributes) {
-            const schema_table = `${attribute.table.databaseid}_${attribute.table.tableid}`;
-            this.data[schema_table][`${attribute.attribute}`] = {};
-            let hash_name = this.data[schema_table].__hash_name;
-
-            if (attribute.attribute === hash_name){
-                this.data[schema_table].__has_hash = true;
-                attribute.values.forEach((value) => {
-                    let autocast_value = common_utils.autoCast(value);
-                    this.data[schema_table].__merged_data[autocast_value] = {};
-                    this.data[schema_table][`${attribute.attribute}`][autocast_value] = autocast_value;
-                });
-            } else {
-                let sub_path = common_utils.buildFolderPath(attribute.table.databaseid, attribute.table.tableid, attribute.attribute);
-                let attribute_path = common_utils.buildFolderPath(base_path(), sub_path);
-
-                await Promise.all(attribute.values.map(async (value) => {
-                    try {
-                        let escaped_value = value.replace(escaped_slash_regex, '/');
-                        let ids = await fs.readdir(common_utils.buildFolderPath(attribute_path, value));
-                        for (let id of ids) {
-                            if (id === BLOB_FOLDER_NAME) {
-                                blob_paths[common_utils.buildFolderPath(sub_path, value)] = attribute;
-                            } else {
-                                //this removes the .hdb extension from the end of the file name in a more performant way than replace
-                                id = this._stripFileExtension(id);
-                                let autocast_id = common_utils.autoCast(id);
-                                //TODO Should add the value as an object here, avoiding a step in consolidate data.
-                                this.data[schema_table].__merged_data[autocast_id] = {};
-                                this.data[schema_table][`${attribute.attribute}`][autocast_id] = common_utils.autoCast(escaped_value);
-                            }
-                        }
-                    } catch (e) {
-                        log.error(e);
-                        // no-op
-                    }
-                    // TODO: Why do we need this?
-                    attribute.values = null;
-                }));
-            }
-        }
-        return blob_paths;
-    }
-
-    /**
-     * Reads actual files when the byte length of the value exceeds 255 bytes.
-     * @param blob_paths - path to the blob files to read
-     * @returns {Promise<void>}
-     * @private
-     */
-    async _readBlobFilesForSetup(blob_paths){
-        let keys = Object.keys(blob_paths);
-
-        if (!keys || keys.length === 0 ) {
-            return;
-        }
-
-        await Promise.all(keys.map(async key => {
-            try {
-                let column = blob_paths[key];
-                let ids = await fs.readdir(common_utils.buildFolderPath(base_path(),key,BLOB_FOLDER_NAME));
-                if (common_utils.isEmptyOrZeroLength(ids)) {
-                    return;
-                }
-                await Promise.all(ids.map(async id => {
-                    let the_id = common_utils.autoCast(this._stripFileExtension(id));
-                    let file_data = await fs.readFile(common_utils.buildFolderPath(base_path(), key, BLOB_FOLDER_NAME, id));
-                    this.data[`${column.table.databaseid}_${column.table.tableid}`].__merged_data[the_id] = {};
-                    this.data[`${column.table.databaseid}_${column.table.tableid}`][`${column.attribute}`][the_id] = common_utils.autoCast(file_data.toString());
-                })).catch(e => {
-                    log.error(e);
-                });
-            } catch (e) {
-                log.error(e);
-                // no-op
-            }
-        }));
     }
 
     /**
@@ -552,7 +465,7 @@ class FileSearch {
                     if (exclude_attributes.indexOf(attribute) >= 0 || attribute === hash_name) {
                         return;
                     }
-                    // TODO: This is another loop through the data
+
                     object_keys.forEach(value => {
                         value = value.replace(escaped_slash_regex, '/');
                         if (this.data[table][attribute][value] === null || this.data[table][attribute][value] === undefined) {
@@ -581,7 +494,7 @@ class FileSearch {
         let table_data = [];
         let select = [];
 
-        //TODO posibbly need to loop the from here, need to investigate
+        //TODO possibly need to loop the from here, need to investigate
         let from_statement = this.statement.from[0];
 
         let tables = [from_statement];
@@ -641,7 +554,7 @@ class FileSearch {
 
         let limit = this.statement.limit ? 'LIMIT ' + this.statement.limit : '';
 
-//we should only select the primary key of each table then remove the rows that exist from each table
+        //we should only select the primary key of each table then remove the rows that exist from each table
         let joined =[];
 
         try {
@@ -676,13 +589,13 @@ class FileSearch {
     }
 
     /**
-     * Determines the most efficient method for collecting remaining attribute values based on row_count
+     * Gets remaining attribute values for final SQL operation that were not grabbed during first pass
      * @param existing_attributes
      * @param row_count
      * @returns {Promise<void>}
      * @private
      */
-    async _decideReadPattern(existing_attributes, row_count) {
+    async _getFinalAttributeData(existing_attributes, row_count) {
         if (row_count === 0) {
             return;
         }
@@ -700,150 +613,54 @@ class FileSearch {
 
         all_columns = _.uniqBy(all_columns, attribute => [attribute.table.databaseid, attribute.table.tableid, attribute.attribute].join());
 
-        let read_function;
-        if (row_count > RAW_FILE_READ_LIMIT) {
-            read_function = this._readAttributeValues.bind(this);
-        } else {
-            read_function = this._readRawFiles.bind(this);
-        }
-
-        await read_function(all_columns).catch(e => {
+        try {
+            await this._getData(all_columns);
+        } catch(e) {
             log.error(e);
-        });
-    }
-
-    /**
-     * Setup function for getting all object values from raw files rather than from the indices
-     * Figures out the remaining attributes to retrieve and the ids, both used to generate paths to open  all the files
-     * This can be slow as it is overhead intensive
-     * @param all_columns
-     * @returns {Promise<void>}
-     * @private
-     */
-    async _readRawFiles(all_columns) {
-        await Promise.all(all_columns.map(async the_column => {
-            try {
-                let ids = Object.keys(this.data[`${the_column.table.databaseid}_${the_column.table.tableid}`].__merged_data);
-                await this._readAttributeFilesByIds(the_column, ids);
-            } catch (e) {
-                log.error(e);
-            }
-        }));
-    }
-
-    /**
-     * reads the actual hdb files which in small batches is more performant
-     * @param column
-     * @param ids
-     * @returns {Promise<void>}
-     * @private
-     */
-    async _readAttributeFilesByIds(column, ids) {
-        let attribute_path = common_utils.buildFolderPath(base_path(), column.table.databaseid, column.table.tableid, HDB_HASH_FOLDER_NAME, column.attribute);
-        await Promise.all(ids.map(async id => {
-            try {
-                let data = await fs.readFile(common_utils.buildFolderPath(attribute_path, id + HDB_EXTENSION));
-                if (!data) {
-                    return;
-                }
-                this.data[`${column.table.databaseid}_${column.table.tableid}`].__merged_data[id][column.attribute] = common_utils.autoCast(data.toString());
-            } catch (err) {
-                if (err && err.code === ENOENT_CODE) {
-                    this.data[`${column.table.databaseid}_${column.table.tableid}`].__merged_data[id][column.attribute] = null;
-                } else if (err) {
-                    log.error(err);
-                }
-            }
-        }));
-    }
-
-    /**
-     * Reads the values for all remaining attributes not processed in the initial pass on the data.
-     * The data retained is limited to the ids evaluated from processJoIns
-     * @param all_columns
-     * @returns {Promise<void>}
-     * @private
-     */
-    async _readAttributeValues(all_columns) {
-        let blob_paths = {};
-
-        await Promise.all(all_columns.map(async column => {
-            try {
-                let sub_path = common_utils.buildFolderPath(column.table.databaseid, column.table.tableid, column.attribute);
-
-                let attribute_path = common_utils.buildFolderPath(base_path(),sub_path);
-                let results = await fs.readdir(attribute_path);
-                await Promise.all(results.map(async value => {
-                    try {
-                        let the_value = common_utils.autoCast(value.replace(escaped_slash_regex, '/'));
-                        let ids = await fs.readdir(common_utils.buildFolderPath(attribute_path,value));
-                        for (let id of ids) {
-                            if (id===BLOB_FOLDER_NAME) {
-                                let blob_path = common_utils.buildFolderPath(sub_path, value);
-                                if (!blob_paths[blob_path]) {
-                                    blob_paths[blob_path] = column;
-                                }
-                            } else{
-                                let the_id = common_utils.autoCast(this._stripFileExtension(id));
-                                let the_key = this.data[`${column.table.databaseid}_${column.table.tableid}`].__merged_data[the_id];
-                                if (the_key) {
-                                    this.data[`${column.table.databaseid}_${column.table.tableid}`].__merged_data[the_id][column.attribute] = the_value;
-                                }
-                            }
-                        }
-                    } catch (e) {
-                        log.error(e);
-                    }
-                }));
-            } catch (e) {
-                log.error(e);
-            }
-
-            //TODO - investigate it it is faster to do individual reads of records in the above loop instead of looping through paths again in _readBlobFiles method
-            if (!_.isEmpty(blob_paths)) {
-                await this._readBlobFiles(blob_paths).catch(e => {
-                    log.error(e);
-                });
-            }
-        }));
-    }
-
-    /**
-     * Reads actual files when the byte length of the value exceeds 255 bytes.
-     * @param blob_paths - path to the blob files to read
-     * @returns {Promise<void>}
-     * @private
-     */
-    async _readBlobFiles(blob_paths){
-        let keys = Object.keys(blob_paths);
-
-        if(!keys || keys.length === 0 ){
-            return;
         }
+    }
 
-        await Promise.all(keys.map(async key => {
-            try {
-                let column = blob_paths[key];
-                let ids = await fs.readdir(common_utils.buildFolderPath(base_path(), key, BLOB_FOLDER_NAME));
-                if (!ids || ids.length === 0) {
-                    return;
+    /**
+     * Organizes the final data searches based on tables being search to ensure we are only searching each table once
+     * @param all_columns - remaining columns to be searched in
+     * @returns {Promise<void>}
+     * @private
+     */
+    async _getData(all_columns) {
+        try {
+            const table_searches = all_columns.reduce((acc, column) => {
+                const table_key = `${column.table.databaseid}_${column.table.tableid}`;
+                if (!acc[table_key]) {
+                    acc[table_key] = {
+                        schema: column.table.databaseid,
+                        table: column.table.tableid,
+                        columns: [column.attribute]
+                    };
+                } else {
+                    acc[table_key].columns.push(column.attribute);
                 }
-                await Promise.all(ids.map(async id => {
-                    try {
-                        let the_id = common_utils.autoCast(this._stripFileExtension(id));
-                        let the_key = this.data[`${column.table.databaseid}_${column.table.tableid}`].__merged_data[the_id];
-                        if (the_key) {
-                            let file_data = await fs.readFile(common_utils.buildFolderPath(base_path(), key, BLOB_FOLDER_NAME, id));
-                            this.data[`${column.table.databaseid}_${column.table.tableid}`].__merged_data[the_id][column.attribute] = common_utils.autoCast(file_data.toString());
-                        }
-                    } catch(e) {
-                        log.error(e);
-                    }
-                }));
-            } catch (e) {
-                log.error(e);
-            }
-        }));
+                return acc;
+            }, {});
+
+            await Promise.all(Object.values(table_searches).map(async table => {
+                const search_object = {
+                    schema: table.schema,
+                    table: table.table,
+                    hash_values: Object.keys(this.data[`${table.schema}_${table.table}`].__merged_data),
+                    get_attributes: table.columns
+                };
+                const search_result = await harperBridge.getDataByHash(search_object);
+                Object.keys(search_result).forEach(the_id => {
+                    const the_row = search_result[the_id];
+                    this.data[`${table.schema}_${table.table}`].__merged_data[the_id] = {
+                        ...this.data[`${table.schema}_${table.table}`].__merged_data[the_id],
+                        ...the_row
+                    };
+                });
+            }));
+        } catch(e) {
+            throw e;
+        }
     }
 
     /**
@@ -902,19 +719,6 @@ class FileSearch {
 
         return sql;
     }
-
-    /**
-     * Utility function to strip the .hdb from file names in order to get the raw value.
-     * @param value
-     * @returns {string|*}
-     * @private
-     */
-    _stripFileExtension(value) {
-        if (!common_utils.isEmpty(value)) {
-            return value.substr(0,value.length-FILE_EXTENSION_LENGTH);
-        }
-        return value;
-    }
 }
 
-module.exports = FileSearch;
+module.exports = SQLSearch;

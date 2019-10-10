@@ -4,7 +4,7 @@ const test_utils = require('../../../../test_utils');
 const { mochaAsyncWrapper } = test_utils;
 
 const rewire = require('rewire');
-let fsSearchByHash = rewire('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsSearchByHash');
+let fsSearchByHash_rw = rewire('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsSearchByHash');
 const { expect } = require('chai');
 const sinon = require('sinon');
 
@@ -28,12 +28,12 @@ const test_search_result_stub = {
     '2': { stuff: 'things'},
     '3': { stuff: 'things'},
     '4': { stuff: 'things'}
-}
+};
 
 function setupTestStub() {
     sandbox = sinon.createSandbox()
     fsGetDataByHash_stub = sandbox.stub().returns(test_search_result_stub);
-    fsSearchByHash.__set__('fsGetDataByHash', fsGetDataByHash_stub);
+    fsSearchByHash_rw.__set__('fsGetDataByHash', fsGetDataByHash_stub);
 }
 
 describe('fsSearchByHash', () => {
@@ -48,10 +48,26 @@ describe('fsSearchByHash', () => {
 
     it('Should return an array with objects from object of objects returned from fsGetDataByHash', mochaAsyncWrapper(async () => {
         const test_expected_result = Object.values(test_search_result_stub);
-        const test_search_result = await fsSearchByHash(TEST_SEARCH_OBJ);
+        const test_search_result = await fsSearchByHash_rw(TEST_SEARCH_OBJ);
 
         expect(test_search_result).to.deep.equal(test_expected_result);
         expect(test_search_result.length).to.equal(test_expected_result.length);
+    }));
+
+    it('Should catch throw error from fsGetDataByHash', mochaAsyncWrapper(async () => {
+        const error_msg = "This is an error msg";
+        fsGetDataByHash_stub = sandbox.stub().throws(new Error(error_msg));
+        fsSearchByHash_rw.__set__('fsGetDataByHash', fsGetDataByHash_stub);
+
+        let test_search_result;
+        try {
+            await fsSearchByHash_rw(TEST_SEARCH_OBJ);
+        } catch(err) {
+            test_search_result = err;
+        }
+
+        expect(test_search_result.message).to.equal(error_msg);
+        expect(test_search_result instanceof Error).to.equal(true);
     }));
 
 });

@@ -2,9 +2,8 @@
 
 const test_utils = require('../../../../test_utils');
 test_utils.preTestPrep();
-test_utils.buildHeliumTestVolume();
+let hdb_helium = test_utils.buildHeliumTestVolume();
 
-const heliumUtils = require('../../../../../utility/helium/heliumUtils');
 const rewire = require('rewire');
 const heCreateTable = rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heCreateTable');
 const he_create_attribute_rw = rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heCreateAttribute');
@@ -14,14 +13,6 @@ const sinon = require('sinon');
 const sinon_chai = require('sinon-chai');
 const { expect } = chai;
 chai.use(sinon_chai);
-
-let hdb_helium;
-try {
-    heliumUtils.createSystemDataStores();
-    hdb_helium = heliumUtils.initializeHelium();
-} catch(err) {
-    console.log(err);
-}
 
 const CREATE_TABLE_OBJ_TEST_A = {
     operation: 'create_table',
@@ -61,6 +52,7 @@ describe('Test for Helium method heCreateTable', () => {
     let uuidV4_stub_func = () => '1234';
 
     before(() => {
+
         he_create_attribute_rw.__set__('uuidV4', uuidV4_stub_func);
         heCreateTable.__set__('heCreateAttribute', he_create_attribute_rw);
         global.hdb_schema = {

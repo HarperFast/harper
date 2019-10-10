@@ -5,11 +5,13 @@ test_utils.preTestPrep();
 
 const rewire = require('rewire');
 let fs_delete_records = rewire('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsDeleteRecords');
+let DeleteResponseObject = require('../../../../../data_layer/DataLayerObjects').DeleteResponseObject;
 const log = require('../../../../../utility/logging/harper_logger');
 const fs = require('graceful-fs');
 const chai = require('chai');
 const sinon = require('sinon');
 const sinon_chai = require('sinon-chai');
+const assert = require('assert');
 const { expect } = chai;
 chai.use(sinon_chai);
 
@@ -99,11 +101,13 @@ describe('Tests for file system module fsDeleteRecords', () => {
     // This test assumes the global schema has been set in previous test.
     it('Test that an error fom unlink is caught and logged', async () => {
         let unlink_stub = sandbox.stub().throws(new Error('path does not exist'));
-        fs_delete_records.__set__('unlink', unlink_stub);
+        global.hdb_schema[DELETE_OBJ_TEST.schema][DELETE_OBJ_TEST.table].hash_attribute = 'id';
+        let revert = fs_delete_records.__set__('unlink', {unlink_delete_object: unlink_stub});
         let test_err_result = await test_utils.testError(fs_delete_records(DELETE_OBJ_TEST), 'path does not exist');
 
         expect(test_err_result).to.be.true;
         expect(log_error_stub).has.been.called;
+        revert();
     });
 
     it('Test error from search by hash is thrown', async () => {
@@ -116,11 +120,15 @@ describe('Tests for file system module fsDeleteRecords', () => {
     });
 
     it('Test that item not found error thrown due to empty records', async () => {
+        delete DELETE_OBJ_TEST.records;
+        global.hdb_schema[DELETE_OBJ_TEST.schema][DELETE_OBJ_TEST.table].hash_attribute = 'id';
         let search_by_hash_stub = sandbox.stub().resolves([]);
         fs_delete_records.__set__('fsSearchByHash', search_by_hash_stub);
-        let test_err_result = await test_utils.testError(fs_delete_records(DELETE_OBJ_TEST), 'Item not found');
-
-        expect(test_err_result).to.be.true;
-        expect(log_error_stub).has.been.called;
+        //let test_err_result = await test_utils.testError(fs_delete_records(DELETE_OBJ_TEST), 'Item not found');
+        let result = await fs_delete_records(DELETE_OBJ_TEST);
+        let compare_object = new DeleteResponseObject();
+        //compare_object.message = '0 of 2 records successfully deleted';
+        compare_object.skipped_hashes =  [8,9];
+        assert.deepStrictEqual(result, compare_object);
     });
 });

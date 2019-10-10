@@ -1,3 +1,5 @@
+"use strict";
+
 const cluster = require('cluster');
 const DEBUG = false;
 const harper_logger = require('../utility/logging/harper_logger');
@@ -9,7 +11,7 @@ try {
     harper_logger.error(`Got an error loading the environment.  Exiting.${err}`);
     process.exit(0);
 }
-const user_schema = require('../utility/user_schema');
+const user_schema = require('../security/user');
 const os = require('os');
 const job_runner = require('./jobRunner');
 const hdb_util = require('../utility/common_utils');
@@ -27,7 +29,6 @@ const util = require('util');
 const promisify = util.promisify;
 
 const p_schema_to_global = promisify(global_schema.setSchemaDataToGlobal);
-const p_users_to_global = promisify(user_schema.setUsersToGlobal);
 
 const DEFAULT_SERVER_TIMEOUT = 120000;
 const PROPS_SERVER_TIMEOUT_KEY = 'SERVER_TIMEOUT_MS';
@@ -124,9 +125,6 @@ cluster.on('exit', (dead_worker, code, signal) => {
 
 if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     global.isMaster = cluster.isMaster;
-    const search = require('../data_layer/search');
-    const p_search_by_value = promisify(search.searchByValue);
-    const License = require('../utility/registration/licenseObjects').ExtendedLicense;
 
     process.on('uncaughtException', function (err) {
         let os = require('os');
@@ -135,16 +133,6 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         harper_logger.fatal(message);
         process.exit(1);
     });
-
-    let licenseKeySearch = {
-        operation: 'search_by_value',
-        schema: 'system',
-        table: 'hdb_license',
-        hash_attribute: 'license_key',
-        search_attribute: "license_key",
-        search_value: "*",
-        get_attributes: ["*"]
-    };
 
     let restart_event_tracker = new RestartEventObject();
     let restart_in_progress = false;
@@ -187,28 +175,19 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     }
 
     async function launch(){
-        await p_schema_to_global();
-        await p_users_to_global();
-        let licenses = await p_search_by_value(licenseKeySearch);
-
-        global.clustering_on = env.get('CLUSTERING');
-        let license_values = new License();
-
         const hdb_license = require('../utility/registration/hdb_license');
+        const helium_utils = require('../utility/helium/heliumUtils');
+        let license_values = hdb_license.licenseSearch();
+        global.clustering_on = env.get('CLUSTERING');
 
-        await Promise.all(licenses.map(async (license) => {
-            try {
-                let license_validation = await hdb_license.validateLicense(license.license_key, license.company);
-                if (license_validation.valid_machine && license_validation.valid_date && license_validation.valid_license) {
-                    license_values.exp_date = license_validation.exp_date;
-                    license_values.api_call = license_validation.api_call;
-                    license_values.storage_type = license_validation.storage_type;
-                    license_values.enterprise = true;
-                }
-            } catch(e){
-                harper_logger.error(e);
-            }
-        }));
+        await p_schema_to_global();
+        await user_schema.setUsersToGlobal();
+
+        if(license_values.storage_type === terms.STORAGE_TYPES_ENUM.HELIUM){
+            let helium = await helium_utils.checkHeliumServerRunning();
+            await helium_utils.createSystemDataStores(helium);
+        }
+
         harper_logger.notify(`HarperDB successfully started`);
         harper_logger.info(`Master ${process.pid} is running`);
         harper_logger.info(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
@@ -433,7 +412,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         try {
             harper_logger.trace('Configuring child process.');
             await p_schema_to_global();
-            await p_users_to_global();
+            await user_schema.setUsersToGlobal();
             spawnSCConnection();
 
         } catch(e) {

@@ -13,12 +13,12 @@ module.exports = {
     userInfo: userInfo,
     listUsers: listUsers,
     listUsersExternal : listUsersExternal,
-    setUsersToGlobal: setUsersToGlobal,
-    USERNAME_REQUIRED: USERNAME_REQUIRED,
-    ALTERUSER_NOTHING_TO_UPDATE: ALTERUSER_NOTHING_TO_UPDATE,
-    EMPTY_PASSWORD: EMPTY_PASSWORD,
-    EMPTY_ROLE: EMPTY_ROLE,
-    ACTIVE_BOOLEAN: ACTIVE_BOOLEAN
+    setUsersToGlobal,
+    USERNAME_REQUIRED,
+    ALTERUSER_NOTHING_TO_UPDATE,
+    EMPTY_PASSWORD,
+    EMPTY_ROLE,
+    ACTIVE_BOOLEAN
 };
 
 //requires must be declared after module.exports to avoid cyclical dependency
@@ -35,6 +35,7 @@ const {promisify} = require('util');
 const crypto_hash = require('./cryptoHash');
 const terms = require('../utility/hdbTerms');
 const env = require('../utility/environment/environmentManager');
+const license = require('../utility/registration/hdb_license');
 
 const USER_ATTRIBUTE_WHITELIST = {
     username: true,
@@ -47,7 +48,7 @@ const p_search_search_by_value = promisify(search.searchByValue);
 const p_search_search_by_hash = promisify(search.searchByHash);
 const p_delete_delete = promisify(delete_.delete);
 
-async function addUser(user){
+async function addUser(user) {
     let clean_user = validate.cleanAttributes(user, USER_ATTRIBUTE_WHITELIST);
 
     let validation_resp = validation.addUserValidation(clean_user);
@@ -297,51 +298,117 @@ async function listUsersExternal() {
 }
 
 async function listUsers() {
+    try {
+        let role_search_obj = {
+            schema: 'system',
+            table: 'hdb_role',
+            hash_attribute: 'id',
+            search_value: '*',
+            search_attribute: 'role',
+            get_attributes: ['*']
+        };
 
-    let role_search_obj = {
-        schema: 'system',
-        table: 'hdb_role',
-        hash_attribute: 'id',
-        search_value: '*',
-        search_attribute: 'role',
-        get_attributes: ['*']
-    };
-
-    let roles = await p_search_search_by_value(role_search_obj).catch((err) => {
-       logger.error(`Got an error searching for roles.`);
-       logger.error(err);
-       throw err;
-    });
-
-    if(roles) {
-        let roleMapObj = {};
-        for(let r in roles){
-            roleMapObj[roles[r].id] = roles[r];
-        }
-
-        let user_search_obj = {};
-        user_search_obj.schema = 'system';
-        user_search_obj.table = 'hdb_user';
-        user_search_obj.hash_attribute = 'username';
-        user_search_obj.search_value = '*';
-        user_search_obj.search_attribute = 'username';
-        user_search_obj.get_attributes = ['*'];
-        let users = await p_search_search_by_value(user_search_obj).catch((err) => {
-           logger.error('Got an error searching for users.');
-           logger.error(err);
-           throw err;
+        let roles = await p_search_search_by_value(role_search_obj).catch((err) => {
+            logger.error(`Got an error searching for roles.`);
+            logger.error(err);
+            throw err;
         });
 
-        for(let u in users){
-            users[u].role = roleMapObj[users[u].role];
+        if (roles) {
+            let roleMapObj = {};
+            for (let r in roles) {
+                roleMapObj[roles[r].id] = roles[r];
+            }
+
+            let user_search_obj = {};
+            user_search_obj.schema = 'system';
+            user_search_obj.table = 'hdb_user';
+            user_search_obj.hash_attribute = 'username';
+            user_search_obj.search_value = '*';
+            user_search_obj.search_attribute = 'username';
+            user_search_obj.get_attributes = ['*'];
+            let users = await p_search_search_by_value(user_search_obj).catch((err) => {
+                logger.error('Got an error searching for users.');
+                logger.error(err);
+                throw err;
+            });
+
+            for (let u in users) {
+                users[u].role = roleMapObj[users[u].role];
+            }
+            // No enterprise license limits roles to 2 (1 su, 1 cu).  If a license has expired, we need to allow the cluster role
+            // and the role with the most users.
+            if (!(await license.getLicense()).enterprise) {
+                return nonEnterpriseFilter(users);
+            }
+            return users;
         }
-        return users;
+    } catch(err) {
+        logger.error('got an error listing users');
+        logger.error(err);
+        throw hdb_utility.errorizeMessage(err);
     }
     return null;
 }
 
+/**
+ * Should return array of users
+ * @param search_results
+ * @returns {Array}
+ */
+function nonEnterpriseFilter(search_results) {
+    try {
+        logger.info('No enterprise license found.  System is limited to 1 clustering role and 1 user role');
+        if(!search_results) {
+            return [];
+        }
+        let user_map = Object.create(null);
+        let found_users = [];
+        let cluster_users = [];
+        // bucket users by role.  We will pick the role with the most users to enable
+        Object.keys(search_results).forEach((user_id) => {
+            let user = search_results[user_id];
+            if (user.role.permission.cluster_user === undefined) {
+                // only add super users
+                if (user.role.permission.super_user === true) {
+                    if (!user_map[user.role.id]) {
+                        user_map[user.role.id] = {};
+                        user_map[user.role.id].users = [];
+                    }
+                    user_map[user.role.id].users.push(user);
+                }
+            } else {
+                cluster_users.push(user);
+            }
+        });
+
+        let most_users_tuple = {role: undefined, count: 0};
+        Object.keys(user_map).forEach((role_id) => {
+            let curr_role = user_map[role_id];
+            if (curr_role.users.length >= most_users_tuple.count) {
+                most_users_tuple.role = role_id;
+                most_users_tuple.count = curr_role.users.length;
+            }
+        });
+        if (most_users_tuple.role === undefined) {
+            logger.error('No roles found with active users.  This is bad.');
+            return found_users;
+        }
+        found_users = user_map[most_users_tuple.role].users.concat(cluster_users);
+        return found_users;
+    } catch(err) {
+        logger.error('error filtering users.');
+        logger.error(err);
+        return [];
+    }
+}
+
 async function setUsersToGlobal() {
-    global.hdb_users = await listUsers().catch((err) => {
-       throw err;
-    });
+    try {
+        let users = await listUsers();
+        global.hdb_users = users;
+    } catch(err) {
+        logger.error(err);
+        throw err;
+    }
 }

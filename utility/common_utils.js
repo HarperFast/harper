@@ -11,16 +11,21 @@ const papa_parse = require('papaparse');
 const cluster_messages = require('../server/socketcluster/room/RoomMessageObjects');
 const {inspect} = require('util');
 
+const async_set_timeout = require('util').promisify(setTimeout);
+const HDB_PROC_START_TIMEOUT = 100;
+const CHECK_PROCS_LOOP_LIMIT = 5;
+
 const EMPTY_STRING = '';
 const FILE_EXTENSION_LENGTH = 4;
 const CHARACTER_LIMIT = 255;
 
 const HDB_PROC_NAME = 'hdb_express.js';
 
+//Because undefined will not return in a JSON response, we convert undefined to null when autocasting
 const AUTOCAST_COMMON_STRINGS = {
     'true': true,
     'false': false,
-    'undefined': undefined,
+    'undefined': null,
     'null': null,
     'NaN': NaN
 };
@@ -53,7 +58,8 @@ module.exports = {
     promisifyPapaParse,
     removeBOM,
     getClusterMessage,
-    createEventPromise
+    createEventPromise,
+    checkProcessRunning
 };
 
 /**
@@ -168,7 +174,7 @@ function stripFileExtension(file_name) {
  * @returns
  */
 function autoCast(data){
-    if(isEmpty(data)){
+    if(isEmpty(data) || data === ""){
         return data;
     }
 
@@ -178,7 +184,7 @@ function autoCast(data){
     }
 
     // Try to make it a common string
-    if ((data === 'undefined' && AUTOCAST_COMMON_STRINGS[data] === undefined) || AUTOCAST_COMMON_STRINGS[data] !== undefined) {
+    if (AUTOCAST_COMMON_STRINGS[data] !== undefined) {
         return AUTOCAST_COMMON_STRINGS[data];
     }
 
@@ -596,4 +602,26 @@ function getClusterMessage(cluster_msg_type_enum) {
             break;
     }
     return built_msg;
+}
+
+/**
+ * Verifies the named process has started before fulfilling promise.
+ * @returns {Promise<void>}
+ */
+async function checkProcessRunning(proc_name){
+    let go_on = true;
+    let x = 0;
+    do{
+        await async_set_timeout(HDB_PROC_START_TIMEOUT * x++);
+
+        let instances = await ps_list.findPs(proc_name);
+
+        if(instances.length > 0) {
+            go_on = false;
+        }
+    } while(go_on && x < CHECK_PROCS_LOOP_LIMIT);
+
+    if(go_on) {
+        throw new Error(`process ${proc_name} was not started`);
+    }
 }

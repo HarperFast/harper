@@ -2,7 +2,7 @@
 
 const FSReadStream = require('../../../utility/fs/FSReadStream');
 const log = require('../../../utility/logging/harper_logger');
-
+const terms = require('../../../utility/hdbTerms');
 // eslint-disable-next-line no-magic-numbers
 const HIGHWATERMARK = 1024 * 1024 *5;
 const READ_STREAM_OPTIONS = {highWaterMark:HIGHWATERMARK};
@@ -17,7 +17,7 @@ class CatchUp extends FSReadStream{
      * @param {number} end_timestamp
      */
     constructor(file_path, start_timestamp, end_timestamp){
-        super(file_path, READ_STREAM_OPTIONS, '\r\n');
+        super(file_path, READ_STREAM_OPTIONS, terms.NEW_LINE);
         this.results = [];
         this.start_timestamp = start_timestamp;
         this.end_timestamp = end_timestamp ? end_timestamp : Date.now();

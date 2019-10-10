@@ -3,6 +3,7 @@
 const test_utils = require('../test_utils');
 test_utils.preTestPrep();
 
+let DeleteResponseObject = require('../../data_layer/DataLayerObjects').DeleteResponseObject;
 const rewire = require('rewire');
 const harperBridge = require('../../data_layer/harperBridge/harperBridge');
 const _delete = rewire('../../data_layer/delete');
@@ -25,6 +26,16 @@ const DELETE_OBJ_TEST = {
     table: 'dogs',
     schema: 'animals',
     hash_values: ['id']
+};
+
+let DELETE_RECORDS_TEST = {
+    operation: "delete",
+    table: "dogs",
+    schema: "animals",
+    hash_values: [
+        8,
+        9
+    ]
 };
 
 describe('Tests for delete.js', () => {
@@ -104,10 +115,16 @@ describe('Tests for delete.js', () => {
         });
 
         it('Test for nominal behaviour, success msg is returned', async () => {
-            let result = await _delete.deleteRecord(DELETE_OBJ_TEST);
+            let expected_response = new DeleteResponseObject();
+            expected_response.deleted_hashes = [];
+            expected_response.skipped_hashes = [8,9];
+            let delete_records_stub = sandbox.stub().resolves(expected_response);
+            let revert = _delete.__set__('harperBridge', {deleteRecords: delete_records_stub});
+            let result = await _delete.deleteRecord(DELETE_RECORDS_TEST);
 
-            expect(bridge_delete_records_stub).to.have.been.calledWith(DELETE_OBJ_TEST);
-            expect(result).to.equal('records successfully deleted');
+            expect(delete_records_stub).to.have.been.calledWith(DELETE_RECORDS_TEST);
+            expect(result).to.eql(expected_response);
+            revert();
         });
 
         it('Test that error from bridge is caught and thrown', async () => {

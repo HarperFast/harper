@@ -10,9 +10,9 @@ const insert_validator = require('../validation/insertValidator.js');
 const h_utils = require('../utility/common_utils');
 const hdb_terms = require('../utility/hdbTerms');
 const util = require('util');
+const logger = require('../utility/logging/harper_logger');
 const env = require('../utility/environment/environmentManager');
 // Leave this unused signalling import here. Due to circular dependencies we bring it in early to load it before the bridge
-const signalling = require('../utility/signalling');
 const harperBridge = require('./harperBridge/harperBridge');
 const global_schema = require('../utility/globalSchema');
 
@@ -21,12 +21,8 @@ const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 
 
 //for release 2.0 we need to turn off threading.  this variable will control the enable/disable
-const ENABLE_THREADING = false;
-const ATTRIBUTE_ALREADY_EXISTS = 'attribute already exists';
 const UPDATE_ACTION = 'updated';
 const INSERT_ACTION = 'inserted';
-
-const log = require('../utility/logging/harper_logger');
 
 module.exports = {
     insert: insertData,
@@ -163,7 +159,7 @@ async function updateData(update_object){
         }
         convertOperationToTransaction(update_object, bridge_update_result.written_hashes, bridge_update_result.schema_table.hash_attribute);
 
-        return returnObject(UPDATE_ACTION, bridge_update_result.written_hashes, update_object, bridge_update_result.skipped_hashes);
+        return returnObject(UPDATE_ACTION, bridge_update_result.updated_hashes, update_object, bridge_update_result.skipped_hashes);
     } catch(e){
         throw (e);
     }
