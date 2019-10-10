@@ -146,6 +146,7 @@ async function dropRole(role){
         get_attributes: ['role']
     };
 
+    //TODO: This can be updated to searchByHash the next time this method is worked on - not critical
     let role_name = await p_search_search_by_conditions(search_for_role_name).catch((err) => {
         throw err;
     });

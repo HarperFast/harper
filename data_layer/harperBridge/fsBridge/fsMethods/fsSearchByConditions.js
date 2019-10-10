@@ -63,6 +63,7 @@ function multiConditionSearch(conditions, table_schema, callback) {
 
             let pattern = condition_patterns.createPatterns(condition, table_schema, getBasePath());
 
+            //Replace w/ fsGetDataByValue - long term, this could move in front of harper_bridge
             file_search.findIDsByRegex(pattern.folder_search_path, pattern.folder_search, pattern.blob_regex, (err, results) => {
                 if (err) {
                     logger.error(err);
