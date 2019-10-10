@@ -2,23 +2,14 @@
 
 const test_utils = require('../../../../test_utils');
 test_utils.preTestPrep();
-test_utils.buildHeliumTestVolume();
+let hdb_helium = test_utils.buildHeliumTestVolume();
 
 const rewire = require('rewire');
 const heCreateAttribute = require('../../../../../data_layer/harperBridge/heBridge/heMethods/heCreateAttribute');
 const heDropAllAttribute = require('../../../../../data_layer/harperBridge/heBridge/heUtility/heDropAllAttributes');
 const heliumUtils = require('../../../../../utility/helium/heliumUtils');
 const chai = require('chai');
-const { expect } = chai;
-
-let hdb_helium;
-try {
-    heliumUtils.createSystemDataStores();
-    hdb_helium = heliumUtils.initializeHelium();
-} catch(err) {
-    console.log(err);
-}
-
+const assert = require('assert');
 
 const DROP_OBJ_TEST= {
     operation: "drop_table",
@@ -29,6 +20,7 @@ const DROP_OBJ_TEST= {
 const ATTRIBUTES = ['age', 'height', 'weight', 'address', 'id', 'owner'];
 
 const ATTRIBUTES_SYS = [{attribute: 'age'}, {attribute: 'height'}, {attribute: 'weight'}, {attribute: 'address'}, {attribute: 'id'}, {attribute: 'owner'}];
+const ATTRIBUTES_SYS_PLUS_NO_EXIST = [{attribute: 'age'}, {attribute: 'height'},{attribute: 'blerg'}, {attribute: 'weight'}, {attribute: 'address'}, {attribute: 'id'}, {attribute: 'owner'}];
 const DATASTORES = ['dropAllAttr/dog/age', 'dropAllAttr/dog/height', 'dropAllAttr/dog/weight', 'dropAllAttr/dog/address', 'dropAllAttr/dog/id', 'dropAllAttr/dog/owner'];
 
 function setupTest() {
@@ -43,20 +35,22 @@ function setupTest() {
             heCreateAttribute(create_attr);
         });
 
-        // TODO: this timeout is a temporary fix. GitHub issue - harperdb_helium #33 THIS IS CAUSING OTHER UNIT TESTS TO FAIL
-        //setTimeout(() => {hdb_helium.createDataStores(DATASTORES);}, 500);
     } catch(err) {
         throw err;
     }
 }
 
-describe('Tests for Helium method heDropAttribute', () => {
+describe('Tests for Helium method heDropAllAttributes', () => {
 
-    before(() => {
+    beforeEach(() => {
+
         global.hdb_schema = {
             [DROP_OBJ_TEST.schema]: {
                 [DROP_OBJ_TEST.table]: {
-                    attributes: ATTRIBUTES_SYS
+                    hash_attribute:"id",
+                    name: DROP_OBJ_TEST.table,
+                    schema: DROP_OBJ_TEST.schema,
+                    attributes: []
                 }
             },
             system: {
@@ -86,6 +80,8 @@ describe('Tests for Helium method heDropAttribute', () => {
             }
         };
         setupTest();
+        global.hdb_schema[DROP_OBJ_TEST.schema][DROP_OBJ_TEST.table].attributes = ATTRIBUTES_SYS;
+
     });
 
     after(() => {
@@ -95,11 +91,39 @@ describe('Tests for Helium method heDropAttribute', () => {
 
     context('Test heDropAllAttribute function', () => {
 
+        it('Test invalid schema', ()=>{
+            let drop_obj = test_utils.deepClone(DROP_OBJ_TEST);
+            drop_obj.schema = 'blerg';
+            assert.throws(()=>{
+                heDropAllAttribute(drop_obj);
+            }, new Error(`unknown schema:${drop_obj.schema} and table ${drop_obj.table}`));
+        });
+
+        it('Test invalid table', ()=>{
+            let drop_obj = test_utils.deepClone(DROP_OBJ_TEST);
+            drop_obj.table = 'blerg';
+            assert.throws(()=>{
+                heDropAllAttribute(drop_obj);
+            }, new Error(`unknown schema:${drop_obj.schema} and table ${drop_obj.table}`));
+        });
+
+        it('Test drop all with an attribute that does not exist', ()=>{
+            let drop_obj = test_utils.deepClone(DROP_OBJ_TEST);
+            global.hdb_schema[DROP_OBJ_TEST.schema][DROP_OBJ_TEST.table].attributes = ATTRIBUTES_SYS_PLUS_NO_EXIST;
+            assert.doesNotThrow(()=>{
+                heDropAllAttribute(drop_obj);
+            }, new Error(`unknown schema:${drop_obj.schema} and table ${drop_obj.table}`));
+        });
+
         it('Test that all the test attributes are dropped', () => {
             try {
-                console.log(heDropAllAttribute(DROP_OBJ_TEST));
-                console.log(hdb_helium.listDataStores());
-                console.log('hello');
+                assert.doesNotThrow(()=>{
+                    heDropAllAttribute(DROP_OBJ_TEST);
+                });
+
+                let data_stores = hdb_helium.listDataStores(`${DROP_OBJ_TEST.schema}/(.*)`);
+
+                assert(data_stores.length === 0);
             } catch(err) {
                 console.log(err);
 

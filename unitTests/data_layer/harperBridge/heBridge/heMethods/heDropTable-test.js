@@ -2,7 +2,7 @@
 
 const test_utils = require('../../../../test_utils');
 test_utils.preTestPrep();
-test_utils.buildHeliumTestVolume();
+let hdb_helium = test_utils.buildHeliumTestVolume();
 
 const heliumUtils = require('../../../../../utility/helium/heliumUtils');
 const heCreateSchema = require('../../../../../data_layer/harperBridge/heBridge/heMethods/heCreateSchema');
@@ -13,14 +13,8 @@ const heDropTable = require('../../../../../data_layer/harperBridge/heBridge/heM
 const rewire = require('rewire');
 const chai = require('chai');
 const { expect } = chai;
-
-let hdb_helium;
-try {
-    heliumUtils.createSystemDataStores();
-    hdb_helium = heliumUtils.initializeHelium();
-} catch(err) {
-    console.log(err);
-}
+const hdb_terms = require('../../../../../utility/hdbTerms');
+const assert = require('assert');
 
 const DROP_TABLE_OBJ_TEST = {
     operation: "drop_table",
@@ -112,13 +106,12 @@ function setupTest() {
         heCreateSchema(CREATE_SCHEMA_OBJ_TEST);
         heCreateTable(TABLE_SYSTEM_DATA_TEST, CREATE_TABLE_OBJ_TEST);
         heCreateRecords(INSERT_OBJECT_TEST);
+        global.hdb_schema[CREATE_TABLE_OBJ_TEST.schema][CREATE_TABLE_OBJ_TEST.table].attributes = ATTRIBUTES_TEST;
     } catch(err) {
         console.log(err);
     }
 }
 
-// TODO: These tests are setting up due to bug #33 (same as other branches)
-// Helium throws error. It happens on heCreateRecords halfway through an insertData call in heCreateAttribute
 describe('Test Helium function heDropTable', () => {
     before(() => {
         global.hdb_schema = {
@@ -203,12 +196,25 @@ describe('Test Helium function heDropTable', () => {
     });
     
     context('Test heDropTable function', () => {
-        it('Temp...', () => {
-            try {
-                console.log(heDropTable(DROP_TABLE_OBJ_TEST));
-            } catch(err) {
-                console.log(err);
-            }
+        it('test happy path', () => {
+            assert.doesNotThrow(()=>{
+                heDropTable(DROP_TABLE_OBJ_TEST);
+            });
+
+            let data_stores = hdb_helium.listDataStores(`${DROP_TABLE_OBJ_TEST.schema}/${DROP_TABLE_OBJ_TEST.table}/(.*)`);
+            assert(Array.isArray(data_stores) && data_stores.length === 0);
+
+            let search_obj = {
+                schema: hdb_terms.SYSTEM_SCHEMA_NAME,
+                table: hdb_terms.SYSTEM_TABLE_NAMES.TABLE_TABLE_NAME,
+                hash_attribute: hdb_terms.SYSTEM_TABLE_HASH,
+                search_attribute: hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_NAME_KEY,
+                search_value: DROP_TABLE_OBJ_TEST.table,
+                get_attributes: [hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_NAME_KEY, hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_SCHEMA_KEY, hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_ID_KEY]
+            };
+
+            let results = heSearchByValue(search_obj);
+            assert(Array.isArray(results) && results.length === 0);
         });
     
     });
