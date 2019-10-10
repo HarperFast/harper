@@ -18,6 +18,9 @@ const env = require('../../utility/environment/environmentManager');
 const LICENSE_FILE = path.join(hdb_utils.getHomeDir(), terms.HDB_HOME_DIR_NAME, terms.LICENSE_KEY_DIR_NAME, terms.LICENSE_FILE_NAME);
 
 let FINGER_PRINT_FILE = undefined;
+
+let current_license = undefined;
+
 try {
     FINGER_PRINT_FILE = `${env.get('PROJECT_DIR')}/utility/keys/${terms.REG_KEY_FILE_NAME}`;
     if(!fs.existsSync(FINGER_PRINT_FILE)) {
@@ -31,7 +34,8 @@ try {
 module.exports = {
     validateLicense: validateLicense,
     generateFingerPrint: generateFingerPrint,
-    licenseSearch
+    licenseSearch,
+    getLicense
 };
 
 async function generateFingerPrint() {
@@ -166,8 +170,12 @@ function licenseSearch(){
         }
     }
 
-    licenses.forEach((license_string) => {
+    for(let i=0; i<licenses.length; ++i) {
+        let license_string = licenses[i];
         try {
+            if(hdb_utils.isEmptyOrZeroLength(license_string)) {
+                continue;
+            }
             let license = JSON.parse(license_string);
             let license_validation = validateLicense(license.license_key, license.company);
             if (license_validation.valid_machine === true && license_validation.valid_date === true && license_validation.valid_license === true) {
@@ -176,13 +184,30 @@ function licenseSearch(){
                 license_values.storage_type = license_validation.storage_type;
                 license_values.enterprise = true;
             }
-        } catch(e){
+        } catch(e) {
+            log.error('There was an error parsing the license string.');
             log.error(e);
+            license_values.api_call = terms.LICENSE_VALUES.API_CALL_DEFAULT;
+            license_values.storage_type = terms.STORAGE_TYPES_ENUM.FILE_SYSTEM;
+            license_values.enterprise = false;
         }
-    });
+    };
 
     if(license_values.api_call === 0){
         license_values.api_call = terms.LICENSE_VALUES.API_CALL_DEFAULT;
     }
+    current_license = license_values;
     return license_values;
+}
+
+/**
+ * Returns the value of the most recently parsed license (likely during start up).  If the license has not yet been parsed,
+ * the function will call licenseSearch to determine the current license.
+ * @returns {Promise<undefined>}
+ */
+async function getLicense() {
+    if(!current_license) {
+        await licenseSearch();
+    }
+    return current_license;
 }

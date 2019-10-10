@@ -44,7 +44,7 @@ try {
     hdb_properties.append(hdb_properties.get('settings_path'));
 
     // read environment settings to get log settings
-    daily_rotate = hdb_properties.get('LOG_DAILY_ROTATE');
+    daily_rotate = hdb_properties.get('LOG_DAILY_ROTATE').toLowerCase() === 'true' ? true : false;
     const daily_max = hdb_properties.get('LOG_MAX_DAILY_FILES');
     max_daily_files = daily_max ? daily_max + 'd' : null;
     log_level = hdb_properties.get('LOG_LEVEL');
