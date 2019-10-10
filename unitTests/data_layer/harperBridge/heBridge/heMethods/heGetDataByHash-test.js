@@ -20,8 +20,8 @@ let heSearchReturnErr_stub;
 let search_validator_rw;
 let evaluateTableGetAttributes_stub;
 let heGenerateDataStoreName_stub;
-let consolidateSearchData_stub;
-let consolidateSearchData_rw;
+let consolidateHashSearchData_stub;
+let consolidateHashSearchData_rw;
 
 const { TEST_DATA_DOG } = require('../../../../test_data');
 const TEST_SCHEMA = 'dev';
@@ -47,7 +47,7 @@ const ERR_MSGS = {
     TABLE: "Table can't be blank",
     HASHES: "Hash values can't be blank",
     GET_ATTR: "Get attributes can't be blank"
-}
+};
 
 function setupTestData() {
     const test_data = test_utils.deepClone(TEST_DATA_DOG);
@@ -79,12 +79,12 @@ function setupInitialTestSpies() {
     search_validator_rw = heGetDataByHash_rw.__get__('search_validator');
     evaluateTableGetAttributes_stub = sandbox.stub().callsFake(evaluateTableGetAttributes);
     heGenerateDataStoreName_stub = sandbox.stub().callsFake(heGenerateDataStoreName);
-    consolidateSearchData_rw = heGetDataByHash_rw.__get__('consolidateSearchData');
-    consolidateSearchData_stub = sandbox.stub().callsFake(consolidateSearchData_rw);
+    consolidateHashSearchData_rw = heGetDataByHash_rw.__get__('consolidateHashSearchData');
+    consolidateHashSearchData_stub = sandbox.stub().callsFake(consolidateHashSearchData_rw);
 
     heGetDataByHash_rw.__set__('evaluateTableGetAttributes', evaluateTableGetAttributes_stub);
     heGetDataByHash_rw.__set__('heGenerateDataStoreName', heGenerateDataStoreName_stub);
-    heGetDataByHash_rw.__set__('consolidateSearchData', consolidateSearchData_stub);
+    heGetDataByHash_rw.__set__('consolidateHashSearchData', consolidateHashSearchData_stub);
 }
 
 describe('Test for Helium method heGetDataByHash', () => {
@@ -138,7 +138,7 @@ describe('Test for Helium method heGetDataByHash', () => {
         it('Should consolidate results from helium into object of row objects', () => {
             let test_search_result;
             try {
-                test_search_result = consolidateSearchData_rw(test_attr_names, test_he_return);
+                test_search_result = consolidateHashSearchData_rw(test_attr_names, test_he_return);
             } catch(err) {
                 console.log(err);
             }
