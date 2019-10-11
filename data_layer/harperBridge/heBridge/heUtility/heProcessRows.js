@@ -49,7 +49,8 @@ function processRows(insert_obj, attributes, schema_table, hashes) {
         // at attribute location a null will be inserted into row array.
         for (let y = 0; y < attributes.length; y++) {
             if (records[x].hasOwnProperty(attributes[y])) {
-                row_records.push(records[x][attributes[y]]);
+                const attr_val = attrValueConverter(records[x][attributes[y]]);
+                row_records.push(attr_val);
             } else {
                 row_records.push(null);
             }
@@ -113,7 +114,7 @@ function getExistingHashes(hashes, hash_datastore) {
 }
 
 /**
- * Validates hash value exists, under max char size and doesn't contain a forward slash.
+ * Validates hash value exists and under max char size.
  * @param record
  * @param hash_attribute
  */
@@ -128,6 +129,7 @@ function validateHash(record, hash_attribute) {
         throw new Error(`transaction aborted due to record(s) with a hash value that exceeds ${hdb_terms.INSERT_MODULE_ENUM.MAX_CHARACTER_SIZE} bytes, check log for more info`);
     }
 
+    //TODO: Do we need to check this?  Discussing w/ David in CORE-632
     if (hdb_terms.FORWARD_SLASH_REGEX.test(record[hash_attribute])) {
         log.error(record);
         throw new Error('transaction aborted due to record(s) with a hash value that contains a forward slash, check log for more info');
@@ -158,6 +160,8 @@ function heBuildDataStoreArray(attributes, schema, table) {
  * @param attribute
  */
 function validateAttribute(attribute) {
+    //TODO: review if we need to check attr name length.  Either way, we need to create different
+    // ENUMS for fs and helium so that there is no confusion here.  Will discuss in CORE-632
     if (Buffer.byteLength(String(attribute)) > hdb_terms.INSERT_MODULE_ENUM.MAX_CHARACTER_SIZE) {
         throw new Error(`transaction aborted due to attribute name ${attribute} being too long. Attribute names cannot be longer than ${hdb_terms.INSERT_MODULE_ENUM.MAX_CHARACTER_SIZE} bytes.`);
     }
@@ -165,4 +169,15 @@ function validateAttribute(attribute) {
     if (hdb_utils.isEmptyOrZeroLength(attribute) || hdb_utils.isEmpty(attribute.trim())) {
         throw new Error('transaction aborted due to record(s) with an attribute name that is null, undefined or empty string');
     }
+}
+
+function attrValueConverter(raw_value) {
+    let value;
+    try {
+        value = typeof raw_value === 'object' ? JSON.stringify(raw_value) : raw_value;
+    } catch(e){
+        log.error(e);
+        value = raw_value;
+    }
+    return value;
 }

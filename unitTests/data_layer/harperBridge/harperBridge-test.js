@@ -17,8 +17,8 @@ const terms = require('../../../utility/hdbTerms');
 const FileSystemBridge = require('../../../data_layer/harperBridge/fsBridge/FileSystemBridge');
 const HeliumBridge = require('../../../data_layer/harperBridge/heBridge/HeliumBridge');
 
-const returnFS = () => terms.HDB_DATA_STORE_TYPES.FILE_SYSTEM;
-const returnHelium = () => terms.HDB_DATA_STORE_TYPES.HELIUM;
+const returnFS = () => terms.STORAGE_TYPES_ENUM.FILE_SYSTEM;
+const returnHelium = () => terms.STORAGE_TYPES_ENUM.HELIUM;
 const returnUndefined = () => undefined;
 
 describe('Test harperBridge', () => {
@@ -66,7 +66,7 @@ describe('Test harperBridge', () => {
         //this test will get updated as more logic is added to this method for determining the correct data store
         it("should return the FILE_SYSTEM data store type", () => {
             const enabled_data_store = getDataStoreType_rw();
-            expect(enabled_data_store).to.equal(terms.HDB_DATA_STORE_TYPES.FILE_SYSTEM);
+            expect(enabled_data_store).to.equal(terms.STORAGE_TYPES_ENUM.FILE_SYSTEM);
         });
     });
 });
