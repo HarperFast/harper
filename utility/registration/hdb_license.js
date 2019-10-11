@@ -15,9 +15,6 @@ const LICENSE_HASH_PREFIX = '061183';
 const LICENSE_KEY_DELIMITER = 'mofi25';
 const env = require('../../utility/environment/environmentManager');
 
-const promisify = require('util').promisify;
-const search = require('../../data_layer/search');
-const p_search_by_value = promisify(search.searchByValue);
 const LICENSE_FILE = path.join(hdb_utils.getHomeDir(), terms.HDB_HOME_DIR_NAME, terms.LICENSE_KEY_DIR_NAME, terms.LICENSE_FILE_NAME);
 
 let FINGER_PRINT_FILE = undefined;
