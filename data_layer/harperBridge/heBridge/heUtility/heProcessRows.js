@@ -129,6 +129,7 @@ function validateHash(record, hash_attribute) {
         throw new Error(`transaction aborted due to record(s) with a hash value that exceeds ${hdb_terms.INSERT_MODULE_ENUM.MAX_CHARACTER_SIZE} bytes, check log for more info`);
     }
 
+    //TODO: Do we need to check this?  Discussing w/ David in CORE-632
     if (hdb_terms.FORWARD_SLASH_REGEX.test(record[hash_attribute])) {
         log.error(record);
         throw new Error('transaction aborted due to record(s) with a hash value that contains a forward slash, check log for more info');
@@ -160,7 +161,7 @@ function heBuildDataStoreArray(attributes, schema, table) {
  */
 function validateAttribute(attribute) {
     //TODO: review if we need to check attr name length.  Either way, we need to create different
-    // ENUMS for fs and helium so that there is no confusion here
+    // ENUMS for fs and helium so that there is no confusion here.  Will discuss in CORE-632
     if (Buffer.byteLength(String(attribute)) > hdb_terms.INSERT_MODULE_ENUM.MAX_CHARACTER_SIZE) {
         throw new Error(`transaction aborted due to attribute name ${attribute} being too long. Attribute names cannot be longer than ${hdb_terms.INSERT_MODULE_ENUM.MAX_CHARACTER_SIZE} bytes.`);
     }
@@ -176,7 +177,7 @@ function attrValueConverter(raw_value) {
         value = typeof raw_value === 'object' ? JSON.stringify(raw_value) : raw_value;
     } catch(e){
         log.error(e);
-        value = raw_value;//TODO: review if we need to check
+        value = raw_value;
     }
     return value;
 }
