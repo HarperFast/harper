@@ -101,6 +101,15 @@ describe('Tests for Helium utility heProcessRows', () => {
     let sandbox = sinon.createSandbox();
 
     before(() => {
+        insert_obj_single = test_utils.deepClone(INSERT_OBJECT_TEST);
+        insert_obj_single.records = [
+            {
+                name: "Harper",
+                breed: "Mutt",
+                id: "8",
+                age: 5
+            },
+        ];
         sandbox.stub(Date, 'now').returns('80443');
         buildTestData(INSERT_OBJECT_TEST, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST);
     });
@@ -121,21 +130,13 @@ describe('Tests for Helium utility heProcessRows', () => {
                 [ "10", [ "Rob", "Mutt", "10", 5, 145, "80443", "80443" ] ]
             ]
         };
-        let result = heProcessRows(INSERT_OBJECT_TEST, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST, HASHES_TEST);
+        const multi_insert_obj = test_utils.deepClone(INSERT_OBJECT_TEST);
+        let result = heProcessRows(multi_insert_obj, ATTRIBUTES_TEST, SCHEMA_TABLE_TEST, HASHES_TEST);
 
         expect(result).to.eql(expected_result);
     });
 
     it('Test return obj is as expected for a single entry multiple attributes', () => {
-        insert_obj_single = test_utils.deepClone(INSERT_OBJECT_TEST);
-        insert_obj_single.records = [
-            {
-                name: "Harper",
-                breed: "Mutt",
-                id: "8",
-                age: 5
-            },
-        ];
         let expected_result = {
             datastores: [ "dev/dog/name", "dev/dog/breed", "dev/dog/id", "dev/dog/age", "dev/dog/height", "dev/dog/__createdtime__",  "dev/dog/__updatedtime__" ],
             processed_rows: [ [ "8", [ "Harper", "Mutt", "8", 5, null, "80443", "80443" ] ] ]
@@ -165,6 +166,24 @@ describe('Tests for Helium utility heProcessRows', () => {
         let result = heProcessRows(update_obj, ["id"], SCHEMA_TABLE_TEST, HASHES_TEST);
 
         expect(result).to.eql(expected_result);
+    });
+
+    it('Test return obj is as expected for a single datastore and row update with an obj & arr value', () => {
+        let update_obj = test_utils.deepClone(UPDATE_OBJECT_TEST);
+        update_obj.records = [
+            {
+                breed: {type: "Mutt"},
+                id: "8",
+                age: [1,2,3,4]
+            }
+        ];
+        const expected_result = {
+            datastores: [ "dev/dog/breed", "dev/dog/id", "dev/dog/age", "dev/dog/__createdtime__",  "dev/dog/__updatedtime__" ],
+            processed_rows: [ [ "8", [ "{\"type\":\"Mutt\"}", "8", "[1,2,3,4]", null, "80443" ] ] ]
+        };
+        const result = heProcessRows(update_obj, ["breed", "id", "age"], SCHEMA_TABLE_TEST, HASHES_TEST);
+        expect(result).to.eql(expected_result);
+
     });
 
     it('Test return obj is as expected for update when value does not exist', () => {
