@@ -1,7 +1,8 @@
 "use strict";
 
 const BridgeMethods = require("./BridgeMethods.js");
-const license = require('../../utility/environment/LicenseManager').license;
+const hdb_license = require('../../utility/registration/hdb_license');
+const license = hdb_license.licenseSearch();
 const terms = require('../../utility/hdbTerms');
 
 const FileSystemBridge = require('./fsBridge/FileSystemBridge');

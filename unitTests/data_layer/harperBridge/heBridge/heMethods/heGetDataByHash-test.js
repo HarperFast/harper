@@ -47,7 +47,7 @@ const ERR_MSGS = {
     TABLE: "Table can't be blank",
     HASHES: "Hash values can't be blank",
     GET_ATTR: "Get attributes can't be blank"
-}
+};
 
 function setupTestData() {
     const test_data = test_utils.deepClone(TEST_DATA_DOG);
