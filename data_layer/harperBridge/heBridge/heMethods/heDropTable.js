@@ -14,7 +14,7 @@ module.exports = heDropTable;
  * @param drop_table_obj
  */
 function heDropTable(drop_table_obj) {
-    try {
+        try {
         heDropAllAttributes(drop_table_obj);
         dropTableFromSystem(drop_table_obj);
     } catch(err) {
@@ -30,7 +30,6 @@ function dropTableFromSystem(drop_table_obj) {
     let search_obj = {
         schema: hdb_terms.SYSTEM_SCHEMA_NAME,
         table: hdb_terms.SYSTEM_TABLE_NAMES.TABLE_TABLE_NAME,
-        hash_attribute: hdb_terms.SYSTEM_TABLE_HASH,
         search_attribute: hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_NAME_KEY,
         search_value: drop_table_obj.table,
         get_attributes: [hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_NAME_KEY, hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_SCHEMA_KEY, hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_ID_KEY]

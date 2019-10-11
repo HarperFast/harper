@@ -4,15 +4,12 @@ const test_utils = require('../../../../test_utils');
 test_utils.preTestPrep();
 let hdb_helium = test_utils.buildHeliumTestVolume();
 
-const heliumUtils = require('../../../../../utility/helium/heliumUtils');
 const heCreateSchema = require('../../../../../data_layer/harperBridge/heBridge/heMethods/heCreateSchema');
 const heCreateTable = require('../../../../../data_layer/harperBridge/heBridge/heMethods/heCreateTable');
 const heSearchByValue = require('../../../../../data_layer/harperBridge/heBridge/heMethods/heSearchByValue');
 const heCreateRecords = require('../../../../../data_layer/harperBridge/heBridge/heMethods/heCreateRecords');
 const heDropTable = require('../../../../../data_layer/harperBridge/heBridge/heMethods/heDropTable');
-const rewire = require('rewire');
-const chai = require('chai');
-const { expect } = chai;
+
 const hdb_terms = require('../../../../../utility/hdbTerms');
 const assert = require('assert');
 
@@ -96,21 +93,10 @@ const CREATE_TABLE_OBJ_TEST = {
 const TABLE_SYSTEM_DATA_TEST = {
     name: CREATE_TABLE_OBJ_TEST.table,
     schema: CREATE_TABLE_OBJ_TEST.schema,
-    id: 'fd23fds',
+    id: 'thedroptabletest',
     hash_attribute: CREATE_TABLE_OBJ_TEST.hash_attribute,
     residence: '*'
 };
-
-function setupTest() {
-    try {
-        heCreateSchema(CREATE_SCHEMA_OBJ_TEST);
-        heCreateTable(TABLE_SYSTEM_DATA_TEST, CREATE_TABLE_OBJ_TEST);
-        heCreateRecords(INSERT_OBJECT_TEST);
-        global.hdb_schema[CREATE_TABLE_OBJ_TEST.schema][CREATE_TABLE_OBJ_TEST.table].attributes = ATTRIBUTES_TEST;
-    } catch(err) {
-        console.log(err);
-    }
-}
 
 describe('Test Helium function heDropTable', () => {
     before(() => {
@@ -187,15 +173,21 @@ describe('Test Helium function heDropTable', () => {
                 }
             }
         };
-        setupTest();
+        try {
+            heCreateSchema(CREATE_SCHEMA_OBJ_TEST);
+            heCreateTable(TABLE_SYSTEM_DATA_TEST, CREATE_TABLE_OBJ_TEST);
+            heCreateRecords(INSERT_OBJECT_TEST);
+            global.hdb_schema[CREATE_TABLE_OBJ_TEST.schema][CREATE_TABLE_OBJ_TEST.table].attributes = ATTRIBUTES_TEST;
+        } catch(err) {
+            console.log(err);
+        }
     });
 
     after(() => {
         test_utils.teardownHeliumTestVolume(global.hdb_helium);
         delete global.hdb_schema[DROP_TABLE_OBJ_TEST.schema];
     });
-    
-    context('Test heDropTable function', () => {
+
         it('test happy path', () => {
             assert.doesNotThrow(()=>{
                 heDropTable(DROP_TABLE_OBJ_TEST);
@@ -207,16 +199,13 @@ describe('Test Helium function heDropTable', () => {
             let search_obj = {
                 schema: hdb_terms.SYSTEM_SCHEMA_NAME,
                 table: hdb_terms.SYSTEM_TABLE_NAMES.TABLE_TABLE_NAME,
-                hash_attribute: hdb_terms.SYSTEM_TABLE_HASH,
                 search_attribute: hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_NAME_KEY,
                 search_value: DROP_TABLE_OBJ_TEST.table,
                 get_attributes: [hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_NAME_KEY, hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_SCHEMA_KEY, hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_ID_KEY]
             };
-
             let results = heSearchByValue(search_obj);
+
             assert(Array.isArray(results) && results.length === 0);
         });
-    
-    });
 
 });
