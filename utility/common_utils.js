@@ -340,8 +340,9 @@ function stringifyProps(prop_reader_object, comments) {
     return lines;
 }
 
+//TODO - FS-specific methods like the one below need to be moved to an FS-specific module
 /**
- * takes a raw value from an attribute, replaces "/", ".", ".." with unicode equivalents and returns the value, escaped value & the value path
+ * For FS only - takes a raw value from an attribute, replaces "/", ".", ".." with unicode equivalents and returns the value, escaped value & the value path
  * @param raw_value
  * @returns {{value: string, value_stripped: string, value_path: string}}
  */
