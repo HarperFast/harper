@@ -2,6 +2,7 @@
 
 const _ = require('lodash');
 const async = require('async');
+const common_utils = require('../../../../utility/common_utils');
 const logger = require('../../../../utility/logging/harper_logger');
 const util = require('util');
 const hdb_terms = require('../../../../utility/hdbTerms');
@@ -33,13 +34,16 @@ async function heSearchByConditions(search_object) {
         }
 
         const final_hash_results = await p_multiConditionSearch(search_object);
+
+        if (common_utils.isEmptyOrZeroLength(final_hash_results)) {
+            return [];
+        }
         const final_search_object = {
             schema: search_object.schema,
             table: search_object.table,
             hash_values: final_hash_results,
             get_attributes: search_object.get_attributes
-        }
-
+        };
         const final_results = heSearchByHash(final_search_object);
 
         return final_results;
@@ -75,7 +79,7 @@ function multiConditionSearch(search_object, callback) {
                 search_attribute: comparators[0],
                 search_value: String(comparators[1]),
                 get_attributes: [hash_attr]
-            }
+            };
 
             let val_search_result;
             try {
