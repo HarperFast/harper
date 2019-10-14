@@ -146,6 +146,7 @@ async function dropRole(role){
         get_attributes: ['role']
     };
 
+    //TODO: This can be updated to searchByHash the next time this method is worked on - not critical
     let role_name = await p_search_search_by_conditions(search_for_role_name).catch((err) => {
         throw err;
     });
@@ -157,7 +158,8 @@ async function dropRole(role){
        throw err;
     });
     if(users && users.length > 0){
-        throw new Error(`Cannot drop role ${role_name[0].role} ${users.length} users are tied to this role`);
+        const dynamic_text = users.length === 1 ? "user is" : "users are";
+        throw new Error(`Cannot drop role ${role_name[0].role} - ${users.length} ${dynamic_text} tied to this role`);
     }
     let delete_object = {
         table:"hdb_role",
@@ -165,7 +167,7 @@ async function dropRole(role){
         hash_values: [role.id]
     };
 
-    let success = await p_delete_delete(delete_object).catch((err) => {
+    await p_delete_delete(delete_object).catch((err) => {
        throw err;
     });
 
