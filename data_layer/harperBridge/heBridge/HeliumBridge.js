@@ -18,6 +18,7 @@ const heDropAttribute = require('./heMethods/heDropAttribute');
 // const heDropSchema = require('./heMethods/heDropSchema');
 const heCreateTable = require('./heMethods/heCreateTable');
 const heUpdateRecords = require('./heMethods/heUpdateRecords');
+const heDeleteRecordsBefore = require('./heMethods/heDeleteRecordsBefore');
 
 class HeliumBridge extends BridgeMethods {
     async createSchema(create_schema_obj) {
@@ -131,6 +132,15 @@ class HeliumBridge extends BridgeMethods {
     async dropAttribute(drop_attr_obj) {
         try {
             return heDropAttribute(drop_attr_obj);
+        } catch(err) {
+            log.error(err);
+            throw err;
+        }
+    }
+
+    async deleteRecordsBefore(delete_obj) {
+        try {
+            return heDeleteRecordsBefore(delete_obj);
         } catch(err) {
             log.error(err);
             throw err;
