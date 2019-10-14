@@ -57,9 +57,9 @@ function dropAttributeFromSystem(drop_attribute_obj) {
         }
 
         let ids = [];
-        attributes.forEach(attribute=>{
-            ids.push(attribute.id);
-        });
+        for(let x = 0; x < attributes.length; x++){
+            ids.push(attributes[x].id);
+        }
 
         let delete_table_obj = {
             table: hdb_terms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME,
