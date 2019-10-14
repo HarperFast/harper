@@ -158,7 +158,8 @@ async function dropRole(role){
        throw err;
     });
     if(users && users.length > 0){
-        throw new Error(`Cannot drop role ${role_name[0].role} ${users.length} users are tied to this role`);
+        const dynamic_text = users.length === 1 ? "user is" : "users are";
+        throw new Error(`Cannot drop role ${role_name[0].role} - ${users.length} ${dynamic_text} tied to this role`);
     }
     let delete_object = {
         table:"hdb_role",
@@ -166,7 +167,7 @@ async function dropRole(role){
         hash_values: [role.id]
     };
 
-    let success = await p_delete_delete(delete_object).catch((err) => {
+    await p_delete_delete(delete_object).catch((err) => {
        throw err;
     });
 
