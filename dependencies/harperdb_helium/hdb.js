@@ -1,8 +1,4 @@
 "use strict";
-
-const os = require('os');
-const path = require('path');
-
 var __decorate = (this && this.__decorate) || function (decorators, target, key, desc) {
     var c = arguments.length, r = c < 3 ? target : desc === null ? desc = Object.getOwnPropertyDescriptor(target, key) : desc, d;
     if (typeof Reflect === "object" && typeof Reflect.decorate === "function") r = Reflect.decorate(decorators, target, key, desc);
@@ -12,19 +8,27 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
+var __importStar = (this && this.__importStar) || function (mod) {
+    if (mod && mod.__esModule) return mod;
+    var result = {};
+    if (mod != null) for (var k in mod) if (Object.hasOwnProperty.call(mod, k)) result[k] = mod[k];
+    result["default"] = mod;
+    return result;
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 require('module-alias/register');
-var testUtils_1 = __importDefault(require("../testUtils"));
+var testUtils_1 = __importDefault(require("./test/testUtils"));
+var os = __importStar(require("os"));
+var path = __importStar(require("path"));
 var moduleName = "node-hdb.node";
-
-let buildPath = '';
-if(os.platform() === 'darwin'){
-    buildPath = '../../mac/build';
-} else {
-    buildPath = '../../build';
+var buildPath = '';
+if (os.platform() === 'darwin') {
+    buildPath = 'mac/build';
 }
-let modulePath = path.join(buildPath, testUtils_1.default.MODE, moduleName);
-
+else {
+    buildPath = 'build';
+}
+var modulePath = path.join(__dirname, buildPath, testUtils_1.default.MODE, moduleName);
 var HDBjs = require(modulePath);
 function printStr(str, padding, EOF) {
     if (EOF === void 0) { EOF = false; }
@@ -201,20 +205,63 @@ var HDB = /** @class */ (function () {
         var ret = HDBjs.searchByKeys(keys, dataStores);
         return ret;
     };
-    /** function searchBySecondaryKeys
-            The purpose of this API is to return multiple key/values across multiple data stores.
-            The API will receive a array list of datastores to search upon and the keys to search.
-            The API will return a multi-dimensional array of key values, where each array is the
-            returned results from each datastore.
-        @param primaryKey   - A strings of primary key's dataStore.
-        @param secondaryKey - A strings of seconadry key's dataStore.
-        @param keys		    - An array of keys to be searched from the listed datastores
-        @return 		    - A multidimensional array which contains the key/value entries
-                               for each datastore, matching the order of the passed in data
-                               stores.
+    /** function searchByValues
+        The purpose of this API is to return multiple key/values across multiple data stores.
+        The API will receive a datastore whose values is to be searched, type of operation to perform
+        and an array of datastore whose corresponding values to be returned.
+
+    @param valueStore - Datastore containing the values to be searched.
+    @param operation  - This is the type of the comparison operation to be performed.
+                        Valid comparison operations are:
+                        + “exact” - Default. Exact comparison. The value must match completely
+                        + “startsWith” - the actual value must begin with the specified value.
+                        + “endsWith” - the actual value must end with the specified value.
+                        + “includes” - the actual value must contain the specified value at any position.
+                        + “exactNoCase” - case insensitive version of “exact”.
+                        + “startsWithNoCase” - case insensitive version of “startsWith”.
+                        + “endsWithNoCase” - case insensitive version of “endsWith”.
+                        + “includesNoCase” - case insensitive version of “includes”.
+    @param values     - Array of strings that lists all the values to be searched for.
+    @param dataStores - An array of strings that list all of the datastores whose values are to be returned.
+    @return           - A multidimensional array which contains the key/value entries
+                        for each datastore, matching the order of the passed in data
+                        stores.
     */
-    HDB.prototype.searchByValues = function (valueDataStore, values, dataStores) {
-        var ret = HDBjs.searchByValues(valueDataStore, values, dataStores);
+    HDB.prototype.searchByValues = function (valueStore, operation, values, dataStores) {
+        var ret = HDBjs.searchByValues(valueStore, operation, values, dataStores);
+        return ret;
+    };
+    /** function searchByValueRange
+        The purpose of this API is to return multiple key/values across multiple data stores
+        based on a single string comparison range.
+        The API will receive a array list of datastores to search upon and the keys to search.
+        The API will return a multi-dimensional array of values, where each array is
+        the returned results from each of the output datastores.
+
+    @param valueStore     - Datastore containing the values to be evaluated.
+    @param rangeOperation - This is the type of the range operation to be performed.
+                            Valid range operations are:
+                            + "<" - smaller than
+                            + "<=" - smaller than or equal
+                            + ">" - greater than
+                            + ">=" - greater than or equal
+                            + "==" - equal
+                            + "!=" - not equal
+                            + "()" - ranged query, not including the upper and lower limits
+                            + "[)" - ranged query that includes the lower limit
+                            + "(]" - ranged query that includes the upper limit
+                            + "[]" - ranged query that includes both the lower and the upper limits
+    @param arg            - The first comparison value. It cannot be null nor undefined.
+                            This is also the lowerLimit for the ranged queries
+    @param upperLimit     - Upper limit for the range queries.
+                            It must be null or undefined for the non ranged queries.
+    @param dataStores     - An array of strings that list all of the datastores whose values are to be returned.
+    @return               - Return a multi-dimensional array which contains the value entries for each data store,
+                            followed by an array containing the corresponding values from the output data stores.
+                            The order of the returned results is undefined.
+    */
+    HDB.prototype.searchByValueRange = function (valueStore, rangeOperation, arg, upperLimit, dataStores) {
+        var ret = HDBjs.searchByValueRange(valueStore, rangeOperation, arg, upperLimit, dataStores);
         return ret;
     };
     /** function listDataStores
@@ -228,7 +275,7 @@ var HDB = /** @class */ (function () {
     */
     HDB.prototype.listDataStores = function (regex) {
         var ret;
-        if (regex === undefined) {
+        if (regex !== undefined) {
             ret = HDBjs.listDataStores(regex);
         }
         else {
@@ -295,6 +342,9 @@ var HDB = /** @class */ (function () {
     __decorate([
         debug
     ], HDB.prototype, "searchByValues", null);
+    __decorate([
+        debug
+    ], HDB.prototype, "searchByValueRange", null);
     __decorate([
         debug
     ], HDB.prototype, "listDataStores", null);

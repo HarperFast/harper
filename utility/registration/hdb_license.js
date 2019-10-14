@@ -21,6 +21,9 @@ const p_search_by_value = promisify(search.searchByValue);
 const LICENSE_FILE = path.join(hdb_utils.getHomeDir(), terms.HDB_HOME_DIR_NAME, terms.LICENSE_KEY_DIR_NAME, terms.LICENSE_FILE_NAME);
 
 let FINGER_PRINT_FILE = undefined;
+
+let current_license = undefined;
+
 try {
     FINGER_PRINT_FILE = `${env.get('PROJECT_DIR')}/utility/keys/${terms.REG_KEY_FILE_NAME}`;
     if(!fs.existsSync(FINGER_PRINT_FILE)) {
@@ -34,7 +37,8 @@ try {
 module.exports = {
     validateLicense: validateLicense,
     generateFingerPrint: generateFingerPrint,
-    licenseSearch
+    licenseSearch,
+    getLicense
 };
 
 async function generateFingerPrint() {
@@ -65,7 +69,7 @@ async function writeFingerprint(){
     return hashed_hash;
 }
 
-async function validateLicense(license_key, company) {
+function validateLicense(license_key, company) {
     let license_validation_object = {
         valid_license: false,
         valid_date: false,
@@ -79,13 +83,19 @@ async function validateLicense(license_key, company) {
         log.error(`empty license key passed to validate.`);
         return license_validation_object;
     }
-    let is_exist = await fs.stat(FINGER_PRINT_FILE).catch((err) => {
+
+    let is_exist = false;
+
+    try {
+        is_exist = fs.statSync(FINGER_PRINT_FILE);
+    } catch(err) {
         log.error(err);
-    });
+    }
+
     if (is_exist) {
         let fingerprint;
         try {
-            fingerprint = await fs.readFile(FINGER_PRINT_FILE, 'utf8');
+            fingerprint = fs.readFileSync(FINGER_PRINT_FILE, 'utf8');
         } catch (e) {
             log.error('error validating this machine in the license');
             license_validation_object.valid_machine = false;
@@ -147,13 +157,13 @@ async function validateLicense(license_key, company) {
 /**
  * search for the hdb license, validate & return
  */
-async function licenseSearch(){
+function licenseSearch(){
     let license_values = new License();
     license_values.api_call = 0;
     let licenses = [];
 
     try {
-        let file_licenses = await fs.readFile(LICENSE_FILE, 'utf-8');
+        let file_licenses = fs.readFileSync(LICENSE_FILE, 'utf-8');
         licenses = file_licenses.split(terms.NEW_LINE);
     } catch(e){
         if(e.code === 'ENOENT'){
@@ -163,23 +173,44 @@ async function licenseSearch(){
         }
     }
 
-    await Promise.all(licenses.map(async (license_string) => {
+    for(let i=0; i<licenses.length; ++i) {
+        let license_string = licenses[i];
         try {
+            if(hdb_utils.isEmptyOrZeroLength(license_string)) {
+                continue;
+            }
             let license = JSON.parse(license_string);
-            let license_validation = await validateLicense(license.license_key, license.company);
+            let license_validation = validateLicense(license.license_key, license.company);
             if (license_validation.valid_machine === true && license_validation.valid_date === true && license_validation.valid_license === true) {
                 license_values.exp_date = license_validation.exp_date > license_values.exp_date ? license_validation.exp_date : license_values.exp_date;
                 license_values.api_call += license_validation.api_call;
                 license_values.storage_type = license_validation.storage_type;
                 license_values.enterprise = true;
             }
-        } catch(e){
+        } catch(e) {
+            log.error('There was an error parsing the license string.');
             log.error(e);
+            license_values.api_call = terms.LICENSE_VALUES.API_CALL_DEFAULT;
+            license_values.storage_type = terms.STORAGE_TYPES_ENUM.FILE_SYSTEM;
+            license_values.enterprise = false;
         }
-    }));
+    };
 
     if(license_values.api_call === 0){
         license_values.api_call = terms.LICENSE_VALUES.API_CALL_DEFAULT;
     }
+    current_license = license_values;
     return license_values;
+}
+
+/**
+ * Returns the value of the most recently parsed license (likely during start up).  If the license has not yet been parsed,
+ * the function will call licenseSearch to determine the current license.
+ * @returns {Promise<undefined>}
+ */
+async function getLicense() {
+    if(!current_license) {
+        await licenseSearch();
+    }
+    return current_license;
 }

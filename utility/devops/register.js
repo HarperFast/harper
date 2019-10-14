@@ -7,37 +7,75 @@
 const license = require('../registration/hdb_license');
 const license_generator = require('./licenseGenerator');
 const reg_handler = require('../registration/registrationHandler');
-const global_schema = require('../globalSchema');
-const env = require('../environment/environmentManager');
+
+const minimist = require('minimist');
+const fs = require('fs-extra');
+const path = require('path');
+const hdb_utils = require('../common_utils');
+const terms = require('../hdbTerms');
+const LICENSE_FILE = path.join(hdb_utils.getHomeDir(), terms.HDB_HOME_DIR_NAME, terms.LICENSE_KEY_DIR_NAME, terms.LICENSE_FILE_NAME);
 const moment = require('moment');
+const env = require('../environment/environmentManager');
 if(!env.isInitialized()) {
     env.initSync();
 }
-const terms = require('../hdbTerms');
-const promisify = require('util').promisify;
-const p_schema_to_global = promisify(global_schema.setSchemaDataToGlobal);
 
-
+const ARGS = minimist(process.argv.slice(2));
+let RESET_SUCCESS_MSG = 'successfully reset license';
 async function register(){
-    console.log('setting global schema');
-    await p_schema_to_global();
-    console.log('creating fingerprint');
-    let fingerprint = await license.generateFingerPrint();
-    let license_object = {
-        company: 'harperdb.io',
-        fingerprint: fingerprint,
-        storage_type: terms.STORAGE_TYPES_ENUM.HELIUM,
-        api_call: terms.LICENSE_VALUES.API_CALL_DEFAULT,
-        version: terms.LICENSE_VALUES.VERSION_DEFAULT,
-        exp_date: moment().add(1, 'year').format('YYYY-MM-DD')
-    };
-    console.log('generating license');
-    let generated_license = license_generator.generateLicense(license_object);
-    console.log('validating & writing license to hdb');
-    await reg_handler.parseLicense(generated_license, 'harperdb.io');
-    console.log('success!');
+    if(ARGS.help || (ARGS.api_call === undefined && ARGS.storage_type === undefined && ARGS.reset_license === undefined)){
+        console.log('available arguments --api_call, --storage_type, or reset_license.  All can be used in conjunction with each other\n' +
+            '--api_call is an integer specify the number of api call / day this node can perform ex: --api_call=100000\n ' +
+            '--storage_type specifies the data storage type this node will use value can be: \'helium\' or \'fs\' ex: --storage_type=helium\n' +
+            '--reset_license will delete the existing license file');
+        return;
+    }
+
+    if(ARGS.reset_license === true){
+        console.log('resetting license');
+
+        try {
+            fs.unlinkSync(LICENSE_FILE);
+            console.log(RESET_SUCCESS_MSG);
+        }catch(e){
+            if(e.code !== 'ENOENT'){
+                throw e;
+            }
+
+            console.log(RESET_SUCCESS_MSG);
+        }
+    }
+
+    if(ARGS.api_call !== undefined || ARGS.storage_type !== undefined) {
+        let api_call = ARGS.api_call === undefined ? terms.LICENSE_VALUES.API_CALL_DEFAULT : ARGS.api_call;
+        let storage_type = ARGS.storage_type === undefined ? terms.STORAGE_TYPES_ENUM.FILE_SYSTEM : ARGS.storage_type;
+        if(!Number.isInteger(api_call)){
+            throw new Error('argument api_call must be an integer');
+        }
+
+        if([terms.STORAGE_TYPES_ENUM.HELIUM, terms.STORAGE_TYPES_ENUM.FILE_SYSTEM].indexOf(storage_type) < 0){
+            throw new Error(`argument storage_type must have value 'helium' or 'fs'`);
+        }
+
+        console.log('creating fingerprint');
+        let fingerprint = await license.generateFingerPrint();
+        let license_object = {
+            company: 'harperdb.io',
+            fingerprint: fingerprint,
+            storage_type: storage_type,
+            api_call: api_call,
+            version: terms.LICENSE_VALUES.VERSION_DEFAULT,
+            exp_date: moment().add(1, 'year').format('YYYY-MM-DD')
+        };
+        console.log('generating license');
+        let generated_license = license_generator.generateLicense(license_object);
+        console.log('validating & writing license to hdb');
+        await reg_handler.parseLicense(generated_license, 'harperdb.io');
+        console.log('license saved');
+    }
+
 }
 
 register().then().catch(e=>{
-    console.error(e);
+    console.error(e.message);
 });

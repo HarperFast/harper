@@ -9,7 +9,7 @@ try {
     harper_logger.error(`Got an error loading the environment.  Exiting.${err}`);
     process.exit(0);
 }
-const user_schema = require('../utility/user_schema');
+const user_schema = require('../security/user');
 const os = require('os');
 const job_runner = require('./jobRunner');
 const hdb_util = require('../utility/common_utils');
@@ -27,7 +27,6 @@ const util = require('util');
 const promisify = util.promisify;
 
 const p_schema_to_global = promisify(global_schema.setSchemaDataToGlobal);
-const p_users_to_global = promisify(user_schema.setUsersToGlobal);
 
 const DEFAULT_SERVER_TIMEOUT = 120000;
 const PROPS_SERVER_TIMEOUT_KEY = 'SERVER_TIMEOUT_MS';
@@ -177,14 +176,15 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         const hdb_license = require('../utility/registration/hdb_license');
         const helium_utils = require('../utility/helium/heliumUtils');
         await p_schema_to_global();
-        await p_users_to_global();
+        await user_schema.setUsersToGlobal();
 
         global.clustering_on = env.get('CLUSTERING');
 
-        let license_values = await hdb_license.licenseSearch();
+        let license_values = hdb_license.licenseSearch();
 
         if(license_values.storage_type === terms.STORAGE_TYPES_ENUM.HELIUM){
-            await helium_utils.checkHeliumServerRunning();
+            let helium = await helium_utils.checkHeliumServerRunning();
+            await helium_utils.createSystemDataStores(helium);
         }
 
         harper_logger.notify(`HarperDB successfully started`);
@@ -411,7 +411,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         try {
             harper_logger.trace('Configuring child process.');
             await p_schema_to_global();
-            await p_users_to_global();
+            await user_schema.setUsersToGlobal();
             spawnSCConnection();
 
         } catch(e) {
