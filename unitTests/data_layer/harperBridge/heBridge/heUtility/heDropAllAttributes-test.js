@@ -4,11 +4,8 @@ const test_utils = require('../../../../test_utils');
 test_utils.preTestPrep();
 let hdb_helium = test_utils.buildHeliumTestVolume();
 
-const rewire = require('rewire');
 const heCreateAttribute = require('../../../../../data_layer/harperBridge/heBridge/heMethods/heCreateAttribute');
 const heDropAllAttribute = require('../../../../../data_layer/harperBridge/heBridge/heUtility/heDropAllAttributes');
-const heliumUtils = require('../../../../../utility/helium/heliumUtils');
-const chai = require('chai');
 const assert = require('assert');
 
 const DROP_OBJ_TEST= {
@@ -21,7 +18,6 @@ const ATTRIBUTES = ['age', 'height', 'weight', 'address', 'id', 'owner'];
 
 const ATTRIBUTES_SYS = [{attribute: 'age'}, {attribute: 'height'}, {attribute: 'weight'}, {attribute: 'address'}, {attribute: 'id'}, {attribute: 'owner'}];
 const ATTRIBUTES_SYS_PLUS_NO_EXIST = [{attribute: 'age'}, {attribute: 'height'},{attribute: 'blerg'}, {attribute: 'weight'}, {attribute: 'address'}, {attribute: 'id'}, {attribute: 'owner'}];
-const DATASTORES = ['dropAllAttr/dog/age', 'dropAllAttr/dog/height', 'dropAllAttr/dog/weight', 'dropAllAttr/dog/address', 'dropAllAttr/dog/id', 'dropAllAttr/dog/owner'];
 
 function setupTest() {
     try {

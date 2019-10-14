@@ -29,6 +29,7 @@ function heDropAllAttributes(drop_obj) {
                 heDropAttribute(drop_attr_object);
             } catch(e){
                 if(e.message !== 'HE_ERR_DATASTORE_NOT_FOUND'){
+                    log.error(e);
                     throw e;
                 }
             }
