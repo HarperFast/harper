@@ -56,11 +56,16 @@ function dropAttributeFromSystem(drop_attribute_obj) {
             throw new Error(`Attribute ${drop_attribute_obj.attribute} was not found.`);
         }
 
+        let ids = [];
+        for(let x = 0; x < attributes.length; x++){
+            ids.push(attributes[x].id);
+        }
+
         let delete_table_obj = {
             table: hdb_terms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME,
             schema: hdb_terms.SYSTEM_SCHEMA_NAME,
             hash_attribute: hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_ID_KEY,
-            hash_values: [attributes[0].id]
+            hash_values: ids
         };
 
         return heDeleteRecords(delete_table_obj);

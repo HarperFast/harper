@@ -2,7 +2,7 @@
 	;The directory harperdb has been installed in
 PROJECT_DIR=/home/kyle/WebstormProjects/harperdb/unitTests/server/clustering
 	;The directory selected during install where the database files reside
-HDB_ROOT=/home/kyle/WebstormProjects/harperdb/unitTests/envDir
+HDB_ROOT=/home/kyle/WebstormProjects/harperdb/unitTests/envDir/
 	;The port the HarperDB REST interface will listen on
 HTTP_PORT=12345
 	;If HTTPS is enabled, the port the HarperDB REST interface will listen on
@@ -48,7 +48,7 @@ This is a security risk=
 ALLOW_SELF_SIGNED_SSL_CERTS=true
 	;Set the max number of processes HarperDB will start
 This can also be limited by number of cores and licenses=
-MAX_HDB_PROCESSES=8
+MAX_HDB_PROCESSES=2
 	;Set to true to enable clustering
 Requires a valid enterprise license=
 CLUSTERING=TRUE
@@ -58,9 +58,11 @@ CLUSTERING_PORT=12345
 This must be a value unique from the rest of your cluster node names=
 NODE_NAME=1231412de213
 	;The user used to connect to other instances of HarperDB, this user must have a role of cluster_user
-CLUSTERING_USER=test_cluster_user
+CLUSTERING_USER=
 	;Specify the file system path to where the Helium volume will reside
 HELIUM_VOLUME_PATH=/tmp/hdb
+	;specify the host & port where your helium server is running
+NOTE for most installs this will not change from localhost:41000=
 HELIUM_SERVER_HOST=localhost:41000
 PROCESS_DIR_TEST=I'm A Test
 VERSION=1.1.1
