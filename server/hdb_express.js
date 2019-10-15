@@ -26,7 +26,7 @@ const RestartEventObject = require('./RestartEventObject');
 const util = require('util');
 const promisify = util.promisify;
 // Rate limiter
-const {RateLimiterClusterMaster, RateLimiterCluster} = require('rate-limiter-flexible');
+const {RateLimiterClusterMaster} = require('rate-limiter-flexible');
 
 const p_schema_to_global = promisify(global_schema.setSchemaDataToGlobal);
 
@@ -70,8 +70,6 @@ let num_hdb_processes = undefined;
 let numCPUs = 4;
 let num_workers = undefined;
 let os_cpus = undefined;
-// rate limiter
-let rate_limiter = undefined;
 
 //in an instance of having HDB installed on an android devices we don't have access to the cpu info so we need to handle the error and move on
 try {
@@ -127,7 +125,24 @@ cluster.on('exit', (dead_worker, code, signal) => {
 
 if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     global.isMaster = cluster.isMaster;
-    new RateLimiterClusterMaster();
+    let master_rate_limiter = new RateLimiterClusterMaster();
+    const MasterClusterRateLimiter = require('../server/apiLimiter/MasterClusterRateLimiter');
+    const CounterObject = require('../server/apiLimiter/CounterObject');
+
+    setInterval(async (info) => {
+        try {
+            let points = master_rate_limiter._rateLimiters[`apiclusterlimiter`].points;
+            let duration = master_rate_limiter._rateLimiters[`apiclusterlimiter`].duration;
+            let memory_store = master_rate_limiter._rateLimiters[`apiclusterlimiter`]._memoryStorage;
+            let storage = master_rate_limiter._rateLimiters[`apiclusterlimiter`]._memoryStorage._storage;
+
+            let expiresat = master_rate_limiter._rateLimiters[`apiclusterlimiter`]._memoryStorage._storage['apiclusterlimiter:localhost']._expiresAt;
+            let expiresAtTicks = Date.parse(expiresat)/1000;
+            await MasterClusterRateLimiter.saveApiCallCount(new CounterObject(points, expiresAtTicks));
+        } catch(err) {
+            console.log(err);
+        }
+    }, 10000);
     process.on('uncaughtException', function (err) {
         let os = require('os');
         let message = `Found an uncaught exception with message: os.EOL ${err.message}.  Stack: ${err.stack} ${os.EOL} Terminating HDB.`;
@@ -240,29 +255,14 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     const cors = require('cors');
     const license = require('../utility/environment/LicenseManager').license;
     // rate limiter
-    const api_limiter = require('./apiLimiter/apiLimiter');
+    const apiLimiterClusterRateLimiter = require('./apiLimiter/apiLimiterClusterRateLimiter');
 
-    /*rate_limiter = new RateLimiterCluster({
-        keyPrefix: 'hdblicenseapilimiter',
-        points: 20,
-        duration: 86400,
-        timeoutMs: 3000
-    });
+    const LIMIT_RESET_IN_SECONDS = 86400;
+    apiLimiterClusterRateLimiter.init('apiclusterlimiter', 2, LIMIT_RESET_IN_SECONDS, 3000);
 
-    const rateLimiterMiddleware = (req, res, next) => {
-        rate_limiter.consume('localhost',1)
-            .then(() => {
-                harper_logger.info('Using 1 point');
-                next();
-            })
-            .catch(() => {
-                harper_logger.notify(`You have reached your API limit within 24 hours. ${terms.SUPPORT_HELP_MSG}`);
-                res.status(429).send('Too Many Requests');
-            });
-    };*/
     const app = express();
 
-    app.use(api_limiter.rateLimiter);
+    app.use(apiLimiterClusterRateLimiter.rateLimiter);
     const SC_WORKER_NAME_PREFIX = 'worker_';
     global.clustering_on = false;
 
