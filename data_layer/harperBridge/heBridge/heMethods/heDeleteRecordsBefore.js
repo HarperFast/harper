@@ -23,11 +23,17 @@ module.exports = heDeleteRecordsBefore;
 /**
  * Deletes all records in a schema.table that fall behind a passed date.
  * @param delete_obj
+ * {
+ *     operation: 'delete_files_before' <string>,
+ *     date: ISO-8601 format YYYY-MM-DD <string>,
+ *     schema: Schema where table resides <string>,
+ *     table: Table to delete records from <string>,
+ * }
  * @returns {undefined}
  */
 function heDeleteRecordsBefore(delete_obj) {
     let schema_table_hash = global.hdb_schema[delete_obj.schema][delete_obj.table].hash_attribute;
-    if (hdb_utils.isEmpty(schema_table_hash)) {
+    if (hdb_utils.isEmptyOrZeroLength(schema_table_hash)) {
         throw new Error(`Could not retrieve hash attribute for schema: ${delete_obj.schema} table: ${delete_obj.table}`);
     }
 
