@@ -39,10 +39,10 @@ function heUpdateRecords(update_obj) {
 
         heCheckForNewAttributes(update_obj.hdb_auth_header, schema_table, attributes);
         let he_response = hdb_helium.updateRows(datastores, processed_rows);
-        let { updated_hashes, skipped_hashes } = heProcessResponse(he_response, hdb_terms.OPERATIONS_ENUM.UPDATE);
+        let { written_hashes, skipped_hashes } = heProcessResponse(he_response, hdb_terms.OPERATIONS_ENUM.UPDATE);
 
         return {
-            updated_hashes,
+            written_hashes,
             skipped_hashes,
             schema_table
         };

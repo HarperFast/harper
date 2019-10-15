@@ -27,13 +27,9 @@ function heProcessResponse(he_response, action) {
 
     switch (action) {
         case hdb_terms.OPERATIONS_ENUM.INSERT:
-            return {
-                written_hashes: processed_hashes,
-                skipped_hashes
-            };
         case hdb_terms.OPERATIONS_ENUM.UPDATE:
             return {
-                updated_hashes: processed_hashes,
+                written_hashes: processed_hashes,
                 skipped_hashes
             };
         case hdb_terms.OPERATIONS_ENUM.DELETE:
