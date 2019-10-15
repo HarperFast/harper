@@ -169,7 +169,7 @@ describe('Test for Helium method heCreateAttribute', () => {
             let expected_result = {
                 message: 'inserted 1 of 1 records',
                 skipped_hashes: [],
-                inserted_hashes: [ '45' ]
+                inserted_hashes: [ 45 ]
             };
             let expected_search_result = [ [ '45', [ 'I am a test', 'Not really a table', '45' ] ] ];
             let result;

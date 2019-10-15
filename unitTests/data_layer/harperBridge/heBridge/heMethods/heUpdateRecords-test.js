@@ -135,7 +135,7 @@ describe('Tests for Helium method heUpdateRecords', () => {
             [ '37', [ 'Brian', 'Cartoon', '37', '5', '145', '1943201', '1943201' ] ]
         ];
         let expected_return_result = {
-            written_hashes: [ '34', '35', '36', '37' ],
+            written_hashes: [ 34, 35, 36, 37 ],
             skipped_hashes: [],
             schema_table: {
                 attributes: [],
@@ -169,7 +169,7 @@ describe('Tests for Helium method heUpdateRecords', () => {
              [ '37', [ 'Brian', 'Cartoon', '37', '5', '145', '1943201', '1943201' ] ]
          ];
          let expected_return_result = {
-             written_hashes: [ '34', '35', '36', '37' ],
+             written_hashes: [ 34, 35, 36, 37 ],
              skipped_hashes: [],
              schema_table: {
                  attributes: [],
@@ -212,7 +212,7 @@ describe('Tests for Helium method heUpdateRecords', () => {
 
         let expected_result = {
             "written_hashes": [
-                "34"
+                34
             ],
             "skipped_hashes": [],
             "schema_table": {
@@ -287,7 +287,7 @@ describe('Tests for Helium method heUpdateRecords', () => {
         ];
         update_obj.records = new_records;
         let expected_return_result = {
-            written_hashes: [ '8', '9', '34', '35' ],
+            written_hashes: [ 8, 9, 34, 35 ],
             skipped_hashes: [],
             schema_table: {
                 attributes: ATTRIBUTES_TEST,
