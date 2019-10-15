@@ -14,7 +14,6 @@ const heSearchByValue = require('./heMethods/heSearchByValue');
 const heSearchByConditions = require('./heMethods/heSearchByConditions');
 const heDropTable = require('./heMethods/heDropTable');
 const heDropAttribute = require('./heMethods/heDropAttribute');
-// const heSearchByConditions = require('./heMethods/heSearchByConditions');
 const heDropSchema = require('./heMethods/heDropSchema');
 const heCreateTable = require('./heMethods/heCreateTable');
 const heUpdateRecords = require('./heMethods/heUpdateRecords');
