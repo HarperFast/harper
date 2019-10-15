@@ -105,7 +105,7 @@ describe('Test Helium method heDeleteRecords', () => {
             };
             let expected_result = {
                 message: '1 record successfully deleted',
-                deleted_hashes: [ '8' ],
+                deleted_hashes: [ 8 ],
                 skipped_hashes: []
             };
             let result;
@@ -131,8 +131,8 @@ describe('Test Helium method heDeleteRecords', () => {
             };
             let expected_result = {
                 message: '1 record successfully deleted',
-                deleted_hashes: [ '9' ],
-                skipped_hashes: [ '8']
+                deleted_hashes: [ 9 ],
+                skipped_hashes: [ 8]
             };
             let result;
             let search_result;
@@ -158,7 +158,7 @@ describe('Test Helium method heDeleteRecords', () => {
             let expected_result = {
                 message: '0 records successfully deleted',
                 deleted_hashes: [ ],
-                skipped_hashes: [ '8', '9']
+                skipped_hashes: [ 8, 9]
             };
             let result;
             let search_result;
@@ -183,7 +183,7 @@ describe('Test Helium method heDeleteRecords', () => {
             };
             let expected_result = {
                 message: '2 records successfully deleted',
-                deleted_hashes: [ '12', '10' ],
+                deleted_hashes: [ 12, 10 ],
                 skipped_hashes: [ ]
             };
             let result;
