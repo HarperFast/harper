@@ -145,7 +145,7 @@ describe('Tests for Helium method heCreateRecords', () => {
                 [ '10', [ 'Rob', 'Mutt', '10', '5', '145', '1943201', '1943201' ] ]
             ];
             let expected_return_result = {
-                written_hashes: [ '8', '9', '12', '10' ],
+                written_hashes: [ 8, 9, 12, 10 ],
                 skipped_hashes: [],
                 schema_table: {
                     attributes: [],
@@ -201,8 +201,8 @@ describe('Tests for Helium method heCreateRecords', () => {
             ];
             insert_obj.records = new_records;
             let expected_return_result = {
-                written_hashes: [ '123', '1232' ],
-                skipped_hashes: [ '8', '9' ],
+                written_hashes: [ 123, 1232 ],
+                skipped_hashes: [ 8, 9 ],
                 schema_table: {
                     attributes: NO_NEW_ATTR_TEST,
                     hash_attribute: 'id',
@@ -235,7 +235,7 @@ describe('Tests for Helium method heCreateRecords', () => {
         it('Test inserting rows that already exist',  () => {
             let expected_result = {
                 written_hashes: [],
-                skipped_hashes: [ '8', '9', '12', '10' ],
+                skipped_hashes: [ 8, 9, 12, 10 ],
                 schema_table:
                     { attributes: NO_NEW_ATTR_TEST,
                         hash_attribute: 'id',

@@ -1,7 +1,7 @@
 'use strict';
 
 const hdb_terms = require('../../../../utility/hdbTerms');
-
+const hdb_utils = require('../../../../utility/common_utils');
 module.exports = heProcessResponse;
 
 /**
@@ -14,7 +14,11 @@ module.exports = heProcessResponse;
 function heProcessResponse(he_response, action) {
     let records_count;
     let plural;
-    let processed_hashes = he_response[0];
+    let processed_hashes = [];
+    for(let x = 0; x < he_response[0].length; x++){
+        processed_hashes.push(hdb_utils.autoCast(he_response[0][x]));
+    }
+
     let skipped_hashes = [];
 
     for (let i = 0; i < he_response[1].length; i++) {
@@ -22,7 +26,7 @@ function heProcessResponse(he_response, action) {
             throw new Error(he_response[1][i][1][1]);
         }
 
-        skipped_hashes.push(he_response[1][i][0]);
+        skipped_hashes.push(hdb_utils.autoCast(he_response[1][i][0]));
     }
 
     switch (action) {
