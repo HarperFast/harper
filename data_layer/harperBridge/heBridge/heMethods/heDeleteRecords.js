@@ -20,19 +20,35 @@ module.exports = heDeleteRecords;
  * @param delete_obj
  */
 function heDeleteRecords(delete_obj) {
-        let schema_table = global.hdb_schema[delete_obj.schema][delete_obj.table];
-        if (hdb_utils.isEmpty(schema_table.hash_attribute)) {
-            throw new Error(`could not retrieve hash attribute for schema:${delete_obj.schema} and table ${delete_obj.table}`);
+    let schema_table = global.hdb_schema[delete_obj.schema][delete_obj.table];
+    let hash_attribute = schema_table.hash_attribute;
+    if (hdb_utils.isEmpty(hash_attribute)) {
+        throw new Error(`could not retrieve hash attribute for schema:${delete_obj.schema} and table ${delete_obj.table}`);
+    }
+
+    try {
+        //this would happen for SQL delete
+        if(hdb_utils.isEmptyOrZeroLength(delete_obj.hash_values) && !hdb_utils.isEmptyOrZeroLength(delete_obj.records)){
+            //reintitialize hash_values since it is empty we are not sure if the variable has been set to empty array yet
+            delete_obj.hash_values = [];
+            for(let k = 0; k < delete_obj.records.length; k++){
+                let hash_value = delete_obj.records[k][hash_attribute];
+                if(!hdb_utils.isEmpty(hash_value)){
+                    delete_obj.hash_values.push(hash_value);
+                }
+            }
         }
 
-        try {
-            let he_response = hdb_helium.deleteRows(buildTableDataStores(delete_obj, schema_table), delete_obj.hash_values);
-            let response = heProcessResponse(he_response, hdb_terms.OPERATIONS_ENUM.DELETE);
-
-            return response;
-        } catch(err) {
-            throw err;
+        if(hdb_utils.isEmptyOrZeroLength(delete_obj.hash_values)){
+            return heProcessResponse([ [],[] ], hdb_terms.OPERATIONS_ENUM.DELETE);
         }
+
+        let data_stores = buildTableDataStores(delete_obj, schema_table);
+        let he_response = hdb_helium.deleteRows(data_stores, delete_obj.hash_values);
+        return heProcessResponse(he_response, hdb_terms.OPERATIONS_ENUM.DELETE);
+    } catch(err) {
+        throw err;
+    }
 }
 
 /**

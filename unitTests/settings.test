@@ -1,16 +1,16 @@
 	;Settings for the HarperDB process
 	;The directory harperdb has been installed in
-PROJECT_DIR=/home/kyle/WebstormProjects/harperdb/unitTests/server/clustering
+PROJECT_DIR=/Users/kylebernhardy/WebstormProjects/harperdb/unitTests/server/clustering
 	;The directory selected during install where the database files reside
-HDB_ROOT=/home/kyle/WebstormProjects/harperdb/unitTests/envDir/
+HDB_ROOT=/Users/kylebernhardy/WebstormProjects/harperdb/unitTests/envDir/
 	;The port the HarperDB REST interface will listen on
 HTTP_PORT=12345
 	;If HTTPS is enabled, the port the HarperDB REST interface will listen on
 HTTPS_PORT=31283
 	;The path to the SSL certificate used when running with HTTPS enabled
-CERTIFICATE=/home/kyle/WebstormProjects/harperdb/unitTests/server/clustering/envDir/utilities/keys/certificate.pem
+CERTIFICATE=/Users/kylebernhardy/WebstormProjects/harperdb/unitTests/server/clustering/envDir/utilities/keys/certificate.pem
 	;The path to the SSL private key used when running with HTTPS enabled
-PRIVATE_KEY=/home/kyle/WebstormProjects/harperdb/unitTests/envDir/utility/keys/privateKey.pem
+PRIVATE_KEY=/Users/kylebernhardy/WebstormProjects/harperdb/unitTests/envDir/utility/keys/privateKey.pem
 	;Set to true to enable HTTPS on the HarperDB REST endpoint
 Requires a valid certificate and key=
 HTTPS_ON=FALSE
@@ -31,7 +31,7 @@ LOG_LEVEL=debug
 	; 2 Uses the more performant PINO logger
 LOGGER=1
 	;The path where log files will be written
-LOG_PATH=/home/kyle/WebstormProjects/harperdb/unitTests/envDir/log/hdb_log.log
+LOG_PATH=/Users/kylebernhardy/WebstormProjects/harperdb/unitTests/envDir/log/hdb_log.log
 	;Set to true to enable daily log file rotations - each log file name will be prepended with YYYY-MM-DD (for WINSTON logger only)
 LOG_DAILY_ROTATE=false
 	;Set the number of daily log files to maintain when LOG_DAILY_ROTATE is enabled
