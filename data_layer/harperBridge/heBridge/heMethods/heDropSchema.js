@@ -24,13 +24,12 @@ function heDropSchema(drop_schema_obj) {
         };
 
         let tables = heGetDataByValue(table_search_obj);
-        let delete_table_obj = {
-            schema: delete_schema,
-            table: ''
-        };
 
         for (let table_name in tables) {
-            delete_table_obj.table = tables[table_name].name;
+            const delete_table_obj = {
+                schema: delete_schema,
+                table: tables[table_name].name
+            };
             try {
                 heDropTable(delete_table_obj);
             } catch(e) {
