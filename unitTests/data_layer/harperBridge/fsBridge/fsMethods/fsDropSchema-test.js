@@ -21,7 +21,9 @@ const TABLES_TEST = [{id: '123d24'}];
 
 describe('Tests for file system module fsDropSchema', () => {
     let sandbox = sinon.createSandbox();
-    let fs_delete_records_stub = sandbox.stub();
+    let fs_delete_records_stub = sandbox.stub().resolves({
+        deleted_hashes: [DROP_SCHEMA_OBJ_TEST.schema]
+    });
 
     before(() => {
         fsDropSchema.__set__('fsDeleteRecords', fs_delete_records_stub);

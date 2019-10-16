@@ -28,7 +28,10 @@ async function fsDropSchema(drop_schema_obj) {
             table_ids.push({id: tables[table_name].id});
         }
 
-        await fsDeleteRecords(delete_schema_obj);
+        let delete_response = await fsDeleteRecords(delete_schema_obj);
+        if(delete_response.deleted_hashes.length === 0){
+            throw new Error(`schema '${drop_schema_obj.schema}' does not exist`);
+        }
         await moveSchemaToTrash(drop_schema_obj, table_ids);
         await deleteAttrStructure(drop_schema_obj);
     } catch(err) {

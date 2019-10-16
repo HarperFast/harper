@@ -16,8 +16,8 @@ describe('Tests for heUtility module heProcessResponse', () => {
     
     it('Test for nominal behaviour from Helium response A', () => {
         let expected_result = {
-            written_hashes: [ '123', '1232' ],
-            skipped_hashes: [ '8', '9' ]
+            written_hashes: [ 123, 1232 ],
+            skipped_hashes: [ 8, 9 ]
         };
         let result = heProcessInsertUpdateResponse(HE_RESPONSE_A, hdb_terms.OPERATIONS_ENUM.INSERT);
 
@@ -26,7 +26,7 @@ describe('Tests for heUtility module heProcessResponse', () => {
 
     it('Test for nominal behaviour from Helium response B', () => {
         let expected_result = {
-            written_hashes: [ '34', '43', '77' ],
+            written_hashes: [ 34, 43, 77 ],
             skipped_hashes: []
         };
         let result = heProcessInsertUpdateResponse(HE_RESPONSE_B, hdb_terms.OPERATIONS_ENUM.INSERT);
@@ -48,8 +48,8 @@ describe('Tests for heUtility module heProcessResponse', () => {
 
     it('Test for nominal behaviour deleting', () => {
         let expected_result = {
-            deleted_hashes: [ '123', '1232' ],
-            skipped_hashes: [ '8', '9' ],
+            deleted_hashes: [ 123, 1232 ],
+            skipped_hashes: [ 8, 9 ],
             message: '2 records successfully deleted'
         };
         let result = heProcessInsertUpdateResponse(HE_RESPONSE_A, hdb_terms.OPERATIONS_ENUM.DELETE);
