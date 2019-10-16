@@ -14,10 +14,6 @@ try {
     throw err;
 }
 
-// Timestamp attribute to use when comparing with delete before date
-const TIMESTAMP_ATTR = '__updatedtime__';
-const RANGE_OPERATION = '<';
-
 module.exports = heDeleteRecordsBefore;
 
 /**
@@ -44,8 +40,9 @@ function heDeleteRecordsBefore(delete_obj) {
 
     // Uses helium api to search for values in a scheme.tables timestamp column that are less than passed date.
     try {
-        search_result = hdb_helium.searchByValueRange(heGenerateDataStoreName(delete_obj.schema, delete_obj.table, TIMESTAMP_ATTR),
-            RANGE_OPERATION, parsed_search_date, null, [heGenerateDataStoreName(delete_obj.schema, delete_obj.table, schema_table_hash)]);
+        let search_attribute = heGenerateDataStoreName(delete_obj.schema, delete_obj.table, hdb_terms.HELIUM_TIME_STAMP_ENUM.UPDATED_TIME);
+        let return_attribute = heGenerateDataStoreName(delete_obj.schema, delete_obj.table, schema_table_hash);
+        search_result = hdb_helium.searchByValueRange(search_attribute, hdb_terms.HELIUM_VALUE_RANGE_SEARCH_OPS.LESS, parsed_search_date, null, [return_attribute]);
     } catch(err) {
         log.error(`Error searching for date: ${delete_obj.date} in schema: ${delete_obj.schema} table: ${delete_obj.table}`);
         throw err;
