@@ -51,14 +51,14 @@ function heDeleteRecordsBefore(delete_obj) {
         throw err;
     }
 
+    if (hdb_utils.isEmptyOrZeroLength(search_result)) {
+        log.trace('No records found to delete');
+        return;
+    }
+
     let hashes_to_delete = [];
     for (let i = 0; i < search_result.length; i++) {
         hashes_to_delete.push(search_result[i][1][0]);
-    }
-
-    if (hdb_utils.isEmptyOrZeroLength(hashes_to_delete)) {
-        log.trace('No records found to delete');
-        return;
     }
 
     let delete_records_obj = {
@@ -68,5 +68,9 @@ function heDeleteRecordsBefore(delete_obj) {
         hash_values: hashes_to_delete
     };
 
-    return heDeleteRecords(delete_records_obj);
+    try {
+        return heDeleteRecords(delete_records_obj);
+    } catch(err) {
+        throw err;
+    }
 }
