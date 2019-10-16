@@ -9375,8 +9375,15 @@
 									"",
 									"pm.test(\"update with nonexistent hash skips hash\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.message).to.eql(\"updated 0 of 1 records\");",
-									"    pm.expect(jsonData.skipped_hashes[0]).to.eql(\"There is no way this exists\");",
+									"    if(jsonData.message === \"updated 0 of 1 records\"){",
+									"        pm.expect(jsonData.message).to.eql(\"updated 0 of 1 records\");",
+									"        pm.expect(jsonData.update_hashes).to.eql([]);",
+									"        pm.expect(jsonData.skipped_hashes[0]).to.eql(\"There is no way this exists\");",
+									"    } else if(jsonData.message === \"updated 1 of 1 records\"){",
+									"        pm.expect(jsonData.message).to.eql(\"updated 1 of 1 records\");",
+									"        pm.expect(jsonData.update_hashes[0]).to.eql(\"There is no way this exists\");",
+									"        pm.expect(jsonData.skipped_hashes).to.eql([]);",
+									"    }",
 									"});",
 									""
 								],
@@ -16633,6 +16640,10 @@
 											"    pm.expect(ids.includes(1)).to.be.true;",
 											"    pm.expect(ids.includes(3)).to.be.true;",
 											"    pm.expect(ids.includes(5)).to.be.true;",
+											"    ",
+											"    pm.expect(ids.includes(2)).to.be.false;",
+											"    pm.expect(ids.includes(4)).to.be.false;",
+											"    pm.expect(ids.includes(6)).to.be.false;",
 											"});"
 										],
 										"type": "text/javascript"
@@ -16683,7 +16694,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n\t\"operation\":\"search_by_hash\",\n\t\"schema\":\"test_delete_before\",\n\t\"table\":\"address\",\n\t\"hash_attribute\": \"id\",\n\t\"hash_values\":[1, 2, 3, 4, 5, 6],\n\t\"get_attributes\": [\"id\", \"address\", \"__updatedtime__\"]\n}\n"
+									"raw": "{\n\t\"operation\":\"search_by_hash\",\n\t\"schema\":\"test_delete_before\",\n\t\"table\":\"address\",\n\t\"hash_attribute\": \"id\",\n\t\"hash_values\":[1, 2, 3, 4, 5, 6],\n\t\"get_attributes\": [\"id\", \"address\"]\n}\n"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -16713,7 +16724,7 @@
 								"id": "6f0d72f5-c85c-46bf-b31b-5cf36fa340c0",
 								"type": "text/javascript",
 								"exec": [
-									"postman.setGlobalVariable(\"function:getJobId\", (jsonData, next_req)=>{",
+									"postman.setGlobalVariable(\"function:getJobIdDelete\", (jsonData, next_req)=>{",
 									"    let id_index = jsonData.message.indexOf('id ');",
 									"    let parsedId = jsonData.message.substr(id_index + 3, jsonData.message.length);",
 									"    pm.environment.set(\"job_id\", parsedId);",
@@ -19708,7 +19719,7 @@
 			"name": "12. Environment Clean Up",
 			"item": [
 				{
-					"name": "sql delete schema",
+					"name": "drop schema northnwd",
 					"event": [
 						{
 							"listen": "test",
@@ -19830,7 +19841,7 @@
 					"response": []
 				},
 				{
-					"name": "sql delete schema dev",
+					"name": "drop schema dev",
 					"event": [
 						{
 							"listen": "test",
@@ -19893,7 +19904,7 @@
 					"response": []
 				},
 				{
-					"name": "sql delete schema call",
+					"name": "drop schema call",
 					"event": [
 						{
 							"listen": "test",
@@ -19943,6 +19954,70 @@
 						"body": {
 							"mode": "raw",
 							"raw": "{\n     \"operation\": \"drop_schema\",\n     \"schema\": \"call\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "This method is used to create a schema.  It like all other functions requires basic auth.  \n\nAttributes:\n\noperation (required) - must always be create_schema\n\nschema (required) - name of the schema you are creating"
+					},
+					"response": []
+				},
+				{
+					"name": "drop schema test_delete_before",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "0fc4d93b-7280-409f-a416-a6fd8517f99d",
+								"exec": [
+									"tests[\"Delete Schema\"] = responseBody.has(\"successfully delete\");\r",
+									"\r",
+									"\r",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3Q="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n     \"operation\": \"drop_schema\",\n     \"schema\": \"test_delete_before\"\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",

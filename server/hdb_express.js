@@ -207,7 +207,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                    harper_logger.fatal(err);
                 });
                 forked.on('disconnect', (err) => {
-                   harper_logger.error('Cluster worker has been disconnected.');
+                   harper_logger.error('HDB child has been disconnected.');
                    harper_logger.error(err);
                 });
                 forked.on('listening', (address) => {
