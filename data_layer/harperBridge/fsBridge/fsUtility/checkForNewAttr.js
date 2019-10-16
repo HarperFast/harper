@@ -44,7 +44,7 @@ async function checkForNewAttributes(hdb_auth_header, table_schema, data_attribu
             })
         );
     } catch(e){
-        throw new Error(e);
+        throw e;
     }
 }
 
