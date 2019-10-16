@@ -2,35 +2,30 @@
 
 const heDropTable = require('./heDropTable');
 const heDeleteRecords = require('./heDeleteRecords');
+const heGetDataByHash = require('./heGetDataByHash');
+const heGetDataByValue = require('./heGetDataByValue');
 const hdb_terms = require('../../../../utility/hdbTerms');
-const common_utils = require('../../../../utility/common_utils');
 
 module.exports = heDropSchema;
 
-async function heDropSchema(drop_schema_obj) {
-    let schema = drop_schema_obj.schema;
+function heDropSchema(drop_schema_obj) {
+    let delete_schema;
 
     try {
-        let delete_schema_obj = {
+        delete_schema = validateDropSchema(drop_schema_obj.schema);
+
+        //We search in system > hdb_table for tables with the schema to ensure we are deleting all schema datastores
+        const table_search_obj = {
             schema: hdb_terms.SYSTEM_SCHEMA_NAME,
-            table: hdb_terms.SYSTEM_TABLE_NAMES.SCHEMA_TABLE_NAME,
-            hash_values: [drop_schema_obj.schema]
+            table: hdb_terms.SYSTEM_TABLE_NAMES.TABLE_TABLE_NAME,
+            search_attribute: hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_SCHEMA_KEY,
+            search_value: delete_schema,
+            get_attributes: [hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_NAME_KEY]
         };
 
-        // Delete the schema from the system > hdb_schema datastore
-        const delete_response = heDeleteRecords(delete_schema_obj);
-
-        //If there was no deleted_hashes returned, that means the schema doesn't exist
-        // in the db and we can skip the rest of this operation
-        if (delete_response.deleted_hashes.length === 0) {
-            throw new Error(`schema '${drop_schema_obj.schema}' does not exist`);
-        }
-
-        //Final step is to drop the tables associated with the schema - this will also
-        // handle table and attribute system data
-        let tables = global.hdb_schema[schema];
+        let tables = heGetDataByValue(table_search_obj);
         let delete_table_obj = {
-            schema: schema,
+            schema: delete_schema,
             table: ''
         };
 
@@ -43,7 +38,47 @@ async function heDropSchema(drop_schema_obj) {
             }
         }
 
+        //After all tables for schema are deleted, we can delete the schema
+        const delete_schema_obj = {
+            schema: hdb_terms.SYSTEM_SCHEMA_NAME,
+            table: hdb_terms.SYSTEM_TABLE_NAMES.SCHEMA_TABLE_NAME,
+            hash_values: [delete_schema]
+        };
+
+        // Delete the schema from the system > hdb_schema datastore
+        heDeleteRecords(delete_schema_obj);
+
     } catch(err) {
         throw err;
     }
+}
+
+function validateDropSchema(drop_schema) {
+    let search_obj = {
+        schema: hdb_terms.SYSTEM_SCHEMA_NAME,
+        table: hdb_terms.SYSTEM_TABLE_NAMES.SCHEMA_TABLE_NAME,
+        hash_values: [drop_schema],
+        get_attributes: [hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_NAME_KEY]
+    };
+    let search_result;
+    let delete_schema;
+
+    try {
+        search_result = heGetDataByHash(search_obj);
+    } catch(err) {
+        throw err;
+    }
+
+    // Data found by the search function should match the drop_schema
+    for (let item in search_result) {
+        if (search_result[item].name === drop_schema) {
+            delete_schema = drop_schema;
+        }
+    }
+
+    if (!delete_schema) {
+        throw new Error(`schema '${drop_schema}' does not exist`);
+    }
+
+    return delete_schema;
 }

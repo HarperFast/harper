@@ -30,7 +30,7 @@ class HeliumBridge extends BridgeMethods {
 
     async dropSchema(drop_schema_obj) {
         try {
-            return await heDropSchema(drop_schema_obj);
+            return heDropSchema(drop_schema_obj);
         } catch(err) {
             log.error(err);
             throw err;
