@@ -5,6 +5,7 @@ const heDeleteRecords = require('./heDeleteRecords');
 const heSearchByValue = require('./heSearchByValue');
 const helium_utils = require('../../../../utility/helium/heliumUtils');
 const hdb_terms = require('../../../../utility/hdbTerms');
+const common_utils = require('../../../../utility/common_utils');
 
 let hdb_helium;
 try {
@@ -45,27 +46,25 @@ function dropAttributeFromSystem(drop_attribute_obj) {
     let search_obj = {
         schema: hdb_terms.SYSTEM_SCHEMA_NAME,
         table: hdb_terms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME,
-        search_attribute: hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_ATTRIBUTE_KEY,
-        search_value: drop_attribute_obj.attribute,
-        get_attributes: [hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_ID_KEY]
+        search_attribute: hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_SCHEMA_TABLE_KEY,
+        search_value: `${drop_attribute_obj.schema}.${drop_attribute_obj.table}`,
+        get_attributes: [hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_ID_KEY, hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_ATTRIBUTE_KEY]
     };
 
     try {
-        let attributes = heSearchByValue(search_obj);
-        if (!attributes || attributes.length < 1) {
+        let table_attributes = heSearchByValue(search_obj);
+        let attribute = table_attributes.filter(attr => attr[hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_ATTRIBUTE_KEY] === drop_attribute_obj.attribute);
+        if (common_utils.isEmptyOrZeroLength(attribute)) {
             throw new Error(`Attribute ${drop_attribute_obj.attribute} was not found.`);
         }
 
-        let ids = [];
-        for(let x = 0; x < attributes.length; x++){
-            ids.push(attributes[x].id);
-        }
+        let id = attribute.map(attr => attr[hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_ID_KEY]);
 
         let delete_table_obj = {
             table: hdb_terms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME,
             schema: hdb_terms.SYSTEM_SCHEMA_NAME,
             hash_attribute: hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_ID_KEY,
-            hash_values: ids
+            hash_values: id
         };
 
         return heDeleteRecords(delete_table_obj);

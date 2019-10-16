@@ -57,10 +57,10 @@ function multiConditionSearch(search_object, callback) {
         const { schema, table, conditions } = search_object;
         let hash_attr;
 
-        if (search_object.schema === hdb_terms.SYSTEM_SCHEMA_NAME) {
-            hash_attr = system_schema[search_object.table].hash_attribute;
+        if (schema === hdb_terms.SYSTEM_SCHEMA_NAME) {
+            hash_attr = system_schema[table].hash_attribute;
         } else {
-            hash_attr = global.hdb_schema[search_object.schema][search_object.table].hash_attribute;
+            hash_attr = global.hdb_schema[schema][table].hash_attribute;
         }
 
         let all_ids = [];
@@ -74,8 +74,8 @@ function multiConditionSearch(search_object, callback) {
             const comparators = Object.values(condition)[0];
 
             const val_search_object = {
-                schema: search_object.schema,
-                table: search_object.table,
+                schema: schema,
+                table: table,
                 search_attribute: comparators[0],
                 search_value: String(comparators[1]),
                 get_attributes: [hash_attr]

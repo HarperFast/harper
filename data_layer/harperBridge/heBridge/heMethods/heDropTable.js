@@ -15,8 +15,8 @@ module.exports = heDropTable;
  */
 function heDropTable(drop_table_obj) {
         try {
-        heDropAllAttributes(drop_table_obj);
-        dropTableFromSystem(drop_table_obj);
+            heDropAllAttributes(drop_table_obj);
+            dropTableFromSystem(drop_table_obj);
     } catch(err) {
         throw err;
     }

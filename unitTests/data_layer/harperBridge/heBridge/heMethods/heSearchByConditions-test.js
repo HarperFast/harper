@@ -1,5 +1,8 @@
 'use strict';
 
+const test_utils = require('../../../../test_utils');
+test_utils.preTestPrep();
+
 const rewire = require('rewire');
 let heSearchByConditions_rw = rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heSearchByConditions');
 

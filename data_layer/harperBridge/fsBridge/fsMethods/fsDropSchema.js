@@ -11,9 +11,9 @@ const DATE_SUBSTR_LENGTH = 19;
 let current_date = new Date().toISOString().substr(0, DATE_SUBSTR_LENGTH);
 const TRASH_BASE_PATH = `${env.getHdbBasePath()}/${terms.HDB_TRASH_DIR}`;
 
-module.exports = dropSchema;
+module.exports = fsDropSchema;
 
-async function dropSchema(drop_schema_obj) {
+async function fsDropSchema(drop_schema_obj) {
     let schema = drop_schema_obj.schema;
     let delete_schema_obj = {
         table: terms.SYSTEM_TABLE_NAMES.SCHEMA_TABLE_NAME,
