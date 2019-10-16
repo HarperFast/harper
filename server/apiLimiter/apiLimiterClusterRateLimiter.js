@@ -43,15 +43,12 @@ function init(limiter_name, rate_limit, reset_duration_seconds, timeout_ms) {
 
             let largest = vals[0];
             vals.forEach((val) => {
-                if(val.count > largest.count) {
+                if(val && val.count && val.count > largest.count) {
                     largest = val;
                 }
             });
-            let expire_time = moment.unix(largest.expires_at);
-            let now_in_seconds = moment().valueOf();
-            let duration_in_seconds = expire_time - now_in_seconds;
 
-            constructLimiter(limiter_name, rate_limit, reset_duration_seconds, timeout_ms);
+            constructLimiter(limiter_name, rate_limit, hdb_util.getStartOfTomorrowInSeconds(), timeout_ms);
             if(largest.count > 0) {
                 // This will remove the number of calls read.
                 limiter.penalty(`localhost`, largest)
@@ -151,6 +148,18 @@ async function saveApiCallCount(count, loc) {
         log.error('Error saving calls');
         log.error(err);
     }
+}
+
+function createLimiterResetTimeout(limiter_name_string, timout_interval_ms) {
+    setTimeout(async (info) => {
+        try {
+            log.debug('Restoring limits');
+            //let points = master_rate_limiter._rateLimiters[`apiclusterlimiter`].points;
+
+        } catch(err) {
+            log.log(err);
+        }
+    }, timout_interval_ms);
 }
 
 

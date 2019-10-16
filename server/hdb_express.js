@@ -25,6 +25,9 @@ const terms = require('../utility/hdbTerms');
 const RestartEventObject = require('./RestartEventObject');
 const util = require('util');
 const promisify = util.promisify;
+const moment = require('moment');
+const path = require('path');
+
 // Rate limiter
 const {RateLimiterClusterMaster} = require('rate-limiter-flexible');
 
@@ -45,6 +48,7 @@ const ENV_PROD_VAL = 'production';
 const ENV_DEV_VAL = 'development';
 const TRUE_COMPARE_VAL = 'TRUE';
 const REPO_RUNNING_PROCESS_NAME = 'server/hdb_express.js';
+const LIMIT_SAVE_INTERVAL_MS = 10000;
 
 let node_env_value = env.get(PROPS_ENV_KEY);
 let running_from_repo = false;
@@ -128,21 +132,41 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     let master_rate_limiter = new RateLimiterClusterMaster();
     const MasterClusterRateLimiter = require('../server/apiLimiter/MasterClusterRateLimiter');
     const CounterObject = require('../server/apiLimiter/CounterObject');
+    let tomorow_ms = moment().utc().add(1, terms.MOMENT_DAYS_TAG).startOf(terms.MOMENT_DAYS_TAG).millisecond();
+    let now_ms = moment().millisecond();
+    let interval_reset_ms = tomorow_ms - now_ms;
+    interval_reset_ms = moment(hdb_util.getStartOfTomorrowInSeconds()).valueOf() * 1000;
 
+    // Interval to periodically the api limits
     setInterval(async (info) => {
         try {
+            console.log("Saving limit file");
+            harper_logger.debug('Limits written');
             let points = master_rate_limiter._rateLimiters[`apiclusterlimiter`].points;
-            let duration = master_rate_limiter._rateLimiters[`apiclusterlimiter`].duration;
-            let memory_store = master_rate_limiter._rateLimiters[`apiclusterlimiter`]._memoryStorage;
-            let storage = master_rate_limiter._rateLimiters[`apiclusterlimiter`]._memoryStorage._storage;
-
-            let expiresat = master_rate_limiter._rateLimiters[`apiclusterlimiter`]._memoryStorage._storage['apiclusterlimiter:localhost']._expiresAt;
-            let expiresAtTicks = Date.parse(expiresat)/1000;
-            await MasterClusterRateLimiter.saveApiCallCount(new CounterObject(points, expiresAtTicks));
+            // Currently we probably dont need the reset time, but this may be useful later if we decide
+            // to customize api limit rollover times
+            let reset_time = hdb_util.getStartOfTomorrowInSeconds();
+            await MasterClusterRateLimiter.saveApiCallCount(new CounterObject(points, reset_time), path.join(os.homedir(), terms.HDB_HOME_DIR_NAME, terms.LIMIT_COUNT_NAME));
         } catch(err) {
             console.log(err);
         }
-    }, 10000);
+    }, LIMIT_SAVE_INTERVAL_MS);
+
+    // Set the limits rollover timeout
+    /*
+    setTimeout(async (info) => {
+        try {
+            log.debug('Restoring limits');
+            let points = master_rate_limiter._rateLimiters[`apiclusterlimiter`].points;
+            // Currently we probably dont need the reset time, but this may be useful later if we decide
+            // to customize api limit rollover times
+            let reset_time = hdb_util.getStartOfTomorrowInSeconds();
+            await MasterClusterRateLimiter.saveApiCallCount(new CounterObject(points, reset_time));
+        } catch(err) {
+            console.log(err);
+        }
+    }, interval_reset_ms); */
+
     process.on('uncaughtException', function (err) {
         let os = require('os');
         let message = `Found an uncaught exception with message: os.EOL ${err.message}.  Stack: ${err.stack} ${os.EOL} Terminating HDB.`;
@@ -258,7 +282,10 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     const apiLimiterClusterRateLimiter = require('./apiLimiter/apiLimiterClusterRateLimiter');
 
     const LIMIT_RESET_IN_SECONDS = 86400;
-    apiLimiterClusterRateLimiter.init('apiclusterlimiter', 2, LIMIT_RESET_IN_SECONDS, 3000);
+    apiLimiterClusterRateLimiter.init(terms.LIMIT_KEY, 2, 30, 3000);
+
+    // Create timeout for UTC 0000 tomorrow when the limits will reset.
+    //server_utilities.createLimitsTimeout(terms.LIMITS_KEY, )
 
     const app = express();
 

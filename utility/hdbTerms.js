@@ -28,6 +28,8 @@ const UNICODE_FORWARD_SLASH = 'U+002F';
 const ESCAPED_FORWARD_SLASH_REGEX = /U\+002F/g;
 const ESCAPED_PERIOD_REGEX = /^U\+002E$/;
 const ESCAPED_DOUBLE_PERIOD_REGEX = /^U\+002EU\+002E$/;
+const MOMENT_DAYS_TAG = 'd';
+const LIMIT_KEY = 'apiclusterlimiter';
 
 // Name of the System schema
 const SYSTEM_SCHEMA_NAME = 'system';
@@ -448,6 +450,8 @@ module.exports = {
     HELIUM_PROCESS_NAME,
     HELIUM_START_SERVER_COMMAND,
     LICENSE_FILE_NAME,
-    NEW_LINE
+    NEW_LINE,
+    MOMENT_DAYS_TAG,
+    LIMIT_KEY
 };
 

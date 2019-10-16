@@ -7,6 +7,7 @@ const path = require('path');
 const fs = require('fs-extra');
 const CounterObject = require('./CounterObject');
 const terms = require('../../utility/hdbTerms');
+const {inspect} = require('util');
 
 /*
 * This class should be used by hdb_express to store the rate limits whenever needed.
@@ -22,7 +23,8 @@ let fingerprint = undefined;
  */
 async function saveApiCallCount(count, loc) {
     try {
-        let finger = fingerprint;
+        let finger = await registration_handler.getFingerprint();
+        console.log("fingerprint:" + inspect(finger));
         let cipher = crypto.createCipher('aes192', finger);
         let encrypted_exp = cipher.update(JSON.stringify(count), 'utf8', 'hex');
         encrypted_exp += cipher.final('hex');
