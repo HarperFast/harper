@@ -63,7 +63,8 @@ const TABLE_DATA_TEST = [
     [ '8', [ 'Harper', 'Mutt', '8', '5', null, '1943201', '1943201'] ],
     [ '9', [ 'Penny', 'Mutt', '9', '5', '145', '1943201', '1943201' ] ],
     [ '12', [ 'David', 'Mutt', '12', null, null, '1943201', '1943201' ] ],
-    [ '10', [ 'Rob', 'Mutt', '10', '5', '145', '1943201', '1943201' ] ]
+    [ '10', [ 'Rob', 'Mutt', '10', '5', '145', '1943201', '1943201' ] ],
+    [ '11', [ 'Riley', 'Mutt', '11', '7', '145', '1943201', '1943201' ] ],
 ];
 
 function setupTest() {
@@ -216,6 +217,83 @@ describe('Test Helium method heDeleteRecords', () => {
             }
 
             expect(error.message).to.equal('Second argument must be an array of keys to to be deleted.');
+        });
+
+        it('Test passing no hash_values or records', () => {
+            let error;
+            let delete_obj = {
+                operation: "delete",
+                table: "doggo",
+                schema: "deleteTest"
+            };
+
+            let response;
+            try {
+                response = heDeleteRecords(delete_obj);
+            } catch(err) {
+                error = err;
+            }
+
+            expect(error).to.equal(undefined);
+            expect(response).to.not.equal(undefined);
+            expect(response.deleted_hashes).to.eql([]);
+            expect(response.skipped_hashes).to.eql([]);
+            expect(response.message).to.equal("0 records successfully deleted");
+        });
+
+        it('Test passing records instead of hash_values', () => {
+            let error;
+            let delete_obj = {
+                operation: "delete",
+                table: "doggo",
+                schema: "deleteTest",
+                records:[
+                    {
+                        id: 11,
+                        name: 'Riley'
+                    }
+                ]
+            };
+
+            let response;
+            try {
+                response = heDeleteRecords(delete_obj);
+            } catch(err) {
+                error = err;
+            }
+
+            expect(error).to.equal(undefined);
+            expect(response).to.not.equal(undefined);
+            expect(response.deleted_hashes).to.eql([11]);
+            expect(response.skipped_hashes).to.eql([]);
+            expect(response.message).to.equal("1 record successfully deleted");
+        });
+
+        it('Test passing records instead of hash_values where record hash no hash value', () => {
+            let error;
+            let delete_obj = {
+                operation: "delete",
+                table: "doggo",
+                schema: "deleteTest",
+                records:[
+                    {
+                        name: 'Riley'
+                    }
+                ]
+            };
+
+            let response;
+            try {
+                response = heDeleteRecords(delete_obj);
+            } catch(err) {
+                error = err;
+            }
+
+            expect(error).to.equal(undefined);
+            expect(response).to.not.equal(undefined);
+            expect(response.deleted_hashes).to.eql([]);
+            expect(response.skipped_hashes).to.eql([]);
+            expect(response.message).to.equal("0 records successfully deleted");
         });
 
         it('Test that error thrown if hash not present', () => {
