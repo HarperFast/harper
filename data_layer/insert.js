@@ -189,17 +189,3 @@ function returnObject(action, written_hashes, object, skipped) {
     return_object.update_hashes = written_hashes;
     return return_object;
 }
-
-/**
- * Checks the global schema to see if a Schema or Table exist.
- * @param insertUpdateObject
- */
-function checkSchemaTableExist(insertUpdateObject) {
-    if (!global.hdb_schema[insertUpdateObject.schema]) {
-        throw new Error(`Schema '${insertUpdateObject.schema}' does not exist`);
-    }
-
-    if (!global.hdb_schema[insertUpdateObject.schema][insertUpdateObject.table]) {
-        throw new Error(`Table '${insertUpdateObject.table}' does not exist in schema '${insertUpdateObject.schema}'`);
-    }
-}
