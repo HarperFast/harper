@@ -115,6 +115,7 @@ async function insertData(insert_object){
     }
 
     try {
+        h_utils.checkSchemaTableExist(insert_object.schema, insert_object.table);
         let bridge_insert_result = await harperBridge.createRecords(insert_object);
         convertOperationToTransaction(insert_object, bridge_insert_result.written_hashes, bridge_insert_result.schema_table.hash_attribute);
         await p_schema_to_global();
@@ -153,6 +154,7 @@ async function updateData(update_object){
         throw new Error('invalid operation, must be update');
     }
     try {
+        h_utils.checkSchemaTableExist(update_object.schema, update_object.table);
         let bridge_update_result = await harperBridge.updateRecords(update_object);
         if (!h_utils.isEmpty(bridge_update_result.existing_rows)) {
             return returnObject(bridge_update_result.update_action, [], update_object, bridge_update_result.hashes);
@@ -186,4 +188,18 @@ function returnObject(action, written_hashes, object, skipped) {
 
     return_object.update_hashes = written_hashes;
     return return_object;
+}
+
+/**
+ * Checks the global schema to see if a Schema or Table exist.
+ * @param insertUpdateObject
+ */
+function checkSchemaTableExist(insertUpdateObject) {
+    if (!global.hdb_schema[insertUpdateObject.schema]) {
+        throw new Error(`Schema '${insertUpdateObject.schema}' does not exist`);
+    }
+
+    if (!global.hdb_schema[insertUpdateObject.schema][insertUpdateObject.table]) {
+        throw new Error(`Table '${insertUpdateObject.table}' does not exist in schema '${insertUpdateObject.schema}'`);
+    }
 }

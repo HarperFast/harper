@@ -59,7 +59,8 @@ module.exports = {
     removeBOM,
     getClusterMessage,
     createEventPromise,
-    checkProcessRunning
+    checkProcessRunning,
+    checkSchemaTableExist
 };
 
 /**
@@ -624,5 +625,20 @@ async function checkProcessRunning(proc_name){
 
     if(go_on) {
         throw new Error(`process ${proc_name} was not started`);
+    }
+}
+
+/**
+ * Checks the global schema to see if a Schema or Table exist.
+ * @param schema
+ * @param table
+ */
+function checkSchemaTableExist(schema, table) {
+    if (!global.hdb_schema[schema]) {
+        throw new Error(`Schema '${schema}' does not exist`);
+    }
+
+    if (!global.hdb_schema[schema][table]) {
+        throw new Error(`Table '${table}' does not exist in schema '${schema}'`);
     }
 }
