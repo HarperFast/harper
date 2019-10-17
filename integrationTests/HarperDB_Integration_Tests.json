@@ -16344,16 +16344,16 @@
 							"response": []
 						},
 						{
-							"name": "Update some records",
+							"name": "Insert additional new records",
 							"event": [
 								{
 									"listen": "test",
 									"script": {
 										"id": "117c3953-8685-4758-8769-4358a812df0e",
 										"exec": [
-											"pm.test(\"Check update_hash array length\", function () {",
+											"pm.test(\"Check inserted_hashed array length\", function () {",
 											"    var jsonData = pm.response.json();",
-											"    pm.expect(jsonData.update_hashes.length).to.eql(3);",
+											"    pm.expect(jsonData.inserted_hashes.length).to.eql(3);",
 											"});",
 											"",
 											"pm.test(\"Status code is 200\", function () {",
@@ -16366,10 +16366,10 @@
 								{
 									"listen": "prerequest",
 									"script": {
-										"id": "c60b0793-1a2e-4632-82a1-4ed8653e03ac",
+										"id": "17681c84-ae56-4f19-b909-3da1747e2913",
 										"exec": [
 											"pm.environment.set(\"insert_timestamp\", new Date().toISOString());",
-											"console.log(\"insert_timestamp\")"
+											""
 										],
 										"type": "text/javascript"
 									}
@@ -16409,7 +16409,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n\"operation\":\"update\",\n\"schema\":\"test_delete_before\",\n\"table\":\"address\",\n\"records\": [\n  {\n    \"id\": 1,\n    \"address\": \"5 Norfolk Lane\"\n  },\n  {\n    \"id\": 3,\n    \"address\": \"113 Fresh Place\"\n  },\n  {\n    \"id\": 5,\n    \"address\": \"9 Harper Drive\"\n  }\n]\n\n}\n"
+									"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"test_delete_before\",\n\"table\":\"address\",\n\"records\": [\n  {\n    \"id\": 11,\n    \"address\": \"24 South st\"\n  },\n  {\n    \"id\": 12,\n    \"address\": \"6 Truck Lane\"\n  },\n  {\n    \"id\": 13,\n    \"address\": \"19 Broadway\"\n  }\n]\n\n}"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -16637,12 +16637,15 @@
 											"        ids.push(record.id)",
 											"    })",
 											"    ",
-											"    pm.expect(ids.includes(1)).to.be.true;",
-											"    pm.expect(ids.includes(3)).to.be.true;",
-											"    pm.expect(ids.includes(5)).to.be.true;",
+											"    pm.expect(ids.includes(11)).to.be.true;",
+											"    pm.expect(ids.includes(12)).to.be.true;",
+											"    pm.expect(ids.includes(13)).to.be.true;",
 											"    ",
+											"    pm.expect(ids.includes(1)).to.be.false;",
 											"    pm.expect(ids.includes(2)).to.be.false;",
+											"    pm.expect(ids.includes(3)).to.be.false;",
 											"    pm.expect(ids.includes(4)).to.be.false;",
+											"    pm.expect(ids.includes(5)).to.be.false;",
 											"    pm.expect(ids.includes(6)).to.be.false;",
 											"});"
 										],
@@ -16694,7 +16697,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n\t\"operation\":\"search_by_hash\",\n\t\"schema\":\"test_delete_before\",\n\t\"table\":\"address\",\n\t\"hash_attribute\": \"id\",\n\t\"hash_values\":[1, 2, 3, 4, 5, 6],\n\t\"get_attributes\": [\"id\", \"address\"]\n}\n"
+									"raw": "{\n\t\"operation\":\"search_by_hash\",\n\t\"schema\":\"test_delete_before\",\n\t\"table\":\"address\",\n\t\"hash_attribute\": \"id\",\n\t\"hash_values\":[1, 2, 3, 4, 5, 6, 11, 12, 13],\n\t\"get_attributes\": [\"id\", \"address\"]\n}\n"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
