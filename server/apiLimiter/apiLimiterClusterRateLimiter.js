@@ -23,35 +23,37 @@ const CONSUME_TIMEOUT_IN_MS = 3000;
 let limiter = undefined;
 let fingerprint = undefined;
 
-function init(limiter_name, rate_limit, reset_duration_seconds, timeout_ms) {
+function init(limiter_name, rate_limit, reset_duration_seconds, timeout_ms, new_limiter_bool) {
     registration_handler.getFingerprint()
         .then((finger) => {
             fingerprint = finger;
-            let vals = [];
+            let largest;
+            if(new_limiter_bool === false) {
+                let vals = [];
 
-            try {
-                vals.push(readCFile(path.join(HOME_HDB_PATH, terms.LIMIT_COUNT_NAME)));
-            } catch(err) {
-                log.error(err);
-            }
-
-            try {
-                vals.push(readCFile(path.join(`/tmp`, finger, `.${finger}1`)));
-            } catch(err) {
-                log.error(err);
-            }
-
-            let largest = vals[0];
-            vals.forEach((val) => {
-                if(val && val.count && val.count > largest.count) {
-                    largest = val;
+                try {
+                    vals.push(readCFile(path.join(HOME_HDB_PATH, terms.LIMIT_COUNT_NAME)));
+                } catch (err) {
+                    log.error(err);
                 }
-            });
 
+                try {
+                    vals.push(readCFile(path.join(`/tmp`, finger, `.${finger}1`)));
+                } catch (err) {
+                    log.error(err);
+                }
+
+                largest = vals[0];
+                vals.forEach((val) => {
+                    if (val && val.count && val.count > largest.count) {
+                        largest = val;
+                    }
+                });
+            }
             constructLimiter(limiter_name, rate_limit, hdb_util.getStartOfTomorrowInSeconds(), timeout_ms);
             if(largest.count > 0) {
                 // This will remove the number of calls read.
-                limiter.penalty(`localhost`, largest)
+                limiter.penalty(hdb_util.getLimitKey(), largest)
                     .then((res) => {
                         log.info(`limits configured`);
                 })
@@ -110,7 +112,7 @@ function constructLimiter(limiter_name, rate_limit, reset_duration_seconds, time
  */
 async function rateLimiter(req, res, next) {
     try {
-        let result = await limiter.consume('localhost');
+        let result = await limiter.consume(hdb_util.getLimitKey());
         //await saveApiCallCount(result._consumedPoints, path.join(HOME_HDB_PATH, terms.LIMIT_COUNT_NAME));
         return next();
     } catch(err) {
@@ -150,6 +152,19 @@ async function saveApiCallCount(count, loc) {
     }
 }
 
+async function removeLimiter(limiter_name_string) {
+    log.debug('Remove Limit');
+    if(!limiter) {
+        log.info('No limiter found');
+        return;
+    }
+    let remove_result = await limiter.delete(limiter_name_string);
+    if(remove_result === true) {
+        console.log('REMOVED!');
+    }
+    return remove_result;
+}
+
 function createLimiterResetTimeout(limiter_name_string, timout_interval_ms) {
     setTimeout(async (info) => {
         try {
@@ -167,5 +182,6 @@ module.exports = {
     rateLimiter,
     saveApiCallCount,
     readCFile,
-    init
+    init,
+    removeLimiter
 };

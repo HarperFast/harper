@@ -30,6 +30,9 @@ const AUTOCAST_COMMON_STRINGS = {
     'NaN': NaN
 };
 
+//TODO: Remove this after testing
+let switcheroo = false;
+
 module.exports = {
     isEmpty:isEmpty,
     isEmptyOrZeroLength:isEmptyOrZeroLength,
@@ -60,7 +63,9 @@ module.exports = {
     getClusterMessage,
     createEventPromise,
     checkProcessRunning,
-    getStartOfTomorrowInSeconds
+    getStartOfTomorrowInSeconds,
+    getLimitKey,
+    setSwitcharoo
 };
 
 /**
@@ -635,4 +640,20 @@ function getStartOfTomorrowInSeconds() {
     let tomorow_seconds = moment().utc().add(1, terms.MOMENT_DAYS_TAG).startOf(terms.MOMENT_DAYS_TAG).unix();
     let now_seconds = moment().utc().unix();
     return tomorow_seconds - now_seconds;
+}
+
+/**
+ * Returns the key used by limits for this cycle.
+ * @returns {string}
+ */
+function getLimitKey() {
+    //TODO: Remove switcharoo when done testing
+    if(!switcheroo) {
+        return moment().utc().format('DD-MM-YYYY');
+    }
+    return moment().add(1, 'd').utc().format('DD-MM-YYYY');
+}
+
+function setSwitcharoo() {
+    switcheroo = true;
 }

@@ -27,6 +27,7 @@ const util = require('util');
 const promisify = util.promisify;
 const moment = require('moment');
 const path = require('path');
+const hdb_license = require('../utility/registration/hdb_license');
 
 // Rate limiter
 const {RateLimiterClusterMaster} = require('rate-limiter-flexible');
@@ -137,12 +138,12 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     let interval_reset_ms = tomorow_ms - now_ms;
     interval_reset_ms = moment(hdb_util.getStartOfTomorrowInSeconds()).valueOf() * 1000;
 
-    // Interval to periodically the api limits
+    // Interval to periodically store the api limits
     setInterval(async (info) => {
         try {
             console.log("Saving limit file");
             harper_logger.debug('Limits written');
-            let points = master_rate_limiter._rateLimiters[`apiclusterlimiter`].points;
+            let points = master_rate_limiter._rateLimiters[hdb_util.getLimitKey()].points;
             // Currently we probably dont need the reset time, but this may be useful later if we decide
             // to customize api limit rollover times
             let reset_time = hdb_util.getStartOfTomorrowInSeconds();
@@ -153,19 +154,21 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     }, LIMIT_SAVE_INTERVAL_MS);
 
     // Set the limits rollover timeout
-    /*
+
     setTimeout(async (info) => {
         try {
-            log.debug('Restoring limits');
-            let points = master_rate_limiter._rateLimiters[`apiclusterlimiter`].points;
+            harper_logger.debug('Restoring limits');
+            //let points = master_rate_limiter._rateLimiters[`apiclusterlimiter`].points;
+            //master_rate_limiter._rateLimiters[terms.LIMIT_KEY].points = 0;
             // Currently we probably dont need the reset time, but this may be useful later if we decide
             // to customize api limit rollover times
-            let reset_time = hdb_util.getStartOfTomorrowInSeconds();
-            await MasterClusterRateLimiter.saveApiCallCount(new CounterObject(points, reset_time));
+            //let reset_time = hdb_util.getStartOfTomorrowInSeconds();
+            //master_rate_limiter._rateLimiters[terms.LIMIT_KEY].duration = reset_time;
+            //await MasterClusterRateLimiter.saveApiCallCount(new CounterObject(points, reset_time));
         } catch(err) {
             console.log(err);
         }
-    }, interval_reset_ms); */
+    }, 20000);
 
     process.on('uncaughtException', function (err) {
         let os = require('os');
@@ -216,7 +219,6 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     }
 
     async function launch(){
-        const hdb_license = require('../utility/registration/hdb_license');
         const helium_utils = require('../utility/helium/heliumUtils');
         await p_schema_to_global();
         await user_schema.setUsersToGlobal();
@@ -277,19 +279,51 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     const pjson = require(`${__dirname}/../package.json`);
     const server_utilities = require('./serverUtilities');
     const cors = require('cors');
-    const license = require('../utility/environment/LicenseManager').license;
-    // rate limiter
-    const apiLimiterClusterRateLimiter = require('./apiLimiter/apiLimiterClusterRateLimiter');
-
-    const LIMIT_RESET_IN_SECONDS = 86400;
-    apiLimiterClusterRateLimiter.init(terms.LIMIT_KEY, 2, 30, 3000);
-
-    // Create timeout for UTC 0000 tomorrow when the limits will reset.
-    //server_utilities.createLimitsTimeout(terms.LIMITS_KEY, )
+    const hdb_license = require('../utility/registration/hdb_license');
 
     const app = express();
+    let license;
 
-    app.use(apiLimiterClusterRateLimiter.rateLimiter);
+    // rate limiter
+    const apiLimiterClusterRateLimiter = require('./apiLimiter/apiLimiterClusterRateLimiter');
+    const LIMIT_RESET_IN_SECONDS = 86400;
+    hdb_license.getLicense()
+        .then((lic) => {
+            license = lic;
+            //TODO: Remove after testing
+            license.api_call = 2;
+            // once license is loaded, init the limits
+            apiLimiterClusterRateLimiter.init(hdb_util.getLimitKey(), license.api_call, terms.API_TURNOVER_SEC, 3000, false);
+            app.use(apiLimiterClusterRateLimiter.rateLimiter);
+            //TODO: Restore this after testing
+            //let tomorrow_in_ms = hdb_util.getStartOfTomorrowInSeconds() * 1000;
+            let tomorrow_in_ms = 20000;
+            createTomorrowTimeout(license.api_call, tomorrow_in_ms);
+        })
+        .catch((err) => {
+           harper_logger.error("Error loading license limits");
+           harper_logger.error(err);
+           // This should be caught by the unhandled exception handler which will (and should) kill the process.
+           throw err;
+        });
+
+
+    function createTomorrowTimeout(api_calls, timeout_time_in_ms) {
+        setTimeout(async () => {
+            try {
+                // TODO: Remove switcharoo after testing
+                harper_logger.debug('Restoring limits');
+                await apiLimiterClusterRateLimiter.removeLimiter(hdb_util.getLimitKey());
+                hdb_util.setSwitcharoo();
+                apiLimiterClusterRateLimiter.init(hdb_util.getLimitKey(), api_calls, terms.API_TURNOVER_SEC, 3000, true);
+                //app.use(apiLimiterClusterRateLimiter.rateLimiter);
+                createTomorrowTimeout(api_calls, timeout_time_in_ms);
+            } catch(err) {
+                harper_logger.error(err);
+            }
+        }, timeout_time_in_ms);
+    }
+
     const SC_WORKER_NAME_PREFIX = 'worker_';
     global.clustering_on = false;
 
