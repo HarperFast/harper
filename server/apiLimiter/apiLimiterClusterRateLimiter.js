@@ -23,7 +23,7 @@ const CONSUME_TIMEOUT_IN_MS = 3000;
 let limiter = undefined;
 let fingerprint = undefined;
 
-async function init(limiter_name, rate_limit, reset_duration_seconds, timeout_ms, new_limiter_bool) {
+async function init(limiter_name, rate_limit, reset_duration_seconds, timeout_ms, new_limiter_bool, express_app) {
     try {
         fingerprint = await registration_handler.getFingerprint();
         let largest;
@@ -175,6 +175,7 @@ module.exports = {
     rateLimiter,
     saveApiCallCount,
     readCFile,
+    constructLimiter,
     init,
     removeLimiter
 };

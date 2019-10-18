@@ -648,10 +648,10 @@ function getStartOfTomorrowInSeconds() {
  */
 function getLimitKey() {
     //TODO: Remove switcharoo when done testing
-    if(!switcheroo) {
+    //if(!switcheroo) {
         return moment().utc().format('DD-MM-YYYY');
-    }
-    return moment().add(1, 'd').utc().format('DD-MM-YYYY');
+    //}
+    //return moment().add(1, 'd').utc().format('DD-MM-YYYY');
 }
 
 function setSwitcharoo() {

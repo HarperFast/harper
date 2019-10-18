@@ -151,7 +151,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
             // Currently we probably dont need the reset time, but this may be useful later if we decide
             // to customize api limit rollover times
             let reset_time = hdb_util.getStartOfTomorrowInSeconds();
-            await MasterClusterRateLimiter.saveApiCallCount(new CounterObject(points, reset_time), path.join(os.homedir(), terms.HDB_HOME_DIR_NAME, terms.LIMIT_COUNT_NAME));
+            //await MasterClusterRateLimiter.saveApiCallCount(new CounterObject(points, reset_time), path.join(os.homedir(), terms.HDB_HOME_DIR_NAME, terms.LIMIT_COUNT_NAME));
         } catch(err) {
             console.log(err);
         }
@@ -291,7 +291,9 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
 
     // rate limiter
     const apiLimiterClusterRateLimiter = require('./apiLimiter/apiLimiterClusterRateLimiter');
+    app.use(apiLimiterClusterRateLimiter.rateLimiter);
     const LIMIT_RESET_IN_SECONDS = 86400;
+    /*
     hdb_license.getLicense()
         .then((lic) => {
             license = lic;
@@ -315,10 +317,11 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
            harper_logger.error(err);
            // This should be caught by the unhandled exception handler which will (and should) kill the process.
            throw err;
-        });
+        }); */
 
 
     function createTomorrowTimeout(api_calls, timeout_time_in_ms) {
+        console.log('In createTomorrowTimeout');
         setTimeout(async () => {
             try {
                 // TODO: Remove switcharoo after testing
@@ -326,7 +329,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                 await apiLimiterClusterRateLimiter.removeLimiter(hdb_util.getLimitKey());
                 hdb_util.setSwitcharoo();
                 apiLimiterClusterRateLimiter.init(hdb_util.getLimitKey(), api_calls, terms.API_TURNOVER_SEC, 3000, true);
-                app.use(apiLimiterClusterRateLimiter.rateLimiter);
+                //app.use(apiLimiterClusterRateLimiter.rateLimiter);
                 createTomorrowTimeout(api_calls, timeout_time_in_ms);
             } catch(err) {
                 harper_logger.error(err);
@@ -509,6 +512,15 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
             await p_schema_to_global();
             await user_schema.setUsersToGlobal();
             spawnSCConnection();
+            let license = await hdb_license.getLicense();
+            license.api_call = 2;
+            await apiLimiterClusterRateLimiter.init(hdb_util.getLimitKey(), license.api_call, terms.API_TURNOVER_SEC, 3000, false);
+                //app.use(apiLimiterClusterRateLimiter.rateLimiter);
+                //TODO: Restore this after testing
+                //let tomorrow_in_ms = hdb_util.getStartOfTomorrowInSeconds() * 1000;
+                let tomorrow_in_ms = 20000;
+                createTomorrowTimeout(license.api_call, tomorrow_in_ms);
+            //apiLimiterClusterRateLimiter.constructLimiter(hdb_util.getLimitKey(), 2, terms.API_TURNOVER_SEC, 3000);
 
         } catch(e) {
             harper_logger.error(e);
