@@ -35,10 +35,18 @@ function heCreateTable(table_system_data, table_create_obj) {
         attribute: hdb_terms.HELIUM_TIME_STAMP_ENUM.UPDATED_TIME,
     };
 
+    let hash_attr = {
+        operation: hdb_terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE,
+        schema: table_create_obj.schema,
+        table: table_create_obj.table,
+        attribute: table_create_obj.hash_attribute,
+    };
+
     try {
         heCreateRecords(insert_object);
         heCreateAttribute(created_time_attr);
         heCreateAttribute(updated_time_attr);
+        heCreateAttribute(hash_attr);
     } catch(err) {
         throw err;
     }

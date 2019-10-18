@@ -58,10 +58,11 @@ describe('Test for Helium method heCreateTable', () => {
         global.hdb_schema = {
             [CREATE_TABLE_OBJ_TEST_A.schema]: {
                 [CREATE_TABLE_OBJ_TEST_A.table]: {
-                    attributes: [{attribute: CREATE_TABLE_OBJ_TEST_A.hash_attribute}]
+                    hash_attribute: CREATE_TABLE_OBJ_TEST_A.hash_attribute
                 },
                 [CREATE_TABLE_OBJ_TEST_B.table]: {
-                    attributes: [{attribute: CREATE_TABLE_OBJ_TEST_B.hash_attribute}]
+                    hash_attribute: CREATE_TABLE_OBJ_TEST_B.hash_attribute
+
                 },
             },
             system: {
