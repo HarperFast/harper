@@ -227,7 +227,7 @@ describe('Test for Helium method heGetDataByValue', () => {
     });
 
     describe('consolidateSearchData tests', () => {
-        it('Should consolidate results from helium into object of row objects', () => {
+        it('Should consolidate results from helium into object of row objects with hash value', () => {
             const test_attr_keys = test_utils.deepClone(test_attr_names);
             const test_attr_values = test_utils.deepClone(test_he_return);
             let test_search_result;
@@ -238,6 +238,25 @@ describe('Test for Helium method heGetDataByValue', () => {
             }
 
             expect(test_search_result).to.deep.equal(test_expected_result);
+        });
+
+        it('Should consolidate results from helium into object of row objects without hash value', () => {
+            const test_attr_keys = test_utils.deepClone(test_attr_names);
+            const test_attr_values = test_utils.deepClone(test_he_return);
+            const expected_result = Object.keys(test_expected_result).reduce((acc, key) => {
+                const row = test_utils.deepClone(test_expected_result[key]);
+                delete row[HASH_ATTRIBUTE];
+                acc[key] = row;
+                return acc;
+            }, {});
+            let test_search_result;
+            try {
+                test_search_result = consolidateValueSearchData_rw(test_attr_keys, test_attr_values, false);
+            } catch(err) {
+                console.log(err);
+            }
+
+            expect(test_search_result).to.deep.equal(expected_result);
         });
     });
 
