@@ -157,24 +157,6 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         }
     }, LIMIT_SAVE_INTERVAL_MS);
 
-    // Set the limits rollover timeout
-
-    /*
-    setTimeout(async (info) => {
-        try {
-            harper_logger.debug('Restoring limits');
-            //let points = master_rate_limiter._rateLimiters[`apiclusterlimiter`].points;
-            //master_rate_limiter._rateLimiters[terms.LIMIT_KEY].points = 0;
-            // Currently we probably dont need the reset time, but this may be useful later if we decide
-            // to customize api limit rollover times
-            //let reset_time = hdb_util.getStartOfTomorrowInSeconds();
-            //master_rate_limiter._rateLimiters[terms.LIMIT_KEY].duration = reset_time;
-            //await MasterClusterRateLimiter.saveApiCallCount(new CounterObject(points, reset_time));
-        } catch(err) {
-            console.log(err);
-        }
-    }, 20000); */
-
     process.on('uncaughtException', function (err) {
         let os = require('os');
         let message = `Found an uncaught exception with message: os.EOL ${err.message}.  Stack: ${err.stack} ${os.EOL} Terminating HDB.`;
@@ -324,12 +306,9 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         console.log('In createTomorrowTimeout');
         setTimeout(async () => {
             try {
-                // TODO: Remove switcharoo after testing
                 harper_logger.debug('Restoring limits');
                 await apiLimiterClusterRateLimiter.removeLimiter(hdb_util.getLimitKey());
-                hdb_util.setSwitcharoo();
                 apiLimiterClusterRateLimiter.init(hdb_util.getLimitKey(), api_calls, terms.API_TURNOVER_SEC, 3000, true);
-                //app.use(apiLimiterClusterRateLimiter.rateLimiter);
                 createTomorrowTimeout(api_calls, timeout_time_in_ms);
             } catch(err) {
                 harper_logger.error(err);
@@ -515,12 +494,9 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
             let license = await hdb_license.getLicense();
             license.api_call = 2;
             await apiLimiterClusterRateLimiter.init(hdb_util.getLimitKey(), license.api_call, terms.API_TURNOVER_SEC, 3000, false);
-                //app.use(apiLimiterClusterRateLimiter.rateLimiter);
-                //TODO: Restore this after testing
                 //let tomorrow_in_ms = hdb_util.getStartOfTomorrowInSeconds() * 1000;
                 let tomorrow_in_ms = 20000;
                 createTomorrowTimeout(license.api_call, tomorrow_in_ms);
-            //apiLimiterClusterRateLimiter.constructLimiter(hdb_util.getLimitKey(), 2, terms.API_TURNOVER_SEC, 3000);
 
         } catch(e) {
             harper_logger.error(e);

@@ -65,7 +65,6 @@ module.exports = {
     checkProcessRunning,
     getStartOfTomorrowInSeconds,
     getLimitKey,
-    setSwitcharoo
 };
 
 /**
@@ -647,13 +646,5 @@ function getStartOfTomorrowInSeconds() {
  * @returns {string}
  */
 function getLimitKey() {
-    //TODO: Remove switcharoo when done testing
-    //if(!switcheroo) {
         return moment().utc().format('DD-MM-YYYY');
-    //}
-    //return moment().add(1, 'd').utc().format('DD-MM-YYYY');
-}
-
-function setSwitcharoo() {
-    switcheroo = true;
 }
