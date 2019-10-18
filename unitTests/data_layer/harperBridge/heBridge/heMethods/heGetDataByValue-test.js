@@ -64,12 +64,13 @@ function setupTestData() {
     test_data.forEach(row => {
         test_expected_result[row.id] = Object.assign(row, {test_null_attr: null});
     });
-    test_attr_names = Object.keys(test_data[0]);
+    test_attr_names = Object.keys(test_data[0]).filter(attr => attr !== HASH_ATTRIBUTE);
+    test_attr_names.unshift(HASH_ATTRIBUTE);
     test_he_return = test_data.reduce((acc, row, i) => {
         test_hash_values.push(row.id);
         const row_data = [];
         row_data.push(row.id);
-        row_data.push([row.id]);
+        row_data.push([]);
         test_attr_names.forEach(key => {
             row_data[1].push(row[key]);
         });
@@ -210,7 +211,7 @@ describe('Test for Helium method heGetDataByValue', () => {
             console.log(e);
         }
 
-        expect(heGenerateDataStoreName_stub.callCount).to.equal(test_attr_names.length+2);
+        expect(heGenerateDataStoreName_stub.callCount).to.equal(test_attr_names.length+1);
     });
 
     it('Should generate a datastore name for specified get_attribute plus the valueStore and the hash data store', () => {
@@ -227,11 +228,11 @@ describe('Test for Helium method heGetDataByValue', () => {
 
     describe('consolidateSearchData tests', () => {
         it('Should consolidate results from helium into object of row objects', () => {
-            const test_attr_keys = [HASH_ATTRIBUTE, ...test_attr_names];
+            const test_attr_keys = test_utils.deepClone(test_attr_names);
             const test_attr_values = test_utils.deepClone(test_he_return);
             let test_search_result;
             try {
-                test_search_result = consolidateValueSearchData_rw(test_attr_keys, test_attr_values);
+                test_search_result = consolidateValueSearchData_rw(test_attr_keys, test_attr_values, true);
             } catch(err) {
                 console.log(err);
             }
