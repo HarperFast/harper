@@ -49,10 +49,14 @@ async function deleteFilesBefore(delete_obj) {
         throw new Error("Invalid table.");
     }
 
-    await harperBridge.deleteRecordsBefore(delete_obj);
-    await p_global_schema(delete_obj.schema, delete_obj.table);
-
-    harper_logger.info(`Finished deleting files before ${delete_obj.date}`);
+    try {
+        common_utils.checkSchemaTableExist(delete_obj.schema, delete_obj.table);
+        await harperBridge.deleteRecordsBefore(delete_obj);
+        await p_global_schema(delete_obj.schema, delete_obj.table);
+        harper_logger.info(`Finished deleting files before ${delete_obj.date}`);
+    } catch(err) {
+        throw err;
+    }
 }
 
 /**
@@ -67,6 +71,7 @@ async function deleteRecord(delete_object){
     }
 
     try {
+        common_utils.checkSchemaTableExist(delete_object.schema, delete_object.table);
         await p_global_schema(delete_object.schema, delete_object.table);
         let delete_result_object = await harperBridge.deleteRecords(delete_object);
 
@@ -90,6 +95,5 @@ async function deleteRecord(delete_object){
         }
 
         throw err;
-
     }
 }
