@@ -7,7 +7,7 @@
  * as the update module is meant to be used in more specific circumstances.
  */
 const insert_validator = require('../validation/insertValidator.js');
-const h_utils = require('../utility/common_utils');
+const hdb_utils = require('../utility/common_utils');
 const hdb_terms = require('../utility/hdbTerms');
 const util = require('util');
 const logger = require('../utility/logging/harper_logger');
@@ -41,13 +41,13 @@ async function validation(write_object){
     // Need to validate these outside of the validator as the getTableSchema call will fail with
     // invalid values.
 
-    if(h_utils.isEmpty(write_object)) {
+    if(hdb_utils.isEmpty(write_object)) {
         throw new Error('invalid update parameters defined.');
     }
-    if(h_utils.isEmptyOrZeroLength(write_object.schema) ) {
+    if(hdb_utils.isEmptyOrZeroLength(write_object.schema) ) {
         throw new Error('invalid schema specified.');
     }
-    if(h_utils.isEmptyOrZeroLength(write_object.table) ) {
+    if(hdb_utils.isEmptyOrZeroLength(write_object.table) ) {
         throw new Error('invalid table specified.');
     }
 
@@ -74,15 +74,15 @@ async function validation(write_object){
 
     write_object.records.forEach((record)=>{
 
-        if (is_update && h_utils.isEmptyOrZeroLength(record[hash_attribute])) {
+        if (is_update && hdb_utils.isEmptyOrZeroLength(record[hash_attribute])) {
             throw new Error('a valid hash attribute must be provided with update record');
         }
 
-        if (!h_utils.isEmpty(record[hash_attribute]) && record[hash_attribute] !== '' && dups.has(h_utils.autoCast(record[hash_attribute]))){
+        if (!hdb_utils.isEmpty(record[hash_attribute]) && record[hash_attribute] !== '' && dups.has(hdb_utils.autoCast(record[hash_attribute]))){
             record.skip = true;
         }
 
-        dups.add(h_utils.autoCast(record[hash_attribute]));
+        dups.add(hdb_utils.autoCast(record[hash_attribute]));
 
         for (let attr in record) {
             attributes[attr] = 1;
@@ -115,6 +115,7 @@ async function insertData(insert_object){
     }
 
     try {
+        hdb_utils.checkSchemaTableExist(insert_object.schema, insert_object.table);
         let bridge_insert_result = await harperBridge.createRecords(insert_object);
         convertOperationToTransaction(insert_object, bridge_insert_result.written_hashes, bridge_insert_result.schema_table.hash_attribute);
         await p_schema_to_global();
@@ -135,11 +136,11 @@ function convertOperationToTransaction(write_object, written_hashes, hash_attrib
         };
 
         write_object.records.forEach(record =>{
-            if(written_hashes.indexOf(h_utils.autoCast(record[hash_attribute])) >= 0) {
+            if(written_hashes.indexOf(hdb_utils.autoCast(record[hash_attribute])) >= 0) {
                 transaction.records.push(record);
             }
         });
-        let insert_msg = h_utils.getClusterMessage(hdb_terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
+        let insert_msg = hdb_utils.getClusterMessage(hdb_terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
         insert_msg.transaction = transaction;
     }
 }
@@ -153,8 +154,9 @@ async function updateData(update_object){
         throw new Error('invalid operation, must be update');
     }
     try {
+        hdb_utils.checkSchemaTableExist(update_object.schema, update_object.table);
         let bridge_update_result = await harperBridge.updateRecords(update_object);
-        if (!h_utils.isEmpty(bridge_update_result.existing_rows)) {
+        if (!hdb_utils.isEmpty(bridge_update_result.existing_rows)) {
             return returnObject(bridge_update_result.update_action, [], update_object, bridge_update_result.hashes);
         }
         convertOperationToTransaction(update_object, bridge_update_result.written_hashes, bridge_update_result.schema_table.hash_attribute);

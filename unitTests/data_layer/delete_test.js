@@ -92,6 +92,11 @@ describe('Tests for delete.js', () => {
         });
 
         it('Test for nominal behaviour, bridge stubbed called and info logged', async () => {
+            global.hdb_schema = {
+                [DELETE_BEFORE_OBJ.schema]: {
+                    [DELETE_BEFORE_OBJ.table]: {}
+                }
+            };
             await _delete.deleteFilesBefore(DELETE_BEFORE_OBJ);
 
             expect(bridge_delete_before_stub).to.have.been.calledWith(DELETE_BEFORE_OBJ);
@@ -115,6 +120,11 @@ describe('Tests for delete.js', () => {
         });
 
         it('Test for nominal behaviour, success msg is returned', async () => {
+            global.hdb_schema = {
+                [DELETE_RECORDS_TEST.schema]: {
+                    [DELETE_RECORDS_TEST.table]: {}
+                }
+            };
             let expected_response = new DeleteResponseObject();
             expected_response.deleted_hashes = [];
             expected_response.skipped_hashes = [8,9];
