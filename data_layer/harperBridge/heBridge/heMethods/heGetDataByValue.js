@@ -49,9 +49,21 @@ function heGetDataByValue(search_object) {
         const value_store = heGenerateDataStoreName(table_info.schema, table_info.name, search_object.search_attribute);
 
         const final_get_attrs = evaluateTableGetAttributes(search_object.get_attributes, table_info.attributes);
-        // We add hash_attribute to the beginning of the array to ensure first arr value returned is always hash value for
-        // consolidate data step where the value is popped off results array and not be included in final results object
-        final_get_attrs.unshift(table_info.hash_attribute);
+
+        // We need the make sure that the hash attr is retrieved from He in the 0 index position for each row result - to do that,
+        // we check if it has been requested in the get_attrs and, if not, add it or, if so, make sure it's in the 0 index position.
+        const hash_attr = table_info.hash_attribute;
+        const hash_attr_index = final_get_attrs.findIndex(attr => attr === hash_attr);
+        let return_hash_attr = false;
+
+        final_get_attrs.unshift(hash_attr);
+        if (hash_attr_index != -1) {
+            return_hash_attr = true;
+            const index_pos = hash_attr_index + 1;
+            final_get_attrs.splice(index_pos, 1);
+        }
+
+        // Create data stores with hash attr in the 0 index position
         const data_stores = final_get_attrs.map(attr => heGenerateDataStoreName(table_info.schema, table_info.name, attr));
 
         let final_attributes_data;
@@ -61,7 +73,7 @@ function heGetDataByValue(search_object) {
             final_attributes_data = hdb_helium.searchByValues(value_store, search_operation, [search_value], data_stores);
         }
 
-        const final_results = consolidateValueSearchData(final_get_attrs, final_attributes_data);
+        const final_results = consolidateValueSearchData(final_get_attrs, final_attributes_data, return_hash_attr);
 
         return final_results;
 
@@ -70,15 +82,25 @@ function heGetDataByValue(search_object) {
     }
 }
 
-function consolidateValueSearchData(attrs_keys, attrs_data) {
+function consolidateValueSearchData(attrs_keys, attrs_data, return_hash_attr) {
+    // Check to see if the hash attr was requested and, if not, remove it from the attr_keys we use to consolidate the
+    // final data below - the actual hash value in attrs_data will be handled within the loop
+    if (!return_hash_attr) {
+        attrs_keys.shift();
+    }
+
     let final_data = {};
-    // Bc we added the hash datastore to the search - we remove the attr_key here and the actual value below
-    // after we grab it for the final data obj
-    attrs_keys.shift();
 
     for (const row of attrs_data) {
-        //As noted above, we remove the hash value after grabbing it for the final_data row obj key so it is not looped over
-        const hash = row[1].shift();
+        //As noted above, if the hash attr was requested we just grab the value for the row object key - if it was not, we
+        // shift it off of the array and set it as the row object key before looping through the final data to return
+        let hash;
+        if (return_hash_attr) {
+             hash = row[1][0];
+        } else {
+            hash = row[1].shift();
+        }
+
         final_data[hash] = {};
 
         for (let i = 0; i < row[1].length; i++) {
