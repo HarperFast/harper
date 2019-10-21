@@ -44,7 +44,7 @@ function processRows(insert_obj, attributes, schema_table, hashes) {
     // Iterates through array of record objects and validates their hash
     for (let x = 0; x < records.length; x++) {
         let row_records = [];
-        validateHash(records[x], hash_attribute, insert_obj);
+        validateHash(records[x], hash_attribute, insert_obj.operation);
 
         // Builds a single row array with each record object. Matches each value to its attribute. If it doesn't contain any data
         // at attribute location a null will be inserted into row array.
@@ -120,9 +120,9 @@ function getExistingHashes(hashes, hash_datastore) {
  * @param record
  * @param hash_attribute
  */
-function validateHash(record, hash_attribute, insert_obj) {
+function validateHash(record, hash_attribute, operation) {
     if (!record.hasOwnProperty(hash_attribute) || hdb_utils.isEmptyOrZeroLength(record[hash_attribute])) {
-        if (insert_obj.operation === hdb_terms.OPERATIONS_ENUM.INSERT) {
+        if (operation === hdb_terms.OPERATIONS_ENUM.INSERT) {
             record[hash_attribute] = uuid();
         } else {
             log.error(record);
