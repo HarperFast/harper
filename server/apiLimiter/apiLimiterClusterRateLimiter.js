@@ -29,28 +29,35 @@ async function init(limiter_name, rate_limit, reset_duration_seconds, timeout_ms
         let largest;
         if (new_limiter_bool === false) {
             let vals = [];
-
             try {
-                vals.push(readCFile(path.join(HOME_HDB_PATH, terms.LIMIT_COUNT_NAME)));
-            } catch (err) {
-                log.error(err);
-            }
-
-            try {
-                vals.push(readCFile(path.join(`/tmp`, fingerprint, `.${fingerprint}1`)));
-            } catch (err) {
-                log.error(err);
-            }
-
-            largest = vals[0];
-            vals.forEach((val) => {
-                if (val && val.count && val.count > largest.count) {
-                    largest = val;
+                let val1 = readCFile(path.join(HOME_HDB_PATH, terms.LIMIT_COUNT_NAME));
+                if(val1 && val1.count) {
+                    vals.push(val1);
                 }
-            });
+            } catch (err) {
+                log.error(err);
+            }
+
+            try {
+                let val2 = readCFile(path.join(`/tmp`, fingerprint, `.${fingerprint}1`));
+                if(val2 && val2.count) {
+                    vals.push(val2);
+                }
+            } catch (err) {
+                log.error(err);
+            }
+
+            if(vals.length > 0) {
+                largest = vals[0];
+                vals.forEach((val) => {
+                    if (val && val.count && val.count > largest.count) {
+                        largest = val;
+                    }
+                });
+            }
         }
         constructLimiter(limiter_name, rate_limit, hdb_util.getStartOfTomorrowInSeconds(), timeout_ms);
-        if (largest.count > 0) {
+        if (largest && largest.count > 0) {
             // This will remove the number of calls read.
             await limiter.penalty(hdb_util.getLimitKey(), largest);
             log.info(`limits configured`);
