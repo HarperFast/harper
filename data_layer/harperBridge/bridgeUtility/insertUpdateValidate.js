@@ -52,7 +52,7 @@ function insertUpdateValidate(write_object){
     write_object.records.forEach((record)=>{
 
         if (is_update && hdb_utils.isEmptyOrZeroLength(record[hash_attribute])) {
-            log.error(`a valid hash attribute must be provided with update record: ${record}`);
+            log.error(`a valid hash attribute must be provided with update record: ${JSON.stringify(record)}`);
             throw new Error('a valid hash attribute must be provided with update record, check log for more info');
         }
 
