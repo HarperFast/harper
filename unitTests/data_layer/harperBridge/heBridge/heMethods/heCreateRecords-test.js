@@ -272,6 +272,7 @@ describe('Tests for Helium method heCreateRecords', () => {
                 }
             ];
             insert_obj.records = records_no_hash;
+            insert_obj.operation = 'update';
 
             try {
                 heCreateRecords(insert_obj);
@@ -279,7 +280,7 @@ describe('Tests for Helium method heCreateRecords', () => {
                 error = err;
             }
 
-            expect(error.message).to.equal('transaction aborted due to record(s) with no hash value, check log for more info');
+            expect(error.message).to.equal('a valid hash attribute must be provided with update record, check log for more info');
             expect(error).to.be.an.instanceOf(Error);
         });
     });

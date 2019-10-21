@@ -134,7 +134,7 @@ describe('Tests for fsUtility function insertUpdateValidate', () => {
             error = err;
         }
 
-        expect(error.message).to.equal('a valid hash attribute must be provided with update record');
+        expect(error.message).to.equal('a valid hash attribute must be provided with update record, check log for more info');
         expect(error).to.be.instanceOf(Error);
     });
 

@@ -1,6 +1,7 @@
 'use strict';
 
 const hdb_utils = require('../../../utility/common_utils');
+const log = require('../../../utility/logging/harper_logger');
 const insert_validator = require('../../../validation/insertValidator');
 
 module.exports = insertUpdateValidate;
@@ -51,7 +52,8 @@ function insertUpdateValidate(write_object){
     write_object.records.forEach((record)=>{
 
         if (is_update && hdb_utils.isEmptyOrZeroLength(record[hash_attribute])) {
-            throw new Error('a valid hash attribute must be provided with update record');
+            log.error(`a valid hash attribute must be provided with update record: ${record}`);
+            throw new Error('a valid hash attribute must be provided with update record, check log for more info');
         }
 
         if (!hdb_utils.isEmpty(record[hash_attribute]) && record[hash_attribute] !== '' && dups.has(hdb_utils.autoCast(record[hash_attribute]))){

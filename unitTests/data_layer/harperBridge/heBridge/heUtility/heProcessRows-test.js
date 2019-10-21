@@ -195,8 +195,9 @@ describe('Tests for Helium utility heProcessRows', () => {
         expect(result).to.eql(expected_result);
     });
 
-    it('Test error is thrown if record has no hash', () => {
+    it('Test error is thrown if record has no hash and operation is update ', () => {
         let insert_obj = test_utils.deepClone(INSERT_OBJECT_TEST);
+        insert_obj.operation = 'update';
         insert_obj.records = [
             {
                 name: "Harper",
