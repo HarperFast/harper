@@ -148,7 +148,6 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
             if(!limiter) {
                 return;
             }
-            //let value = master_rate_limiter._rateLimiters[hdb_util.getLimitKey()]._memoryStorage._storage[`${limit_key}:${limit_key}`]._value;
             let value = MasterClusterRateLimiter.getCallCount(master_rate_limiter);
 
             // to customize api limit rollover times
@@ -228,7 +227,6 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                     }
                     // This goes against the design of the limiter, but we have no way around forcing the limit value.  If we use the child limiter.penalty(), all children
                     // would read the file and penalize resulting in a 4x penalty.  So we just hack around the problem here.
-                    //master_rate_limiter._rateLimiters[hdb_util.getLimitKey()]._memoryStorage._storage[`${limit_key}:${limit_key}`]._value = stored_limit.count;
                     let success = MasterClusterRateLimiter.setCallCount(master_rate_limiter, stored_limit.count);
                     if(success) {
                         harper_logger.debug('Set limits success');

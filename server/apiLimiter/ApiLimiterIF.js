@@ -8,9 +8,7 @@ const hdb_util = require('../../utility/common_utils');
 const terms = require('../../utility/hdbTerms');
 
 const LICENSE_LIMITER_NAME = 'hdblicenseapilimiter';
-// TODO: Change this to be the result of the license
-//let RATE_LIMIT_MAX = license.getLicense().api_call;
-const RATE_LIMIT_MAX = 2;
+let RATE_LIMIT_MAX = license.getLicense().api_call;
 const LIMIT_RESET_IN_SECONDS = 86400; // # seconds in a day, will reset after 1 day
 const CONSUME_TIMEOUT_IN_MS = 3000;
 

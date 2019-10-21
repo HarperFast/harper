@@ -30,9 +30,6 @@ const AUTOCAST_COMMON_STRINGS = {
     'NaN': NaN
 };
 
-//TODO: Remove this after testing
-let switcheroo = false;
-
 module.exports = {
     isEmpty:isEmpty,
     isEmptyOrZeroLength:isEmptyOrZeroLength,
