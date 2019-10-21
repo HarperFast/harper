@@ -12,7 +12,6 @@ const os = require('os');
 /*
 * This class should be used by hdb_express to store the rate limits whenever needed.
 */
-let fingerprint = undefined;
 const HOME_HDB_PATH = path.join(os.homedir(), terms.HDB_HOME_DIR_NAME);
 
 /**
@@ -47,6 +46,12 @@ async function saveApiCallCount(count, loc) {
     }
 }
 
+/**
+ * Reads and decrypts stored limit calls.
+ * @param loc
+ * @param fingerprint
+ * @returns {number|any}
+ */
 function readCFile(loc, fingerprint) {
     try {
         let result = fs.readFileSync(loc);
@@ -66,6 +71,10 @@ function readCFile(loc, fingerprint) {
     }
 }
 
+/**
+ * Reads the stored limit counts to establish a somewhat accurate limit on API calls.
+ * @returns {Promise<*>}
+ */
 async function readLimitFiles() {
     let vals = [];
     let fingerprint = await registration_handler.getFingerprint();

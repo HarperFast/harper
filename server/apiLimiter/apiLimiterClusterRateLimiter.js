@@ -2,28 +2,25 @@
 
 const rate_limiter_flexible = require('rate-limiter-flexible');
 const log = require('../../utility/logging/harper_logger');
-const env = require('../../utility/environment/environmentManager');
 const license = require('../../utility/registration/hdb_license');
 const hdb_util = require('../../utility/common_utils');
 const terms = require('../../utility/hdbTerms');
-const ApiLimiterIF = require('./ApiLimiterIF');
-const CounterObject = require('./CounterObject');
-const crypto = require('crypto');
-const fs = require('fs-extra');
-const registration_handler = require('../../utility/registration/registrationHandler');
-const path = require(`path`);
-const os = require(`os`);
-const moment = require('moment');
 
-const HOME_HDB_PATH = path.join(os.homedir(), terms.HDB_HOME_DIR_NAME);
 const RATE_LIMIT_MAX = 2;
 const LIMIT_RESET_IN_SECONDS = 86400; // # seconds in a day, will reset after 1 day
 const CONSUME_TIMEOUT_IN_MS = 3000;
 
 let limiter = undefined;
-let fingerprint = undefined;
 
-async function init(limiter_name, rate_limit, reset_duration_seconds, timeout_ms, new_limiter_bool, express_app) {
+/**
+ * Initialize a limiter to be used by express to limit number of api calls based on license.
+ * @param limiter_name - Limiter name as used to reference it
+ * @param rate_limit - The number of API calls defined in license
+ * @param reset_duration_seconds - Number of seconds before the limiter rolls over
+ * @param timeout_ms - timeout for waiting from response from master.
+ * @returns {Promise<void>}
+ */
+async function init(limiter_name, rate_limit, reset_duration_seconds, timeout_ms) {
     try {
         constructLimiter(limiter_name, rate_limit, hdb_util.getStartOfTomorrowInSeconds(), timeout_ms);
         //initialize the current limiter entry on master so it will be available immediately
@@ -34,25 +31,13 @@ async function init(limiter_name, rate_limit, reset_duration_seconds, timeout_ms
     }
 }
 
-function readCFile(loc) {
-    try {
-        let result = fs.readFileSync(loc);
-        let decipher = crypto.createDecipher('aes192', fingerprint);
-        let decrypted = decipher.update(result.toString(), 'hex', 'utf8');
-        decrypted.trim();
-        decrypted += decipher.final('utf8');
-
-        if (isNaN(decrypted)) {
-            let count_obj = JSON.parse(decrypted);
-            return count_obj;
-        }
-        fs.unlink(loc);
-    } catch(err) {
-        log.error('Error reading count');
-        return 0;
-    }
-}
-
+/**
+ * Sends a message to master to construct a limiter
+ * @param limiter_name - name of the limiter
+ * @param rate_limit - number of API calls before limiter enforces
+ * @param reset_duration_seconds - How long in seconds before the limiter rolls over
+ * @param timeout_ms - timeout before response from server
+ */
 function constructLimiter(limiter_name, rate_limit, reset_duration_seconds, timeout_ms) {
     try {
         limiter = new rate_limiter_flexible.RateLimiterCluster({
@@ -86,37 +71,6 @@ async function rateLimiter(req, res, next) {
     }
 }
 
-/**
- * Store the curr api count to path
- * @param count - A CounterObject type with the count to store
- * @param path - The path to store to
- * @returns {Promise<void>}
- */
-async function saveApiCallCount(count, loc) {
-    try {
-        let finger = fingerprint;
-        let cipher = crypto.createCipher('aes192', finger);
-        let encrypted_exp = cipher.update(JSON.stringify(new CounterObject(count)), 'utf8', 'hex');
-        encrypted_exp += cipher.final('hex');
-
-        let backup_loc = path.join(`/tmp`, finger, `.${finger}1`);
-
-        await fs.writeFile(loc, encrypted_exp, {encoding: 'utf8', mode: terms.HDB_FILE_PERMISSIONS}).catch((err) => {
-            log.error(`Error writing count file to ${loc}`);
-            log.error(err);
-            throw new Error('There was an error writing the count');
-        });
-
-        await fs.outputFile(backup_loc, encrypted_exp, {
-            encoding: 'utf8',
-            mode: terms.HDB_FILE_PERMISSIONS
-        });
-    } catch(err) {
-        log.error('Error saving calls');
-        log.error(err);
-    }
-}
-
 async function removeLimiter(limiter_name_string) {
     log.debug('Remove Limit');
     if(!limiter) {
@@ -130,24 +84,8 @@ async function removeLimiter(limiter_name_string) {
     return remove_result;
 }
 
-function createLimiterResetTimeout(limiter_name_string, timout_interval_ms) {
-    setTimeout(async (info) => {
-        try {
-            log.debug('Restoring limits');
-            //let points = master_rate_limiter._rateLimiters[`apiclusterlimiter`].points;
-
-        } catch(err) {
-            log.log(err);
-        }
-    }, timout_interval_ms);
-}
-
-
 module.exports = {
     rateLimiter,
-    saveApiCallCount,
-    readCFile,
-    constructLimiter,
     init,
     removeLimiter
 };
