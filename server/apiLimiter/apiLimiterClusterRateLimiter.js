@@ -25,43 +25,9 @@ let fingerprint = undefined;
 
 async function init(limiter_name, rate_limit, reset_duration_seconds, timeout_ms, new_limiter_bool, express_app) {
     try {
-        fingerprint = await registration_handler.getFingerprint();
-        let largest;
-        if (new_limiter_bool === false) {
-            let vals = [];
-            try {
-                let val1 = readCFile(path.join(HOME_HDB_PATH, terms.LIMIT_COUNT_NAME));
-                if(val1 && val1.count) {
-                    vals.push(val1);
-                }
-            } catch (err) {
-                log.error(err);
-            }
-
-            try {
-                let val2 = readCFile(path.join(`/tmp`, fingerprint, `.${fingerprint}1`));
-                if(val2 && val2.count) {
-                    vals.push(val2);
-                }
-            } catch (err) {
-                log.error(err);
-            }
-
-            if(vals.length > 0) {
-                largest = vals[0];
-                vals.forEach((val) => {
-                    if (val && val.count && val.count > largest.count) {
-                        largest = val;
-                    }
-                });
-            }
-        }
         constructLimiter(limiter_name, rate_limit, hdb_util.getStartOfTomorrowInSeconds(), timeout_ms);
-        if (largest && largest.count > 0) {
-            // This will remove the number of calls read.
-            await limiter.penalty(hdb_util.getLimitKey(), largest);
-            log.info(`limits configured`);
-        }
+        //initialize the current limiter entry on master so it will be available immediately
+        let result = await limiter.consume(hdb_util.getLimitKey());
     } catch(err) {
         log.error('Error getting fingerprint.');
         log.error(err);
@@ -85,7 +51,6 @@ function readCFile(loc) {
         log.error('Error reading count');
         return 0;
     }
-
 }
 
 function constructLimiter(limiter_name, rate_limit, reset_duration_seconds, timeout_ms) {

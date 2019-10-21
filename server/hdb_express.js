@@ -50,6 +50,7 @@ const ENV_DEV_VAL = 'development';
 const TRUE_COMPARE_VAL = 'TRUE';
 const REPO_RUNNING_PROCESS_NAME = 'server/hdb_express.js';
 const LIMIT_SAVE_INTERVAL_MS = 10000;
+const LIMIT_READ_TIMEOUT_LENGTH_MS = 3000;
 
 let node_env_value = env.get(PROPS_ENV_KEY);
 let running_from_repo = false;
@@ -208,12 +209,29 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     });
 
     try {
-        launch().then(() => {});
+        launch().then(() => {
+            setTimeout( async () => {
+                try {
+                    let stored_limit = await MasterClusterRateLimiter.readLimitFiles();
+                    if(!stored_limit) {
+                        return;
+                    }
+                    let limit_key = hdb_util.getLimitKey();
+                    let limiter = master_rate_limiter._rateLimiters[hdb_util.getLimitKey()];
+                    if(!limiter) {
+                        return;
+                    }
+                    master_rate_limiter._rateLimiters[hdb_util.getLimitKey()]._memoryStorage._storage[`${limit_key}:${limit_key}`]._value = stored_limit.count;
+                } catch(err) {
+                    harper_logger.debug('Limiter has not been initialized');
+                }
+            }, LIMIT_READ_TIMEOUT_LENGTH_MS);
+        });
     } catch(e){
         harper_logger.error(e);
     }
 
-    async function launch(){
+    async function launch() {
         const helium_utils = require('../utility/helium/heliumUtils');
         await p_schema_to_global();
         await user_schema.setUsersToGlobal();

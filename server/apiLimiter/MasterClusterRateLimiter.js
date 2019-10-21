@@ -8,12 +8,12 @@ const fs = require('fs-extra');
 const CounterObject = require('./CounterObject');
 const terms = require('../../utility/hdbTerms');
 const {inspect} = require('util');
-
+const os = require('os');
 /*
 * This class should be used by hdb_express to store the rate limits whenever needed.
 */
-
 let fingerprint = undefined;
+const HOME_HDB_PATH = path.join(os.homedir(), terms.HDB_HOME_DIR_NAME);
 
 /**
  * Store the curr api count to path
@@ -47,7 +47,59 @@ async function saveApiCallCount(count, loc) {
     }
 }
 
+function readCFile(loc, fingerprint) {
+    try {
+        let result = fs.readFileSync(loc);
+        let decipher = crypto.createDecipher('aes192', fingerprint);
+        let decrypted = decipher.update(result.toString(), 'hex', 'utf8');
+        decrypted.trim();
+        decrypted += decipher.final('utf8');
+
+        if (isNaN(decrypted)) {
+            let count_obj = JSON.parse(decrypted);
+            return count_obj;
+        }
+        fs.unlink(loc);
+    } catch(err) {
+        log.error('Error reading count');
+        return 0;
+    }
+}
+
+async function readLimitFiles() {
+    let vals = [];
+    let fingerprint = await registration_handler.getFingerprint();
+    try {
+        let val1 = await readCFile(path.join(HOME_HDB_PATH, terms.LIMIT_COUNT_NAME), fingerprint);
+        if(val1 && val1.count) {
+            vals.push(val1);
+        }
+    } catch (err) {
+        log.error(err);
+    }
+
+    try {
+        let val2 = await readCFile(path.join(`/tmp`, fingerprint, `.${fingerprint}1`), fingerprint);
+        if(val2 && val2.count) {
+            vals.push(val2);
+        }
+    } catch (err) {
+        log.error(err);
+    }
+    let largest;
+    if(vals.length > 0) {
+        largest = vals[0];
+        vals.forEach((val) => {
+            if (val && val.count && val.count > largest.count) {
+                largest = val;
+            }
+        });
+    }
+    return largest;
+}
+
 module.exports = {
-    saveApiCallCount
+    saveApiCallCount,
+    readLimitFiles
 };
 
