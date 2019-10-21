@@ -142,33 +142,31 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     // Interval to periodically store the api limits
     setInterval(async (info) => {
         try {
-            console.log("Saving limit file");
             harper_logger.debug('Limits written');
-            let temp = hdb_util.getLimitKey();
+            let limit_key = hdb_util.getLimitKey();
             let limiter = master_rate_limiter._rateLimiters[hdb_util.getLimitKey()];
             if(!limiter) {
                 return;
             }
-            let points = limiter.points;
-            let memstorage = limiter._memoryStorage;
-            let storage = memstorage._storage;
-            let curr = storage[`${temp}:${temp}`];
-            let value = curr._value;
+            //let value = master_rate_limiter._rateLimiters[hdb_util.getLimitKey()]._memoryStorage._storage[`${limit_key}:${limit_key}`]._value;
+            let value = MasterClusterRateLimiter.getCallCount(master_rate_limiter);
 
-            // Currently we probably dont need the reset time, but this may be useful later if we decide
             // to customize api limit rollover times
             let reset_time = hdb_util.getStartOfTomorrowInSeconds();
             if(value) {
-                await MasterClusterRateLimiter.saveApiCallCount(new CounterObject(points, reset_time), path.join(os.homedir(), terms.HDB_HOME_DIR_NAME, terms.LIMIT_COUNT_NAME));
+                await MasterClusterRateLimiter.saveApiCallCount(new CounterObject(value, reset_time), path.join(os.homedir(), terms.HDB_HOME_DIR_NAME, terms.LIMIT_COUNT_NAME));
             }
         } catch(err) {
-            console.log(err);
+            harper_logger.debug('error storing limit, does not exist');
         }
     }, LIMIT_SAVE_INTERVAL_MS);
 
-    process.on('uncaughtException', function (err) {
+    process.on('uncaughtException', async function (err) {
         let os = require('os');
         let message = `Found an uncaught exception with message: os.EOL ${err.message}.  Stack: ${err.stack} ${os.EOL} Terminating HDB.`;
+        let value = MasterClusterRateLimiter.getCallCount(master_rate_limiter);
+        let reset_time = hdb_util.getStartOfTomorrowInSeconds();
+        await MasterClusterRateLimiter.saveApiCallCount(new CounterObject(value, reset_time), path.join(os.homedir(), terms.HDB_HOME_DIR_NAME, terms.LIMIT_COUNT_NAME));
         console.error(message);
         harper_logger.fatal(message);
         process.exit(1);
@@ -177,13 +175,16 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     let restart_event_tracker = new RestartEventObject();
     let restart_in_progress = false;
     // Consume AllChildrenStopped Event.
-    all_children_stopped_event.allChildrenStoppedEmitter.on(all_children_stopped_event.EVENT_NAME, (msg) => {
+    all_children_stopped_event.allChildrenStoppedEmitter.on(all_children_stopped_event.EVENT_NAME, async (msg) => {
         harper_logger.info(`Got all children stopped event.`);
         try {
             restart_event_tracker.express_connections_stopped = true;
             if(restart_event_tracker.isReadyForRestart()) {
                 if(!restart_in_progress) {
                     restart_in_progress = true;
+                    let value = MasterClusterRateLimiter.getCallCount(master_rate_limiter);
+                    let reset_time = hdb_util.getStartOfTomorrowInSeconds();
+                    await MasterClusterRateLimiter.saveApiCallCount(new CounterObject(value, reset_time), path.join(os.homedir(), terms.HDB_HOME_DIR_NAME, terms.LIMIT_COUNT_NAME));
                     cluster_utilities.restartHDB();
                 }
             }
@@ -193,13 +194,16 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     });
 
     // Consume SocketIOServerStopped event.
-    sio_server_stopped_event.sioServerStoppedEmitter.on(sio_server_stopped_event.EVENT_NAME, (msg) => {
+    sio_server_stopped_event.sioServerStoppedEmitter.on(sio_server_stopped_event.EVENT_NAME, async (msg) => {
         harper_logger.info(`Got sio server stopped event.`);
         try {
             restart_event_tracker.sio_connections_stopped = true;
             if(restart_event_tracker.isReadyForRestart()) {
                 if(!restart_in_progress) {
                     restart_in_progress = true;
+                    let value = MasterClusterRateLimiter.getCallCount(master_rate_limiter);
+                    let reset_time = hdb_util.getStartOfTomorrowInSeconds();
+                    await MasterClusterRateLimiter.saveApiCallCount(new CounterObject(value, reset_time), path.join(os.homedir(), terms.HDB_HOME_DIR_NAME, terms.LIMIT_COUNT_NAME));
                     cluster_utilities.restartHDB();
                 }
             }
@@ -210,8 +214,10 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
 
     try {
         launch().then(() => {
+            // We need to wait for the children to initialize themselves and then create the limiter for today.
             setTimeout( async () => {
                 try {
+                    //Check for stored limits for the case of a crash or shutdown.
                     let stored_limit = await MasterClusterRateLimiter.readLimitFiles();
                     if(!stored_limit) {
                         return;
@@ -221,11 +227,22 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                     if(!limiter) {
                         return;
                     }
-                    master_rate_limiter._rateLimiters[hdb_util.getLimitKey()]._memoryStorage._storage[`${limit_key}:${limit_key}`]._value = stored_limit.count;
+                    // This goes against the design of the limiter, but we have no way around forcing the limit value.  If we use the child limiter.penalty(), all children
+                    // would read the file and penalize resulting in a 4x penalty.  So we just hack around the problem here.
+                    //master_rate_limiter._rateLimiters[hdb_util.getLimitKey()]._memoryStorage._storage[`${limit_key}:${limit_key}`]._value = stored_limit.count;
+                    let success = MasterClusterRateLimiter.setCallCount(master_rate_limiter, stored_limit.count);
+                    if(success) {
+                        harper_logger.debug('Set limits success');
+                    }
                 } catch(err) {
                     harper_logger.debug('Limiter has not been initialized');
                 }
             }, LIMIT_READ_TIMEOUT_LENGTH_MS);
+
+            //TODO: remove this after shutdown testing
+            setTimeout(() => {
+                    throw new Error("Testing@");
+                }, 10000);
         });
     } catch(e){
         harper_logger.error(e);
@@ -304,16 +321,16 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     /**
      * This function is used during an interrupt to re establish the api limits at the beginning of the day, UTC.  It will
      * then set a timeout for the next day by calling itself
-     * @param api_calls
-     * @param timeout_time_in_ms
+     * @param api_calls - number of api calls to configure
+     * @param timeout_time_in_ms - tomorrow in MS
      */
     function createTomorrowTimeout(api_calls, timeout_time_in_ms) {
-        console.log('In createTomorrowTimeout');
+        harper_logger.trace('createTomorrowTimeout');
         setTimeout(async () => {
             try {
                 harper_logger.debug('Restoring limits');
                 await apiLimiterClusterRateLimiter.removeLimiter(hdb_util.getLimitKey());
-                apiLimiterClusterRateLimiter.init(hdb_util.getLimitKey(), api_calls, terms.API_TURNOVER_SEC, 3000, true);
+                apiLimiterClusterRateLimiter.init(hdb_util.getLimitKey(), api_calls, terms.API_TURNOVER_SEC, 3000);
                 createTomorrowTimeout(api_calls, timeout_time_in_ms);
             } catch(err) {
                 harper_logger.error(err);
@@ -428,7 +445,8 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
             case terms.CLUSTER_MESSAGE_TYPE_ENUM.RESTART:
                 harper_logger.info(`Server close event received for process ${process.pid}`);
                 harper_logger.debug(`calling shutdown`);
-                shutDown(false).then(() => {
+                let force = (msg.force_shutdown === undefined? true : msg.force_shutdown);
+                shutDown(force).then(() => {
                     harper_logger.info(`Completed shut down`);
                     process.exit(terms.RESTART_CODE_NUM);
                 });
@@ -497,10 +515,9 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
             await user_schema.setUsersToGlobal();
             spawnSCConnection();
             let license = await hdb_license.getLicense();
-            license.api_call = 2;
-            await apiLimiterClusterRateLimiter.init(hdb_util.getLimitKey(), license.api_call, terms.API_TURNOVER_SEC, 3000, false);
+            await apiLimiterClusterRateLimiter.init(hdb_util.getLimitKey(), license.api_call, terms.API_TURNOVER_SEC, 3000);
                 //let tomorrow_in_ms = hdb_util.getStartOfTomorrowInSeconds() * 1000;
-                let tomorrow_in_ms = 20000;
+                let tomorrow_in_ms = 40000;
                 createTomorrowTimeout(license.api_call, tomorrow_in_ms);
 
         } catch(e) {
@@ -524,7 +541,6 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
             }, terms.RESTART_TIMEOUT_MS);
             target_server.close(function () {
                 harper_logger.warn(`Process pid:${process.pid} - Work completed, shutting down`);
-                //process.exit(terms.RESTART_CODE_NUM);
                 hdb_util.callProcessSend({type: terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STOPPED, pid: process.pid});
             });
         }

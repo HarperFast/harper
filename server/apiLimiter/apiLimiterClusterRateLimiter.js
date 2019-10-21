@@ -24,7 +24,7 @@ async function init(limiter_name, rate_limit, reset_duration_seconds, timeout_ms
     try {
         constructLimiter(limiter_name, rate_limit, hdb_util.getStartOfTomorrowInSeconds(), timeout_ms);
         //initialize the current limiter entry on master so it will be available immediately
-        let result = await limiter.consume(hdb_util.getLimitKey());
+        let result = await limiter.consume(hdb_util.getLimitKey(),0);
     } catch(err) {
         log.error('Error getting fingerprint.');
         log.error(err);
@@ -60,10 +60,9 @@ function constructLimiter(limiter_name, rate_limit, reset_duration_seconds, time
  * @returns {Promise<*>}
  */
 async function rateLimiter(req, res, next) {
+    log.trace('rate function');
     try {
-        let temp = hdb_util.getLimitKey();
         let result = await limiter.consume(hdb_util.getLimitKey());
-        //await saveApiCallCount(result._consumedPoints, path.join(HOME_HDB_PATH, terms.LIMIT_COUNT_NAME));
         return next();
     } catch(err) {
         log.notify(`You have reached your API limit within 24 hours. ${terms.SUPPORT_HELP_MSG}`);
@@ -79,7 +78,7 @@ async function removeLimiter(limiter_name_string) {
     }
     let remove_result = await limiter.delete(limiter_name_string);
     if(remove_result === true) {
-        console.log('REMOVED!');
+        log.debug('Removed expired limiter');
     }
     return remove_result;
 }

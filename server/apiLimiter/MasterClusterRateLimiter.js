@@ -9,8 +9,10 @@ const CounterObject = require('./CounterObject');
 const terms = require('../../utility/hdbTerms');
 const {inspect} = require('util');
 const os = require('os');
+const hdb_util = require('../../utility/common_utils');
 /*
-* This class should be used by hdb_express to store the rate limits whenever needed.
+* This class contains helper functions for interacting with an RateLimiterClusterMaster object.  There is no defined
+* API for the Master in the API.
 */
 const HOME_HDB_PATH = path.join(os.homedir(), terms.HDB_HOME_DIR_NAME);
 
@@ -22,8 +24,8 @@ const HOME_HDB_PATH = path.join(os.homedir(), terms.HDB_HOME_DIR_NAME);
  */
 async function saveApiCallCount(count, loc) {
     try {
+        log.trace('Store call count');
         let finger = await registration_handler.getFingerprint();
-        console.log("fingerprint:" + inspect(finger));
         let cipher = crypto.createCipher('aes192', finger);
         let encrypted_exp = cipher.update(JSON.stringify(count), 'utf8', 'hex');
         encrypted_exp += cipher.final('hex');
@@ -107,8 +109,45 @@ async function readLimitFiles() {
     return largest;
 }
 
+/**
+ * Will attempt to pull the rate limit from the master parameter.  Returns that value if found, undefined if not.
+ * @param master_limiter - the initialized MasterClusterRateLimiter object.
+ * @returns {integer|udefined}
+ */
+function getCallCount(master_limiter) {
+    let limit = undefined;
+    try {
+        let limit_key = hdb_util.getLimitKey();
+        limit = master_limiter._rateLimiters[hdb_util.getLimitKey()]._memoryStorage._storage[`${limit_key}:${limit_key}`]._value;
+    } catch(err) {
+        log.debug("failed to pull limits");
+    }
+    return limit;
+}
+
+/**
+ * Will attempt to set the rate limit from the master parameter.  Returns true if successful, false if not.
+ * @param master_limiter - the initialized MasterClusterRateLimiter object.
+ * @returns {boolean}
+ */
+function setCallCount(master_limiter, new_value) {
+    let success = true;
+    try {
+        let limit_key = hdb_util.getLimitKey();
+        // This goes against the design of the limiter, but we have no way around forcing the limit value.  If we use the child limiter.penalty(), all children
+        // would read the file and penalize resulting in a 4x penalty.  So we just hack around the problem here.
+        master_limiter._rateLimiters[hdb_util.getLimitKey()]._memoryStorage._storage[`${limit_key}:${limit_key}`]._value = new_value;
+        return true;
+    } catch(err) {
+        log.debug("failed to pull limits");
+    }
+    return false;
+}
+
 module.exports = {
     saveApiCallCount,
-    readLimitFiles
+    readLimitFiles,
+    getCallCount,
+    setCallCount
 };
 
