@@ -125,7 +125,7 @@ function validateHash(record, hash_attribute, operation) {
         if (operation === hdb_terms.OPERATIONS_ENUM.INSERT) {
             record[hash_attribute] = uuid();
         } else {
-            log.error(record);
+            log.error(`Update transaction aborted due to record with no hash value: ${record}`);
             throw new Error('transaction aborted due to record(s) with no hash value, check log for more info');
         }
     }
