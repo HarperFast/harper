@@ -3,6 +3,7 @@
 const rewire = require('rewire');
 const test_utils = require('../../../test_utils');
 const insertUpdateValidate = rewire('../../../../data_layer/harperBridge/bridgeUtility/insertUpdateValidate');
+const log = require('../../../../utility/logging/harper_logger');
 const chai = require('chai');
 const sinon = require('sinon');
 const sinon_chai = require('sinon-chai');
@@ -53,6 +54,7 @@ const SCHEMA_TABLE_TEST = {
 
 describe('Tests for fsUtility function insertUpdateValidate', () => {
     let sandbox = sinon.createSandbox();
+    let log_spy;
 
     before(() => {
         global.hdb_schema = {
@@ -66,6 +68,8 @@ describe('Tests for fsUtility function insertUpdateValidate', () => {
                 }
             }
         };
+        log_spy = sandbox.spy(log, 'error');
+
     });
 
     after(() => {
@@ -134,7 +138,8 @@ describe('Tests for fsUtility function insertUpdateValidate', () => {
             error = err;
         }
 
-        expect(error.message).to.equal('a valid hash attribute must be provided with update record');
+        expect(error.message).to.equal('a valid hash attribute must be provided with update record, check log for more info');
+        expect(log_spy).to.have.been.calledWith('a valid hash attribute must be provided with update record: {"schema":"attrUnitTest","table":"dog","attribute":"another_attribute","id":"","schema_table":"attrUnitTest.dog"}');
         expect(error).to.be.instanceOf(Error);
     });
 

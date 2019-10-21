@@ -5,6 +5,7 @@ const hdb_utils = require('../../../../utility/common_utils');
 const log = require('../../../../utility/logging/harper_logger');
 const heGenerateDataStoreName = require('../heUtility/heGenerateDataStoreName');
 const heliumUtils = require('../../../../utility/helium/heliumUtils');
+const uuid = require('uuid/v4');
 
 let hdb_helium;
 try {
@@ -43,7 +44,7 @@ function processRows(insert_obj, attributes, schema_table, hashes) {
     // Iterates through array of record objects and validates their hash
     for (let x = 0; x < records.length; x++) {
         let row_records = [];
-        validateHash(records[x], hash_attribute);
+        validateHash(records[x], hash_attribute, insert_obj.operation);
 
         // Builds a single row array with each record object. Matches each value to its attribute. If it doesn't contain any data
         // at attribute location a null will be inserted into row array.
@@ -114,14 +115,19 @@ function getExistingHashes(hashes, hash_datastore) {
 }
 
 /**
- * Validates hash value exists and under max char size.
+ * Validates hash value exists and under max char size. If the operation is 'insert' and the hash doesn't exist it
+ * will create one.
  * @param record
  * @param hash_attribute
  */
-function validateHash(record, hash_attribute) {
-    if (!record.hasOwnProperty(hash_attribute)) {
-        log.error(record);
-        throw new Error('transaction aborted due to record(s) with no hash value, check log for more info');
+function validateHash(record, hash_attribute, operation) {
+    if (!record.hasOwnProperty(hash_attribute) || hdb_utils.isEmptyOrZeroLength(record[hash_attribute])) {
+        if (operation === hdb_terms.OPERATIONS_ENUM.INSERT) {
+            record[hash_attribute] = uuid();
+        } else {
+            log.error(`Update transaction aborted due to record with no hash value: ${JSON.stringify(record)}`);
+            throw new Error('transaction aborted due to record(s) with no hash value, check log for more info');
+        }
     }
 
     if (Buffer.byteLength(String(record[hash_attribute])) > hdb_terms.INSERT_MODULE_ENUM.MAX_CHARACTER_SIZE) {

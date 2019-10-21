@@ -36,7 +36,7 @@ async function processData(process_wrapper) {
     for (let x = 0; x < records.length; x++) {
         let record = records[x];
 
-        if (h_utils.isEmpty(record[hash_attribute])) {
+        if (h_utils.isEmptyOrZeroLength(record[hash_attribute])) {
             if (operation === 'update') {
                 no_hash = true;
                 break;
