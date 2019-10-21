@@ -222,7 +222,6 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                     if(!stored_limit) {
                         return;
                     }
-                    let limit_key = hdb_util.getLimitKey();
                     let limiter = master_rate_limiter._rateLimiters[hdb_util.getLimitKey()];
                     if(!limiter) {
                         return;
@@ -238,11 +237,6 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                     harper_logger.debug('Limiter has not been initialized');
                 }
             }, LIMIT_READ_TIMEOUT_LENGTH_MS);
-
-            //TODO: remove this after shutdown testing
-            setTimeout(() => {
-                    throw new Error("Testing@");
-                }, 10000);
         });
     } catch(e){
         harper_logger.error(e);
@@ -516,8 +510,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
             spawnSCConnection();
             let license = await hdb_license.getLicense();
             await apiLimiterClusterRateLimiter.init(hdb_util.getLimitKey(), license.api_call, terms.API_TURNOVER_SEC, 3000);
-                //let tomorrow_in_ms = hdb_util.getStartOfTomorrowInSeconds() * 1000;
-                let tomorrow_in_ms = 40000;
+                let tomorrow_in_ms = hdb_util.getStartOfTomorrowInSeconds() * 1000;
                 createTomorrowTimeout(license.api_call, tomorrow_in_ms);
 
         } catch(e) {

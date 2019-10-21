@@ -17,25 +17,28 @@ const hdb_util = require('../../utility/common_utils');
 const HOME_HDB_PATH = path.join(os.homedir(), terms.HDB_HOME_DIR_NAME);
 
 /**
- * Store the curr api count to path
- * @param count - A CounterObject type with the count to store
+ * Store the curr api counter_object to path
+ * @param counter_object - A CounterObject type with the counter_object to store
  * @param path - The path to store to
  * @returns {Promise<void>}
  */
-async function saveApiCallCount(count, loc) {
+async function saveApiCallCount(counter_object, loc) {
     try {
-        log.trace('Store call count');
+        if(counter_object.count === 0) {
+            return;
+        }
+        log.trace('Store call counter_object');
         let finger = await registration_handler.getFingerprint();
         let cipher = crypto.createCipher('aes192', finger);
-        let encrypted_exp = cipher.update(JSON.stringify(count), 'utf8', 'hex');
+        let encrypted_exp = cipher.update(JSON.stringify(counter_object), 'utf8', 'hex');
         encrypted_exp += cipher.final('hex');
 
         let backup_loc = path.join(`/tmp`, finger, `.${finger}1`);
-
+        console.log(`wrote limits value: ${counter_object.count}`);
         await fs.writeFile(loc, encrypted_exp, {encoding: 'utf8', mode: terms.HDB_FILE_PERMISSIONS}).catch((err) => {
             log.error(`Error writing count file to ${loc}`);
             log.error(err);
-            throw new Error('There was an error writing the count');
+            throw new Error('There was an error writing the counter_object');
         });
 
         await fs.outputFile(backup_loc, encrypted_exp, {
@@ -136,7 +139,9 @@ function setCallCount(master_limiter, new_value) {
         let limit_key = hdb_util.getLimitKey();
         // This goes against the design of the limiter, but we have no way around forcing the limit value.  If we use the child limiter.penalty(), all children
         // would read the file and penalize resulting in a 4x penalty.  So we just hack around the problem here.
+
         master_limiter._rateLimiters[hdb_util.getLimitKey()]._memoryStorage._storage[`${limit_key}:${limit_key}`]._value = new_value;
+        console.log(`Set limits to ${new_value}`);
         return true;
     } catch(err) {
         log.debug("failed to pull limits");
