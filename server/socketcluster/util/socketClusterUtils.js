@@ -62,7 +62,10 @@ function getWorkerStatus(status_response_msg, worker) {
         if (worker.scServer && worker.scServer.clients) {
             let client_keys = Object.keys(worker.scServer.clients);
             for (let i = 0; i < client_keys.length; i++) {
-                let client = worker.scServer.clients[client_keys[i]];//worker.scServer.clients[i];
+                let client = worker.scServer.clients[client_keys[i]];
+                if(client.remoteAddress && (client.remoteAddress.contains('localhost') || client.remoteAddress.contains('127.0.0.1') )) {
+                    continue;
+                }
                 let conn = new ConnectionDetails(client.id, client.remoteAddress, client.remotePort, client.state);
                 if (client.exchange && client.exchange._channels) {
                     let channel_keys = Object.keys(client.exchange._channels);
