@@ -35,10 +35,14 @@ fi
 
 cp $ADD2 $MIRRORED_DIR/$ADD2_DIR
 mkdir -p $MIRRORED_DIR/dependencies/harperdb_helium/build/Release
+mkdir -p $MIRRORED_DIR/dependencies/harperdb_helium/mac/build/Release
 cp ./dependencies/harperdb_helium/build/Release/* $MIRRORED_DIR/dependencies/harperdb_helium/build/Release/
+cp ./dependencies/harperdb_helium/mac/build/Release/* $MIRRORED_DIR/dependencies/harperdb_helium/mac/build/Release/
+cp ./npm_build/package.json $MIRRORED_DIR/
+cp ./npm_buil/README.md $MIRRORED_DIR/
 
 #create file for registration process
-mkdir $MIRRORED_DIR/utility/keys
+#mkdir $MIRRORED_DIR/utility/keys
 #Add the removed header for harperdb.js
 sed -i '1 i #!\/usr\/bin\/env node' $MIRRORED_DIR/bin/harperdb.js
 exit 0
