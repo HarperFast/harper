@@ -18,7 +18,9 @@ const SUPPORT_HELP_MSG = `For support, please submit a support request at ${HDB_
 const SEARCH_NOT_FOUND_MESSAGE = "None of the specified records were found.";
 const SEARCH_ATTRIBUTE_NOT_FOUND = `hash attribute not found`;
 const LICENSE_ROLE_DENIED_RESPONSE = 'Your current license only supports 1 role.';
+const LICENSE_MAX_CONNS_REACHED = 'Your current license only supports 3 connections to a node.';
 const BASIC_LICENSE_MAX_NON_CU_ROLES = 1;
+const BASIC_LICENSE_MAX_CLUSTER_CONNS = 3;
 
 const PERIOD_REGEX = /^\.$/;
 const DOUBLE_PERIOD_REGEX = /^\.\.$/;
@@ -441,7 +443,9 @@ module.exports = {
     SEARCH_NOT_FOUND_MESSAGE,
     SEARCH_ATTRIBUTE_NOT_FOUND,
     LICENSE_ROLE_DENIED_RESPONSE,
+    LICENSE_MAX_CONNS_REACHED,
     BASIC_LICENSE_MAX_NON_CU_ROLES,
+    BASIC_LICENSE_MAX_CLUSTER_CONNS,
     HELIUM_PROCESS_NAME,
     HELIUM_START_SERVER_COMMAND,
     LICENSE_FILE_NAME,

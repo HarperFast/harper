@@ -17,6 +17,7 @@ const child_process = require('child_process');
 const path = require('path');
 const InsertObject = require('../../data_layer/DataLayerObjects').InsertObject;
 const search = require('../../data_layer/search');
+const hdb_license = require('../../utility/registration/hdb_license');
 
 const CLUSTER_PORT = env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY);
 const CONFIGURE_SUCCESS_RESPONSE = 'Successfully configured and loaded clustering configuration.  Some configurations may require a restart of HarperDB to take effect.';
@@ -70,8 +71,31 @@ async function addNode(new_node) {
     nodeValidation(new_node);
 
     let new_node_insert = new InsertObject("insert", terms.SYSTEM_SCHEMA_NAME, terms.SYSTEM_TABLE_NAMES.NODE_TABLE_NAME, null, [new_node]);
-
     let results = undefined;
+
+    if(!(await hdb_license.getLicense()).enterprise) {
+        // send a get cluster status message and wait for response
+        let cluster_status = await clusterStatus(null);
+        if(!cluster_status) {
+            return hdb_utils.errorizeMessage('Cannot add a node, not connected to cluster.');
+        }
+        if((typeof cluster_status.status === 'string') || (cluster_status.status instanceof String)) {
+            return hdb_utils.errorizeMessage('Cannot add a node, cluster is busy');
+        }
+        let status_count = 0;
+        if(cluster_status.status.outbound_connections) {
+            status_count += cluster_status.status.outbound_connections.length;
+        }
+        if(cluster_status.status.inbound_connections) {
+            status_count += cluster_status.status.inbound_connections.length;
+        }
+        // count # connections, if >= 3, reject
+        console.log(`Cluster status count: ${status_count}`);
+        if(status_count >= terms.BASIC_LICENSE_MAX_CLUSTER_CONNS) {
+            return `${terms.LICENSE_MAX_CONNS_REACHED} ${terms.SUPPORT_HELP_MSG}`;
+        }
+
+    }
     try {
         results = await insert.insert(new_node_insert);
     } catch(err) {
@@ -171,15 +195,13 @@ async function updateNode(update_node) {
         log.info(`Node '${update_node.name}' does not exist. Operation aborted.`);
         throw new Error(`Node '${update_node.name}' does not exist. Operation aborted.`);
     }
+
     let merge_node = node_search[0];
     Object.assign(merge_node, update_node);
-
-
     nodeValidation(merge_node);
-
     let update_node_object = new InsertObject("update", terms.SYSTEM_SCHEMA_NAME, terms.SYSTEM_TABLE_NAMES.NODE_TABLE_NAME, null, [update_node]);
-
     let results = undefined;
+
     try {
         results = await insert.update(update_node_object);
     } catch(err) {
@@ -320,8 +342,9 @@ async function clusterStatus(cluster_status_json) {
         }
 
         if(!global.hdb_socket_client || !global.hdb_socket_client.socket.id) {
-            log.error('Cannot request cluster status.  Disconnected from clustering.');
-            return;
+            let msg = 'Cannot request cluster status.  Disconnected from clustering.';
+            log.error(msg);
+            return msg;
         }
         let cluster_status_msg = hdb_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.GET_CLUSTER_STATUS);
         if(!cluster_status_msg) {
@@ -580,7 +603,7 @@ function restartHDB() {
 }
 
 module.exports = {
-    addNode: addNode,
+    addNode,
     updateNode: updateNode,
     // The reference to the callback functions can be removed once processLocalTransaction has been refactored
     configureCluster,
