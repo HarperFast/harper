@@ -90,7 +90,6 @@ async function addNode(new_node) {
             status_count += cluster_status.status.inbound_connections.length;
         }
         // count # connections, if >= 3, reject
-        console.log(`Cluster status count: ${status_count}`);
         if(status_count >= terms.BASIC_LICENSE_MAX_CLUSTER_CONNS) {
             return `${terms.LICENSE_MAX_CONNS_REACHED} ${terms.SUPPORT_HELP_MSG}`;
         }

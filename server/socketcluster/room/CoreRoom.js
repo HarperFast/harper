@@ -136,7 +136,7 @@ class CoreRoom extends RoomIF {
                     let get_cluster_status_msg = new RoomMessageObjects.GetClusterStatusMessage();
                     get_cluster_status_msg.requestor_channel = req.channel;
                     get_cluster_status_msg.worker_request_owner = worker.id;
-                    if(worker.hdb_workers.length > 1) {
+                    if(worker.options.workerCount > 1) {
                         if(!get_cluster_status_msg.hdb_header) {
                             get_cluster_status_msg.hdb_header = {};
                             get_cluster_status_msg.hdb_header['worker_originator_id'] = worker.id;
@@ -152,7 +152,7 @@ class CoreRoom extends RoomIF {
                                 }
                             }
                         }
-                        // We are posting to the hdb_workers room to get status from other workers, so we can't use this.publishToRoom.
+                        // We are posting to the workers room to get status from other workers, so we can't use this.publishToRoom.
                         worker.exchange.publish(hdb_terms.INTERNAL_SC_CHANNELS.WORKER_ROOM, get_cluster_status_msg);
                     }
 
@@ -160,18 +160,18 @@ class CoreRoom extends RoomIF {
                     cluster_status_response.cluster_staatus_request_id = req.id;
                     // insert the status for this worker
                     cluster_utils.getWorkerStatus(cluster_status_response, worker);
-                    let status_bucket_obj = new ClusterStatusBucket(worker.hdb_workers.length);
+                    let status_bucket_obj = new ClusterStatusBucket(worker.options.workerCount);
                     status_bucket_obj.response_msg = cluster_status_response;
                     self.cluster_status_request_buckets[get_cluster_status_msg.request_id] = status_bucket_obj;
-                    if(worker.hdb_workers.length === 1) {
+                    if(worker.options.workerCount === 1) {
                         self.publishToRoom(cluster_status_response, worker, req.hdb_header);
                         result = cluster_status_response;
                         return result;
                     }
                     // create an array of all workers other than 'this' so we can use as iterable in promise.all() below.
                     let workers = [];
-                    for(let i=1; i<worker.hdb_workers.length; i++) {
-                        workers.push(worker.hdb_workers[i]);
+                    for(let i=1; i<worker.options.workerCount; i++) {
+                        workers.push(worker.options.workerCount[i]);
                     }
                     await Promise.all(
                         workers.map(async worker => {
