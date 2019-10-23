@@ -683,6 +683,24 @@ describe('Test FileSystem Class',function() {
             });
         });
 
+        it('should perform same as test above but with a test hash value of zero', () => {
+            const test_hash_val = "0";
+            const test_sql_statement = sql_basic_dog_select + ` WHERE ${HASH_ATTRIBUTE} = ${test_hash_val}`;
+            setupTestInstance(test_sql_statement);
+            test_instance.exact_search_values = {};
+            const test_AST_statememt = generateMockAST(test_sql_statement).statement;
+            test_instance.statement = test_AST_statememt;
+
+            test_instance._conditionsToFetchAttributeValues();
+
+            const test_result = test_instance.exact_search_values;
+            expect(test_result[test_attr_path]).to.be.a('object');
+            expect(test_result[test_attr_path].ignore).to.equal(false);
+            test_result[test_attr_path].values.forEach(val => {
+                expect(val).to.equal(test_hash_val);
+            });
+        });
+
         it('should set multiple values to exact_search_values property with data from WHERE IN clause',function() {
             const test_hash_vals = "1,2";
             const test_sql_statement = sql_basic_dog_select + ` WHERE ${HASH_ATTRIBUTE} IN (${test_hash_vals})`;
