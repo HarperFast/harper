@@ -13,7 +13,7 @@ const HDB_PROC_DESCRIPTOR = 'HarperDB';
 const SC_PROC_DESCRIPTOR = 'Cluster Server';
 
 const HDB_SUPPORT_ADDRESS = 'support@harperdb.io';
-const HDB_LICENSE_EMAIL_ADDRESS = 'license@harperdb.io';
+const HDB_LICENSE_EMAIL_ADDRESS = 'customer-success@harperdb.io';
 
 const BASIC_LICENSE_MAX_NON_CU_ROLES = 1;
 const BASIC_LICENSE_MAX_CLUSTER_CONNS = 3;
