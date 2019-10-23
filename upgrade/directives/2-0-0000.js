@@ -23,18 +23,9 @@ directive.environment_variables.push(
 );
 
 directive.environment_variables.push(
-    new env_variable(`${HDB_SETTINGS_NAMES.HELIUM_VOLUME_PATH_KEY}`, ``, [`Specify the file system path to where the Helium volume will reside.`])
-);
-
-directive.environment_variables.push(
     new env_variable(`${HDB_SETTINGS_NAMES.LOG_MAX_DAILY_FILES_KEY}`, `false`, [`Set the number of daily log files to maintain when LOG_DAILY_ROTATE is enabled`,
     'If no integer value is set, no limit will be set for',
     'daily log files which may consume a large amount of storage depending on your log settings'])
-);
-
-directive.environment_variables.push(
-    new env_variable(`${HDB_SETTINGS_NAMES.HELIUM_SERVER_HOST}`, HDB_SETTINGS_DEFAULT_VALUES.HELIUM_SERVER_HOST,
-        [`specify the host & port where your helium server is running. NOTE for most installs this will not change from ${HDB_SETTINGS_DEFAULT_VALUES.HELIUM_SERVER_HOST}`])
 );
 
 // Move the utilities/keys/060493.ks file to its new home in ~/.harperdb/keys/
