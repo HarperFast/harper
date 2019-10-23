@@ -684,7 +684,7 @@ describe('Test FileSystem Class',function() {
         });
 
         it('should perform same as test above but with a test hash value of zero', () => {
-            const test_hash_val = "0";
+            const test_hash_val = 0;
             const test_sql_statement = sql_basic_dog_select + ` WHERE ${HASH_ATTRIBUTE} = ${test_hash_val}`;
             setupTestInstance(test_sql_statement);
             test_instance.exact_search_values = {};
@@ -697,7 +697,7 @@ describe('Test FileSystem Class',function() {
             expect(test_result[test_attr_path]).to.be.a('object');
             expect(test_result[test_attr_path].ignore).to.equal(false);
             test_result[test_attr_path].values.forEach(val => {
-                expect(val).to.equal(test_hash_val);
+                expect(val).to.equal("0");
             });
         });
 
