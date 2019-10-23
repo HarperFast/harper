@@ -1,3 +1,5 @@
+"use strict";
+
 const insert = require('../data_layer/insert');
 const search = require('../data_layer/search');
 const delete_ = require('../data_layer/delete');
@@ -45,11 +47,10 @@ async function addRole(role){
     }
 
     let license_details = await license.getLicense();
-    //TODO: Restore this after setting up roles
     if(!license_details.enterprise) {
         let role_count = Object.keys(await listRoles()).length;
-        if(role_count > 0) {
-            throw new Error(`Your current license only supports ${terms.BASIC_LICENSE_MAX_NON_CU_ROLES} role.  ${terms.SUPPORT_HELP_MSG}`);
+        if(role_count >= terms.BASIC_LICENSE_MAX_NON_CU_ROLES) {
+            throw new Error(`${terms.LICENSE_ROLE_DENIED_RESPONSE} role.  ${terms.LICENSE_HELP_MSG}`);
         }
     }
 

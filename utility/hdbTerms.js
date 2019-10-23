@@ -13,14 +13,19 @@ const HDB_PROC_DESCRIPTOR = 'HarperDB';
 const SC_PROC_DESCRIPTOR = 'Cluster Server';
 
 const HDB_SUPPORT_ADDRESS = 'support@harperdb.io';
-const HDB_SUPPORT_URL = 'https://harperdbhelp.zendesk.com/hc/en-us';
-const SUPPORT_HELP_MSG = `For support, please submit a support request at ${HDB_SUPPORT_URL} or contact ${HDB_SUPPORT_ADDRESS}`;
-const SEARCH_NOT_FOUND_MESSAGE = "None of the specified records were found.";
-const SEARCH_ATTRIBUTE_NOT_FOUND = `hash attribute not found`;
-const LICENSE_ROLE_DENIED_RESPONSE = 'Your current license only supports 1 role.';
-const LICENSE_MAX_CONNS_REACHED = 'Your current license only supports 3 connections to a node.';
+const HDB_LICENSE_EMAIL_ADDRESS = 'license@harperdb.io';
+
 const BASIC_LICENSE_MAX_NON_CU_ROLES = 1;
 const BASIC_LICENSE_MAX_CLUSTER_CONNS = 3;
+const HDB_SUPPORT_URL = 'https://harperdbhelp.zendesk.com/hc/en-us';
+const HDB_PRICING_URL = 'https://https://www.harperdb.io/product';
+const SUPPORT_HELP_MSG = `For support, please submit a support request at ${HDB_SUPPORT_URL} or contact ${HDB_SUPPORT_ADDRESS}`;
+const LICENSE_HELP_MSG = `For license support, please contact ${HDB_LICENSE_EMAIL_ADDRESS}`;
+const SEARCH_NOT_FOUND_MESSAGE = "None of the specified records were found.";
+const SEARCH_ATTRIBUTE_NOT_FOUND = `hash attribute not found`;
+const LICENSE_ROLE_DENIED_RESPONSE = `Your current license only supports ${BASIC_LICENSE_MAX_NON_CU_ROLES} role.  ${LICENSE_HELP_MSG}`;
+const LICENSE_MAX_CONNS_REACHED = 'Your current license only supports 3 connections to a node.';
+
 
 const PERIOD_REGEX = /^\.$/;
 const DOUBLE_PERIOD_REGEX = /^\.\.$/;
@@ -383,6 +388,7 @@ module.exports = {
     HDB_SUPPORT_ADDRESS,
     HDB_SUPPORT_URL,
     SUPPORT_HELP_MSG,
+    LICENSE_HELP_MSG,
     HDB_PROC_NAME,
     HDB_PROC_DESCRIPTOR,
     SC_PROC_NAME,

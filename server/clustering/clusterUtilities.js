@@ -76,7 +76,7 @@ async function addNode(new_node) {
     if(!(await hdb_license.getLicense()).enterprise) {
         // send a get cluster status message and wait for response
         let cluster_status = await clusterStatus(null);
-        if(!cluster_status) {
+        if(!cluster_status || !cluster_status.status) {
             return hdb_utils.errorizeMessage('Cannot add a node, not connected to cluster.');
         }
         if((typeof cluster_status.status === 'string') || (cluster_status.status instanceof String)) {
@@ -91,7 +91,7 @@ async function addNode(new_node) {
         }
         // count # connections, if >= 3, reject
         if(status_count >= terms.BASIC_LICENSE_MAX_CLUSTER_CONNS) {
-            return `${terms.LICENSE_MAX_CONNS_REACHED} ${terms.SUPPORT_HELP_MSG}`;
+            return `${terms.LICENSE_MAX_CONNS_REACHED} ${terms.LICENSE_HELP_MSG}`;
         }
 
     }

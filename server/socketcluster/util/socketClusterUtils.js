@@ -63,7 +63,7 @@ function getWorkerStatus(status_response_msg, worker) {
             let client_keys = Object.keys(worker.scServer.clients);
             for (let i = 0; i < client_keys.length; i++) {
                 let client = worker.scServer.clients[client_keys[i]];
-                if(client.remoteAddress && (client.remoteAddress.contains('localhost') || client.remoteAddress.contains('127.0.0.1') )) {
+                if(client.remoteAddress && (client.remoteAddress.includes('localhost') || client.remoteAddress.includes('127.0.0.1') )) {
                     continue;
                 }
                 let conn = new ConnectionDetails(client.id, client.remoteAddress, client.remotePort, client.state);
@@ -96,7 +96,7 @@ function getWorkerStatus(status_response_msg, worker) {
  */
 function createEventPromise(event_name, event_emitter_object, timeout_promise) {
     let event_promise = new Promise((resolve) => {
-        event_emitter_object.on(event_name, (msg) => {
+        event_emitter_object.once(event_name, (msg) => {
             let curr_timeout_promise = timeout_promise;
             //timeout_promise = hdb_utils.timeoutPromise(STATUS_TIMEOUT_MS, TIMEOUT_ERR_MSG);
             log.info(`Got cluster status event response: ${inspect(msg)}`);
