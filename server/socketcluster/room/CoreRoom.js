@@ -102,6 +102,9 @@ class CoreRoom extends RoomIF {
         try {
             super.publishToRoom(msg, worker, existing_hdb_header);
             log.info(`Called publishToRoom in CoreRoom with topic: ${self.topic}.`);
+            if(msg.requestor_channel) {
+                return worker.exchange.publish(msg.requestor_channel, msg);
+            }
             worker.exchange.publish(self.topic, msg);
         } catch(err) {
             log.error(`Error publishing to channel ${self.topic}.`);
@@ -158,6 +161,8 @@ class CoreRoom extends RoomIF {
 
                     cluster_status_response.hdb_header = req.hdb_header;
                     cluster_status_response.cluster_staatus_request_id = req.id;
+                    // Make sure we send the response back to the originating hdb_child
+                    cluster_status_response.requestor_channel = req.requestor_channel;
                     // insert the status for this worker
                     cluster_utils.getWorkerStatus(cluster_status_response, worker);
                     let status_bucket_obj = new ClusterStatusBucket(worker.options.workerCount);
