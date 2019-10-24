@@ -6,8 +6,6 @@ const RoomMessageObjects = require('../room/RoomMessageObjects');
 const {inspect} = require('util');
 const hdb_license = require('../../../utility/registration/hdb_license');
 
-let license = hdb_license.getLicense();
-
 class SCServer{
     constructor(worker){
         this.worker = worker;
