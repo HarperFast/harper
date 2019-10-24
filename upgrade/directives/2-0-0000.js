@@ -20,11 +20,12 @@ directive.explicit_directory_paths.push(`${home_dir}/.harperdb`);
 // Create the ~/.harperdb/keys directory
 directive.explicit_directory_paths.push(new_keys_dir_path);
 // Create the ~/hdb/clustering/connections directory
-let connections_dir_path = path.join(hdb_root, CLUSTERING_FOLDER_NAMES_ENUM.CLUSTERING_FOLDER, CLUSTERING_FOLDER_NAMES_ENUM.CONNECTIONS_FOLDER);
+
+/*let connections_dir_path = path.join(hdb_root, CLUSTERING_FOLDER_NAMES_ENUM.CLUSTERING_FOLDER, CLUSTERING_FOLDER_NAMES_ENUM.CONNECTIONS_FOLDER);
 directive.explicit_directory_paths.push(connections_dir_path);
 // Create the ~/hdb/clustering/transaction_log directory
 let transaction_log_dir_path = path.join(hdb_root, CLUSTERING_FOLDER_NAMES_ENUM.CLUSTERING_FOLDER, CLUSTERING_FOLDER_NAMES_ENUM.TRANSACTION_LOG_FOLDER);
-directive.explicit_directory_paths.push(transaction_log_dir_path);
+directive.explicit_directory_paths.push(transaction_log_dir_path);*/
 
 directive.environment_variables.push(
     new env_variable(`${HDB_SETTINGS_NAMES.CLUSTERING_USER_KEY}`, ``, [`The user used to connect to other instances of HarperDB, this user must have a role of cluster_user`])
