@@ -438,10 +438,6 @@ function createAdminUser(role, admin_user, callback) {
     const cb_role_add_role = util.callbackify(role_ops.addRole);
     const cb_role_list_role = util.callbackify(role_ops.listRoles);
     const cb_user_add_user = util.callbackify(user_ops.addUser);
-    /*let role = {};
-    role.role = 'super_user';
-    role.permission = {};
-    role.permission.super_user = true;*/
 
     schema.setSchemaDataToGlobal(() => {
         if (keep_data) {
@@ -470,12 +466,8 @@ function createAdminUser(role, admin_user, callback) {
                     };
 
                     prompt.get(role_schema, function (err, selected_role) {
-                        /*let admin_user = {};
-                        admin_user.username = wizard_result.HDB_ADMIN_USERNAME;
-                        admin_user.password = wizard_result.HDB_ADMIN_PASSWORD;*/
                         // account for the offset
                         admin_user.role = res[selected_role.ROLE - 1].id;
-                       // admin_user.active = true;
 
                         cb_user_add_user(admin_user, (err) => {
                             if (err) {
@@ -488,11 +480,7 @@ function createAdminUser(role, admin_user, callback) {
                     });
 
                 } else {
-                    /*let admin_user = {};
-                    admin_user.username = wizard_result.HDB_ADMIN_USERNAME;
-                    admin_user.password = wizard_result.HDB_ADMIN_PASSWORD;*/
                     admin_user.role = res[0].id;
-                   // admin_user.active = true;
 
                     cb_user_add_user(admin_user, (err) => {
                         if (err) {
@@ -513,11 +501,7 @@ function createAdminUser(role, admin_user, callback) {
                     return callback(err);
                 }
 
-                /*let admin_user = {};
-                admin_user.username = wizard_result.HDB_ADMIN_USERNAME;
-                admin_user.password = wizard_result.HDB_ADMIN_PASSWORD;*/
                 admin_user.role = res.id;
-                //admin_user.active = true;
 
                 cb_user_add_user(admin_user, (err) => {
                     if (err) {
