@@ -64,7 +64,7 @@ function processLocalTransaction(req, res, operation_function, callback) {
             harper_logger.log_level === harper_logger.TRACE) {
                 // Need to remove auth variables, but we don't want to create an object unless
                 // the logging is actually going to happen.
-                const { hdb_user, hdb_auth_header, ...clean_body } = req.body;
+                const { hdb_user, hdb_auth_header, password, ...clean_body } = req.body;
                 harper_logger.info(JSON.stringify(clean_body));
             }
         }
