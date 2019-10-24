@@ -85,7 +85,7 @@ let invalid_other_user = {
 describe('Test authorize function', function () {
     it('Cannot complete request Basic authorization: User not found ', function (done) {
         auth.authorize(invalid_basic_user, null, function (err, user) {            
-            assert.equal(err, "Cannot complete request: User 'nonook' not found", "Cannot complete request: User 'nonook' not found");
+            assert.equal(err, "Login failed", "Cannot complete request: User 'nonook' not found");
             done();
         });
     });
@@ -119,7 +119,7 @@ describe('Test authorize function', function () {
     //other authorization
     it('Cannot complete request Other authorization: User not found ', function (done) {
         auth.authorize(invalid_other_user, null, function (err, user) {            
-            assert.equal(err, "Cannot complete request: User 'nouser' not found", "Cannot complete request: User 'nouser' not found");
+            assert.equal(err, "Login failed", "Cannot complete request: User 'nouser' not found");
             done();
         });
     });
