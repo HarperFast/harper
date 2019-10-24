@@ -60,7 +60,8 @@ module.exports = {
     getClusterMessage,
     createEventPromise,
     checkProcessRunning,
-    checkSchemaTableExist
+    checkSchemaTableExist,
+    promisifyPapaParseURL
 };
 
 /**
@@ -550,6 +551,25 @@ function promisifyPapaParse() {
         });
     };
 }
+
+function promisifyPapaParseURL() {
+    papa_parse.parsePromiseURL = function (url, chunk_func) {
+        return new Promise(function (resolve, reject) {
+            papa_parse.parse(url,
+                {
+                    download: true,
+                    header: true,
+                    transformHeader: removeBOM,
+                    chunk: chunk_func.bind(null, reject),
+                    skipEmptyLines: true,
+                    dynamicTyping: true,
+                    error: reject,
+                    complete: resolve
+                });
+        });
+    };
+}
+
 
 /**
  * Removes the byte order mark from a string

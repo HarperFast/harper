@@ -10,6 +10,7 @@ const logger = require('../utility/logging/harper_logger');
 const papa_parse = require('papaparse');
 const fs = require('fs-extra');
 hdb_utils.promisifyPapaParse();
+hdb_utils.promisifyPapaParseURL();
 const env = require('../utility/environment/environmentManager');
 const socket_cluster_util = require('../server/socketcluster/util/socketClusterUtils');
 const op_func_caller = require('../utility/OperationFunctionCaller');
@@ -18,6 +19,12 @@ const NEWLINE = '\n';
 const unix_filename_regex = new RegExp(/[^-_.A-Za-z0-9]/);
 const ALASQL_MIDDLEWARE_PARSE_PARAMETERS = 'SELECT * FROM CSV(?, {headers:true, separator:","})';
 const HIGHWATERMARK = 1024*1024*5;
+const ACCEPTABLE_URL_CONTENT_TYPE_ENUM = {
+    'text/csv': true,
+    'application/octet-stream': true,
+    'text/plain': true,
+    'application/vnd.ms-excel': true
+};
 
 module.exports = {
     csvDataLoad,
@@ -94,6 +101,7 @@ async function csvURLLoad(json_message) {
     // check passed url to see if its live and valid data
     let url_response = undefined;
     try {
+        await papa_parse.parsePromiseURL(json_message.csv_url, validateChunk.bind(null, json_message));
         url_response = await createReadStreamFromURL(json_message.csv_url);
     } catch (e) {
         logger.error(`invalid bulk load url ${json_message.csv_url}, response ${url_response.statusMessage}`);
@@ -102,7 +110,7 @@ async function csvURLLoad(json_message) {
     try {
         // Some ISPs will return a "Not found" html page that still have a 200 status. This handles that.
         if(!url_response.body) {
-            throw new Error(url_response.message);
+            throw new Error(`${url_response.message}. Status code: ${url_response.status_code}. Status message: ${url_response.status_message}`);
         }
         converted_msg.data = await callMiddleware(ALASQL_MIDDLEWARE_PARSE_PARAMETERS, [url_response.body]);
         bulk_load_result = await op_func_caller.callOperationFunctionAsAwait(callBulkLoad, converted_msg, postCSVLoadFunction);
@@ -265,7 +273,7 @@ async function createReadStreamFromURL(url) {
         resolveWithFullResponse: true
     };
     let response = await request_promise(options);
-    if (response.statusCode !== hdb_terms.HTTP_STATUS_CODES.OK || response.headers['content-type'].indexOf('text/csv') < 0) {
+    if (response.statusCode !== hdb_terms.HTTP_STATUS_CODES.OK) {
         let return_object = {
             message: `CSV Load failed from URL: ${url}`,
             status_code: response.statusCode,
