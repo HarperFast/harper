@@ -29,7 +29,7 @@ class SocketConnector{
 
         this.socket.on('connect', status =>{
             this.disconnect_timestamp = null;
-            log.error(`Connected to cluster server with code: ${status} - ${terms.WEBSOCKET_CLOSE_CODE_DESCRIPTION_LOOKUP[status]}`);
+            log.error(`Connected to cluster server.`);
         });
 
         this.socket.on('disconnect', status =>{
