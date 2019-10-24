@@ -565,11 +565,7 @@ function createSettingsFile(mount_status, callback) {
             `   ;The name of this node in your HarperDB cluster topology.  This must be a value unique from the rest of your cluster node names.\n` +
             `${HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY}=${node_name}\n` +
             `   ;The user used to connect to other instances of HarperDB, this user must have a role of cluster_user. \n` +
-            `${HDB_SETTINGS_NAMES.CLUSTERING_USER_KEY}=\n` +
-            `   ;Specify the file system path to where the Helium volume will reside.  \n` +
-            `${HDB_SETTINGS_NAMES.HELIUM_VOLUME_PATH_KEY}=\n` +
-            `   ;specify the host & port where your helium server is running. NOTE for most installs this will not change from ${hdb_terms.HDB_SETTINGS_DEFAULT_VALUES.HELIUM_SERVER_HOST} \n` +
-            `${HDB_SETTINGS_NAMES.HELIUM_SERVER_HOST_KEY}=${hdb_terms.HDB_SETTINGS_DEFAULT_VALUES.HELIUM_SERVER_HOST}`;
+            `${HDB_SETTINGS_NAMES.CLUSTERING_USER_KEY}=\n`;
 
         winston.info('info', `hdb_props_value ${JSON.stringify(hdb_props_value)}`);
         winston.info('info', `settings path: ${env.get('settings_path')}`);
