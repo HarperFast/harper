@@ -27,14 +27,12 @@ async function saveApiCallCount(counter_object, loc) {
         if(counter_object.count === 0) {
             return;
         }
-        log.trace('Store call counter_object');
         let finger = await registration_handler.getFingerprint();
         let cipher = crypto.createCipher('aes192', finger);
         let encrypted_exp = cipher.update(JSON.stringify(counter_object), 'utf8', 'hex');
         encrypted_exp += cipher.final('hex');
 
         let backup_loc = path.join(`/tmp`, finger, `.${finger}1`);
-        console.log(`wrote limits value: ${counter_object.count}`);
         await fs.writeFile(loc, encrypted_exp, {encoding: 'utf8', mode: terms.HDB_FILE_PERMISSIONS}).catch((err) => {
             log.error(`Error writing count file to ${loc}`);
             log.error(err);
@@ -141,7 +139,6 @@ function setCallCount(master_limiter, new_value) {
         // would read the file and penalize resulting in a 4x penalty.  So we just hack around the problem here.
 
         master_limiter._rateLimiters[hdb_util.getLimitKey()]._memoryStorage._storage[`${limit_key}:${limit_key}`]._value = new_value;
-        console.log(`Set limits to ${new_value}`);
         return true;
     } catch(err) {
         log.debug("failed to pull limits");

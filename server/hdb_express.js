@@ -144,7 +144,6 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     // Interval to periodically store the api limits
     setInterval(async (info) => {
         try {
-            harper_logger.debug('Limits written');
             let limit_key = hdb_util.getLimitKey();
             let limiter = master_rate_limiter._rateLimiters[hdb_util.getLimitKey()];
             if(!limiter) {
