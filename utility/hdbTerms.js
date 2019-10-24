@@ -27,6 +27,7 @@ const SEARCH_ATTRIBUTE_NOT_FOUND = `hash attribute not found`;
 const LICENSE_ROLE_DENIED_RESPONSE = `Your current license only supports ${BASIC_LICENSE_MAX_NON_CU_ROLES} role.  ${LICENSE_HELP_MSG}`;
 const LICENSE_MAX_CONNS_REACHED = 'Your current license only supports 3 connections to a node.';
 
+const BASIC_LICENSE_MAX_CLUSTER_USER_ROLES = 1;
 
 const PERIOD_REGEX = /^\.$/;
 const DOUBLE_PERIOD_REGEX = /^\.\.$/;
@@ -36,6 +37,8 @@ const UNICODE_FORWARD_SLASH = 'U+002F';
 const ESCAPED_FORWARD_SLASH_REGEX = /U\+002F/g;
 const ESCAPED_PERIOD_REGEX = /^U\+002E$/;
 const ESCAPED_DOUBLE_PERIOD_REGEX = /^U\+002EU\+002E$/;
+const MOMENT_DAYS_TAG = 'd';
+const API_TURNOVER_SEC = 999999;
 
 // Name of the System schema
 const SYSTEM_SCHEMA_NAME = 'system';
@@ -53,11 +56,17 @@ const RESTART_CODE_NUM = 24;
 const RESTART_TIMEOUT_MS = 60000;
 const HDB_FILE_PERMISSIONS = 0o700;
 const SCHEMA_DIR_NAME = 'schema';
+const LIMIT_COUNT_NAME = '.count';
 
 const HELIUM_URL_PREFIX = 'he://';
 
-const CLUSTERING_FOLDER_NAME = 'clustering';
 const CLUSTERING_PAYLOAD_FILE_NAME = '.scPayload.json';
+
+const CLUSTERING_FOLDER_NAMES_ENUM = {
+    CLUSTERING_FOLDER: 'clustering',
+    CONNECTIONS_FOLDER: 'connections',
+    TRANSACTION_LOG_FOLDER: 'transaction_log',
+};
 
 // Trying to keep socket cluster as modular as possible, so we will create values in here that point to values
 // inside of the socketcluster types module.
@@ -152,7 +161,8 @@ const HTTP_STATUS_CODES = {
     REQUEST_TIMEOUT: 408,
     SERVICE_UNAVAILABLE: 503,
     UNAUTHORIZED: 401,
-    NOT_IMPLEMENTED: 501
+    NOT_IMPLEMENTED: 501,
+    TOO_MANY_REQUESTS: 429
 };
 
 // Operations
@@ -396,13 +406,9 @@ const WEBSOCKET_CLOSE_CODE_DESCRIPTION_LOOKUP = {
     4141 : 'LICENSE_LIMIT_REACHED'
 };
 
-
-
 const HDB_LICENSE_NAME = 'hdb_license';
-
 const CLUSTERING_MESSAGE_TYPES = cluster_types.CORE_ROOM_MSG_TYPE_ENUM;
 const ORIGINATOR_SET_VALUE = cluster_types.ORIGINATOR_SET_VALUE;
-
 const NEW_LINE = '\r\n';
 
 module.exports = {
@@ -450,6 +456,7 @@ module.exports = {
     RESTART_TIMEOUT_MS,
     HDB_FILE_PERMISSIONS,
     SCHEMA_DIR_NAME,
+    LIMIT_COUNT_NAME,
     INSERT_MODULE_ENUM,
     UPGRADE_JSON_FIELD_NAMES_ENUM,
     RESTART_CODE,
@@ -462,7 +469,6 @@ module.exports = {
     // Make the message objects available through hdbTerms to keep clustering as modular as possible.
     ClusterMessageObjects,
     ORIGINATOR_SET_VALUE,
-    CLUSTERING_FOLDER_NAME,
     CLUSTERING_PAYLOAD_FILE_NAME,
     HELIUM_URL_PREFIX,
     LICENSE_VALUES,
@@ -479,7 +485,11 @@ module.exports = {
     HELIUM_PROCESS_NAME,
     HELIUM_START_SERVER_COMMAND,
     LICENSE_FILE_NAME,
+    WEBSOCKET_CLOSE_CODE_DESCRIPTION_LOOKUP,
     NEW_LINE,
-    WEBSOCKET_CLOSE_CODE_DESCRIPTION_LOOKUP
+    BASIC_LICENSE_MAX_CLUSTER_USER_ROLES,
+    MOMENT_DAYS_TAG,
+    API_TURNOVER_SEC,
+    CLUSTERING_FOLDER_NAMES_ENUM
 };
 

@@ -9,6 +9,7 @@ const uuidV4 = require('uuid/v4');
 const util = require('util');
 const license = require('../utility/registration/hdb_license');
 const terms = require('../utility/hdbTerms');
+const hdb_utils = require('../utility/common_utils');
 const p_search_search_by_value = util.promisify(search.searchByValue);
 const p_search_search_by_conditions = util.promisify(search.searchByConditions);
 const p_delete_delete = util.promisify(delete_.delete);
@@ -48,9 +49,16 @@ async function addRole(role){
 
     let license_details = await license.getLicense();
     if(!license_details.enterprise) {
-        let role_count = Object.keys(await listRoles()).length;
-        if(role_count >= terms.BASIC_LICENSE_MAX_NON_CU_ROLES) {
-            throw new Error(`${terms.LICENSE_ROLE_DENIED_RESPONSE} role.  ${terms.LICENSE_HELP_MSG}`);
+        //look to see if there is already a cluster_user role
+        let roles = await listRoles();
+        let has_cluster_role = checkClusterUserRole(role, roles);
+        if(has_cluster_role){
+            throw new Error(`Your current license only supports ${terms.BASIC_LICENSE_MAX_CLUSTER_USER_ROLES} cluster_user role. ${terms.SUPPORT_HELP_MSG}`);
+        }
+
+        let role_count = await listRoles().length;
+        if(role_count > 0) {
+            throw new Error(`Your current license only supports ${terms.BASIC_LICENSE_MAX_NON_CU_ROLES + terms.BASIC_LICENSE_MAX_CLUSTER_USER_ROLES} roles.  ${terms.SUPPORT_HELP_MSG}`);
         }
     }
 
@@ -92,6 +100,21 @@ async function addRole(role){
 
     role = scrubRoleDetails(role);
     return role;
+}
+
+function checkClusterUserRole(add_role, roles){
+    let has_cluster_role = false;
+    if(add_role.permission.cluster_user === true){
+        for(let x = 0; x < roles.length; x++){
+            let role = roles[x];
+            let permission = role.permission;
+            if(!hdb_utils.isEmpty(permission) && permission.cluster_user === true){
+                has_cluster_role = true;
+                return;
+            }
+        }
+    }
+    return has_cluster_role;
 }
 
 async function alterRole(role){
