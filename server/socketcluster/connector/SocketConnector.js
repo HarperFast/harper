@@ -1,6 +1,6 @@
 "use strict";
 const log = require('../../../utility/logging/harper_logger');
-
+const terms = require('../../../utility/hdbTerms');
 class SocketConnector{
     /**
      *
@@ -29,13 +29,12 @@ class SocketConnector{
 
         this.socket.on('connect', status =>{
             this.disconnect_timestamp = null;
-            log.info(status);
+            log.error(`Connected to cluster server with code: ${status} - ${terms.WEBSOCKET_CLOSE_CODE_DESCRIPTION_LOOKUP[status]}`);
         });
 
         this.socket.on('disconnect', status =>{
             this.disconnect_timestamp = Date.now();
-            log.error('Disconnected from cluster server.');
-            log.error(status);
+            log.error(`Disconnected from cluster server with code: ${status} - ${terms.WEBSOCKET_CLOSE_CODE_DESCRIPTION_LOOKUP[status]}`);
         });
 
         this.socket.on('login', (data, res)=>{

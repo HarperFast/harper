@@ -96,12 +96,13 @@ class SCServer{
                 if (clients) {
                     conn_count += Object.keys(clients).length;
                 }
-            } catch (err) {
+            } catch(err) {
                 log.info('Could not count outbound node connections');
                 log.error(err);
             }
             if(conn_count >= terms.BASIC_LICENSE_MAX_CLUSTER_CONNS) {
-                socket.disconnect(terms.HTTP_STATUS_CODES.UNAUTHORIZED, 'Too many connections');
+                log.notify('Rejected inbound connection, your license only supports 3 connections.');
+                return socket.disconnect(terms.BASIC_LICENSE_CLUSTER_CONNECTION_LIMIT_WS_ERROR_CODE, 'Rejected inbound connection, your license only supports 3 connections.');
             }
         }
 
