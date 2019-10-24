@@ -51,8 +51,13 @@ const LIMIT_COUNT_NAME = '.count';
 
 const HELIUM_URL_PREFIX = 'he://';
 
-const CLUSTERING_FOLDER_NAME = 'clustering';
 const CLUSTERING_PAYLOAD_FILE_NAME = '.scPayload.json';
+
+const CLUSTERING_FOLDER_NAMES_ENUM = {
+    CLUSTERING_FOLDER: 'clustering',
+    CONNECTIONS_FOLDER: 'connections',
+    TRANSACTION_LOG_FOLDER: 'transaction_log',
+};
 
 // Trying to keep socket cluster as modular as possible, so we will create values in here that point to values
 // inside of the socketcluster types module.
@@ -436,7 +441,6 @@ module.exports = {
     // Make the message objects available through hdbTerms to keep clustering as modular as possible.
     ClusterMessageObjects,
     ORIGINATOR_SET_VALUE,
-    CLUSTERING_FOLDER_NAME,
     CLUSTERING_PAYLOAD_FILE_NAME,
     HELIUM_URL_PREFIX,
     LICENSE_VALUES,
@@ -452,6 +456,7 @@ module.exports = {
     LICENSE_FILE_NAME,
     NEW_LINE,
     MOMENT_DAYS_TAG,
-    API_TURNOVER_SEC
+    API_TURNOVER_SEC,
+    CLUSTERING_FOLDER_NAMES_ENUM
 };
 
