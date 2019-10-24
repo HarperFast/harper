@@ -2,24 +2,28 @@
 const path = require('path');
 const env_variable = require('../EnvironmentVariable');
 const upgrade_directive = require('../UpgradeDirective');
-const env = require('../../utility/environment/environmentManager');
 const fs = require('fs');
 const {HDB_SETTINGS_NAMES, HDB_SETTINGS_DEFAULT_VALUES, CLUSTERING_FOLDER_NAMES_ENUM} = require('../../utility/hdbTerms');
 let directive = new upgrade_directive('2.0.000');
+const env = require('../../utility/environment/environmentManager');
+if(!env.isInitialized()) {
+    env.initSync();
+}
 
 const KEYS_FILE_NAME = '060493.ks';
 let home_dir = process.env['HOME'];
 let new_keys_dir_path = `${home_dir}/.harperdb/keys`;
 let hdb_root = env.get('HDB_ROOT');
+
 // Create the ~/.harperdb directory
 directive.explicit_directory_paths.push(`${home_dir}/.harperdb`);
 // Create the ~/.harperdb/keys directory
 directive.explicit_directory_paths.push(new_keys_dir_path);
 // Create the ~/hdb/clustering/connections directory
-let connections_dir_path = path.join(home_dir, hdb_root, CLUSTERING_FOLDER_NAMES_ENUM.CLUSTERING_FOLDER, CLUSTERING_FOLDER_NAMES_ENUM.CONNECTIONS_FOLDER);
+let connections_dir_path = path.join(hdb_root, CLUSTERING_FOLDER_NAMES_ENUM.CLUSTERING_FOLDER, CLUSTERING_FOLDER_NAMES_ENUM.CONNECTIONS_FOLDER);
 directive.explicit_directory_paths.push(connections_dir_path);
 // Create the ~/hdb/clustering/transaction_log directory
-let transaction_log_dir_path = path.join(home_dir, hdb_root, CLUSTERING_FOLDER_NAMES_ENUM.CLUSTERING_FOLDER, CLUSTERING_FOLDER_NAMES_ENUM.TRANSACTION_LOG_FOLDER);
+let transaction_log_dir_path = path.join(hdb_root, CLUSTERING_FOLDER_NAMES_ENUM.CLUSTERING_FOLDER, CLUSTERING_FOLDER_NAMES_ENUM.TRANSACTION_LOG_FOLDER);
 directive.explicit_directory_paths.push(transaction_log_dir_path);
 
 directive.environment_variables.push(
