@@ -4,7 +4,7 @@ const harperdb_helium = require('../../../../dependencies/harperdb_helium/hdb').
 global.hdb_helium = new harperdb_helium(false);
 
 const rewire = require('rewire');
-let heSearchByHash_rw = rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heSearchByHash');
+let heSearchByHash_rw = rewire('../../../../data_layer/harperBridge/heBridge/heMethods/heSearchByHash');
 const { expect } = require('chai');
 const sinon = require('sinon');
 
@@ -43,7 +43,7 @@ describe('heSearchByHash', () => {
 
     after(() => {
         sandbox.reset();
-        rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heSearchByHash');
+        rewire('../../../../data_layer/harperBridge/heBridge/heMethods/heSearchByHash');
         global.harperdb_helium = undefined;
     });
 

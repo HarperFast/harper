@@ -6,7 +6,7 @@ let hdb_helium = test_utils.buildHeliumTestVolume();
 
 const rewire = require('rewire');
 const heCreateAttribute = require('../../../../data_layer/harperBridge/heBridge/heMethods/heCreateAttribute');
-const heDropAttribute = rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heDropAttribute');
+const heDropAttribute = rewire('../../../../data_layer/harperBridge/heBridge/heMethods/heDropAttribute');
 const heGenerateDataStoreName = require('../../../../data_layer/harperBridge/heBridge/heUtility/heGenerateDataStoreName');
 
 const chai = require('chai');

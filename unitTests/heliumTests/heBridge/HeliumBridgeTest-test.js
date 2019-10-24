@@ -5,7 +5,7 @@ test_utils.preTestPrep();
 test_utils.buildHeliumTestVolume();
 
 const rewire = require('rewire');
-let HeliumBridge = rewire('../../../../data_layer/harperBridge/heBridge/HeliumBridge');
+let HeliumBridge = rewire('../../../data_layer/harperBridge/heBridge/HeliumBridge');
 const log = require('../../../utility/logging/harper_logger');
 const chai = require('chai');
 const sinon = require('sinon');
@@ -72,7 +72,7 @@ describe('Tests for the Helium bridge class', () => {
 
     after(() => {
         sandbox.restore();
-        rewire('../../../../data_layer/harperBridge/heBridge/HeliumBridge');
+        rewire('../../../data_layer/harperBridge/heBridge/HeliumBridge');
         test_utils.teardownHeliumTestVolume(global.hdb_helium);
     });
 

@@ -23,13 +23,13 @@ const returnUndefined = () => undefined;
 
 describe('Test harperBridge', () => {
     before(() => {
-        harperBridge_rw = rewire('../../../data_layer/harperBridge/harperBridge');
+        harperBridge_rw = rewire('../../data_layer/harperBridge/harperBridge');
         getBridge_rw = harperBridge_rw.__get__('getBridge');
         getDataStoreType_rw = harperBridge_rw.__get__('getDataStoreType');
     });
 
     after(() => {
-        rewire('../../../data_layer/harperBridge/harperBridge');
+        rewire('../../data_layer/harperBridge/harperBridge');
         test_utils.teardownHeliumTestVolume(global.hdb_helium);
     });
 

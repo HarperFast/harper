@@ -4,7 +4,7 @@ const { preTestPrep, testError} = require('../../../test_utils');
 preTestPrep();
 
 const rewire = require('rewire');
-let heDropSchema_rw = rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heDropSchema');
+let heDropSchema_rw = rewire('../../../../data_layer/harperBridge/heBridge/heMethods/heDropSchema');
 let validateDropSchema_rw = heDropSchema_rw.__get__('validateDropSchema');
 
 const chai = require('chai');
@@ -53,7 +53,7 @@ describe('heDropSchema', () => {
 
     after(() => {
         sandbox.reset();
-        rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heDropSchema');
+        rewire('../../../../data_layer/harperBridge/heBridge/heMethods/heDropSchema');
     });
 
     it('Should drop all tables associated with schema', () => {

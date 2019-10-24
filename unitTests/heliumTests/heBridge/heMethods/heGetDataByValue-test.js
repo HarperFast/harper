@@ -7,7 +7,7 @@ const harperdb_helium = require('../../../../dependencies/harperdb_helium/hdb').
 global.hdb_helium = new harperdb_helium(false);
 
 const rewire = require('rewire');
-const heGetDataByValue_rw = rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heGetDataByValue');
+const heGetDataByValue_rw = rewire('../../../../data_layer/harperBridge/heBridge/heMethods/heGetDataByValue');
 const heGenerateDataStoreName = require('../../../../data_layer/harperBridge/heBridge/heUtility/heGenerateDataStoreName');
 const evaluateTableGetAttributes = require('../../../../data_layer/harperBridge/bridgeUtility/evaluateTableGetAttributes');
 const hdb_terms = require('../../../../utility/hdbTerms');
@@ -126,7 +126,7 @@ describe('Test for Helium method heGetDataByValue', () => {
 
     after(() => {
         sandbox.restore();
-        rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heGetDataByValue');
+        rewire('../../../../data_layer/harperBridge/heBridge/heMethods/heGetDataByValue');
         global.harperdb_helium = undefined;
     });
 

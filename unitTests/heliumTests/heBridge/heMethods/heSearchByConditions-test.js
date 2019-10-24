@@ -4,7 +4,7 @@ const test_utils = require('../../../test_utils');
 test_utils.preTestPrep();
 
 const rewire = require('rewire');
-let heSearchByConditions_rw = rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heSearchByConditions');
+let heSearchByConditions_rw = rewire('../../../../data_layer/harperBridge/heBridge/heMethods/heSearchByConditions');
 
 const { mochaAsyncWrapper } = require('../../../test_utils');
 const chai = require('chai');
@@ -106,7 +106,7 @@ describe('heSearchByCondition', () => {
     })
 
     after(() => {
-        rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heSearchByConditions');
+        rewire('../../../../data_layer/harperBridge/heBridge/heMethods/heSearchByConditions');
     });
 
     it('Single condition - should call heSearchByHash with all hashes returned for value condition', mochaAsyncWrapper(async () => {

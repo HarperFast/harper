@@ -5,7 +5,7 @@ test_utils.preTestPrep();
 let hdb_helium = test_utils.buildHeliumTestVolume();
 
 const rewire = require('rewire');
-const heDeleteRecords = rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heDeleteRecords');
+const heDeleteRecords = rewire('../../../../data_layer/harperBridge/heBridge/heMethods/heDeleteRecords');
 const chai = require('chai');
 const { expect } = chai;
 

@@ -7,7 +7,7 @@ const harperdb_helium = require('../../../../dependencies/harperdb_helium/hdb').
 global.hdb_helium = new harperdb_helium(false);
 
 const rewire = require('rewire');
-const heDeleteRecordsBefore = rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heDeleteRecordsBefore');
+const heDeleteRecordsBefore = rewire('../../../../data_layer/harperBridge/heBridge/heMethods/heDeleteRecordsBefore');
 const chai = require('chai');
 const { expect } = chai;
 const sinon = require('sinon');
@@ -49,7 +49,7 @@ describe('Test Helium method heDeleteRecordsBefore', () => {
     after(() => {
         delete global.hdb_schema[DELETE_OBJ_TEST.schema];
         delete global.harperdb_helium;
-        rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heDeleteRecordsBefore');
+        rewire('../../../../data_layer/harperBridge/heBridge/heMethods/heDeleteRecordsBefore');
         sandbox.restore();
     });
 

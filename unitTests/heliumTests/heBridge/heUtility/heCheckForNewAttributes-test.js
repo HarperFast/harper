@@ -6,7 +6,7 @@ const test_utils = require('../../../test_utils');
 test_utils.preTestPrep();
 
 const rewire = require('rewire');
-const heCheckForNewAttributes = rewire('../../../../../data_layer/harperBridge/heBridge/heUtility/heCheckForNewAttributes');
+const heCheckForNewAttributes = rewire('../../../../data_layer/harperBridge/heBridge/heUtility/heCheckForNewAttributes');
 const log = require('../../../../utility/logging/harper_logger');
 const chai = require('chai');
 const sinon = require('sinon');

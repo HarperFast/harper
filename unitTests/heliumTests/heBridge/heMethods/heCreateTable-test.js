@@ -5,8 +5,8 @@ test_utils.preTestPrep();
 let hdb_helium = test_utils.buildHeliumTestVolume();
 
 const rewire = require('rewire');
-const heCreateTable = rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heCreateTable');
-const he_create_attribute_rw = rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heCreateAttribute');
+const heCreateTable = rewire('../../../../data_layer/harperBridge/heBridge/heMethods/heCreateTable');
+const he_create_attribute_rw = rewire('../../../../data_layer/harperBridge/heBridge/heMethods/heCreateAttribute');
 const heGenerateDataStoreName = require('../../../../data_layer/harperBridge/heBridge/heUtility/heGenerateDataStoreName');
 const chai = require('chai');
 const sinon = require('sinon');
@@ -120,7 +120,7 @@ describe('Test for Helium method heCreateTable', () => {
         test_utils.teardownHeliumTestVolume(global.hdb_helium);
         global.hdb_schema = {};
         sandbox.restore();
-        rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heCreateAttribute');
+        rewire('../../../../data_layer/harperBridge/heBridge/heMethods/heCreateAttribute');
     });
     
     it('Test that table A is successfully created', () => {

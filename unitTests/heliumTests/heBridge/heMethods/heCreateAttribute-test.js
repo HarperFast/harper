@@ -5,7 +5,7 @@ test_utils.preTestPrep();
 let hdb_helium = test_utils.buildHeliumTestVolume();
 
 const rewire = require('rewire');
-const heCreateAttribute = rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heCreateAttribute');
+const heCreateAttribute = rewire('../../../../data_layer/harperBridge/heBridge/heMethods/heCreateAttribute');
 const chai = require('chai');
 const sinon = require('sinon');
 const sinon_chai = require('sinon-chai');
@@ -77,7 +77,7 @@ describe('Test for Helium method heCreateAttribute', () => {
     after(() => {
         test_utils.teardownHeliumTestVolume(global.hdb_helium);
         sandbox.restore();
-        rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heCreateAttribute');
+        rewire('../../../../data_layer/harperBridge/heBridge/heMethods/heCreateAttribute');
     });
 
     context('Tests for heCreateAttribute function', () => {

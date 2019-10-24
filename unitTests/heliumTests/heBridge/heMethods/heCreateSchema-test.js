@@ -4,7 +4,7 @@ const test_utils = require('../../../test_utils');
 test_utils.preTestPrep();
 let hdb_helium = test_utils.buildHeliumTestVolume();
 const rewire = require('rewire');
-const heCreateSchema = rewire('../../../../../data_layer/harperBridge/heBridge/heMethods/heCreateSchema');
+const heCreateSchema = rewire('../../../../data_layer/harperBridge/heBridge/heMethods/heCreateSchema');
 
 const chai = require('chai');
 const sinon = require('sinon');
