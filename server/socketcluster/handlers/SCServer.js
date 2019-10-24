@@ -67,7 +67,7 @@ class SCServer{
      * @param socket
      */
     connectionAbortHandler(socket){
-        log.notify('Connection was aborted');
+        log.debug('Connection was aborted');
     }
 
     /**
@@ -78,15 +78,6 @@ class SCServer{
      * @param status
      */
     async connectionHandler(socket, status) {
-        // if at max connections, reject
-        /*
-        if (socket.authState != 'authenticated') {
-        socket.disconnect(4100, 'unauthenticated'); // mã code err này mình tự quy định
-    }
-         */
-        new ServerSocket(this.worker, socket);
-        log.info('socket connected: ' + socket.remoteAddress);
-
         // we need to allow connections from localhost as that is likely the hdb_client connecting
         if(!(await hdb_license.getLicense()).enterprise && !socket.remoteAddress.includes('127.0.0.1')) {
             let conn_count = this.sc_server.clientsCount;
@@ -100,12 +91,14 @@ class SCServer{
                 log.info('Could not count outbound node connections');
                 log.error(err);
             }
+            // if at max connections, reject
             if(conn_count >= terms.BASIC_LICENSE_MAX_CLUSTER_CONNS) {
                 log.notify('Rejected inbound connection, your license only supports 3 connections.');
                 return socket.disconnect(terms.BASIC_LICENSE_CLUSTER_CONNECTION_LIMIT_WS_ERROR_CODE, 'Rejected inbound connection, your license only supports 3 connections.');
             }
         }
-
+        new ServerSocket(this.worker, socket);
+        log.info('socket connected: ' + socket.remoteAddress);
         if(socket.request.url === '/socketcluster/?hdb_worker=1'){
             try {
                 this.worker.exchange_set([terms.INTERNAL_SC_CHANNELS.HDB_WORKERS, socket.id], 1).then(data => {
