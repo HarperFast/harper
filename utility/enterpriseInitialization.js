@@ -56,7 +56,7 @@ async function kickOffEnterprise() {
         };
 
         try {
-            let file_path = path.join(env.getHdbBasePath(), terms.CLUSTERING_FOLDER_NAME, terms.CLUSTERING_PAYLOAD_FILE_NAME);
+            let file_path = path.join(env.getHdbBasePath(), terms.CLUSTERING_FOLDER_NAMES_ENUM.CLUSTERING_FOLDER, terms.CLUSTERING_PAYLOAD_FILE_NAME);
             await fs.writeFile(file_path, JSON.stringify(sc_data_payload), {mode: terms.HDB_FILE_PERMISSIONS});
             fork(path.join(__dirname, '../server/socketcluster/Server.js'));
             log.debug('Started Clustering server.');
