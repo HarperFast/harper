@@ -403,7 +403,7 @@ class SQLSearch {
                         attribute_values.forEach(hash_obj => {
                             const hash_val = hash_obj[hash_name];
                             this.data[schema_table].__merged_data[hash_val] = {};
-                            this.data[schema_table][`${attribute.attribute}`][hash_val] = hash_val;
+                            // this.data[schema_table][`${attribute.attribute}`][hash_val] = hash_val;
                         });
                     } catch (e) {
                         log.error(e);
@@ -429,7 +429,7 @@ class SQLSearch {
                         Object.values(matching_data).forEach(hash_obj => {
                             const hash_val = hash_obj[hash_name];
                             this.data[schema_table].__merged_data[hash_val] = {};
-                            this.data[schema_table][`${attribute.attribute}`][hash_val] = hash_val;
+                            // this.data[schema_table][`${attribute.attribute}`][hash_val] = hash_val;
                         });
                     } else {
                         Object.keys(matching_data).forEach(hash_val => {
@@ -461,7 +461,8 @@ class SQLSearch {
                     this.data[table].__merged_data[id_value][hash_name] = common_utils.autoCast(id_value);
                 });
 
-                Object.keys(this.data[table]).forEach(attribute => {
+                let attr_keys = Object.keys(this.data[table]);
+                attr_keys.forEach(attribute => {
                     if (exclude_attributes.indexOf(attribute) >= 0 || attribute === hash_name) {
                         return;
                     }
@@ -475,7 +476,8 @@ class SQLSearch {
                         }
                     });
                     //This is to free up memory, after consolidation we no longer need these values
-                    this.data[table][attribute] = null;
+                    delete this.data[table][attribute];
+                    // this.data[table][attribute] = null;
                 });
             } catch (e) {
                 log.error(e);
@@ -534,7 +536,7 @@ class SQLSearch {
 
             for (let prop in this.data[`${table.databaseid_orig}_${table.tableid_orig}`].__merged_data) {
                 existing_attributes[table.tableid_orig] = Object.keys(this.data[`${table.databaseid_orig}_${table.tableid_orig}`].__merged_data[prop]);
-                //TODO: Why is this break here?
+                //This break is here b/c we only need to get attr keys from the first object.
                 break;
             }
         });
@@ -564,6 +566,7 @@ class SQLSearch {
             throw new Error('There was a problem processing the data.');
         }
 
+        //collect returned hash values and remove others from table's __merged_data
         if (joined && joined.length > 0) {
             joined.forEach((row) => {
                 hash_attributes.forEach(hash => {
