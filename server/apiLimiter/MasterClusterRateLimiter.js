@@ -27,7 +27,6 @@ async function saveApiCallCount(counter_object, loc) {
         if(counter_object.count === 0) {
             return;
         }
-        log.trace('Store call counter_object');
         let finger = await registration_handler.getFingerprint();
         let cipher = crypto.createCipher('aes192', finger);
         let encrypted_exp = cipher.update(JSON.stringify(counter_object), 'utf8', 'hex');
