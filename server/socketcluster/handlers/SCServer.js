@@ -4,6 +4,9 @@ const log = require('../../../utility/logging/harper_logger');
 const terms = require('../../../utility/hdbTerms');
 const RoomMessageObjects = require('../room/RoomMessageObjects');
 const {inspect} = require('util');
+const hdb_license = require('../../../utility/registration/hdb_license');
+
+let license = hdb_license.getLicense();
 
 class SCServer{
     constructor(worker){
@@ -64,7 +67,7 @@ class SCServer{
      * @param socket
      */
     connectionAbortHandler(socket){
-
+        log.notify('Connection was aborted');
     }
 
     /**
@@ -74,9 +77,33 @@ class SCServer{
      * @param socket
      * @param status
      */
-    connectionHandler(socket, status){
+    async connectionHandler(socket, status) {
+        // if at max connections, reject
+        /*
+        if (socket.authState != 'authenticated') {
+        socket.disconnect(4100, 'unauthenticated'); // mã code err này mình tự quy định
+    }
+         */
         new ServerSocket(this.worker, socket);
         log.info('socket connected: ' + socket.remoteAddress);
+
+        // we need to allow connections from localhost as that is likely the hdb_client connecting
+        if(!(await hdb_license.getLicense()).enterprise && !socket.remoteAddress.includes('127.0.0.1')) {
+            let conn_count = this.sc_server.clientsCount;
+            // check outbound node_connector connections
+            try {
+                let clients = this.worker.node_connector.connections.clients;
+                if (clients) {
+                    conn_count += Object.keys(clients).length;
+                }
+            } catch (err) {
+                log.info('Could not count outbound node connections');
+                log.error(err);
+            }
+            if(conn_count >= terms.BASIC_LICENSE_MAX_CLUSTER_CONNS) {
+                socket.disconnect(terms.HTTP_STATUS_CODES.UNAUTHORIZED, 'Too many connections');
+            }
+        }
 
         if(socket.request.url === '/socketcluster/?hdb_worker=1'){
             try {
