@@ -1,6 +1,6 @@
 {
 	"info": {
-		"_postman_id": "d47d45ca-9e23-4bcf-a643-476788e04ed0",
+		"_postman_id": "70d9600c-79a5-4e5b-8701-7df1d0c27855",
 		"name": "HarperDB Integration Tests",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
 	},
@@ -12094,7 +12094,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\"operation\":\"add_role\",\n\"role\":\"cluster_user\",\n\"permission\":{\n  \"cluster_user\": true\n  }\n}"
+							"raw": "{\n\"operation\":\"add_role\",\n\"role\":\"test_cluster_user_role\",\n\"permission\":{\n  \"cluster_user\": true\n  }\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
