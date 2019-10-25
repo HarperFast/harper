@@ -26,7 +26,7 @@ const SEARCH_NOT_FOUND_MESSAGE = "None of the specified records were found.";
 const SEARCH_ATTRIBUTE_NOT_FOUND = `hash attribute not found`;
 const LICENSE_ROLE_DENIED_RESPONSE = `Your current license only supports ${BASIC_LICENSE_MAX_NON_CU_ROLES} role.  ${LICENSE_HELP_MSG}`;
 const LICENSE_MAX_CONNS_REACHED = 'Your current license only supports 3 connections to a node.';
-
+const LOOPBACK = '127.0.0.1';
 const BASIC_LICENSE_MAX_CLUSTER_USER_ROLES = 1;
 
 const PERIOD_REGEX = /^\.$/;
@@ -490,6 +490,7 @@ module.exports = {
     BASIC_LICENSE_MAX_CLUSTER_USER_ROLES,
     MOMENT_DAYS_TAG,
     API_TURNOVER_SEC,
-    CLUSTERING_FOLDER_NAMES_ENUM
+    CLUSTERING_FOLDER_NAMES_ENUM,
+    LOOPBACK
 };
 
