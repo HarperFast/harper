@@ -430,7 +430,7 @@ class SQLSearch {
                         Object.keys(attr_vals).forEach(hash_val => {
                             if (!this.data[schema_table].__merged_data[hash_val]) {
                                 this.data[schema_table].__merged_data[hash_val] = Object.create(fetch_attributes_objs[schema_table]);
-                                this.data[schema_table].__merged_data[hash_val][hash_name] = hash_val;
+                                this.data[schema_table].__merged_data[hash_val][hash_name] = common_utils.autoCast(hash_val);
                                 this.data[schema_table].__merged_data[hash_val][attribute.attribute] = attr_vals[hash_val][attribute.attribute];
                             } else {
                                 this.data[schema_table].__merged_data[hash_val][attribute.attribute] = attr_vals[hash_val][attribute.attribute];
@@ -449,14 +449,14 @@ class SQLSearch {
                             const hash_val = hash_obj[hash_name];
                             if (!this.data[schema_table].__merged_data[hash_val]) {
                                 this.data[schema_table].__merged_data[hash_val] = Object.create(fetch_attributes_objs[schema_table]);
-                                this.data[schema_table].__merged_data[hash_val][hash_name] = hash_val;
+                                this.data[schema_table].__merged_data[hash_val][hash_name] = common_utils.autoCast(hash_val);
                             }
                         });
                     } else {
                         Object.keys(matching_data).forEach(hash_val => {
                             if (!this.data[schema_table].__merged_data[hash_val]) {
                                 this.data[schema_table].__merged_data[hash_val] = Object.create(fetch_attributes_objs[schema_table]);
-                                this.data[schema_table].__merged_data[hash_val][hash_name] = hash_val;
+                                this.data[schema_table].__merged_data[hash_val][hash_name] = common_utils.autoCast(hash_val);
                                 this.data[schema_table].__merged_data[hash_val][attribute.attribute] = matching_data[hash_val][attribute.attribute];
                             } else {
                                 this.data[schema_table].__merged_data[hash_val][attribute.attribute] = matching_data[hash_val][attribute.attribute];
