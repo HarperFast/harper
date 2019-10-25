@@ -62,7 +62,7 @@ function findAndValidateUser(username, password, done) {
             })[0];
 
             if (!user_tmp) {
-                return done(`Cannot complete request: User '${username}' not found`, null);
+                return done(`Login failed`, null);
             }
 
             if (user_tmp && !user_tmp.active) {
@@ -77,14 +77,12 @@ function findAndValidateUser(username, password, done) {
             appendSystemTablesToRole(user.role);
             return done(null, user);
         } catch(err) {
-            log.error('There was an error authenicating user.');
+            log.error('There was an error authenticating user.');
             log.error(err);
-            return done(`Cannot complete request: User '${username}' not found`, null);
+            return done(`Login failed`, null);
         }
     }
-
 }
-
 
 passport.use(new LocalStrategy(
     function (username, password, done) {

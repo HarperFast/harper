@@ -15,6 +15,7 @@ const winston = require('winston');
 const async = require('async');
 const optimist = require('optimist');
 const forge = require('node-forge');
+const hri = require('human-readable-ids').hri;
 const terms_address = 'http://legal.harperdb.io/Software+License+Subscription+Agreement+110317.pdf';
 const env = require('../../utility/environment/environmentManager');
 const os = require('os');
@@ -273,6 +274,11 @@ function wizard(err, callback) {
                 },
                 required: false
             },
+            NODE_NAME: {
+                description: colors.magenta(`[NODE_NAME] Please enter a unique name for this node`),
+                default: (hri.random()),
+                required: false
+            },
             HTTP_PORT: {
                 pattern: /^([0-9]{1,4}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$/,
                 description: colors.magenta(`[HTTP_PORT] Please enter an HTTP listening port for HarperDB`),
@@ -285,6 +291,13 @@ function wizard(err, callback) {
                 description: colors.magenta(`[HTTPS_PORT] Please enter an HTTPS listening port for HarperDB`),
                 message: 'Invalid port.',
                 default: 31283,
+                required: false
+            },
+            CLUSTERING_PORT: {
+                pattern: /^([0-9]{1,4}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$/,
+                description: colors.magenta(`[CLUSTERING_PORT] Please enter a listening port for Clustering`),
+                message: 'Invalid port.',
+                default: 1111,
                 required: false
             },
             HDB_ADMIN_USERNAME: {
@@ -612,17 +625,13 @@ function createSettingsFile(mount_status, callback) {
             `   ;Set the max number of processes HarperDB will start.  This can also be limited by number of cores and licenses.\n` +
             `${HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES} = ${num_cores}\n` +
             `   ;Set to true to enable clustering.  Requires a valid enterprise license.\n` +
-            `${HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY} = false\n` +
+            `${HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY} = true\n` +
             `   ;The port that will be used for HarperDB clustering.\n` +
-            `${HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY} = 12345\n` +
+            `${HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY} = ${wizard_result.CLUSTERING_PORT}\n` +
             `   ;The name of this node in your HarperDB cluster topology.  This must be a value unique from the rest of your cluster node names.\n` +
-            `${HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY}=${node_name}\n` +
+            `${HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY}=${wizard_result.NODE_NAME}\n` +
             `   ;The user used to connect to other instances of HarperDB, this user must have a role of cluster_user. \n` +
-            `${HDB_SETTINGS_NAMES.CLUSTERING_USER_KEY}=${wizard_result.CLUSTERING_USERNAME}\n` +
-            `   ;Specify the file system path to where the Helium volume will reside.  \n` +
-            `${HDB_SETTINGS_NAMES.HELIUM_VOLUME_PATH_KEY}=\n` +
-            `   ;specify the host & port where your helium server is running. NOTE for most installs this will not change from ${hdb_terms.HDB_SETTINGS_DEFAULT_VALUES.HELIUM_SERVER_HOST} \n` +
-            `${HDB_SETTINGS_NAMES.HELIUM_SERVER_HOST_KEY}=${hdb_terms.HDB_SETTINGS_DEFAULT_VALUES.HELIUM_SERVER_HOST}`;
+            `${HDB_SETTINGS_NAMES.CLUSTERING_USER_KEY}=${wizard_result.CLUSTERING_USERNAME}\n`;
 
         winston.info('info', `hdb_props_value ${JSON.stringify(hdb_props_value)}`);
         winston.info('info', `settings path: ${env.get('settings_path')}`);
