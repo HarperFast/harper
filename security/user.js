@@ -100,6 +100,9 @@ async function addUser(user) {
        throw err;
     });
 
+    if(success.skipped_hashes.length === 1) {
+        return `User ${clean_user.username} already exists.`;
+    }
     clean_user.role = search_role[0];
     let add_user_msg = new terms.ClusterMessageObjects.HdbCoreClusterAddUserRequestMessage();
     add_user_msg.user = clean_user;
