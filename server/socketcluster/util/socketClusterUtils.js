@@ -142,12 +142,16 @@ async function schemaCatchupHandler() {
  * @param socket
  * @returns {Promise<void>}
  */
-async function catchupHandler(channel, start_timestamp, end_timestamp = Date.now()){
+async function catchupHandler(channel, start_timestamp, end_timestamp){
     if(!channel){
         throw new Error('channel is required');
     }
 
-    if(!start_timestamp || !Number.isInteger(start_timestamp)){
+    if(utils.isEmpty(end_timestamp)){
+        end_timestamp = Date.now();
+    }
+
+    if(!start_timestamp || isNaN(start_timestamp)){
         throw new Error('invalid start_timestamp');
     }
 
