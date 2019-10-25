@@ -80,7 +80,7 @@ class SQLSearch {
             }
 
             // Consolidate initial data required for first pass of sql join - narrows list of hash ids for second pass to collect all data resulting from sql request
-            await this._consolidateData();
+            // await this._consolidateData();
             let join_results = await this._processJoins();
 
             // Decide the most efficient way to make the second/final pass for collecting all additional data needed for sql request
@@ -371,6 +371,11 @@ class SQLSearch {
         // do we need this uniqueby, could just use object as map
         this.fetch_attributes = _.uniqBy(this.fetch_attributes, attribute => [attribute.table.databaseid, attribute.table.tableid, attribute.attribute].join());
 
+        const fetch_attributes_obj = this.fetch_attributes.reduce((acc, attr) => {
+            acc[attr.attribute] = null;
+            return acc;
+        }, {});
+
         for (const attribute of this.fetch_attributes) {
             const schema_table = `${attribute.table.databaseid}_${attribute.table.tableid}`;
             this.data[schema_table][`${attribute.attribute}`] = {};
@@ -402,7 +407,13 @@ class SQLSearch {
                         const attribute_values = Object.values(await harperBridge.getDataByHash(search_object));
                         attribute_values.forEach(hash_obj => {
                             const hash_val = hash_obj[hash_name];
-                            this.data[schema_table].__merged_data[hash_val] = {};
+                            if (!this.data[schema_table].__merged_data[hash_val]) {
+                                this.data[schema_table].__merged_data[hash_val] = Object.create(fetch_attributes_obj);
+                                this.data[schema_table].__merged_data[hash_val][hash_name] = hash_val;
+                            } else {
+                                this.data[schema_table].__merged_data[hash_val][hash_name] = hash_val;
+                            }
+                            // this.data[schema_table].__merged_data[hash_val] = {};
                             // this.data[schema_table][`${attribute.attribute}`][hash_val] = hash_val;
                         });
                     } catch (e) {
@@ -414,8 +425,14 @@ class SQLSearch {
                         search_object.search_value = value;
                         const attr_vals = await harperBridge.getDataByValue(search_object);
                         Object.keys(attr_vals).forEach(hash_val => {
-                            this.data[schema_table].__merged_data[hash_val] = {};
-                            this.data[schema_table][`${attribute.attribute}`][hash_val] = attr_vals[hash_val][attribute.attribute];
+                            if (!this.data[schema_table].__merged_data[hash_val]) {
+                                this.data[schema_table].__merged_data[hash_val] = Object.create(fetch_attributes_obj);
+                                this.data[schema_table].__merged_data[hash_val][attribute.attribute] = attr_vals[hash_val][attribute.attribute];
+                            } else {
+                                this.data[schema_table].__merged_data[hash_val][attribute.attribute] = attr_vals[hash_val][attribute.attribute];
+                            }
+                            // this.data[schema_table].__merged_data[hash_val] = {};
+                            // this.data[schema_table][`${attribute.attribute}`][hash_val] = attr_vals[hash_val][attribute.attribute];
                         });
                     }));
                 }
@@ -428,13 +445,25 @@ class SQLSearch {
                         this.data[schema_table].__has_hash = true;
                         Object.values(matching_data).forEach(hash_obj => {
                             const hash_val = hash_obj[hash_name];
-                            this.data[schema_table].__merged_data[hash_val] = {};
+                            if (!this.data[schema_table].__merged_data[hash_val]) {
+                                this.data[schema_table].__merged_data[hash_val] = Object.create(fetch_attributes_obj);
+                                this.data[schema_table].__merged_data[hash_val][hash_name] = hash_val;
+                            } else {
+                                this.data[schema_table].__merged_data[hash_val][hash_name] = hash_val;
+                            }
+                            // this.data[schema_table].__merged_data[hash_val] = {};
                             // this.data[schema_table][`${attribute.attribute}`][hash_val] = hash_val;
                         });
                     } else {
                         Object.keys(matching_data).forEach(hash_val => {
-                            this.data[schema_table].__merged_data[hash_val] = {};
-                            this.data[schema_table][`${attribute.attribute}`][hash_val] = matching_data[hash_val][attribute.attribute];
+                            if (!this.data[schema_table].__merged_data[hash_val]) {
+                                this.data[schema_table].__merged_data[hash_val] = Object.create(fetch_attributes_obj);
+                                this.data[schema_table].__merged_data[hash_val][attribute.attribute] = matching_data[hash_val][attribute.attribute];
+                            } else {
+                                this.data[schema_table].__merged_data[hash_val][attribute.attribute] = matching_data[hash_val][attribute.attribute];
+                            }
+                            // this.data[schema_table].__merged_data[hash_val] = {};
+                            // this.data[schema_table][`${attribute.attribute}`][hash_val] = matching_data[hash_val][attribute.attribute];
                         });
                     }
                 } catch (e) {
