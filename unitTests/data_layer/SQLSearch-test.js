@@ -42,6 +42,7 @@ const cat_schema_table_id = `${TEST_SCHEMA}_${TEST_TABLE_CAT}`;
 const longtext_schema_table_id = `${TEST_SCHEMA}_${TEST_TABLE_LONGTEXT}`;
 
 const sql_basic_dog_select = `SELECT * FROM ${TEST_SCHEMA}.${TEST_TABLE_DOG}`;
+const sql_basic_cat_select = `SELECT * FROM ${TEST_SCHEMA}.${TEST_TABLE_CAT}`;
 const sql_basic_calc = "2 * 4";
 const sql_basic_calc_result = eval(sql_basic_calc);
 const sql_basic_op = `SELECT ${sql_basic_calc}`;
@@ -59,7 +60,6 @@ let _backtickAllSchemaItems_spy;
 let _getFetchAttributeValues_spy;
 let _getDataByValue_spy;
 let _getDataByHash_spy;
-let _consolidateData_spy;
 let _getFinalAttributeData_spy;
 let _getData_spy;
 let _finalSQL_spy;
@@ -76,7 +76,6 @@ function setClassMethodSpies() {
     _getFetchAttributeValues_spy = sandbox.spy(SQLSearch.prototype, '_getFetchAttributeValues');
     _getDataByValue_spy = sandbox.spy(harperBridge, 'getDataByValue');
     _getDataByHash_spy = sandbox.spy(harperBridge, 'getDataByHash');
-    _consolidateData_spy = sandbox.spy(SQLSearch.prototype, '_consolidateData');
     _getFinalAttributeData_spy = sandbox.stub(SQLSearch.prototype, '_getFinalAttributeData').callThrough();
     _getData_spy = sandbox.stub(SQLSearch.prototype, '_getData').callThrough();
     _finalSQL_spy = sandbox.spy(SQLSearch.prototype, '_finalSQL');
@@ -87,6 +86,7 @@ function setClassMethodSpies() {
 function setupBasicTestData() {
     const test_data_dog = deepClone(TEST_DATA_DOG);
     const test_data_cat = deepClone(TEST_DATA_CAT);
+    test_data_cat[0]['null_attr'] = null;
 
     createMockFS(HASH_ATTRIBUTE, TEST_SCHEMA, TEST_TABLE_DOG, test_data_dog);
     createMockFS(HASH_ATTRIBUTE, TEST_SCHEMA, TEST_TABLE_CAT, test_data_cat);
@@ -219,7 +219,6 @@ describe('Test FileSystem Class',function() {
             // Validate that other methods in search() method were not called;
             expect(_getFetchAttributeValues_spy.called).to.equal(false);
             expect(_getDataByValue_spy.called).to.equal(false);
-            expect(_consolidateData_spy.called).to.equal(false);
             expect(_getFinalAttributeData_spy.called).to.equal(false);
             expect(_getData_spy.called).to.equal(false);
             expect(_finalSQL_spy.called).to.equal(false);
@@ -870,18 +869,18 @@ describe('Test FileSystem Class',function() {
 
     describe('_getFetchAttributeValues()',function() {
 
-        it('should set hash values to the data property for basic full table select', mochaAsyncWrapper(async function() {
-            const expected_result = TEST_DATA_DOG.map(col => col.id);
+        it('should set hash values to the data[table].__merged_data property for basic full table select', mochaAsyncWrapper(async function() {
+            const expected_result = TEST_DATA_DOG.map(col => ({ [HASH_ATTRIBUTE]: col.id}));
             const test_sql_basic = sql_basic_dog_select;
             setupTestInstance(test_sql_basic);
 
             await test_instance._getFetchAttributeValues();
 
-            expect(Object.values(test_instance.data[dog_schema_table_id][HASH_ATTRIBUTE])).to.deep.equal(expected_result);
+            expect(Object.values(test_instance.data[dog_schema_table_id].__merged_data)).to.deep.equal(expected_result);
             expect(_getDataByValue_spy.calledOnce).to.equal(true);
         }));
 
-        it('should set values to the data property for specified hash attributes from WHERE clause', mochaAsyncWrapper(async function() {
+        it('should set values to the data[table].__merged_data property for specified hash attributes from WHERE clause', mochaAsyncWrapper(async function() {
             const expected_result = TEST_DATA_DOG.reduce((acc, col) => {
                 if (col.id < 4) {
                     acc.push(col.id);
@@ -893,23 +892,26 @@ describe('Test FileSystem Class',function() {
 
             await test_instance._getFetchAttributeValues();
 
-            const test_data_result = test_instance.data[dog_schema_table_id][HASH_ATTRIBUTE];
+            const test_data_result = test_instance.data[dog_schema_table_id].__merged_data;
             expect(test_instance.fetch_attributes.length).to.equal(1);
             expect(Object.values(test_data_result).length).to.equal(expected_result.length);
             Object.keys(test_data_result).forEach(key => {
-                expect(expected_result.includes(test_data_result[key])).to.equal(true);
+                expect(expected_result.includes(test_data_result[key][HASH_ATTRIBUTE])).to.equal(true);
             });
             expect(_getDataByHash_spy.calledOnce).to.equal(true);
             expect(_getDataByValue_spy.calledOnce).to.equal(false);
         }));
 
-        it('should set values to the data property for specified attribute value from WHERE clause', mochaAsyncWrapper(async function() {
+        it('should set values to the data[table].__merged_data property for specified attribute value and associated hash key/value pairs from WHERE clause', mochaAsyncWrapper(async function() {
             const name_attr_val = "Sam";
             const attr_data = TEST_DATA_DOG.map(col => ({[`${col.id}`]: col.name}));
             const expected_result = attr_data.reduce((acc, val) => {
                 const hash_key = Object.keys(val)[0];
                 if (val[hash_key] === name_attr_val) {
-                    acc[hash_key] = val[hash_key];
+                    acc[hash_key] = {
+                        id: Number(hash_key),
+                        name: val[hash_key]
+                    };
                 }
                 return acc;
             }, {});
@@ -917,7 +919,7 @@ describe('Test FileSystem Class',function() {
             setupTestInstance(test_sql_where);
 
             await test_instance._getFetchAttributeValues();
-            const test_data_result = test_instance.data[dog_schema_table_id]['name'];
+            const test_data_result = test_instance.data[dog_schema_table_id].__merged_data;
 
             expect(Object.values(test_data_result).length).to.equal(Object.values(expected_result).length);
             expect(test_data_result).to.deep.equal(expected_result);
@@ -925,60 +927,84 @@ describe('Test FileSystem Class',function() {
             expect(_getDataByValue_spy.calledOnce).to.equal(true);
         }));
 
-        it('should set values to the data property for specified attributes from JOIN clause', mochaAsyncWrapper(async function() {
+        it('should set values to the data[table].__merged_data property for specified attributes from JOIN clause', mochaAsyncWrapper(async function() {
             const expected_result_dog = TEST_DATA_DOG.reduce((acc, col) => {
-                acc[`${col.id}`] = col.id;
+                acc[`${col.id}`] = {[HASH_ATTRIBUTE]: col.id};
                 return acc;
             }, {});
             const expected_result_cat = TEST_DATA_CAT.reduce((acc, col) => {
-                acc[`${col.id}`] = col.id;
+                acc[`${col.id}`] = {[HASH_ATTRIBUTE]: col.id};
                 return acc;
             }, {});
             const test_sql_join = `SELECT d.id AS id, d.name, d.breed, c.age FROM dev.dog d JOIN dev.cat c ON d.id = c.id`;
             setupTestInstance(test_sql_join);
 
             await test_instance._getFetchAttributeValues();
-            const test_data_result_dog = test_instance.data[dog_schema_table_id][HASH_ATTRIBUTE];
-            const test_data_result_cat = test_instance.data[cat_schema_table_id][HASH_ATTRIBUTE];
+            const test_data_result_dog = test_instance.data[dog_schema_table_id].__merged_data;
+            const test_data_result_cat = test_instance.data[cat_schema_table_id].__merged_data;
 
             expect(test_instance.fetch_attributes.length).to.equal(2);
             expect(test_data_result_dog).to.deep.equal(expected_result_dog);
             expect(test_data_result_cat).to.deep.equal(expected_result_cat);
             expect(_getDataByValue_spy.callCount).to.equal(test_instance.fetch_attributes.length);
-            // expect(readdir_spy.calledTwice).to.equal(true);
         }));
 
-        it('should set values to the fetched_attr property for specified hash from ORDER BY clause', mochaAsyncWrapper(async function() {
+        it('should set values to the data[table].__merged_data property for specified hash from ORDER BY clause', mochaAsyncWrapper(async function() {
             const expected_result = TEST_DATA_DOG.reduce((acc, col) => {
-                acc[`${col.id}`] = col.id;
+                acc[`${col.id}`] = {[HASH_ATTRIBUTE]: col.id};
                 return acc;
             }, {});
             const test_sql_orderby = `${sql_basic_dog_select} ORDER BY id`;
             setupTestInstance(test_sql_orderby);
 
             await test_instance._getFetchAttributeValues();
-            const test_data_result = test_instance.data[dog_schema_table_id][HASH_ATTRIBUTE];
+            const test_data_result = test_instance.data[dog_schema_table_id].__merged_data;
 
             expect(test_instance.fetch_attributes.length).to.equal(1);
             expect(test_data_result).to.deep.equal(expected_result);
             expect(_getDataByValue_spy.calledOnce).to.equal(true);
         }));
 
-        it('should set values to the data property for specified attribute value from ORDER BY clause', mochaAsyncWrapper(async function() {
+        it('should set values to the data[table].__merged_data property for specified attribute value from ORDER BY clause', mochaAsyncWrapper(async function() {
+            const name_attr_key = "name";
             const expected_result_name = TEST_DATA_DOG.reduce((acc, col) => {
-                acc[`${col.id}`] = `${col.name}`;
+                acc[`${col.id}`] = {
+                    [HASH_ATTRIBUTE]: col.id,
+                    [name_attr_key]: `${col.name}`
+                };
                 return acc;
             }, {});
-            const name_attr_key = "name";
             const test_sql_orderby = `${sql_basic_dog_select} ORDER BY ${name_attr_key}`;
             setupTestInstance(test_sql_orderby);
 
             await test_instance._getFetchAttributeValues();
-            const test_data_result = test_instance.data[dog_schema_table_id]['name'];
+            const test_data_result = test_instance.data[dog_schema_table_id].__merged_data;
 
             expect(test_instance.fetch_attributes.length).to.equal(2);
             expect(test_data_result).to.deep.equal(expected_result_name);
             expect(_getDataByValue_spy.calledTwice).to.equal(true);
+        }));
+
+        it('should set row attr values that do not come back as null in final row data in to the data[table].__merged_data property', mochaAsyncWrapper(async function() {
+            const name_attr_key = "name";
+            const null_attr_key = "null_attr"
+            const expected_result_name = TEST_DATA_CAT.reduce((acc, col) => {
+                acc[`${col.id}`] = {
+                    [HASH_ATTRIBUTE]: col.id,
+                    [name_attr_key]: `${col.name}`,
+                    [null_attr_key]: null
+                };
+                return acc;
+            }, {});
+            const test_sql_null = `${sql_basic_cat_select} ORDER BY ${name_attr_key}, ${null_attr_key}`;
+            setupTestInstance(test_sql_null);
+
+            await test_instance._getFetchAttributeValues();
+            const test_data_result = test_instance.data[cat_schema_table_id].__merged_data;
+
+            expect(test_instance.fetch_attributes.length).to.equal(3);
+            expect(test_data_result).to.deep.equal(expected_result_name);
+            expect(_getDataByValue_spy.calledThrice).to.equal(true);
         }));
     });
 
@@ -1043,7 +1069,6 @@ describe('Test FileSystem Class',function() {
 
             setupTestInstance();
             await test_instance._getFetchAttributeValues();
-            await test_instance._consolidateData();
             sandbox.resetHistory();
 
             await test_instance._getData(all_columns);
@@ -1074,7 +1099,6 @@ describe('Test FileSystem Class',function() {
 
             setupTestInstance(test_sql_statement);
             await test_instance._getFetchAttributeValues();
-            await test_instance._consolidateData();
             sandbox.resetHistory();
 
             await test_instance._getData(all_columns);
@@ -1114,7 +1138,6 @@ describe('Test FileSystem Class',function() {
 
             setupTestInstance(test_sql_statement);
             await test_instance._getFetchAttributeValues();
-            await test_instance._consolidateData();
 
             sandbox.resetHistory();
             await test_instance._getData(all_columns);
@@ -1137,54 +1160,6 @@ describe('Test FileSystem Class',function() {
         }));
     });
 
-    describe('_consolidateData()',function() {
-
-        it('should collect all id and name attribute values for table into __merged_data', mochaAsyncWrapper(async function() {
-            const expected_values = TEST_DATA_DOG.reduce((acc, col) => {
-                acc[col.id] = {
-                    age: col.age,
-                    breed: col.breed,
-                    name: col.name
-                };
-                return acc;
-            }, {});
-            const test_sql_statement = `SELECT * FROM dev.dog WHERE id IN(${sql_where_in_ids}) ORDER BY id, name, breed, age`;
-            setupTestInstance(test_sql_statement);
-            await test_instance._getFetchAttributeValues();
-
-            await test_instance._consolidateData();
-
-            const test_instance_data = test_instance.data[dog_schema_table_id];
-            expect(test_instance_data.__has_hash).to.equal(true);
-            const merged_data_keys = Object.keys(test_instance_data.__merged_data);
-            expect(merged_data_keys.length).to.equal(TEST_DATA_DOG.length);
-            merged_data_keys.forEach(hash_val => {
-                expect(test_instance_data.__merged_data[hash_val].age).to.equal(expected_values[hash_val].age);
-                expect(test_instance_data.__merged_data[hash_val].breed).to.equal(expected_values[hash_val].breed);
-                expect(test_instance_data.__merged_data[hash_val].name).to.equal(expected_values[hash_val].name);
-            })
-            const id_attr_keys = Object.values(test_instance_data.id);
-            expect(id_attr_keys.length).to.equal(sql_where_in_ids.length);
-            id_attr_keys.forEach(val => {
-                expect(sql_where_in_ids.includes(test_instance_data.id[val])).to.equal(true);
-            });
-        }));
-
-        it('should nullify non-hash attribute properties in this.data after adding values to __merged_data (to free up memory)', mochaAsyncWrapper(async function() {
-            const test_sql_statement = `SELECT * FROM dev.dog WHERE id IN(${sql_where_in_ids}) ORDER BY id, name, breed, age`;
-            setupTestInstance(test_sql_statement);
-            await test_instance._getFetchAttributeValues();
-
-            await test_instance._consolidateData();
-
-            const test_instance_data = test_instance.data[dog_schema_table_id];
-            expect(test_instance_data.name).to.equal(null);
-            expect(test_instance_data.breed).to.equal(null);
-            expect(test_instance_data.age).to.equal(null);
-            expect(Object.keys(test_instance_data.id).length).to.equal(sql_where_in_ids.length);
-        }));
-    });
-
     describe('_processJoins()',function() {
 
         it('should remove rows from `__merged_data` that do not meet WHERE clause', mochaAsyncWrapper(async function() {
@@ -1192,7 +1167,6 @@ describe('Test FileSystem Class',function() {
             const test_sql_statement = `SELECT * FROM dev.dog WHERE id IN(${sql_where_in_ids}) ORDER BY ${expected_attr_keys.toString()}`;
             setupTestInstance(test_sql_statement);
             await test_instance._getFetchAttributeValues();
-            await test_instance._consolidateData();
             const merged_data = test_instance.data[dog_schema_table_id].__merged_data;
             const expected_merged_data = Object.keys(merged_data).reduce((acc, key) => {
                 if (sql_where_in_ids.includes(parseInt(key))) {
@@ -1217,7 +1191,6 @@ describe('Test FileSystem Class',function() {
             const expected_attr_keys_d = ['id', 'name', 'breed'];
             setupTestInstance(test_sql_statement);
             await test_instance._getFetchAttributeValues();
-            await test_instance._consolidateData();
             const merged_data_d = test_instance.data[dog_schema_table_id].__merged_data;
             const merged_data_c = test_instance.data[cat_schema_table_id].__merged_data;
             const expected_merged_data_d = Object.keys(merged_data_d).reduce((acc, key) => {
@@ -1249,7 +1222,6 @@ describe('Test FileSystem Class',function() {
             const expected_attr_keys = Object.keys(TEST_DATA_LONGTEXT[0]);
             setupTestInstance(test_sql_statement);
             await test_instance._getFetchAttributeValues();;
-            await test_instance._consolidateData();
 
             const test_results = await test_instance._processJoins();
 
@@ -1278,7 +1250,6 @@ describe('Test FileSystem Class',function() {
             const test_sql_statement = `SELECT * FROM dev.dog ORDER BY id DESC`;
             setupTestInstance(test_sql_statement);
             await test_instance._getFetchAttributeValues();
-            await test_instance._consolidateData();
             const existing_attrs = { dog: ['id']};
             const joined_length = 6;
             await test_instance._getFinalAttributeData(existing_attrs, joined_length);

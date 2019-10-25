@@ -9,22 +9,12 @@
 const _ = require('lodash');
 const alasql = require('alasql');
 const alasql_function_importer = require('../sqlTranslator/alasqlFunctionImporter');
-const fs = require('fs-extra');
 const clone = require('clone');
 const RecursiveIterator = require('recursive-iterator');
-const env = require('../utility/environment/environmentManager');
 const log = require('../utility/logging/harper_logger');
 const common_utils = require('../utility/common_utils');
 const harperBridge = require('./harperBridge/harperBridge');
 
-
-const exclude_attributes = ['__hash_values','__hash_name','__merged_data','__has_hash'];
-const escaped_slash_regex = /U\+002F/g;
-// Search is used in the installer, and the base path may be undefined when search is instantiated.  Dynamically
-// get the base path from the environment manager before using it.
-let base_path = function() {
-    return `${env.getHdbBasePath()}/schema/`;
-};
 const WHERE_CLAUSE_IS_NULL = 'IS NULL';
 
 //here we call to define and import custom functions to alasql
@@ -72,6 +62,8 @@ class SQLSearch {
             if (!common_utils.isEmptyOrZeroLength(empty_sql_results)) {
                 return empty_sql_results;
             }
+
+            // Search for fetch attribute values and consolidate them into this.data[table].__merged_data property
             await this._getFetchAttributeValues();
 
             //In the instance of null data this.data would not have schema/table defined or created as there is no data backing up what would sit in data.
@@ -80,7 +72,6 @@ class SQLSearch {
             }
 
             // Consolidate initial data required for first pass of sql join - narrows list of hash ids for second pass to collect all data resulting from sql request
-            await this._consolidateData();
             let join_results = await this._processJoins();
 
             // Decide the most efficient way to make the second/final pass for collecting all additional data needed for sql request
@@ -111,7 +102,6 @@ class SQLSearch {
                 }
             });
         }
-
 
         let iterator = new RecursiveIterator(this.statement);
         for (let {node, path} of iterator) {
@@ -245,7 +235,6 @@ class SQLSearch {
                     if (node.tableid && !node.tableid.startsWith('`')) {
                         node.tableid_orig = node.tableid;
                         node.tableid = `\`${node.tableid}\``;
-
                     }
                     if (node.databaseid && !node.databaseid.startsWith('`')) {
                         node.databaseid_orig = node.databaseid;
@@ -331,7 +320,8 @@ class SQLSearch {
     }
 
     /**
-     * Gets all values for the where, join, & order by attributes and also the associated hashes for those rows
+     * Gets all values for the where, join, & order by attributes and converts the raw indexed data into individual
+     * rows by hash attribute consolidated based on tables
      * @returns {Promise<void>}
      * @private
      */
@@ -371,6 +361,17 @@ class SQLSearch {
         // do we need this uniqueby, could just use object as map
         this.fetch_attributes = _.uniqBy(this.fetch_attributes, attribute => [attribute.table.databaseid, attribute.table.tableid, attribute.attribute].join());
 
+        // create an attr template for each table row to ensure each row has a null value for attrs not returned in the search
+        const fetch_attributes_objs = this.fetch_attributes.reduce((acc, attr) => {
+            const schema_table = `${attr.table.databaseid}_${attr.table.tableid}`;
+            if (!acc[schema_table]) {
+                const hash_name = this.data[schema_table].__hash_name;
+                acc[schema_table] = { [hash_name]: null };
+            }
+            acc[schema_table][attr.attribute] = null;
+            return acc;
+        }, {});
+
         for (const attribute of this.fetch_attributes) {
             const schema_table = `${attribute.table.databaseid}_${attribute.table.tableid}`;
             this.data[schema_table][`${attribute.attribute}`] = {};
@@ -383,9 +384,9 @@ class SQLSearch {
             };
             let is_hash = false;
             let object_path = common_utils.buildFolderPath(attribute.table.databaseid, attribute.table.tableid, attribute.attribute);
+
             //check if this attribute is the hash attribute for a table, if it is we need to read the files from the __hdh_hash
             // folder, otherwise pull from the value index
-
             if (attribute.attribute === hash_name) {
                 is_hash = true;
             }
@@ -402,8 +403,10 @@ class SQLSearch {
                         const attribute_values = Object.values(await harperBridge.getDataByHash(search_object));
                         attribute_values.forEach(hash_obj => {
                             const hash_val = hash_obj[hash_name];
-                            this.data[schema_table].__merged_data[hash_val] = {};
-                            this.data[schema_table][`${attribute.attribute}`][hash_val] = hash_val;
+                            if (!this.data[schema_table].__merged_data[hash_val]) {
+                                this.data[schema_table].__merged_data[hash_val] = Object.create(fetch_attributes_objs[schema_table]);
+                                this.data[schema_table].__merged_data[hash_val][hash_name] = hash_val;
+                            }
                         });
                     } catch (e) {
                         log.error(e);
@@ -414,8 +417,13 @@ class SQLSearch {
                         search_object.search_value = value;
                         const attr_vals = await harperBridge.getDataByValue(search_object);
                         Object.keys(attr_vals).forEach(hash_val => {
-                            this.data[schema_table].__merged_data[hash_val] = {};
-                            this.data[schema_table][`${attribute.attribute}`][hash_val] = attr_vals[hash_val][attribute.attribute];
+                            if (!this.data[schema_table].__merged_data[hash_val]) {
+                                this.data[schema_table].__merged_data[hash_val] = Object.create(fetch_attributes_objs[schema_table]);
+                                this.data[schema_table].__merged_data[hash_val][hash_name] = common_utils.autoCast(hash_val);
+                                this.data[schema_table].__merged_data[hash_val][attribute.attribute] = attr_vals[hash_val][attribute.attribute];
+                            } else {
+                                this.data[schema_table].__merged_data[hash_val][attribute.attribute] = attr_vals[hash_val][attribute.attribute];
+                            }
                         });
                     }));
                 }
@@ -428,60 +436,28 @@ class SQLSearch {
                         this.data[schema_table].__has_hash = true;
                         Object.values(matching_data).forEach(hash_obj => {
                             const hash_val = hash_obj[hash_name];
-                            this.data[schema_table].__merged_data[hash_val] = {};
-                            this.data[schema_table][`${attribute.attribute}`][hash_val] = hash_val;
+                            if (!this.data[schema_table].__merged_data[hash_val]) {
+                                this.data[schema_table].__merged_data[hash_val] = Object.create(fetch_attributes_objs[schema_table]);
+                                this.data[schema_table].__merged_data[hash_val][hash_name] = common_utils.autoCast(hash_val);
+                            }
                         });
                     } else {
                         Object.keys(matching_data).forEach(hash_val => {
-                            this.data[schema_table].__merged_data[hash_val] = {};
-                            this.data[schema_table][`${attribute.attribute}`][hash_val] = matching_data[hash_val][attribute.attribute];
+                            if (!this.data[schema_table].__merged_data[hash_val]) {
+                                this.data[schema_table].__merged_data[hash_val] = Object.create(fetch_attributes_objs[schema_table]);
+                                this.data[schema_table].__merged_data[hash_val][hash_name] = common_utils.autoCast(hash_val);
+                                this.data[schema_table].__merged_data[hash_val][attribute.attribute] = matching_data[hash_val][attribute.attribute];
+                            } else {
+                                this.data[schema_table].__merged_data[hash_val][attribute.attribute] = matching_data[hash_val][attribute.attribute];
+                            }
                         });
                     }
                 } catch (e) {
-                    console.log(e);
+                    log.error(e);
                     // no-op
                 }
             }
         }
-    }
-
-    /**
-     * Converts the raw indexed data into individual rows by hash attribute
-     * consolidated based on tables
-     * @returns {Promise<void>}
-     * @private
-     */
-    async _consolidateData() {
-        await Promise.all(Object.keys(this.data).map(table => {
-            try {
-                let hash_name = this.data[table].__hash_name;
-                let object_keys = Object.keys(this.data[table].__merged_data);
-
-                object_keys.forEach(id_value => {
-                    this.data[table].__merged_data[id_value][hash_name] = common_utils.autoCast(id_value);
-                });
-
-                Object.keys(this.data[table]).forEach(attribute => {
-                    if (exclude_attributes.indexOf(attribute) >= 0 || attribute === hash_name) {
-                        return;
-                    }
-
-                    object_keys.forEach(value => {
-                        value = value.replace(escaped_slash_regex, '/');
-                        if (this.data[table][attribute][value] === null || this.data[table][attribute][value] === undefined) {
-                            this.data[table].__merged_data[value][attribute] = null;
-                        } else {
-                            this.data[table].__merged_data[value][attribute] = this.data[table][attribute][value];
-                        }
-                    });
-                    //This is to free up memory, after consolidation we no longer need these values
-                    this.data[table][attribute] = null;
-                });
-            } catch (e) {
-                log.error(e);
-                // no-op
-            }
-        }));
     }
 
     /**
@@ -534,7 +510,7 @@ class SQLSearch {
 
             for (let prop in this.data[`${table.databaseid_orig}_${table.tableid_orig}`].__merged_data) {
                 existing_attributes[table.tableid_orig] = Object.keys(this.data[`${table.databaseid_orig}_${table.tableid_orig}`].__merged_data[prop]);
-                //TODO: Why is this break here?
+                //This break is here b/c we only need to get attr keys from the first object.
                 break;
             }
         });
@@ -564,6 +540,7 @@ class SQLSearch {
             throw new Error('There was a problem processing the data.');
         }
 
+        //collect returned hash values and remove others from table's __merged_data
         if (joined && joined.length > 0) {
             joined.forEach((row) => {
                 hash_attributes.forEach(hash => {
