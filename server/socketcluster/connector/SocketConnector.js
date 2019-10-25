@@ -22,7 +22,7 @@ class SocketConnector{
             this.socket.additional_info = this.additional_info;
         }
 
-        this.socket.on('error', err =>{
+        this.socket.on('error', (err, socket) =>{
             log.error('ERROR on HDB Client socket: ' + err);
             log.error(err);
         });

@@ -85,9 +85,11 @@ async function addNode(new_node) {
         let status_count = 0;
         if(cluster_status.status.outbound_connections) {
             status_count += cluster_status.status.outbound_connections.length;
+            log.debug(`I have ${cluster_status.status.outbound_connections.length} outbound connections.`);
         }
         if(cluster_status.status.inbound_connections) {
             status_count += cluster_status.status.inbound_connections.length;
+            log.debug(`I have ${cluster_status.status.inbound_connections.length} inbound connections.`);
         }
         // count # connections, if >= 3, reject
         if(status_count >= terms.BASIC_LICENSE_MAX_CLUSTER_CONNS) {

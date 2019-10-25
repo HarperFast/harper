@@ -91,8 +91,8 @@ class SCServer{
             }
             // if at max connections, reject
             if(conn_count >= terms.BASIC_LICENSE_MAX_CLUSTER_CONNS) {
-                log.notify('Rejected inbound connection, your license only supports 3 connections.');
-                return socket.disconnect(terms.BASIC_LICENSE_CLUSTER_CONNECTION_LIMIT_WS_ERROR_CODE, 'Rejected inbound connection, your license only supports 3 connections.');
+                log.notify(`Rejected inbound connection, your license only supports 3 connections, you have ${conn_count}`);
+                return socket.disconnect(terms.BASIC_LICENSE_CLUSTER_CONNECTION_LIMIT_WS_ERROR_CODE, `Rejected inbound connection, your license only supports 3 connections.  I have ${conn_count}`);
             }
         }
         new ServerSocket(this.worker, socket);
