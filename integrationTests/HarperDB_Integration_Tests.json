@@ -409,6 +409,74 @@
 					"response": []
 				},
 				{
+					"name": "search by hash empty table",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "582da6b6-527f-4777-9954-f7f2cb29e718",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Check return array length\", function () {",
+									"    pm.expect(pm.response.json().length).to.eql(0)",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from northnwd.customers where customerid = 1\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
 					"name": "create_table confirm table exists",
 					"event": [
 						{

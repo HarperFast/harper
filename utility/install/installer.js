@@ -77,7 +77,8 @@ function run_install(callback) {
                 wizard,
                 async.apply(mount, winston),
                 createSettingsFile,
-                createAdminUser,
+                createSuperUser,
+                createClusterUser,
                 generateKeys,
                 updateHdbInfo,
                 () => {
@@ -311,6 +312,29 @@ function wizard(err, callback) {
                 description: colors.magenta('[HDB_ADMIN_PASSWORD] Please enter a password for the HDB_ADMIN'),
                 hidden: true,
                 required: true
+            },
+            CLUSTERING_USERNAME: {
+                description: colors.magenta('[CLUSTERING_USERNAME] Please enter a username for the CLUSTERING USER'),
+                default: 'CLUSTER_USER',
+                message: 'Specified username is invalid or already in use.',
+                required: true,
+                // check against the previously built list of existing usernames.
+                conform: function (username) {
+                    if (!keep_data) {
+                        return true;
+                    }
+                    for (let i = 0; i < existing_users.length; i++) {
+                        if (username === existing_users[i]) {
+                            return false;
+                        }
+                    }
+                    return true;
+                }
+            },
+            CLUSTERING_PASSWORD: {
+                description: colors.magenta('[CLUSTERING_PASSWORD] Please enter a password for the CLUSTERING USER'),
+                hidden: true,
+                required: true
             }
         }
     };
@@ -359,7 +383,55 @@ function wizard(err, callback) {
     });
 }
 
-function createAdminUser(callback) {
+function createSuperUser(callback){
+    winston.info('Creating Super user.');
+    let role = {
+        role: 'super_user',
+        permission: {
+            super_user:true
+        }
+    };
+
+    let user = {
+        username: wizard_result.HDB_ADMIN_USERNAME,
+        password: wizard_result.HDB_ADMIN_PASSWORD,
+        active: true
+    };
+
+    createAdminUser(role, user, (err)=>{
+        if(err){
+            return callback(err);
+        }
+
+        callback();
+    });
+}
+
+function createClusterUser(callback){
+    winston.info('Creating Cluster user.');
+    let role = {
+        role: 'cluster_user',
+        permission: {
+            cluster_user:true
+        }
+    };
+
+    let user = {
+        username: wizard_result.CLUSTERING_USERNAME,
+        password: wizard_result.CLUSTERING_PASSWORD,
+        active: true
+    };
+
+    createAdminUser(role, user, (err)=>{
+        if(err){
+            return callback(err);
+        }
+
+        callback();
+    });
+}
+
+function createAdminUser(role, admin_user, callback) {
     winston.info('Creating admin user.');
     // These need to be defined here since they use the hdb_boot_properties file, but it has not yet been created
     // in the installer.
@@ -369,10 +441,6 @@ function createAdminUser(callback) {
     const cb_role_add_role = util.callbackify(role_ops.addRole);
     const cb_role_list_role = util.callbackify(role_ops.listRoles);
     const cb_user_add_user = util.callbackify(user_ops.addUser);
-    let role = {};
-    role.role = 'super_user';
-    role.permission = {};
-    role.permission.super_user = true;
 
     schema.setSchemaDataToGlobal(() => {
         if (keep_data) {
@@ -401,12 +469,8 @@ function createAdminUser(callback) {
                     };
 
                     prompt.get(role_schema, function (err, selected_role) {
-                        let admin_user = {};
-                        admin_user.username = wizard_result.HDB_ADMIN_USERNAME;
-                        admin_user.password = wizard_result.HDB_ADMIN_PASSWORD;
                         // account for the offset
                         admin_user.role = res[selected_role.ROLE - 1].id;
-                        admin_user.active = true;
 
                         cb_user_add_user(admin_user, (err) => {
                             if (err) {
@@ -419,11 +483,7 @@ function createAdminUser(callback) {
                     });
 
                 } else {
-                    let admin_user = {};
-                    admin_user.username = wizard_result.HDB_ADMIN_USERNAME;
-                    admin_user.password = wizard_result.HDB_ADMIN_PASSWORD;
                     admin_user.role = res[0].id;
-                    admin_user.active = true;
 
                     cb_user_add_user(admin_user, (err) => {
                         if (err) {
@@ -444,11 +504,7 @@ function createAdminUser(callback) {
                     return callback(err);
                 }
 
-                let admin_user = {};
-                admin_user.username = wizard_result.HDB_ADMIN_USERNAME;
-                admin_user.password = wizard_result.HDB_ADMIN_PASSWORD;
                 admin_user.role = res.id;
-                admin_user.active = true;
 
                 cb_user_add_user(admin_user, (err) => {
                     if (err) {
@@ -565,11 +621,7 @@ function createSettingsFile(mount_status, callback) {
             `   ;The name of this node in your HarperDB cluster topology.  This must be a value unique from the rest of your cluster node names.\n` +
             `${HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY}=${node_name}\n` +
             `   ;The user used to connect to other instances of HarperDB, this user must have a role of cluster_user. \n` +
-            `${HDB_SETTINGS_NAMES.CLUSTERING_USER_KEY}=\n` +
-            `   ;Specify the file system path to where the Helium volume will reside.  \n` +
-            `${HDB_SETTINGS_NAMES.HELIUM_VOLUME_PATH_KEY}=\n` +
-            `   ;specify the host & port where your helium server is running. NOTE for most installs this will not change from ${hdb_terms.HDB_SETTINGS_DEFAULT_VALUES.HELIUM_SERVER_HOST} \n` +
-            `${HDB_SETTINGS_NAMES.HELIUM_SERVER_HOST_KEY}=${hdb_terms.HDB_SETTINGS_DEFAULT_VALUES.HELIUM_SERVER_HOST}`;
+            `${HDB_SETTINGS_NAMES.CLUSTERING_USER_KEY}=${wizard_result.CLUSTERING_USERNAME}\n`;
 
         winston.info('info', `hdb_props_value ${JSON.stringify(hdb_props_value)}`);
         winston.info('info', `settings path: ${env.get('settings_path')}`);

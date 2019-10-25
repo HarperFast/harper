@@ -113,7 +113,7 @@ class ClusterWorker extends WorkerIF {
     async processArgs() {
         log.trace('processArgs');
         try{
-            let file_path = path.join(env.getHdbBasePath(), terms.CLUSTERING_FOLDER_NAME, terms.CLUSTERING_PAYLOAD_FILE_NAME);
+            let file_path = path.join(env.getHdbBasePath(), terms.CLUSTERING_FOLDER_NAMES_ENUM.CLUSTERING_FOLDER, terms.CLUSTERING_PAYLOAD_FILE_NAME);
             let data = await fs.readFile(file_path, 'utf-8');
             await fs.unlink(file_path);
             let hdb_data = JSON.parse(data);

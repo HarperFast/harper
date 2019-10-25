@@ -24,7 +24,12 @@ async function createAttribute(create_attribute_object) {
     if (validation_error) {
         throw validation_error;
     }
-    let attributes_obj_array = global.hdb_schema[create_attribute_object.schema][create_attribute_object.table]['attributes'];
+
+    let attributes_obj_array = [];
+    // On initial creation of a table the attribute will not exist in hdb_schema yet
+    if(global.hdb_schema[create_attribute_object.schema] && global.hdb_schema[create_attribute_object.schema][create_attribute_object.table]) {
+        attributes_obj_array = global.hdb_schema[create_attribute_object.schema][create_attribute_object.table]['attributes'];
+    }
 
     if(Array.isArray(attributes_obj_array) && attributes_obj_array.length > 0) {
         for (let attribute of attributes_obj_array) {
