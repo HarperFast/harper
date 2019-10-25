@@ -331,7 +331,8 @@ class SQLSearch {
     }
 
     /**
-     * Gets all values for the where, join, & order by attributes and also the associated hashes for those rows
+     * Gets all values for the where, join, & order by attributes and converts the raw indexed data into individual
+     * rows by hash attribute consolidated based on tables
      * @returns {Promise<void>}
      * @private
      */
@@ -371,8 +372,14 @@ class SQLSearch {
         // do we need this uniqueby, could just use object as map
         this.fetch_attributes = _.uniqBy(this.fetch_attributes, attribute => [attribute.table.databaseid, attribute.table.tableid, attribute.attribute].join());
 
-        const fetch_attributes_obj = this.fetch_attributes.reduce((acc, attr) => {
-            acc[attr.attribute] = null;
+        // create an attr template for each table row to ensure each row has a null value for attrs not returned in the search
+        const fetch_attributes_objs = this.fetch_attributes.reduce((acc, attr) => {
+            const schema_table = `${attr.table.databaseid}_${attr.table.tableid}`;
+            if (!acc[schema_table]) {
+                const hash_name = this.data[schema_table].__hash_name;
+                acc[schema_table] = { [hash_name]: null };
+            }
+            acc[schema_table][attr.attribute] = null;
             return acc;
         }, {});
 
@@ -408,13 +415,9 @@ class SQLSearch {
                         attribute_values.forEach(hash_obj => {
                             const hash_val = hash_obj[hash_name];
                             if (!this.data[schema_table].__merged_data[hash_val]) {
-                                this.data[schema_table].__merged_data[hash_val] = Object.create(fetch_attributes_obj);
-                                this.data[schema_table].__merged_data[hash_val][hash_name] = hash_val;
-                            } else {
+                                this.data[schema_table].__merged_data[hash_val] = Object.create(fetch_attributes_objs[schema_table]);
                                 this.data[schema_table].__merged_data[hash_val][hash_name] = hash_val;
                             }
-                            // this.data[schema_table].__merged_data[hash_val] = {};
-                            // this.data[schema_table][`${attribute.attribute}`][hash_val] = hash_val;
                         });
                     } catch (e) {
                         log.error(e);
@@ -426,13 +429,12 @@ class SQLSearch {
                         const attr_vals = await harperBridge.getDataByValue(search_object);
                         Object.keys(attr_vals).forEach(hash_val => {
                             if (!this.data[schema_table].__merged_data[hash_val]) {
-                                this.data[schema_table].__merged_data[hash_val] = Object.create(fetch_attributes_obj);
+                                this.data[schema_table].__merged_data[hash_val] = Object.create(fetch_attributes_objs[schema_table]);
+                                this.data[schema_table].__merged_data[hash_val][hash_name] = hash_val;
                                 this.data[schema_table].__merged_data[hash_val][attribute.attribute] = attr_vals[hash_val][attribute.attribute];
                             } else {
                                 this.data[schema_table].__merged_data[hash_val][attribute.attribute] = attr_vals[hash_val][attribute.attribute];
                             }
-                            // this.data[schema_table].__merged_data[hash_val] = {};
-                            // this.data[schema_table][`${attribute.attribute}`][hash_val] = attr_vals[hash_val][attribute.attribute];
                         });
                     }));
                 }
@@ -446,73 +448,27 @@ class SQLSearch {
                         Object.values(matching_data).forEach(hash_obj => {
                             const hash_val = hash_obj[hash_name];
                             if (!this.data[schema_table].__merged_data[hash_val]) {
-                                this.data[schema_table].__merged_data[hash_val] = Object.create(fetch_attributes_obj);
-                                this.data[schema_table].__merged_data[hash_val][hash_name] = hash_val;
-                            } else {
+                                this.data[schema_table].__merged_data[hash_val] = Object.create(fetch_attributes_objs[schema_table]);
                                 this.data[schema_table].__merged_data[hash_val][hash_name] = hash_val;
                             }
-                            // this.data[schema_table].__merged_data[hash_val] = {};
-                            // this.data[schema_table][`${attribute.attribute}`][hash_val] = hash_val;
                         });
                     } else {
                         Object.keys(matching_data).forEach(hash_val => {
                             if (!this.data[schema_table].__merged_data[hash_val]) {
-                                this.data[schema_table].__merged_data[hash_val] = Object.create(fetch_attributes_obj);
+                                this.data[schema_table].__merged_data[hash_val] = Object.create(fetch_attributes_objs[schema_table]);
+                                this.data[schema_table].__merged_data[hash_val][hash_name] = hash_val;
                                 this.data[schema_table].__merged_data[hash_val][attribute.attribute] = matching_data[hash_val][attribute.attribute];
                             } else {
                                 this.data[schema_table].__merged_data[hash_val][attribute.attribute] = matching_data[hash_val][attribute.attribute];
                             }
-                            // this.data[schema_table].__merged_data[hash_val] = {};
-                            // this.data[schema_table][`${attribute.attribute}`][hash_val] = matching_data[hash_val][attribute.attribute];
                         });
                     }
                 } catch (e) {
-                    console.log(e);
+                    log.error(e);
                     // no-op
                 }
             }
         }
-    }
-
-    /**
-     * Converts the raw indexed data into individual rows by hash attribute
-     * consolidated based on tables
-     * @returns {Promise<void>}
-     * @private
-     */
-    async _consolidateData() {
-        await Promise.all(Object.keys(this.data).map(table => {
-            try {
-                let hash_name = this.data[table].__hash_name;
-                let object_keys = Object.keys(this.data[table].__merged_data);
-
-                object_keys.forEach(id_value => {
-                    this.data[table].__merged_data[id_value][hash_name] = common_utils.autoCast(id_value);
-                });
-
-                let attr_keys = Object.keys(this.data[table]);
-                attr_keys.forEach(attribute => {
-                    if (exclude_attributes.indexOf(attribute) >= 0 || attribute === hash_name) {
-                        return;
-                    }
-
-                    object_keys.forEach(value => {
-                        value = value.replace(escaped_slash_regex, '/');
-                        if (this.data[table][attribute][value] === null || this.data[table][attribute][value] === undefined) {
-                            this.data[table].__merged_data[value][attribute] = null;
-                        } else {
-                            this.data[table].__merged_data[value][attribute] = this.data[table][attribute][value];
-                        }
-                    });
-                    //This is to free up memory, after consolidation we no longer need these values
-                    delete this.data[table][attribute];
-                    // this.data[table][attribute] = null;
-                });
-            } catch (e) {
-                log.error(e);
-                // no-op
-            }
-        }));
     }
 
     /**
