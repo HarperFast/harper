@@ -79,10 +79,12 @@ class SCServer{
         // we need to allow connections from localhost as that is likely the hdb_client connecting
         if(!(await hdb_license.getLicense()).enterprise && !socket.remoteAddress.includes('127.0.0.1')) {
             let conn_count = this.sc_server.clientsCount;
+            log.debug(`There are ${this.sc_server.clientsCount} clients in the server.`);
             // check outbound node_connector connections
             try {
                 let clients = this.worker.node_connector.connections.clients;
                 if (clients) {
+                    log.debug(`There are ${Object.keys(clients).length} node connector connections in the worker.`);
                     conn_count += Object.keys(clients).length;
                 }
             } catch(err) {
