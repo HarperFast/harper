@@ -64,7 +64,7 @@ function processLocalTransaction(req, res, operation_function, callback) {
             harper_logger.log_level === harper_logger.TRACE) {
                 // Need to remove auth variables, but we don't want to create an object unless
                 // the logging is actually going to happen.
-                const { hdb_user, hdb_auth_header, ...clean_body } = req.body;
+                const { hdb_user, hdb_auth_header, password, ...clean_body } = req.body;
                 harper_logger.info(JSON.stringify(clean_body));
             }
         }
@@ -177,7 +177,7 @@ function postOperationHandler(request_body, result, orig_req) {
                     operation: terms.OPERATIONS_ENUM.CREATE_SCHEMA,
                     schema: request_body.schema,
                 };
-                sendSchemaTransaction(transaction_msg, terms.OPERATIONS_ENUM.CREATE_SCHEMA, request_body, orig_req);
+                sendSchemaTransaction(transaction_msg, terms.INTERNAL_SC_CHANNELS.CREATE_SCHEMA, request_body, orig_req);
             } catch(err) {
                 harper_logger.error('There was a problem sending the create_schema transaction to the cluster.');
             }
@@ -190,7 +190,7 @@ function postOperationHandler(request_body, result, orig_req) {
                     table: request_body.table,
                     hash_attribute: request_body.hash_attribute
                 };
-                sendSchemaTransaction(transaction_msg, terms.OPERATIONS_ENUM.CREATE_TABLE, request_body, orig_req);
+                sendSchemaTransaction(transaction_msg, terms.INTERNAL_SC_CHANNELS.CREATE_TABLE, request_body, orig_req);
             } catch(err) {
                 harper_logger.error('There was a problem sending the create_schema transaction to the cluster.');
             }
