@@ -189,8 +189,8 @@ class SQLSearch {
 
                     switch (node.op) {
                         case '=':
-                            if (node.right.value || node.left.value) {
-                                values.add(node.right.value ? node.right.value.toString() : node.left.value.toString());
+                            if (!common_utils.isEmpty(node.right.value) || !common_utils.isEmpty(node.left.value)) {
+                                values.add(!common_utils.isEmpty(node.right.value) ? node.right.value.toString() : node.left.value.toString());
                             } else {
                                 ignore = true;
                             }
