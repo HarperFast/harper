@@ -50,6 +50,7 @@
     "fill-range": "^4.0.0",
     "fs-extra": "^7.0.1",
     "graceful-fs": "^4.1.15",
+    "human-readable-ids": "^1.0.4",
     "lodash": "^4.17.11",
     "mathjs": "^4.4.1",
     "module-alias": "^2.2.1",
