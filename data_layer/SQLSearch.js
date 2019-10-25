@@ -9,22 +9,12 @@
 const _ = require('lodash');
 const alasql = require('alasql');
 const alasql_function_importer = require('../sqlTranslator/alasqlFunctionImporter');
-const fs = require('fs-extra');
 const clone = require('clone');
 const RecursiveIterator = require('recursive-iterator');
-const env = require('../utility/environment/environmentManager');
 const log = require('../utility/logging/harper_logger');
 const common_utils = require('../utility/common_utils');
 const harperBridge = require('./harperBridge/harperBridge');
 
-
-const exclude_attributes = ['__hash_values','__hash_name','__merged_data','__has_hash'];
-const escaped_slash_regex = /U\+002F/g;
-// Search is used in the installer, and the base path may be undefined when search is instantiated.  Dynamically
-// get the base path from the environment manager before using it.
-let base_path = function() {
-    return `${env.getHdbBasePath()}/schema/`;
-};
 const WHERE_CLAUSE_IS_NULL = 'IS NULL';
 
 //here we call to define and import custom functions to alasql
@@ -72,6 +62,8 @@ class SQLSearch {
             if (!common_utils.isEmptyOrZeroLength(empty_sql_results)) {
                 return empty_sql_results;
             }
+
+            // Search for fetch attribute values and consolidate them into this.data[table].__merged_data property
             await this._getFetchAttributeValues();
 
             //In the instance of null data this.data would not have schema/table defined or created as there is no data backing up what would sit in data.
@@ -80,7 +72,6 @@ class SQLSearch {
             }
 
             // Consolidate initial data required for first pass of sql join - narrows list of hash ids for second pass to collect all data resulting from sql request
-            // await this._consolidateData();
             let join_results = await this._processJoins();
 
             // Decide the most efficient way to make the second/final pass for collecting all additional data needed for sql request
@@ -111,7 +102,6 @@ class SQLSearch {
                 }
             });
         }
-
 
         let iterator = new RecursiveIterator(this.statement);
         for (let {node, path} of iterator) {
@@ -245,7 +235,6 @@ class SQLSearch {
                     if (node.tableid && !node.tableid.startsWith('`')) {
                         node.tableid_orig = node.tableid;
                         node.tableid = `\`${node.tableid}\``;
-
                     }
                     if (node.databaseid && !node.databaseid.startsWith('`')) {
                         node.databaseid_orig = node.databaseid;
@@ -395,9 +384,9 @@ class SQLSearch {
             };
             let is_hash = false;
             let object_path = common_utils.buildFolderPath(attribute.table.databaseid, attribute.table.tableid, attribute.attribute);
+
             //check if this attribute is the hash attribute for a table, if it is we need to read the files from the __hdh_hash
             // folder, otherwise pull from the value index
-
             if (attribute.attribute === hash_name) {
                 is_hash = true;
             }
