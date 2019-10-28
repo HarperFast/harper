@@ -17,13 +17,6 @@ class StampOriginatorMiddleware extends MiddlewareIF {
                 }
                 req.data.__originator[env.getProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)] = types.ORIGINATOR_SET_VALUE;
 
-                //we need to remove the transacted flag before the outbound message goes out to the cluster.
-                if(req.data.__transacted) {
-                    delete req.data.__transacted;
-                }
-                if(req.__transacted) {
-                    delete req.data.__transacted;
-                }
             } catch(err) {
                 log.error('Got an error in StampOriginatorMiddleware');
                 log.error(err);
