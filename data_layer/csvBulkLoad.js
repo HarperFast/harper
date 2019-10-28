@@ -2,12 +2,14 @@
 
 const insert = require('./insert');
 const validator = require('../validation/csvLoadValidator');
+const request = require('request');
 const request_promise = require('request-promise-native');
 const hdb_terms = require('../utility/hdbTerms');
 const hdb_utils = require('../utility/common_utils');
 const {promise} = require('alasql');
 const logger = require('../utility/logging/harper_logger');
 const papa_parse = require('papaparse');
+const { PassThrough, Writable } = require('stream');
 const fs = require('fs-extra');
 hdb_utils.promisifyPapaParse();
 hdb_utils.promisifyPapaParseURL();
@@ -96,30 +98,74 @@ async function csvURLLoad(json_message) {
         transact_to_cluster: json_message.transact_to_cluster,
         data: []
     };
-    let bulk_load_result = undefined;
+    //let bulk_load_result = undefined;
 
     // check passed url to see if its live and valid data
     let url_response = undefined;
     try {
-        await papa_parse.parsePromiseURL(json_message.csv_url, validateChunk.bind(null, json_message));
-        url_response = await createReadStreamFromURL(json_message.csv_url);
+
+        //url_response = await createReadStreamFromURL(json_message.csv_url);
+        let bulk_load_result = await callPapaParseURL(json_message);
+        return bulk_load_result;
+
     } catch (e) {
         logger.error(`invalid bulk load url ${json_message.csv_url}, response ${url_response.statusMessage}`);
         throw e;
     }
-    try {
-        // Some ISPs will return a "Not found" html page that still have a 200 status. This handles that.
-        if(!url_response.body) {
-            throw new Error(`${url_response.message}. Status code: ${url_response.status_code}. Status message: ${url_response.status_message}`);
-        }
-        converted_msg.data = await callMiddleware(ALASQL_MIDDLEWARE_PARSE_PARAMETERS, [url_response.body]);
-        bulk_load_result = await op_func_caller.callOperationFunctionAsAwait(callBulkLoad, converted_msg, postCSVLoadFunction);
-    } catch(e) {
-        throw new Error(e);
-    }
-
-    return bulk_load_result.message;
+    // try {
+    //     // Some ISPs will return a "Not found" html page that still have a 200 status. This handles that.
+    //     if(!url_response.body) {
+    //         throw new Error(`${url_response.message}. Status code: ${url_response.status_code}. Status message: ${url_response.status_message}`);
+    //     }
+    //     converted_msg.data = await callMiddleware(ALASQL_MIDDLEWARE_PARSE_PARAMETERS, [url_response.body]);
+    //     bulk_load_result = await op_func_caller.callOperationFunctionAsAwait(callBulkLoad, converted_msg, postCSVLoadFunction);
+    // } catch(e) {
+    //     throw new Error(e);
+    // }
 }
+
+function urlReadStream(url) {
+    let pass = new PassThrough();
+
+    request
+        .get(url)
+        .on('response', function(response) {
+            logger.info(`CSV url load status code: ${response.statusCode}`);
+            logger.info(`CSV url load content type: ${response.headers['content-type']}`);
+            if (!ACCEPTABLE_URL_CONTENT_TYPE_ENUM[response.headers['content-type']]) {
+                throw new Error(`Content type: ${response.headers['content-type']} not permitted.`);
+            }
+        })
+        .on('error', function(err) {
+            throw err;
+        })
+        .pipe(pass);
+
+    return pass;
+}
+
+async function callPapaParseURL(json_message) {
+    // passing insert_results object by reference to insertChunk function where it accumulate values from bulk load results.
+    let insert_results = {
+        records: 0,
+        number_written: 0
+    };
+
+    try {
+        let read_stream = urlReadStream(json_message.csv_url);
+        await papa_parse.parsePromise(read_stream, validateChunk.bind(null, json_message));
+
+        read_stream = urlReadStream(json_message.csv_url);
+        await papa_parse.parsePromise(read_stream, insertChunk.bind(null, json_message, insert_results));
+        read_stream.destroy();
+
+        return insert_results;
+    } catch(err) {
+        logger.error(err);
+        throw err;
+    }
+}
+
 
 /**
  * Parse and load CSV values.
@@ -158,6 +204,7 @@ async function csvFileLoad(json_message) {
  * @returns if validation error found returns Promise<error>, if no error nothing is returned.
  */
 async function validateChunk(json_message, reject, results, parser) {
+    console.log('validate called');
     if (results.data.length === 0) {
         return;
     }
@@ -194,6 +241,7 @@ async function validateChunk(json_message, reject, results, parser) {
  * @returns if validation error found returns Promise<error>, if no error nothing is returned.
  */
 async function insertChunk(json_message, insert_results, reject, results, parser) {
+    console.log('insert called');
     if (results.data.length === 0) {
         return;
     }
@@ -261,29 +309,7 @@ async function callPapaParse(json_message) {
     }
 }
 
-/**
- * Grab the file specified in the URL parameter.
- * @param {string} url - URL to file.
- * @returns {Promise<*>}
- */
-async function createReadStreamFromURL(url) {
-    let options = {
-        method: 'GET',
-        uri: `${url}`,
-        resolveWithFullResponse: true
-    };
-    let response = await request_promise(options);
-    if (response.statusCode !== hdb_terms.HTTP_STATUS_CODES.OK) {
-        let return_object = {
-            message: `CSV Load failed from URL: ${url}`,
-            status_code: response.statusCode,
-            status_message: response.statusMessage,
-            content_type: response.headers['content-type']
-        };
-        return return_object;
-    }
-    return response;
-}
+
 
 /**
  * Genericize the call to the middleware used for parsing (currently alasql);
