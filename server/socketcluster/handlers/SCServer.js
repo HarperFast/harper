@@ -88,8 +88,8 @@ class SCServer{
                 }
                 external_conn_count++;
             }
-            let conn_count = external_con_count;
-            log.debug(`There are ${external_con_count} clients in the server.`);
+            let conn_count = external_conn_count;
+            log.debug(`There are ${external_conn_count} clients in the server.`);
             // check outbound node_connector connections
             try {
                 let clients = this.worker.node_connector.connections.clients;
