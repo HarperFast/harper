@@ -48,7 +48,7 @@ This is a security risk=
 ALLOW_SELF_SIGNED_SSL_CERTS=true
 	;Set the max number of processes HarperDB will start
 This can also be limited by number of cores and licenses=
-MAX_HDB_PROCESSES=1
+MAX_HDB_PROCESSES=4
 	;Set to true to enable clustering
 Requires a valid enterprise license=
 CLUSTERING=TRUE
@@ -59,5 +59,10 @@ This must be a value unique from the rest of your cluster node names=
 NODE_NAME=1231412de213
 	;The user used to connect to other instances of HarperDB, this user must have a role of cluster_user
 CLUSTERING_USER=cluster_user
-HELIUM_SERVER_HOST=localhost:41000
+	;Specify the file system path to where the Helium volume will reside
 HELIUM_VOLUME_PATH=/tmp/hdb
+	;specify the host & port where your helium server is running
+NOTE for most installs this will not change from localhost:41000=
+HELIUM_SERVER_HOST=localhost:41000
+PROCESS_DIR_TEST=I'm A Test
+VERSION=1.1.1
