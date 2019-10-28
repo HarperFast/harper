@@ -32,7 +32,7 @@ async function fsGetDataByValue(search_object, comparator) {
     try {
         let comparator_search = !common_utils.isEmpty(comparator);
         if (comparator_search && VALUE_SEARCH_COMPARATORS.indexOf(comparator) === -1) {
-            throw new Error(`Value search comparator - ${comparator} - is not valid`)
+            throw new Error(`Value search comparator - ${comparator} - is not valid`);
         }
         let validation_error = search_validator(search_object, 'value');
         if (validation_error) {

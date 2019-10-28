@@ -14,6 +14,7 @@ const RecursiveIterator = require('recursive-iterator');
 const log = require('../utility/logging/harper_logger');
 const common_utils = require('../utility/common_utils');
 const harperBridge = require('./harperBridge/harperBridge');
+const hdbTerms = require('../utility/hdbTerms');
 
 const WHERE_CLAUSE_IS_NULL = 'IS NULL';
 
@@ -40,6 +41,7 @@ class SQLSearch {
 
         this.fetch_attributes = [];
         this.exact_search_values = {};
+        this.comparator_search_values = {};
         this.tables = [];
 
         //holds the data from the file system to be evaluated by the sql processor
@@ -167,6 +169,32 @@ class SQLSearch {
                 }
                 //buildFolderPath returns the needed key for FS (attribute dir key) and for Helium (datastore key)
                 let attribute_key = common_utils.buildFolderPath(found_column.table.databaseid, found_column.table.tableid, found_column.attribute);
+
+                // Check for value range search first
+                if (!common_utils.isEmpty(hdbTerms.FS_VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP[node.op])) {
+                    if (common_utils.isEmpty(this.comparator_search_values[attribute_key])) {
+                        this.comparator_search_values[attribute_key] = {
+                            ignore: false,
+                            comparators: []
+                        };
+                    }
+
+                    if (!this.comparator_search_values[attribute_key].ignore) {
+                        if (common_utils.isEmpty(node.left.columnid) || common_utils.isEmpty(node.right.value)) {
+                            this.comparator_search_values[attribute_key].ignore = true;
+                            this.comparator_search_values[attribute_key].comparators = [];
+                            continue;
+                        }
+
+                        this.comparator_search_values[attribute_key].comparators.push({
+                            attribute: node.left.columnid,
+                            operation: node.op,
+                            search_value: `${node.right.value}`
+                        });
+                    }
+                    continue;
+                }
+
                 if (common_utils.isEmpty(this.exact_search_values[attribute_key])) {
                     this.exact_search_values[attribute_key] = {
                         ignore: false,
@@ -185,7 +213,7 @@ class SQLSearch {
                                 ignore = true;
                             }
                             break;
-                        case 'IN' :
+                        case 'IN':
                             let in_array = Array.isArray(node.right) ? node.right : node.left;
 
                             for (let x = 0; x < in_array.length; x++) {
@@ -210,6 +238,8 @@ class SQLSearch {
                         this.exact_search_values[attribute_key].values = new Set([...this.exact_search_values[attribute_key].values, ...values]);
                     }
                 }
+
+                continue;
             }
         }
     }
@@ -329,7 +359,8 @@ class SQLSearch {
         //get all unique attributes
         this._addFetchColumns(this.columns.joins);
 
-        // in order to perform is null conditions we need to bring in the hash attribute to make sure we coalesce the
+        //TODO - move the below comment to a better spot
+        //in order to perform is null conditions we need to bring in the hash attribute to make sure we coalesce the
         // objects so records that have null values are found.
         let where_string = null;
         try {
@@ -429,28 +460,60 @@ class SQLSearch {
                 }
             } else {
                 try {
-                    search_object.search_attribute = attribute.attribute;
-                    search_object.search_value = '*';
-                    const matching_data = await harperBridge.getDataByValue(search_object);
-                    if (is_hash) {
-                        this.data[schema_table].__has_hash = true;
-                        Object.values(matching_data).forEach(hash_obj => {
-                            const hash_val = hash_obj[hash_name];
-                            if (!this.data[schema_table].__merged_data[hash_val]) {
-                                this.data[schema_table].__merged_data[hash_val] = Object.create(fetch_attributes_objs[schema_table]);
-                                this.data[schema_table].__merged_data[hash_val][hash_name] = common_utils.autoCast(hash_val);
-                            }
-                        });
-                    } else {
-                        Object.keys(matching_data).forEach(hash_val => {
-                            if (!this.data[schema_table].__merged_data[hash_val]) {
-                                this.data[schema_table].__merged_data[hash_val] = Object.create(fetch_attributes_objs[schema_table]);
-                                this.data[schema_table].__merged_data[hash_val][hash_name] = common_utils.autoCast(hash_val);
-                                this.data[schema_table].__merged_data[hash_val][attribute.attribute] = matching_data[hash_val][attribute.attribute];
+                    // TODO - add comparator check
+                    if (!common_utils.isEmpty(this.comparator_search_values[object_path]) && !this.comparator_search_values[object_path].ignore &&
+                        !common_utils.isEmptyOrZeroLength(this.comparator_search_values[object_path].comparators)) {
+                        const search_value_comparators = this.comparator_search_values[object_path].comparators;
+                        for (let i=0; i < search_value_comparators.length; i++) {
+                            const comp = search_value_comparators[i];
+                            search_object.search_attribute = comp.attribute;
+                            search_object.search_value = comp.search_value;
+                            const matching_data = await harperBridge.getDataByValue(search_object, comp.operation);
+                            if (is_hash) {
+                                this.data[schema_table].__has_hash = true;
+                                Object.values(matching_data).forEach(hash_obj => {
+                                    const hash_val = hash_obj[hash_name];
+                                    if (!this.data[schema_table].__merged_data[hash_val]) {
+                                        this.data[schema_table].__merged_data[hash_val] = Object.create(fetch_attributes_objs[schema_table]);
+                                        this.data[schema_table].__merged_data[hash_val][hash_name] = common_utils.autoCast(hash_val);
+                                    }
+                                });
                             } else {
-                                this.data[schema_table].__merged_data[hash_val][attribute.attribute] = matching_data[hash_val][attribute.attribute];
+                                Object.keys(matching_data).forEach(hash_val => {
+                                    if (!this.data[schema_table].__merged_data[hash_val]) {
+                                        this.data[schema_table].__merged_data[hash_val] = Object.create(fetch_attributes_objs[schema_table]);
+                                        this.data[schema_table].__merged_data[hash_val][hash_name] = common_utils.autoCast(hash_val);
+                                        this.data[schema_table].__merged_data[hash_val][attribute.attribute] = matching_data[hash_val][attribute.attribute];
+                                    } else {
+                                        this.data[schema_table].__merged_data[hash_val][attribute.attribute] = matching_data[hash_val][attribute.attribute];
+                                    }
+                                });
                             }
-                        });
+                        }
+                    } else {
+                        search_object.search_attribute = attribute.attribute;
+                        search_object.search_value = '*';
+                        const matching_data = await harperBridge.getDataByValue(search_object);
+                        if (is_hash) {
+                            this.data[schema_table].__has_hash = true;
+                            Object.values(matching_data).forEach(hash_obj => {
+                                const hash_val = hash_obj[hash_name];
+                                if (!this.data[schema_table].__merged_data[hash_val]) {
+                                    this.data[schema_table].__merged_data[hash_val] = Object.create(fetch_attributes_objs[schema_table]);
+                                    this.data[schema_table].__merged_data[hash_val][hash_name] = common_utils.autoCast(hash_val);
+                                }
+                            });
+                        } else {
+                            Object.keys(matching_data).forEach(hash_val => {
+                                if (!this.data[schema_table].__merged_data[hash_val]) {
+                                    this.data[schema_table].__merged_data[hash_val] = Object.create(fetch_attributes_objs[schema_table]);
+                                    this.data[schema_table].__merged_data[hash_val][hash_name] = common_utils.autoCast(hash_val);
+                                    this.data[schema_table].__merged_data[hash_val][attribute.attribute] = matching_data[hash_val][attribute.attribute];
+                                } else {
+                                    this.data[schema_table].__merged_data[hash_val][attribute.attribute] = matching_data[hash_val][attribute.attribute];
+                                }
+                            });
+                        }
                     }
                 } catch (e) {
                     log.error(e);

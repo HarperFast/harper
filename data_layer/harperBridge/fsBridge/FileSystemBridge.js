@@ -38,9 +38,9 @@ class FileSystemBridge extends BridgeMethods {
         }
     }
 
-    async getDataByValue(search_object) {
+    async getDataByValue(search_object, comparator) {
         try {
-            return await fsGetDataByValue(search_object);
+            return await fsGetDataByValue(search_object, comparator);
         } catch(err) {
             log.error(err);
             throw err;
