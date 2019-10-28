@@ -409,6 +409,74 @@
 					"response": []
 				},
 				{
+					"name": "search by hash empty table",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "582da6b6-527f-4777-9954-f7f2cb29e718",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Check return array length\", function () {",
+									"    pm.expect(pm.response.json().length).to.eql(0)",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from northnwd.customers where customerid = 1\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
 					"name": "create_table confirm table exists",
 					"event": [
 						{
@@ -1485,6 +1553,62 @@
 						"body": {
 							"mode": "raw",
 							"raw": "{\n\t\"operation\":\"create_table\",\n\t\"schema\":\"dev\",\n\t\"table\":\"invalid_attribute\",\n\t\"hash_attribute\": \"id\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "create_table_dev_remarks_blob",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "84856ff2-bfb5-4dc6-96b2-d6ec2f2758cf",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"create_table\",\n\t\"schema\":\"dev\",\n\t\"table\":\"remarks_blob\",\n\t\"hash_attribute\": \"id\"\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -2853,6 +2977,71 @@
 								"description": "Search and confirm that insert attributes worked as expected."
 							},
 							"response": []
+						},
+						{
+							"name": "Import data bulk insert into dev.remarks_blob table",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "4faf5143-2058-45a9-b84f-5d4598d33098",
+										"exec": [
+											"pm.test(\"inserted 11\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message.indexOf('inserted 11')).to.eql(0);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"name": "Content-Type",
+										"type": "text",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\":\"insert\",\n    \"schema\" :  \"dev\",\n    \"table\":\"remarks_blob\",\n   \n\"records\": [\n    {\n        \"id\": 1,\n        \"length\": 238,\n        \"remarks\":\"Beautiful pool home that has all the upgrades you're looking for. 4 Bedroom/2.5+ bath with updated kitchen with granite countertops, stainless steel appliances including a Bosch dishwasher and double ovens. Formal Living room, dining room.\"\n    },\n    {\n        \"id\": 2,\n        \"length\": 248,\n        \"remarks\":\"Beautiful pool home that has all the upgrades you're looking for.  4 Bedroom/2.5+ bath with updated kitchen with granite countertops, stainless steel appliances including a Bosch dishwasher and double ovens.  Formal Living room, dining room and stuff.\"\n    },\n    {\n        \"id\": 3,\n        \"length\": 788,\n        \"remarks\": \"Beautiful pool home that has all the upgrades you're looking for.  4 Bedroom/2.5+ bath with updated kitchen with granite countertops, stainless steel appliances including a Bosch dishwasher and double ovens.  Formal Living room, dining room & separate family room with vauled ceilings. Family room is wired for speakers. Tile floors in kitchen & b'fast area.  Hardwood floors are found in the family room and 2 bedrooms.  The master bedroom has french doors out to the screened pool area.  The bath has separate vanities with granite tops, remodeled shower with a seat & his and hers closets.  There is a pool and spa.  Both are heated using solar panels, no gas heater.  There is a Soothing waterfall feature that makes this outdoor area perfect for entertaining.  Fenced back yard as well.\"\n    },\n    {\n        \"id\": 4,\n        \"length\": 701,\n        \"remarks\": \"This custom built dream home is stunningly gorgeous!  It is a 5+ acres luxury equestrian property with access to Jennings State Forest from your backyard, no need to trailer your horses anywhere for a beautifully scenic peaceful ride.  This amazing home includes impressive Brazilian hardwood floors, plantation shutters throughout, granite countertops, triple tray and wood beam ceilings and so much more.  Builder's touches include 24'' tiles, rounded corner walls, 5'' baseboards, 10 ft. ceilings, in-wall vacuum system and many more unique upgrades.  There are extensive custom touches on this property from the mailbox to the unique 3000 sq. ft. two level 3-stall barn with tons of storage space.\"\n    },\n    {\n        \"id\": 5,\n        \"length\": 234,\n        \"remarks\": \"This custom built dream home is stunningly gorgeous!  It is a 5+ acres luxury equestrian property with access to Jennings State Forest from your backyard, no need to trailer your horses anywhere for a beautifully scenic peaceful ride.\"\n    },\n    {\n        \"id\": 6,\n        \"length\": 779,\n        \"remarks\": \"*DON'T MISS THIS BEAUTIFUL DAVID WEEKLEY BELMONTE MODEL*ONE OF THE LARGEST LOTS IN CROSSWATER*GREAT FOR OUTDOOR FUN!*LUXURIOUS LIVING!*HIGH TECH HOME*CROWN MOLDING, CUSTOM PLANTATION SHUTTERS, 18'' TILE & CUSTOM WHITE OAK HARDWOOD FLOORING...THRUOUT THE HOME*LARGE OFFICE W/GLASS FRENCH DOORS*FORMAL DINING ROOM W/PICTURE FRAME MOLDING*GOURMET KITCHEN W/42''CUSTOM CABINETRY & GRANITE COUNTERTOPS, STAINLESS STEEL APPLIANCES, & HUGE ISLAND OPEN TO THE GREAT ROOM W/TRAY CEILING & SURROUND SOUND SPEAKERS*MASTER BEDROOM SUITE W/TRAY CEILING W/BEADBOARD INSET AND SHOWER W/OVERHEAD RAINFOREST HEAD*2 MORE BEDROOMS & OPEN ''FLEX'' AREA*COVERED LANAI OVERLOOKING THE HUGE FENCED BACKYARD*3-CAR GARAGE*''NEST'' THERMOSTAT & AT&T HOME SECURITY W/WIFI ACCESS*WATER SOFTENER*LOTS MORE!!!\"\n    },\n{\n        \"id\": 7,\n        \"length\": 243,\n        \"remarks\": \"*DON'T MISS THIS BEAUTIFUL DAVID WEEKLEY BELMONTE MODEL*ONE OF THE LARGEST LOTS IN CROSSWATER*GREAT FOR OUTDOOR FUN!*LUXURIOUS LIVING!*HIGH TECH HOME*CROWN MOLDING, CUSTOM PLANTATION SHUTTERS, 18'' TILE & CUSTOM WHITE OAK HARDWOOD FLOORING...\"\n    },\n    {\n        \"id\": 8,\n        \"length\": 802,\n        \"remarks\": \"**Spacious & updated 2-story home on large preserve lot nearly 1/2 acre! Concrete block constr. & desirable ICW location near JTB, shopping, dining & the beach! Great split BD flrpln w/soaring ceilings features 4BD + office, upstairs loft & 3 full BA. Beautiful tiled kitchen has granite countertops, island, newer refrigerator, cooktop, oven & convection microwave (2 yrs), breakfast bar & nook. Separate DR, LR & Fam Rm all w/crown molding & wood laminate flrs; FP in Fam Rm. Remodeled BA w/granite countertops & gorgeous travertine tiled showers & flrs. New Roof 6/2014 & New upgraded AC system 10/2015. Huge owner suite w/Jacuzzi tub, sep. shower, 2 walk-in closets & bonus rm w/French doors. Relaxing back porch w/phantom retractable screen overlooks the charming patio & huge stunning backyard!**\"\n    },\n    {\n        \"id\": 9,\n        \"length\": 251,\n        \"remarks\": \"**Spacious & updated 2-story home on large preserve lot nearly 1/2 acre! Concrete block constr. & desirable ICW location near JTB, shopping, dining & the beach! Great split BD flrpln w/soaring ceilings features 4BD + office, upstairs loft & 3 full BA.\"\n    },\n    {\n        \"id\": 10,\n        \"length\": 560,\n        \"remarks\": \"Location ... Location ...GOURGEOUS HOME in a Heart of MANDARIN,Next to Loretto Magnet schoolClose to I-295, shopping & entertainment. Gated community! Loaded with upgrades: GRANITE countertops,upgraded kitchen cabs w/crown molding, st steel appl, New carpets,New exterior and interior paint,Rain soft water softner, tile floors, bay windows, addtl loft + sep. Internet center, fireplace, lots of arches& niches, 2 story family room, huge covered porch overlooking, Planing to put the new sod in the front and sides, landscaped backyard and much more! MUST SEE!\"\n    },\n\n    {\n        \"id\": 11,\n        \"length\": 172,\n        \"remarks\": \"Location ... Location ...GOURGEOUS HOME in a Heart of MANDARIN,Next to Loretto Magnet schoolClose to I-295, shopping & entertainment. Gated community! Loaded with upgrades:\"\n    }\n]\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
 						}
 					],
 					"protocolProfileBehavior": {},
@@ -3214,7 +3403,14 @@
 											"    var randomNumber = Math.floor(Math.random() * 29);",
 											"    pm.expect(jsonData[randomNumber]).to.not.eql(null)",
 											"    pm.expect(jsonData.length).to.eql(29);",
-											"    pm.expect(Object.keys(jsonData[randomNumber]).length).to.eql(12);",
+											"    let keys = Object.keys(jsonData[randomNumber]);",
+											"    //because helium has 2 extra keys we need to check for them",
+											"    if(keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1){",
+											"        pm.expect(keys.length).to.eql(14);",
+											"    } else{",
+											"        pm.expect(keys.length).to.eql(12);",
+											"    }",
+											"    ",
 											"});",
 											""
 										],
@@ -3738,6 +3934,260 @@
 					"response": []
 				},
 				{
+					"name": "Insert value into schema that doesn't exist",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "83493efa-2538-4d2d-85dd-765f55db06fe",
+								"exec": [
+									"pm.test(\"Status code is 500\", function () {",
+									"    pm.response.to.have.status(500);",
+									"});",
+									"",
+									"pm.test(\"insert non existent schema\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.eql(\"Schema 'not_a_schema' does not exist\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"insert\",\n\t\"schema\":\"not_a_schema\",\n\t\"table\":\"{{cust_tb}}\",\n\t\"records\": [\n\t\t{\n\t\t\t\"name\": \"Harper\",\n\t\t\t\"customerid\": 1\n\t\t}\n\t]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Insert value into table that doesn't exist",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "83493efa-2538-4d2d-85dd-765f55db06fe",
+								"exec": [
+									"pm.test(\"Status code is 500\", function () {",
+									"    pm.response.to.have.status(500);",
+									"});",
+									"",
+									"pm.test(\"insert non existent table\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.eql(\"Table 'not_a_table' does not exist in schema 'northnwd'\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"insert\",\n\t\"schema\":\"{{schema}}\",\n\t\"table\":\"not_a_table\",\n\t\"records\": [\n\t\t{\n\t\t\t\"name\": \"Harper\",\n\t\t\t\"customerid\": 1\n\t\t}\n\t]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Update value in schema that doesn't exist",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "83493efa-2538-4d2d-85dd-765f55db06fe",
+								"exec": [
+									"pm.test(\"Status code is 500\", function () {",
+									"    pm.response.to.have.status(500);",
+									"});",
+									"",
+									"pm.test(\"insert non existent schema\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.eql(\"Schema 'not_a_schema' does not exist\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"update\",\n\t\"schema\":\"not_a_schema\",\n\t\"table\":\"{{cust_tb}}\",\n\t\"records\": [\n\t\t{\n\t\t\t\"name\": \"Harper\",\n\t\t\t\"customerid\": 1\n\t\t}\n\t]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Update value in table that doesn't exist",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "83493efa-2538-4d2d-85dd-765f55db06fe",
+								"exec": [
+									"pm.test(\"Status code is 500\", function () {",
+									"    pm.response.to.have.status(500);",
+									"});",
+									"",
+									"pm.test(\"insert non existent table\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.eql(\"Table 'not_a_table' does not exist in schema 'northnwd'\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"update\",\n\t\"schema\":\"{{schema}}\",\n\t\"table\":\"not_a_table\",\n\t\"records\": [\n\t\t{\n\t\t\t\"name\": \"Harper\",\n\t\t\t\"customerid\": 1\n\t\t}\n\t]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
 					"name": "Set attribute to number",
 					"event": [
 						{
@@ -4024,7 +4474,7 @@
 											"pm.test(\"Receives invalid SQL error msg\", function () {",
 											"    const errorMsg = pm.response.json().error;",
 											"    pm.expect(errorMsg).to.equal(",
-											"        \"Error: Attribute name can only contain alpha numeric characters or underscores\"",
+											"        \"Attribute name can only contain alpha numeric characters or underscores\"",
 											"    );",
 											"});"
 										],
@@ -4085,7 +4535,7 @@
 											"pm.test(\"Receives invalid SQL error msg\", function () {",
 											"    const errorMsg = pm.response.json().error;",
 											"    pm.expect(errorMsg).to.equal(",
-											"        \"Error: Attribute name can only contain alpha numeric characters or underscores\"",
+											"        \"Attribute name can only contain alpha numeric characters or underscores\"",
 											"    );",
 											"});"
 										],
@@ -4146,7 +4596,7 @@
 											"pm.test(\"Receives invalid SQL error msg\", function () {",
 											"    const errorMsg = pm.response.json().error;",
 											"    pm.expect(errorMsg).to.equal(",
-											"        \"Error: Attribute name can only contain alpha numeric characters or underscores\"",
+											"        \"Attribute name can only contain alpha numeric characters or underscores\"",
 											"    );",
 											"});"
 										],
@@ -4207,7 +4657,7 @@
 											"pm.test(\"Receives invalid SQL error msg\", function () {",
 											"    const errorMsg = pm.response.json().error;",
 											"    pm.expect(errorMsg).to.equal(",
-											"        \"Error: Attribute name can only contain alpha numeric characters or underscores\"",
+											"        \"Attribute name can only contain alpha numeric characters or underscores\"",
 											"    );",
 											"});"
 										],
@@ -4268,7 +4718,7 @@
 											"pm.test(\"Receives invalid SQL error msg\", function () {",
 											"    const errorMsg = pm.response.json().error;",
 											"    pm.expect(errorMsg).to.equal(",
-											"        \"Error: Attribute name can only contain alpha numeric characters or underscores\"",
+											"        \"Attribute name can only contain alpha numeric characters or underscores\"",
 											"    )",
 											"});"
 										],
@@ -7146,6 +7596,390 @@
 						"description": "check that correct error is returned when query is sent without sql parameter "
 					},
 					"response": []
+				},
+				{
+					"name": "select * dev.remarks_blob like w/ special chars pt1",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "371ceb40-b3db-4782-b28d-6a50b1e64cfc",
+								"exec": [
+									"pm.test(\"test 3 records returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(3);",
+									"});",
+									"",
+									"pm.test(\"test all remarks contain '4 Bedroom/2.5+ bath'\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.forEach((record)=>{",
+									"        let keys = Object.keys(record);",
+									"        if(keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1){",
+									"            pm.expect(keys.length).to.eql(5);",
+									"        } else{",
+									"            pm.expect(keys.length).to.eql(3);",
+									"        }",
+									"        pm.expect(record.remarks.includes('4 Bedroom/2.5+ bath')).to.eql(true);",
+									"    });",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * FROM dev.remarks_blob where remarks like '%4 Bedroom/2.5+ bath%'\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "select * dev.remarks_blob like w/ special chars pt2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "23177ea7-809c-4384-8e1b-a956436bb54f",
+								"exec": [
+									"pm.test(\"test 2 records returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(2);",
+									"});",
+									"",
+									"pm.test(\"test all remarks contain provided text\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.forEach((record)=>{",
+									"        let keys = Object.keys(record);",
+									"        if(keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1){",
+									"            pm.expect(keys.length).to.eql(5);",
+									"        } else{",
+									"            pm.expect(keys.length).to.eql(3);",
+									"        }",
+									"        pm.expect(record.remarks.includes('This custom built dream home is stunningly gorgeous!  It is a 5+ acres luxury equestrian property with access to Jennings State Forest from your backyard, no need to trailer your horses anywhere for a beautifully scenic peaceful ride.')).to.eql(true);",
+									"    });",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * FROM dev.remarks_blob where remarks like 'This custom built dream home is stunningly gorgeous!  It is a 5+ acres luxury equestrian property with access to Jennings State Forest from your backyard, no need to trailer your horses anywhere for a beautifully scenic peaceful ride.%'\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "select * dev.remarks_blob like w/ special chars pt3",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "65c8d8f9-1a40-4671-b35d-ec57a847cc59",
+								"exec": [
+									"pm.test(\"test 2 records returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(2);",
+									"});",
+									"",
+									"pm.test(\"test all remarks contain provided text\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.forEach((record)=>{",
+									"        let keys = Object.keys(record);",
+									"        if(keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1){",
+									"            pm.expect(keys.length).to.eql(5);",
+									"        } else{",
+									"            pm.expect(keys.length).to.eql(3);",
+									"        }",
+									"        pm.expect(record.remarks.includes('...GOURGEOUS HOME in a Heart of MANDARIN,Next to Loretto Magnet schoolClose to I-295, shopping & entertainment. Gated community! Loaded with upgrades:')).to.eql(true);",
+									"    });",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * FROM dev.remarks_blob where remarks like '%...GOURGEOUS HOME in a Heart of MANDARIN,Next to Loretto Magnet schoolClose to I-295, shopping & entertainment. Gated community! Loaded with upgrades:%'\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "select * dev.remarks_blob like w/ special chars pt4",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "65c8d8f9-1a40-4671-b35d-ec57a847cc59",
+								"exec": [
+									"pm.test(\"test 1 records returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(1);",
+									"});",
+									"",
+									"pm.test(\"test all remarks contain provided text\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.forEach((record)=>{",
+									"        let keys = Object.keys(record);",
+									"        if(keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1){",
+									"            pm.expect(keys.length).to.eql(5);",
+									"        } else{",
+									"            pm.expect(keys.length).to.eql(3);",
+									"        }",
+									"        pm.expect(record.remarks.includes('**Spacious & updated 2-story home on large preserve lot nearly 1/2 acre! Concrete block constr. & desirable ICW location near JTB, shopping, dining & the beach! Great split BD flrpln w/soaring ceilings features 4BD + office, upstairs loft & 3 full BA.')).to.eql(true);",
+									"    });",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * FROM dev.remarks_blob where remarks like '**Spacious & updated 2-story home on large preserve lot nearly 1/2 acre! Concrete block constr. & desirable ICW location near JTB, shopping, dining & the beach! Great split BD flrpln w/soaring ceilings features 4BD + office, upstairs loft & 3 full BA.'\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "select * dev.remarks_blob like w/ special chars pt5",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "65c8d8f9-1a40-4671-b35d-ec57a847cc59",
+								"exec": [
+									"pm.test(\"test 11 records returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(11);",
+									"});",
+									"",
+									"pm.test(\"test all remarks contain 3 attribute values\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.forEach((record)=>{",
+									"        let keys = Object.keys(record);",
+									"        if(keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1){",
+									"            pm.expect(keys.length).to.eql(5);",
+									"        } else{",
+									"            pm.expect(keys.length).to.eql(3);",
+									"        }",
+									"    });",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * FROM dev.remarks_blob where remarks like '%'\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
 				}
 			],
 			"protocolProfileBehavior": {}
@@ -7171,7 +8005,7 @@
 											"pm.test(\"Receives invalid attribute name error msg\", function () {",
 											"    const errorMsg = pm.response.json().error;",
 											"    pm.expect(errorMsg).to.equal(",
-											"        \"Error: Attribute name can only contain alpha numeric characters or underscores\"",
+											"        \"Attribute name can only contain alpha numeric characters or underscores\"",
 											"    )",
 											"});"
 										],
@@ -7232,7 +8066,7 @@
 											"pm.test(\"Receives invalid SQL error msg\", function () {",
 											"    const errorMsg = pm.response.json().error;",
 											"    pm.expect(errorMsg).to.equal(",
-											"        \"Error: Attribute name can only contain alpha numeric characters or underscores\"",
+											"        \"Attribute name can only contain alpha numeric characters or underscores\"",
 											"    );",
 											"});"
 										],
@@ -7293,7 +8127,7 @@
 											"pm.test(\"Receives invalid attribute name error msg\", function () {",
 											"    const errorMsg = pm.response.json().error;",
 											"    pm.expect(errorMsg).to.equal(",
-											"        \"Error: Attribute name can only contain alpha numeric characters or underscores\"",
+											"        \"Attribute name can only contain alpha numeric characters or underscores\"",
 											"    )",
 											"});"
 										],
@@ -7354,7 +8188,7 @@
 											"pm.test(\"Receives invalid SQL error msg\", function () {",
 											"    const errorMsg = pm.response.json().error;",
 											"    pm.expect(errorMsg).to.equal(",
-											"        \"Error: Attribute name can only contain alpha numeric characters or underscores\"",
+											"        \"Attribute name can only contain alpha numeric characters or underscores\"",
 											"    );",
 											"});"
 										],
@@ -7415,7 +8249,7 @@
 											"pm.test(\"Receives invalid attribute name error msg\", function () {",
 											"    const errorMsg = pm.response.json().error;",
 											"    pm.expect(errorMsg).to.equal(",
-											"        \"Error: Attribute name can only contain alpha numeric characters or underscores\"",
+											"        \"Attribute name can only contain alpha numeric characters or underscores\"",
 											"    )",
 											"});"
 										],
@@ -8276,6 +9110,142 @@
 					"response": []
 				},
 				{
+					"name": "Insert with no hash",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "cc8c0614-8642-4057-8b31-fb89f4f52d24",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Insert with no hash\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.inserted_hashes.length).to.eql(1);",
+									"    pm.expect(jsonData.message).to.eql(\"inserted 1 of 1 records\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"insert\",\n\t\"schema\":\"{{schema}}\",\n\t\"table\":\"{{emps_tb}}\",\n\t\"records\": [\n\t  {\n\t    \"address\": \"1 North Street\",\n\t    \"lastname\":\"Dog\",\n\t    \"firstname\":\"Harper\"\n\t  }\n\t]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Insert with empty hash",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "cc8c0614-8642-4057-8b31-fb89f4f52d24",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Insert with no hash\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.inserted_hashes.length).to.eql(1);",
+									"    pm.expect(jsonData.message).to.eql(\"inserted 1 of 1 records\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"insert\",\n\t\"schema\":\"{{schema}}\",\n\t\"table\":\"{{emps_tb}}\",\n\t\"records\": [\n\t  {\n\t  \t\"{{emps_id}}\": \"\",\n\t    \"address\": \"23 North Street\",\n\t    \"lastname\":\"Cat\",\n\t    \"firstname\":\"Brian\"\n\t  }\n\t]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
 					"name": "NoSQL search by hash",
 					"event": [
 						{
@@ -8650,7 +9620,7 @@
 									"",
 									"pm.test(\"Valid error message is recieved\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.error).to.eql(\"a valid hash attribute must be provided with update record\");",
+									"    pm.expect(jsonData.error).to.eql(\"a valid hash attribute must be provided with update record, check log for more info\");",
 									"});",
 									""
 								],
@@ -8721,7 +9691,7 @@
 									"",
 									"pm.test(\"Valid error message is recieved\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.error).to.eql(\"a valid hash attribute must be provided with update record\");",
+									"    pm.expect(jsonData.error).to.eql(\"a valid hash attribute must be provided with update record, check log for more info\");",
 									"});",
 									""
 								],
@@ -8792,7 +9762,7 @@
 									"",
 									"pm.test(\"Valid error message is recieved\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.error).to.eql(\"a valid hash attribute must be provided with update record\");",
+									"    pm.expect(jsonData.error).to.eql(\"a valid hash attribute must be provided with update record, check log for more info\");",
 									"});",
 									""
 								],
@@ -8863,8 +9833,15 @@
 									"",
 									"pm.test(\"update with nonexistent hash skips hash\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.message).to.eql(\"updated 0 of 1 records\");",
-									"    pm.expect(jsonData.skipped_hashes[0]).to.eql(\"There is no way this exists\");",
+									"    if(jsonData.message === \"updated 0 of 1 records\"){",
+									"        pm.expect(jsonData.message).to.eql(\"updated 0 of 1 records\");",
+									"        pm.expect(jsonData.update_hashes).to.eql([]);",
+									"        pm.expect(jsonData.skipped_hashes[0]).to.eql(\"There is no way this exists\");",
+									"    } else if(jsonData.message === \"updated 1 of 1 records\"){",
+									"        pm.expect(jsonData.message).to.eql(\"updated 1 of 1 records\");",
+									"        pm.expect(jsonData.update_hashes[0]).to.eql(\"There is no way this exists\");",
+									"        pm.expect(jsonData.skipped_hashes).to.eql([]);",
+									"    }",
 									"});",
 									""
 								],
@@ -8918,6 +9895,742 @@
 							"port": "{{port}}"
 						},
 						"description": "Try to update employee record with valid nonexistent hash. "
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL search by value - % at end",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "8585d877-4334-4ee1-9e85-48733b10bebd",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"test 2 record returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(2);",
+									"});",
+									"",
+									"pm.test(\"test all remarks contain exact value provided\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.forEach((record)=>{",
+									"        let keys = Object.keys(record);",
+									"        if(keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1){",
+									"            pm.expect(keys.length).to.eql(5);",
+									"        } else{",
+									"            pm.expect(keys.length).to.eql(3);",
+									"        }",
+									"        pm.expect(record.remarks.includes('Location ... Location ...GOURGEOUS HOME in a Heart of MANDARIN,Next to Loretto Magnet schoolClose to I-295, shopping & entertainment. Gated community! Loaded with upgrades:')).to.eql(true);",
+									"    });",
+									"});",
+									"",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"remarks_blob\",\n\t\"search_attribute\":\"remarks\",\n    \"search_value\":\"Location ... Location ...GOURGEOUS HOME in a Heart of MANDARIN,Next to Loretto Magnet schoolClose to I-295, shopping & entertainment. Gated community! Loaded with upgrades:%\",\n\t\"get_attributes\": [\"*\"]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL search by value - * at end",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "8585d877-4334-4ee1-9e85-48733b10bebd",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"test 2 record returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(2);",
+									"});",
+									"",
+									"pm.test(\"test all remarks contain exact value provided\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.forEach((record)=>{",
+									"        let keys = Object.keys(record);",
+									"        if(keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1){",
+									"            pm.expect(keys.length).to.eql(5);",
+									"        } else{",
+									"            pm.expect(keys.length).to.eql(3);",
+									"        }",
+									"        pm.expect(record.remarks.includes('Location ... Location ...GOURGEOUS HOME in a Heart of MANDARIN,Next to Loretto Magnet schoolClose to I-295, shopping & entertainment. Gated community! Loaded with upgrades:')).to.eql(true);",
+									"    });",
+									"});",
+									"",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"remarks_blob\",\n\t\"search_attribute\":\"remarks\",\n    \"search_value\":\"Location ... Location ...GOURGEOUS HOME in a Heart of MANDARIN,Next to Loretto Magnet schoolClose to I-295, shopping & entertainment. Gated community! Loaded with upgrades:*\",\n\t\"get_attributes\": [\"*\"]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL search by value - % at start",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "8585d877-4334-4ee1-9e85-48733b10bebd",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"test 1 record returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(1);",
+									"});",
+									"",
+									"pm.test(\"test all remarks contain exact value provided\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.forEach((record)=>{",
+									"        let keys = Object.keys(record);",
+									"        if(keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1){",
+									"            pm.expect(keys.length).to.eql(5);",
+									"        } else{",
+									"            pm.expect(keys.length).to.eql(3);",
+									"        }",
+									"        pm.expect(record.remarks.includes(\"*DON'T MISS THIS BEAUTIFUL DAVID WEEKLEY BELMONTE MODEL*ONE OF THE LARGEST LOTS IN CROSSWATER*GREAT FOR OUTDOOR FUN!*LUXURIOUS LIVING!*HIGH TECH HOME*CROWN MOLDING, CUSTOM PLANTATION SHUTTERS, 18'' TILE & CUSTOM WHITE OAK HARDWOOD FLOORING...\")).to.eql(true);",
+									"    });",
+									"});",
+									"",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"remarks_blob\",\n\t\"search_attribute\":\"remarks\",\n    \"search_value\":\"%*DON'T MISS THIS BEAUTIFUL DAVID WEEKLEY BELMONTE MODEL*ONE OF THE LARGEST LOTS IN CROSSWATER*GREAT FOR OUTDOOR FUN!*LUXURIOUS LIVING!*HIGH TECH HOME*CROWN MOLDING, CUSTOM PLANTATION SHUTTERS, 18'' TILE & CUSTOM WHITE OAK HARDWOOD FLOORING...\",\n\t\"get_attributes\": [\"*\"]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL search by value - * at start",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "8585d877-4334-4ee1-9e85-48733b10bebd",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"test 1 record returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(1);",
+									"});",
+									"",
+									"pm.test(\"test all remarks contain exact value provided\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.forEach((record)=>{",
+									"        let keys = Object.keys(record);",
+									"        if(keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1){",
+									"            pm.expect(keys.length).to.eql(5);",
+									"        } else{",
+									"            pm.expect(keys.length).to.eql(3);",
+									"        }",
+									"        pm.expect(record.remarks.includes(\"*DON'T MISS THIS BEAUTIFUL DAVID WEEKLEY BELMONTE MODEL*ONE OF THE LARGEST LOTS IN CROSSWATER*GREAT FOR OUTDOOR FUN!*LUXURIOUS LIVING!*HIGH TECH HOME*CROWN MOLDING, CUSTOM PLANTATION SHUTTERS, 18'' TILE & CUSTOM WHITE OAK HARDWOOD FLOORING...\")).to.eql(true);",
+									"    });",
+									"});",
+									"",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"remarks_blob\",\n\t\"search_attribute\":\"remarks\",\n    \"search_value\":\"**DON'T MISS THIS BEAUTIFUL DAVID WEEKLEY BELMONTE MODEL*ONE OF THE LARGEST LOTS IN CROSSWATER*GREAT FOR OUTDOOR FUN!*LUXURIOUS LIVING!*HIGH TECH HOME*CROWN MOLDING, CUSTOM PLANTATION SHUTTERS, 18'' TILE & CUSTOM WHITE OAK HARDWOOD FLOORING...\",\n\t\"get_attributes\": [\"*\"]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL search by value - * at start and end",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "8585d877-4334-4ee1-9e85-48733b10bebd",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"test 3 record returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(3);",
+									"});",
+									"",
+									"pm.test(\"test all remarks contain exact value provided\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.forEach((record)=>{",
+									"        let keys = Object.keys(record);",
+									"        if(keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1){",
+									"            pm.expect(keys.length).to.eql(5);",
+									"        } else{",
+									"            pm.expect(keys.length).to.eql(3);",
+									"        }",
+									"        pm.expect(record.remarks.includes(\"4 Bedroom/2.5+\")).to.eql(true);",
+									"    });",
+									"});",
+									"",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"remarks_blob\",\n\t\"search_attribute\":\"remarks\",\n    \"search_value\":\"*4 Bedroom/2.5+*\",\n\t\"get_attributes\": [\"*\"]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL search by value - % at start and end",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "8585d877-4334-4ee1-9e85-48733b10bebd",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"test 3 record returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(3);",
+									"});",
+									"",
+									"pm.test(\"test all remarks contain exact value provided\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.forEach((record)=>{",
+									"        let keys = Object.keys(record);",
+									"        if(keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1){",
+									"            pm.expect(keys.length).to.eql(5);",
+									"        } else{",
+									"            pm.expect(keys.length).to.eql(3);",
+									"        }",
+									"        pm.expect(record.remarks.includes(\"4 Bedroom/2.5+\")).to.eql(true);",
+									"    });",
+									"});",
+									"",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"remarks_blob\",\n\t\"search_attribute\":\"remarks\",\n    \"search_value\":\"*4 Bedroom/2.5+*\",\n\t\"get_attributes\": [\"*\"]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL search by value - * as search_value",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "8585d877-4334-4ee1-9e85-48733b10bebd",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"test 11 record returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(11);",
+									"});",
+									"",
+									"pm.test(\"test all remarks contain all attributes\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.forEach((record)=>{",
+									"        let keys = Object.keys(record);",
+									"        if(keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1){",
+									"            pm.expect(keys.length).to.eql(5);",
+									"        } else{",
+									"            pm.expect(keys.length).to.eql(3);",
+									"        }",
+									"    });",
+									"});",
+									"",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"remarks_blob\",\n\t\"search_attribute\":\"remarks\",\n    \"search_value\":\"*\",\n\t\"get_attributes\": [\"*\"]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL search by value - % as search_value",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "8585d877-4334-4ee1-9e85-48733b10bebd",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"test 11 record returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(11);",
+									"});",
+									"",
+									"pm.test(\"test all remarks contain all attributes\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.forEach((record)=>{",
+									"        let keys = Object.keys(record);",
+									"        if(keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1){",
+									"            pm.expect(keys.length).to.eql(5);",
+									"        } else{",
+									"            pm.expect(keys.length).to.eql(3);",
+									"        }",
+									"    });",
+									"});",
+									"",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"remarks_blob\",\n\t\"search_attribute\":\"remarks\",\n    \"search_value\":\"%\",\n\t\"get_attributes\": [\"*\"]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL search by value - *** at start",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "8585d877-4334-4ee1-9e85-48733b10bebd",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"test 1 record returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(1);",
+									"});",
+									"",
+									"pm.test(\"test all remarks contain value provided\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.forEach((record)=>{",
+									"        let keys = Object.keys(record);",
+									"        if(keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1){",
+									"            pm.expect(keys.length).to.eql(5);",
+									"        } else{",
+									"            pm.expect(keys.length).to.eql(3);",
+									"        }",
+									"        pm.expect(record.remarks.includes(\"**Spacious & updated 2-story home on large preserve lot nearly 1/2 acre! Concrete block constr. & desirable ICW location near JTB, shopping, dining & the beach! Great split BD flrpln w/soaring ceilings features 4BD + office, upstairs loft & 3 full BA.\")).to.eql(true);",
+									"    });",
+									"});",
+									"",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"remarks_blob\",\n\t\"search_attribute\":\"remarks\",\n    \"search_value\":\"***Spacious & updated 2-story home on large preserve lot nearly 1/2 acre! Concrete block constr. & desirable ICW location near JTB, shopping, dining & the beach! Great split BD flrpln w/soaring ceilings features 4BD + office, upstairs loft & 3 full BA.\",\n\t\"get_attributes\": [\"*\"]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
 					},
 					"response": []
 				}
@@ -10381,7 +12094,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\"operation\":\"add_role\",\n\"role\":\"cluster_user\",\n\"permission\":{\n  \"cluster_user\": true\n  }\n}"
+							"raw": "{\n\"operation\":\"add_role\",\n\"role\":\"test_cluster_user_role\",\n\"permission\":{\n  \"cluster_user\": true\n  }\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -12305,12 +14018,19 @@
 							"listen": "test",
 							"script": {
 								"id": "43e34308-05a8-433b-be7d-964fccf09f03",
-								"type": "text/javascript",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Body includes correct message\", function () {",
+									"    const respMsg = pm.response.json().message;",
+									"    pm.expect(respMsg).to.equal(",
+									"        \"test_user successfully deleted\"",
+									"    );",
 									"});"
-								]
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -12369,12 +14089,19 @@
 							"listen": "test",
 							"script": {
 								"id": "43e34308-05a8-433b-be7d-964fccf09f03",
-								"type": "text/javascript",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Body includes correct message\", function () {",
+									"    const respMsg = pm.response.json().message;",
+									"    pm.expect(respMsg).to.equal(",
+									"        \"developer_test_5 successfully deleted\"",
+									"    );",
 									"});"
-								]
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -14928,6 +16655,618 @@
 			"name": "8. Delete Tests",
 			"item": [
 				{
+					"name": "Delete Records Before Tests",
+					"item": [
+						{
+							"name": "create test schema",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "ac62b3e0-22e1-427b-be6d-aea214164160",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {\r",
+											"    pm.response.to.have.status(200);\r",
+											"});\r",
+											"\r",
+											"tests[\"Create Schema\"] = responseBody.has(\"successfully created\");\r",
+											"\r",
+											"\r",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"create_schema\",\n  \"schema\": \"test_delete_before\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "This method is used to create a schema.  It like all other functions requires basic auth.  \n\nAttributes:\n\noperation (required) - must always be create_schema\n\nschema (required) - name of the schema you are creating"
+							},
+							"response": []
+						},
+						{
+							"name": "create test table",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "1bb90d2c-8c22-474a-9e1f-50c6e9b2192e",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"test_delete_before\",\n  \"table\":\"address\",\n  \"hash_attribute\": \"id\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Insert new records",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "117c3953-8685-4758-8769-4358a812df0e",
+										"exec": [
+											"pm.test(\"Check inserted_hashed array length\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.inserted_hashes.length).to.eql(6);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "17681c84-ae56-4f19-b909-3da1747e2913",
+										"exec": [
+											"",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"test_delete_before\",\n\"table\":\"address\",\n\"records\": [\n  {\n    \"id\": 1,\n    \"address\": \"24 South st\"\n  },\n  {\n    \"id\": 2,\n    \"address\": \"6 Truck Lane\"\n  },\n  {\n    \"id\": 3,\n    \"address\": \"19 Broadway\"\n  },\n  {\n    \"id\": 4,\n    \"address\": \"34A Mountain View\"\n  },\n  {\n    \"id\": 5,\n    \"address\": \"234 Curtis St\"\n  },\n  {\n    \"id\": 6,\n    \"address\": \"115 Way Rd\"\n  }\n]\n\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Insert additional new records",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "117c3953-8685-4758-8769-4358a812df0e",
+										"exec": [
+											"pm.test(\"Check inserted_hashed array length\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.inserted_hashes.length).to.eql(3);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "17681c84-ae56-4f19-b909-3da1747e2913",
+										"exec": [
+											"pm.environment.set(\"insert_timestamp\", new Date().toISOString());",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"test_delete_before\",\n\"table\":\"address\",\n\"records\": [\n  {\n    \"id\": 11,\n    \"address\": \"24 South st\"\n  },\n  {\n    \"id\": 12,\n    \"address\": \"6 Truck Lane\"\n  },\n  {\n    \"id\": 13,\n    \"address\": \"19 Broadway\"\n  }\n]\n\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Delete records before",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "c4158c40-b13a-409d-98bd-1b9e5999fc9b",
+										"exec": [
+											"pm.test(\"Check for job message\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
+											"    ",
+											"    eval(pm.globals.get(\"function:getJobIdDelete\"))(jsonData, null);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "cb908ac7-0953-44a2-8ae9-76c48f4e7d85",
+										"exec": [
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"delete_files_before\",\n\t\"date\":\"{{insert_timestamp}}\",\n\t\"schema\":\"test_delete_before\",\n\t\"table\":\"address\"\n}\n"
+								},
+								"url": {
+									"raw": "http://localhost:9925/",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925",
+									"path": [
+										""
+									]
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Check Delete Job Completed",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "34b3186b-c5e9-45da-8bca-92ea79825179",
+										"exec": [
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"test Job Found\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(1);",
+											"    ",
+											"    pm.expect(jsonData[0]).to.have.property('status');",
+											"    ",
+											"    let status = jsonData[0].status;",
+											"    ",
+											"    switch(status){",
+											"        case 'ERROR':",
+											"            console.log(jsonData[0]);",
+											"            if(pm.environment.get(\"next_request\")){",
+											"                postman.setNextRequest(pm.environment.get(\"next_request\"));",
+											"            }",
+											"            pm.expect(status).to.not.eql('ERROR');",
+											"            break;",
+											"        case 'COMPLETE':",
+											"            console.log(jsonData[0]);",
+											"            if(pm.environment.get(\"next_request\")){",
+											"                postman.setNextRequest(pm.environment.get(\"next_request\"));",
+											"            }",
+											"            pm.expect(status).to.be.oneOf(['COMPLETE', 'ERROR']);",
+											"            break;",
+											"        case '0':",
+											"        case 0:",
+											"        case 'IN_PROGRESS':",
+											"            console.log('in progress, checking again');",
+											"            postman.setNextRequest('Check Delete  Completed');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0']);",
+											"            break;",
+											"        default:",
+											"            postman.setNextRequest('Check Delete Job Completed');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0', 'ERROR', 'COMPLETE']);",
+											"            break;",
+											"    }",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "c350ea7e-d128-486d-9aa2-24abaa82d300",
+										"exec": [
+											"setTimeout(()=>{}, 200);",
+											"console.log(\"Checking Job \" + pm.environment.get(\"job_id\"));"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Search by hash confirm",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "91180915-3018-4750-95f8-1fe9182c2baa",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"verify correct number of records returned\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(3);",
+											"});",
+											"",
+											"pm.test(\"verify correct records are returned\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    var ids = [];",
+											"    jsonData.forEach((record) => {",
+											"        ids.push(record.id)",
+											"    })",
+											"    ",
+											"    pm.expect(ids.includes(11)).to.be.true;",
+											"    pm.expect(ids.includes(12)).to.be.true;",
+											"    pm.expect(ids.includes(13)).to.be.true;",
+											"    ",
+											"    pm.expect(ids.includes(1)).to.be.false;",
+											"    pm.expect(ids.includes(2)).to.be.false;",
+											"    pm.expect(ids.includes(3)).to.be.false;",
+											"    pm.expect(ids.includes(4)).to.be.false;",
+											"    pm.expect(ids.includes(5)).to.be.false;",
+											"    pm.expect(ids.includes(6)).to.be.false;",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "8d26a86f-f46f-490e-a684-7f836691ec8f",
+										"exec": [
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"search_by_hash\",\n\t\"schema\":\"test_delete_before\",\n\t\"table\":\"address\",\n\t\"hash_attribute\": \"id\",\n\t\"hash_values\":[1, 2, 3, 4, 5, 6, 11, 12, 13],\n\t\"get_attributes\": [\"id\", \"address\"]\n}\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						}
+					],
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"id": "899d67d2-0d45-4c8d-9636-93575e33ac5b",
+								"type": "text/javascript",
+								"exec": [
+									""
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"id": "6f0d72f5-c85c-46bf-b31b-5cf36fa340c0",
+								"type": "text/javascript",
+								"exec": [
+									"postman.setGlobalVariable(\"function:getJobIdDelete\", (jsonData, next_req)=>{",
+									"    let id_index = jsonData.message.indexOf('id ');",
+									"    let parsedId = jsonData.message.substr(id_index + 3, jsonData.message.length);",
+									"    pm.environment.set(\"job_id\", parsedId);",
+									"    pm.environment.set(\"next_request\", next_req);",
+									"    postman.setNextRequest(\"Check Delete Job Completed\");",
+									"});"
+								]
+							}
+						}
+					],
+					"protocolProfileBehavior": {},
+					"_postman_isSubFolder": true
+				},
+				{
 					"name": "Insert new Employees",
 					"event": [
 						{
@@ -16314,6 +18653,481 @@
 					]
 				},
 				{
+					"name": "Create Attribute",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "c3c689de-425f-4538-a7c9-4c2c2a2c974e",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"create attribute successful\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message === \"inserted 1 of 1 records\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46MTQwMA=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"create_attribute\",\n\t\"schema\":\"dev\",\n\t\"table\":\"AttributeDropTest\",\n\t\"attribute\":\"created_attribute\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+					},
+					"response": [
+						{
+							"name": "Create Schema",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic ZWxpOnBhc3M="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "access-control-allow-origin",
+									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
+									"name": "access-control-allow-origin",
+									"description": ""
+								},
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "45",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "vary",
+									"value": "Origin",
+									"name": "vary",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": "{\"message\":\"schema dev successfully created\"}"
+						}
+					]
+				},
+				{
+					"name": "Confirm created attribute",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "c3c689de-425f-4538-a7c9-4c2c2a2c974e",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"attribute created_attribute exists\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[\"created_attribute\"] === true);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46MTQwMA=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"describe_table\",\n\t\"table\":\"AttributeDropTest\",\n\t\"schema\":\"dev\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+					},
+					"response": [
+						{
+							"name": "Create Schema",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic ZWxpOnBhc3M="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "access-control-allow-origin",
+									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
+									"name": "access-control-allow-origin",
+									"description": ""
+								},
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "45",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "vary",
+									"value": "Origin",
+									"name": "vary",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": "{\"message\":\"schema dev successfully created\"}"
+						}
+					]
+				},
+				{
+					"name": "Create existing attribute",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "c3c689de-425f-4538-a7c9-4c2c2a2c974e",
+								"exec": [
+									"pm.test(\"Status code is 500\", function () {",
+									"    pm.response.to.have.status(500);",
+									"});",
+									"",
+									"pm.test(\"create attribute successful\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error === \"attribute 'created_attribute' already exists in dev.AttributeDropTest\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46MTQwMA=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"create_attribute\",\n\t\"schema\":\"dev\",\n\t\"table\":\"AttributeDropTest\",\n\t\"attribute\":\"created_attribute\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+					},
+					"response": [
+						{
+							"name": "Create Schema",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic ZWxpOnBhc3M="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "access-control-allow-origin",
+									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
+									"name": "access-control-allow-origin",
+									"description": ""
+								},
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "45",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "vary",
+									"value": "Origin",
+									"name": "vary",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": "{\"message\":\"schema dev successfully created\"}"
+						}
+					]
+				},
+				{
 					"name": "Drop Attribute",
 					"event": [
 						{
@@ -17433,7 +20247,7 @@
 			"name": "12. Environment Clean Up",
 			"item": [
 				{
-					"name": "sql delete schema",
+					"name": "drop schema northnwd",
 					"event": [
 						{
 							"listen": "test",
@@ -17555,7 +20369,7 @@
 					"response": []
 				},
 				{
-					"name": "sql delete schema dev",
+					"name": "drop schema dev",
 					"event": [
 						{
 							"listen": "test",
@@ -17618,7 +20432,7 @@
 					"response": []
 				},
 				{
-					"name": "sql delete schema call",
+					"name": "drop schema call",
 					"event": [
 						{
 							"listen": "test",
@@ -17679,6 +20493,70 @@
 						"description": "This method is used to create a schema.  It like all other functions requires basic auth.  \n\nAttributes:\n\noperation (required) - must always be create_schema\n\nschema (required) - name of the schema you are creating"
 					},
 					"response": []
+				},
+				{
+					"name": "drop schema test_delete_before",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "0fc4d93b-7280-409f-a416-a6fd8517f99d",
+								"exec": [
+									"tests[\"Delete Schema\"] = responseBody.has(\"successfully delete\");\r",
+									"\r",
+									"\r",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3Q="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n     \"operation\": \"drop_schema\",\n     \"schema\": \"test_delete_before\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "This method is used to create a schema.  It like all other functions requires basic auth.  \n\nAttributes:\n\noperation (required) - must always be create_schema\n\nschema (required) - name of the schema you are creating"
+					},
+					"response": []
 				}
 			],
 			"event": [
@@ -17704,6 +20582,14 @@
 				}
 			],
 			"protocolProfileBehavior": {}
+		}
+	],
+	"variable": [
+		{
+			"id": "c50a2691-ff17-4a49-8712-736b2edb2c99",
+			"key": "insert_timestamp",
+			"value": "0",
+			"type": "string"
 		}
 	],
 	"protocolProfileBehavior": {}

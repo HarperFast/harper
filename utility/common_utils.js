@@ -22,10 +22,11 @@ const CHARACTER_LIMIT = 255;
 
 const HDB_PROC_NAME = 'hdb_express.js';
 
+//Because undefined will not return in a JSON response, we convert undefined to null when autocasting
 const AUTOCAST_COMMON_STRINGS = {
     'true': true,
     'false': false,
-    'undefined': undefined,
+    'undefined': null,
     'null': null,
     'NaN': NaN
 };
@@ -60,8 +61,9 @@ module.exports = {
     getClusterMessage,
     createEventPromise,
     checkProcessRunning,
+    checkSchemaTableExist,
     getStartOfTomorrowInSeconds,
-    getLimitKey,
+    getLimitKey
 };
 
 /**
@@ -176,7 +178,7 @@ function stripFileExtension(file_name) {
  * @returns
  */
 function autoCast(data){
-    if(isEmpty(data)){
+    if(isEmpty(data) || data === ""){
         return data;
     }
 
@@ -186,7 +188,7 @@ function autoCast(data){
     }
 
     // Try to make it a common string
-    if ((data === 'undefined' && AUTOCAST_COMMON_STRINGS[data] === undefined) || AUTOCAST_COMMON_STRINGS[data] !== undefined) {
+    if (AUTOCAST_COMMON_STRINGS[data] !== undefined) {
         return AUTOCAST_COMMON_STRINGS[data];
     }
 
@@ -342,8 +344,9 @@ function stringifyProps(prop_reader_object, comments) {
     return lines;
 }
 
+//TODO - FS-specific methods like the one below need to be moved to an FS-specific module
 /**
- * takes a raw value from an attribute, replaces "/", ".", ".." with unicode equivalents and returns the value, escaped value & the value path
+ * For FS only - takes a raw value from an attribute, replaces "/", ".", ".." with unicode equivalents and returns the value, escaped value & the value path
  * @param raw_value
  * @returns {{value: string, value_stripped: string, value_path: string}}
  */
@@ -466,8 +469,8 @@ function isClusterOperation(operation_name) {
  * @param transaction
  */
 function sendTransactionToSocketCluster(channel, transaction, originator) {
-    log.trace(`Sending transaction to channel: ${channel}`);
     if(global.hdb_socket_client !== undefined) {
+        log.trace(`Sending transaction to channel: ${channel}`);
         let {hdb_user, hdb_auth_header, ...data} = transaction;
         if(!data.__originator) {
             data.__originator = {};
@@ -625,6 +628,21 @@ async function checkProcessRunning(proc_name){
 
     if(go_on) {
         throw new Error(`process ${proc_name} was not started`);
+    }
+}
+
+/**
+ * Checks the global schema to see if a Schema or Table exist.
+ * @param schema
+ * @param table
+ */
+function checkSchemaTableExist(schema, table) {
+    if (!global.hdb_schema[schema]) {
+        throw new Error(`Schema '${schema}' does not exist`);
+    }
+
+    if (!global.hdb_schema[schema][table]) {
+        throw new Error(`Table '${table}' does not exist in schema '${schema}'`);
     }
 }
 

@@ -60,7 +60,6 @@ function initializeHelium(){
         throw e;
     }
 
-
     if(!_.isEqual(start_result, START_SESSION_OK)){
         throw new Error(`Unable to initialize Helium due to error code: ${start_result[1]}`);
     }

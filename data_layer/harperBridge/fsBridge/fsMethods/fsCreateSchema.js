@@ -1,0 +1,37 @@
+'use strict';
+
+const fs = require('fs-extra');
+const terms = require('../../../../utility/hdbTerms');
+const getBasePath = require('../fsUtility/getBasePath');
+const fsCreateRecords = require('./fsCreateRecords');
+
+module.exports = createSchema;
+
+/**
+ * Calls HDB core insert to first add schema to system schema then mkdirp to create folder in file system.
+ * @param schema_create_obj
+ * @returns {Promise<void>}
+ */
+async function createSchema(schema_create_obj) {
+    let insert_object = {
+        operation: terms.OPERATIONS_ENUM.INSERT,
+        schema: terms.SYSTEM_SCHEMA_NAME,
+        table: terms.SYSTEM_TABLE_NAMES.SCHEMA_TABLE_NAME,
+        records: [
+            {
+                name: schema_create_obj.schema,
+                createddate: '' + Date.now()
+            }
+        ]
+    };
+
+    try {
+        await fsCreateRecords(insert_object);
+        await fs.mkdir(`${getBasePath()}/${schema_create_obj.schema}`, {mode: terms.HDB_FILE_PERMISSIONS});
+    } catch(err) {
+        if (err.code === 'EEXIST') {
+            throw new Error('schema already exists');
+        }
+        throw err;
+    }
+}
