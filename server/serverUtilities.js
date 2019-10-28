@@ -93,6 +93,9 @@ function processLocalTransaction(req, res, operation_function, callback) {
             if (typeof data !== 'object') {
                 data = {"message": data};
             }
+            if(data instanceof Error) {
+                setResponseStatus(res, terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, {error: data.message});
+            }
 
             if (GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM[req.body.operation]) {
                 global_schema.setSchemaDataToGlobal((err) => {

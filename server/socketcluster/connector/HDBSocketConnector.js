@@ -19,6 +19,7 @@ const ENTITY_TYPE_ENUM = {
 };
 
 class HDBSocketConnector extends SocketConnector{
+
     constructor(socket_client, additional_info, options, credentials){
         super(socket_client, additional_info, options, credentials);
         this.addEventListener('connect', this.connectHandler.bind(this));

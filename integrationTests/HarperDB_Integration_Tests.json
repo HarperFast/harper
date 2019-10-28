@@ -1,6 +1,6 @@
 {
 	"info": {
-		"_postman_id": "70d9600c-79a5-4e5b-8701-7df1d0c27855",
+		"_postman_id": "a20eee7f-d7ee-4322-be92-6e34e1183720",
 		"name": "HarperDB Integration Tests",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
 	},
@@ -14310,6 +14310,73 @@
 							]
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+					},
+					"response": []
+				},
+				{
+					"name": "Query HDB as bad user",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "d6c2b8a5-2350-4570-9825-da63397845d9",
+								"exec": [
+									"pm.test(\"Status code is 401\", function () {",
+									"    pm.response.to.have.status(401);",
+									"});",
+									"",
+									"pm.test(\"Login failed error message\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.eql(\"Login failed\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "JohnnyBadUser",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3Q="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{ \n  \"operation\": \"search_by_value\", \n  \"table\":\"hdb_user\",\n  \"schema\": \"system\",\n  \"search_attribute\":\"username\",\n  \"search_value\":\"{{username}}\",\n  \"get_attributes\":[\"*\"]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
 					},
 					"response": []
 				},

@@ -299,6 +299,7 @@ describe('Test CoreRoom inboundMsgHandler', function() {
         let get_status_request_id = undefined;
         let worker_status_msg = buildWorkerStatusMessage();
         worker_stub.hdb_workers.push('AnotherWorker');
+        worker_stub.options.workerCount = 2;
         // Simulate another worker sending a message through the worker room.
         setTimeout(() => {
             worker_status_msg.originator_msg_id = get_status_request_id;
@@ -319,6 +320,7 @@ describe('Test CoreRoom inboundMsgHandler', function() {
         assert.strictEqual(worker_status_stub.called, true, 'Expected publish to be called');
         assert.strictEqual(response.inbound_connections.length, 1, 'Expected inbound connections to have data');
         assert.strictEqual(response.outbound_connections.length, 1, 'Expected outbound connections to have data');
+        worker_stub.options.workerCount = 1;
     });
     it('test inboundMsgHandler with unrecognized type', async () => {
         let response = await test_instance.inboundMsgHandler(INBOUND_MSG_HANDLER_TEST_MSG, worker_stub, null);
@@ -344,6 +346,7 @@ describe('Test CoreRoom inboundMsgHandler', function() {
     });
     it('test inboundMsgHandler with 2 workers, second worker will timeout.', async () => {
         worker_stub.hdb_workers.push('AnotherWorker');
+        worker_stub.options.workerCount = 2;
         let timeout_orig = CoreRoom_rw.__get__('STATUS_TIMEOUT_MS');
         // Lower timeout so this test doesn't slow everything down.
         CoreRoom_rw.__set__('STATUS_TIMEOUT_MS', SET_TIMEOUT_TIME_MS);
@@ -353,6 +356,7 @@ describe('Test CoreRoom inboundMsgHandler', function() {
         assert.strictEqual(response.inbound_connections.length, 0, 'Expected inbound connections to be reset');
         assert.strictEqual(response.outbound_connections.length, 0, 'Expected outbound connections to be reset');
         CoreRoom_rw.__set__('STATUS_TIMEOUT_MS', timeout_orig);
+        worker_stub.options.workerCount = 1;
     });
 });
 
