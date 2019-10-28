@@ -2,17 +2,34 @@
 const path = require('path');
 const env_variable = require('../EnvironmentVariable');
 const upgrade_directive = require('../UpgradeDirective');
+const hdb_utils = require('../../utility/common_utils');
 const fs = require('fs');
-const {HDB_SETTINGS_NAMES, HDB_SETTINGS_DEFAULT_VALUES} = require('../../utility/hdbTerms');
+const {HDB_SETTINGS_NAMES, HDB_SETTINGS_DEFAULT_VALUES, CLUSTERING_FOLDER_NAMES_ENUM} = require('../../utility/hdbTerms');
 let directive = new upgrade_directive('2.0.000');
+const env = require('../../utility/environment/environmentManager');
+if(!env.isInitialized()) {
+    env.initSync();
+}
 
 const KEYS_FILE_NAME = '060493.ks';
 let home_dir = process.env['HOME'];
 let new_keys_dir_path = `${home_dir}/.harperdb/keys`;
+let hdb_root = env.get('HDB_ROOT');
+
 // Create the ~/.harperdb directory
 directive.explicit_directory_paths.push(`${home_dir}/.harperdb`);
 // Create the ~/.harperdb/keys directory
 directive.explicit_directory_paths.push(new_keys_dir_path);
+
+// If directive is called at install root does not exist, in that case skip creating folders.
+if (!hdb_utils.isEmpty(hdb_root)) {
+    // Create the ~/hdb/clustering/connections directory
+    let connections_dir_path = path.join(hdb_root, CLUSTERING_FOLDER_NAMES_ENUM.CLUSTERING_FOLDER, CLUSTERING_FOLDER_NAMES_ENUM.CONNECTIONS_FOLDER);
+    directive.explicit_directory_paths.push(connections_dir_path);
+    // Create the ~/hdb/clustering/transaction_log directory
+    let transaction_log_dir_path = path.join(hdb_root, CLUSTERING_FOLDER_NAMES_ENUM.CLUSTERING_FOLDER, CLUSTERING_FOLDER_NAMES_ENUM.TRANSACTION_LOG_FOLDER);
+    directive.explicit_directory_paths.push(transaction_log_dir_path);
+}
 
 directive.environment_variables.push(
     new env_variable(`${HDB_SETTINGS_NAMES.CLUSTERING_USER_KEY}`, ``, [`The user used to connect to other instances of HarperDB, this user must have a role of cluster_user`])
@@ -23,9 +40,18 @@ directive.environment_variables.push(
 );
 
 directive.environment_variables.push(
+    new env_variable(`${HDB_SETTINGS_NAMES.HELIUM_VOLUME_PATH_KEY}`, ``, [`Specify the file system path to where the Helium volume will reside.`])
+);
+
+directive.environment_variables.push(
     new env_variable(`${HDB_SETTINGS_NAMES.LOG_MAX_DAILY_FILES_KEY}`, `false`, [`Set the number of daily log files to maintain when LOG_DAILY_ROTATE is enabled`,
     'If no integer value is set, no limit will be set for',
     'daily log files which may consume a large amount of storage depending on your log settings'])
+);
+
+directive.environment_variables.push(
+    new env_variable(`${HDB_SETTINGS_NAMES.HELIUM_SERVER_HOST}`, HDB_SETTINGS_DEFAULT_VALUES.HELIUM_SERVER_HOST,
+        [`specify the host & port where your helium server is running. NOTE for most installs this will not change from ${HDB_SETTINGS_DEFAULT_VALUES.HELIUM_SERVER_HOST}`])
 );
 
 // Move the utilities/keys/060493.ks file to its new home in ~/.harperdb/keys/

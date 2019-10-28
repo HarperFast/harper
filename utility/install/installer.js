@@ -15,6 +15,7 @@ const winston = require('winston');
 const async = require('async');
 const optimist = require('optimist');
 const forge = require('node-forge');
+const hri = require('human-readable-ids').hri;
 const terms_address = 'http://legal.harperdb.io/Software+License+Subscription+Agreement+110317.pdf';
 const env = require('../../utility/environment/environmentManager');
 const os = require('os');
@@ -77,7 +78,8 @@ function run_install(callback) {
                 wizard,
                 async.apply(mount, winston),
                 createSettingsFile,
-                createAdminUser,
+                createSuperUser,
+                createClusterUser,
                 generateKeys,
                 updateHdbInfo,
                 () => {
@@ -275,6 +277,11 @@ function wizard(err, callback) {
                 },
                 required: false
             },
+            NODE_NAME: {
+                description: colors.magenta(`[NODE_NAME] Please enter a unique name for this node`),
+                default: (hri.random()),
+                required: false
+            },
             HTTP_PORT: {
                 pattern: /^([0-9]{1,4}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$/,
                 description: colors.magenta(`[HTTP_PORT] Please enter an HTTP listening port for HarperDB`),
@@ -287,6 +294,13 @@ function wizard(err, callback) {
                 description: colors.magenta(`[HTTPS_PORT] Please enter an HTTPS listening port for HarperDB`),
                 message: 'Invalid port.',
                 default: 31283,
+                required: false
+            },
+            CLUSTERING_PORT: {
+                pattern: /^([0-9]{1,4}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$/,
+                description: colors.magenta(`[CLUSTERING_PORT] Please enter a listening port for Clustering`),
+                message: 'Invalid port.',
+                default: 1111,
                 required: false
             },
             HDB_ADMIN_USERNAME: {
@@ -309,6 +323,29 @@ function wizard(err, callback) {
             },
             HDB_ADMIN_PASSWORD: {
                 description: colors.magenta('[HDB_ADMIN_PASSWORD] Please enter a password for the HDB_ADMIN'),
+                hidden: true,
+                required: true
+            },
+            CLUSTERING_USERNAME: {
+                description: colors.magenta('[CLUSTERING_USERNAME] Please enter a username for the CLUSTERING USER'),
+                default: 'CLUSTER_USER',
+                message: 'Specified username is invalid or already in use.',
+                required: true,
+                // check against the previously built list of existing usernames.
+                conform: function (username) {
+                    if (!keep_data) {
+                        return true;
+                    }
+                    for (let i = 0; i < existing_users.length; i++) {
+                        if (username === existing_users[i]) {
+                            return false;
+                        }
+                    }
+                    return true;
+                }
+            },
+            CLUSTERING_PASSWORD: {
+                description: colors.magenta('[CLUSTERING_PASSWORD] Please enter a password for the CLUSTERING USER'),
                 hidden: true,
                 required: true
             }
@@ -359,7 +396,55 @@ function wizard(err, callback) {
     });
 }
 
-function createAdminUser(callback) {
+function createSuperUser(callback){
+    winston.info('Creating Super user.');
+    let role = {
+        role: 'super_user',
+        permission: {
+            super_user:true
+        }
+    };
+
+    let user = {
+        username: wizard_result.HDB_ADMIN_USERNAME,
+        password: wizard_result.HDB_ADMIN_PASSWORD,
+        active: true
+    };
+
+    createAdminUser(role, user, (err)=>{
+        if(err){
+            return callback(err);
+        }
+
+        callback();
+    });
+}
+
+function createClusterUser(callback){
+    winston.info('Creating Cluster user.');
+    let role = {
+        role: 'cluster_user',
+        permission: {
+            cluster_user:true
+        }
+    };
+
+    let user = {
+        username: wizard_result.CLUSTERING_USERNAME,
+        password: wizard_result.CLUSTERING_PASSWORD,
+        active: true
+    };
+
+    createAdminUser(role, user, (err)=>{
+        if(err){
+            return callback(err);
+        }
+
+        callback();
+    });
+}
+
+function createAdminUser(role, admin_user, callback) {
     winston.info('Creating admin user.');
     // These need to be defined here since they use the hdb_boot_properties file, but it has not yet been created
     // in the installer.
@@ -369,10 +454,6 @@ function createAdminUser(callback) {
     const cb_role_add_role = util.callbackify(role_ops.addRole);
     const cb_role_list_role = util.callbackify(role_ops.listRoles);
     const cb_user_add_user = util.callbackify(user_ops.addUser);
-    let role = {};
-    role.role = 'super_user';
-    role.permission = {};
-    role.permission.super_user = true;
 
     schema.setSchemaDataToGlobal(() => {
         if (keep_data) {
@@ -401,12 +482,8 @@ function createAdminUser(callback) {
                     };
 
                     prompt.get(role_schema, function (err, selected_role) {
-                        let admin_user = {};
-                        admin_user.username = wizard_result.HDB_ADMIN_USERNAME;
-                        admin_user.password = wizard_result.HDB_ADMIN_PASSWORD;
                         // account for the offset
                         admin_user.role = res[selected_role.ROLE - 1].id;
-                        admin_user.active = true;
 
                         cb_user_add_user(admin_user, (err) => {
                             if (err) {
@@ -419,11 +496,7 @@ function createAdminUser(callback) {
                     });
 
                 } else {
-                    let admin_user = {};
-                    admin_user.username = wizard_result.HDB_ADMIN_USERNAME;
-                    admin_user.password = wizard_result.HDB_ADMIN_PASSWORD;
                     admin_user.role = res[0].id;
-                    admin_user.active = true;
 
                     cb_user_add_user(admin_user, (err) => {
                         if (err) {
@@ -444,11 +517,7 @@ function createAdminUser(callback) {
                     return callback(err);
                 }
 
-                let admin_user = {};
-                admin_user.username = wizard_result.HDB_ADMIN_USERNAME;
-                admin_user.password = wizard_result.HDB_ADMIN_PASSWORD;
                 admin_user.role = res.id;
-                admin_user.active = true;
 
                 cb_user_add_user(admin_user, (err) => {
                     if (err) {
@@ -559,13 +628,13 @@ function createSettingsFile(mount_status, callback) {
             `   ;Set the max number of processes HarperDB will start.  This can also be limited by number of cores and licenses.\n` +
             `${HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES} = ${num_cores}\n` +
             `   ;Set to true to enable clustering.  Requires a valid enterprise license.\n` +
-            `${HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY} = false\n` +
+            `${HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY} = true\n` +
             `   ;The port that will be used for HarperDB clustering.\n` +
-            `${HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY} = 12345\n` +
+            `${HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY} = ${wizard_result.CLUSTERING_PORT}\n` +
             `   ;The name of this node in your HarperDB cluster topology.  This must be a value unique from the rest of your cluster node names.\n` +
-            `${HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY}=${node_name}\n` +
+            `${HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY}=${wizard_result.NODE_NAME}\n` +
             `   ;The user used to connect to other instances of HarperDB, this user must have a role of cluster_user. \n` +
-            `${HDB_SETTINGS_NAMES.CLUSTERING_USER_KEY}=\n`;
+            `${HDB_SETTINGS_NAMES.CLUSTERING_USER_KEY}=${wizard_result.CLUSTERING_USERNAME}\n`;
 
         winston.info('info', `hdb_props_value ${JSON.stringify(hdb_props_value)}`);
         winston.info('info', `settings path: ${env.get('settings_path')}`);

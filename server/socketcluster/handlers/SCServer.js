@@ -4,6 +4,7 @@ const log = require('../../../utility/logging/harper_logger');
 const terms = require('../../../utility/hdbTerms');
 const RoomMessageObjects = require('../room/RoomMessageObjects');
 const {inspect} = require('util');
+const hdb_license = require('../../../utility/registration/hdb_license');
 
 class SCServer{
     constructor(worker){
@@ -64,7 +65,7 @@ class SCServer{
      * @param socket
      */
     connectionAbortHandler(socket){
-
+        log.debug('Connection was aborted');
     }
 
     /**
@@ -74,10 +75,40 @@ class SCServer{
      * @param socket
      * @param status
      */
-    connectionHandler(socket, status){
+    async connectionHandler(socket, status) {
+        // we need to allow connections from localhost as that is likely the hdb_client connecting
+        if(!(await hdb_license.getLicense()).enterprise && !socket.remoteAddress.includes(terms.LOOPBACK)) {
+            //let conn_count = this.sc_server.clientsCount;
+            let client_keys = Object.keys(this.sc_server.clients);
+            let external_conn_count = 0;
+            for(let i=0; i<client_keys.length; ++i) {
+                let client = this.sc_server.clients[client_keys[i]];
+                if(this.sc_server.clients[client_keys[i]].remoteAddress.includes(terms.LOOPBACK)) {
+                    continue;
+                }
+                external_conn_count++;
+            }
+            let conn_count = external_conn_count;
+            log.debug(`There are ${external_conn_count} clients in the server.`);
+            // check outbound node_connector connections
+            try {
+                let clients = this.worker.node_connector.connections.clients;
+                if (clients) {
+                    log.debug(`There are ${Object.keys(clients).length} node connector connections in the worker.`);
+                    conn_count += Object.keys(clients).length;
+                }
+            } catch(err) {
+                log.info('Could not count outbound node connections');
+                log.error(err);
+            }
+            // if at max connections, reject
+            if(conn_count >= terms.BASIC_LICENSE_MAX_CLUSTER_CONNS) {
+                log.notify(`Rejected inbound connection, your license only supports 3 connections, you have ${conn_count}`);
+                return socket.disconnect(terms.BASIC_LICENSE_CLUSTER_CONNECTION_LIMIT_WS_ERROR_CODE, `Rejected inbound connection, your license only supports 3 connections.  I have ${conn_count}`);
+            }
+        }
         new ServerSocket(this.worker, socket);
         log.info('socket connected: ' + socket.remoteAddress);
-
         if(socket.request.url === '/socketcluster/?hdb_worker=1'){
             try {
                 this.worker.exchange_set([terms.INTERNAL_SC_CHANNELS.HDB_WORKERS, socket.id], 1).then(data => {

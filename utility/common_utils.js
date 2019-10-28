@@ -9,6 +9,7 @@ const terms = require('./hdbTerms');
 const ps_list = require('./psList');
 const papa_parse = require('papaparse');
 const cluster_messages = require('../server/socketcluster/room/RoomMessageObjects');
+const moment = require('moment');
 const {inspect} = require('util');
 
 const async_set_timeout = require('util').promisify(setTimeout);
@@ -61,7 +62,8 @@ module.exports = {
     createEventPromise,
     checkProcessRunning,
     checkSchemaTableExist,
-    promisifyPapaParseURL
+    getStartOfTomorrowInSeconds,
+    getLimitKey
 };
 
 /**
@@ -552,25 +554,6 @@ function promisifyPapaParse() {
     };
 }
 
-function promisifyPapaParseURL() {
-    papa_parse.parsePromiseURL = function (url, chunk_func) {
-        return new Promise(function (resolve, reject) {
-            papa_parse.parse(url,
-                {
-                    download: true,
-                    header: true,
-                    transformHeader: removeBOM,
-                    chunk: chunk_func.bind(null, reject),
-                    skipEmptyLines: true,
-                    dynamicTyping: true,
-                    error: reject,
-                    complete: resolve
-                });
-        });
-    };
-}
-
-
 /**
  * Removes the byte order mark from a string
  * @param string
@@ -590,7 +573,7 @@ function removeBOM(data_string) {
 
 function createEventPromise(event_name, event_emitter_object, timeout_promise) {
     let event_promise = new Promise((resolve) => {
-        event_emitter_object.on(event_name, (msg) => {
+        event_emitter_object.once(event_name, (msg) => {
             let curr_timeout_promise = timeout_promise;
             log.info(`Got cluster status event response: ${inspect(msg)}`);
             try {
@@ -661,4 +644,22 @@ function checkSchemaTableExist(schema, table) {
     if (!global.hdb_schema[schema][table]) {
         throw new Error(`Table '${table}' does not exist in schema '${schema}'`);
     }
+}
+
+/**
+ * Returns the first second of the next day in seconds.
+ * @returns {number}
+ */
+function getStartOfTomorrowInSeconds() {
+    let tomorow_seconds = moment().utc().add(1, terms.MOMENT_DAYS_TAG).startOf(terms.MOMENT_DAYS_TAG).unix();
+    let now_seconds = moment().utc().unix();
+    return tomorow_seconds - now_seconds;
+}
+
+/**
+ * Returns the key used by limits for this cycle.
+ * @returns {string}
+ */
+function getLimitKey() {
+        return moment().utc().format('DD-MM-YYYY');
 }

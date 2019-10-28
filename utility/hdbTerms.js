@@ -13,12 +13,21 @@ const HDB_PROC_DESCRIPTOR = 'HarperDB';
 const SC_PROC_DESCRIPTOR = 'Cluster Server';
 
 const HDB_SUPPORT_ADDRESS = 'support@harperdb.io';
+const HDB_LICENSE_EMAIL_ADDRESS = 'customer-success@harperdb.io';
+
+const BASIC_LICENSE_MAX_NON_CU_ROLES = 1;
+const BASIC_LICENSE_MAX_CLUSTER_CONNS = 3;
+const BASIC_LICENSE_CLUSTER_CONNECTION_LIMIT_WS_ERROR_CODE = 4141;
 const HDB_SUPPORT_URL = 'https://harperdbhelp.zendesk.com/hc/en-us';
+const HDB_PRICING_URL = 'https://https://www.harperdb.io/product';
 const SUPPORT_HELP_MSG = `For support, please submit a support request at ${HDB_SUPPORT_URL} or contact ${HDB_SUPPORT_ADDRESS}`;
+const LICENSE_HELP_MSG = `For license support, please contact ${HDB_LICENSE_EMAIL_ADDRESS}`;
 const SEARCH_NOT_FOUND_MESSAGE = "None of the specified records were found.";
 const SEARCH_ATTRIBUTE_NOT_FOUND = `hash attribute not found`;
-const LICENSE_ROLE_DENIED_RESPONSE = 'Your current license only supports 1 role.';
-const BASIC_LICENSE_MAX_NON_CU_ROLES = 1;
+const LICENSE_ROLE_DENIED_RESPONSE = `Your current license only supports ${BASIC_LICENSE_MAX_NON_CU_ROLES} role.  ${LICENSE_HELP_MSG}`;
+const LICENSE_MAX_CONNS_REACHED = 'Your current license only supports 3 connections to a node.';
+const LOOPBACK = '127.0.0.1';
+const BASIC_LICENSE_MAX_CLUSTER_USER_ROLES = 1;
 
 const PERIOD_REGEX = /^\.$/;
 const DOUBLE_PERIOD_REGEX = /^\.\.$/;
@@ -28,6 +37,8 @@ const UNICODE_FORWARD_SLASH = 'U+002F';
 const ESCAPED_FORWARD_SLASH_REGEX = /U\+002F/g;
 const ESCAPED_PERIOD_REGEX = /^U\+002E$/;
 const ESCAPED_DOUBLE_PERIOD_REGEX = /^U\+002EU\+002E$/;
+const MOMENT_DAYS_TAG = 'd';
+const API_TURNOVER_SEC = 999999;
 
 // Name of the System schema
 const SYSTEM_SCHEMA_NAME = 'system';
@@ -48,11 +59,17 @@ const HDB_FILE_PERMISSIONS = 0o700;
 const BLOB_FOLDER_NAME = 'blob';
 const HDB_TRASH_DIR = 'trash';
 const SCHEMA_DIR_NAME = 'schema';
+const LIMIT_COUNT_NAME = '.count';
 
 const HELIUM_URL_PREFIX = 'he://';
 
-const CLUSTERING_FOLDER_NAME = 'clustering';
 const CLUSTERING_PAYLOAD_FILE_NAME = '.scPayload.json';
+
+const CLUSTERING_FOLDER_NAMES_ENUM = {
+    CLUSTERING_FOLDER: 'clustering',
+    CONNECTIONS_FOLDER: 'connections',
+    TRANSACTION_LOG_FOLDER: 'transaction_log',
+};
 
 // Trying to keep socket cluster as modular as possible, so we will create values in here that point to values
 // inside of the socketcluster types module.
@@ -147,7 +164,8 @@ const HTTP_STATUS_CODES = {
     REQUEST_TIMEOUT: 408,
     SERVICE_UNAVAILABLE: 503,
     UNAUTHORIZED: 401,
-    NOT_IMPLEMENTED: 501
+    NOT_IMPLEMENTED: 501,
+    TOO_MANY_REQUESTS: 429
 };
 
 // Operations
@@ -372,6 +390,25 @@ const CLUSTER_EVENTS_DEFS_ENUM = {
     DIRECTION_CHANGE: 'direction_change'
 };
 
+const WEBSOCKET_CLOSE_CODE_DESCRIPTION_LOOKUP = {
+    1000 : 'SUCCESSFUL_SHUTDOWN',
+    1001 : 'CLOSE_GOING_AWAY',
+    1002 : 'CLOSE_PROTOCOL_ERROR',
+    1003 : 'CLOSE_UNSUPPORTED',
+    1005 : 'CLOSE_NO_STATUS',
+    1006 : 'CLOSE_ABNORMAL',
+    1007 : 'UNSUPPORTED_PAYLOAD',
+    1008 : 'POLICY_VIOLATION',
+    1009 : 'CLOSE_TOO_LARGE',
+    1010 : 'MANDATORY_EXTENSION',
+    1011 : 'SERVER_ERROR',
+    1012 : 'SERVICE_RESTART',
+    1013 : 'SERVER_BUSY',
+    1014 : 'BAD_GATEWAY',
+    1015 : 'HANDSHAKE_FAIL',
+    4141 : 'LICENSE_LIMIT_REACHED'
+};
+
 const HELIUM_RESPONSE_CODES = {
     HE_ERR_ITEM_EXISTS: 'HE_ERR_ITEM_EXISTS',
     HE_ERR_DATASTORE_EXISTS: 'HE_ERR_DATASTORE_EXISTS',
@@ -409,17 +446,17 @@ const HELIUM_VALUE_RANGE_SEARCH_OPS = {
 };
 
 const HDB_LICENSE_NAME = 'hdb_license';
-
 const CLUSTERING_MESSAGE_TYPES = cluster_types.CORE_ROOM_MSG_TYPE_ENUM;
 const ORIGINATOR_SET_VALUE = cluster_types.ORIGINATOR_SET_VALUE;
-
 const NEW_LINE = '\r\n';
 
 module.exports = {
     LOCAL_HARPERDB_OPERATIONS,
     HDB_SUPPORT_ADDRESS,
     HDB_SUPPORT_URL,
+    HDB_PRICING_URL,
     SUPPORT_HELP_MSG,
+    LICENSE_HELP_MSG,
     HDB_PROC_NAME,
     HDB_PROC_DESCRIPTOR,
     SC_PROC_NAME,
@@ -459,6 +496,7 @@ module.exports = {
     RESTART_TIMEOUT_MS,
     HDB_FILE_PERMISSIONS,
     SCHEMA_DIR_NAME,
+    LIMIT_COUNT_NAME,
     INSERT_MODULE_ENUM,
     UPGRADE_JSON_FIELD_NAMES_ENUM,
     RESTART_CODE,
@@ -474,7 +512,6 @@ module.exports = {
     // Make the message objects available through hdbTerms to keep clustering as modular as possible.
     ClusterMessageObjects,
     ORIGINATOR_SET_VALUE,
-    CLUSTERING_FOLDER_NAME,
     CLUSTERING_PAYLOAD_FILE_NAME,
     HELIUM_URL_PREFIX,
     LICENSE_VALUES,
@@ -485,11 +522,20 @@ module.exports = {
     SEARCH_NOT_FOUND_MESSAGE,
     SEARCH_ATTRIBUTE_NOT_FOUND,
     LICENSE_ROLE_DENIED_RESPONSE,
+    LICENSE_MAX_CONNS_REACHED,
     BASIC_LICENSE_MAX_NON_CU_ROLES,
+    BASIC_LICENSE_MAX_CLUSTER_CONNS,
+    BASIC_LICENSE_CLUSTER_CONNECTION_LIMIT_WS_ERROR_CODE,
     HELIUM_PROCESS_NAME,
     HELIUM_START_SERVER_COMMAND,
     HELIUM_VALUE_SEARCH_OPS,
     HELIUM_VALUE_RANGE_SEARCH_OPS,
     LICENSE_FILE_NAME,
-    NEW_LINE
+    WEBSOCKET_CLOSE_CODE_DESCRIPTION_LOOKUP,
+    NEW_LINE,
+    BASIC_LICENSE_MAX_CLUSTER_USER_ROLES,
+    MOMENT_DAYS_TAG,
+    API_TURNOVER_SEC,
+    CLUSTERING_FOLDER_NAMES_ENUM,
+    LOOPBACK
 };
