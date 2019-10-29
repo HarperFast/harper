@@ -555,7 +555,7 @@ function clusterMessageHandler(msg) {
                 }
                 break;
             default:
-                log.error(`Got an unhandled cluster message type ${msg.type}`);
+                log.info(`Got an unhandled cluster message type ${msg.type}`);
                 break;
         }
     } catch (e) {
