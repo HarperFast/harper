@@ -15220,12 +15220,16 @@
 							"listen": "test",
 							"script": {
 								"id": "8bc25e1a-10dc-45a5-8491-d5560c59a2a7",
-								"type": "text/javascript",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
-									"});"
-								]
+									"});",
+									"",
+									"tests[\"Create Schema\"] = responseBody.has(\"successfully created\");",
+									"",
+									"setTimeout(()=>{}, 500);"
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -15287,12 +15291,14 @@
 							"listen": "test",
 							"script": {
 								"id": "8bc25e1a-10dc-45a5-8491-d5560c59a2a7",
-								"type": "text/javascript",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
-									"});"
-								]
+									"});",
+									"",
+									"setTimeout(()=>{}, 500);"
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -16644,7 +16650,7 @@
 						"id": "e6ab106c-0c59-45bc-a199-b9d9e99b72d3",
 						"type": "text/javascript",
 						"exec": [
-							""
+							"console.log(responseBody);"
 						]
 					}
 				}
@@ -16671,7 +16677,7 @@
 											"\r",
 											"tests[\"Create Schema\"] = responseBody.has(\"successfully created\");\r",
 											"\r",
-											"\r",
+											"setTimeout(()=>{}, 500);\r",
 											""
 										],
 										"type": "text/javascript"
@@ -16733,7 +16739,9 @@
 											"    pm.response.to.have.status(200);",
 											"});",
 											"",
-											"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
+											"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");",
+											"",
+											"setTimeout(()=>{}, 500);"
 										],
 										"type": "text/javascript"
 									}
@@ -16805,7 +16813,9 @@
 											"",
 											"pm.test(\"Status code is 200\", function () {",
 											"    pm.response.to.have.status(200);",
-											"});"
+											"});",
+											"",
+											"setTimeout(()=>{}, 1000);"
 										],
 										"type": "text/javascript"
 									}
