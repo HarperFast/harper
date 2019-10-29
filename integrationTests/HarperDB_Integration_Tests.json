@@ -15287,12 +15287,14 @@
 							"listen": "test",
 							"script": {
 								"id": "8bc25e1a-10dc-45a5-8491-d5560c59a2a7",
-								"type": "text/javascript",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
-									"});"
-								]
+									"});",
+									"",
+									"setTimeout(()=>{}, 500);"
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
