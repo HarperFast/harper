@@ -75,12 +75,6 @@ async function deleteRecord(delete_object){
         await p_global_schema(delete_object.schema, delete_object.table);
         let delete_result_object = await harperBridge.deleteRecords(delete_object);
 
-        if(delete_object.schema !== terms.SYSTEM_SCHEMA_NAME) {
-            let delete_msg = common_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
-            delete_msg.transaction = delete_object;
-            common_utils.sendTransactionToSocketCluster(`${delete_object.schema}:${delete_object.table}`, delete_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
-        }
-
         if(common_utils.isEmptyOrZeroLength(delete_result_object.message)) {
             delete_result_object.message = `${delete_result_object.deleted_hashes.length} of ${delete_object.hash_values.length} ${SUCCESS_MESSAGE}`;
         }

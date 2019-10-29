@@ -443,7 +443,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                 });
                 break;
             default:
-                harper_logger.error(`Received unknown signaling message ${msg.type}, ignoring message`);
+                harper_logger.info(`Received unknown signaling message ${msg.type}, ignoring message`);
                 break;
         }
     });
