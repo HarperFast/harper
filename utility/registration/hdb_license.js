@@ -181,7 +181,7 @@ function licenseSearch(){
             }
             let license = JSON.parse(license_string);
             let license_validation = validateLicense(license.license_key, license.company);
-            if (license_validation.valid_machine === true && license_validation.valid_date === true && license_validation.valid_license === true) {
+            if (license_validation.valid_machine === true && license_validation.valid_date === true && license_validation.valid_machine === true) {
                 license_values.exp_date = license_validation.exp_date > license_values.exp_date ? license_validation.exp_date : license_values.exp_date;
                 license_values.api_call += license_validation.api_call;
                 license_values.storage_type = license_validation.storage_type;

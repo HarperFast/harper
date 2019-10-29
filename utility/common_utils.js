@@ -570,7 +570,7 @@ function removeBOM(data_string) {
 
 function createEventPromise(event_name, event_emitter_object, timeout_promise) {
     let event_promise = new Promise((resolve) => {
-        event_emitter_object.on(event_name, (msg) => {
+        event_emitter_object.once(event_name, (msg) => {
             let curr_timeout_promise = timeout_promise;
             log.info(`Got cluster status event response: ${inspect(msg)}`);
             try {

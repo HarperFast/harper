@@ -48,7 +48,6 @@ async function addRole(role){
     }
 
     let license_details = await license.getLicense();
-    //TODO: Restore this after setting up roles
     if(!license_details.enterprise) {
         //look to see if there is already a cluster_user role
         let roles = await listRoles();

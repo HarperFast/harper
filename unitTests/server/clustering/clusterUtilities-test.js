@@ -3,11 +3,13 @@
 const assert = require('assert');
 const chai = require('chai');
 const rewire = require('rewire');
+const sinon = require('sinon');
 const cluster_utils = rewire('../../../server/clustering/clusterUtilities');
 const cluster_utils_node_validation = cluster_utils.__get__('nodeValidation');
 const test_util = require('../../test_utils');
 test_util.preTestPrep();
 const path = require(`path`);
+const hdb_license = require('../../../utility/registration/hdb_license');
 
 const CLUSTERING_PORT = 12345;
 const ADD_NODE = {name:'test', host:"192.161.0.1", port:12345};
@@ -15,8 +17,26 @@ const SUBSCRIPTIONS_OBJECT = {channel:'dev:dog', publish:true, subscribe:true};
 const REMOVE_NODE = {name:'test'};
 const CONFIGURE_SUCCESS_RESPONSE = 'Successfully configured and loaded clustering configuration.  Some configurations may require a restart of HarperDB to take effect.';
 
+const LICENSE = {
+    valid_machine: true,
+    valid_date: true,
+    exp_date: '01/01/2099',
+    api_call: 2000,
+    enterprise: true
+};
+
 describe('Test clusterUtilities' , ()=> {
     describe('Test addNode', () => {
+        let sandbox = undefined;
+        let license_stub = undefined;
+        beforeEach(() => {
+            sandbox = sinon.createSandbox();
+            license_stub = sandbox.stub(hdb_license, 'getLicense').resolves(LICENSE);
+        });
+        afterEach( () => {
+            sandbox.restore();
+            license_stub = undefined;
+        });
         it('Pass in invalid addNode, empty object', () => {
             assert.rejects(cluster_utils.addNode({}), {message: "Error: Name can't be blank,Port can't be blank,Host can't be blank"});
         });
