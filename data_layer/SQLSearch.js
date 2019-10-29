@@ -160,8 +160,9 @@ class SQLSearch {
         }
 
         for (let {node} of new RecursiveIterator(this.statement.where)) {
-            if (node && node.left && node.right && (node.left.columnid || node.right.columid) && node.op) {
+            if (node && node.left && node.right && (node.left.columnid || node.right.value) && node.op) {
                 let values = new Set();
+                // TODO - explore what scenarios would be handled here - when would a left.columnid not be present?
                 let column = node.left.columnid ? node.left : node.right;
                 let found_column = this._findColumn(column);
                 if(!found_column) {
@@ -180,7 +181,7 @@ class SQLSearch {
                     }
 
                     if (!this.comparator_search_values[attribute_key].ignore) {
-                        if (common_utils.isEmpty(node.left.columnid) || common_utils.isEmpty(node.right.value)) {
+                        if (common_utils.isEmptyOrZeroLength(node.left.columnid) || common_utils.isEmptyOrZeroLength(node.right.value)) {
                             this.comparator_search_values[attribute_key].ignore = true;
                             this.comparator_search_values[attribute_key].comparators = [];
                             continue;
