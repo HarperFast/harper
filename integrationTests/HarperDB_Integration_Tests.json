@@ -16644,7 +16644,7 @@
 						"id": "e6ab106c-0c59-45bc-a199-b9d9e99b72d3",
 						"type": "text/javascript",
 						"exec": [
-							""
+							"console.log(responseBody);"
 						]
 					}
 				}
@@ -16805,7 +16805,9 @@
 											"",
 											"pm.test(\"Status code is 200\", function () {",
 											"    pm.response.to.have.status(200);",
-											"});"
+											"});",
+											"",
+											"setTimeout(()=>{}, 1000);"
 										],
 										"type": "text/javascript"
 									}
