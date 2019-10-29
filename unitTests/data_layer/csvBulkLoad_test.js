@@ -223,77 +223,77 @@ describe('Test csvBulkLoad.js', () => {
         });
     });
 
-    describe('Test csvURLLoad', function () {
-        let test_msg = undefined;
-        let sandbox = sinon.createSandbox();
-        let bulk_load_orig = undefined;
-        let bulk_load_stub = undefined;
-        let bulk_load_rewire;
-        let bulk_load_post_op_stub = undefined;
-        let bulk_load_post_op_stub_orig = undefined;
-        // TODO: Expand these tests once we can get some additional invalid csv files hosted on the intranet.
-
-        before(() => {
-            bulk_load_orig = csv_rewire.__get__('bulkLoad');
-            bulk_load_stub = sandbox.stub().returns(BULK_LOAD_RESPONSE);
-            bulk_load_rewire = csv_rewire.__set__('bulkLoad', bulk_load_stub);
-            bulk_load_post_op_stub_orig = csv_rewire.__get__('postCSVLoadFunction');
-            bulk_load_post_op_stub = sandbox.stub().callsFake(postCSVLoadFunction_stub);
-            csv_rewire.__set__('postCSVLoadFunction', bulk_load_post_op_stub);
-        });
-
-        beforeEach(function () {
-            test_msg = test_utils.deepClone(DATA_LOAD_MESSAGE);
-            test_msg.operation = hdb_terms.OPERATIONS_ENUM.csv_url_load;
-            sandbox.stub(validator, 'urlObject');
-        });
-
-        afterEach(function () {
-            sandbox.restore();
-            bulk_load_rewire = csv_rewire.__set__('postCSVLoadFunction', bulk_load_post_op_stub_orig);
-        });
-
-        after(() => {
-            bulk_load_rewire();
-            csv_rewire.__set__('bulkLoad', bulk_load_orig);
-        });
-
-        it('Test csvURLLoad nominal case with valid file and valid column names/data', async function() {
-            try {
-                test_msg.csv_url = HOSTED_CSV_FILE_URL;
-                let result = await csv_rewire.csvURLLoad(test_msg);
-                assert.equal(result, BULK_LOAD_RESPONSE.message, 'Got incorrect response');
-
-            } catch(e) {
-                throw e;
-            }
-        });
-//TODO this test hangs for a long time, fix in the future
-        /*it('Test csvDataLoad with bad path', async function() {
-            test_msg.csv_url = 'http://omgbadurlwtf/docs.csv';
-            let response = undefined;
-
-            try {
-                response = await csv_rewire.csvURLLoad(test_msg);
-            } catch (e) {
-                response = e;
-            }
-
-            assert.ok((response instanceof Error) === true, 'Did not get expected exception');
-        });*/
-    });
-
-    describe('Test createReadStreamFromURL', function () {
-        let createReadStreamFromURL = csv_rewire.__get__('createReadStreamFromURL');
-
-        // TODO: Expand these tests once we can get some additional invalid csv files hosted on the intranet.
-        // https://harperdb.atlassian.net/browse/OPS-27
-
-        it('Test createReadStreamFromURL nominal case', async function () {
-            let response = await createReadStreamFromURL(HOSTED_CSV_FILE_URL);
-            assert.equal(response.statusCode, hdb_terms.HTTP_STATUS_CODES.OK, 'Expected 200 status code');
-        });
-    });
+//     describe('Test csvURLLoad', function () {
+//         let test_msg = undefined;
+//         let sandbox = sinon.createSandbox();
+//         let bulk_load_orig = undefined;
+//         let bulk_load_stub = undefined;
+//         let bulk_load_rewire;
+//         let bulk_load_post_op_stub = undefined;
+//         let bulk_load_post_op_stub_orig = undefined;
+//         // TODO: Expand these tests once we can get some additional invalid csv files hosted on the intranet.
+//
+//         before(() => {
+//             bulk_load_orig = csv_rewire.__get__('bulkLoad');
+//             bulk_load_stub = sandbox.stub().returns(BULK_LOAD_RESPONSE);
+//             bulk_load_rewire = csv_rewire.__set__('bulkLoad', bulk_load_stub);
+//             bulk_load_post_op_stub_orig = csv_rewire.__get__('postCSVLoadFunction');
+//             bulk_load_post_op_stub = sandbox.stub().callsFake(postCSVLoadFunction_stub);
+//             csv_rewire.__set__('postCSVLoadFunction', bulk_load_post_op_stub);
+//         });
+//
+//         beforeEach(function () {
+//             test_msg = test_utils.deepClone(DATA_LOAD_MESSAGE);
+//             test_msg.operation = hdb_terms.OPERATIONS_ENUM.csv_url_load;
+//             sandbox.stub(validator, 'urlObject');
+//         });
+//
+//         afterEach(function () {
+//             sandbox.restore();
+//             bulk_load_rewire = csv_rewire.__set__('postCSVLoadFunction', bulk_load_post_op_stub_orig);
+//         });
+//
+//         after(() => {
+//             bulk_load_rewire();
+//             csv_rewire.__set__('bulkLoad', bulk_load_orig);
+//         });
+//
+//         it('Test csvURLLoad nominal case with valid file and valid column names/data', async function() {
+//             try {
+//                 test_msg.csv_url = HOSTED_CSV_FILE_URL;
+//                 let result = await csv_rewire.csvURLLoad(test_msg);
+//                 assert.equal(result, BULK_LOAD_RESPONSE.message, 'Got incorrect response');
+//
+//             } catch(e) {
+//                 throw e;
+//             }
+//         });
+// //TODO this test hangs for a long time, fix in the future
+//         /*it('Test csvDataLoad with bad path', async function() {
+//             test_msg.csv_url = 'http://omgbadurlwtf/docs.csv';
+//             let response = undefined;
+//
+//             try {
+//                 response = await csv_rewire.csvURLLoad(test_msg);
+//             } catch (e) {
+//                 response = e;
+//             }
+//
+//             assert.ok((response instanceof Error) === true, 'Did not get expected exception');
+//         });*/
+//     });
+//
+//     describe('Test createReadStreamFromURL', function () {
+//         let createReadStreamFromURL = csv_rewire.__get__('createReadStreamFromURL');
+//
+//         // TODO: Expand these tests once we can get some additional invalid csv files hosted on the intranet.
+//         // https://harperdb.atlassian.net/browse/OPS-27
+//
+//         it('Test createReadStreamFromURL nominal case', async function () {
+//             let response = await createReadStreamFromURL(HOSTED_CSV_FILE_URL);
+//             assert.equal(response.statusCode, hdb_terms.HTTP_STATUS_CODES.OK, 'Expected 200 status code');
+//         });
+//     });
 
     describe('Test csvFileLoad function', () => {
         let validation_msg_stub;

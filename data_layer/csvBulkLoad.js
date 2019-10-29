@@ -2,22 +2,20 @@
 
 const insert = require('./insert');
 const validator = require('../validation/csvLoadValidator');
-const request = require('request');
 const request_promise = require('request-promise-native');
 const hdb_terms = require('../utility/hdbTerms');
 const hdb_utils = require('../utility/common_utils');
 const {promise} = require('alasql');
 const logger = require('../utility/logging/harper_logger');
 const papa_parse = require('papaparse');
-const { PassThrough, Writable } = require('stream');
-const stream = require('stream');
 const fs = require('fs-extra');
 hdb_utils.promisifyPapaParse();
-hdb_utils.promisifyPapaParseURL();
 const env = require('../utility/environment/environmentManager');
 const socket_cluster_util = require('../server/socketcluster/util/socketClusterUtils');
 const op_func_caller = require('../utility/OperationFunctionCaller');
 
+const TEMP_CSV_FILE = `tempCSVURLLoad.csv`;
+const TEMP_DOWNLOAD_DIR = `${env.get('HDB_ROOT')}/tmp`;
 const NEWLINE = '\n';
 const unix_filename_regex = new RegExp(/[^-_.A-Za-z0-9]/);
 const ALASQL_MIDDLEWARE_PARSE_PARAMETERS = 'SELECT * FROM CSV(?, {headers:true, separator:","})';
@@ -79,32 +77,49 @@ async function csvDataLoad(json_message) {
 }
 
 /**
- * Load a csv file from a URL.
- *
- * @param json_message - An object representing the CSV file via URL.
- * @returns validation_msg - Contains any validation errors found
- * @returns error - any errors found reading the csv file
- * @returns err - any errors found during the bulk load
- *
+ * Orchestrates a CSV data load via a file URL. First downloads the file to disk, then calls csvFileLoad on the
+ * downloaded file. Finally deletes temporary folder and file.
+ * @param json_message
+ * @returns {Promise<void>}
  */
 async function csvURLLoad(json_message) {
+    console.time('Timer');
     let validation_msg = validator.urlObject(json_message);
     if (validation_msg) {
         throw new Error(validation_msg);
     }
 
-    try {
+    let csv_file_load_obj = {
+        operation: hdb_terms.OPERATIONS_ENUM.CSV_FILE_LOAD,
+        action: hdb_terms.OPERATIONS_ENUM.INSERT,
+        schema: json_message.schema,
+        table: json_message.table,
+        file_path: `${TEMP_DOWNLOAD_DIR}/${TEMP_CSV_FILE}`
+    };
 
+    try {
         await downloadCSVFile(json_message.csv_url);
-        //let bulk_load_result = await callPapaParseURL(json_message);
-        let read_stream = urlReadStream(json_message.csv_url);
-        //return bulk_load_result;
+        let bulk_load_result = await csvFileLoad(csv_file_load_obj);
+
+        // Remove the downloaded temporary CSV file and directory once csvFileLoad complete
+        await hdb_utils.removeDir(TEMP_DOWNLOAD_DIR);
+
+        console.timeEnd('Timer');
+        return bulk_load_result;
     } catch (err) {
-        logger.error(`invalid bulk load url ${json_message.csv_url}, response ${err.message}`);
+        // If an error is thrown and removeDir above is skipped, cleanup the temporary downloaded data.
+        if (fs.existsSync(TEMP_DOWNLOAD_DIR)) {
+            await hdb_utils.removeDir(TEMP_DOWNLOAD_DIR);
+        }
         throw err;
     }
 }
 
+/**
+ * Gets a file via URL, then creates a temporary directory in hdb root and writes file to disk.
+ * @param url
+ * @returns {Promise<void>}
+ */
 async function downloadCSVFile(url) {
     let options = {
         method: 'GET',
@@ -113,18 +128,30 @@ async function downloadCSVFile(url) {
         resolveWithFullResponse: true
     };
 
+    let response;
     try {
-        let response = await request_promise(options);
-
-
-
-
+        response = await request_promise(options);
     } catch(err) {
-
+        throw new Error (`Error downloading CSV file from ${url}, status code: ${err.statusCode}, message: ${err.message}`);
     }
-};
 
-function validateResponse(response) {
+    validateResponse(response, url);
+
+    try {
+        fs.mkdir(TEMP_DOWNLOAD_DIR);
+        fs.writeFileSync(`${TEMP_DOWNLOAD_DIR}/${TEMP_CSV_FILE}`, response.body);
+    } catch(err) {
+        logger.error(`Error writing temporary CSV download file to disk`);
+        throw err;
+    }
+}
+
+/**
+ * Runs multiple validations on response from HTTP client
+ * @param response
+ * @param url
+ */
+function validateResponse(response, url) {
     if (response.statusCode !== hdb_terms.HTTP_STATUS_CODES.OK) {
         throw new Error(`CSV Load failed from URL: ${url}, status code: ${response.statusCode}, message: ${response.statusMessage}`);
     }
@@ -132,109 +159,11 @@ function validateResponse(response) {
     if (!ACCEPTABLE_URL_CONTENT_TYPE_ENUM[response.headers['content-type']]) {
         throw new Error(`CSV Load failed from URL: ${url}, unsupported content type: ${response.headers['content-type']}`);
     }
-};
-
-
-}
-
-
-
-
-async function createReadStreamFromURL(url) {
-    let options = {
-        method: 'GET',
-        uri: `${url}`,
-        resolveWithFullResponse: true
-    };
-    let response = await request_promise(options);
-    if (response.statusCode !== hdb_terms.HTTP_STATUS_CODES.OK || response.headers['content-type'].indexOf('text/csv') < 0) {
-        let return_object = {
-            message: `CSV Load failed from URL: ${url}`,
-            status_code: response.statusCode,
-            status_message: response.statusMessage,
-            content_type: response.headers['content-type']
-        };
-        return return_object;
-    }
-    return response;
-
-function urlReadStream(url) {
-    let pass_through = new stream.PassThrough();
-    pass_through._readableState.highWaterMark = HIGHWATERMARK;
-
-    try {
-        let req = request
-            .get(url)
-            .on('error', (err) => {
-                logger.error(`Error loading bulk URL from: ${url}, response: ${err.statusCode}`);
-                throw err;
-            })
-            .on('response', (response) => {
-                logger.info(`CSV url load status code: ${response.statusCode}`);
-                logger.info(`CSV url load content type: ${response.headers['content-type']}`);
-
-                if (response.statusCode !== hdb_terms.HTTP_STATUS_CODES.OK) {
-                    //req.abort();
-                    throw new Error(`CSV Load failed from URL: ${url}, status code: ${response.statusCode}, message: ${response.statusMessage}`);
-                }
-
-                if (!ACCEPTABLE_URL_CONTENT_TYPE_ENUM[response.headers['content-type']]) {
-                    req.end();
-                    throw new Error(`CSV Load failed from URL: ${url}, unsupported content type: ${response.headers['content-type']}`);
-                }
-                //
-                // if (!response.body) {
-                //     console.log('here');
-                // }
-
-                // if (response.statusCode !== hdb_terms.HTTP_STATUS_CODES.OK || !ACCEPTABLE_URL_CONTENT_TYPE_ENUM[response.headers['content-type']]) {
-                //     let bad_response_obj = {
-                //         message: `CSV Load failed from URL: ${url}`,
-                //         status_code: response.statusCode,
-                //         // status_message: !body ? 'Response contained no body' : response.statusMessage,
-                //         content_type: response.headers['content-type']
-                //     };
-                //     return bad_response_obj;
-                // }
-            })
-            .on('error', (err) => {
-                logger.error(`Error loading bulk URL from: ${url}, response: ${err.statusCode}`);
-                throw err;
-            })
-            .pipe(pass_through);
-
-        return pass_through;
-    } catch(err) {
-        throw err;
-    }
-
-}
-
-async function callPapaParseURL(json_message) {
-    // passing insert_results object by reference to insertChunk function where it accumulate values from bulk load results.
-    let insert_results = {
-        records: 0,
-        number_written: 0
-    };
-
-    try {
-        let read_stream = urlReadStream(json_message.csv_url);
-        if (!hdb_utils.isEmpty(read_stream.message)) {
-            throw read_stream;
-        }
-        await papa_parse.parsePromise(read_stream, validateChunk.bind(null, json_message));
-
-        read_stream = urlReadStream(json_message.csv_url);
-        await papa_parse.parsePromise(read_stream, insertChunk.bind(null, json_message, insert_results));
-        read_stream.destroy();
-
-        return insert_results;
-    } catch(err) {
-        logger.error(err);
-        throw err;
+    
+    if (!response.body) {
+        throw new Error(`CSV Load failed from URL: ${url}, response contained no body`);
     }
 }
-
 
 /**
  * Parse and load CSV values.
@@ -273,7 +202,6 @@ async function csvFileLoad(json_message) {
  * @returns if validation error found returns Promise<error>, if no error nothing is returned.
  */
 async function validateChunk(json_message, reject, results, parser) {
-    console.log('validate called');
     if (results.data.length === 0) {
         return;
     }
@@ -310,7 +238,6 @@ async function validateChunk(json_message, reject, results, parser) {
  * @returns if validation error found returns Promise<error>, if no error nothing is returned.
  */
 async function insertChunk(json_message, insert_results, reject, results, parser) {
-    console.log('insert called');
     if (results.data.length === 0) {
         return;
     }
@@ -377,8 +304,6 @@ async function callPapaParse(json_message) {
         throw err;
     }
 }
-
-
 
 /**
  * Genericize the call to the middleware used for parsing (currently alasql);
