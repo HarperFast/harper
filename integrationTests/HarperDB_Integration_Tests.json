@@ -15225,6 +15225,8 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
+									"tests[\"Create Schema\"] = responseBody.has(\"successfully created\");",
+									"",
 									"setTimeout(()=>{}, 500);"
 								],
 								"type": "text/javascript"
@@ -16737,7 +16739,9 @@
 											"    pm.response.to.have.status(200);",
 											"});",
 											"",
-											"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
+											"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");",
+											"",
+											"setTimeout(()=>{}, 500);"
 										],
 										"type": "text/javascript"
 									}
