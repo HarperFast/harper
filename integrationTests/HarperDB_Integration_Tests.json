@@ -16677,7 +16677,7 @@
 											"\r",
 											"tests[\"Create Schema\"] = responseBody.has(\"successfully created\");\r",
 											"\r",
-											"\r",
+											"setTimeout(()=>{}, 500);\r",
 											""
 										],
 										"type": "text/javascript"
