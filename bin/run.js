@@ -4,7 +4,7 @@ env.initSync();
 const fs = require('fs-extra');
 const path = require('path');
 const net = require('net');
-const install = require('../utility/install/installer.js');
+const install = require('../utility/install/installer');
 const colors = require("colors/safe");
 const logger = require('../utility/logging/harper_logger');
 const pjson = require(`${__dirname}/../package.json`);

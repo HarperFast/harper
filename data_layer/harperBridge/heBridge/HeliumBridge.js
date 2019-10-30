@@ -2,7 +2,7 @@
 "use strict";
 
 const log = require('../../../utility/logging/harper_logger');
-const BridgeMethods = require("../BridgeMethods.js");
+const BridgeMethods = require("../BridgeMethods");
 const heCreateRecords = require('./heMethods/heCreateRecords');
 const heCreateAttribute = require('./heMethods/heCreateAttribute');
 const heCreateSchema = require('./heMethods/heCreateSchema');

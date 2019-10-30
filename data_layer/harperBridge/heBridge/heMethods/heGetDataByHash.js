@@ -2,7 +2,7 @@
 
 const evaluateTableGetAttributes = require('../../bridgeUtility/evaluateTableGetAttributes');
 const heGenerateDataStoreName = require('../heUtility/heGenerateDataStoreName');
-const search_validator = require('../../../../validation/searchValidator.js');
+const search_validator = require('../../../../validation/searchValidator');
 const common_utils = require('../../../../utility/common_utils');
 
 const helium_utils = require('../../../../utility/helium/heliumUtils');
