@@ -6,8 +6,11 @@
  */
 
  // Name of the HDB process
-const HDB_PROC_NAME = 'hdb_express.js';
-const SC_PROC_NAME = 'Server.js';
+const CODE_EXTENSION = process.env.HDB_COMPILED === 'true' ? 'jsc' : 'js';
+
+const HDB_PROC_NAME = `hdb_express.${CODE_EXTENSION}`;
+const SC_PROC_NAME = `Server.${CODE_EXTENSION}`;
+
 
 const HDB_PROC_DESCRIPTOR = 'HarperDB';
 const SC_PROC_DESCRIPTOR = 'Cluster Server';
@@ -537,5 +540,6 @@ module.exports = {
     MOMENT_DAYS_TAG,
     API_TURNOVER_SEC,
     CLUSTERING_FOLDER_NAMES_ENUM,
-    LOOPBACK
+    LOOPBACK,
+    CODE_EXTENSION
 };

@@ -19,7 +19,7 @@ const p_upgrade = promisify(upgrade.upgrade);
 harperDBService();
 
 function checkCallingUserSync() {
-    let hdb_exe_path = path.join(__dirname, 'harperdb.js');
+    let hdb_exe_path = path.join(__dirname, `harperdb.${hdb_terms.CODE_EXTENSION}`);
     let stats = undefined;
     try {
         stats = fs.statSync(hdb_exe_path);

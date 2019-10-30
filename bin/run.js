@@ -320,12 +320,12 @@ async function kickOffExpress() {
         }
 
         if (env.get('MAX_MEMORY')) {
-            child = fork(path.join(__dirname, '../server/hdb_express.js'), [`--max-old-space-size=${env.get('MAX_MEMORY')}`, `${env.get('PROJECT_DIR')}/server/hdb_express.js`], {
+            child = fork(path.join(__dirname, `../server/${terms.HDB_PROC_NAME}`), [`--max-old-space-size=${env.get('MAX_MEMORY')}`, `${env.get('PROJECT_DIR')}/server/${terms.HDB_PROC_NAME}`], {
                 detached: true,
                 stdio: 'ignore'
             });
         } else {
-            child = fork(path.join(__dirname, '../server/hdb_express.js'), {
+            child = fork(path.join(__dirname, `../server/${terms.HDB_PROC_NAME}`), {
                 detached: true,
                 stdio: 'ignore'
             });
