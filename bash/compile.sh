@@ -55,3 +55,6 @@ find . -name "*.js" -exec rename 's/\.js$/\.jj/i' {} \;
 
 #bring the node modules back
 mv ~/Apps/node_modules ./
+
+mv ./bin/harperdb_jsc.jj ./bin/harperdb.js
+unlink ./bin/harperdb_jsc.jsc
