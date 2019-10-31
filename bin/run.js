@@ -319,17 +319,11 @@ async function kickOffExpress() {
             await helium_utils.createSystemDataStores(helium);
         }
 
-        if (env.get('MAX_MEMORY')) {
-            child = fork(path.join(__dirname, `../server/${terms.HDB_PROC_NAME}`), [`--max-old-space-size=${env.get('MAX_MEMORY')}`, `${env.get('PROJECT_DIR')}/server/${terms.HDB_PROC_NAME}`], {
-                detached: true,
-                stdio: 'ignore'
-            });
-        } else {
-            child = fork(path.join(__dirname, `../server/${terms.HDB_PROC_NAME}`), {
-                detached: true,
-                stdio: 'ignore'
-            });
-        }
+        let args = createForkArgs();
+        child = fork(args[0], [args[1], args[2]], {
+            detached: true,
+            stdio: 'ignore'
+        });
     } catch(err) {
         console.error(`There was an error starting the REST server.  Please try again.`);
         return FAILURE_CODE;
@@ -338,6 +332,20 @@ async function kickOffExpress() {
     console.log(colors.magenta('' + fs.readFileSync(path.join(__dirname,'../utility/install/ascii_logo.txt'))));
     console.log(colors.magenta(`|------------- HarperDB ${pjson.version} successfully started ------------|`));
     return SUCCESS_CODE;
+}
+
+function createForkArgs(){
+    let args = [];
+    if(terms.CODE_EXTENSION === terms.COMPILED_EXTENSION){
+        args.push(path.resolve(__dirname, '../', 'node_modules', 'bytenode', 'cli.js'));
+    }
+
+    args.push(path.resolve(__dirname, '../', 'server', terms.HDB_PROC_NAME));
+
+    if (env.get('MAX_MEMORY')){
+        args.push(`--max-old-space-size=${env.get('MAX_MEMORY')}`)
+    }
+    return args;
 }
 
 function exitInstall(){

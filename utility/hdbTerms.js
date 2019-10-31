@@ -5,9 +5,11 @@
  * duplicate values making refactoring a little easier.
  */
 
- // Name of the HDB process
-const CODE_EXTENSION = process.env.HDB_COMPILED === 'true' ? 'jsc' : 'js';
+const COMPILED_EXTENSION = 'jsc';
+const JAVASCRIPT_EXTENSION = 'js';
+const CODE_EXTENSION = process.env.HDB_COMPILED === 'true' ? COMPILED_EXTENSION : JAVASCRIPT_EXTENSION;
 
+ // Name of the HDB process
 const HDB_PROC_NAME = `hdb_express.${CODE_EXTENSION}`;
 const SC_PROC_NAME = `Server.${CODE_EXTENSION}`;
 
@@ -541,5 +543,7 @@ module.exports = {
     API_TURNOVER_SEC,
     CLUSTERING_FOLDER_NAMES_ENUM,
     LOOPBACK,
-    CODE_EXTENSION
+    CODE_EXTENSION,
+    COMPILED_EXTENSION,
+    JAVASCRIPT_EXTENSION
 };
