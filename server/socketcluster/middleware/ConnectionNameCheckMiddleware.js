@@ -33,13 +33,20 @@ class ConnectionNameCheckMiddleware extends MiddlewareIF {
             }
             let remote_host_name = (env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY) === this.client_node_name ?
                 this.server_node_name : this.client_node_name);
+
             if (req.data.__originator && req.data.__originator[remote_host_name] === types.ORIGINATOR_SET_VALUE) {
+                this.resetValues();
                 return types.ERROR_CODES.MIDDLEWARE_SWALLOW;
             }
+            this.resetValues();
         };
         super(middleware_type_enum, eval_function);
         this.type = types.PREMADE_MIDDLEWARE_TYPES.CONNECTION_NAME_CHECK;
         this.command_order = types.COMMAND_EVAL_ORDER_ENUM.LOW;
+        this.resetValues();
+    }
+
+    resetValues(){
         this.server_node_name = undefined;
         this.client_node_name = undefined;
         this.query_values = undefined;
