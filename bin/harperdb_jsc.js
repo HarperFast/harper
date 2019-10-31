@@ -3,4 +3,4 @@
 process.env.HDB_COMPILED='true';
 const bytenode = require('bytenode');
 
-require('./bin/harperdb.jsc');
+require('./harperdb.jsc');
