@@ -7,7 +7,7 @@
     "harperdb": "./bin/harperdb.js"
   },
   "engines": {
-    "node": ">=10.x.x"
+    "node": ">=10.16.x <11.x.x"
   },
   "homepage": "https://www.harperdb.io/",
   "bugs": "support@harperdb.io",

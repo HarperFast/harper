@@ -58,3 +58,6 @@ mv ~/Apps/node_modules ./
 
 mv ./bin/harperdb_jsc.jj ./bin/harperdb.js
 unlink ./bin/harperdb_jsc.jsc
+
+mv ./upgrade/scripts/postInstall_jsc.jj ./upgrade/scripts/postInstall.js
+unlink ./upgrade/scripts/postInstall_jsc.jsc
