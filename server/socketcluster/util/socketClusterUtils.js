@@ -195,9 +195,12 @@ async function catchupHandler(channel, start_timestamp, end_timestamp){
             let catchup_response = {
                 channel: channel,
                 operation: 'catchup',
-                transactions: results
-            };
+                transactions: results,
+                __originator: {
 
+                }
+            };
+            catchup_response.__originator[env.getProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)] = types.ORIGINATOR_SET_VALUE;
             let catch_up_msg = utils.getClusterMessage(hdb_terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
             catch_up_msg.transaction = catchup_response;
 
