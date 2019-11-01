@@ -1,4 +1,4 @@
-const validator = require('../validationWrapper.js');
+const validator = require('../validationWrapper');
 const terms = require('../../utility/hdbTerms');
 const hdb_utils = require('../../utility/common_utils');
 const fs = require('fs-extra');

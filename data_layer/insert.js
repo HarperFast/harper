@@ -6,7 +6,7 @@
  * This module is used to validate and insert or update data.  Note insert.update should be used over the update module,
  * as the update module is meant to be used in more specific circumstances.
  */
-const insert_validator = require('../validation/insertValidator.js');
+const insert_validator = require('../validation/insertValidator');
 const hdb_utils = require('../utility/common_utils');
 const hdb_terms = require('../utility/hdbTerms');
 const util = require('util');

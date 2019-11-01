@@ -50,7 +50,7 @@ const PROPS_ENV_KEY = 'NODE_ENV';
 const ENV_PROD_VAL = 'production';
 const ENV_DEV_VAL = 'development';
 const TRUE_COMPARE_VAL = 'TRUE';
-const REPO_RUNNING_PROCESS_NAME = 'server/hdb_express.js';
+const REPO_RUNNING_PROCESS_NAME = `server/${terms.HDB_PROC_NAME}`;
 const LIMIT_SAVE_INTERVAL_MS = 10000;
 const LIMIT_READ_TIMEOUT_LENGTH_MS = 3000;
 

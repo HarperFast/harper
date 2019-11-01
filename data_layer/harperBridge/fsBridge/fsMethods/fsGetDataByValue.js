@@ -7,7 +7,7 @@ const getBasePath = require('../fsUtility/getBasePath');
 
 const condition_patterns = require('../../../../sqlTranslator/conditionPatterns');
 const hdb_terms = require('../../../../utility/hdbTerms');
-const search_validator = require('../../../../validation/searchValidator.js');
+const search_validator = require('../../../../validation/searchValidator');
 const system_schema = require('../../../../json/systemSchema.json');
 
 const util = require('util');

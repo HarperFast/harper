@@ -11,7 +11,7 @@ const getAttributeFileValues = require('../fsUtility/getAttributeFileValues');
 const getBasePath = require('../fsUtility/getBasePath');
 
 const condition_patterns = require('../../../../sqlTranslator/conditionPatterns');
-const search_validator = require('../../../../validation/searchValidator.js');
+const search_validator = require('../../../../validation/searchValidator');
 
 const file_search = require('../../../../lib/fileSystem/fileSearch');
 
