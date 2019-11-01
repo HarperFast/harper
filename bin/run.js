@@ -343,7 +343,7 @@ function createForkArgs(){
     args.push(path.resolve(__dirname, '../', 'server', terms.HDB_PROC_NAME));
 
     if (env.get('MAX_MEMORY')){
-        args.push(`--max-old-space-size=${env.get('MAX_MEMORY')}`)
+        args.push(`--max-old-space-size=${env.get('MAX_MEMORY')}`);
     }
     return args;
 }
