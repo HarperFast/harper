@@ -17,7 +17,7 @@
     "harperdb": "./bin/harperdb.js"
   },
   "engines": {
-    "node": ">=10.x.x"
+  "node": ">=10.16.x <11.x.x"
   },
   "homepage": "https://www.harperdb.io/",
   "bugs": "support@harperdb.io",
@@ -26,11 +26,10 @@
     "email": "support@harperdb.io"
   },
   "scripts": {
-    "postinstall": "node ./upgrade/scripts/postInstall.js"
+    "postinstall": "./node_modules/bytenode/cli.js ./upgrade/scripts/postInstall.jsc"
   },
   "license": "See License in ./license/Community+Edition+and+Evaluation+End+User+License+Agreement.pdf",
   "dependencies": {
-    "@turf/area": "^6.0.1",
     "@turf/boolean-contains": "^6.0.1",
     "@turf/boolean-disjoint": "^6.0.2",
     "@turf/boolean-equal": "^6.0.1",
@@ -43,6 +42,7 @@
     "async": "^2.6.1",
     "aws-sdk": "2.536.0",
     "body-parser": "^1.18.3",
+    "bytenode": "^1.1.2",
     "clone": "^2.1.1",
     "clui": "^0.3.6",
     "colors": "^1.3.3",
@@ -53,6 +53,7 @@
     "file-stream-rotator": "^0.4.1",
     "fill-range": "^4.0.0",
     "fs-extra": "^7.0.1",
+    "human-readable-ids": "^1.0.4",
     "graceful-fs": "^4.1.15",
     "lodash": "^4.17.11",
     "mathjs": "^4.4.1",
@@ -67,6 +68,7 @@
     "pino": "^5.12.2",
     "prompt": "^1.0.0",
     "properties-reader": "0.0.15",
+    "rate-limiter-flexible": "^1.1.5",
     "recursive-iterator": "^3.3.0",
     "request": "^2.88.0",
     "request-promise-native": "^1.0.5",
