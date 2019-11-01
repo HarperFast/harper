@@ -7,7 +7,7 @@ const log = require('../logging/harper_logger');
 const password = require('../password');
 const LICENSE_HASH_PREFIX = '061183';
 const LICENSE_KEY_DELIMITER = 'mofi25';
-const validation = require('../../validation/registration/license_key_object.js');
+const validation = require('../../validation/registration/license_key_object');
 const License = require('../registration/licenseObjects').BaseLicense;
 
 module.exports={

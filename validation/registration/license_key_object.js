@@ -1,4 +1,4 @@
-const validator = require('../validationWrapper.js');
+const validator = require('../validationWrapper');
 const validate = require('validate.js');
 const moment = require('moment');
 const terms = require('../../utility/hdbTerms');
