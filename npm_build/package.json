@@ -30,6 +30,7 @@
   },
   "license": "See License in ./license/Community+Edition+and+Evaluation+End+User+License+Agreement.pdf",
   "dependencies": {
+    "@turf/area": "^6.0.1",
     "@turf/boolean-contains": "^6.0.1",
     "@turf/boolean-disjoint": "^6.0.2",
     "@turf/boolean-equal": "^6.0.1",
