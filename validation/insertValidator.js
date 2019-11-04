@@ -1,4 +1,4 @@
-const validator = require('./validationWrapper.js');
+const validator = require('./validationWrapper');
 const INVALID_ATTRIBUTE_NAMES = {
     "undefined":"undefined",
     "null":"null"

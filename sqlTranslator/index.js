@@ -18,6 +18,9 @@ const op_auth = require('../utility/operation_authorization');
 const logger = require('../utility/logging/harper_logger');
 const alasql_function_importer = require('./alasqlFunctionImporter');
 const hdb_utils = require('../utility/common_utils');
+const terms = require('../utility/hdbTerms');
+const env = require('../utility/environment/environmentManager');
+
 //here we call to define and import custom functions to alasql
 alasql_function_importer(alasql);
 
@@ -130,7 +133,6 @@ function processAST(json_message, parsed_sql_object, callback) {
                 callback(err);
                 return;
             }
-
             callback(null, data);
         });
     } catch(e){
@@ -143,8 +145,8 @@ function nullFunction(sql, callback) {
     callback('unknown sql statement');
 }
 
-function convertInsert(statement, callback) {
 
+function convertInsert(statement, callback) {
     let schema_table = statement.into;
     let insert_object = {
         schema : schema_table.databaseid,
@@ -166,7 +168,16 @@ function convertInsert(statement, callback) {
         if (err) {
             return callback(err);
         }
-
+        // With non SQL CUD actions, the `post` operation passed into OperationFunctionCaller would send the transaction to the cluster.
+        // Since we don`t send Most SQL options to the cluster, we need to explicitly send it.
+        if(res.inserted_hashes.length > 0) {
+            if (insert_object.schema !== terms.SYSTEM_SCHEMA_NAME) {
+                let insert_msg = hdb_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
+                insert_msg.transaction = insert_object;
+                insert_msg.transaction.operation = terms.OPERATIONS_ENUM.INSERT;
+                hdb_utils.sendTransactionToSocketCluster(`${insert_object.schema}:${insert_object.table}`, insert_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
+            }
+        }
         callback(null, res);
     });
 }

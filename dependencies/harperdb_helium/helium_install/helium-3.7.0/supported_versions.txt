@@ -1,3 +1,0 @@
-## Supported harperdb_helium versions:
-
-hdb-rel-0.3.0

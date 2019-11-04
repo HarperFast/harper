@@ -1,5 +1,5 @@
 const clone = require('clone');
-const validator = require('./validationWrapper.js');
+const validator = require('./validationWrapper');
 const common_utils = require('../utility/common_utils');
 const hdb_terms = require('../utility/hdbTerms');
 const log = require('../utility/logging/harper_logger');

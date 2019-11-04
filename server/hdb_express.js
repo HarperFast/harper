@@ -1,3 +1,5 @@
+"use strict";
+
 const cluster = require('cluster');
 const DEBUG = false;
 const harper_logger = require('../utility/logging/harper_logger');
@@ -48,7 +50,7 @@ const PROPS_ENV_KEY = 'NODE_ENV';
 const ENV_PROD_VAL = 'production';
 const ENV_DEV_VAL = 'development';
 const TRUE_COMPARE_VAL = 'TRUE';
-const REPO_RUNNING_PROCESS_NAME = 'server/hdb_express.js';
+const REPO_RUNNING_PROCESS_NAME = `server/${terms.HDB_PROC_NAME}`;
 const LIMIT_SAVE_INTERVAL_MS = 10000;
 const LIMIT_READ_TIMEOUT_LENGTH_MS = 3000;
 
@@ -241,12 +243,11 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
 
     async function launch() {
         const helium_utils = require('../utility/helium/heliumUtils');
-        await p_schema_to_global();
-        await user_schema.setUsersToGlobal();
-
+        let license_values = hdb_license.licenseSearch();
         global.clustering_on = env.get('CLUSTERING');
 
-        let license_values = hdb_license.licenseSearch();
+        await p_schema_to_global();
+        await user_schema.setUsersToGlobal();
 
         if(license_values.storage_type === terms.STORAGE_TYPES_ENUM.HELIUM){
             let helium = await helium_utils.checkHeliumServerRunning();
@@ -272,7 +273,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                    harper_logger.fatal(err);
                 });
                 forked.on('disconnect', (err) => {
-                   harper_logger.error('Cluster worker has been disconnected.');
+                   harper_logger.error('HDB child has been disconnected.');
                    harper_logger.error(err);
                 });
                 forked.on('listening', (address) => {
@@ -300,7 +301,6 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     const pjson = require(`${__dirname}/../package.json`);
     const server_utilities = require('./serverUtilities');
     const cors = require('cors');
-    const hdb_license = require('../utility/registration/hdb_license');
 
     const app = express();
     let license;
@@ -428,7 +428,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                 break;
             case 'job':
                 job_runner.parseMessage(msg.runner_message).then((result) => {
-                    harper_logger.info(`completed job with result ${result}`);
+                    harper_logger.info(`completed job with result: ${JSON.stringify(result)}`);
                 }).catch(function isError(e) {
                     harper_logger.error(e);
                 });
@@ -443,7 +443,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                 });
                 break;
             default:
-                harper_logger.error(`Received unknown signaling message ${msg.type}, ignoring message`);
+                harper_logger.info(`Received unknown signaling message ${msg.type}, ignoring message`);
                 break;
         }
     });

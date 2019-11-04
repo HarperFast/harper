@@ -7,7 +7,7 @@
     "harperdb": "./bin/harperdb.js"
   },
   "engines": {
-    "node": ">=10.x.x"
+    "node": ">=10.16.x <11.x.x"
   },
   "homepage": "https://www.harperdb.io/",
   "bugs": "support@harperdb.io",
@@ -18,7 +18,7 @@
   "scripts": {
     "build": "eslint -c ./.eslintbuild bin/ data_layer/ events/ lib/ security/ server/ sqlTranslator/ upgrade/ utility/ validation/",
     "postinstall": "node ./upgrade/scripts/postInstall.js",
-    "test": "npm run build && cd bin/ && ../node_modules/mocha/bin/_mocha --opts '../unitTests/mocha.opts'",
+    "test": "npm run build && node utility/devops/register.js --reset_license --storage_type=fs && cd bin/ && ../node_modules/mocha/bin/_mocha --opts '../unitTests/mocha.opts'",
     "hdb-check": "./utility/devops/hdb-check.sh",
     "prepublish": "npm run build",
     "prebuild": "date",
@@ -39,6 +39,7 @@
     "async": "^2.6.1",
     "aws-sdk": "^2.389.0",
     "body-parser": "^1.18.3",
+    "bytenode": "^1.1.2",
     "clone": "^2.1.1",
     "clui": "^0.3.6",
     "colors": "^1.3.3",

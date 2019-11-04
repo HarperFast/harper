@@ -5,9 +5,14 @@
  * duplicate values making refactoring a little easier.
  */
 
+const COMPILED_EXTENSION = 'jsc';
+const JAVASCRIPT_EXTENSION = 'js';
+const CODE_EXTENSION = process.env.HDB_COMPILED === 'true' ? COMPILED_EXTENSION : JAVASCRIPT_EXTENSION;
+
  // Name of the HDB process
-const HDB_PROC_NAME = 'hdb_express.js';
-const SC_PROC_NAME = 'Server.js';
+const HDB_PROC_NAME = `hdb_express.${CODE_EXTENSION}`;
+const SC_PROC_NAME = `Server.${CODE_EXTENSION}`;
+
 
 const HDB_PROC_DESCRIPTOR = 'HarperDB';
 const SC_PROC_DESCRIPTOR = 'Cluster Server';
@@ -43,6 +48,7 @@ const API_TURNOVER_SEC = 999999;
 // Name of the System schema
 const SYSTEM_SCHEMA_NAME = 'system';
 const HASH_FOLDER_NAME = '__hdb_hash';
+const SYSTEM_TABLE_HASH = 'id';
 const CLUSTERING_VERSION_HEADER_NAME = 'hdb_version';
 const HDB_HOME_DIR_NAME = '.harperdb';
 const HDB_FILE_SUFFIX = '.hdb';
@@ -55,6 +61,8 @@ const RESTART_CODE = 'SIGTSTP';
 const RESTART_CODE_NUM = 24;
 const RESTART_TIMEOUT_MS = 60000;
 const HDB_FILE_PERMISSIONS = 0o700;
+const BLOB_FOLDER_NAME = 'blob';
+const HDB_TRASH_DIR = 'trash';
 const SCHEMA_DIR_NAME = 'schema';
 const LIMIT_COUNT_NAME = '.count';
 
@@ -406,6 +414,42 @@ const WEBSOCKET_CLOSE_CODE_DESCRIPTION_LOOKUP = {
     4141 : 'LICENSE_LIMIT_REACHED'
 };
 
+const HELIUM_RESPONSE_CODES = {
+    HE_ERR_ITEM_EXISTS: 'HE_ERR_ITEM_EXISTS',
+    HE_ERR_DATASTORE_EXISTS: 'HE_ERR_DATASTORE_EXISTS',
+    HE_ERR_OK: 'HE_ERR_OK',
+    HE_ERR_ITEM_NOT_FOUND: 'HE_ERR_ITEM_NOT_FOUND'
+};
+
+const HELIUM_TIME_STAMP_ENUM = {
+    CREATED_TIME: '__createdtime__',
+    UPDATED_TIME: '__updatedtime__'
+};
+
+const HELIUM_VALUE_SEARCH_OPS = {
+    EXACT: 'exact',
+    STARTS_WITH: 'startsWith',
+    ENDS_WITH: 'endsWith',
+    INCLUDES: 'includes',
+    EXACT_NO_CASE: 'exactNoCase',
+    STARTS_WITH_NO_CASE: 'startsWithNoCase',
+    ENDS_WITH_NO_CASE: 'endsWithNoCase',
+    INCLUDES_NO_CASE: 'includesNoCase'
+};
+
+const HELIUM_VALUE_RANGE_SEARCH_OPS = {
+    LESS: "<",
+    LESS_OR_EQ: "<=",
+    GREATER: ">",
+    GREATER_OR_EQ: ">=",
+    EQUAL: "==",
+    NOT_EQUAL: "!=",
+    RANGE_INC: "[]",
+    RANGE_NON_INC: "()",
+    RANGE_LOWER: "[)",
+    RANGE_UPPER: "(]"
+};
+
 const HDB_LICENSE_NAME = 'hdb_license';
 const CLUSTERING_MESSAGE_TYPES = cluster_types.CORE_ROOM_MSG_TYPE_ENUM;
 const ORIGINATOR_SET_VALUE = cluster_types.ORIGINATOR_SET_VALUE;
@@ -423,6 +467,7 @@ module.exports = {
     SC_PROC_NAME,
     SC_PROC_DESCRIPTOR,
     SYSTEM_SCHEMA_NAME,
+    SYSTEM_TABLE_HASH,
     HDB_INFO_TABLE_NAME,
     HDB_INTO_TABLE_HASH_ATTRIBUTE,
     HASH_FOLDER_NAME,
@@ -466,6 +511,9 @@ module.exports = {
     HDB_INTERNAL_SC_CHANNEL_PREFIX,
     INTERNAL_SC_CHANNELS,
     CLUSTERING_MESSAGE_TYPES,
+    HDB_FILE_SUFFIX,
+    BLOB_FOLDER_NAME,
+    HDB_TRASH_DIR,
     // Make the message objects available through hdbTerms to keep clustering as modular as possible.
     ClusterMessageObjects,
     ORIGINATOR_SET_VALUE,
@@ -473,8 +521,9 @@ module.exports = {
     HELIUM_URL_PREFIX,
     LICENSE_VALUES,
     STORAGE_TYPES_ENUM,
+    HELIUM_RESPONSE_CODES,
+    HELIUM_TIME_STAMP_ENUM,
     HDB_LICENSE_NAME,
-    HDB_FILE_SUFFIX,
     SEARCH_NOT_FOUND_MESSAGE,
     SEARCH_ATTRIBUTE_NOT_FOUND,
     LICENSE_ROLE_DENIED_RESPONSE,
@@ -484,6 +533,8 @@ module.exports = {
     BASIC_LICENSE_CLUSTER_CONNECTION_LIMIT_WS_ERROR_CODE,
     HELIUM_PROCESS_NAME,
     HELIUM_START_SERVER_COMMAND,
+    HELIUM_VALUE_SEARCH_OPS,
+    HELIUM_VALUE_RANGE_SEARCH_OPS,
     LICENSE_FILE_NAME,
     WEBSOCKET_CLOSE_CODE_DESCRIPTION_LOOKUP,
     NEW_LINE,
@@ -491,6 +542,8 @@ module.exports = {
     MOMENT_DAYS_TAG,
     API_TURNOVER_SEC,
     CLUSTERING_FOLDER_NAMES_ENUM,
-    LOOPBACK
+    LOOPBACK,
+    CODE_EXTENSION,
+    COMPILED_EXTENSION,
+    JAVASCRIPT_EXTENSION
 };
-

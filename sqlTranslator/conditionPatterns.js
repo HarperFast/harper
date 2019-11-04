@@ -1,5 +1,7 @@
-const fill = require('fill-range'),
-    daterange = require('daterange');
+const fill = require('fill-range');
+const h_utils = require('../utility/common_utils');
+const hdb_terms = require('../utility/hdbTerms');
+const { MAX_CHARACTER_SIZE } = hdb_terms.INSERT_MODULE_ENUM;
 
 const slash_regex =  /\//g;
 
@@ -16,24 +18,34 @@ function createPatterns(condition, table_schema, base_path){
     let attribute_name = column.length > 1 ? column[1] : column[0];
 
     let stripped_search_string;
+    let stripped_folder_string;
     let pattern = {
         table_path: table_path,
         hash_path: `${table_path}__hdb_hash/${attribute_name}/`,
-        blob_search: false
+        blob_regex: null
     };
 
-    if(Buffer.byteLength(String(comparators[1])) > 255 || String(comparators[1]).startsWith('%')){
-        pattern.blob_search = true;
+    let blob_search = false;
+    const starts_with_wildcard = String(comparators[1]).startsWith('%') || String(comparators[1]).startsWith('*');
+    const ends_with_wildcard = String(comparators[1]).endsWith('%') || String(comparators[1]).endsWith('*');
+
+    if (Buffer.byteLength(String(comparators[1])) > MAX_CHARACTER_SIZE || starts_with_wildcard || ends_with_wildcard) {
+        blob_search = true;
     }
 
+    //if search attribute is hash_attr, search by primary index (i.e. '__hdb_hash' dir) - if not, search on secondary index (i.e. attr value directory)
     pattern.folder_search_path = attribute_name === table_schema.hash_attribute ? pattern.hash_path : `${table_path + attribute_name}/`;
 
     let hdb_extension = attribute_name === table_schema.hash_attribute ? '\.hdb' : '';
 
     switch(operation){
         case '=':
-            stripped_search_string = comparators[1] === '*' ? '*' :String(comparators[1]).replace(slash_regex, '');
-            pattern.folder_search = comparators[1] === '*' ? new RegExp('.*') : new RegExp(`^${RegExp.escape(stripped_search_string)+hdb_extension}$`);
+            stripped_search_string = (comparators[1] === '*' || comparators[1] === '%') ? '*' : RegExp.escape(h_utils.escapeRawValue(comparators[1]));
+            stripped_folder_string = (comparators[1] === '*' || comparators[1] === '%') ? new RegExp('.*') : new RegExp(`^${stripped_search_string+hdb_extension}$`);
+            pattern.folder_search = stripped_folder_string;
+            if (blob_search) {
+                pattern.blob_regex = (comparators[1] === '*' || comparators[1] === '%') ? new RegExp('.*') : new RegExp(`^${stripped_search_string}$`);
+            }
             break;
         case '>':
             pattern.folder_search = new RegExp(fill(Number(comparators[1]) + 1, Number.MAX_SAFE_INTEGER, {toRegex:true}));
@@ -58,17 +70,50 @@ function createPatterns(condition, table_schema, base_path){
             pattern.folder_search = new RegExp(folder_searches.join('|'));
             break;
         case 'like':
-            stripped_search_string = String(comparators[1]).replace(slash_regex, '')
-                .replace(/[\*%]/g, '.*?');
-            pattern.folder_search = new RegExp(`^${stripped_search_string+hdb_extension}$`);
+            pattern.folder_search = buildLikeRegex(comparators[1], 'folder');
+            if (blob_search) {
+                pattern.blob_regex = buildLikeRegex(comparators[1], 'blob');
+            }
             break;
         default:
             break;
     }
-
     return pattern;
 }
 
 RegExp.escape= function(s) {
     return s.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
 };
+
+function buildLikeRegex(search_string, regex_type) {
+    const starts_w_wildcard = search_string.startsWith('*') || search_string.startsWith('%');
+    const ends_w_wildcard = search_string.length > 1 && (search_string.endsWith('*') || search_string.endsWith('%'));
+    let split_string = search_string.split('');
+    if (starts_w_wildcard) {
+        split_string.shift();
+    }
+    if (ends_w_wildcard) {
+        split_string.pop();
+    }
+
+    let final_search_string;
+    if (regex_type === 'folder') {
+        final_search_string = RegExp.escape(h_utils.escapeRawValue(split_string.join('')));
+    } else {
+        final_search_string = RegExp.escape(split_string.join(''));
+    }
+
+    if (starts_w_wildcard) {
+        final_search_string = '.*?' + final_search_string;
+    } else {
+        final_search_string = '^' + final_search_string;
+    }
+
+    if (ends_w_wildcard) {
+        final_search_string = final_search_string + '.*?';
+    } else {
+        final_search_string = final_search_string + '$';
+    }
+
+    return new RegExp(final_search_string);
+}

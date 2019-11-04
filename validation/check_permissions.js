@@ -1,4 +1,4 @@
-const validator = require('./validationWrapper.js');
+const validator = require('./validationWrapper');
 
 const constraints = {
     user: {

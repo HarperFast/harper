@@ -383,9 +383,9 @@ describe('Test compareTableKeys with filesystem', () => {
         }
         // get table returns an error string rather than an error :(
         assert.notStrictEqual(found_table,undefined,'Expected table to be found');
-        assert.strictEqual(found_table.attributes.length,2,'Expected 2 attributes in table');
+        assert.strictEqual(found_table.attributes.length,3,'Expected 2 attributes in table');
         assert.notStrictEqual(other_found_table,undefined,'Expected table to be found');
-        assert.strictEqual(other_found_table.attributes.length,2,'Expected 2 attributes in table');
+        assert.strictEqual(other_found_table.attributes.length,3,'Expected 2 attributes in table');
         assert.notStrictEqual(global.hdb_schema[SCHEMA_1_NAME][SCHEMA_1_NEW_TABLE_NAME], undefined, 'Expected new table to be created.');
         assert.notStrictEqual(global.hdb_schema[SCHEMA_1_NAME][SCHEMA_1_OTHER_NEW_TABLE_NAME], undefined, 'Expected new table to be created.');
     });
@@ -425,7 +425,7 @@ describe('Test compareTableKeys with filesystem', () => {
         }
         // get table returns an error string rather than an error :(
         assert.notStrictEqual(found_table,undefined,'Expected table to be found');
-        assert.strictEqual(found_table.attributes.length,2,'Expected 2 attributes in table');
+        assert.strictEqual(found_table.attributes.length,3,'Expected 2 attributes in table');
         assert.notStrictEqual(global.hdb_schema[SCHEMA_1_NAME][SCHEMA_1_NEW_TABLE_NAME], undefined, 'Expected new table to be created.');
     });
     it(`test compareTableKeys bad parameter, expect exception`, async () => {
