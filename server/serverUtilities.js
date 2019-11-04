@@ -502,32 +502,34 @@ function getOperationFunction(json){
     };
 }
 
-async function catchup(catchup_object) {
+async function catchup(req) {
     harper_logger.trace('In serverUtils.catchup');
+    let catchup_object = req.transaction;
     let split_channel = catchup_object.channel.split(':');
 
     let schema = split_channel[0];
     let table = split_channel[1];
-    let originator = catchup_object.__originator;
     for (let transaction of catchup_object.transactions) {
         try {
             transaction.schema = schema;
             transaction.table = table;
-            transaction.__originator = originator;
+            let result;
             switch (transaction.operation) {
                 case terms.OPERATIONS_ENUM.INSERT:
-                    await insert.insert(transaction);
+                    result = await insert.insert(transaction);
                     break;
                 case terms.OPERATIONS_ENUM.UPDATE:
-                    await insert.update(transaction);
+                    result = await insert.update(transaction);
                     break;
                 case terms.OPERATIONS_ENUM.DELETE:
-                    await delete_.delete(transaction);
+                    result = await delete_.delete(transaction);
                     break;
                 default:
                     harper_logger.warn('invalid operation in catchup');
                     break;
             }
+
+            postOperationHandler(transaction, result, req);
         } catch(e) {
             harper_logger.info('Invalid operation in transaction');
             harper_logger.error(e);
