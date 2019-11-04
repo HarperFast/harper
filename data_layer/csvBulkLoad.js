@@ -77,13 +77,12 @@ async function csvDataLoad(json_message) {
 }
 
 /**
- * Orchestrates a CSV data load via a file URL. First downloads the file to disk, then calls csvFileLoad on the
+ * Orchestrates a CSV data load via a file URL. First downloads the file to disk to a temporary folder/file, then calls csvFileLoad on the
  * downloaded file. Finally deletes temporary folder and file.
  * @param json_message
  * @returns {Promise<void>}
  */
 async function csvURLLoad(json_message) {
-    console.time('Timer');
     let validation_msg = validator.urlObject(json_message);
     if (validation_msg) {
         throw new Error(validation_msg);
@@ -104,7 +103,6 @@ async function csvURLLoad(json_message) {
         // Remove the downloaded temporary CSV file and directory once csvFileLoad complete
         await hdb_utils.removeDir(TEMP_DOWNLOAD_DIR);
 
-        console.timeEnd('Timer');
         return bulk_load_result;
     } catch (err) {
         // If an error is thrown and removeDir above is skipped, cleanup the temporary downloaded data.
@@ -138,7 +136,7 @@ async function downloadCSVFile(url) {
     validateResponse(response, url);
 
     try {
-        fs.mkdir(TEMP_DOWNLOAD_DIR);
+        fs.mkdirSync(TEMP_DOWNLOAD_DIR);
         fs.writeFileSync(`${TEMP_DOWNLOAD_DIR}/${TEMP_CSV_FILE}`, response.body);
     } catch(err) {
         logger.error(`Error writing temporary CSV download file to disk`);
@@ -147,7 +145,7 @@ async function downloadCSVFile(url) {
 }
 
 /**
- * Runs multiple validations on response from HTTP client
+ * Runs multiple validations on response from HTTP client.
  * @param response
  * @param url
  */
