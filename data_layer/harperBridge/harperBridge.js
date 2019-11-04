@@ -1,6 +1,6 @@
 "use strict";
 
-const BridgeMethods = require("./BridgeMethods.js");
+const BridgeMethods = require("./BridgeMethods");
 const hdb_license = require('../../utility/registration/hdb_license');
 const license = hdb_license.licenseSearch();
 const terms = require('../../utility/hdbTerms');

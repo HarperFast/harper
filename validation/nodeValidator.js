@@ -1,6 +1,6 @@
 "use strict";
 
-const validator = require('./validationWrapper.js');
+const validator = require('./validationWrapper');
 
 const constraints = {
     name : {

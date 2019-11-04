@@ -105,8 +105,8 @@ async function addNode(new_node) {
     }
 
     if(!hdb_utils.isEmptyOrZeroLength(results.skipped_hashes)) {
-        log.info(`Node '${new_node.name}' has already been already added. Operation aborted.`);
-        throw new Error(`Node '${new_node.name}' has already been already added. Operation aborted.`);
+        log.info(`Node '${new_node.name}' has already been added. Operation aborted.`);
+        throw new Error(`Node '${new_node.name}' has already been added. Operation aborted.`);
     }
 
     try {
@@ -555,7 +555,7 @@ function clusterMessageHandler(msg) {
                 }
                 break;
             default:
-                log.error(`Got an unhandled cluster message type ${msg.type}`);
+                log.info(`Got an unhandled cluster message type ${msg.type}`);
                 break;
         }
     } catch (e) {

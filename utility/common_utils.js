@@ -20,7 +20,7 @@ const EMPTY_STRING = '';
 const FILE_EXTENSION_LENGTH = 4;
 const CHARACTER_LIMIT = 255;
 
-const HDB_PROC_NAME = 'hdb_express.js';
+const HDB_PROC_NAME = terms.HDB_PROC_NAME;
 
 //Because undefined will not return in a JSON response, we convert undefined to null when autocasting
 const AUTOCAST_COMMON_STRINGS = {

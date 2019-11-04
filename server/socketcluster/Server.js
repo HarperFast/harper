@@ -4,7 +4,7 @@ const promisify = require('util').promisify;
 const fs = require('fs-extra');
 const env = require('../../utility/environment/environmentManager');
 env.initSync();
-
+const terms = require('../../utility/hdbTerms');
 const PROPS_PRIVATE_KEY = 'PRIVATE_KEY';
 const PROPS_CERT_KEY = 'CERTIFICATE';
 const PRIVATE_KEY = env.get(PROPS_PRIVATE_KEY);
@@ -41,7 +41,7 @@ try {
         // The interval in milliseconds on which to
         // send a ping to the client to check that
         // it is still alive
-        pingInterval: 10000,
+        pingInterval: 20000,
 
         // How many milliseconds to wait without receiving a ping
         // before closing the socket
@@ -70,12 +70,12 @@ try {
         /* A JS file which you can use to configure each of your
          * workers/servers - This is where most of your backend code should go
          */
-        workerController: __dirname + '/worker/ClusterWorker.js',
+        workerController: __dirname + `/worker/ClusterWorker.${terms.CODE_EXTENSION}`,
 
         /* JS file which you can use to configure each of your
          * brokers - Useful for scaling horizontally across multiple machines (optional)
          */
-        brokerController: __dirname + '/broker.js',
+        brokerController: __dirname + `/broker.${terms.CODE_EXTENSION}`,
 
         // Whether or not to reboot the worker in case it crashes (defaults to true)
         rebootWorkerOnCrash: true,
