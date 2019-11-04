@@ -1,5 +1,5 @@
 const validate = require('validate.js'),
-    validator = require('./validationWrapper.js');
+    validator = require('./validationWrapper');
 
 const constraints = {
     role: {

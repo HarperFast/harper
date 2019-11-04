@@ -347,7 +347,7 @@ function chooseOperation(json, callback) {
 
 function getOperationFunction(json){
     harper_logger.trace(`getOperationFunction with operation: ${json.operation}`);
-    let operation_function = nullOperation;
+    let operation_function = nullOperationAwait;
     let job_operation_function = undefined;
 
     switch (json.operation) {
@@ -537,6 +537,10 @@ async function catchup(catchup_object) {
 
 function nullOperation(json, callback) {
     callback('Invalid operation');
+}
+
+async function nullOperationAwait(json) {
+    throw new Error('Invalid operation');
 }
 
 async function signalJob(json) {

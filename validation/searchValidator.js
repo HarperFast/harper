@@ -1,6 +1,6 @@
 const validate = require('validate.js'),
     _ = require('lodash'),
-    validator = require('./validationWrapper.js');
+    validator = require('./validationWrapper');
 
 let search_by_hash_constraints = {
     schema: {

@@ -160,7 +160,7 @@ class CoreRoom extends RoomIF {
                     }
 
                     cluster_status_response.hdb_header = req.hdb_header;
-                    cluster_status_response.cluster_staatus_request_id = req.id;
+                    cluster_status_response.cluster_status_request_id = req.id;
                     // Make sure we send the response back to the originating hdb_child
                     cluster_status_response.requestor_channel = req.requestor_channel;
                     // insert the status for this worker

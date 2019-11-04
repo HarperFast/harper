@@ -11,7 +11,7 @@ const system_schema = require('../../../../json/systemSchema.json');
 const heGetDataByValue = require('../heMethods/heGetDataByValue');
 const heSearchByHash = require('../heMethods/heSearchByHash');
 
-const search_validator = require('../../../../validation/searchValidator.js');
+const search_validator = require('../../../../validation/searchValidator');
 
 module.exports = heSearchByConditions;
 

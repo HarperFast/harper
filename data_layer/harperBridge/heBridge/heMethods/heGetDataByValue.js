@@ -2,7 +2,7 @@
 
 const common_utils = require('../../../../utility/common_utils');
 const hdb_terms = require('../../../../utility/hdbTerms');
-const search_validator = require('../../../../validation/searchValidator.js');
+const search_validator = require('../../../../validation/searchValidator');
 const SEARCH_VALUE_OPS = hdb_terms.HELIUM_VALUE_SEARCH_OPS;
 const SEARCH_RANGE_OPS = hdb_terms.HELIUM_VALUE_RANGE_SEARCH_OPS;
 const system_schema = require('../../../../json/systemSchema.json');
