@@ -282,11 +282,17 @@ function convertCRUDOperationToTransaction(source_json, affected_hashes, hash_at
         records:[]
     };
 
-    source_json.records.forEach(record =>{
-        if(affected_hashes.indexOf(common_utils.autoCast(record[hash_attribute])) >= 0) {
-            transaction.records.push(record);
+    transaction.hash_values = [];
+    source_json.records.forEach(record => {
+        if (affected_hashes.indexOf(common_utils.autoCast(record[hash_attribute])) >= 0) {
+            if(source_json.operation === terms.OPERATIONS_ENUM.DELETE) {
+                transaction.hash_values.push(record);
+            } else {
+                transaction.records.push(record);
+            }
         }
     });
+
     let transaction_msg = common_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
     transaction_msg.transaction = transaction;
     return transaction_msg;
