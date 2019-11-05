@@ -265,7 +265,6 @@ describe('Test csvBulkLoad.js', () => {
             sandbox.stub(validator, 'urlObject').returns(null);
             let result = await csv_rewire.csvURLLoad(CSV_URL_MESSAGE);
 
-
             expect(result).to.equal(success_msg);
             expect(remove_dir_stub).to.have.been.calledWith(CSV_URL_TEMP_DIR);
         });
