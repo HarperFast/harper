@@ -17,8 +17,6 @@ const p_find_ids_by_regex = util.promisify(file_search.findIDsByRegex);
 
 module.exports = fsGetDataByValue;
 
-const VALUE_SEARCH_COMPARATORS = ['<','<=','>','>='];
-
 // Search Object
 // {
 //   schema:String, // schema to search
@@ -31,7 +29,7 @@ const VALUE_SEARCH_COMPARATORS = ['<','<=','>','>='];
 async function fsGetDataByValue(search_object, comparator) {
     try {
         let comparator_search = !common_utils.isEmpty(comparator);
-        if (comparator_search && VALUE_SEARCH_COMPARATORS.indexOf(comparator) === -1) {
+        if (comparator_search && !hdb_terms.FS_VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP[comparator]) {
             throw new Error(`Value search comparator - ${comparator} - is not valid`);
         }
         let validation_error = search_validator(search_object, 'value');
