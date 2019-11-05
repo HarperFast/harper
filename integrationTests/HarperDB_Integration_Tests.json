@@ -2489,6 +2489,1087 @@
 					"_postman_isSubFolder": true
 				},
 				{
+					"name": "CSV URL Load",
+					"item": [
+						{
+							"name": "Create CSV data table",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "7c135745-b3bf-47c2-9887-3649dea3c65a",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3Q="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{csv_tb}}\",\n  \"hash_attribute\": \"id\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "CSV file load",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "acf3b9f8-0ea6-4f9a-b0f2-0ddb6722242d",
+										"exec": [
+											"pm.test(\"Check for job message\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
+											"    ",
+											"    eval(pm.globals.get(\"function:getJobIdURLcsv\"))(jsonData, null);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"csv_url_load\",\n  \"action\": \"insert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{csv_tb}}\",\n  \"csv_url\":\"https://s3.amazonaws.com/complimentarydata/breeds.csv\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": [
+								{
+									"name": "CSV Data Load",
+									"originalRequest": {
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											},
+											{
+												"key": "Authorization",
+												"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n  \"operation\":\"csv_data_load\",\n  \"schema\":\"dev\",\n  \"action\": \"insert\",\n  \"table\":\"breed\",\n  \"data\":\"id,name,section,country,image\\n1,ENGLISH POINTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/001g07.jpg\\n2,ENGLISH SETTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/002g07.jpg\\n3,KERRY BLUE TERRIER,Large and medium sized Terriers,IRELAND,\\n\"\n}"
+										},
+										"url": {
+											"raw": "{{HDB_ENDPOINT}}",
+											"host": [
+												"{{HDB_ENDPOINT}}"
+											]
+										}
+									},
+									"status": "OK",
+									"code": 200,
+									"_postman_previewlanguage": "json",
+									"header": [
+										{
+											"key": "Connection",
+											"value": "keep-alive",
+											"name": "Connection",
+											"description": "Options that are desired for the connection"
+										},
+										{
+											"key": "Content-Length",
+											"value": "71",
+											"name": "Content-Length",
+											"description": "The length of the response body in octets (8-bit bytes)"
+										},
+										{
+											"key": "Content-Type",
+											"value": "application/json; charset=utf-8",
+											"name": "Content-Type",
+											"description": "The mime type of this content"
+										},
+										{
+											"key": "Date",
+											"value": "Mon, 09 Jul 2018 20:07:14 GMT",
+											"name": "Date",
+											"description": "The date and time that the message was sent"
+										},
+										{
+											"key": "ETag",
+											"value": "W/\"47-FY/m86hgW/48m7lLK1CpL02xrIw\"",
+											"name": "ETag",
+											"description": "An identifier for a specific version of a resource, often a message digest"
+										},
+										{
+											"key": "Vary",
+											"value": "Origin",
+											"name": "Vary",
+											"description": "Tells downstream proxies how to match future request headers to decide whether the cached response can be used rather than requesting a fresh one from the origin server."
+										}
+									],
+									"cookie": [],
+									"body": ""
+								}
+							]
+						},
+						{
+							"name": "Check CSV data loaded",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "34b3186b-c5e9-45da-8bca-92ea79825179",
+										"exec": [
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"test Job Found\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(1);",
+											"    ",
+											"    pm.expect(jsonData[0]).to.have.property('status');",
+											"    ",
+											"    let status = jsonData[0].status;",
+											"    ",
+											"    switch(status){",
+											"        case 'ERROR':",
+											"            console.log(jsonData[0]);",
+											"            console.log(\"Error checking CSV URL load job.\")",
+											"            if(pm.environment.get(\"next_request\")){",
+											"                postman.setNextRequest(pm.environment.get(\"next_request\"));",
+											"            }",
+											"            pm.expect(status).to.not.eql('ERROR');",
+											"            break;",
+											"        case 'COMPLETE':",
+											"            console.log(jsonData[0]);",
+											"            if(pm.environment.get(\"next_request\")){",
+											"                postman.setNextRequest(pm.environment.get(\"next_request\"));",
+											"            }",
+											"           ",
+											"            pm.expect(jsonData[0].message).to.eql(\"successfully loaded 351 of 351 records\");",
+											"            pm.expect(status).to.be.oneOf(['COMPLETE', 'ERROR']);",
+											"            break;",
+											"        case '0':",
+											"        case 0:",
+											"        case 'IN_PROGRESS':",
+											"            console.log('in progress, checking again');",
+											"            postman.setNextRequest('Check CSV data loaded');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0']);",
+											"            break;",
+											"        default:",
+											"            postman.setNextRequest('Check CSV data loaded');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0', 'ERROR', 'COMPLETE']);",
+											"            break;",
+											"    }",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "c350ea7e-d128-486d-9aa2-24abaa82d300",
+										"exec": [
+											"setTimeout(()=>{}, 200);",
+											"console.log(\"Checking Job CSV URL load\" + pm.environment.get(\"job_id\"));"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Confirm all CSV records loaded",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "0140dbb8-08cc-411d-ae68-91d01be59fdf",
+										"exec": [
+											"pm.test(\"test good response\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"test correct count from table\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData[0]['COUNT(*)']).to.eql(351)",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select count(*) from {{schema}}.{{csv_tb}}\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": [
+								{
+									"name": "Select",
+									"originalRequest": {
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											},
+											{
+												"key": "Authorization",
+												"type": "text",
+												"name": "Authorization",
+												"value": "Basic SERCX0FETUlOOjE0MDA="
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"SELECT d.id, d.dog_name, d.owner_name, b.name, b.section FROM dev.dog AS d INNER JOIN dev.breed AS b ON d.breed_id = b.id WHERE d.owner_name IN ('Kyle', 'Zach', 'Stephen') AND b.section = 'Mutt' ORDER BY d.dog_name\"\n}"
+										},
+										"url": {
+											"raw": "http://localhost:9925",
+											"protocol": "http",
+											"host": [
+												"localhost"
+											],
+											"port": "9925"
+										}
+									},
+									"status": "OK",
+									"code": 200,
+									"_postman_previewlanguage": "json",
+									"header": [
+										{
+											"key": "connection",
+											"value": "keep-alive",
+											"name": "connection",
+											"description": ""
+										},
+										{
+											"key": "content-length",
+											"value": "389",
+											"name": "content-length",
+											"description": ""
+										},
+										{
+											"key": "content-type",
+											"value": "application/json; charset=utf-8",
+											"name": "content-type",
+											"description": ""
+										},
+										{
+											"key": "date",
+											"value": "Fri, 01 Sep 2017 17:55:45 GMT",
+											"name": "date",
+											"description": ""
+										},
+										{
+											"key": "etag",
+											"value": "W/\"185-edwDBNLCreSo/YY1IIyzPmR72ec\"",
+											"name": "etag",
+											"description": ""
+										},
+										{
+											"key": "x-powered-by",
+											"value": "HarperDB",
+											"name": "x-powered-by",
+											"description": ""
+										}
+									],
+									"cookie": [],
+									"body": ""
+								}
+							]
+						},
+						{
+							"name": "Create CSV data table empty",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "7c135745-b3bf-47c2-9887-3649dea3c65a",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3Q="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{csv_tb_empty}}\",\n  \"hash_attribute\": \"id\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "CSV file load empty file",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "acf3b9f8-0ea6-4f9a-b0f2-0ddb6722242d",
+										"exec": [
+											"pm.test(\"Check for job message\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
+											"    ",
+											"    eval(pm.globals.get(\"function:getJobIdURLcsvEmpty\"))(jsonData, null);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"csv_url_load\",\n  \"action\": \"insert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{csv_tb_empty}}\",\n  \"csv_url\":\"https://s3.amazonaws.com/complimentarydata/breedsEmpty.csv\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": [
+								{
+									"name": "CSV Data Load",
+									"originalRequest": {
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											},
+											{
+												"key": "Authorization",
+												"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n  \"operation\":\"csv_data_load\",\n  \"schema\":\"dev\",\n  \"action\": \"insert\",\n  \"table\":\"breed\",\n  \"data\":\"id,name,section,country,image\\n1,ENGLISH POINTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/001g07.jpg\\n2,ENGLISH SETTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/002g07.jpg\\n3,KERRY BLUE TERRIER,Large and medium sized Terriers,IRELAND,\\n\"\n}"
+										},
+										"url": {
+											"raw": "{{HDB_ENDPOINT}}",
+											"host": [
+												"{{HDB_ENDPOINT}}"
+											]
+										}
+									},
+									"status": "OK",
+									"code": 200,
+									"_postman_previewlanguage": "json",
+									"header": [
+										{
+											"key": "Connection",
+											"value": "keep-alive",
+											"name": "Connection",
+											"description": "Options that are desired for the connection"
+										},
+										{
+											"key": "Content-Length",
+											"value": "71",
+											"name": "Content-Length",
+											"description": "The length of the response body in octets (8-bit bytes)"
+										},
+										{
+											"key": "Content-Type",
+											"value": "application/json; charset=utf-8",
+											"name": "Content-Type",
+											"description": "The mime type of this content"
+										},
+										{
+											"key": "Date",
+											"value": "Mon, 09 Jul 2018 20:07:14 GMT",
+											"name": "Date",
+											"description": "The date and time that the message was sent"
+										},
+										{
+											"key": "ETag",
+											"value": "W/\"47-FY/m86hgW/48m7lLK1CpL02xrIw\"",
+											"name": "ETag",
+											"description": "An identifier for a specific version of a resource, often a message digest"
+										},
+										{
+											"key": "Vary",
+											"value": "Origin",
+											"name": "Vary",
+											"description": "Tells downstream proxies how to match future request headers to decide whether the cached response can be used rather than requesting a fresh one from the origin server."
+										}
+									],
+									"cookie": [],
+									"body": ""
+								}
+							]
+						},
+						{
+							"name": "Check CSV data empty",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "34b3186b-c5e9-45da-8bca-92ea79825179",
+										"exec": [
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"test Job Found\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(1);",
+											"    ",
+											"    pm.expect(jsonData[0]).to.have.property('status');",
+											"    ",
+											"    let status = jsonData[0].status;",
+											"    ",
+											"    switch(status){",
+											"        case 'ERROR':",
+											"            console.log(jsonData[0]);",
+											"            console.log(\"Error checking CSV URL load job.\")",
+											"            if(pm.environment.get(\"next_request\")){",
+											"                postman.setNextRequest(pm.environment.get(\"next_request\"));",
+											"            }",
+											"            pm.expect(status).to.not.eql('ERROR');",
+											"            break;",
+											"        case 'COMPLETE':",
+											"            console.log(jsonData[0]);",
+											"            if(pm.environment.get(\"next_request\")){",
+											"                postman.setNextRequest(pm.environment.get(\"next_request\"));",
+											"            }",
+											"           ",
+											"            pm.expect(jsonData[0].message).to.eql(\"successfully loaded 0 of 0 records\");",
+											"            pm.expect(status).to.be.oneOf(['COMPLETE', 'ERROR']);",
+											"            break;",
+											"        case '0':",
+											"        case 0:",
+											"        case 'IN_PROGRESS':",
+											"            console.log('in progress, checking again');",
+											"            postman.setNextRequest('Check CSV data empty');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0']);",
+											"            break;",
+											"        default:",
+											"            postman.setNextRequest('Check CSV data empty');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0', 'ERROR', 'COMPLETE']);",
+											"            break;",
+											"    }",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "c350ea7e-d128-486d-9aa2-24abaa82d300",
+										"exec": [
+											"setTimeout(()=>{}, 200);",
+											"console.log(\"Checking Job CSV URL load\" + pm.environment.get(\"job_id\"));"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "CSV file load bad attribute",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "acf3b9f8-0ea6-4f9a-b0f2-0ddb6722242d",
+										"exec": [
+											"pm.test(\"Check for job message\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
+											"    ",
+											"    eval(pm.globals.get(\"function:getJobIdURLcsvError\"))(jsonData, null);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"csv_url_load\",\n  \"action\": \"insert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{csv_tb_empty}}\",\n  \"csv_url\":\"https://s3.amazonaws.com/complimentarydata/breeds-bad-column-name.csv\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": [
+								{
+									"name": "CSV Data Load",
+									"originalRequest": {
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											},
+											{
+												"key": "Authorization",
+												"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n  \"operation\":\"csv_data_load\",\n  \"schema\":\"dev\",\n  \"action\": \"insert\",\n  \"table\":\"breed\",\n  \"data\":\"id,name,section,country,image\\n1,ENGLISH POINTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/001g07.jpg\\n2,ENGLISH SETTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/002g07.jpg\\n3,KERRY BLUE TERRIER,Large and medium sized Terriers,IRELAND,\\n\"\n}"
+										},
+										"url": {
+											"raw": "{{HDB_ENDPOINT}}",
+											"host": [
+												"{{HDB_ENDPOINT}}"
+											]
+										}
+									},
+									"status": "OK",
+									"code": 200,
+									"_postman_previewlanguage": "json",
+									"header": [
+										{
+											"key": "Connection",
+											"value": "keep-alive",
+											"name": "Connection",
+											"description": "Options that are desired for the connection"
+										},
+										{
+											"key": "Content-Length",
+											"value": "71",
+											"name": "Content-Length",
+											"description": "The length of the response body in octets (8-bit bytes)"
+										},
+										{
+											"key": "Content-Type",
+											"value": "application/json; charset=utf-8",
+											"name": "Content-Type",
+											"description": "The mime type of this content"
+										},
+										{
+											"key": "Date",
+											"value": "Mon, 09 Jul 2018 20:07:14 GMT",
+											"name": "Date",
+											"description": "The date and time that the message was sent"
+										},
+										{
+											"key": "ETag",
+											"value": "W/\"47-FY/m86hgW/48m7lLK1CpL02xrIw\"",
+											"name": "ETag",
+											"description": "An identifier for a specific version of a resource, often a message digest"
+										},
+										{
+											"key": "Vary",
+											"value": "Origin",
+											"name": "Vary",
+											"description": "Tells downstream proxies how to match future request headers to decide whether the cached response can be used rather than requesting a fresh one from the origin server."
+										}
+									],
+									"cookie": [],
+									"body": ""
+								}
+							]
+						},
+						{
+							"name": "Check CSV job error",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "34b3186b-c5e9-45da-8bca-92ea79825179",
+										"exec": [
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"test Job Found\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(1);",
+											"    ",
+											"    pm.expect(jsonData[0]).to.have.property('status');",
+											"    ",
+											"    let status = jsonData[0].status;",
+											"    ",
+											"    switch(status){",
+											"        case 'ERROR':",
+											"            console.log(jsonData[0]);",
+											"            if(pm.environment.get(\"next_request\")){",
+											"                postman.setNextRequest(pm.environment.get(\"next_request\"));",
+											"            }",
+											"            ",
+											"            let msg_contains = jsonData[0].message.includes(\"Invalid column name id/, cancelling load operation\");",
+											"            pm.expect(msg_contains).to.eql(true);",
+											"            pm.expect(status).to.eql('ERROR');",
+											"            break;",
+											"        case 'COMPLETE':",
+											"            console.log(jsonData[0]);",
+											"            if(pm.environment.get(\"next_request\")){",
+											"                postman.setNextRequest(pm.environment.get(\"next_request\"));",
+											"            }",
+											"            ",
+											"            pm.expect(status).to.not.eql('COMPLETE');",
+											"            break;",
+											"        case '0':",
+											"        case 0:",
+											"        case 'IN_PROGRESS':",
+											"            console.log('in progress, checking again');",
+											"            postman.setNextRequest('Check CSV job error');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0']);",
+											"            break;",
+											"        default:",
+											"            postman.setNextRequest('Check CSV job error');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0', 'ERROR', 'COMPLETE']);",
+											"            break;",
+											"    }",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "c350ea7e-d128-486d-9aa2-24abaa82d300",
+										"exec": [
+											"setTimeout(()=>{}, 200);",
+											"console.log(\"Checking Job CSV URL load\" + pm.environment.get(\"job_id\"));"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"response": []
+						}
+					],
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"id": "f31e0863-2b2b-4ffb-b2c1-dce594619552",
+								"type": "text/javascript",
+								"exec": [
+									""
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"id": "2a002ef4-bd15-4976-902b-505b1d69361e",
+								"type": "text/javascript",
+								"exec": [
+									"postman.setGlobalVariable(\"function:getJobIdURLcsv\", (jsonData, next_req)=>{",
+									"    let id_index = jsonData.message.indexOf('id ');",
+									"    let parsedId = jsonData.message.substr(id_index + 3, jsonData.message.length);",
+									"    pm.environment.set(\"job_id\", parsedId);",
+									"    pm.environment.set(\"next_request\", next_req);",
+									"    postman.setNextRequest(\"Check CSV data loaded\");",
+									"});",
+									"",
+									"postman.setGlobalVariable(\"function:getJobIdURLcsvEmpty\", (jsonData, next_req)=>{",
+									"    let id_index = jsonData.message.indexOf('id ');",
+									"    let parsedId = jsonData.message.substr(id_index + 3, jsonData.message.length);",
+									"    pm.environment.set(\"job_id\", parsedId);",
+									"    pm.environment.set(\"next_request\", next_req);",
+									"    postman.setNextRequest(\"Check CSV data empty\");",
+									"});",
+									"",
+									"postman.setGlobalVariable(\"function:getJobIdURLcsvError\", (jsonData, next_req)=>{",
+									"    let id_index = jsonData.message.indexOf('id ');",
+									"    let parsedId = jsonData.message.substr(id_index + 3, jsonData.message.length);",
+									"    pm.environment.set(\"job_id\", parsedId);",
+									"    pm.environment.set(\"next_request\", next_req);",
+									"    postman.setNextRequest(\"Check CSV job error\");",
+									"});"
+								]
+							}
+						}
+					],
+					"protocolProfileBehavior": {},
+					"_postman_isSubFolder": true
+				},
+				{
 					"name": "JSON",
 					"item": [
 						{
