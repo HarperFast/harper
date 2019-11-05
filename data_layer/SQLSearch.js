@@ -461,7 +461,6 @@ class SQLSearch {
                 }
             } else {
                 try {
-                    // TODO - add comparator check
                     if (!common_utils.isEmpty(this.comparator_search_values[object_path]) && !this.comparator_search_values[object_path].ignore &&
                         !common_utils.isEmptyOrZeroLength(this.comparator_search_values[object_path].comparators)) {
                         const search_value_comparators = this.comparator_search_values[object_path].comparators;
