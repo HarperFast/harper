@@ -437,7 +437,6 @@ const HELIUM_VALUE_SEARCH_OPS = {
     INCLUDES_NO_CASE: 'includesNoCase'
 };
 
-// const FS_VALUE_SEARCH_COMPARATORS = ['<','<=','>','>='];
 const FS_VALUE_SEARCH_COMPARATORS = {
     LESS: "<",
     LESS_OR_EQ: "<=",

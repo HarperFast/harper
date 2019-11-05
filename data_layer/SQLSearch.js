@@ -360,9 +360,6 @@ class SQLSearch {
         //get all unique attributes
         this._addFetchColumns(this.columns.joins);
 
-        //TODO - move the below comment to a better spot
-        //in order to perform is null conditions we need to bring in the hash attribute to make sure we coalesce the
-        // objects so records that have null values are found.
         let where_string = null;
         try {
             where_string = this.statement.where ? this.statement.where.toString() : '';
