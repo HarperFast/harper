@@ -2456,10 +2456,10 @@
 									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "{{host}}:9925",
+
 									"host": [
-										"localhost"
+										"{{host}}"
 									],
 									"port": "9925"
 								}
@@ -3273,10 +3273,10 @@
 											"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
 										},
 										"url": {
-											"raw": "http://localhost:9925",
-											"protocol": "http",
+											"raw": "{{host}}:9925",
+
 											"host": [
-												"localhost"
+												"{{host}}"
 											],
 											"port": "9925"
 										}
@@ -10758,10 +10758,9 @@
 							"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"{{role_id}}\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":true\n\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -10825,10 +10824,9 @@
 							"raw": "{\n\"operation\":\"search_by_value\",\n\"table\":\"{{supp_tb}}\",\n\"schema\":\"{{schema}}\",\n\"hash_attribute\":\"id\",\n\"search_attribute\":\"{{supp_id}}\",\n\"search_value\":\"*\",\n\"get_attributes\":[\"{{supp_id}}\"]\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -10892,10 +10890,9 @@
 							"raw": "{\n\"operation\":\"search_by_value\",\n\"table\":\"{{supp_tb}}\",\n\"schema\":\"{{schema}}\",\n\"hash_attribute\":\"id\",\n\"search_attribute\":\"{{supp_id}}\",\n\"search_value\":\"*\",\n\"get_attributes\":[\"{{supp_id}}\"]\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -10959,10 +10956,9 @@
 							"raw": "{\n\"operation\":\"search_by_value\",\n\"table\":\"{{regi_tb}}\",\n\"schema\":\"{{schema}}\",\n\"hash_attribute\":\"id\",\n\"search_attribute\":\"{{regi_id}}\",\n\"search_value\":\"*\",\n\"get_attributes\":[\"*\"]\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11026,10 +11022,9 @@
 							"raw": "{\n\"operation\":\"search_by_value\",\n\"table\":\"{{regi_tb}}\",\n\"schema\":\"{{schema}}\",\n\"hash_attribute\":\"id\",\n\"search_attribute\":\"{{regi_id}}\",\n\"search_value\":\"*\",\n\"get_attributes\":[\"*\"]\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11093,10 +11088,9 @@
 							"raw": "{\n  \"operation\":\"insert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{regi_tb}}\",\n  \"records\": [\n    {\n      \"{{regi_id}}\":16,\n      \"regiondescription\":\"test description\"\n    }\n  ]\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11160,10 +11154,9 @@
 							"raw": "{\n  \"operation\":\"insert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{regi_tb}}\",\n  \"records\": [\n    {\n      \"{{regi_id}}\":17,\n      \"regiondescription\":\"test description\"\n    }\n  ]\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11227,10 +11220,9 @@
 							"raw": "{\n  \"operation\":\"insert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{terr_tb}}\",\n  \"records\": [\n    {\n      \"{{terr_id}}\":123456,\n      \"territorydescription\":\"test description\"\n    }\n  ]\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11294,10 +11286,9 @@
 							"raw": "{\n  \"operation\":\"insert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{terr_tb}}\",\n  \"records\": [\n    {\n      \"{{terr_id}}\":1234567,\n      \"territorydescription\":\"test description\"\n    }\n  ]\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11361,10 +11352,9 @@
 							"raw": "{\n  \"operation\":\"update\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{terr_tb}}\",\n  \"records\": [\n    {\n      \"{{terr_id}}\":123456,\n      \"territorydescription\":\"test description updated\"\n    }\n  ]\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11428,10 +11418,9 @@
 							"raw": "{\n  \"operation\":\"update\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{terr_tb}}\",\n  \"records\": [\n    {\n      \"{{terr_id}}\":1234567,\n      \"territorydescription\":\"test description updated\"\n    }\n  ]\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11495,10 +11484,9 @@
 							"raw": "{\n  \"operation\":\"update\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{cate_tb}}\",\n  \"records\": [\n    {\n      \"{{cate_id}}\":1,\n      \"description\":\"test description updated\"\n    }\n  ]\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11562,10 +11550,9 @@
 							"raw": "{\n  \"operation\":\"delete\",\n  \"table\":\"{{cate_tb}}\",\n  \"schema\":\"{{schema}}\",\n  \"hash_values\":[1]\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11629,10 +11616,9 @@
 							"raw": "{\n  \"operation\":\"delete\",\n  \"table\":\"{{cate_tb}}\",\n  \"schema\":\"{{schema}}\",\n  \"hash_values\":[2]\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11696,10 +11682,9 @@
 							"raw": "{\n\"operation\":\"search_by_value\",\n\"table\":\"{{ship_tb}}\",\n\"schema\":\"{{schema}}\",\n\"hash_attribute\":\"id\",\n\"search_attribute\":\"{{ship_id}}\",\n\"search_value\":\"*\",\n\"get_attributes\":[\"companyname\"]\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11763,10 +11748,9 @@
 							"raw": "\n{\n  \"operation\":\"update\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{ship_tb}}\",\n  \"records\": [{\n    \"{{ship_id}}\": 1,\n    \"companyname\": \"bad update name\"\n  }]\n}\n"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11830,10 +11814,9 @@
 							"raw": "{\n  \"operation\":\"insert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{ship_tb}}\",\n  \"records\": [{\n      \"{{ship_id}}\": 1,\n      \"companyname\": \"bad update name\",\n      \"phone\": \"(503) 555-9831\"\n    }]\n}\n"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11897,10 +11880,9 @@
 							"raw": "{\n  \"operation\":\"insert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{ship_tb}}\",\n  \"records\": [{\n      \"{{ship_id}}\": 1,\n      \"phone\": \"(503) 555-1111\"\n    }]\n}\n"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11964,10 +11946,9 @@
 							"raw": "{\n  \"operation\":\"drop_user\",\n  \"username\":\"test_user\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -12028,10 +12009,9 @@
 							"raw": "{\n\"operation\":\"drop_role\",\n\"id\":\"{{role_id}}\"\n\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -12643,10 +12623,9 @@
 							"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"{{role_id}}\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":true\n\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -12721,10 +12700,9 @@
 							"raw": "{\n\t\"operation\":\"list_users\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -12789,10 +12767,9 @@
 							"raw": "{\n\"operation\":\"alter_user\",\n\"role\":\"blahblah\",\n\"username\":\"test_user\"\n\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -12865,10 +12842,9 @@
 							"raw": "{\n\t\"operation\":\"list_users\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -12929,10 +12905,9 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from {{schema}}.{{supp_tb}}\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -12996,10 +12971,9 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from {{schema}}.{{supp_tb}}\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13063,10 +13037,9 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from {{schema}}.{{regi_tb}}\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13130,10 +13103,9 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from {{schema}}.{{regi_tb}}\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13197,10 +13169,9 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"insert into northnwd.region (regionid, regiondescription) values ('16', 'test description');\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13264,10 +13235,9 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"insert into northnwd.region (regionid, regiondescription) values ('17', 'test description');\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13331,10 +13301,9 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"insert into northnwd.territories (regionid, territoryid, territorydescription) values ('1', '65', 'Im a test');\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13398,10 +13367,9 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"insert into northnwd.territories (regionid, territoryid, territorydescription) values ('1', '65', 'Im a test');\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13465,10 +13433,9 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"update northnwd.territories set territorydescription = 'update test' where territoryid = 65\"\n}\n"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13532,10 +13499,9 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"update northnwd.territories set territorydescription = 'update test' where territoryid = 65\"\n}\n"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13599,10 +13565,9 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"update northnwd.categories set description = 'update test' where categoryid = 2\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13666,10 +13631,9 @@
 							"raw": "{ \n  \"operation\":\"sql\",\n  \"sql\":\"delete from northnwd.categories where categoryid = 2\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13733,10 +13697,9 @@
 							"raw": "{ \n  \"operation\":\"sql\",\n  \"sql\":\"delete from northnwd.categories where categoryid = 2\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13800,10 +13763,9 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from {{schema}}.{{ship_tb}}\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13867,10 +13829,9 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"update northnwd.{{ship_tb}} set companyname = 'bad update name' where {{ship_id}} = 1\"\n}\n"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13934,10 +13895,9 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"insert into northnwd.shippers (shipperid, companyname, phone) values ('1', 'bad update name', '(503) 555-9831');\"\n}\n\n"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13997,10 +13957,9 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"insert into northnwd.shippers (shipperid, phone) values ('1', '(503) 555-9831');\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -14071,10 +14030,9 @@
 							"raw": "{\n  \"operation\":\"drop_user\",\n  \"username\":\"test_user\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -14142,10 +14100,9 @@
 							"raw": "{\n\"operation\":\"drop_role\",\n\"id\":\"{{role_id}}\"\n\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -14299,10 +14256,9 @@
 							"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"{{role_id}}\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":true\n\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15270,10 +15226,9 @@
 							"raw": "{\n  \"operation\":\"create_schema\",\n  \"schema\": \"test_job\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15339,10 +15294,9 @@
 							"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"test_job\",\n  \"table\":\"runner\",\n  \"hash_attribute\": \"runner_id\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15416,10 +15370,9 @@
 							"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"test_job\",\n\"table\":\"runner\",\n\"records\": [\n  {\n    \"name\":\"Harper\",\n    \"shoes\":\"Nike\",\n    \"runner_id\":\"1\",\n    \"age\":55\n  }\n]\n\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15488,10 +15441,9 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from test_job.runner\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15551,10 +15503,9 @@
 							"raw": "{\n\t\"operation\":\"delete_files_before\",\n\t\"date\":\"2018-06-14\",\n\t\"schema\":\"dev\",\n\t\"schema\":\"dog\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15629,10 +15580,9 @@
 							"raw": "{\n\t\"operation\":\"delete_files_before\",\n\t\"date\":\"{{date_tomorrow}}\",\n\t\"schema\":\"test_job\",\n\t\"table\":\"runner\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15701,10 +15651,9 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from test_job.runner\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15782,10 +15731,9 @@
 							"raw": "{\n\t\"operation\":\"search_jobs_by_start_date\",\n\t\"from_date\": \t\"{{date_yesterday}}\",\n\t\"to_date\": \t\"{{date_tomorrow}}\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						}
@@ -15850,10 +15798,9 @@
 							"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						}
@@ -15914,10 +15861,9 @@
 							"raw": "{\n\t\"operation\":\"delete_job\",\n\t\"id\":\"{{job_id}}\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						}
@@ -15982,10 +15928,9 @@
 							"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						}
@@ -16045,10 +15990,9 @@
 							"raw": "{\n  \"operation\":\"csv_data_load\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{regi_tb}}\",\n  \"data\":\"regionid, regiondescription\\n'17', 'test description'\\n\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -16112,10 +16056,9 @@
 							"raw": "{\n  \"operation\":\"csv_data_load\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{regi_tb}}\",\n  \"data\":\"regionid, regiondescription\\n'17', 'test description'\\n\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -16175,10 +16118,9 @@
 							"raw": "{\n  \"operation\":\"csv_file_load\",\n  \"action\":\"insert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{supp_tb}}\",\n  \"file_path\":\"{{files_location}}Suppliers.csv\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -16238,10 +16180,9 @@
 							"raw": "{\n\t\"operation\":\"export_local\",\n\t\"path\":\"./\",\n\t\"filename\":\"test_export.json\",\n\t\"format\":\"json\",\n\t\"search_operation\": {\n        \"operation\":\"sql\",\n        \"sql\":\"select * from {{schema}}.{{ship_tb}}\"\n    }\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -16301,10 +16242,9 @@
 							"raw": "{\n\t\"operation\":\"export_local\",\n\t\"path\":\"./\",\n\t\"filename\":\"test_export.json\",\n\t\"format\":\"json\",\n\t\"search_operation\": {\n\t  \"operation\":\"search_by_hash\",\n\t  \"schema\":\"{{schema}}\",\n\t  \"table\":\"{{ship_tb}}\",\n\t  \"hash_attribute\": \"{{ship_id}}\",\n\t  \"hash_values\":[1],\n\t  \"get_attributes\": [\"companyname\"]\n\t}\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -16364,10 +16304,9 @@
 							"raw": "{\n\t\"operation\":\"export_local\",\n\t\"path\":\"./\",\n\t\"filename\":\"test_export.json\",\n\t\"format\":\"json\",\n\t\"search_operation\": {\n        \"operation\":\"sql\",\n        \"sql\":\"select * from {{schema}}.{{ship_tb}}\"\n    }\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -16427,10 +16366,9 @@
 							"raw": "{\n\t\"operation\":\"export_local\",\n\t\"path\":\"./\",\n\t\"filename\":\"test_export\",\n\t\"format\":\"json\",\n\t\"search_operation\": {\n\t  \"operation\":\"search_by_hash\",\n\t  \"schema\":\"{{schema}}\",\n\t  \"table\":\"{{supp_tb}}\",\n\t  \"hash_attribute\": \"{{supp_id}}\",\n\t  \"hash_values\":[1],\n\t  \"get_attributes\": [\"{{supp_id}}\"]\n\t}\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -16494,10 +16432,9 @@
 							"raw": "{\n  \"operation\":\"drop_user\",\n  \"username\":\"test_user\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -16558,10 +16495,9 @@
 							"raw": "{\n\"operation\":\"drop_role\",\n\"id\":\"{{role_id}}\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -17736,10 +17672,9 @@
 							"raw": "{\n    \"operation\": \"alter_role\",\n    \"role\": \"bad_user_2\",\n    \"id\": \"{{role_id}}\",\n    \"permission\": {\n        \"super_user\": false,\n        \"crapschema\": {\n            \"tables\": {\n                \"blahblah\": {\n                    \"read\": false,\n                    \"insert\": false,\n                    \"update\": false,\n                    \"delete\": false,\n                    \"attribute_restrictions\": [\n                        {\n                            \"attribute_name\": \"name\",\n                            \"read\": false,\n                            \"insert\": false,\n                            \"update\": true,\n                            \"delete\": false\n                        }\n                    ]\n                }\n            }\n        },\n        \"dev\": {\n            \"tables\": {\n                \"craptable\": {\n                    \"read\": false,\n                    \"insert\": false,\n                    \"update\": false,\n                    \"delete\": false,\n                    \"attribute_restrictions\": [\n                        {\n                            \"attribute_name\": \"name\",\n                            \"read\": false,\n                            \"insert\": false,\n                            \"update\": true,\n                            \"delete\": false\n                        }\n                    ]\n                },\n                \"dog\": {\n                    \"read\": false,\n                    \"insert\": false,\n                    \"update\": false,\n                    \"delete\": false,\n                    \"attribute_restrictions\": [\n                        {\n                            \"attribute_name\": \"name\",\n                            \"read\": false,\n                            \"insert\": false,\n                            \"update\": true,\n                            \"delete\": false\n                        },\n                        {\n                            \"attribute_name\": \"crapattribute\",\n                            \"read\": false,\n                            \"insert\": false,\n                            \"update\": true,\n                            \"delete\": false\n                        }\n                    ]\n                }\n            }\n        }\n    }\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -17816,10 +17751,9 @@
 							"raw": "{\n\"operation\":\"list_roles\"\n\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -17870,10 +17804,9 @@
 							"raw": "{\n  \"operation\": \"alter_role\",\n  \"role\": \"user_role_update\",\n  \"id\": \"{{role_id}}\",\n  \"permission\": {\n    \"super_user\": false,\n    \"{{schema}}\": {\n      \"tables\": {\n        \"{{cust_tb}}\": {\n          \"read\": false,\n          \"insert\": false,\n          \"update\": false,\n          \"delete\": false,\n          \"attribute_restrictions\": [\n            {\n              \"attribute_name\": \"fax\",\n              \"read\": false,\n              \"insert\": false,\n              \"update\": false,\n              \"delete\": false\n            }\n          ]\n        }\n      }\n    }\n    }\n  }"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -17950,10 +17883,9 @@
 							"raw": "{\n\"operation\":\"list_roles\"\n\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -18014,10 +17946,9 @@
 							"raw": "{\n\"operation\":\"drop_role\",\n\"id\":\"{{role_id}}\"\n\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -18149,10 +18080,9 @@
 							"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"{{role_id}}\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":true\n\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -18221,10 +18151,9 @@
 							"raw": "{\n\"operation\":\"alter_user\",\n\"role\":\"\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":true\n\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -18293,10 +18222,9 @@
 							"raw": "{\n\"operation\":\"alter_user\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":false\n\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -18370,10 +18298,9 @@
 							"raw": "{\n\"operation\":\"list_users\"\n\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -18434,10 +18361,9 @@
 							"raw": "{\n  \"operation\":\"drop_user\",\n  \"username\":\"test_user\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -18498,10 +18424,9 @@
 							"raw": "{\n\"operation\":\"drop_role\",\n\"id\":\"{{role_id}}\"\n\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -18608,10 +18533,10 @@
 									"raw": "{\n\"operation\":\"describe_table\",\n\"table\":\"dog\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "{{host}}:9925",
+
 									"host": [
-										"localhost"
+										"{{host}}"
 									],
 									"port": "9925"
 								}
@@ -19229,10 +19154,10 @@
 									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "{{host}}:9925",
+
 									"host": [
-										"localhost"
+										"{{host}}"
 									],
 									"port": "9925"
 								}
@@ -19387,10 +19312,10 @@
 									"raw": "{\n\"operation\":\"describe_table\",\n\"table\":\"dog\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "{{host}}:9925",
+
 									"host": [
-										"localhost"
+										"{{host}}"
 									],
 									"port": "9925"
 								}
@@ -19503,10 +19428,9 @@
 							"raw": "{\n\t\"operation\":\"get_fingerprint\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -19534,10 +19458,10 @@
 									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "{{host}}:9925",
+
 									"host": [
-										"localhost"
+										"{{host}}"
 									],
 									"port": "9925"
 								}
@@ -19662,10 +19586,9 @@
 							"raw": "{\n\"operation\":\"set_license\",\n\"key\":\"uFFG7xAZG11ec9d335bfe27c4ec5555310bd4a27f\",\n\"company\":\"harperdb.io\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -19693,10 +19616,10 @@
 									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "{{host}}:9925",
+
 									"host": [
-										"localhost"
+										"{{host}}"
 									],
 									"port": "9925"
 								}
@@ -19821,10 +19744,9 @@
 							"raw": "{\n\"operation\":\"set_license\",\n\"key\":\"\",\n\"company\":\"harperdb.io\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -19852,10 +19774,10 @@
 									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "{{host}}:9925",
+
 									"host": [
-										"localhost"
+										"{{host}}"
 									],
 									"port": "9925"
 								}
@@ -19975,10 +19897,9 @@
 							"raw": "{\n\t\"operation\": \"configure_cluster\",\n\t\"clustering\": \"true\",\n\t\"clustering_PORT\": \"12345\",\n\t\"NODE_NAME\":\"server\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -20006,10 +19927,10 @@
 									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "{{host}}:9925",
+
 									"host": [
-										"localhost"
+										"{{host}}"
 									],
 									"port": "9925"
 								}
@@ -20131,10 +20052,9 @@
 							"raw": "{\n\t\"operation\": \"configure_cluster\",\n\t\"clustering\": \"true\",\n\t\"clustering_PORT\": \"1\",\n\t\"NODE_NAME\":\"some_name\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -20162,10 +20082,10 @@
 									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "{{host}}:9925",
+
 									"host": [
-										"localhost"
+										"{{host}}"
 									],
 									"port": "9925"
 								}
