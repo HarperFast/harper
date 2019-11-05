@@ -2503,7 +2503,9 @@
 											"    pm.response.to.have.status(200);",
 											"});",
 											"",
-											"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
+											"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");",
+											"",
+											"setTimeout(()=>{}, 500);"
 										],
 										"type": "text/javascript"
 									}
@@ -2577,7 +2579,9 @@
 											"",
 											"pm.test(\"Status code is 200\", function () {",
 											"    pm.response.to.have.status(200);",
-											"});"
+											"});",
+											"",
+											"setTimeout(()=>{}, 500);"
 										],
 										"type": "text/javascript"
 									}
@@ -2827,7 +2831,8 @@
 											"    var jsonData = pm.response.json();",
 											"    pm.expect(jsonData[0]['COUNT(*)']).to.eql(351)",
 											"});",
-											""
+											"",
+											"setTimeout(()=>{}, 500);"
 										],
 										"type": "text/javascript"
 									}
