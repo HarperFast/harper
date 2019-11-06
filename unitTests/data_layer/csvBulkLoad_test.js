@@ -240,16 +240,14 @@ describe('Test csvBulkLoad.js', () => {
         let remove_dir_stub;
         let success_msg = 'Successfully loaded 77 of 77 records';
         let csv_file_load_stub = sandbox.stub().resolves(success_msg);
-        let csv_file_load_rw;
 
         before(() => {
             csv_rewire.__set__('downloadCSVFile', download_csv_stub);
-            csv_file_load_rw = csv_rewire.__set__('csvFileLoad', csv_file_load_stub);
+            csv_rewire.__set__('csvFileLoad', csv_file_load_stub);
             remove_dir_stub = sandbox.stub(hdb_utils, 'removeDir');
         });
 
         after(() => {
-            csv_file_load_rw();
             sandbox.restore();
         });
 
