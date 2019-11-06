@@ -717,6 +717,157 @@ describe('Test FileSystem Class',function() {
                 expect(["1","2"].includes(val)).to.equal(true);
             });
         });
+
+        it('should set comparator_search_values property with < comparator logic from WHERE clause',function() {
+            const test_hash_val = "5";
+            const test_sql_statement = sql_basic_dog_select + ` WHERE ${HASH_ATTRIBUTE} < ${test_hash_val}`;
+            setupTestInstance(test_sql_statement);
+            test_instance.comparator_search_values = {};
+            const test_AST_statememt = generateMockAST(test_sql_statement).statement;
+            test_instance.statement = test_AST_statememt;
+
+            test_instance._conditionsToFetchAttributeValues();
+
+            const test_result = test_instance.comparator_search_values;
+            expect(test_result[test_attr_path]).to.be.a('object');
+            expect(test_result[test_attr_path].ignore).to.equal(false);
+            expect(test_result[test_attr_path].comparators[0]).to.deep.equal({
+                attribute: HASH_ATTRIBUTE,
+                operation: '<',
+                search_value: test_hash_val
+            });
+            expect(test_instance.exact_search_values).to.deep.equal({});
+        });
+
+        it('should set comparator_search_values property with <= comparator logic from WHERE clause',function() {
+            const test_hash_val = "5";
+            const test_sql_statement = sql_basic_dog_select + ` WHERE ${HASH_ATTRIBUTE} <= ${test_hash_val}`;
+            setupTestInstance(test_sql_statement);
+            test_instance.comparator_search_values = {};
+            const test_AST_statememt = generateMockAST(test_sql_statement).statement;
+            test_instance.statement = test_AST_statememt;
+
+            test_instance._conditionsToFetchAttributeValues();
+
+            const test_result = test_instance.comparator_search_values;
+            expect(test_result[test_attr_path]).to.be.a('object');
+            expect(test_result[test_attr_path].ignore).to.equal(false);
+            expect(test_result[test_attr_path].comparators[0]).to.deep.equal({
+                attribute: HASH_ATTRIBUTE,
+                operation: '<=',
+                search_value: test_hash_val
+            });
+            expect(test_instance.exact_search_values).to.deep.equal({});
+        });
+
+        it('should set comparator_search_values property with > comparator logic from WHERE clause',function() {
+            const test_hash_val = "5";
+            const test_sql_statement = sql_basic_dog_select + ` WHERE ${HASH_ATTRIBUTE} > ${test_hash_val}`;
+            setupTestInstance(test_sql_statement);
+            test_instance.comparator_search_values = {};
+            const test_AST_statememt = generateMockAST(test_sql_statement).statement;
+            test_instance.statement = test_AST_statememt;
+
+            test_instance._conditionsToFetchAttributeValues();
+
+            const test_result = test_instance.comparator_search_values;
+            expect(test_result[test_attr_path]).to.be.a('object');
+            expect(test_result[test_attr_path].ignore).to.equal(false);
+            expect(test_result[test_attr_path].comparators[0]).to.deep.equal({
+                attribute: HASH_ATTRIBUTE,
+                operation: '>',
+                search_value: test_hash_val
+            });
+            expect(test_instance.exact_search_values).to.deep.equal({});
+        });
+
+        it('should set comparator_search_values property with >= comparator logic from WHERE clause',function() {
+            const test_hash_val = "5";
+            const test_sql_statement = sql_basic_dog_select + ` WHERE ${HASH_ATTRIBUTE} >= ${test_hash_val}`;
+            setupTestInstance(test_sql_statement);
+            test_instance.comparator_search_values = {};
+            const test_AST_statememt = generateMockAST(test_sql_statement).statement;
+            test_instance.statement = test_AST_statememt;
+
+            test_instance._conditionsToFetchAttributeValues();
+
+            const test_result = test_instance.comparator_search_values;
+            expect(test_result[test_attr_path]).to.be.a('object');
+            expect(test_result[test_attr_path].ignore).to.equal(false);
+            expect(test_result[test_attr_path].comparators[0]).to.deep.equal({
+                attribute: HASH_ATTRIBUTE,
+                operation: '>=',
+                search_value: test_hash_val
+            });
+            expect(test_instance.exact_search_values).to.deep.equal({});
+        });
+
+        it('should not set comparator_search_values if the expression.left is null',function() {
+            const test_hash_val = "5";
+            const test_sql_statement = sql_basic_dog_select + ` WHERE ${HASH_ATTRIBUTE} >= ${test_hash_val}`;
+            setupTestInstance(test_sql_statement);
+            test_instance.comparator_search_values = {};
+            const test_AST_statememt = generateMockAST(test_sql_statement).statement;
+            test_instance.statement = test_AST_statememt;
+            test_instance.statement.where.expression.left = null;
+
+            test_instance._conditionsToFetchAttributeValues();
+
+            const test_result = test_instance.comparator_search_values;
+            expect(test_result).to.deep.equal({});
+            expect(test_instance.exact_search_values).to.deep.equal({});
+        });
+
+        it('should not set comparator_search_values if the expression.right is null',function() {
+            const test_hash_val = "5";
+            const test_sql_statement = sql_basic_dog_select + ` WHERE ${HASH_ATTRIBUTE} >= ${test_hash_val}`;
+            setupTestInstance(test_sql_statement);
+            test_instance.comparator_search_values = {};
+            const test_AST_statememt = generateMockAST(test_sql_statement).statement;
+            test_instance.statement = test_AST_statememt;
+            test_instance.statement.where.expression.right = null;
+
+            test_instance._conditionsToFetchAttributeValues();
+
+            const test_result = test_instance.comparator_search_values;
+            expect(test_result).to.deep.equal({});
+            expect(test_instance.exact_search_values).to.deep.equal({});
+        });
+
+        it('should set multiple comparator_search_values if the WHERE clause has multiple different attr conditions',function() {
+            const age_attr_key = "age";
+            const test_hash_val = "5";
+            const test_age_val = "10";
+            const test_sql_statement = sql_basic_dog_select + ` WHERE ${HASH_ATTRIBUTE} >= ${test_hash_val} AND ${age_attr_key} > ${test_age_val}`;
+            setupTestInstance(test_sql_statement);
+            test_instance.comparator_search_values = {};
+            const test_AST_statememt = generateMockAST(test_sql_statement).statement;
+            test_instance.statement = test_AST_statememt;
+
+            test_instance._conditionsToFetchAttributeValues();
+
+            const test_result = test_instance.comparator_search_values;
+            expect(Object.keys(test_result).length).to.equal(2);
+            expect(test_instance.exact_search_values).to.deep.equal({});
+        });
+
+        it('should set multiple comparator_search_values.comparators values if the WHERE clause has multiple same attr conditions',function() {
+            const test_age_key = 'dev/dog/age';
+            const age_attr_key = "age";
+            const test_age_val1 = "5";
+            const test_age_val2 = "10";
+            const test_sql_statement = sql_basic_dog_select + ` WHERE ${age_attr_key} >= ${test_age_val1} AND ${age_attr_key} < ${test_age_val2}`;
+            setupTestInstance(test_sql_statement);
+            test_instance.comparator_search_values = {};
+            const test_AST_statememt = generateMockAST(test_sql_statement).statement;
+            test_instance.statement = test_AST_statememt;
+
+            test_instance._conditionsToFetchAttributeValues();
+
+            const test_result = test_instance.comparator_search_values[test_age_key];
+            expect(test_result.comparators.length).to.equal(2);
+            expect(test_instance.exact_search_values).to.deep.equal({});
+        });
     });
 
     describe('_backtickAllSchemaItems()',function() {
