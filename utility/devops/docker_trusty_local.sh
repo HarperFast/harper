@@ -33,11 +33,11 @@ cp -R $working_dir/* $mirrored_dir
 cd $mirrored_dir
 
 #clean up unwanted directories for executable only
-rm -rf ./integrationTests ./test ./unitTests ./user_guide.html ./bash ./package-lock.json
+rm -rf ./integrationTests ./test ./unitTests ./index.html ./bash ./package-lock.json
 ############################
 
 cd $working_dir
-#Loop through files[] array and get js files to obfuscate. 
+#Loop through files[] array and get js files to obfuscate.
 echo "**Copy complete to mirrored dir**  $(ls $mirrored_dir)"
 for i in "${files[@]}"
 do
@@ -86,7 +86,7 @@ harperdb_run()
             	environment_id="76e7cef5-43aa-4b46-8afa-1f161c2ea223"
 
 		newman run https://api.getpostman.com/collections/$collection_id?apikey=$apiKey --environment https://api.getpostman.com/environments/$environment_id?apikey=$apiKey -r teamcity
-							
+
 	else
 		echo "Process hdb_express did not start?"
 		# clean Up install artifacts.
