@@ -278,15 +278,19 @@ function convertCRUDOperationToTransaction(source_json, affected_hashes, hash_at
     let transaction = {
         operation: source_json.operation,
         schema: source_json.schema,
-        table: source_json.table,
-        records:[]
+        table: source_json.table
     };
 
-    transaction.hash_values = [];
+    if(source_json.operation === terms.OPERATIONS_ENUM.DELETE) {
+        transaction.hash_values = [];
+    } else{
+        transaction.records = [];
+    }
+
     source_json.records.forEach(record => {
         if (affected_hashes.indexOf(common_utils.autoCast(record[hash_attribute])) >= 0) {
             if(source_json.operation === terms.OPERATIONS_ENUM.DELETE) {
-                transaction.hash_values.push(record);
+                transaction.hash_values.push(record[hash_attribute]);
             } else {
                 transaction.records.push(record);
             }
