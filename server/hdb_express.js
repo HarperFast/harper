@@ -301,6 +301,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     const pjson = require(`${__dirname}/../package.json`);
     const server_utilities = require('./serverUtilities');
     const cors = require('cors');
+    const compression = require('compression');
 
     const app = express();
     let license;
@@ -367,13 +368,15 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     });
 
     app.use(passport.initialize());
-    app.get('/', function (req, res) {
-        auth.authorize(req, res, function () {
-            res.sendFile(guidePath.resolve('../docs/user_guide.html'));
-        });
-    });
+
+    // This handles all get requests for the studio
+    app.use(compression());
+    app.use(express.static(guidePath.join(__dirname,'../docs')));
+    app.get('*', function (req, res) { res.sendFile(guidePath.join(__dirname, 'index.html')); });
+
     // Recent security posts recommend disabling this header.
     app.disable('x-powered-by');
+    app.set('etag', false); // turn off
 
     app.post('/', function (req, res) {
         // Per the body-parser docs, any request which does not match the bodyParser.json middleware will be returned with

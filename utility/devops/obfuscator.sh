@@ -12,7 +12,7 @@
 #Then add newly obfuscated files through the --output option in javascript-obfuscator command.
 
 #Files to search for javascript to obfuscate as of 12/17/2018.. Please keep this updated!!(should Upgrade to new version functionality;
-#now allows directory use 
+#now allows directory use
 #version i was using only allowed individual .js files at a time.)
 
 files=( "data_layer" "sqlTranslator" "validation" "security" "utility" "utility/install" "utility/logging" "utility/functions" "utility/functions/date" "utility/functions/math" "utility/functions/string" "utility/functions/sql" "utility/registration" "lib/fileSystem" "lib/server" "lib/streams" "server" "server/clustering" "json" "bin")
@@ -30,7 +30,7 @@ cp -R $working_dir/* $mirrored_dir
 
 #clean up unwanted directories for executable only
 cd $mirrored_dir
-rm -rf ./integrationTests ./test ./unitTests ./user_guide.html ./bash ./package-lock.json
+rm -rf ./integrationTests ./test ./unitTests ./index.html ./bash ./package-lock.json
 ############################
 
 cd $working_dir
