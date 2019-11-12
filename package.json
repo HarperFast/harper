@@ -22,7 +22,7 @@
     "hdb-check": "./utility/devops/hdb-check.sh",
     "prepublish": "npm run build",
     "prebuild": "date",
-    "coverage": "nyc report --reporter=html npm test"
+    "coverage": "nyc --reporter=lcov npm test"
   },
   "license": "ISC",
   "dependencies": {
