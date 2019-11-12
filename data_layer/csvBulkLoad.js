@@ -415,11 +415,10 @@ async function postCSVLoadFunction(orig_bulk_msg, result, orig_req) {
     let transaction_msg = hdb_utils.getClusterMessage(hdb_terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
     transaction_msg.__transacted = true;
     transaction_msg.transaction = {
-        operation: hdb_terms.OPERATIONS_ENUM.CSV_DATA_LOAD,
+        operation: orig_bulk_msg.action !== undefined ? orig_bulk_msg.action : hdb_terms.OPERATIONS_ENUM.INSERT,
         schema: orig_bulk_msg.schema,
         table: orig_bulk_msg.table,
-        transact_to_cluster: orig_bulk_msg.transact_to_cluster,
-        data: orig_bulk_msg.data
+        records: orig_bulk_msg.data
     };
     if (orig_req) {
         socket_cluster_util.concatSourceMessageHeader(transaction_msg, orig_req);

@@ -41,7 +41,7 @@ async function callOperationFunctionAsAwait(promisified_function, function_input
         // necessary.
         if(followup_async_func) {
             //TODO: Passing result twice seems silly, why is this a thing?
-            result = await followup_async_func(function_input, result, orig_req);
+            await followup_async_func(function_input, result, orig_req);
         }
         return result;
     } catch(err) {
