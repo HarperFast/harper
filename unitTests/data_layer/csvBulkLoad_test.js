@@ -380,7 +380,7 @@ describe('Test csvBulkLoad.js', () => {
                 error = err;
             }
 
-            expect(error.message).to.equal(`CSV Load failed from URL: ${url_fake}, response contained no body`);
+            expect(error.message).to.equal(`CSV Load failed from URL: ${url_fake}, no csv found at url`);
         });
     });
 

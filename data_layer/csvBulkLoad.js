@@ -90,7 +90,7 @@ async function csvURLLoad(json_message) {
 
     let csv_file_load_obj = {
         operation: hdb_terms.OPERATIONS_ENUM.CSV_FILE_LOAD,
-        action: hdb_terms.OPERATIONS_ENUM.INSERT,
+        action: json_message.action,
         schema: json_message.schema,
         table: json_message.table,
         file_path: `${TEMP_DOWNLOAD_DIR}/${TEMP_CSV_FILE}`
@@ -159,7 +159,7 @@ function validateResponse(response, url) {
     }
     
     if (!response.body) {
-        throw new Error(`CSV Load failed from URL: ${url}, response contained no body`);
+        throw new Error(`CSV Load failed from URL: ${url}, no csv found at url`);
     }
 }
 
