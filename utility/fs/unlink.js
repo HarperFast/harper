@@ -36,8 +36,9 @@ async function unlink(paths) {
                     await fs_rmdir(folder);
                 }
             } catch(e) {
-                // OK for this to fail, just means there are other records in the folder.
-                if(e.code !== 'ENOTEMPTY') {
+                // OK for this to fail, just means there are other records in the folder or the folder was delete on an
+                // earlier pass - this is the case when we are deleting identical values from different records.
+                if(e.code !== 'ENOTEMPTY' && e.code !== 'ENOENT') {
                     logger.error(e);
                 }
             }
