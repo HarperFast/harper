@@ -63,7 +63,8 @@ module.exports = {
     checkProcessRunning,
     checkSchemaTableExist,
     getStartOfTomorrowInSeconds,
-    getLimitKey
+    getLimitKey,
+    isObject
 };
 
 /**
@@ -157,6 +158,20 @@ function isBoolean(value){
         return true;
     }
     return false;
+}
+
+/**
+ * Takes a value and checks if it is an object.
+ * Note - null is considered an object but we are excluding it here.
+ * @param value
+ * @returns {boolean}
+ */
+function isObject(value) {
+    if (isEmpty(value)){
+        return false;
+    }
+
+    return typeof value === 'object';
 }
 
 /**
