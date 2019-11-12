@@ -57,8 +57,8 @@ async function deleteRecords(delete_obj){
                     hash_attribute_path_map[hash_value].push(common_utils.buildFolderPath(table_path, terms.HASH_FOLDER_NAME, attribute, `${hash_value}${terms.HDB_FILE_SUFFIX}`));
 
                     let value = record[attribute];
-                    if (common_utils.isObject(record[attribute])) {
-                        value = JSON.stringify(record[attribute]);
+                    if (common_utils.isObject(value)) {
+                        value = JSON.stringify(value);
                     }
 
                     let stripped_value = String(value).replace(slash_regex, '');
