@@ -42,7 +42,6 @@ function describeAll (op_obj, callback) {
             search.searchByValue(table_search_obj, function (search_err, tables) {
                 if (search_err) {
                     logger.error(search_err);
-                    //initialize();
                     return;
                 }
 
