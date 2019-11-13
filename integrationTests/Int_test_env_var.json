@@ -185,6 +185,16 @@
       "key": "insert_timestamp",
       "value": "0",
       "enabled": true
+    },
+    {
+      "key": "csv_tb",
+      "value": "url_csv_data",
+      "enabled": true
+    },
+    {
+      "key": "csv_tb_empty",
+      "value": "url_csv_no_data",
+      "enabled": true
     }
   ],
   "_postman_variable_scope": "environment",
