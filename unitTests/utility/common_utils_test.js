@@ -695,6 +695,28 @@ describe('Test checkSchemaTableExist', () => {
     });
 });
 
+describe('Test isObject', () => {
+    it('Should return true with simple object', () => {
+        let result = cu_rewire.isObject({id: 1, name: 'Harper'});
+        expect(result).to.be.true;
+    });
+
+    it('Should return true with array', () => {
+        let result = cu_rewire.isObject([1, 2, 3]);
+        expect(result).to.be.true;
+    });
+
+    it('Should return false with string', () => {
+        let result = cu_rewire.isObject("{id: 1}");
+        expect(result).to.be.false;
+    });
+
+    it('Should return false with null', () => {
+        let result = cu_rewire.isObject(null);
+        expect(result).to.be.false;
+    });
+});
+
 // TODO: Commented this out for now due to it breaking tests on the CI server.  Will revisit later.
 // https://harperdb.atlassian.net/browse/CORE-273
 /*
