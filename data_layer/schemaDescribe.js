@@ -39,9 +39,9 @@ function describeAll (op_obj, callback) {
             table_search_obj.search_value = '*';
             table_search_obj.hash_values = [];
             table_search_obj.get_attributes = ['hash_attribute', 'id', 'name', 'schema'];
-            search.searchByValue(table_search_obj, function (err, tables) {
-                if (err) {
-                    logger.error(err);
+            search.searchByValue(table_search_obj, function (search_err, tables) {
+                if (search_err) {
+                    logger.error(search_err);
                     //initialize();
                     return;
                 }
@@ -49,10 +49,10 @@ function describeAll (op_obj, callback) {
 
                 let t_results = [];
                 async.map(tables, function (table, caller) {
-                    descTable({"schema": table.schema, "table": table.name}, function (err, desc) {
-                        if (err) {
+                    descTable({"schema": table.schema, "table": table.name}, function (describe_err, desc) {
+                        if (describe_err) {
 
-                            caller(err);
+                            caller(describe_err);
                             return;
                         }
                         t_results.push(desc);
@@ -60,9 +60,9 @@ function describeAll (op_obj, callback) {
 
                     });
 
-                }, function (err, data) {
-                    if (err) {
-                        callback(err);
+                }, function (error, data) {
+                    if (error) {
+                        callback(error);
                         return;
                     }
 
@@ -129,9 +129,9 @@ function descTable(describe_table_object, callback) {
                 }
                 caller();
 
-            }, function (err, data) {
-                if (err) {
-                    callback(err);
+            }, function (error, data) {
+                if (error) {
+                    callback(error);
                     return;
                 }
 
@@ -148,9 +148,9 @@ function descTable(describe_table_object, callback) {
                 attribute_search_obj.get_attributes = ['attribute'];
 
 
-                search.searchByValue(attribute_search_obj, function (err, attributes) {
-                    if (err) {
-                        logger.error(err);
+                search.searchByValue(attribute_search_obj, function (search_err, attributes) {
+                    if (search_err) {
+                        logger.error(search_err);
                         //initialize();
                         return;
                     }
@@ -192,7 +192,7 @@ function describeSchema(describe_schema_object, callback) {
         table_search_obj.search_value = describe_schema_object.schema;
         table_search_obj.hash_values = [];
         table_search_obj.get_attributes = ['hash_attribute', 'id', 'name', 'schema'];
-        let table_result = {};
+
         search.searchByValue(table_search_obj, function (err, tables) {
             if (err) {
                 logger.error(err);
@@ -208,10 +208,10 @@ function describeSchema(describe_schema_object, callback) {
                 schema_search_obj.hash_values = [describe_schema_object.schema];
                 schema_search_obj.get_attributes = ['name'];
 
-                search.searchByHash(schema_search_obj, function (err, schema) {
-                    if (err) {
-                        logger.error(err);
-                        callback(err);
+                search.searchByHash(schema_search_obj, function (search_err, schema) {
+                    if (search_err) {
+                        logger.error(search_err);
+                        callback(search_err);
                         return;
                     }
                     if(schema && schema.length < 1){
@@ -226,16 +226,16 @@ function describeSchema(describe_schema_object, callback) {
             }else{
                 let results = [];
                 async.map(tables, function (table, caller) {
-                    descTable({"schema": describe_schema_object.schema, "table":table.name}, function(err, data){
-                        if(err){
-                            caller(err);
+                    descTable({"schema": describe_schema_object.schema, "table":table.name}, function(describe_err, data){
+                        if(describe_err){
+                            caller(describe_err);
                         }
 
                         results.push(data);
                         caller();
                     });
 
-                },function(err, data){
+                },function(error, data){
                     return callback(null, results);
 
                 });

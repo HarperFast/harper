@@ -33,7 +33,7 @@ function processRows(insert_obj, attributes, schema_table, hashes) {
     let timestamp = Date.now();
     let datastores = heBuildDataStoreArray(attributes, schema, table);
     let is_system_schema = insert_obj.schema === hdb_terms.SYSTEM_SCHEMA_NAME;
-    let existing_hashes;
+    let existing_hashes = [];
 
     // When updating we need to know if the value exists already so we can timestamp it accordingly, for this we
     // need an array of existing attributes.
