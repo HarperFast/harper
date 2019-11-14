@@ -65,8 +65,8 @@ async function getAttributeFileValues(get_attributes, search_object, hash_attr, 
                                                 const the_id = common_utils.autoCast(common_utils.stripFileExtension(id));
                                                 const hash_included = hash_results_map[the_id];
                                                 if (hash_included) {
-                                                    const file_data = await fs.readFile(common_utils.buildFolderPath(blob_path, the_id));
-                                                    scanned_attr_data[the_id] = file_data;
+                                                    const file_data = await fs.readFile(common_utils.buildFolderPath(blob_path, the_id), 'utf-8');
+                                                    scanned_attr_data[the_id] = common_utils.autoCast(file_data);
                                                 }
                                             } catch (e) {
                                                 log.error(e);
@@ -78,9 +78,9 @@ async function getAttributeFileValues(get_attributes, search_object, hash_attr, 
 
                                 } else {
                                     const the_id = common_utils.autoCast(common_utils.stripFileExtension(id));
-                                    const hash_included = hash_results_map[the_id];
+                                    const hash_included = hash_results.includes(the_id);
                                     if (hash_included) {
-                                        scanned_attr_data[the_id] = the_value;
+                                        scanned_attr_data[the_id] = common_utils.autoCast(the_value);
                                     }
                                 }
                             }
@@ -119,38 +119,6 @@ async function getAttributeFileValues(get_attributes, search_object, hash_attr, 
         throw err;
     }
 }
-
-// async function readBlobFiles(blob_paths){
-//     let keys = Object.keys(blob_paths);
-//
-//     if(!keys || keys.length === 0 ){
-//         return;
-//     }
-//
-//     await Promise.all(keys.map(async key => {
-//         try {
-//             let column = blob_paths[key];
-//             let ids = await fs.readdir(common_utils.buildFolderPath(base_path(), key, BLOB_FOLDER_NAME));
-//             if (!ids || ids.length === 0) {
-//                 return;
-//             }
-//             await Promise.all(ids.map(async id => {
-//                 try {
-//                     let the_id = common_utils.autoCast(this._stripFileExtension(id));
-//                     let the_key = this.data[`${column.table.databaseid}_${column.table.tableid}`].__merged_data[the_id];
-//                     if (the_key) {
-//                         let file_data = await fs.readFile(common_utils.buildFolderPath(base_path(), key, BLOB_FOLDER_NAME, id));
-//                         this.data[`${column.table.databaseid}_${column.table.tableid}`].__merged_data[the_id][column.attribute] = common_utils.autoCast(file_data.toString());
-//                     }
-//                 } catch(e) {
-//                     log.error(e);
-//                 }
-//             }));
-//         } catch (e) {
-//             log.error(e);
-//         }
-//     }));
-// }
 
 async function readAttributeFilePromise(table_path, attribute, file, attribute_data, is_hash) {
     try {
