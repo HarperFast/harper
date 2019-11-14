@@ -33,55 +33,66 @@ async function getAttributeFileValues(get_attributes, search_object, hash_attr, 
         }
 
         if (hash_values.length > RAW_FILE_READ_LIMIT) {
-            //TODO - add logic for scanning attr value dir
-            //START
-            let blob_paths = {};
+            //hash_map_template is used for each attribute_values object to ensure hash values that do not exists in the attr dir
+            // scan are still in the final result as null values
+            const hash_results_map = hash_results.reduce((acc, hash) => {
+                acc[hash] = null;
+                return acc;
+            }, {});
+
             await Promise.all(get_attributes.map(async attr => {
                 try {
-                    // let sub_path = common_utils.buildFolderPath(schema, table, attr);
-
-                    let attribute_path = common_utils.buildFolderPath(table_path, attr);
-                    let results = await fs.readdir(attribute_path);
+                    let scanned_attr_data = Object.assign({}, hash_results_map);
+                    const attribute_path = common_utils.buildFolderPath(table_path, attr);
+                    const results = await fs.readdir(attribute_path);
                     await Promise.all(results.map(async value => {
                         try {
-                            //TODO - use new approach to cleaning up values and ids below
-                            let the_value = common_utils.autoCast(value.replace(escaped_slash_regex, '/'));
-                            let ids = await fs.readdir(common_utils.buildFolderPath(attribute_path,value));
-                            for (let id of ids) {
-                                if (id===BLOB_FOLDER_NAME) {
-                                    //TODO - should probably just do a deeper search here instead of add to the blob obj
-                                    let blob_path = common_utils.buildFolderPath(sub_path, value);
-                                    if (!blob_paths[blob_path]) {
-                                        blob_paths[blob_path] = column;
-                                    }
-                                } else {
-                                    //TODO - use new approach to cleaning up values and ids below
+                            const the_value = common_utils.unescapeValue(value);
+                            const attr_value_path = common_utils.buildFolderPath(attribute_path, value);
 
-                                    let the_id = common_utils.autoCast(this._stripFileExtension(id));
-                                    let the_key = this.data[`${column.table.databaseid}_${column.table.tableid}`].__merged_data[the_id];
-                                    if (the_key) {
-                                        this.data[`${column.table.databaseid}_${column.table.tableid}`].__merged_data[the_id][column.attribute] = the_value;
+                            const ids = await fs.readdir(attr_value_path);
+                            for (let id of ids) {
+                                if (id === BLOB_FOLDER_NAME) {
+                                    try {
+                                        const blob_path = common_utils.buildFolderPath(attr_value_path, BLOB_FOLDER_NAME);
+                                        const blob_ids = await fs.readdir(blob_path);
+
+                                        if (!blob_ids || blob_ids.length === 0) {
+                                            return;
+                                        }
+                                        await Promise.all(ids.map(async id => {
+                                            try {
+                                                const the_id = common_utils.autoCast(common_utils.stripFileExtension(id));
+                                                const hash_included = hash_results_map[the_id];
+                                                if (hash_included) {
+                                                    const file_data = await fs.readFile(common_utils.buildFolderPath(blob_path, the_id));
+                                                    scanned_attr_data[the_id] = file_data;
+                                                }
+                                            } catch (e) {
+                                                log.error(e);
+                                            }
+                                        }));
+                                    } catch(e) {
+                                        log.error(e);
+                                    }
+
+                                } else {
+                                    const the_id = common_utils.autoCast(common_utils.stripFileExtension(id));
+                                    const hash_included = hash_results_map[the_id];
+                                    if (hash_included) {
+                                        scanned_attr_data[the_id] = the_value;
                                     }
                                 }
                             }
                         } catch (e) {
                             log.error(e);
                         }
-
-                        if (!_.isEmpty(blob_paths)) {
-                            await this._readBlobFiles(blob_paths).catch(e => {
-                                log.error(e);
-                            });
-                        }
                     }));
+                    attributes_data[attr] = scanned_attr_data;
                 } catch (e) {
                     log.error(e);
                 }
-
             }));
-
-
-            //END
         } else {
             for (const attribute of get_attributes) {
                 //evaluate if an array of strings or objects has been passed in and assign values accordingly
@@ -108,6 +119,38 @@ async function getAttributeFileValues(get_attributes, search_object, hash_attr, 
         throw err;
     }
 }
+
+// async function readBlobFiles(blob_paths){
+//     let keys = Object.keys(blob_paths);
+//
+//     if(!keys || keys.length === 0 ){
+//         return;
+//     }
+//
+//     await Promise.all(keys.map(async key => {
+//         try {
+//             let column = blob_paths[key];
+//             let ids = await fs.readdir(common_utils.buildFolderPath(base_path(), key, BLOB_FOLDER_NAME));
+//             if (!ids || ids.length === 0) {
+//                 return;
+//             }
+//             await Promise.all(ids.map(async id => {
+//                 try {
+//                     let the_id = common_utils.autoCast(this._stripFileExtension(id));
+//                     let the_key = this.data[`${column.table.databaseid}_${column.table.tableid}`].__merged_data[the_id];
+//                     if (the_key) {
+//                         let file_data = await fs.readFile(common_utils.buildFolderPath(base_path(), key, BLOB_FOLDER_NAME, id));
+//                         this.data[`${column.table.databaseid}_${column.table.tableid}`].__merged_data[the_id][column.attribute] = common_utils.autoCast(file_data.toString());
+//                     }
+//                 } catch(e) {
+//                     log.error(e);
+//                 }
+//             }));
+//         } catch (e) {
+//             log.error(e);
+//         }
+//     }));
+// }
 
 async function readAttributeFilePromise(table_path, attribute, file, attribute_data, is_hash) {
     try {

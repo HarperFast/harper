@@ -184,7 +184,7 @@ function stripFileExtension(file_name) {
     if(isEmptyOrZeroLength(file_name)) {
         return EMPTY_STRING;
     }
-    return file_name.substr(0, file_name.length-FILE_EXTENSION_LENGTH);
+    return file_name.slice(0, -FILE_EXTENSION_LENGTH);
 }
 
 /**
