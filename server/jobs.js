@@ -47,6 +47,8 @@ async function jobHandler(json_body) {
                 log.error(msg);
                 throw new Error(msg);
             }
+            // eslint-disable-next-line no-unreachable
+            break;
         case 'search_jobs_by_start_date':
             try {
                 let result = await getJobsInDateRange(json_body);
@@ -67,6 +69,8 @@ async function jobHandler(json_body) {
                 log.error(message);
                 throw new Error(message);
             }
+            // eslint-disable-next-line no-unreachable
+            break;
         case 'get_job':
             try {
                 let result = await getJobById(json_body);
@@ -87,6 +91,8 @@ async function jobHandler(json_body) {
                 log.error(message);
                 throw new Error(message);
             }
+            // eslint-disable-next-line no-unreachable
+            break;
         case 'delete_job':
             try {
                 let result = await deleteJobById(json_body);
@@ -97,6 +103,8 @@ async function jobHandler(json_body) {
                 log.error(message);
                 throw new Error(message);
             }
+            // eslint-disable-next-line no-unreachable
+            break;
         default:
             return 'Invalid operation specified.';
     }
@@ -260,7 +268,7 @@ async function deleteJobById(json_body) {
         delete_result.message = await p_delete(delete_obj);
     } catch(e) {
         let message = "";
-        if(e.message.indexOf('not found') > 0) {
+        if(e.message.indexOf('not found') >= 0) {
             message = `Job ID ${json_body.id} was not found.`;
         } else {
             message = `There was an error deleting a job by id: ${json_body.id} ${e}`;

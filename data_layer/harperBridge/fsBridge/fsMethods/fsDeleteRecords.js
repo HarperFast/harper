@@ -82,7 +82,7 @@ async function deleteRecords(delete_obj){
     try {
         delete_response_object = await unlink.unlink_delete_object(hash_attribute_path_map);
         if(!common_utils.isEmptyOrZeroLength(delete_obj.hash_values)) {
-            compareSearchResultsWithRequest(not_found_hashes, delete_obj, delete_obj.records);
+            compareSearchResultsWithRequest(not_found_hashes, delete_obj);
         }
         // append records not found to skipped
         if(not_found_hashes && not_found_hashes.length > 0) {
