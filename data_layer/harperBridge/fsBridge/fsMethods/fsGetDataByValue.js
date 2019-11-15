@@ -2,6 +2,7 @@
 
 const consolidateSearchData = require('../fsUtility/consolidateSearchData');
 const evaluateTableGetAttributes = require('../../bridgeUtility/evaluateTableGetAttributes');
+const getAllAttrHashValues = require('../fsUtility/getAllAttrHashValues');
 const getAttributeFileValues = require('../fsUtility/getAttributeFileValues');
 const getBasePath = require('../fsUtility/getBasePath');
 
@@ -54,15 +55,20 @@ async function fsGetDataByValue(search_object, comparator) {
             table_info = global.hdb_schema[search_object.schema][search_object.table];
         }
 
-        let patterns = condition_patterns.createPatterns(condition, {
+        const patterns = condition_patterns.createPatterns(condition, {
             name: search_object.table,
             schema: search_object.schema,
             hash_attribute: table_info.hash_attribute
         }, getBasePath());
 
-        const final_get_attrs = evaluateTableGetAttributes(search_object.get_attributes, table_info.attributes);
-        const final_hash_results = await p_find_ids_by_regex(patterns.folder_search_path, patterns.folder_search, patterns.blob_regex);
+        let final_hash_results;
+        if (search_object.search_value === '*' || search_object.search_value === '%') {
+            final_hash_results = await getAllAttrHashValues(patterns.hash_path);
+        } else {
+            final_hash_results = await p_find_ids_by_regex(patterns.folder_search_path, patterns.folder_search, patterns.blob_regex);
+        }
 
+        const final_get_attrs = evaluateTableGetAttributes(search_object.get_attributes, table_info.attributes);
         const final_attributes_data = await getAttributeFileValues(final_get_attrs, search_object, table_info.hash_attribute, final_hash_results);
         const final_results = consolidateSearchData(table_info.hash_attribute, final_attributes_data);
 

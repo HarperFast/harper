@@ -35,64 +35,68 @@ async function getAttributeFileValues(get_attributes, search_object, hash_attr, 
         if (hash_values.length > RAW_FILE_READ_LIMIT) {
             //hash_map_template is used for each attribute_values object to ensure hash values that do not exists in the attr dir
             // scan are still in the final result as null values
-            const hash_results_map = hash_results.reduce((acc, hash) => {
+            const hash_values_map = hash_values.reduce((acc, hash) => {
                 acc[hash] = null;
                 return acc;
             }, {});
 
-            await Promise.all(get_attributes.map(async attr => {
+            for (const attr of get_attributes) {
                 try {
-                    let scanned_attr_data = Object.assign({}, hash_results_map);
-                    const attribute_path = common_utils.buildFolderPath(table_path, attr);
-                    const results = await fs.readdir(attribute_path);
-                    await Promise.all(results.map(async value => {
-                        try {
-                            const the_value = common_utils.unescapeValue(value);
-                            const attr_value_path = common_utils.buildFolderPath(attribute_path, value);
+                    attributes_data[attr] = Object.assign({}, hash_values_map);
+                    if (attr === hash_attr) {
+                        hash_values.forEach(hash => attributes_data[attr][hash] = hash);
+                    } else {
+                        const attribute_path = common_utils.buildFolderPath(table_path, attr);
+                        const results = await fs.readdir(attribute_path);
+                        for (const value of results) {
+                            try {
+                                const the_value = common_utils.unescapeValue(value);
+                                const attr_value_path = common_utils.buildFolderPath(attribute_path, value);
 
-                            const ids = await fs.readdir(attr_value_path);
-                            for (let id of ids) {
-                                if (id === BLOB_FOLDER_NAME) {
-                                    try {
-                                        const blob_path = common_utils.buildFolderPath(attr_value_path, BLOB_FOLDER_NAME);
-                                        const blob_ids = await fs.readdir(blob_path);
+                                const ids = await fs.readdir(attr_value_path);
+                                for (let id of ids) {
+                                    if (id === BLOB_FOLDER_NAME) {
+                                        try {
+                                            const blob_path = common_utils.buildFolderPath(attr_value_path, BLOB_FOLDER_NAME);
+                                            const blob_ids = await fs.readdir(blob_path);
 
-                                        if (!blob_ids || blob_ids.length === 0) {
-                                            return;
-                                        }
-                                        await Promise.all(ids.map(async id => {
-                                            try {
-                                                const the_id = common_utils.autoCast(common_utils.stripFileExtension(id));
-                                                const hash_included = hash_results_map[the_id];
-                                                if (hash_included) {
-                                                    const file_data = await fs.readFile(common_utils.buildFolderPath(blob_path, the_id), 'utf-8');
-                                                    scanned_attr_data[the_id] = common_utils.autoCast(file_data);
-                                                }
-                                            } catch (e) {
-                                                log.error(e);
+                                            if (!blob_ids || blob_ids.length === 0) {
+                                                return;
                                             }
-                                        }));
-                                    } catch(e) {
-                                        log.error(e);
-                                    }
-
-                                } else {
-                                    const the_id = common_utils.autoCast(common_utils.stripFileExtension(id));
-                                    const hash_included = hash_results.includes(the_id);
-                                    if (hash_included) {
-                                        scanned_attr_data[the_id] = common_utils.autoCast(the_value);
+                                            for (const blob_id of blob_ids) {
+                                                try {
+                                                    const the_id = common_utils.autoCast(common_utils.stripFileExtension(blob_id));
+                                                    // const hash_included = hash_results.includes(the_id);
+                                                    const hash_included = hash_values_map[the_id] === null;
+                                                    if (hash_included) {
+                                                        const file_data = await fs.readFile(common_utils.buildFolderPath(blob_path, blob_id), 'utf-8');
+                                                        attributes_data[attr][the_id] = file_data;
+                                                    }
+                                                } catch (e) {
+                                                    log.error(e);
+                                                }
+                                            };
+                                        } catch(e) {
+                                            log.error(e);
+                                        }
+                                    } else {
+                                        const the_id = common_utils.autoCast(common_utils.stripFileExtension(id));
+                                        // const hash_included = hash_results.includes(the_id);
+                                        const hash_included = hash_values_map[the_id] === null;
+                                        if (hash_included) {
+                                            attributes_data[attr][the_id] = common_utils.autoCast(the_value);
+                                        }
                                     }
                                 }
+                            } catch (e) {
+                                log.error(e);
                             }
-                        } catch (e) {
-                            log.error(e);
-                        }
-                    }));
-                    attributes_data[attr] = scanned_attr_data;
+                        };
+                    }
                 } catch (e) {
                     log.error(e);
                 }
-            }));
+            };
         } else {
             for (const attribute of get_attributes) {
                 //evaluate if an array of strings or objects has been passed in and assign values accordingly
