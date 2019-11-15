@@ -2,7 +2,7 @@
 
 
 
-function init()
+init()
 {
 echo "Abc1234!" | apt-get -S update
 
@@ -58,25 +58,39 @@ sudo su ubuntu -c "docker run --rm --privileged multiarch/qemu-user-static --res
 exit 0
 }
 
-function production(){
+production(){
 # Where is .tgz
-# Create .tgz
-# docker buildx build --tag harperdb/hdb:latest -f Dockerfile --load .
-#test it runs
-#push
+pathToTGZ="/tmp/harperdb-2.0.0.tgz"
+if [ -e "$pathToTGZ" ]; then
+      echo "File exists Move it and use it"
+      cp $pathToTGZ ./
+   else
+      echo "File Is not there ABORT"
+      exit 1
+fi
 
+docker buildx build --tag harperdb/hdb:latest -f Dockerfile --load .
+#test it runs
+dockerTest=$(docker run harperdb/hdb /usr/local/bin/harperdb version)
+if [ -z "$dockerTest" ]; then
+       echo "Something is terribly wrong"
+   else
+    echo "*******Data*********: $dockerTest "
+    echo "******** END ********"
+fi
+
+#push
+#docker push harperdb/hdb:latest
+exit 0
 }
 
-function development(){
+development(){
 # Where is .tgz
 # Create .tgz
-# docker buildx build --tag harperdb/testing:latest -f Dockerfile --load .
+# docker buildx build --tag harperdb/testing:latest -f Dockerfile --load
 # test it runs
 #push to private repo
-
+exit 0
 }
 
-
 $@
-
-
