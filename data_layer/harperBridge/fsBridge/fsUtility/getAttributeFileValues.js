@@ -21,7 +21,7 @@ async function getAttributeFileValues(get_attributes, search_object, hash_attr, 
         const { schema, table } = search_object;
         let table_path = `${getBasePath()}/${schema}/${table}`;
 
-        if (!common_utils.isEmpty(hash_results)) {
+        if (!common_utils.isEmptyOrZeroLength(hash_results)) {
             hash_values = hash_results;
         } else {
             hash_values = await validateHashValuesExist(table_path, hash_attr, search_object.hash_values);
@@ -158,8 +158,9 @@ async function readAttributeFiles(table_path, attribute, hash_files, is_hash) {
 }
 
 async function validateHashValuesExist(table_path, hash_attr, hash_files) {
-    // const valid_hashes = await readAttributeFiles(table_path, hash_attr, hash_files, true);
-    // return Object.values(valid_hashes);
+    if (common_utils.isEmptyOrZeroLength(hash_files)){
+        return [];
+    }
     const hash_path = common_utils.buildFolderPath(table_path, hdb_terms.HASH_FOLDER_NAME, hash_attr);
     let existing_values = [];
     await Promise.all(hash_files.map(async value => {
