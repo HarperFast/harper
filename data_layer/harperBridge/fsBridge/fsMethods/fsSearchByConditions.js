@@ -40,8 +40,7 @@ async function fsSearchByConditions(search_object) {
         const final_get_attrs = evaluateTableGetAttributes(search_object.get_attributes, table_info.attributes);
         const final_hash_results = await p_multiConditionSearch(search_object.conditions, table_info);
 
-        const final_attributes_data = await getAttributeFileValues(final_get_attrs, search_object, table_info.hash_attribute, final_hash_results);
-        const final_results = consolidateSearchData(table_info.hash_attribute, final_attributes_data);
+        const final_results = await getAttributeFileValues(final_get_attrs, search_object, table_info.hash_attribute, final_hash_results);
 
         return Object.values(final_results);
     } catch(err){

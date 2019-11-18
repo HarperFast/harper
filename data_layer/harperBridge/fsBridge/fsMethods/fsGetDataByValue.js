@@ -1,6 +1,6 @@
 "use strict";
 
-const consolidateSearchData = require('../fsUtility/consolidateSearchData');
+// const consolidateSearchData = require('../fsUtility/consolidateSearchData');
 const evaluateTableGetAttributes = require('../../bridgeUtility/evaluateTableGetAttributes');
 const getAllAttrHashValues = require('../fsUtility/getAllAttrHashValues');
 const getAttributeFileValues = require('../fsUtility/getAttributeFileValues');
@@ -69,8 +69,7 @@ async function fsGetDataByValue(search_object, comparator) {
         }
 
         const final_get_attrs = evaluateTableGetAttributes(search_object.get_attributes, table_info.attributes);
-        const final_attributes_data = await getAttributeFileValues(final_get_attrs, search_object, table_info.hash_attribute, final_hash_results);
-        const final_results = consolidateSearchData(table_info.hash_attribute, final_attributes_data);
+        const final_results = await getAttributeFileValues(final_get_attrs, search_object, table_info.hash_attribute, final_hash_results);
 
         return final_results;
 

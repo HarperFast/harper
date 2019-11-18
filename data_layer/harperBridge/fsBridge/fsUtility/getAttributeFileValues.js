@@ -15,13 +15,13 @@ const BLOB_FOLDER_NAME = 'blob';
 
 async function getAttributeFileValues(get_attributes, search_object, hash_attr, hash_results) {
     try {
-        let attributes_data = {};
+        let final_attributes_data = {};
         let hash_values = [];
 
         const { schema, table } = search_object;
         let table_path = `${getBasePath()}/${schema}/${table}`;
 
-        if (!common_utils.isEmptyOrZeroLength(hash_results)) {
+        if (!common_utils.isEmpty(hash_results)) {
             hash_values = hash_results;
         } else {
             hash_values = await validateHashValuesExist(table_path, hash_attr, search_object.hash_values);
@@ -29,22 +29,29 @@ async function getAttributeFileValues(get_attributes, search_object, hash_attr, 
 
         //if there are no valid hash values to find attribute values for, return an empty attr data obj
         if (common_utils.isEmptyOrZeroLength(hash_values)) {
-            return attributes_data;
+            return final_attributes_data;
         }
 
+        const hash_requested = get_attributes.includes(hash_attr);
+
         if (hash_values.length > RAW_FILE_READ_LIMIT) {
-            //hash_map_template is used for each attribute_values object to ensure hash values that do not exists in the attr dir
-            // scan are still in the final result as null values
-            const hash_values_map = hash_values.reduce((acc, hash) => {
-                acc[hash] = null;
+            //TODO - update comment for below
+            const row_value_template = get_attributes.reduce((acc, attr) => {
+               acc[attr] = null;
+               return acc;
+            }, {});
+            final_attributes_data = hash_values.reduce((acc, hash) => {
+                acc[hash] = Object.assign({}, row_value_template);
+                if (hash_requested) {
+                    acc[hash][hash_attr] = common_utils.autoCast(hash);
+                }
                 return acc;
             }, {});
 
             for (const attr of get_attributes) {
                 try {
-                    attributes_data[attr] = Object.assign({}, hash_values_map);
                     if (attr === hash_attr) {
-                        hash_values.forEach(hash => attributes_data[attr][hash] = hash);
+                        continue;
                     } else {
                         const attribute_path = common_utils.buildFolderPath(table_path, attr);
                         const results = await fs.readdir(attribute_path);
@@ -70,7 +77,7 @@ async function getAttributeFileValues(get_attributes, search_object, hash_attr, 
                                                     const hash_included = hash_values_map[the_id] === null;
                                                     if (hash_included) {
                                                         const file_data = await fs.readFile(common_utils.buildFolderPath(blob_path, blob_id), 'utf-8');
-                                                        attributes_data[attr][the_id] = file_data;
+                                                        final_attributes_data[the_id][attr] = file_data;
                                                     }
                                                 } catch (e) {
                                                     log.error(e);
@@ -82,9 +89,9 @@ async function getAttributeFileValues(get_attributes, search_object, hash_attr, 
                                     } else {
                                         const the_id = common_utils.autoCast(common_utils.stripFileExtension(id));
                                         // const hash_included = hash_results.includes(the_id);
-                                        const hash_included = hash_values_map[the_id] === null;
+                                        const hash_included = final_attributes_data[the_id];
                                         if (hash_included) {
-                                            attributes_data[attr][the_id] = common_utils.autoCast(the_value);
+                                            final_attributes_data[the_id][attr] = common_utils.autoCast(the_value);
                                         }
                                     }
                                 }
@@ -98,60 +105,58 @@ async function getAttributeFileValues(get_attributes, search_object, hash_attr, 
                 }
             };
         } else {
+            final_attributes_data = hash_values.reduce((acc, hash) => {
+                acc[hash] = {};
+                if (hash_requested) {
+                    acc[hash][hash_attr] = common_utils.autoCast(hash);
+                }
+                return acc;
+            }, {});
             for (const attribute of get_attributes) {
                 //evaluate if an array of strings or objects has been passed in and assign values accordingly
                 const attribute_name = (typeof attribute === 'string') ? attribute : attribute.attribute;
                 const is_hash = attribute_name === hash_attr;
                 //if attribute is the hash value, assign hash_result values to hash
                 if (is_hash) {
-                    let hash_attr_data = {};
-                    for (const file of hash_values) {
-                        hash_attr_data[file] = common_utils.autoCast(file);
-                    }
-                    attributes_data[attribute_name] = hash_attr_data;
+                    continue;
                 } else {
-                    const attribute_file_values = await readAttributeFiles(table_path, attribute_name, hash_values);
-                    if (!_.isEmpty(attribute_file_values)) {
-                        attributes_data[attribute_name] = attribute_file_values;
-                    }
+                    await readAttributeFiles(table_path, attribute_name, hash_values, final_attributes_data);
                 }
             }
         }
 
-        return attributes_data;
+        return final_attributes_data;
     } catch(err) {
         throw err;
     }
 }
 
-async function readAttributeFilePromise(table_path, attribute, file, attribute_data, is_hash) {
+async function readAttributeFilePromise(table_path, attribute, file, final_attributes_data) {
     try {
         const data = await fs.readFile(`${table_path}/${hdb_terms.HASH_FOLDER_NAME}/${attribute}/${file}${hdb_terms.HDB_FILE_SUFFIX}`, 'utf-8');
         const value = common_utils.autoCast(data.toString());
-        attribute_data[file] = value;
+        final_attributes_data[file][attribute] = value;
     } catch (err) {
         if (err.code === 'ENOENT') {
-            if (!is_hash) {
-                attribute_data[file] = null;
-            }
+            final_attributes_data[file][attribute] = null;
         } else {
             throw(err);
         }
     }
 }
 
-async function readAttributeFiles(table_path, attribute, hash_files, is_hash) {
+async function readAttributeFiles(table_path, attribute, hash_files, final_attributes_data) {
     try {
-        let attribute_data = {};
+        // let attribute_data = {};
         const readFileOps = [];
 
         for (const file of hash_files) {
-            readFileOps.push(readAttributeFilePromise(table_path, attribute, file, attribute_data, !!is_hash));
+            readFileOps.push(readAttributeFilePromise(table_path, attribute, file, final_attributes_data));
         }
 
         await Promise.all(readFileOps);
 
-        return attribute_data;
+        // return attribute_data;
     } catch(err) {
         throw err;
     }
