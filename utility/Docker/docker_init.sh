@@ -58,9 +58,18 @@ sudo su ubuntu -c "docker run --rm --privileged multiarch/qemu-user-static --res
 exit 0
 }
 
-production(){
-# Where is .tgz
-pathToTGZ="/tmp/harperdb-2.0.0.tgz"
+find_the_artifact()
+{
+#The Artifacts Directory for this particular buildInstacne HarperDB20:DevelopmentObfuscationandTest
+artifactHome="/home/ubuntu/data_dir/.BuildServer/system/artifacts/HarperDB20/DevelopmentObfuscationandTest/"
+#find the path to the newest artifact from a build
+artifactDir=$(ls -tl "$artifactHome" | sed -n '2p' | awk '{print $9}')
+
+fullPath="$artifactHome""$artifactDir"
+artifact=$(ls "$fullPath"  | grep -m 1 harperdb-*)
+pathToTGZ="$fullPath/$artifact"
+echo "The artifact lives here: $pathToTGZ"
+
 if [ -e "$pathToTGZ" ]; then
       echo "File exists Move it and use it"
       cp $pathToTGZ ./
@@ -68,6 +77,14 @@ if [ -e "$pathToTGZ" ]; then
       echo "File Is not there ABORT"
       exit 1
 fi
+
+
+}
+
+production(){
+
+#find newest build
+find_the_artifact
 
 docker buildx build --tag harperdb/hdb:latest -f Dockerfile --load .
 #test it runs
