@@ -363,6 +363,15 @@ async function clusterStatus(cluster_status_json) {
         let event_promise = hdb_utils.createEventPromise(cluster_status_event.EVENT_NAME, cluster_status_event.clusterEmitter, timeout_promise);
         let result = await Promise.race([event_promise, timeout_promise.promise]);
         log.trace(`cluster status result: ${util.inspect(result)}`);
+        try {
+            delete result['hdb_header'];
+            delete result['__originator'];
+            delete result['requestor_channel'];
+            delete result['channel'];
+            delete result['cluster_status_request_id'];
+        } catch(err) {
+            //no-op
+        }
         response["status"] = result;
     } catch (err) {
         log.error(`Got an error getting cluster status ${err}`);
