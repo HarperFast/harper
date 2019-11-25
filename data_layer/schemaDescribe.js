@@ -31,7 +31,7 @@ function describeAll (op_obj, callback) {
             }
 
             if (hdb_utils.isEmptyOrZeroLength(schemas)) {
-                return;
+                return callback(null, {});
             }
 
             let schema_list = {};
