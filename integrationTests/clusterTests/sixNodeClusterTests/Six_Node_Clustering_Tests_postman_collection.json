@@ -65,7 +65,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"add_node\",\n    \"name\": \"{{node4_name}}\",\n    \"host\": \"{{node4_host}}\",\n    \"port\": \"{{clustering_port}}\",\n    \"subscriptions\": [\n        {\n            \"channel\": \"{{bear_schema}}:{{temp_table}}\",\n            \"subscribe\": false,\n            \"publish\": true\n        },\n         {\n            \"channel\": \"{{bear_schema}}:{{press_table}}\",\n            \"subscribe\": false,\n            \"publish\": true\n        }\n    ]\n}",
+							"raw": "{\n    \"operation\": \"add_node\",\n    \"name\": \"{{node4_name}}\",\n    \"host\": \"{{node4_host}}\",\n    \"port\": \"{{clustering_port}}\",\n    \"subscriptions\": [\n        {\n            \"channel\": \"{{bear_schema}}:{{temp_table}}\",\n            \"subscribe\": false,\n            \"publish\": true\n        }\n    ]\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -5880,7 +5880,7 @@
 									"\r",
 									"pm.test(\"Correct number of records\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(4);\r",
+									"    pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(7);\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -6557,6 +6557,484 @@
 						}
 					},
 					"response": []
+				}
+			],
+			"protocolProfileBehavior": {}
+		},
+		{
+			"name": "Remove Nodes",
+			"item": [
+				{
+					"name": "Remove node 1 to 4",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    pm.response.to.have.status(200);\r",
+									"});\r",
+									"\r",
+									"pm.test(\"Node successfully removed\", function () {\r",
+									"    var jsonData = pm.response.json();\r",
+									"    pm.expect(jsonData.message).to.be.eql(\"successfully removed DavidTest4 from manifest\");\r",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"{{node4_name}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "http://{{node1_host}}:{{node_port}}",
+							"protocol": "http",
+							"host": [
+								"{{node1_host}}"
+							],
+							"port": "{{node_port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Remove node 2 to 4",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    pm.response.to.have.status(200);\r",
+									"});\r",
+									"\r",
+									"pm.test(\"Node successfully removed\", function () {\r",
+									"    var jsonData = pm.response.json();\r",
+									"    pm.expect(jsonData.message).to.be.eql(\"successfully removed DavidTest4 from manifest\");\r",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"{{node4_name}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "http://{{node2_host}}:{{node_port}}",
+							"protocol": "http",
+							"host": [
+								"{{node2_host}}"
+							],
+							"port": "{{node_port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Remove node 3 to 4",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    pm.response.to.have.status(200);\r",
+									"});\r",
+									"\r",
+									"pm.test(\"Node successfully removed\", function () {\r",
+									"    var jsonData = pm.response.json();\r",
+									"    pm.expect(jsonData.message).to.be.eql(\"successfully removed DavidTest4 from manifest\");\r",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"{{node4_name}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "http://{{node3_host}}:{{node_port}}",
+							"protocol": "http",
+							"host": [
+								"{{node3_host}}"
+							],
+							"port": "{{node_port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Remove node 4 to 6",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    pm.response.to.have.status(200);\r",
+									"});\r",
+									"\r",
+									"pm.test(\"Node successfully removed\", function () {\r",
+									"    var jsonData = pm.response.json();\r",
+									"    pm.expect(jsonData.message).to.be.eql(\"successfully removed DavidTest6 from manifest\");\r",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"{{node6_name}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "http://{{node4_host}}:{{node_port}}",
+							"protocol": "http",
+							"host": [
+								"{{node4_host}}"
+							],
+							"port": "{{node_port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Remove node 4 to 5",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    pm.response.to.have.status(200);\r",
+									"});\r",
+									"\r",
+									"pm.test(\"Node successfully removed\", function () {\r",
+									"    var jsonData = pm.response.json();\r",
+									"    pm.expect(jsonData.message).to.be.eql(\"successfully removed DavidTest5 from manifest\");\r",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"{{node5_name}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "http://{{node4_host}}:{{node_port}}",
+							"protocol": "http",
+							"host": [
+								"{{node4_host}}"
+							],
+							"port": "{{node_port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Remove node 5 to 3",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    pm.response.to.have.status(200);\r",
+									"});\r",
+									"\r",
+									"pm.test(\"Node successfully removed\", function () {\r",
+									"    var jsonData = pm.response.json();\r",
+									"    pm.expect(jsonData.message).to.be.eql(\"successfully removed DavidTest3 from manifest\");\r",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"{{node3_name}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "http://{{node5_host}}:{{node_port}}",
+							"protocol": "http",
+							"host": [
+								"{{node5_host}}"
+							],
+							"port": "{{node_port}}"
+						}
+					},
+					"response": []
+				}
+			],
+			"event": [
+				{
+					"listen": "prerequest",
+					"script": {
+						"id": "d8cd78ef-4d09-4515-8699-b681f1e21737",
+						"type": "text/javascript",
+						"exec": [
+							""
+						]
+					}
+				},
+				{
+					"listen": "test",
+					"script": {
+						"id": "89a897e2-88fc-4af2-9b6d-a9e97ee51906",
+						"type": "text/javascript",
+						"exec": [
+							""
+						]
+					}
 				}
 			],
 			"protocolProfileBehavior": {}
@@ -9738,596 +10216,6 @@
 				}
 			],
 			"protocolProfileBehavior": {}
-		},
-		{
-			"name": "Remove Nodes",
-			"item": [
-				{
-					"name": "Remove node 1 to 4",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
-								"exec": [
-									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
-									"});\r",
-									"\r",
-									"pm.test(\"Node successfully removed\", function () {\r",
-									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData.message).to.be.eql(\"successfully removed DavidTest4 from manifest\");\r",
-									"});"
-								],
-								"type": "text/javascript"
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "password",
-									"value": "{{password_ct}}",
-									"type": "string"
-								},
-								{
-									"key": "username",
-									"value": "{{username_ct}}",
-									"type": "string"
-								},
-								{
-									"key": "saveHelperData",
-									"type": "any"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"name": "Content-Type",
-								"type": "text",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"{{node4_name}}\"\n}",
-							"options": {
-								"raw": {
-									"language": "json"
-								}
-							}
-						},
-						"url": {
-							"raw": "http://{{node1_host}}:{{node_port}}",
-							"protocol": "http",
-							"host": [
-								"{{node1_host}}"
-							],
-							"port": "{{node_port}}"
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Remove node 2 to 4",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
-								"exec": [
-									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
-									"});\r",
-									"\r",
-									"pm.test(\"Node successfully removed\", function () {\r",
-									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData.message).to.be.eql(\"successfully removed DavidTest4 from manifest\");\r",
-									"});"
-								],
-								"type": "text/javascript"
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "password",
-									"value": "{{password_ct}}",
-									"type": "string"
-								},
-								{
-									"key": "username",
-									"value": "{{username_ct}}",
-									"type": "string"
-								},
-								{
-									"key": "saveHelperData",
-									"type": "any"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"name": "Content-Type",
-								"type": "text",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"{{node4_name}}\"\n}",
-							"options": {
-								"raw": {
-									"language": "json"
-								}
-							}
-						},
-						"url": {
-							"raw": "http://{{node2_host}}:{{node_port}}",
-							"protocol": "http",
-							"host": [
-								"{{node2_host}}"
-							],
-							"port": "{{node_port}}"
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Remove node 3 to 4",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
-								"exec": [
-									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
-									"});\r",
-									"\r",
-									"pm.test(\"Node successfully removed\", function () {\r",
-									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData.message).to.be.eql(\"successfully removed DavidTest4 from manifest\");\r",
-									"});"
-								],
-								"type": "text/javascript"
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "password",
-									"value": "{{password_ct}}",
-									"type": "string"
-								},
-								{
-									"key": "username",
-									"value": "{{username_ct}}",
-									"type": "string"
-								},
-								{
-									"key": "saveHelperData",
-									"type": "any"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"name": "Content-Type",
-								"type": "text",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"{{node4_name}}\"\n}",
-							"options": {
-								"raw": {
-									"language": "json"
-								}
-							}
-						},
-						"url": {
-							"raw": "http://{{node3_host}}:{{node_port}}",
-							"protocol": "http",
-							"host": [
-								"{{node3_host}}"
-							],
-							"port": "{{node_port}}"
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Remove node 4 to 6",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
-								"exec": [
-									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
-									"});\r",
-									"\r",
-									"pm.test(\"Node successfully removed\", function () {\r",
-									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData.message).to.be.eql(\"successfully removed DavidTest6 from manifest\");\r",
-									"});"
-								],
-								"type": "text/javascript"
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "password",
-									"value": "{{password_ct}}",
-									"type": "string"
-								},
-								{
-									"key": "username",
-									"value": "{{username_ct}}",
-									"type": "string"
-								},
-								{
-									"key": "saveHelperData",
-									"type": "any"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"name": "Content-Type",
-								"type": "text",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"{{node6_name}}\"\n}",
-							"options": {
-								"raw": {
-									"language": "json"
-								}
-							}
-						},
-						"url": {
-							"raw": "http://{{node4_host}}:{{node_port}}",
-							"protocol": "http",
-							"host": [
-								"{{node4_host}}"
-							],
-							"port": "{{node_port}}"
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Remove node 4 to 5",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
-								"exec": [
-									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
-									"});\r",
-									"\r",
-									"pm.test(\"Node successfully removed\", function () {\r",
-									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData.message).to.be.eql(\"successfully removed DavidTest5 from manifest\");\r",
-									"});"
-								],
-								"type": "text/javascript"
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "password",
-									"value": "{{password_ct}}",
-									"type": "string"
-								},
-								{
-									"key": "username",
-									"value": "{{username_ct}}",
-									"type": "string"
-								},
-								{
-									"key": "saveHelperData",
-									"type": "any"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"name": "Content-Type",
-								"type": "text",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"{{node5_name}}\"\n}",
-							"options": {
-								"raw": {
-									"language": "json"
-								}
-							}
-						},
-						"url": {
-							"raw": "http://{{node4_host}}:{{node_port}}",
-							"protocol": "http",
-							"host": [
-								"{{node4_host}}"
-							],
-							"port": "{{node_port}}"
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Remove node 5 to 3",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
-								"exec": [
-									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
-									"});\r",
-									"\r",
-									"pm.test(\"Node successfully removed\", function () {\r",
-									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData.message).to.be.eql(\"successfully removed DavidTest3 from manifest\");\r",
-									"});"
-								],
-								"type": "text/javascript"
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "password",
-									"value": "{{password_ct}}",
-									"type": "string"
-								},
-								{
-									"key": "username",
-									"value": "{{username_ct}}",
-									"type": "string"
-								},
-								{
-									"key": "saveHelperData",
-									"type": "any"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"name": "Content-Type",
-								"type": "text",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"{{node3_name}}\"\n}",
-							"options": {
-								"raw": {
-									"language": "json"
-								}
-							}
-						},
-						"url": {
-							"raw": "http://{{node5_host}}:{{node_port}}",
-							"protocol": "http",
-							"host": [
-								"{{node5_host}}"
-							],
-							"port": "{{node_port}}"
-						}
-					},
-					"response": []
-				}
-			],
-			"event": [
-				{
-					"listen": "prerequest",
-					"script": {
-						"id": "d8cd78ef-4d09-4515-8699-b681f1e21737",
-						"type": "text/javascript",
-						"exec": [
-							""
-						]
-					}
-				},
-				{
-					"listen": "test",
-					"script": {
-						"id": "89a897e2-88fc-4af2-9b6d-a9e97ee51906",
-						"type": "text/javascript",
-						"exec": [
-							""
-						]
-					}
-				}
-			],
-			"protocolProfileBehavior": {}
-		},
-		{
-			"name": "Cluster Status Copy",
-			"request": {
-				"auth": {
-					"type": "basic",
-					"basic": [
-						{
-							"key": "password",
-							"value": "{{password_ct}}",
-							"type": "string"
-						},
-						{
-							"key": "username",
-							"value": "{{username_ct}}",
-							"type": "string"
-						},
-						{
-							"key": "saveHelperData",
-							"type": "any"
-						},
-						{
-							"key": "showPassword",
-							"value": false,
-							"type": "boolean"
-						}
-					]
-				},
-				"method": "POST",
-				"header": [
-					{
-						"key": "Content-Type",
-						"name": "Content-Type",
-						"value": "application/json",
-						"type": "text"
-					}
-				],
-				"body": {
-					"mode": "raw",
-					"raw": "{\n\t\"operation\":\"cluster_status\"\n}\n",
-					"options": {
-						"raw": {
-							"language": "json"
-						}
-					}
-				},
-				"url": {
-					"raw": "http://{{node1_host}}:{{node_port}}",
-					"protocol": "http",
-					"host": [
-						"{{node1_host}}"
-					],
-					"port": "{{node_port}}"
-				}
-			},
-			"response": []
-		},
-		{
-			"name": "Cluster Status Copy temp local",
-			"request": {
-				"auth": {
-					"type": "basic",
-					"basic": [
-						{
-							"key": "password",
-							"value": "{{password_ct}}",
-							"type": "string"
-						},
-						{
-							"key": "username",
-							"value": "{{username_ct}}",
-							"type": "string"
-						},
-						{
-							"key": "saveHelperData",
-							"type": "any"
-						},
-						{
-							"key": "showPassword",
-							"value": false,
-							"type": "boolean"
-						}
-					]
-				},
-				"method": "POST",
-				"header": [
-					{
-						"key": "Content-Type",
-						"name": "Content-Type",
-						"type": "text",
-						"value": "application/json"
-					}
-				],
-				"body": {
-					"mode": "raw",
-					"raw": "{\n\t\"operation\":\"cluster_status\"\n}\n",
-					"options": {
-						"raw": {
-							"language": "json"
-						}
-					}
-				},
-				"url": {
-					"raw": "http://localhost:9925",
-					"protocol": "http",
-					"host": [
-						"localhost"
-					],
-					"port": "9925"
-				}
-			},
-			"response": []
 		}
 	],
 	"event": [
