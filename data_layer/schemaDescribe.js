@@ -27,6 +27,7 @@ function describeAll (op_obj, callback) {
         search.searchByValue(schema_search, function(err, schemas){
             if (err) {
                 logger.error(err);
+                callback(err);
                 return;
             }
 
