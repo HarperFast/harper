@@ -6,6 +6,7 @@ const async = require('async'),
     validator = require('../validation/schema_validator'),
     _ = require('lodash');
 
+const hdb_utils = require('../utility/common_utils');
 
 module.exports = {
     describeAll,
@@ -24,12 +25,19 @@ function describeAll (op_obj, callback) {
         schema_search.hash_values = [];
         schema_search.get_attributes = ['name'];
         search.searchByValue(schema_search, function(err, schemas){
+            if (err) {
+                logger.error(err);
+                return;
+            }
+
+            if (hdb_utils.isEmptyOrZeroLength(schemas)) {
+                return;
+            }
 
             let schema_list = {};
             for(let s in schemas){
                 schema_list[schemas[s].name] = true;
             }
-
 
             let table_search_obj = {};
             table_search_obj.schema = 'system';
@@ -45,7 +53,6 @@ function describeAll (op_obj, callback) {
                     //initialize();
                     return;
                 }
-
 
                 let t_results = [];
                 async.map(tables, function (table, caller) {
@@ -70,27 +77,21 @@ function describeAll (op_obj, callback) {
                     for (let t in t_results) {
                         if (hdb_description[t_results[t].schema] == null) {
                             hdb_description[t_results[t].schema] = {};
-
                         }
 
                         hdb_description[t_results[t].schema][t_results[t].name] = t_results[t];
                         if(schema_list[t_results[t].schema]){
                             delete schema_list[t_results[t].schema];
                         }
-
                     }
 
                     for(let schema in schema_list){
                         hdb_description[schema] = {};
                     }
                     callback(null, hdb_description);
-
                 });
-
             });
         });
-
-
     }catch(e){
         callback(e);
     }
@@ -147,7 +148,6 @@ function descTable(describe_table_object, callback) {
                 attribute_search_obj.search_value = describe_table_object.schema + "." + describe_table_object.table;
                 attribute_search_obj.get_attributes = ['attribute'];
 
-
                 search.searchByValue(attribute_search_obj, function (err, attributes) {
                     if (err) {
                         logger.error(err);
@@ -162,15 +162,9 @@ function descTable(describe_table_object, callback) {
 
                     table_result.attributes = attributes;
                     callback(null, table_result);
-
-
                 });
-
             });
-
-
         });
-
     }catch(e){
         callback(e);
     }
@@ -200,7 +194,6 @@ function describeSchema(describe_schema_object, callback) {
                 return;
             }
             if (tables && tables.length < 1) {
-
                 let schema_search_obj = {};
                 schema_search_obj.schema = 'system';
                 schema_search_obj.table = 'hdb_schema';
@@ -222,7 +215,6 @@ function describeSchema(describe_schema_object, callback) {
 
                     }
                 });
-
             }else{
                 let results = [];
                 async.map(tables, function (table, caller) {
@@ -234,12 +226,10 @@ function describeSchema(describe_schema_object, callback) {
                         results.push(data);
                         caller();
                     });
-
                 },function(err, data){
                     return callback(null, results);
 
                 });
-
             }
         });
     } catch (e) {
