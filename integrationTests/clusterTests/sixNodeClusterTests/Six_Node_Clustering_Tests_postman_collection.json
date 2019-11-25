@@ -22,7 +22,8 @@
 									"\r",
 									"pm.test(\"Node successfully added\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData.message).to.be.eql(\"successfully added DavidTest4 to manifest\");\r",
+									"    var node = pm.variables.get(\"node4_name\");\r",
+									"    pm.expect(jsonData.message).to.be.eql(`successfully added ${node} to manifest`);\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -174,7 +175,8 @@
 									"\r",
 									"pm.test(\"Node successfully added\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData.message).to.be.eql(\"successfully added DavidTest4 to manifest\");\r",
+									"     var node = pm.variables.get(\"node4_name\");\r",
+									"    pm.expect(jsonData.message).to.be.eql(`successfully added ${node} to manifest`);\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -325,7 +327,8 @@
 									"\r",
 									"pm.test(\"Node successfully added\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData.message).to.be.eql(\"successfully added DavidTest4 to manifest\");\r",
+									"     var node = pm.variables.get(\"node4_name\");\r",
+									"    pm.expect(jsonData.message).to.be.eql(`successfully added ${node} to manifest`);\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -476,7 +479,8 @@
 									"\r",
 									"pm.test(\"Node successfully added\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData.message).to.be.eql(\"successfully added DavidTest6 to manifest\");\r",
+									"    var node = pm.variables.get(\"node6_name\");\r",
+									"    pm.expect(jsonData.message).to.be.eql(`successfully added ${node} to manifest`);\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -551,7 +555,8 @@
 									"\r",
 									"pm.test(\"Node successfully added\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData.message).to.be.eql(\"successfully added DavidTest5 to manifest\");\r",
+									"    var node = pm.variables.get(\"node5_name\");\r",
+									"    pm.expect(jsonData.message).to.be.eql(`successfully added ${node} to manifest`);\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -626,7 +631,8 @@
 									"\r",
 									"pm.test(\"Node successfully added\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData.message).to.be.eql(\"successfully added DavidTest3 to manifest\");\r",
+									"    var node = pm.variables.get(\"node3_name\");\r",
+									"    pm.expect(jsonData.message).to.be.eql(`successfully added ${node} to manifest`);\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -6578,7 +6584,8 @@
 									"\r",
 									"pm.test(\"Node successfully removed\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData.message).to.be.eql(\"successfully removed DavidTest4 from manifest\");\r",
+									"    var node = pm.variables.get(\"node4_name\");\r",
+									"    pm.expect(jsonData.message).to.be.eql(`successfully removed ${node} from manifest`);\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -6653,7 +6660,8 @@
 									"\r",
 									"pm.test(\"Node successfully removed\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData.message).to.be.eql(\"successfully removed DavidTest4 from manifest\");\r",
+									"    var node = pm.variables.get(\"node4_name\");\r",
+									"    pm.expect(jsonData.message).to.be.eql(`successfully removed ${node} from manifest`);\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -6728,7 +6736,8 @@
 									"\r",
 									"pm.test(\"Node successfully removed\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData.message).to.be.eql(\"successfully removed DavidTest4 from manifest\");\r",
+									"    var node = pm.variables.get(\"node4_name\");\r",
+									"    pm.expect(jsonData.message).to.be.eql(`successfully removed ${node} from manifest`);\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -6803,7 +6812,8 @@
 									"\r",
 									"pm.test(\"Node successfully removed\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData.message).to.be.eql(\"successfully removed DavidTest6 from manifest\");\r",
+									"    var node = pm.variables.get(\"node6_name\");\r",
+									"    pm.expect(jsonData.message).to.be.eql(`successfully removed ${node} from manifest`);\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -6878,7 +6888,8 @@
 									"\r",
 									"pm.test(\"Node successfully removed\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData.message).to.be.eql(\"successfully removed DavidTest5 from manifest\");\r",
+									"    var node = pm.variables.get(\"node5_name\");\r",
+									"    pm.expect(jsonData.message).to.be.eql(`successfully removed ${node} from manifest`);\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -6953,7 +6964,8 @@
 									"\r",
 									"pm.test(\"Node successfully removed\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData.message).to.be.eql(\"successfully removed DavidTest3 from manifest\");\r",
+									"    var node = pm.variables.get(\"node3_name\");\r",
+									"    pm.expect(jsonData.message).to.be.eql(`successfully removed ${node} from manifest`);\r",
 									"});"
 								],
 								"type": "text/javascript"
