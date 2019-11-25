@@ -164,7 +164,7 @@ async function processData(process_wrapper) {
     let exploded_wrapper = new ExplodedObject(hashes, skipped, Object.keys(folders), raw_data, unlinks);
     process_wrapper = null;
     return exploded_wrapper;
-};
+}
 
 /**
  * This function is used to remove HDB internal values (such as HDB_INTERNAL_PATH) from the record when it
