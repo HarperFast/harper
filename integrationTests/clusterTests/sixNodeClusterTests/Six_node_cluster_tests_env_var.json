@@ -4,62 +4,62 @@
 	"values": [
 		{
 			"key": "node1_name",
-			"value": "DavidTest1",
+			"value": "ClstrTestC1",
 			"enabled": true
 		},
 		{
 			"key": "node2_name",
-			"value": "DavidTest2",
+			"value": "ClstrTestC2",
 			"enabled": true
 		},
 		{
 			"key": "node3_name",
-			"value": "DavidTest3",
+			"value": "ClstrTestC3",
 			"enabled": true
 		},
 		{
 			"key": "node4_name",
-			"value": "DavidTest4",
+			"value": "ClstrTestC4",
 			"enabled": true
 		},
 		{
 			"key": "node5_name",
-			"value": "DavidTest5",
+			"value": "ClstrTestC5",
 			"enabled": true
 		},
 		{
 			"key": "node6_name",
-			"value": "DavidTest6",
+			"value": "ClstrTestC6",
 			"enabled": true
 		},
 		{
 			"key": "node1_host",
-			"value": "10.100.1.149",
+			"value": "ClstrTestC1",
 			"enabled": true
 		},
 		{
 			"key": "node2_host",
-			"value": "10.100.1.103",
+			"value": "ClstrTestC2",
 			"enabled": true
 		},
 		{
 			"key": "node3_host",
-			"value": "10.100.1.179",
+			"value": "ClstrTestC3",
 			"enabled": true
 		},
 		{
 			"key": "node4_host",
-			"value": "10.100.1.182",
+			"value": "ClstrTestC4",
 			"enabled": true
 		},
 		{
 			"key": "node5_host",
-			"value": "10.100.1.174",
+			"value": "ClstrTestC5",
 			"enabled": true
 		},
 		{
 			"key": "node6_host",
-			"value": "10.100.1.122",
+			"value": "ClstrTestC6",
 			"enabled": true
 		},
 		{
@@ -124,7 +124,7 @@
 		},
 		{
 			"key": "con_rpm_csv_file",
-			"value": "/home/ubuntu/csv/rpm_conversion.csv",
+			"value": "/home/ubuntu/harperdb/test/data/clusteringCsvs/rpm_conversion.csv",
 			"enabled": true
 		}
 	],
