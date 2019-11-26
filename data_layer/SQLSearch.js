@@ -31,7 +31,7 @@ class SQLSearch {
      */
     constructor(statement, attributes) {
         if (common_utils.isEmpty(statement)) {
-            log.error('AST statement for SQL select process can not be empty');
+            log.error('AST statement for SQL select process cannot be empty');
             throw 'statement cannot be null';
         }
 
