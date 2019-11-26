@@ -31,6 +31,7 @@ class SQLSearch {
      */
     constructor(statement, attributes) {
         if (common_utils.isEmpty(statement)) {
+            log.error('AST statement for SQL select process can not be empty');
             throw 'statement cannot be null';
         }
 
@@ -67,7 +68,7 @@ class SQLSearch {
                 return empty_sql_results;
             }
         } catch (err) {
-            log.error('Error thrown from SQLSearch class method checkEmptySQL.');
+            log.error('Error thrown from checkEmptySQL in SQLSearch class method search.');
             log.error(err);
             throw new Error(SEARCH_ERROR_MSG);
         }
@@ -76,7 +77,7 @@ class SQLSearch {
             // Search for fetch attribute values and consolidate them into this.data[table].__merged_data property
             await this._getFetchAttributeValues();
         } catch (err) {
-            log.error('Error thrown from SQLSearch class method getFetchAttributeValues.');
+            log.error('Error thrown from getFetchAttributeValues in SQLSearch class method search.');
             log.error(err);
             throw new Error(SEARCH_ERROR_MSG);
         }
@@ -92,7 +93,7 @@ class SQLSearch {
             // Consolidate initial data required for first pass of sql join - narrows list of hash ids for second pass to collect all data resulting from sql request
             join_results = await this._processJoins();
         } catch (err) {
-            log.error('Error thrown from SQLSearch class method processJoins.');
+            log.error('Error thrown from processJoins in SQLSearch class method search.');
             log.error(err);
             throw new Error(SEARCH_ERROR_MSG);
         }
@@ -101,7 +102,7 @@ class SQLSearch {
             // Decide the most efficient way to make the second/final pass for collecting all additional data needed for sql request
             await this._getFinalAttributeData(join_results.existing_attributes, join_results.joined_length);
         } catch (err) {
-            log.error('Error thrown from SQLSearch class method getFinalAttributeData.');
+            log.error('Error thrown from getFinalAttributeData in SQLSearch class method search.');
             log.error(err);
             throw new Error(SEARCH_ERROR_MSG);
         }
@@ -111,7 +112,7 @@ class SQLSearch {
             log.trace(`Search results: ${search_results}`);
             return search_results;
         } catch (err) {
-            log.error('Error thrown from SQLSearch class method finalSQL.');
+            log.error('Error thrown from finalSQL in SQLSearch class method search.');
             log.error(err);
             throw new Error(SEARCH_ERROR_MSG);
         }
@@ -272,8 +273,6 @@ class SQLSearch {
                         this.exact_search_values[attribute_key].values = new Set([...this.exact_search_values[attribute_key].values, ...values]);
                     }
                 }
-
-                continue;
             }
         }
     }
