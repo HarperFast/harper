@@ -1,0 +1,134 @@
+{
+	"id": "2ae38a51-df9f-4efe-adcc-5733825e2fc5",
+	"name": "Six node cluster tests env var",
+	"values": [
+		{
+			"key": "node1_name",
+			"value": "ClstrTestC1",
+			"enabled": true
+		},
+		{
+			"key": "node2_name",
+			"value": "ClstrTestC2",
+			"enabled": true
+		},
+		{
+			"key": "node3_name",
+			"value": "ClstrTestC3",
+			"enabled": true
+		},
+		{
+			"key": "node4_name",
+			"value": "ClstrTestC4",
+			"enabled": true
+		},
+		{
+			"key": "node5_name",
+			"value": "ClstrTestC5",
+			"enabled": true
+		},
+		{
+			"key": "node6_name",
+			"value": "ClstrTestC6",
+			"enabled": true
+		},
+		{
+			"key": "node1_host",
+			"value": "ClstrTestC1",
+			"enabled": true
+		},
+		{
+			"key": "node2_host",
+			"value": "ClstrTestC2",
+			"enabled": true
+		},
+		{
+			"key": "node3_host",
+			"value": "ClstrTestC3",
+			"enabled": true
+		},
+		{
+			"key": "node4_host",
+			"value": "ClstrTestC4",
+			"enabled": true
+		},
+		{
+			"key": "node5_host",
+			"value": "ClstrTestC5",
+			"enabled": true
+		},
+		{
+			"key": "node6_host",
+			"value": "ClstrTestC6",
+			"enabled": true
+		},
+		{
+			"key": "node_port",
+			"value": "9925",
+			"enabled": true
+		},
+		{
+			"key": "bear_schema",
+			"value": "bearing",
+			"enabled": true
+		},
+		{
+			"key": "temp_table",
+			"value": "temperature",
+			"enabled": true
+		},
+		{
+			"key": "press_table",
+			"value": "pressure",
+			"enabled": true
+		},
+		{
+			"key": "rpm_table",
+			"value": "rpm",
+			"enabled": true
+		},
+		{
+			"key": "con_schema",
+			"value": "conversion",
+			"enabled": true
+		},
+		{
+			"key": "con_rpm_table",
+			"value": "rpm",
+			"enabled": true
+		},
+		{
+			"key": "clustering_port",
+			"value": "12345",
+			"enabled": true
+		},
+		{
+			"key": "password_ct",
+			"value": "Abc1234!",
+			"enabled": true
+		},
+		{
+			"key": "username_ct",
+			"value": "admin",
+			"enabled": true
+		},
+		{
+			"key": "job_id_ct",
+			"value": "",
+			"enabled": true
+		},
+		{
+			"key": "next_request_ct",
+			"value": "",
+			"enabled": true
+		},
+		{
+			"key": "con_rpm_csv_file",
+			"value": "/home/ubuntu/harperdb/test/data/clusteringCsvs/rpm_conversion.csv",
+			"enabled": true
+		}
+	],
+	"_postman_variable_scope": "environment",
+	"_postman_exported_at": "2019-11-13T19:26:18.938Z",
+	"_postman_exported_using": "Postman/7.11.0"
+}
