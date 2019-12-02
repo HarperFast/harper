@@ -19826,6 +19826,16 @@
 										],
 										"type": "text/javascript"
 									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "8b93e762-284c-45f8-9ec0-7556ff038948",
+										"exec": [
+											"setTimeout(()=>{}, 200);"
+										],
+										"type": "text/javascript"
+									}
 								}
 							],
 							"request": {
@@ -19888,6 +19898,16 @@
 											"     pm.expect(jsonData.message).to.eql(\"table drop_schema.drop_table successfully created.\")",
 											"});",
 											""
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "dce466bb-df10-444f-abed-e8c22a146e21",
+										"exec": [
+											"setTimeout(()=>{}, 200);"
 										],
 										"type": "text/javascript"
 									}
