@@ -1,7 +1,7 @@
 "use strict";
 
 const log = require('../../../utility/logging/harper_logger');
-const BridgeMethods = require("../BridgeMethods.js");
+const BridgeMethods = require("../BridgeMethods");
 const fsCreateAttribute = require('./fsMethods/fsCreateAttribute');
 const fsCreateRecords = require('./fsMethods/fsCreateRecords');
 const fsCreateSchema = require('./fsMethods/fsCreateSchema');
@@ -38,9 +38,9 @@ class FileSystemBridge extends BridgeMethods {
         }
     }
 
-    async getDataByValue(search_object) {
+    async getDataByValue(search_object, comparator) {
         try {
-            return await fsGetDataByValue(search_object);
+            return await fsGetDataByValue(search_object, comparator);
         } catch(err) {
             log.error(err);
             throw err;

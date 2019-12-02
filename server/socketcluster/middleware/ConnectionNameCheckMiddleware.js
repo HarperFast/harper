@@ -7,6 +7,7 @@ const terms = require('../../../utility/hdbTerms');
 const uuidV4 = require('uuid/v4');
 const env = require('../../../utility/environment/environmentManager');
 const url = require('url');
+const socket_cluster_utils = require('../util/socketClusterUtils');
 
 /**
  * This middleware should be called after any middlware which compares against the message's originator.  It will stamp
@@ -25,7 +26,9 @@ class ConnectionNameCheckMiddleware extends MiddlewareIF {
             }
 
             if(!this.server_node_name || !this.client_node_name) {
-                this.parseConnectionString(req.socket.request.url);
+                this.query_values = socket_cluster_utils.parseConnectionString(req.socket.request.url);
+                this.server_node_name = this.query_values.node_server_name;
+                this.client_node_name = this.query_values.node_client_name;
             }
             // This is a message meant for an hdb_child.
             if(this.query_values && this.query_values.hdb_worker) {
@@ -33,13 +36,20 @@ class ConnectionNameCheckMiddleware extends MiddlewareIF {
             }
             let remote_host_name = (env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY) === this.client_node_name ?
                 this.server_node_name : this.client_node_name);
+
             if (req.data.__originator && req.data.__originator[remote_host_name] === types.ORIGINATOR_SET_VALUE) {
+                this.resetValues();
                 return types.ERROR_CODES.MIDDLEWARE_SWALLOW;
             }
+            this.resetValues();
         };
         super(middleware_type_enum, eval_function);
         this.type = types.PREMADE_MIDDLEWARE_TYPES.CONNECTION_NAME_CHECK;
         this.command_order = types.COMMAND_EVAL_ORDER_ENUM.LOW;
+        this.resetValues();
+    }
+
+    resetValues(){
         this.server_node_name = undefined;
         this.client_node_name = undefined;
         this.query_values = undefined;

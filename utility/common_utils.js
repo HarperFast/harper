@@ -9,6 +9,7 @@ const terms = require('./hdbTerms');
 const ps_list = require('./psList');
 const papa_parse = require('papaparse');
 const cluster_messages = require('../server/socketcluster/room/RoomMessageObjects');
+const moment = require('moment');
 const {inspect} = require('util');
 
 const async_set_timeout = require('util').promisify(setTimeout);
@@ -19,7 +20,7 @@ const EMPTY_STRING = '';
 const FILE_EXTENSION_LENGTH = 4;
 const CHARACTER_LIMIT = 255;
 
-const HDB_PROC_NAME = 'hdb_express.js';
+const HDB_PROC_NAME = terms.HDB_PROC_NAME;
 
 //Because undefined will not return in a JSON response, we convert undefined to null when autocasting
 const AUTOCAST_COMMON_STRINGS = {
@@ -60,7 +61,10 @@ module.exports = {
     getClusterMessage,
     createEventPromise,
     checkProcessRunning,
-    checkSchemaTableExist
+    checkSchemaTableExist,
+    getStartOfTomorrowInSeconds,
+    getLimitKey,
+    isObject
 };
 
 /**
@@ -154,6 +158,20 @@ function isBoolean(value){
         return true;
     }
     return false;
+}
+
+/**
+ * Takes a value and checks if it is an object.
+ * Note - null is considered an object but we are excluding it here.
+ * @param value
+ * @returns {boolean}
+ */
+function isObject(value) {
+    if (isEmpty(value)){
+        return false;
+    }
+
+    return typeof value === 'object';
 }
 
 /**
@@ -570,7 +588,7 @@ function removeBOM(data_string) {
 
 function createEventPromise(event_name, event_emitter_object, timeout_promise) {
     let event_promise = new Promise((resolve) => {
-        event_emitter_object.on(event_name, (msg) => {
+        event_emitter_object.once(event_name, (msg) => {
             let curr_timeout_promise = timeout_promise;
             log.info(`Got cluster status event response: ${inspect(msg)}`);
             try {
@@ -641,4 +659,22 @@ function checkSchemaTableExist(schema, table) {
     if (!global.hdb_schema[schema][table]) {
         throw new Error(`Table '${table}' does not exist in schema '${schema}'`);
     }
+}
+
+/**
+ * Returns the first second of the next day in seconds.
+ * @returns {number}
+ */
+function getStartOfTomorrowInSeconds() {
+    let tomorow_seconds = moment().utc().add(1, terms.MOMENT_DAYS_TAG).startOf(terms.MOMENT_DAYS_TAG).unix();
+    let now_seconds = moment().utc().unix();
+    return tomorow_seconds - now_seconds;
+}
+
+/**
+ * Returns the key used by limits for this cycle.
+ * @returns {string}
+ */
+function getLimitKey() {
+        return moment().utc().format('DD-MM-YYYY');
 }

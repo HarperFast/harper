@@ -14,6 +14,7 @@ const password_utility = require('../../../utility/password');
 const types = require('../types');
 const global_schema = require('../../../utility/globalSchema');
 const {promisify} = require('util');
+const url = require('url');
 
 const SC_TOKEN_EXPIRATION = '1d';
 const CATCHUP_OFFSET_MS = 100;
@@ -44,7 +45,7 @@ function getWorkerStatus(status_response_msg, worker) {
             let client_keys = Object.keys(worker.node_connector.connections.clients);
             for (let i = 0; i < client_keys.length; i++) {
                 let client = worker.node_connector.connections.clients[client_keys[i]];
-                let conn = new ConnectionDetails('', client.options.hostname, client.options.port, client.state);
+                let conn = new ConnectionDetails( client.id, client.options.hostname, client.options.port, client.state);
                 if (client.additional_info) {
                     conn['subscriptions'] = [];
                     conn.node_name = client.additional_info.server_name;
@@ -62,16 +63,21 @@ function getWorkerStatus(status_response_msg, worker) {
         if (worker.scServer && worker.scServer.clients) {
             let client_keys = Object.keys(worker.scServer.clients);
             for (let i = 0; i < client_keys.length; i++) {
-                let client = worker.scServer.clients[client_keys[i]];//worker.scServer.clients[i];
+                let client = worker.scServer.clients[client_keys[i]];
+                if(client.remoteAddress && (client.remoteAddress.includes('localhost') || client.remoteAddress.includes('127.0.0.1') )) {
+                    continue;
+                }
+                let query_vals = parseConnectionString(client.request.url);
                 let conn = new ConnectionDetails(client.id, client.remoteAddress, client.remotePort, client.state);
-                if (client.exchange && client.exchange._channels) {
-                    let channel_keys = Object.keys(client.exchange._channels);
+                if (client.channelSubscriptions) {
+                    let channel_keys = Object.keys(client.channelSubscriptions);
                     for (let i = 0; i < channel_keys.length; i++) {
                         let sub = client.exchange._channels[channel_keys[i]];
                         if (sub.name.indexOf(hdb_terms.HDB_INTERNAL_SC_CHANNEL_PREFIX) === 0) {
                             continue;
                         }
-                        conn.subscriptions.push({"channel": sub.name, "state": sub.state});
+                        conn.subscriptions.push({"channel": sub.name, "subscribe": (sub.state === 'subscribed'), "publish": false});
+                        conn.node_name = query_vals.node_client_name;
                     }
                 }
                 status_response_msg.inbound_connections.push(conn);
@@ -93,7 +99,7 @@ function getWorkerStatus(status_response_msg, worker) {
  */
 function createEventPromise(event_name, event_emitter_object, timeout_promise) {
     let event_promise = new Promise((resolve) => {
-        event_emitter_object.on(event_name, (msg) => {
+        event_emitter_object.once(event_name, (msg) => {
             let curr_timeout_promise = timeout_promise;
             //timeout_promise = hdb_utils.timeoutPromise(STATUS_TIMEOUT_MS, TIMEOUT_ERR_MSG);
             log.info(`Got cluster status event response: ${inspect(msg)}`);
@@ -139,12 +145,16 @@ async function schemaCatchupHandler() {
  * @param socket
  * @returns {Promise<void>}
  */
-async function catchupHandler(channel, start_timestamp, end_timestamp = Date.now()){
+async function catchupHandler(channel, start_timestamp, end_timestamp){
     if(!channel){
         throw new Error('channel is required');
     }
 
-    if(!start_timestamp || !Number.isInteger(start_timestamp)){
+    if(utils.isEmpty(end_timestamp)){
+        end_timestamp = Date.now();
+    }
+
+    if(!start_timestamp || isNaN(start_timestamp)){
         throw new Error('invalid start_timestamp');
     }
 
@@ -190,10 +200,10 @@ async function catchupHandler(channel, start_timestamp, end_timestamp = Date.now
                 operation: 'catchup',
                 transactions: results
             };
-
             let catch_up_msg = utils.getClusterMessage(hdb_terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
             catch_up_msg.transaction = catchup_response;
-
+            catch_up_msg.__originator = {};
+            catch_up_msg.__originator[env.getProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)] = types.ORIGINATOR_SET_VALUE;
             return catch_up_msg;
         }
     }catch(e){
@@ -270,11 +280,20 @@ function concatSourceMessageHeader(outbound_message, orig_req) {
     }
 }
 
+/**
+ * Parse the connection string in socket cluster clients to extract the node_server_name and the node_client_name.
+ * @param req_url - request socket url
+ */
+function parseConnectionString(req_url) {
+    return url.parse(req_url, true).query;
+}
+
 module.exports = {
     getWorkerStatus,
     createEventPromise,
     catchupHandler,
     schemaCatchupHandler,
     requestAndHandleLogin,
-    concatSourceMessageHeader
+    concatSourceMessageHeader,
+    parseConnectionString
 };

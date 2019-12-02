@@ -235,6 +235,10 @@ class NodeConnectionsHandler {
     }
 
     async assignTransactionToChild(channel, socket, data){
+        if(data.__transacted){
+            delete data.__transacted;
+        }
+
         let req = {
             channel: channel,
             data: data,

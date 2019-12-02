@@ -4,6 +4,8 @@ const log = require('../utility/logging/harper_logger');
 const harperBridge = require('../data_layer/harperBridge/harperBridge');
 const util = require('util');
 const hdb_utils = require('../utility/common_utils');
+const terms = require('../utility/hdbTerms');
+const env = require('../utility/environment/environmentManager');
 
 const RECORD = 'record';
 const SUCCESS = 'successfully deleted';
@@ -36,6 +38,18 @@ async function convertDelete(statement){
     try{
         delete_obj.records = await p_search_search(search_statement);
         let result = await harperBridge.deleteRecords(delete_obj);
+
+        // With non SQL CUD actions, the `post` operation passed into OperationFunctionCaller would send the transaction to the cluster.
+        // Since we don`t send Most SQL options to the cluster, we need to explicitly send it.
+        if(result.deleted_hashes.length > 0) {
+            if (delete_obj.schema !== terms.SYSTEM_SCHEMA_NAME) {
+                let delete_msg = hdb_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
+                delete_msg.transaction = delete_obj;
+                delete_msg.transaction.operation = terms.OPERATIONS_ENUM.DELETE;
+                delete_msg.transaction.hash_values = result.deleted_hashes;
+                hdb_utils.sendTransactionToSocketCluster(`${delete_obj.schema}:${delete_obj.table}`, delete_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
+            }
+        }
 
         if(hdb_utils.isEmptyOrZeroLength(result.message)) {
             result.message = generateReturnMessage(result);

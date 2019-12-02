@@ -1,7 +1,7 @@
 "use strict";
 
 const validate = require('validate.js');
-const validator = require('./validationWrapper.js');
+const validator = require('./validationWrapper');
 const moment = require('moment');
 
 validate.extend(validate.validators.datetime, {

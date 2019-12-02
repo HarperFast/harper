@@ -1,6 +1,6 @@
 'use strict';
 
-const validation = require('../validation/schema_validator.js');
+const validation = require('../validation/schema_validator');
 const logger = require('../utility/logging/harper_logger');
 const uuidV4 = require('uuid/v4');
 const env = require('../utility/environment/environmentManager');

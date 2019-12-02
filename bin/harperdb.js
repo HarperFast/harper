@@ -19,7 +19,7 @@ const p_upgrade = promisify(upgrade.upgrade);
 harperDBService();
 
 function checkCallingUserSync() {
-    let hdb_exe_path = path.join(__dirname, 'harperdb.js');
+    let hdb_exe_path = path.join(__dirname, `harperdb.${hdb_terms.CODE_EXTENSION}`);
     let stats = undefined;
     try {
         stats = fs.statSync(hdb_exe_path);
@@ -40,7 +40,6 @@ function checkCallingUserSync() {
 function harperDBService() {
     let service;
 
-    let inBin = false;
     fs.readdir(__dirname, (err, files) => {
         if (err) {
             return logger.error(err);
@@ -67,9 +66,9 @@ function harperDBService() {
                 result = run.run();
                 break;
             case hdb_terms.SERVICE_ACTIONS_ENUM.INSTALL:
-                install.install((err, response)=>{
-                    if(err){
-                        console.error(err);
+                install.install((install_err, response)=>{
+                    if(install_err){
+                        console.error(install_err);
                     } else {
                         console.log(response);
                     }
@@ -80,19 +79,19 @@ function harperDBService() {
                 const register = require('./register');
                 register.register().then((response) => {
                     console.log(response);
-                }).catch((err) => {
-                    console.error(err);
+                }).catch((register_err) => {
+                    console.error(register_err);
                 });
                 break;
             case hdb_terms.SERVICE_ACTIONS_ENUM.STOP:
-                stop.stop().then().catch((err) => {
-                    console.error(err);
+                stop.stop().then().catch((stop_err) => {
+                    console.error(stop_err);
                 });
                 break;
             case hdb_terms.SERVICE_ACTIONS_ENUM.RESTART:
                 stop.stop().then(
                     run.run()
-                ).catch((err) => {
+                ).catch((restart_err) => {
                     console.error('There was an error stopping harperdb.  Please stop manually with harperdb stop and start again.');
                     process.exit(1);
                 });
@@ -119,18 +118,18 @@ function harperDBService() {
                         .then(() => {
                             logger.notify('Upgrade complete');
                     })
-                        .catch((err) => {
+                        .catch((upgrade_err) => {
                             console.log('There was an error during the upgrade process.  Please check the logs for details.');
-                            logger.error(err);
+                            logger.error(upgrade_err);
                         });
                 } else {
                     upgrade.upgradeFromFilePath(tar_file_path)
                         .then(() => {
                         logger.notify('Upgrade complete');
                     })
-                        .catch((err) => {
+                        .catch((upgrade_err) => {
                             console.log('There was an error during the upgrade process.  Please check the logs for details.');
-                            logger.error(err);
+                            logger.error(upgrade_err);
                         });
                 }
                 break;

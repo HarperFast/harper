@@ -192,7 +192,7 @@ const TEST_LIST_USER_SEARCH_RESPONSE = {
 const TEST_UPDATE_RESPONSE = {
     message: `updated 1 of 1 records`,
     update_hashes: '[test_user]',
-    skipped_hashes: ''
+    skipped_hashes: '[]'
 };
 
 const TEST_USER_INFO_SEARCH_FAIL_RESPONSE = "Role Not Found";
@@ -220,7 +220,7 @@ describe('Test addUser', function () {
         //search_stub = sinon.stub(search, "searchByHash").yields("", TEST_ADD_USER_SEARCH_OBJ);
         search_stub = sinon.stub().resolves(TEST_USER_INFO_SEARCH_RESPONSE);
         user.__set__('p_search_search_by_hash', search_stub);
-        insert_stub = sinon.stub(insert, "insert").resolves(true);
+        insert_stub = sinon.stub(insert, "insert").resolves({message: 'inserted 1 or 1 records', skipped_hashes : [], inserted_hashes: [`test_user`]});
         validate_stub = sinon.stub(validation, "addUserValidation").callsFake(function() {
             return null;
         });

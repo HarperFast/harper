@@ -25,6 +25,8 @@ const global_schema = require('../utility/globalSchema');
 const operation_function_caller = require(`../utility/OperationFunctionCaller`);
 const common_utils = require(`../utility/common_utils`);
 const env = require(`../utility/environment/environmentManager`);
+const master_cluster_rate_limiter = require('../server/apiLimiter/MasterClusterRateLimiter');
+const CounterObject = require('../server/apiLimiter/CounterObject');
 
 const UNAUTH_RESPONSE = 403;
 const UNAUTHORIZED_TEXT = 'You are not authorized to perform the operation specified';
@@ -52,6 +54,7 @@ module.exports = {
     getOperationFunction,
     processLocalTransaction,
     postOperationHandler,
+    createLimitsTimeout,
     UNAUTH_RESPONSE,
     UNAUTHORIZED_TEXT
 };
@@ -73,7 +76,7 @@ function processLocalTransaction(req, res, operation_function, callback) {
             harper_logger.log_level === harper_logger.TRACE) {
                 // Need to remove auth variables, but we don't want to create an object unless
                 // the logging is actually going to happen.
-                const { hdb_user, hdb_auth_header, ...clean_body } = req.body;
+                const { hdb_user, hdb_auth_header, password, ...clean_body } = req.body;
                 harper_logger.info(JSON.stringify(clean_body));
             }
         }
@@ -89,6 +92,9 @@ function processLocalTransaction(req, res, operation_function, callback) {
         .then((data) => {
             if (typeof data !== 'object') {
                 data = {"message": data};
+            }
+            if(data instanceof Error) {
+                setResponseStatus(res, terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, {error: data.message});
             }
 
             if (GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM[req.body.operation]) {
@@ -204,7 +210,7 @@ function postOperationHandler(request_body, result, orig_req) {
                     operation: terms.OPERATIONS_ENUM.CREATE_SCHEMA,
                     schema: request_body.schema,
                 };
-                sendSchemaTransaction(transaction_msg, terms.OPERATIONS_ENUM.CREATE_SCHEMA, request_body, orig_req);
+                sendSchemaTransaction(transaction_msg, terms.INTERNAL_SC_CHANNELS.CREATE_SCHEMA, request_body, orig_req);
             } catch(err) {
                 harper_logger.error('There was a problem sending the create_schema transaction to the cluster.');
             }
@@ -217,7 +223,7 @@ function postOperationHandler(request_body, result, orig_req) {
                     table: request_body.table,
                     hash_attribute: request_body.hash_attribute
                 };
-                sendSchemaTransaction(transaction_msg, terms.OPERATIONS_ENUM.CREATE_TABLE, request_body, orig_req);
+                sendSchemaTransaction(transaction_msg, terms.INTERNAL_SC_CHANNELS.CREATE_TABLE, request_body, orig_req);
             } catch(err) {
                 harper_logger.error('There was a problem sending the create_schema transaction to the cluster.');
             }
@@ -272,15 +278,25 @@ function convertCRUDOperationToTransaction(source_json, affected_hashes, hash_at
     let transaction = {
         operation: source_json.operation,
         schema: source_json.schema,
-        table: source_json.table,
-        records:[]
+        table: source_json.table
     };
 
-    source_json.records.forEach(record =>{
-        if(affected_hashes.indexOf(common_utils.autoCast(record[hash_attribute])) >= 0) {
-            transaction.records.push(record);
+    if(source_json.operation === terms.OPERATIONS_ENUM.DELETE) {
+        transaction.hash_values = [];
+    } else{
+        transaction.records = [];
+    }
+
+    source_json.records.forEach(record => {
+        if (affected_hashes.indexOf(common_utils.autoCast(record[hash_attribute])) >= 0) {
+            if(source_json.operation === terms.OPERATIONS_ENUM.DELETE) {
+                transaction.hash_values.push(record[hash_attribute]);
+            } else {
+                transaction.records.push(record);
+            }
         }
     });
+
     let transaction_msg = common_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
     transaction_msg.transaction = transaction;
     return transaction_msg;
@@ -341,7 +357,7 @@ function chooseOperation(json, callback) {
 
 function getOperationFunction(json){
     harper_logger.trace(`getOperationFunction with operation: ${json.operation}`);
-    let operation_function = nullOperation;
+    let operation_function = nullOperationAwait;
     let job_operation_function = undefined;
 
     switch (json.operation) {
@@ -496,32 +512,34 @@ function getOperationFunction(json){
     };
 }
 
-async function catchup(catchup_object) {
+async function catchup(req) {
     harper_logger.trace('In serverUtils.catchup');
+    let catchup_object = req.transaction;
     let split_channel = catchup_object.channel.split(':');
 
     let schema = split_channel[0];
     let table = split_channel[1];
-    let originator = catchup_object.__originator;
     for (let transaction of catchup_object.transactions) {
         try {
             transaction.schema = schema;
             transaction.table = table;
-            transaction.__originator = originator;
+            let result;
             switch (transaction.operation) {
                 case terms.OPERATIONS_ENUM.INSERT:
-                    await insert.insert(transaction);
+                    result = await insert.insert(transaction);
                     break;
                 case terms.OPERATIONS_ENUM.UPDATE:
-                    await insert.update(transaction);
+                    result = await insert.update(transaction);
                     break;
                 case terms.OPERATIONS_ENUM.DELETE:
-                    await delete_.delete(transaction);
+                    result = await delete_.delete(transaction);
                     break;
                 default:
                     harper_logger.warn('invalid operation in catchup');
                     break;
             }
+
+            postOperationHandler(transaction, result, req);
         } catch(e) {
             harper_logger.info('Invalid operation in transaction');
             harper_logger.error(e);
@@ -531,6 +549,10 @@ async function catchup(catchup_object) {
 
 function nullOperation(json, callback) {
     callback('Invalid operation');
+}
+
+async function nullOperationAwait(json) {
+    throw new Error('Invalid operation');
 }
 
 async function signalJob(json) {
@@ -557,4 +579,16 @@ async function signalJob(json) {
         harper_logger.error(message);
         throw new Error(message);
     }
+}
+
+function createLimitsTimeout(limiter_name_string, master_rate_limiter, timout_interval_ms) {
+    setTimeout(async (info) => {
+        try {
+            harper_logger.debug('Restoring limits');
+            let points = master_rate_limiter._rateLimiters[`apiclusterlimiter`].points;
+
+        } catch(err) {
+            harper_logger.log(err);
+        }
+    }, timout_interval_ms);
 }

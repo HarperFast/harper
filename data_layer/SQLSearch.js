@@ -9,23 +9,15 @@
 const _ = require('lodash');
 const alasql = require('alasql');
 const alasql_function_importer = require('../sqlTranslator/alasqlFunctionImporter');
-const fs = require('fs-extra');
 const clone = require('clone');
 const RecursiveIterator = require('recursive-iterator');
-const env = require('../utility/environment/environmentManager');
 const log = require('../utility/logging/harper_logger');
 const common_utils = require('../utility/common_utils');
 const harperBridge = require('./harperBridge/harperBridge');
+const hdbTerms = require('../utility/hdbTerms');
 
-
-const exclude_attributes = ['__hash_values','__hash_name','__merged_data','__has_hash'];
-const escaped_slash_regex = /U\+002F/g;
-// Search is used in the installer, and the base path may be undefined when search is instantiated.  Dynamically
-// get the base path from the environment manager before using it.
-let base_path = function() {
-    return `${env.getHdbBasePath()}/schema/`;
-};
 const WHERE_CLAUSE_IS_NULL = 'IS NULL';
+const SEARCH_ERROR_MSG = 'There was a problem performing this search. Please check the logs and try again.';
 
 //here we call to define and import custom functions to alasql
 alasql_function_importer(alasql);
@@ -39,6 +31,7 @@ class SQLSearch {
      */
     constructor(statement, attributes) {
         if (common_utils.isEmpty(statement)) {
+            log.error('AST statement for SQL select process cannot be empty');
             throw 'statement cannot be null';
         }
 
@@ -50,6 +43,7 @@ class SQLSearch {
 
         this.fetch_attributes = [];
         this.exact_search_values = {};
+        this.comparator_search_values = {};
         this.tables = [];
 
         //holds the data from the file system to be evaluated by the sql processor
@@ -70,27 +64,58 @@ class SQLSearch {
         try {
             let empty_sql_results = await this._checkEmptySQL();
             if (!common_utils.isEmptyOrZeroLength(empty_sql_results)) {
+                log.trace('No results returned from checkEmptySQL SQLSearch method.');
                 return empty_sql_results;
             }
-            await this._getFetchAttributeValues();
-
-            //In the instance of null data this.data would not have schema/table defined or created as there is no data backing up what would sit in data.
-            if (Object.keys(this.data).length === 0) {
-                return [];
-            }
-
-            // Consolidate initial data required for first pass of sql join - narrows list of hash ids for second pass to collect all data resulting from sql request
-            await this._consolidateData();
-            let join_results = await this._processJoins();
-
-            // Decide the most efficient way to make the second/final pass for collecting all additional data needed for sql request
-            await this._getFinalAttributeData(join_results.existing_attributes,join_results.joined_length);
-            search_results = await this._finalSQL();
-        } catch(e) {
-            log.error(e);
-            throw new Error('There was a problem performing this search.  Please check the logs and try again.');
+        } catch (err) {
+            log.error('Error thrown from checkEmptySQL in SQLSearch class method search.');
+            log.error(err);
+            throw new Error(SEARCH_ERROR_MSG);
         }
-        return search_results;
+
+        try {
+            // Search for fetch attribute values and consolidate them into this.data[table].__merged_data property
+            await this._getFetchAttributeValues();
+        } catch (err) {
+            log.error('Error thrown from getFetchAttributeValues in SQLSearch class method search.');
+            log.error(err);
+            throw new Error(SEARCH_ERROR_MSG);
+        }
+
+        // In the instance of null data this.data would not have schema/table defined or created as there is no data backing up what would sit in data.
+        if (Object.keys(this.data).length === 0) {
+            log.trace('SQLSearch class field: "data" is empty.');
+            return [];
+        }
+
+        let join_results;
+        try {
+            // Consolidate initial data required for first pass of sql join - narrows list of hash ids for second pass to collect all data resulting from sql request
+            join_results = await this._processJoins();
+        } catch (err) {
+            log.error('Error thrown from processJoins in SQLSearch class method search.');
+            log.error(err);
+            throw new Error(SEARCH_ERROR_MSG);
+        }
+
+        try {
+            // Decide the most efficient way to make the second/final pass for collecting all additional data needed for sql request
+            await this._getFinalAttributeData(join_results.existing_attributes, join_results.joined_length);
+        } catch (err) {
+            log.error('Error thrown from getFinalAttributeData in SQLSearch class method search.');
+            log.error(err);
+            throw new Error(SEARCH_ERROR_MSG);
+        }
+
+        try {
+            search_results = await this._finalSQL();
+            log.trace(`Search results: ${search_results}`);
+            return search_results;
+        } catch (err) {
+            log.error('Error thrown from finalSQL in SQLSearch class method search.');
+            log.error(err);
+            throw new Error(SEARCH_ERROR_MSG);
+        }
     }
 
     /**
@@ -111,7 +136,6 @@ class SQLSearch {
                 }
             });
         }
-
 
         let iterator = new RecursiveIterator(this.statement);
         for (let {node, path} of iterator) {
@@ -152,6 +176,7 @@ class SQLSearch {
      */
     _conditionsToFetchAttributeValues() {
         if (common_utils.isEmpty(this.statement.where)) {
+            log.trace('AST "where" statement is empty.');
             return;
         }
 
@@ -164,12 +189,14 @@ class SQLSearch {
         }
 
         if (total_ignore) {
+            log.trace('Where clause contains "OR", exact match search not performed on attributes.');
             return;
         }
 
         for (let {node} of new RecursiveIterator(this.statement.where)) {
-            if (node && node.left && node.right && (node.left.columnid || node.right.columid) && node.op) {
+            if (node && node.left && node.right && (node.left.columnid || node.right.value) && node.op) {
                 let values = new Set();
+                // TODO - explore what scenarios would be handled here - when would a left.columnid not be present?
                 let column = node.left.columnid ? node.left : node.right;
                 let found_column = this._findColumn(column);
                 if(!found_column) {
@@ -177,6 +204,32 @@ class SQLSearch {
                 }
                 //buildFolderPath returns the needed key for FS (attribute dir key) and for Helium (datastore key)
                 let attribute_key = common_utils.buildFolderPath(found_column.table.databaseid, found_column.table.tableid, found_column.attribute);
+
+                // Check for value range search first
+                if (!common_utils.isEmpty(hdbTerms.FS_VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP[node.op])) {
+                    if (common_utils.isEmpty(this.comparator_search_values[attribute_key])) {
+                        this.comparator_search_values[attribute_key] = {
+                            ignore: false,
+                            comparators: []
+                        };
+                    }
+
+                    if (!this.comparator_search_values[attribute_key].ignore) {
+                        if (common_utils.isEmptyOrZeroLength(node.left.columnid) || common_utils.isEmptyOrZeroLength(node.right.value)) {
+                            this.comparator_search_values[attribute_key].ignore = true;
+                            this.comparator_search_values[attribute_key].comparators = [];
+                            continue;
+                        }
+
+                        this.comparator_search_values[attribute_key].comparators.push({
+                            attribute: node.left.columnid,
+                            operation: node.op,
+                            search_value: `${node.right.value}`
+                        });
+                    }
+                    continue;
+                }
+
                 if (common_utils.isEmpty(this.exact_search_values[attribute_key])) {
                     this.exact_search_values[attribute_key] = {
                         ignore: false,
@@ -189,13 +242,13 @@ class SQLSearch {
 
                     switch (node.op) {
                         case '=':
-                            if (node.right.value || node.left.value) {
-                                values.add(node.right.value ? node.right.value.toString() : node.left.value.toString());
+                            if (!common_utils.isEmpty(node.right.value) || !common_utils.isEmpty(node.left.value)) {
+                                values.add(!common_utils.isEmpty(node.right.value) ? node.right.value.toString() : node.left.value.toString());
                             } else {
                                 ignore = true;
                             }
                             break;
-                        case 'IN' :
+                        case 'IN':
                             let in_array = Array.isArray(node.right) ? node.right : node.left;
 
                             for (let x = 0; x < in_array.length; x++) {
@@ -245,7 +298,6 @@ class SQLSearch {
                     if (node.tableid && !node.tableid.startsWith('`')) {
                         node.tableid_orig = node.tableid;
                         node.tableid = `\`${node.tableid}\``;
-
                     }
                     if (node.databaseid && !node.databaseid.startsWith('`')) {
                         node.databaseid_orig = node.databaseid;
@@ -304,8 +356,8 @@ class SQLSearch {
             //this scenario is reached by doing a select with only calculations
             try {
                 results = await alasql.promise(this.statement.toString());
-
             } catch(e) {
+                log.error('Error thrown from AlaSQL in SQLSearch class method checkEmptySQL.');
                 log.error(e);
                 throw new Error('There was a problem with the SQL statement');
             }
@@ -331,7 +383,8 @@ class SQLSearch {
     }
 
     /**
-     * Gets all values for the where, join, & order by attributes and also the associated hashes for those rows
+     * Gets all values for the where, join, & order by attributes and converts the raw indexed data into individual
+     * rows by hash attribute consolidated based on tables
      * @returns {Promise<void>}
      * @private
      */
@@ -339,8 +392,6 @@ class SQLSearch {
         //get all unique attributes
         this._addFetchColumns(this.columns.joins);
 
-        // in order to perform is null conditions we need to bring in the hash attribute to make sure we coalesce the
-        // objects so records that have null values are found.
         let where_string = null;
         try {
             where_string = this.statement.where ? this.statement.where.toString() : '';
@@ -371,6 +422,17 @@ class SQLSearch {
         // do we need this uniqueby, could just use object as map
         this.fetch_attributes = _.uniqBy(this.fetch_attributes, attribute => [attribute.table.databaseid, attribute.table.tableid, attribute.attribute].join());
 
+        // create an attr template for each table row to ensure each row has a null value for attrs not returned in the search
+        const fetch_attributes_objs = this.fetch_attributes.reduce((acc, attr) => {
+            const schema_table = `${attr.table.databaseid}_${attr.table.tableid}`;
+            if (!acc[schema_table]) {
+                const hash_name = this.data[schema_table].__hash_name;
+                acc[schema_table] = { [hash_name]: null };
+            }
+            acc[schema_table][attr.attribute] = null;
+            return acc;
+        }, {});
+
         for (const attribute of this.fetch_attributes) {
             const schema_table = `${attribute.table.databaseid}_${attribute.table.tableid}`;
             this.data[schema_table][`${attribute.attribute}`] = {};
@@ -383,9 +445,9 @@ class SQLSearch {
             };
             let is_hash = false;
             let object_path = common_utils.buildFolderPath(attribute.table.databaseid, attribute.table.tableid, attribute.attribute);
+
             //check if this attribute is the hash attribute for a table, if it is we need to read the files from the __hdh_hash
             // folder, otherwise pull from the value index
-
             if (attribute.attribute === hash_name) {
                 is_hash = true;
             }
@@ -402,86 +464,103 @@ class SQLSearch {
                         const attribute_values = Object.values(await harperBridge.getDataByHash(search_object));
                         attribute_values.forEach(hash_obj => {
                             const hash_val = hash_obj[hash_name];
-                            this.data[schema_table].__merged_data[hash_val] = {};
-                            this.data[schema_table][`${attribute.attribute}`][hash_val] = hash_val;
+                            if (!this.data[schema_table].__merged_data[hash_val]) {
+                                this.data[schema_table].__merged_data[hash_val] = Object.create(fetch_attributes_objs[schema_table]);
+                                this.data[schema_table].__merged_data[hash_val][hash_name] = hash_val;
+                            }
                         });
                     } catch (e) {
+                        log.error('Error thrown from getDataByHash function in SQLSearch class method getFetchAttributeValues exact match.');
                         log.error(e);
                     }
                 } else {
-                    search_object.search_attribute = attribute.attribute;
-                    await Promise.all(Array.from(this.exact_search_values[object_path].values).map(async (value) => {
-                        search_object.search_value = value;
-                        const attr_vals = await harperBridge.getDataByValue(search_object);
-                        Object.keys(attr_vals).forEach(hash_val => {
-                            this.data[schema_table].__merged_data[hash_val] = {};
-                            this.data[schema_table][`${attribute.attribute}`][hash_val] = attr_vals[hash_val][attribute.attribute];
-                        });
-                    }));
+                    try {
+                        search_object.search_attribute = attribute.attribute;
+                        await Promise.all(Array.from(this.exact_search_values[object_path].values).map(async (value) => {
+                            search_object.search_value = value;
+                            const attr_vals = await harperBridge.getDataByValue(search_object);
+                            Object.keys(attr_vals).forEach(hash_val => {
+                                if (!this.data[schema_table].__merged_data[hash_val]) {
+                                    this.data[schema_table].__merged_data[hash_val] = Object.create(fetch_attributes_objs[schema_table]);
+                                    this.data[schema_table].__merged_data[hash_val][hash_name] = common_utils.autoCast(hash_val);
+                                    this.data[schema_table].__merged_data[hash_val][attribute.attribute] = attr_vals[hash_val][attribute.attribute];
+                                } else {
+                                    this.data[schema_table].__merged_data[hash_val][attribute.attribute] = attr_vals[hash_val][attribute.attribute];
+                                }
+                            });
+                        }));
+                    } catch (err) {
+                        log.error('Error thrown from getDataByValue function in SQLSearch class method getFetchAttributeValues exact match.');
+                        log.error(err);
+                    }
                 }
             } else {
-                try {
-                    search_object.search_attribute = attribute.attribute;
-                    search_object.search_value = '*';
-                    const matching_data = await harperBridge.getDataByValue(search_object);
-                    if (is_hash) {
-                        this.data[schema_table].__has_hash = true;
-                        Object.values(matching_data).forEach(hash_obj => {
-                            const hash_val = hash_obj[hash_name];
-                            this.data[schema_table].__merged_data[hash_val] = {};
-                            this.data[schema_table][`${attribute.attribute}`][hash_val] = hash_val;
-                        });
-                    } else {
-                        Object.keys(matching_data).forEach(hash_val => {
-                            this.data[schema_table].__merged_data[hash_val] = {};
-                            this.data[schema_table][`${attribute.attribute}`][hash_val] = matching_data[hash_val][attribute.attribute];
-                        });
+                if (!common_utils.isEmpty(this.comparator_search_values[object_path]) && !this.comparator_search_values[object_path].ignore &&
+                    !common_utils.isEmptyOrZeroLength(this.comparator_search_values[object_path].comparators)) {
+                    try {
+                        const search_value_comparators = this.comparator_search_values[object_path].comparators;
+                        for (let i = 0; i < search_value_comparators.length; i++) {
+                            const comp = search_value_comparators[i];
+                            search_object.search_attribute = comp.attribute;
+                            search_object.search_value = comp.search_value;
+                            const matching_data = await harperBridge.getDataByValue(search_object, comp.operation);
+                            if (is_hash) {
+                                this.data[schema_table].__has_hash = true;
+                                Object.values(matching_data).forEach(hash_obj => {
+                                    const hash_val = hash_obj[hash_name];
+                                    if (!this.data[schema_table].__merged_data[hash_val]) {
+                                        this.data[schema_table].__merged_data[hash_val] = Object.create(fetch_attributes_objs[schema_table]);
+                                        this.data[schema_table].__merged_data[hash_val][hash_name] = common_utils.autoCast(hash_val);
+                                    }
+                                });
+                            } else {
+                                Object.keys(matching_data).forEach(hash_val => {
+                                    if (!this.data[schema_table].__merged_data[hash_val]) {
+                                        this.data[schema_table].__merged_data[hash_val] = Object.create(fetch_attributes_objs[schema_table]);
+                                        this.data[schema_table].__merged_data[hash_val][hash_name] = common_utils.autoCast(hash_val);
+                                        this.data[schema_table].__merged_data[hash_val][attribute.attribute] = matching_data[hash_val][attribute.attribute];
+                                    } else {
+                                        this.data[schema_table].__merged_data[hash_val][attribute.attribute] = matching_data[hash_val][attribute.attribute];
+                                    }
+                                });
+                            }
+                        }
+                    } catch (err) {
+                        log.error('Error thrown from getDataByValue function in SQLSearch class method getFetchAttributeValues comparator search values.');
+                        log.error(err);
                     }
-                } catch (e) {
-                    console.log(e);
-                    // no-op
+                } else {
+                    try {
+                        search_object.search_attribute = attribute.attribute;
+                        search_object.search_value = '*';
+                        const matching_data = await harperBridge.getDataByValue(search_object);
+                        if (is_hash) {
+                            this.data[schema_table].__has_hash = true;
+                            Object.values(matching_data).forEach(hash_obj => {
+                                const hash_val = hash_obj[hash_name];
+                                if (!this.data[schema_table].__merged_data[hash_val]) {
+                                    this.data[schema_table].__merged_data[hash_val] = Object.create(fetch_attributes_objs[schema_table]);
+                                    this.data[schema_table].__merged_data[hash_val][hash_name] = common_utils.autoCast(hash_val);
+                                }
+                            });
+                        } else {
+                            Object.keys(matching_data).forEach(hash_val => {
+                                if (!this.data[schema_table].__merged_data[hash_val]) {
+                                    this.data[schema_table].__merged_data[hash_val] = Object.create(fetch_attributes_objs[schema_table]);
+                                    this.data[schema_table].__merged_data[hash_val][hash_name] = common_utils.autoCast(hash_val);
+                                    this.data[schema_table].__merged_data[hash_val][attribute.attribute] = matching_data[hash_val][attribute.attribute];
+                                } else {
+                                    this.data[schema_table].__merged_data[hash_val][attribute.attribute] = matching_data[hash_val][attribute.attribute];
+                                }
+                            });
+                        }
+                    } catch (err) {
+                        log.error('Error thrown from getDataByValue function in SQLSearch class method getFetchAttributeValues no comparator search values.');
+                        log.error(err);
+                    }
                 }
             }
         }
-    }
-
-    /**
-     * Converts the raw indexed data into individual rows by hash attribute
-     * consolidated based on tables
-     * @returns {Promise<void>}
-     * @private
-     */
-    async _consolidateData() {
-        await Promise.all(Object.keys(this.data).map(table => {
-            try {
-                let hash_name = this.data[table].__hash_name;
-                let object_keys = Object.keys(this.data[table].__merged_data);
-
-                object_keys.forEach(id_value => {
-                    this.data[table].__merged_data[id_value][hash_name] = common_utils.autoCast(id_value);
-                });
-
-                Object.keys(this.data[table]).forEach(attribute => {
-                    if (exclude_attributes.indexOf(attribute) >= 0 || attribute === hash_name) {
-                        return;
-                    }
-
-                    object_keys.forEach(value => {
-                        value = value.replace(escaped_slash_regex, '/');
-                        if (this.data[table][attribute][value] === null || this.data[table][attribute][value] === undefined) {
-                            this.data[table].__merged_data[value][attribute] = null;
-                        } else {
-                            this.data[table].__merged_data[value][attribute] = this.data[table][attribute][value];
-                        }
-                    });
-                    //This is to free up memory, after consolidation we no longer need these values
-                    this.data[table][attribute] = null;
-                });
-            } catch (e) {
-                log.error(e);
-                // no-op
-            }
-        }));
     }
 
     /**
@@ -493,18 +572,14 @@ class SQLSearch {
     async _processJoins() {
         let table_data = [];
         let select = [];
-
         //TODO possibly need to loop the from here, need to investigate
         let from_statement = this.statement.from[0];
-
         let tables = [from_statement];
-
         let from_clause = [
             '? ' + (from_statement.as ? ' AS ' + from_statement.as : from_statement.tableid)
         ];
 
         table_data.push(Object.values(this.data[`${from_statement.databaseid_orig}_${from_statement.tableid_orig}`].__merged_data));
-
 
         if (this.statement.joins) {
             this.statement.joins.forEach(join => {
@@ -534,7 +609,7 @@ class SQLSearch {
 
             for (let prop in this.data[`${table.databaseid_orig}_${table.tableid_orig}`].__merged_data) {
                 existing_attributes[table.tableid_orig] = Object.keys(this.data[`${table.databaseid_orig}_${table.tableid_orig}`].__merged_data[prop]);
-                //TODO: Why is this break here?
+                //This break is here b/c we only need to get attr keys from the first object.
                 break;
             }
         });
@@ -560,10 +635,12 @@ class SQLSearch {
         try {
             joined = await alasql.promise(`SELECT ${select.join(',')} FROM ${from_clause.join(' ')} ${where_clause} ${order_clause} ${limit}`, table_data);
         } catch(e) {
+            log.error('Error thrown from AlaSQL in SQLSearch class method processJoins.');
             log.error(e);
             throw new Error('There was a problem processing the data.');
         }
 
+        //collect returned hash values and remove others from table's __merged_data
         if (joined && joined.length > 0) {
             joined.forEach((row) => {
                 hash_attributes.forEach(hash => {
@@ -616,6 +693,7 @@ class SQLSearch {
         try {
             await this._getData(all_columns);
         } catch(e) {
+            log.error('Error thrown from getData in SQLSearch class method getFinalAttributeData.');
             log.error(e);
         }
     }
@@ -659,6 +737,8 @@ class SQLSearch {
                 });
             }));
         } catch(e) {
+            log.error('Error thrown from getDataByHash function in SQLSearch class method getData.');
+            log.error(e);
             throw e;
         }
     }
@@ -689,8 +769,12 @@ class SQLSearch {
         let final_results = undefined;
         try {
             let sql = this._buildSQL();
+            log.trace(`Final SQL: ${sql}`);
             final_results = await alasql.promise(sql, table_data);
-        } catch(e){
+            log.trace(`Final AlaSQL results: ${final_results}`);
+        } catch(e) {
+            log.error('Error thrown from AlaSQL in SQLSearch class method finalSQL.');
+            log.error(e);
             throw new Error('There was a problem running the generated sql.');
         }
         return final_results;

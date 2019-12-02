@@ -1,4 +1,4 @@
-const validator = require('./validationWrapper.js');
+const validator = require('./validationWrapper');
 const validate = require('validate.js');
 
 validate.validators.typeArray = function(value, options, key, attributes) {

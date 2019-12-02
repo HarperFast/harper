@@ -9,6 +9,9 @@ const clone = require('clone');
 const alasql = require('alasql');
 const util = require('util');
 const cb_insert_update = util.callbackify(write.update);
+const terms = require('../utility/hdbTerms');
+const hdb_utils = require('../utility/common_utils');
+const env = require('../utility/environment/environmentManager');
 
 module.exports = {
     update: update
@@ -113,7 +116,16 @@ function updateRecords(table, records, callback){
             callback(err);
             return;
         }
-
+        // With non SQL CUD actions, the `post` operation passed into OperationFunctionCaller would send the transaction to the cluster.
+        // Since we don`t send Most SQL options to the cluster, we need to explicitly send it.
+        if(res.update_hashes.length > 0) {
+            if (update_object.schema !== terms.SYSTEM_SCHEMA_NAME) {
+                let update_msg = hdb_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
+                update_msg.transaction = update_object;
+                update_msg.transaction.operation = terms.OPERATIONS_ENUM.UPDATE;
+                hdb_utils.sendTransactionToSocketCluster(`${update_object.schema}:${update_object.table}`, update_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
+            }
+        }
         callback(null, res);
     });
 }

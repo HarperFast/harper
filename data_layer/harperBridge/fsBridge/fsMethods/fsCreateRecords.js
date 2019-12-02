@@ -10,7 +10,7 @@ const hdb_utils = require('../../../../utility/common_utils');
 const hdb_terms = require('../../../../utility/hdbTerms');
 const signalling = require('../../../../utility/signalling');
 
-const ATTRIBUTE_ALREADY_EXISTS = 'attribute already exists';
+const ATTRIBUTE_ALREADY_EXISTS = 'already exists';
 
 module.exports = createRecords;
 

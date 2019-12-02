@@ -65,22 +65,22 @@ async function export_local(export_object) {
 
 /**
  * stats the path sent in to verify the path exists, the user has access & the path is a directory
- * @param path
+ * @param directory_path
  */
-async function confirmPath(path) {
+async function confirmPath(directory_path) {
     hdb_logger.trace("in confirmPath");
-    if(hdb_utils.isEmptyOrZeroLength(path)) {
-        throw new Error(`Invalid path: ${path}`);
+    if(hdb_utils.isEmptyOrZeroLength(directory_path)) {
+        throw new Error(`Invalid path: ${directory_path}`);
     }
     let stats = undefined;
     try {
-        stats = await fs.stat(path);
+        stats = await fs.stat(directory_path);
     } catch(err) {
         let error_message;
         if (err.code === 'ENOENT') {
-            error_message = `path '${path}' does not exist`;
+            error_message = `path '${directory_path}' does not exist`;
         } else if (err.code === 'EACCES') {
-            error_message = `access to path '${path}' is denied`;
+            error_message = `access to path '${directory_path}' is denied`;
         } else {
             error_message = err.message;
         }
@@ -88,7 +88,7 @@ async function confirmPath(path) {
         throw new Error(error_message);
     }
     if (!stats.isDirectory()) {
-        let err = `path '${path}' is not a directory, please supply a valid folder path`;
+        let err = `path '${directory_path}' is not a directory, please supply a valid folder path`;
         hdb_logger.error(err);
         throw new Error(err);
     }

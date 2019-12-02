@@ -19,6 +19,7 @@ const ENTITY_TYPE_ENUM = {
 };
 
 class HDBSocketConnector extends SocketConnector{
+
     constructor(socket_client, additional_info, options, credentials){
         super(socket_client, additional_info, options, credentials);
         this.addEventListener('connect', this.connectHandler.bind(this));
@@ -61,7 +62,9 @@ class HDBSocketConnector extends SocketConnector{
                                 // csv loading and other jobs need to use a different postOp handler
                                 if(found_operation.job_operation_function) {
                                     let result = operation_function(req.transaction);
-                                } else {
+                                } else if(found_operation.operation_function.name === 'catchup'){
+                                    let result = await operation_function(req);
+                                }else {
                                     let result = await operation_function_caller.callOperationFunctionAsAwait(operation_function, req.transaction, server_utilities.postOperationHandler, req);
                                     log.debug(result);
                                 }

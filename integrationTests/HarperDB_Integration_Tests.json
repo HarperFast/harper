@@ -1,6 +1,6 @@
 {
 	"info": {
-		"_postman_id": "d47d45ca-9e23-4bcf-a643-476788e04ed0",
+		"_postman_id": "ca781c25-7146-489f-985e-2cee898543cc",
 		"name": "HarperDB Integration Tests",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
 	},
@@ -2456,10 +2456,10 @@
 									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "{{host}}:9925",
+
 									"host": [
-										"localhost"
+										"{{host}}"
 									],
 									"port": "9925"
 								}
@@ -2480,6 +2480,1102 @@
 									"    pm.environment.set(\"job_id\", parsedId);",
 									"    pm.environment.set(\"next_request\", next_req);",
 									"    postman.setNextRequest(\"Check Job Completed\");",
+									"});"
+								]
+							}
+						}
+					],
+					"protocolProfileBehavior": {},
+					"_postman_isSubFolder": true
+				},
+				{
+					"name": "CSV URL Load",
+					"item": [
+						{
+							"name": "Create CSV data table",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "7c135745-b3bf-47c2-9887-3649dea3c65a",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");",
+											"",
+											"setTimeout(()=>{}, 500);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3Q="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{csv_tb}}\",\n  \"hash_attribute\": \"id\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "CSV file load",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "acf3b9f8-0ea6-4f9a-b0f2-0ddb6722242d",
+										"exec": [
+											"pm.test(\"Check for job message\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
+											"    ",
+											"    eval(pm.globals.get(\"function:getJobIdURLcsv\"))(jsonData, null);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"setTimeout(()=>{}, 500);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"csv_url_load\",\n  \"action\": \"insert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{csv_tb}}\",\n  \"csv_url\":\"https://s3.amazonaws.com/complimentarydata/breeds.csv\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": [
+								{
+									"name": "CSV Data Load",
+									"originalRequest": {
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											},
+											{
+												"key": "Authorization",
+												"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n  \"operation\":\"csv_data_load\",\n  \"schema\":\"dev\",\n  \"action\": \"insert\",\n  \"table\":\"breed\",\n  \"data\":\"id,name,section,country,image\\n1,ENGLISH POINTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/001g07.jpg\\n2,ENGLISH SETTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/002g07.jpg\\n3,KERRY BLUE TERRIER,Large and medium sized Terriers,IRELAND,\\n\"\n}"
+										},
+										"url": {
+											"raw": "{{HDB_ENDPOINT}}",
+											"host": [
+												"{{HDB_ENDPOINT}}"
+											]
+										}
+									},
+									"status": "OK",
+									"code": 200,
+									"_postman_previewlanguage": "json",
+									"header": [
+										{
+											"key": "Connection",
+											"value": "keep-alive",
+											"name": "Connection",
+											"description": "Options that are desired for the connection"
+										},
+										{
+											"key": "Content-Length",
+											"value": "71",
+											"name": "Content-Length",
+											"description": "The length of the response body in octets (8-bit bytes)"
+										},
+										{
+											"key": "Content-Type",
+											"value": "application/json; charset=utf-8",
+											"name": "Content-Type",
+											"description": "The mime type of this content"
+										},
+										{
+											"key": "Date",
+											"value": "Mon, 09 Jul 2018 20:07:14 GMT",
+											"name": "Date",
+											"description": "The date and time that the message was sent"
+										},
+										{
+											"key": "ETag",
+											"value": "W/\"47-FY/m86hgW/48m7lLK1CpL02xrIw\"",
+											"name": "ETag",
+											"description": "An identifier for a specific version of a resource, often a message digest"
+										},
+										{
+											"key": "Vary",
+											"value": "Origin",
+											"name": "Vary",
+											"description": "Tells downstream proxies how to match future request headers to decide whether the cached response can be used rather than requesting a fresh one from the origin server."
+										}
+									],
+									"cookie": [],
+									"body": ""
+								}
+							]
+						},
+						{
+							"name": "Check CSV data loaded",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "34b3186b-c5e9-45da-8bca-92ea79825179",
+										"exec": [
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"test Job Found\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(1);",
+											"    ",
+											"    pm.expect(jsonData[0]).to.have.property('status');",
+											"    ",
+											"    let status = jsonData[0].status;",
+											"    ",
+											"    switch(status){",
+											"        case 'ERROR':",
+											"            console.log(jsonData[0]);",
+											"            console.log(\"Error checking CSV URL load job.\")",
+											"            if(pm.environment.get(\"next_request\")){",
+											"                postman.setNextRequest(pm.environment.get(\"next_request\"));",
+											"            }",
+											"            pm.expect(status).to.not.eql('ERROR');",
+											"            break;",
+											"        case 'COMPLETE':",
+											"            console.log(jsonData[0]);",
+											"            if(pm.environment.get(\"next_request\")){",
+											"                postman.setNextRequest(pm.environment.get(\"next_request\"));",
+											"            }",
+											"           ",
+											"            pm.expect(jsonData[0].message).to.eql(\"successfully loaded 351 of 351 records\");",
+											"            pm.expect(status).to.be.oneOf(['COMPLETE', 'ERROR']);",
+											"            break;",
+											"        case '0':",
+											"        case 0:",
+											"        case 'IN_PROGRESS':",
+											"            console.log('in progress, checking again');",
+											"            postman.setNextRequest('Check CSV data loaded');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0']);",
+											"            break;",
+											"        default:",
+											"            postman.setNextRequest('Check CSV data loaded');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0', 'ERROR', 'COMPLETE']);",
+											"            break;",
+											"    }",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "c350ea7e-d128-486d-9aa2-24abaa82d300",
+										"exec": [
+											"setTimeout(()=>{}, 200);",
+											"console.log(\"Checking Job CSV URL load\" + pm.environment.get(\"job_id\"));"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Confirm all CSV records loaded",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "0140dbb8-08cc-411d-ae68-91d01be59fdf",
+										"exec": [
+											"pm.test(\"test good response\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"test correct count from table\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData[0]['COUNT(*)']).to.eql(351)",
+											"});",
+											"",
+											"setTimeout(()=>{}, 500);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select count(*) from {{schema}}.{{csv_tb}}\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": [
+								{
+									"name": "Select",
+									"originalRequest": {
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											},
+											{
+												"key": "Authorization",
+												"type": "text",
+												"name": "Authorization",
+												"value": "Basic SERCX0FETUlOOjE0MDA="
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"SELECT d.id, d.dog_name, d.owner_name, b.name, b.section FROM dev.dog AS d INNER JOIN dev.breed AS b ON d.breed_id = b.id WHERE d.owner_name IN ('Kyle', 'Zach', 'Stephen') AND b.section = 'Mutt' ORDER BY d.dog_name\"\n}"
+										},
+										"url": {
+											"raw": "http://localhost:9925",
+											"protocol": "http",
+											"host": [
+												"localhost"
+											],
+											"port": "9925"
+										}
+									},
+									"status": "OK",
+									"code": 200,
+									"_postman_previewlanguage": "json",
+									"header": [
+										{
+											"key": "connection",
+											"value": "keep-alive",
+											"name": "connection",
+											"description": ""
+										},
+										{
+											"key": "content-length",
+											"value": "389",
+											"name": "content-length",
+											"description": ""
+										},
+										{
+											"key": "content-type",
+											"value": "application/json; charset=utf-8",
+											"name": "content-type",
+											"description": ""
+										},
+										{
+											"key": "date",
+											"value": "Fri, 01 Sep 2017 17:55:45 GMT",
+											"name": "date",
+											"description": ""
+										},
+										{
+											"key": "etag",
+											"value": "W/\"185-edwDBNLCreSo/YY1IIyzPmR72ec\"",
+											"name": "etag",
+											"description": ""
+										},
+										{
+											"key": "x-powered-by",
+											"value": "HarperDB",
+											"name": "x-powered-by",
+											"description": ""
+										}
+									],
+									"cookie": [],
+									"body": ""
+								}
+							]
+						},
+						{
+							"name": "Create CSV data table empty",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "7c135745-b3bf-47c2-9887-3649dea3c65a",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3Q="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{csv_tb_empty}}\",\n  \"hash_attribute\": \"id\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "CSV file load empty file",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "acf3b9f8-0ea6-4f9a-b0f2-0ddb6722242d",
+										"exec": [
+											"pm.test(\"Check for job message\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
+											"    ",
+											"    eval(pm.globals.get(\"function:getJobIdURLcsvEmpty\"))(jsonData, null);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "4c54e477-3457-4c75-a64f-10c086d27727",
+										"exec": [
+											"setTimeout(()=>{}, 500);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"csv_url_load\",\n  \"action\": \"insert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{csv_tb_empty}}\",\n  \"csv_url\":\"https://s3.amazonaws.com/complimentarydata/breedsEmpty.csv\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": [
+								{
+									"name": "CSV Data Load",
+									"originalRequest": {
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											},
+											{
+												"key": "Authorization",
+												"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n  \"operation\":\"csv_data_load\",\n  \"schema\":\"dev\",\n  \"action\": \"insert\",\n  \"table\":\"breed\",\n  \"data\":\"id,name,section,country,image\\n1,ENGLISH POINTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/001g07.jpg\\n2,ENGLISH SETTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/002g07.jpg\\n3,KERRY BLUE TERRIER,Large and medium sized Terriers,IRELAND,\\n\"\n}"
+										},
+										"url": {
+											"raw": "{{HDB_ENDPOINT}}",
+											"host": [
+												"{{HDB_ENDPOINT}}"
+											]
+										}
+									},
+									"status": "OK",
+									"code": 200,
+									"_postman_previewlanguage": "json",
+									"header": [
+										{
+											"key": "Connection",
+											"value": "keep-alive",
+											"name": "Connection",
+											"description": "Options that are desired for the connection"
+										},
+										{
+											"key": "Content-Length",
+											"value": "71",
+											"name": "Content-Length",
+											"description": "The length of the response body in octets (8-bit bytes)"
+										},
+										{
+											"key": "Content-Type",
+											"value": "application/json; charset=utf-8",
+											"name": "Content-Type",
+											"description": "The mime type of this content"
+										},
+										{
+											"key": "Date",
+											"value": "Mon, 09 Jul 2018 20:07:14 GMT",
+											"name": "Date",
+											"description": "The date and time that the message was sent"
+										},
+										{
+											"key": "ETag",
+											"value": "W/\"47-FY/m86hgW/48m7lLK1CpL02xrIw\"",
+											"name": "ETag",
+											"description": "An identifier for a specific version of a resource, often a message digest"
+										},
+										{
+											"key": "Vary",
+											"value": "Origin",
+											"name": "Vary",
+											"description": "Tells downstream proxies how to match future request headers to decide whether the cached response can be used rather than requesting a fresh one from the origin server."
+										}
+									],
+									"cookie": [],
+									"body": ""
+								}
+							]
+						},
+						{
+							"name": "Check CSV data empty",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "34b3186b-c5e9-45da-8bca-92ea79825179",
+										"exec": [
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"test Job Found\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(1);",
+											"    ",
+											"    pm.expect(jsonData[0]).to.have.property('status');",
+											"    ",
+											"    let status = jsonData[0].status;",
+											"    ",
+											"    switch(status){",
+											"        case 'ERROR':",
+											"            console.log(jsonData[0]);",
+											"            console.log(\"Error checking CSV URL load job.\")",
+											"            if(pm.environment.get(\"next_request\")){",
+											"                postman.setNextRequest(pm.environment.get(\"next_request\"));",
+											"            }",
+											"            pm.expect(status).to.not.eql('ERROR');",
+											"            break;",
+											"        case 'COMPLETE':",
+											"            console.log(jsonData[0]);",
+											"            if(pm.environment.get(\"next_request\")){",
+											"                postman.setNextRequest(pm.environment.get(\"next_request\"));",
+											"            }",
+											"           ",
+											"            pm.expect(jsonData[0].message).to.eql(\"successfully loaded 0 of 0 records\");",
+											"            pm.expect(status).to.be.oneOf(['COMPLETE', 'ERROR']);",
+											"            break;",
+											"        case '0':",
+											"        case 0:",
+											"        case 'IN_PROGRESS':",
+											"            console.log('in progress, checking again');",
+											"            postman.setNextRequest('Check CSV data empty');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0']);",
+											"            break;",
+											"        default:",
+											"            postman.setNextRequest('Check CSV data empty');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0', 'ERROR', 'COMPLETE']);",
+											"            break;",
+											"    }",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "c350ea7e-d128-486d-9aa2-24abaa82d300",
+										"exec": [
+											"setTimeout(()=>{}, 200);",
+											"console.log(\"Checking Job CSV URL load\" + pm.environment.get(\"job_id\"));"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "CSV file load bad attribute",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "acf3b9f8-0ea6-4f9a-b0f2-0ddb6722242d",
+										"exec": [
+											"pm.test(\"Check for job message\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
+											"    ",
+											"    eval(pm.globals.get(\"function:getJobIdURLcsvError\"))(jsonData, null);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"csv_url_load\",\n  \"action\": \"insert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{csv_tb_empty}}\",\n  \"csv_url\":\"https://s3.amazonaws.com/complimentarydata/breeds-bad-column-name.csv\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": [
+								{
+									"name": "CSV Data Load",
+									"originalRequest": {
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											},
+											{
+												"key": "Authorization",
+												"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n  \"operation\":\"csv_data_load\",\n  \"schema\":\"dev\",\n  \"action\": \"insert\",\n  \"table\":\"breed\",\n  \"data\":\"id,name,section,country,image\\n1,ENGLISH POINTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/001g07.jpg\\n2,ENGLISH SETTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/002g07.jpg\\n3,KERRY BLUE TERRIER,Large and medium sized Terriers,IRELAND,\\n\"\n}"
+										},
+										"url": {
+											"raw": "{{HDB_ENDPOINT}}",
+											"host": [
+												"{{HDB_ENDPOINT}}"
+											]
+										}
+									},
+									"status": "OK",
+									"code": 200,
+									"_postman_previewlanguage": "json",
+									"header": [
+										{
+											"key": "Connection",
+											"value": "keep-alive",
+											"name": "Connection",
+											"description": "Options that are desired for the connection"
+										},
+										{
+											"key": "Content-Length",
+											"value": "71",
+											"name": "Content-Length",
+											"description": "The length of the response body in octets (8-bit bytes)"
+										},
+										{
+											"key": "Content-Type",
+											"value": "application/json; charset=utf-8",
+											"name": "Content-Type",
+											"description": "The mime type of this content"
+										},
+										{
+											"key": "Date",
+											"value": "Mon, 09 Jul 2018 20:07:14 GMT",
+											"name": "Date",
+											"description": "The date and time that the message was sent"
+										},
+										{
+											"key": "ETag",
+											"value": "W/\"47-FY/m86hgW/48m7lLK1CpL02xrIw\"",
+											"name": "ETag",
+											"description": "An identifier for a specific version of a resource, often a message digest"
+										},
+										{
+											"key": "Vary",
+											"value": "Origin",
+											"name": "Vary",
+											"description": "Tells downstream proxies how to match future request headers to decide whether the cached response can be used rather than requesting a fresh one from the origin server."
+										}
+									],
+									"cookie": [],
+									"body": ""
+								}
+							]
+						},
+						{
+							"name": "Check CSV job error",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "34b3186b-c5e9-45da-8bca-92ea79825179",
+										"exec": [
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"test Job Found\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(1);",
+											"    ",
+											"    pm.expect(jsonData[0]).to.have.property('status');",
+											"    ",
+											"    let status = jsonData[0].status;",
+											"    ",
+											"    switch(status){",
+											"        case 'ERROR':",
+											"            console.log(jsonData[0]);",
+											"            if(pm.environment.get(\"next_request\")){",
+											"                postman.setNextRequest(pm.environment.get(\"next_request\"));",
+											"            }",
+											"            ",
+											"            let msg_contains = jsonData[0].message.includes(\"Invalid column name id/, cancelling load operation\");",
+											"            pm.expect(msg_contains).to.eql(true);",
+											"            pm.expect(status).to.eql('ERROR');",
+											"            break;",
+											"        case 'COMPLETE':",
+											"            console.log(jsonData[0]);",
+											"            if(pm.environment.get(\"next_request\")){",
+											"                postman.setNextRequest(pm.environment.get(\"next_request\"));",
+											"            }",
+											"            ",
+											"            pm.expect(status).to.not.eql('COMPLETE');",
+											"            break;",
+											"        case '0':",
+											"        case 0:",
+											"        case 'IN_PROGRESS':",
+											"            console.log('in progress, checking again');",
+											"            postman.setNextRequest('Check CSV job error');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0']);",
+											"            break;",
+											"        default:",
+											"            postman.setNextRequest('Check CSV job error');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0', 'ERROR', 'COMPLETE']);",
+											"            break;",
+											"    }",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "c350ea7e-d128-486d-9aa2-24abaa82d300",
+										"exec": [
+											"setTimeout(()=>{}, 200);",
+											"console.log(\"Checking Job CSV URL load\" + pm.environment.get(\"job_id\"));"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"response": []
+						}
+					],
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"id": "f31e0863-2b2b-4ffb-b2c1-dce594619552",
+								"type": "text/javascript",
+								"exec": [
+									""
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"id": "2a002ef4-bd15-4976-902b-505b1d69361e",
+								"type": "text/javascript",
+								"exec": [
+									"postman.setGlobalVariable(\"function:getJobIdURLcsv\", (jsonData, next_req)=>{",
+									"    let id_index = jsonData.message.indexOf('id ');",
+									"    let parsedId = jsonData.message.substr(id_index + 3, jsonData.message.length);",
+									"    pm.environment.set(\"job_id\", parsedId);",
+									"    pm.environment.set(\"next_request\", next_req);",
+									"    postman.setNextRequest(\"Check CSV data loaded\");",
+									"});",
+									"",
+									"postman.setGlobalVariable(\"function:getJobIdURLcsvEmpty\", (jsonData, next_req)=>{",
+									"    let id_index = jsonData.message.indexOf('id ');",
+									"    let parsedId = jsonData.message.substr(id_index + 3, jsonData.message.length);",
+									"    pm.environment.set(\"job_id\", parsedId);",
+									"    pm.environment.set(\"next_request\", next_req);",
+									"    postman.setNextRequest(\"Check CSV data empty\");",
+									"});",
+									"",
+									"postman.setGlobalVariable(\"function:getJobIdURLcsvError\", (jsonData, next_req)=>{",
+									"    let id_index = jsonData.message.indexOf('id ');",
+									"    let parsedId = jsonData.message.substr(id_index + 3, jsonData.message.length);",
+									"    pm.environment.set(\"job_id\", parsedId);",
+									"    pm.environment.set(\"next_request\", next_req);",
+									"    postman.setNextRequest(\"Check CSV job error\");",
 									"});"
 								]
 							}
@@ -3273,10 +4369,10 @@
 											"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
 										},
 										"url": {
-											"raw": "http://localhost:9925",
-											"protocol": "http",
+											"raw": "{{host}}:9925",
+
 											"host": [
-												"localhost"
+												"{{host}}"
 											],
 											"port": "9925"
 										}
@@ -6853,6 +7949,574 @@
 						"body": {
 							"mode": "raw",
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from {{schema}}.{{prod_tb}} where (productname like 'T%') and (unitprice>100) \"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "select - where attr < comparator",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "3ac0766f-efe2-4652-b990-f38461be86f7",
+								"exec": [
+									"pm.test(\"sql select - where attr < comparator\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.forEach((record)=>{",
+									"        pm.expect(record.unitprice)<81;",
+									"    });",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from {{schema}}.{{prod_tb}} where unitprice < 81\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "select - where attr <= comparator",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "3ac0766f-efe2-4652-b990-f38461be86f7",
+								"exec": [
+									"pm.test(\"sql select - where attr <= comparator\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.forEach((record)=>{",
+									"        pm.expect(record.unitprice)<=81;",
+									"    });",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from {{schema}}.{{prod_tb}} where unitprice <= 81\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "select - where attr > comparator",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "3ac0766f-efe2-4652-b990-f38461be86f7",
+								"exec": [
+									"pm.test(\"sql select - where attr > comparator\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.forEach((record)=>{",
+									"        pm.expect(record.unitprice) > 81;",
+									"    });",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from {{schema}}.{{prod_tb}} where unitprice > 81\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "select - where attr >= comparator",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "3ac0766f-efe2-4652-b990-f38461be86f7",
+								"exec": [
+									"pm.test(\"sql select - where attr >= comparator\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.forEach((record)=>{",
+									"        pm.expect(record.unitprice) >= 81;",
+									"    });",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from {{schema}}.{{prod_tb}} where unitprice >= 81\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "select - where attr w/ multiple comparators",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "3ac0766f-efe2-4652-b990-f38461be86f7",
+								"exec": [
+									"pm.test(\"sql select - where attr w/ multiple comparators\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.forEach((record)=>{",
+									"        pm.expect(record.unitprice) > 20;",
+									"        pm.expect(record.unitprice) <= 81;",
+									"    });",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from {{schema}}.{{prod_tb}} where unitprice > 20 AND unitprice <= 81\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "select - where w/ multiple attr comparators",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "3ac0766f-efe2-4652-b990-f38461be86f7",
+								"exec": [
+									"pm.test(\"sql select - where w/ multiple attr comparators\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.forEach((record)=>{",
+									"        pm.expect(record.unitprice) > 10;",
+									"        pm.expect(record.unitprice) <= 81;",
+									"        pm.expect(record.unitsinstock).to.eql(0);",
+									"    });",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from {{schema}}.{{prod_tb}} where unitprice > 10 AND unitprice <=81 AND unitsinstock = 0\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "select - where w/ multiple comparators for multiple attrs",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "3ac0766f-efe2-4652-b990-f38461be86f7",
+								"exec": [
+									"pm.test(\"sql select - where w/ multiple comparators for multiple attrs\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.forEach((record)=>{",
+									"        pm.expect(record.unitprice) > 10;",
+									"        pm.expect(record.unitprice) <= 81;",
+									"        pm.expect(record.unitsinstock) > 10;",
+									"    });",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from {{schema}}.{{prod_tb}} where unitprice > 10 AND unitprice <=81 AND unitsinstock > 10\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "select - where w/ IN() and multiple of comparators for multiple attrs",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "3ac0766f-efe2-4652-b990-f38461be86f7",
+								"exec": [
+									"pm.test(\"sql select - where w/ IN() and multiple of comparators for multiple attrs\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.forEach((record)=>{",
+									"        pm.expect(record.unitprice) > 10;",
+									"        pm.expect(record.unitprice) <= 81;",
+									"        pm.expect(record.unitsinstock) > 10;",
+									"        pm.expect(record.supplierid).to.be.oneOf([1,2,3,4]);",
+									"    });",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from {{schema}}.{{prod_tb}} where unitprice > 10 AND unitprice <=81 AND unitsinstock > 10 AND supplierid IN(1,2,3,4)\"\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -10758,10 +12422,9 @@
 							"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"{{role_id}}\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":true\n\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -10825,10 +12488,9 @@
 							"raw": "{\n\"operation\":\"search_by_value\",\n\"table\":\"{{supp_tb}}\",\n\"schema\":\"{{schema}}\",\n\"hash_attribute\":\"id\",\n\"search_attribute\":\"{{supp_id}}\",\n\"search_value\":\"*\",\n\"get_attributes\":[\"{{supp_id}}\"]\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -10892,10 +12554,9 @@
 							"raw": "{\n\"operation\":\"search_by_value\",\n\"table\":\"{{supp_tb}}\",\n\"schema\":\"{{schema}}\",\n\"hash_attribute\":\"id\",\n\"search_attribute\":\"{{supp_id}}\",\n\"search_value\":\"*\",\n\"get_attributes\":[\"{{supp_id}}\"]\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -10959,10 +12620,9 @@
 							"raw": "{\n\"operation\":\"search_by_value\",\n\"table\":\"{{regi_tb}}\",\n\"schema\":\"{{schema}}\",\n\"hash_attribute\":\"id\",\n\"search_attribute\":\"{{regi_id}}\",\n\"search_value\":\"*\",\n\"get_attributes\":[\"*\"]\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11026,10 +12686,9 @@
 							"raw": "{\n\"operation\":\"search_by_value\",\n\"table\":\"{{regi_tb}}\",\n\"schema\":\"{{schema}}\",\n\"hash_attribute\":\"id\",\n\"search_attribute\":\"{{regi_id}}\",\n\"search_value\":\"*\",\n\"get_attributes\":[\"*\"]\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11093,10 +12752,9 @@
 							"raw": "{\n  \"operation\":\"insert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{regi_tb}}\",\n  \"records\": [\n    {\n      \"{{regi_id}}\":16,\n      \"regiondescription\":\"test description\"\n    }\n  ]\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11160,10 +12818,9 @@
 							"raw": "{\n  \"operation\":\"insert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{regi_tb}}\",\n  \"records\": [\n    {\n      \"{{regi_id}}\":17,\n      \"regiondescription\":\"test description\"\n    }\n  ]\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11227,10 +12884,9 @@
 							"raw": "{\n  \"operation\":\"insert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{terr_tb}}\",\n  \"records\": [\n    {\n      \"{{terr_id}}\":123456,\n      \"territorydescription\":\"test description\"\n    }\n  ]\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11294,10 +12950,9 @@
 							"raw": "{\n  \"operation\":\"insert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{terr_tb}}\",\n  \"records\": [\n    {\n      \"{{terr_id}}\":1234567,\n      \"territorydescription\":\"test description\"\n    }\n  ]\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11361,10 +13016,9 @@
 							"raw": "{\n  \"operation\":\"update\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{terr_tb}}\",\n  \"records\": [\n    {\n      \"{{terr_id}}\":123456,\n      \"territorydescription\":\"test description updated\"\n    }\n  ]\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11428,10 +13082,9 @@
 							"raw": "{\n  \"operation\":\"update\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{terr_tb}}\",\n  \"records\": [\n    {\n      \"{{terr_id}}\":1234567,\n      \"territorydescription\":\"test description updated\"\n    }\n  ]\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11495,10 +13148,9 @@
 							"raw": "{\n  \"operation\":\"update\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{cate_tb}}\",\n  \"records\": [\n    {\n      \"{{cate_id}}\":1,\n      \"description\":\"test description updated\"\n    }\n  ]\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11562,10 +13214,9 @@
 							"raw": "{\n  \"operation\":\"delete\",\n  \"table\":\"{{cate_tb}}\",\n  \"schema\":\"{{schema}}\",\n  \"hash_values\":[1]\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11629,10 +13280,9 @@
 							"raw": "{\n  \"operation\":\"delete\",\n  \"table\":\"{{cate_tb}}\",\n  \"schema\":\"{{schema}}\",\n  \"hash_values\":[2]\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11696,10 +13346,9 @@
 							"raw": "{\n\"operation\":\"search_by_value\",\n\"table\":\"{{ship_tb}}\",\n\"schema\":\"{{schema}}\",\n\"hash_attribute\":\"id\",\n\"search_attribute\":\"{{ship_id}}\",\n\"search_value\":\"*\",\n\"get_attributes\":[\"companyname\"]\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11763,10 +13412,9 @@
 							"raw": "\n{\n  \"operation\":\"update\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{ship_tb}}\",\n  \"records\": [{\n    \"{{ship_id}}\": 1,\n    \"companyname\": \"bad update name\"\n  }]\n}\n"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11830,10 +13478,9 @@
 							"raw": "{\n  \"operation\":\"insert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{ship_tb}}\",\n  \"records\": [{\n      \"{{ship_id}}\": 1,\n      \"companyname\": \"bad update name\",\n      \"phone\": \"(503) 555-9831\"\n    }]\n}\n"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11897,10 +13544,9 @@
 							"raw": "{\n  \"operation\":\"insert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{ship_tb}}\",\n  \"records\": [{\n      \"{{ship_id}}\": 1,\n      \"phone\": \"(503) 555-1111\"\n    }]\n}\n"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11964,10 +13610,9 @@
 							"raw": "{\n  \"operation\":\"drop_user\",\n  \"username\":\"test_user\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -12028,10 +13673,9 @@
 							"raw": "{\n\"operation\":\"drop_role\",\n\"id\":\"{{role_id}}\"\n\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -12094,7 +13738,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\"operation\":\"add_role\",\n\"role\":\"cluster_user\",\n\"permission\":{\n  \"cluster_user\": true\n  }\n}"
+							"raw": "{\n\"operation\":\"add_role\",\n\"role\":\"test_cluster_user_role\",\n\"permission\":{\n  \"cluster_user\": true\n  }\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -12643,10 +14287,9 @@
 							"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"{{role_id}}\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":true\n\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -12721,10 +14364,9 @@
 							"raw": "{\n\t\"operation\":\"list_users\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -12789,10 +14431,9 @@
 							"raw": "{\n\"operation\":\"alter_user\",\n\"role\":\"blahblah\",\n\"username\":\"test_user\"\n\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -12865,10 +14506,9 @@
 							"raw": "{\n\t\"operation\":\"list_users\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -12929,10 +14569,9 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from {{schema}}.{{supp_tb}}\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -12996,10 +14635,9 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from {{schema}}.{{supp_tb}}\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13063,10 +14701,9 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from {{schema}}.{{regi_tb}}\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13130,10 +14767,9 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from {{schema}}.{{regi_tb}}\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13197,10 +14833,9 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"insert into northnwd.region (regionid, regiondescription) values ('16', 'test description');\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13264,10 +14899,9 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"insert into northnwd.region (regionid, regiondescription) values ('17', 'test description');\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13331,10 +14965,9 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"insert into northnwd.territories (regionid, territoryid, territorydescription) values ('1', '65', 'Im a test');\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13398,10 +15031,9 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"insert into northnwd.territories (regionid, territoryid, territorydescription) values ('1', '65', 'Im a test');\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13465,10 +15097,9 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"update northnwd.territories set territorydescription = 'update test' where territoryid = 65\"\n}\n"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13532,10 +15163,9 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"update northnwd.territories set territorydescription = 'update test' where territoryid = 65\"\n}\n"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13599,10 +15229,9 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"update northnwd.categories set description = 'update test' where categoryid = 2\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13666,10 +15295,9 @@
 							"raw": "{ \n  \"operation\":\"sql\",\n  \"sql\":\"delete from northnwd.categories where categoryid = 2\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13733,10 +15361,9 @@
 							"raw": "{ \n  \"operation\":\"sql\",\n  \"sql\":\"delete from northnwd.categories where categoryid = 2\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13800,10 +15427,9 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from {{schema}}.{{ship_tb}}\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13867,10 +15493,9 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"update northnwd.{{ship_tb}} set companyname = 'bad update name' where {{ship_id}} = 1\"\n}\n"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13934,10 +15559,9 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"insert into northnwd.shippers (shipperid, companyname, phone) values ('1', 'bad update name', '(503) 555-9831');\"\n}\n\n"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13997,10 +15621,9 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"insert into northnwd.shippers (shipperid, phone) values ('1', '(503) 555-9831');\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -14071,10 +15694,9 @@
 							"raw": "{\n  \"operation\":\"drop_user\",\n  \"username\":\"test_user\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -14142,10 +15764,9 @@
 							"raw": "{\n\"operation\":\"drop_role\",\n\"id\":\"{{role_id}}\"\n\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -14299,10 +15920,9 @@
 							"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"{{role_id}}\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":true\n\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -14310,6 +15930,73 @@
 							]
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+					},
+					"response": []
+				},
+				{
+					"name": "Query HDB as bad user",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "d6c2b8a5-2350-4570-9825-da63397845d9",
+								"exec": [
+									"pm.test(\"Status code is 401\", function () {",
+									"    pm.response.to.have.status(401);",
+									"});",
+									"",
+									"pm.test(\"Login failed error message\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.eql(\"Login failed\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "JohnnyBadUser",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3Q="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{ \n  \"operation\": \"search_by_value\", \n  \"table\":\"hdb_user\",\n  \"schema\": \"system\",\n  \"search_attribute\":\"username\",\n  \"search_value\":\"{{username}}\",\n  \"get_attributes\":[\"*\"]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
 					},
 					"response": []
 				},
@@ -15153,12 +16840,16 @@
 							"listen": "test",
 							"script": {
 								"id": "8bc25e1a-10dc-45a5-8491-d5560c59a2a7",
-								"type": "text/javascript",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
-									"});"
-								]
+									"});",
+									"",
+									"tests[\"Create Schema\"] = responseBody.has(\"successfully created\");",
+									"",
+									"setTimeout(()=>{}, 500);"
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -15199,10 +16890,9 @@
 							"raw": "{\n  \"operation\":\"create_schema\",\n  \"schema\": \"test_job\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15220,12 +16910,14 @@
 							"listen": "test",
 							"script": {
 								"id": "8bc25e1a-10dc-45a5-8491-d5560c59a2a7",
-								"type": "text/javascript",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
-									"});"
-								]
+									"});",
+									"",
+									"setTimeout(()=>{}, 500);"
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -15266,10 +16958,9 @@
 							"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"test_job\",\n  \"table\":\"runner\",\n  \"hash_attribute\": \"runner_id\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15343,10 +17034,9 @@
 							"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"test_job\",\n\"table\":\"runner\",\n\"records\": [\n  {\n    \"name\":\"Harper\",\n    \"shoes\":\"Nike\",\n    \"runner_id\":\"1\",\n    \"age\":55\n  }\n]\n\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15415,10 +17105,9 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from test_job.runner\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15478,10 +17167,9 @@
 							"raw": "{\n\t\"operation\":\"delete_files_before\",\n\t\"date\":\"2018-06-14\",\n\t\"schema\":\"dev\",\n\t\"schema\":\"dog\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15556,10 +17244,9 @@
 							"raw": "{\n\t\"operation\":\"delete_files_before\",\n\t\"date\":\"{{date_tomorrow}}\",\n\t\"schema\":\"test_job\",\n\t\"table\":\"runner\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15628,10 +17315,9 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from test_job.runner\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15709,10 +17395,9 @@
 							"raw": "{\n\t\"operation\":\"search_jobs_by_start_date\",\n\t\"from_date\": \t\"{{date_yesterday}}\",\n\t\"to_date\": \t\"{{date_tomorrow}}\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						}
@@ -15777,10 +17462,9 @@
 							"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						}
@@ -15841,10 +17525,9 @@
 							"raw": "{\n\t\"operation\":\"delete_job\",\n\t\"id\":\"{{job_id}}\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						}
@@ -15909,10 +17592,9 @@
 							"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						}
@@ -15972,10 +17654,9 @@
 							"raw": "{\n  \"operation\":\"csv_data_load\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{regi_tb}}\",\n  \"data\":\"regionid, regiondescription\\n'17', 'test description'\\n\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -16039,10 +17720,9 @@
 							"raw": "{\n  \"operation\":\"csv_data_load\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{regi_tb}}\",\n  \"data\":\"regionid, regiondescription\\n'17', 'test description'\\n\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -16102,10 +17782,9 @@
 							"raw": "{\n  \"operation\":\"csv_file_load\",\n  \"action\":\"insert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{supp_tb}}\",\n  \"file_path\":\"{{files_location}}Suppliers.csv\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -16165,10 +17844,9 @@
 							"raw": "{\n\t\"operation\":\"export_local\",\n\t\"path\":\"./\",\n\t\"filename\":\"test_export.json\",\n\t\"format\":\"json\",\n\t\"search_operation\": {\n        \"operation\":\"sql\",\n        \"sql\":\"select * from {{schema}}.{{ship_tb}}\"\n    }\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -16228,10 +17906,9 @@
 							"raw": "{\n\t\"operation\":\"export_local\",\n\t\"path\":\"./\",\n\t\"filename\":\"test_export.json\",\n\t\"format\":\"json\",\n\t\"search_operation\": {\n\t  \"operation\":\"search_by_hash\",\n\t  \"schema\":\"{{schema}}\",\n\t  \"table\":\"{{ship_tb}}\",\n\t  \"hash_attribute\": \"{{ship_id}}\",\n\t  \"hash_values\":[1],\n\t  \"get_attributes\": [\"companyname\"]\n\t}\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -16291,10 +17968,9 @@
 							"raw": "{\n\t\"operation\":\"export_local\",\n\t\"path\":\"./\",\n\t\"filename\":\"test_export.json\",\n\t\"format\":\"json\",\n\t\"search_operation\": {\n        \"operation\":\"sql\",\n        \"sql\":\"select * from {{schema}}.{{ship_tb}}\"\n    }\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -16354,10 +18030,9 @@
 							"raw": "{\n\t\"operation\":\"export_local\",\n\t\"path\":\"./\",\n\t\"filename\":\"test_export\",\n\t\"format\":\"json\",\n\t\"search_operation\": {\n\t  \"operation\":\"search_by_hash\",\n\t  \"schema\":\"{{schema}}\",\n\t  \"table\":\"{{supp_tb}}\",\n\t  \"hash_attribute\": \"{{supp_id}}\",\n\t  \"hash_values\":[1],\n\t  \"get_attributes\": [\"{{supp_id}}\"]\n\t}\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -16421,10 +18096,9 @@
 							"raw": "{\n  \"operation\":\"drop_user\",\n  \"username\":\"test_user\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -16485,10 +18159,9 @@
 							"raw": "{\n\"operation\":\"drop_role\",\n\"id\":\"{{role_id}}\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -16577,7 +18250,7 @@
 						"id": "e6ab106c-0c59-45bc-a199-b9d9e99b72d3",
 						"type": "text/javascript",
 						"exec": [
-							""
+							"console.log(responseBody);"
 						]
 					}
 				}
@@ -16604,7 +18277,7 @@
 											"\r",
 											"tests[\"Create Schema\"] = responseBody.has(\"successfully created\");\r",
 											"\r",
-											"\r",
+											"setTimeout(()=>{}, 500);\r",
 											""
 										],
 										"type": "text/javascript"
@@ -16666,7 +18339,9 @@
 											"    pm.response.to.have.status(200);",
 											"});",
 											"",
-											"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
+											"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");",
+											"",
+											"setTimeout(()=>{}, 500);"
 										],
 										"type": "text/javascript"
 									}
@@ -16738,7 +18413,9 @@
 											"",
 											"pm.test(\"Status code is 200\", function () {",
 											"    pm.response.to.have.status(200);",
-											"});"
+											"});",
+											"",
+											"setTimeout(()=>{}, 1000);"
 										],
 										"type": "text/javascript"
 									}
@@ -17525,6 +19202,218 @@
 						}
 					},
 					"response": []
+				},
+				{
+					"name": "Insert records with objects and arrays",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "117c3953-8685-4758-8769-4358a812df0e",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Inserted all records\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message).to.be.eql(\"inserted 4 of 4 records\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"{{schema}}\",\n\"table\":\"{{emps_tb}}\",\n\"records\": [\n  {\n    \"employeeid\": 7924,\n    \"address\": [{\"height\": 12, \"weight\": 46}, {\"shoe_size\": 12, \"iq\": 46}]\n  },\n  {\n    \"employeeid\": 7925,\n    \"address\": {\"number\": 12, \"age\": 46}\n  },\n  {\n    \"employeeid\": 7926,\n    \"address\": {\"numberArray\": [\"1\", \"2\", \"3\"], \"string\": \"Penny\"}\n  },\n  {\n    \"employeeid\": 7927,\n    \"address\":  [\"1\", \"2\", \"3\"]\n  }\n]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Delete records contaitng objects and arrays",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "117c3953-8685-4758-8769-4358a812df0e",
+								"exec": [
+									"let expected_result = {",
+									"    \"message\": \"4 of 4 records successfully deleted\",",
+									"    \"deleted_hashes\": [",
+									"        7924,",
+									"        7925,",
+									"        7926,",
+									"        7927",
+									"    ],",
+									"    \"skipped_hashes\": []",
+									"}",
+									"",
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Deleted all records\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.be.eql(expected_result);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"delete\",\n\t\"schema\":\"{{schema}}\",\n\t\"table\":\"{{emps_tb}}\",\n\t\"hash_values\":[7924, 7925, 7926, 7927]\n}\n\n"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Verify object and array records deleted",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "117c3953-8685-4758-8769-4358a812df0e",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Search finds no records\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.be.eql([]);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_hash\",\n\t\"schema\":\"{{schema}}\",\n\t\"table\":\"{{emps_tb}}\",\n\t\"hash_values\":[7924, 7925, 7926, 7925],\n\t\"get_attributes\": [\"employeeid\", \"address\"]\n}\n"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
 				}
 			],
 			"protocolProfileBehavior": {}
@@ -17659,10 +19548,9 @@
 							"raw": "{\n    \"operation\": \"alter_role\",\n    \"role\": \"bad_user_2\",\n    \"id\": \"{{role_id}}\",\n    \"permission\": {\n        \"super_user\": false,\n        \"crapschema\": {\n            \"tables\": {\n                \"blahblah\": {\n                    \"read\": false,\n                    \"insert\": false,\n                    \"update\": false,\n                    \"delete\": false,\n                    \"attribute_restrictions\": [\n                        {\n                            \"attribute_name\": \"name\",\n                            \"read\": false,\n                            \"insert\": false,\n                            \"update\": true,\n                            \"delete\": false\n                        }\n                    ]\n                }\n            }\n        },\n        \"dev\": {\n            \"tables\": {\n                \"craptable\": {\n                    \"read\": false,\n                    \"insert\": false,\n                    \"update\": false,\n                    \"delete\": false,\n                    \"attribute_restrictions\": [\n                        {\n                            \"attribute_name\": \"name\",\n                            \"read\": false,\n                            \"insert\": false,\n                            \"update\": true,\n                            \"delete\": false\n                        }\n                    ]\n                },\n                \"dog\": {\n                    \"read\": false,\n                    \"insert\": false,\n                    \"update\": false,\n                    \"delete\": false,\n                    \"attribute_restrictions\": [\n                        {\n                            \"attribute_name\": \"name\",\n                            \"read\": false,\n                            \"insert\": false,\n                            \"update\": true,\n                            \"delete\": false\n                        },\n                        {\n                            \"attribute_name\": \"crapattribute\",\n                            \"read\": false,\n                            \"insert\": false,\n                            \"update\": true,\n                            \"delete\": false\n                        }\n                    ]\n                }\n            }\n        }\n    }\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -17739,10 +19627,9 @@
 							"raw": "{\n\"operation\":\"list_roles\"\n\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -17793,10 +19680,9 @@
 							"raw": "{\n  \"operation\": \"alter_role\",\n  \"role\": \"user_role_update\",\n  \"id\": \"{{role_id}}\",\n  \"permission\": {\n    \"super_user\": false,\n    \"{{schema}}\": {\n      \"tables\": {\n        \"{{cust_tb}}\": {\n          \"read\": false,\n          \"insert\": false,\n          \"update\": false,\n          \"delete\": false,\n          \"attribute_restrictions\": [\n            {\n              \"attribute_name\": \"fax\",\n              \"read\": false,\n              \"insert\": false,\n              \"update\": false,\n              \"delete\": false\n            }\n          ]\n        }\n      }\n    }\n    }\n  }"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -17873,10 +19759,9 @@
 							"raw": "{\n\"operation\":\"list_roles\"\n\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -17937,10 +19822,9 @@
 							"raw": "{\n\"operation\":\"drop_role\",\n\"id\":\"{{role_id}}\"\n\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -18072,10 +19956,9 @@
 							"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"{{role_id}}\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":true\n\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -18144,10 +20027,9 @@
 							"raw": "{\n\"operation\":\"alter_user\",\n\"role\":\"\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":true\n\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -18216,10 +20098,9 @@
 							"raw": "{\n\"operation\":\"alter_user\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":false\n\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925/",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925/",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -18293,10 +20174,9 @@
 							"raw": "{\n\"operation\":\"list_users\"\n\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -18357,10 +20237,9 @@
 							"raw": "{\n  \"operation\":\"drop_user\",\n  \"username\":\"test_user\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -18421,10 +20300,9 @@
 							"raw": "{\n\"operation\":\"drop_role\",\n\"id\":\"{{role_id}}\"\n\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -18531,10 +20409,10 @@
 									"raw": "{\n\"operation\":\"describe_table\",\n\"table\":\"dog\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "{{host}}:9925",
+
 									"host": [
-										"localhost"
+										"{{host}}"
 									],
 									"port": "9925"
 								}
@@ -19152,10 +21030,10 @@
 									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "{{host}}:9925",
+
 									"host": [
-										"localhost"
+										"{{host}}"
 									],
 									"port": "9925"
 								}
@@ -19310,10 +21188,10 @@
 									"raw": "{\n\"operation\":\"describe_table\",\n\"table\":\"dog\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "{{host}}:9925",
+
 									"host": [
-										"localhost"
+										"{{host}}"
 									],
 									"port": "9925"
 								}
@@ -19426,10 +21304,9 @@
 							"raw": "{\n\t\"operation\":\"get_fingerprint\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -19457,10 +21334,10 @@
 									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "{{host}}:9925",
+
 									"host": [
-										"localhost"
+										"{{host}}"
 									],
 									"port": "9925"
 								}
@@ -19585,10 +21462,9 @@
 							"raw": "{\n\"operation\":\"set_license\",\n\"key\":\"uFFG7xAZG11ec9d335bfe27c4ec5555310bd4a27f\",\n\"company\":\"harperdb.io\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -19616,10 +21492,10 @@
 									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "{{host}}:9925",
+
 									"host": [
-										"localhost"
+										"{{host}}"
 									],
 									"port": "9925"
 								}
@@ -19744,10 +21620,9 @@
 							"raw": "{\n\"operation\":\"set_license\",\n\"key\":\"\",\n\"company\":\"harperdb.io\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -19775,10 +21650,10 @@
 									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "{{host}}:9925",
+
 									"host": [
-										"localhost"
+										"{{host}}"
 									],
 									"port": "9925"
 								}
@@ -19898,10 +21773,9 @@
 							"raw": "{\n\t\"operation\": \"configure_cluster\",\n\t\"clustering\": \"true\",\n\t\"clustering_PORT\": \"12345\",\n\t\"NODE_NAME\":\"server\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -19929,10 +21803,10 @@
 									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "{{host}}:9925",
+
 									"host": [
-										"localhost"
+										"{{host}}"
 									],
 									"port": "9925"
 								}
@@ -20054,10 +21928,9 @@
 							"raw": "{\n\t\"operation\": \"configure_cluster\",\n\t\"clustering\": \"true\",\n\t\"clustering_PORT\": \"1\",\n\t\"NODE_NAME\":\"some_name\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:9925",
-							"protocol": "http",
-							"host": [
-								"localhost"
+							"raw": "{{host}}:9925",
+
+							"host": ["{{host}}"
 							],
 							"port": "9925"
 						},
@@ -20085,10 +21958,10 @@
 									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "{{host}}:9925",
+
 									"host": [
-										"localhost"
+										"{{host}}"
 									],
 									"port": "9925"
 								}

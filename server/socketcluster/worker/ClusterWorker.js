@@ -85,7 +85,7 @@ class ClusterWorker extends WorkerIF {
 
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_HANDSHAKE_SC, this.evalRoomHandshakeSCMiddleware.bind(this));
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_OUT, this.evalRoomPublishOutMiddleware.bind(this));
-        this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_OUT, this.evalRoomPublishOutRules.bind(this));
+
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_SUBSCRIBE, this.checkNewRoom.bind(this));
         this.scServer.addMiddleware(this.scServer.MIDDLEWARE_SUBSCRIBE, this.evalRoomSubscribeMiddleware.bind(this));
         new SCServer(this);
@@ -113,7 +113,7 @@ class ClusterWorker extends WorkerIF {
     async processArgs() {
         log.trace('processArgs');
         try{
-            let file_path = path.join(env.getHdbBasePath(), terms.CLUSTERING_FOLDER_NAME, terms.CLUSTERING_PAYLOAD_FILE_NAME);
+            let file_path = path.join(env.getHdbBasePath(), terms.CLUSTERING_FOLDER_NAMES_ENUM.CLUSTERING_FOLDER, terms.CLUSTERING_PAYLOAD_FILE_NAME);
             let data = await fs.readFile(file_path, 'utf-8');
             await fs.unlink(file_path);
             let hdb_data = JSON.parse(data);

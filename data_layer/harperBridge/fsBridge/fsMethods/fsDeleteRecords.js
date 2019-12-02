@@ -55,7 +55,13 @@ async function deleteRecords(delete_obj){
                         hash_attribute_path_map[hash_value] = [];
                     }
                     hash_attribute_path_map[hash_value].push(common_utils.buildFolderPath(table_path, terms.HASH_FOLDER_NAME, attribute, `${hash_value}${terms.HDB_FILE_SUFFIX}`));
-                    let stripped_value = String(record[attribute]).replace(slash_regex, '');
+
+                    let value = record[attribute];
+                    if (common_utils.isObject(value)) {
+                        value = JSON.stringify(value);
+                    }
+
+                    let stripped_value = String(value).replace(slash_regex, '');
                     stripped_value = stripped_value.length > MAX_BYTES ? common_utils.buildFolderPath(truncate(stripped_value, MAX_BYTES), BLOB_FOLDER_NAME) : stripped_value;
                     let path = common_utils.buildFolderPath(table_path, attribute, stripped_value, `${hash_value}${terms.HDB_FILE_SUFFIX}`);
                     // This `includes` is icky and slow, but we need to make sure we don`t have duplicate paths, as a failure to remove
@@ -76,7 +82,7 @@ async function deleteRecords(delete_obj){
     try {
         delete_response_object = await unlink.unlink_delete_object(hash_attribute_path_map);
         if(!common_utils.isEmptyOrZeroLength(delete_obj.hash_values)) {
-            compareSearchResultsWithRequest(not_found_hashes, delete_obj, delete_obj.records);
+            compareSearchResultsWithRequest(not_found_hashes, delete_obj);
         }
         // append records not found to skipped
         if(not_found_hashes && not_found_hashes.length > 0) {
