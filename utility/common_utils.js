@@ -235,8 +235,8 @@ async function removeDir(dir_path) {
         throw new Error(`Directory path: ${dir_path} does not exist`);
     }
     try {
-        await fs_extra.emptyDir(dir_path);
-        await fs_extra.remove(dir_path);
+        //await fs_extra.emptyDir(dir_path);
+        //await fs_extra.remove(dir_path);
     } catch(e) {
         log.error(`Error removing files in ${dir_path} -- ${e}`);
         throw e;
