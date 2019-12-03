@@ -371,10 +371,6 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
 
     // This handles all get requests for the studio
     app.use(compression());
-    app.get('/processCSV.worker.js', function (req, res) {
-        res.type('application/javascript');
-        return res.sendFile(guidePath.join(__dirname,'../docs', 'processCSV.worker.js'));
-    });
     app.use(express.static(guidePath.join(__dirname,'../docs')));
     app.get('*', function (req, res) {
         return res.sendFile(guidePath.join(__dirname,'../docs', 'index.html'));
