@@ -113,7 +113,7 @@ class CommandCollection {
             return false;
         }
         let curr = this.base;
-        let prev = null;
+        let prev = Object.create(null);
         while(curr != null) {
             if(curr && curr.data && curr.data.type === rule_type_enum) {
                 prev.next = curr.next;
@@ -141,7 +141,7 @@ class CommandCollection {
             return false;
         }
         let curr = this.base;
-        let prev = null;
+        let prev = Object.create(null);
         while(curr != null) {
             if(curr && curr.data && curr.data.id === command_id) {
                 prev.next = curr.next;
@@ -181,7 +181,6 @@ class CommandCollection {
      */
     getCommands() {
         let command_array = [];
-        let index = 0;
         let curr = this.base.next;
         try {
             while (curr) {
