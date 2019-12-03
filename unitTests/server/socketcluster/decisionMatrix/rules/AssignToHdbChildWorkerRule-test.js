@@ -59,7 +59,7 @@ describe('Test RuleIF', function() {
         } catch(err) {
             result = err;
         }
-        assert.equal(result, true, 'expected success');
+        assert.equal(result, false, 'expected success');
         assert.equal(worker_publish_stub.calledOnce, true, 'expected worker publish function to be called');
     });
     it('test eval with invalid worker.', async () => {
