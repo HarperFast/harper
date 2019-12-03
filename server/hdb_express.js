@@ -371,13 +371,13 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
 
     // This handles all get requests for the studio
     app.use(compression());
-    app.use(express.static(guidePath.join(__dirname,'../docs')));
     app.get('/processCSV.worker.js', function (req, res) {
-        res.type('text/javascript');
-        res.sendFile(guidePath.join(__dirname,'../docs', 'processCSV.worker.js'));
+        res.type('application/javascript');
+        return res.sendFile(guidePath.join(__dirname,'../docs', 'processCSV.worker.js'));
     });
+    app.use(express.static(guidePath.join(__dirname,'../docs')));
     app.get('*', function (req, res) {
-        res.sendFile(guidePath.join(__dirname,'../docs', 'index.html'));
+        return res.sendFile(guidePath.join(__dirname,'../docs', 'index.html'));
     });
 
     // Recent security posts recommend disabling this header.
