@@ -215,7 +215,7 @@ async function startUpgrade() {
     }
 
     try {
-        //backupCurrInstall();
+        backupCurrInstall();
     } catch(err) {
         // Error logging happens in backup.
         throw err;
@@ -246,7 +246,7 @@ async function startUpgrade() {
     }
 
     // Logging and exception handling occurs in postInstallCleanUp.
-    //postInstallCleanUp();
+    postInstallCleanUp();
     version.refresh();
     try {
         await hdbInfoController.updateHdbInfo(version.version());
@@ -319,7 +319,7 @@ async function getBuild(opers) {
     let res = undefined;
     try {
         // The request-promise repo recommends using plain old request when piping needs to happen.
-        /*res = await request(options);
+        res = await request(options);
         let file = await fs.createWriteStream(path.join(UPGRADE_DIR_PATH, TAR_FILE_NAME), {mode: hdb_terms.HDB_FILE_PERMISSIONS});
         res.pipe(file);
         file.on('finish', async function() {
@@ -328,11 +328,6 @@ async function getBuild(opers) {
                 await copyUpgradeExecutable();
                 callUpgradeOnNew();
             });
-        });*/
-        let tarball = await fs.createReadStream(path.join(UPGRADE_DIR_PATH, TAR_FILE_NAME), {mode: hdb_terms.HDB_FILE_PERMISSIONS}).pipe(tar.extract(UPGRADE_DIR_PATH));
-        tarball.on('finish', async function () {
-            await copyUpgradeExecutable();
-            callUpgradeOnNew();
         });
     } catch (e) {
         log.error(`There was an error with the request to get the latest HDB Build: ${e}`);
