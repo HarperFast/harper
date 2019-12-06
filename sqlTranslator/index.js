@@ -1,10 +1,10 @@
 "use strict";
 
 module.exports = {
-    evaluateSQL: evaluateSQL,
-    processAST: processAST,
-    convertSQLToAST:convertSQLToAST,
-    checkASTPermissions: checkASTPermissions
+    evaluateSQL,
+    processAST,
+    convertSQLToAST,
+    checkASTPermissions
 };
 
 const insert = require('../data_layer/insert');
@@ -35,23 +35,26 @@ class ParsedSQLObject {
 }
 
 function evaluateSQL(json_message, callback) {
-    let parsed_sql = convertSQLToAST(json_message.sql);
-    //TODO; This is a temporary check and should be removed once validation is integrated.
-    let schema = undefined;
-    let statement = parsed_sql.ast.statements[0];
-    if(statement instanceof alasql.yy.Insert) {
-        schema = statement.into.databaseid;
-    } else if (statement instanceof alasql.yy.Select) {
-        schema = statement.from ? statement.from[0].databaseid : null;
-    } else if (statement instanceof alasql.yy.Update) {
-        schema = statement.table.databaseid;
-    } else if (statement instanceof alasql.yy.Delete) {
-        schema = statement.table.databaseid;
-    } else {
-        logger.error(`AST in evaluateSQL is not a valid SQL type.`);
-    }
-    if(!(statement instanceof alasql.yy.Select) && hdb_utils.isEmptyOrZeroLength(schema)) {
-        return callback('No schema specified', null);
+    let parsed_sql = json_message.parsed_sql_object;
+    if(!parsed_sql) {
+        parsed_sql = convertSQLToAST(json_message.sql);
+        //TODO; This is a temporary check and should be removed once validation is integrated.
+        let schema = undefined;
+        let statement = parsed_sql.ast.statements[0];
+        if (statement instanceof alasql.yy.Insert) {
+            schema = statement.into.databaseid;
+        } else if (statement instanceof alasql.yy.Select) {
+            schema = statement.from ? statement.from[0].databaseid : null;
+        } else if (statement instanceof alasql.yy.Update) {
+            schema = statement.table.databaseid;
+        } else if (statement instanceof alasql.yy.Delete) {
+            schema = statement.table.databaseid;
+        } else {
+            logger.error(`AST in evaluateSQL is not a valid SQL type.`);
+        }
+        if (!(statement instanceof alasql.yy.Select) && hdb_utils.isEmptyOrZeroLength(schema)) {
+            return callback('No schema specified', null);
+        }
     }
     processAST(json_message, parsed_sql, (error, results) => {
         if (error) {
@@ -72,6 +75,7 @@ function checkASTPermissions(json_message, parsed_sql_object) {
     let verify_result = undefined;
     try {
         verify_result = op_auth.verifyPermsAst(parsed_sql_object.ast.statements[0], json_message.hdb_user, parsed_sql_object.variant);
+        parsed_sql_object.permissions_checked = true;
     } catch(e) {
         throw e;
     }

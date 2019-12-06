@@ -102,7 +102,7 @@ required_permissions.set(SQL_UPDATE, new permission(false, [UPDATE_PERM]));
 
 module.exports = {
     verifyPerms:verifyPerms,
-    verifyPermsAst:verifyPermsAst
+    verifyPermsAst
 };
 
 /**
@@ -167,7 +167,7 @@ function verifyPermsAst(ast, user_object, operation) {
 }
 
 /**
- * Checks if the user's role has the required permissions for the opertion specified.
+ * Checks if the user's role has the required permissions for the operation specified.
  * @param user_object - the hdb_user specified in the request body
  * @param op - the name of the operation
  * @param schema_table_map - A map in the format [schema_key, [tables]].
@@ -305,6 +305,7 @@ function checkAttributePerms(record_attributes, role_attribute_restrictions, ope
                 for (let perm of needed_perm.perms) {
                     for (let restriction of role_attribute_restrictions.keys()) {
                         if (role_attribute_restrictions.get(restriction)[perm] === false) {
+                            // here, rather than return false, we need to remove it from data that is searched for
                             return false;
                         }
                     }
