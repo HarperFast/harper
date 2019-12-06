@@ -10903,5 +10903,23 @@
 			"protocolProfileBehavior": {}
 		}
 	],
+	"event": [
+		{
+			"listen": "test",
+			"script": {
+				"id": "a161eddb-9093-4a18-ae08-00b37ed86653",
+				"type": "text/javascript",
+				"exec": [
+					"postman.setGlobalVariable(\"function:getJobId\", (jsonData, next_req)=>{",
+					"    let id_index = jsonData.message.indexOf('id ');",
+					"    let parsedId = jsonData.message.substr(id_index + 3, jsonData.message.length);",
+					"    pm.environment.set(\"job_id\", parsedId);",
+					"    pm.environment.set(\"next_request\", next_req);",
+					"    postman.setNextRequest(\"Check Job Completed\");",
+					"});"
+				]
+			}
+		}
+	],
 	"protocolProfileBehavior": {}
 }
