@@ -73,8 +73,7 @@ async function getAttributeFileValues(get_attributes, search_object, hash_attr, 
                                             for (const blob_id of blob_ids) {
                                                 try {
                                                     const the_id = common_utils.autoCast(common_utils.stripFileExtension(blob_id));
-                                                    // const hash_included = hash_results.includes(the_id);
-                                                    const hash_included = hash_values_map[the_id] === null;
+                                                    const hash_included = !!final_attributes_data[the_id];
                                                     if (hash_included) {
                                                         const file_data = await fs.readFile(common_utils.buildFolderPath(blob_path, blob_id), 'utf-8');
                                                         final_attributes_data[the_id][attr] = file_data;
@@ -88,7 +87,6 @@ async function getAttributeFileValues(get_attributes, search_object, hash_attr, 
                                         }
                                     } else {
                                         const the_id = common_utils.autoCast(common_utils.stripFileExtension(id));
-                                        // const hash_included = hash_results.includes(the_id);
                                         const hash_included = final_attributes_data[the_id];
                                         if (hash_included) {
                                             final_attributes_data[the_id][attr] = common_utils.autoCast(the_value);
@@ -134,7 +132,7 @@ async function getAttributeFileValues(get_attributes, search_object, hash_attr, 
 async function readAttributeFilePromise(table_path, attribute, file, final_attributes_data) {
     try {
         const data = await fs.readFile(`${table_path}/${hdb_terms.HASH_FOLDER_NAME}/${attribute}/${file}${hdb_terms.HDB_FILE_SUFFIX}`, 'utf-8');
-        const value = common_utils.autoCast(data.toString());
+        const value = common_utils.autoCast(data);
         final_attributes_data[file][attribute] = value;
     } catch (err) {
         if (err.code === 'ENOENT') {
@@ -147,7 +145,6 @@ async function readAttributeFilePromise(table_path, attribute, file, final_attri
 
 async function readAttributeFiles(table_path, attribute, hash_files, final_attributes_data) {
     try {
-        // let attribute_data = {};
         const readFileOps = [];
 
         for (const file of hash_files) {
@@ -156,7 +153,6 @@ async function readAttributeFiles(table_path, attribute, hash_files, final_attri
 
         await Promise.all(readFileOps);
 
-        // return attribute_data;
     } catch(err) {
         throw err;
     }
