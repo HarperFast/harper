@@ -261,13 +261,14 @@ function prepForReinstall(callback) {
 function wizard(err, callback) {
     prompt.message = ``;
     winston.info('Starting install wizard');
+    let admin_username;
     let install_schema = {
         properties: {
             HDB_ROOT: {
                 description: colors.magenta(`[HDB_ROOT] Please enter the destination for HarperDB`),
                 message: 'HDB_ROOT cannot contain /',
                 default: (env.getHdbBasePath() ? env.getHdbBasePath() : process.env['HOME'] + '/hdb'),
-                ask: function() {
+                ask: function () {
                     // only ask for HDB_ROOT if it is not defined.
                     if (env.getHdbBasePath()) {
                         console.log(`Using previous install path: ${env.getHdbBasePath()}`);
@@ -310,6 +311,7 @@ function wizard(err, callback) {
                 required: true,
                 // check against the previously built list of existing usernames.
                 conform: function (username) {
+                    admin_username = username;
                     if (!keep_data) {
                         return true;
                     }
@@ -333,9 +335,15 @@ function wizard(err, callback) {
                 required: true,
                 // check against the previously built list of existing usernames.
                 conform: function (username) {
+                    // check clustering user name not the same as admin user name
+                    if (username === admin_username) {
+                        return false;
+                    }
+
                     if (!keep_data) {
                         return true;
                     }
+
                     for (let i = 0; i < existing_users.length; i++) {
                         if (username === existing_users[i]) {
                             return false;
