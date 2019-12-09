@@ -1,12 +1,15 @@
 //this is to avoid a circular dependency with insert.  insert needs the describe all function but so does the main schema module.  as such the functions have been broken out into a seperate module.
 
-const async = require('async'),
-    search = require('./search'),
-    logger = require('../utility/logging/harper_logger'),
-    validator = require('../validation/schema_validator'),
-    _ = require('lodash');
-
+const async = require('async');
+const search = require('./search');
+const logger = require('../utility/logging/harper_logger');
+const validator = require('../validation/schema_validator');
+const _ = require('lodash');
 const hdb_utils = require('../utility/common_utils');
+const {promisify} = require('util');
+
+// Promisified functions
+let p_search_search_by_value = promisify(search.searchByValue);
 
 module.exports = {
     describeAll,
@@ -14,7 +17,7 @@ module.exports = {
     describeSchema
 };
 
-function describeAll (op_obj, callback) {
+async function describeAll(op_obj) {
     try {
         let schema_search = {};
         schema_search.schema = 'system';
@@ -24,89 +27,74 @@ function describeAll (op_obj, callback) {
         schema_search.search_value = '*';
         schema_search.hash_values = [];
         schema_search.get_attributes = ['name'];
-        search.searchByValue(schema_search, function(err, schemas){
-            if (err) {
-                logger.error(err);
-                callback(err);
-                return;
-            }
+        let schemas = await p_search_search_by_value(schema_search);
 
-            if (hdb_utils.isEmptyOrZeroLength(schemas)) {
-                return callback(null, {});
-            }
+        if (hdb_utils.isEmptyOrZeroLength(schemas)) {
+            return {};
+        }
 
-            let schema_list = {};
-            for(let s in schemas){
-                schema_list[schemas[s].name] = true;
-            }
+        let schema_list = {};
+        for(let s in schemas){
+            schema_list[schemas[s].name] = true;
+        }
 
-            let table_search_obj = {};
-            table_search_obj.schema = 'system';
-            table_search_obj.table = 'hdb_table';
-            table_search_obj.hash_attribute = 'id';
-            table_search_obj.search_attribute = 'id';
-            table_search_obj.search_value = '*';
-            table_search_obj.hash_values = [];
-            table_search_obj.get_attributes = ['hash_attribute', 'id', 'name', 'schema'];
-            search.searchByValue(table_search_obj, function (search_err, tables) {
-                if (search_err) {
-                    logger.error(search_err);
-                    return;
-                }
+        let table_search_obj = {};
+        table_search_obj.schema = 'system';
+        table_search_obj.table = 'hdb_table';
+        table_search_obj.hash_attribute = 'id';
+        table_search_obj.search_attribute = 'id';
+        table_search_obj.search_value = '*';
+        table_search_obj.hash_values = [];
+        table_search_obj.get_attributes = ['hash_attribute', 'id', 'name', 'schema'];
 
-                let t_results = [];
-                async.map(tables, function (table, caller) {
-                    descTable({"schema": table.schema, "table": table.name}, function (describe_err, desc) {
-                        if (describe_err) {
+        let tables = await p_search_search_by_value(table_search_obj);
 
-                            caller(describe_err);
-                            return;
-                        }
+        let t_results = [];
+        await Promise.all(
+            tables.map(async (table) => {
+                try {
+                    let desc = await descTable({"schema": table.schema, "table": table.name});
+                    if(desc) {
                         t_results.push(desc);
-                        caller();
-
-                    });
-
-                }, function (error, data) {
-                    if (error) {
-                        callback(error);
-                        return;
                     }
+                } catch(e) {
+                    logger.error(e);
+                }
+            })
+        );
+        let hdb_description = {};
+        for (let t in t_results) {
+            if (hdb_description[t_results[t].schema] == null) {
+                hdb_description[t_results[t].schema] = {};
+            }
 
-                    let hdb_description = {};
-                    for (let t in t_results) {
-                        if (hdb_description[t_results[t].schema] == null) {
-                            hdb_description[t_results[t].schema] = {};
-                        }
+            hdb_description[t_results[t].schema][t_results[t].name] = t_results[t];
+            if(schema_list[t_results[t].schema]){
+                delete schema_list[t_results[t].schema];
+            }
+        }
 
-                        hdb_description[t_results[t].schema][t_results[t].name] = t_results[t];
-                        if(schema_list[t_results[t].schema]){
-                            delete schema_list[t_results[t].schema];
-                        }
-                    }
-
-                    for(let schema in schema_list){
-                        hdb_description[schema] = {};
-                    }
-                    callback(null, hdb_description);
-                });
-            });
-        });
-    }catch(e){
-        callback(e);
+        for(let schema in schema_list){
+            hdb_description[schema] = {};
+        }
+        return hdb_description;
+    } catch(e) {
+        logger.error('Got an error in describeAll');
+        logger.error(e);
+        return new Error("There was an error during describeAll.  Please check the logs and try again.");
     }
 }
 
-function descTable(describe_table_object, callback) {
+async function descTable(describe_table_object) {
+    let table_result = {};
     try {
         let validation = validator.describe_table(describe_table_object);
         if (validation) {
-            callback(validation);
-            return;
+            throw validation;
         }
 
         if (describe_table_object.schema === 'system') {
-            return callback(null, global.hdb_schema['system'][describe_table_object.table]);
+            return global.hdb_schema['system'][describe_table_object.table];
         }
 
         let table_search_obj = {};
@@ -117,27 +105,16 @@ function descTable(describe_table_object, callback) {
         table_search_obj.search_value = describe_table_object.table;
         table_search_obj.hash_values = [];
         table_search_obj.get_attributes = ['*'];
-        let table_result = {};
-        search.searchByValue(table_search_obj, function (err, tables) {
-            if (err) {
-                logger.error(err);
-                return;
-            }
 
-            async.map(tables, function (table, caller) {
+        let tables = await p_search_search_by_value(table_search_obj);
+
+        await Promise.all(
+            tables.map(async (table) => {
                 if (table.schema === describe_table_object.schema) {
                     table_result = table;
                 }
-                caller();
-
-            }, function (error, data) {
-                if (error) {
-                    callback(error);
-                    return;
-                }
-
-                if(!table_result.hash_attribute){
-                    return callback("Invalid table");
+                if (!table_result.hash_attribute) {
+                    throw new Error("Invalid table");
                 }
 
                 let attribute_search_obj = {};
@@ -148,35 +125,26 @@ function descTable(describe_table_object, callback) {
                 attribute_search_obj.search_value = describe_table_object.schema + "." + describe_table_object.table;
                 attribute_search_obj.get_attributes = ['attribute'];
 
-
-                search.searchByValue(attribute_search_obj, function (search_err, attributes) {
-                    if (search_err) {
-                        logger.error(search_err);
-                        //initialize();
-                        return;
-                    }
-
-                    //need to remove possible dups
-                    attributes = _.uniqBy(attributes, (attribute)=>{
-                        return attribute.attribute;
-                    });
-
-                    table_result.attributes = attributes;
-                    callback(null, table_result);
+                let attributes = await p_search_search_by_value(attribute_search_obj);
+                attributes = _.uniqBy(attributes, (attribute) => {
+                    return attribute.attribute;
                 });
-            });
-        });
-    }catch(e){
-        callback(e);
+
+                table_result.attributes = attributes;
+            })
+        );
+    } catch(err) {
+        logger.error('There was an error during describeTable.');
+        logger.error(err);
     }
+    return table_result;
 }
 
-function describeSchema(describe_schema_object, callback) {
+async function describeSchema(describe_schema_object) {
     try {
         let validation_msg = validator.schema_object(describe_schema_object);
         if (validation_msg) {
-            callback(validation_msg);
-            return;
+            throw validation_msg;
         }
 
         let table_search_obj = {};
@@ -188,53 +156,42 @@ function describeSchema(describe_schema_object, callback) {
         table_search_obj.hash_values = [];
         table_search_obj.get_attributes = ['hash_attribute', 'id', 'name', 'schema'];
 
-        search.searchByValue(table_search_obj, function (err, tables) {
-            if (err) {
-                logger.error(err);
-                callback(err);
-                return;
+        let tables = await p_search_search_by_value(table_search_obj);
+
+        if (tables && tables.length < 1) {
+            let schema_search_obj = {};
+            schema_search_obj.schema = 'system';
+            schema_search_obj.table = 'hdb_schema';
+            schema_search_obj.hash_attribute = 'name';
+            schema_search_obj.hash_values = [describe_schema_object.schema];
+            schema_search_obj.get_attributes = ['name'];
+
+            let schema = await p_search_search_by_value(schema_search_obj);
+            if (schema && schema.length < 1) {
+                throw new Error('schema not found');
+            } else {
+                return {};
             }
-            if (tables && tables.length < 1) {
-                let schema_search_obj = {};
-                schema_search_obj.schema = 'system';
-                schema_search_obj.table = 'hdb_schema';
-                schema_search_obj.hash_attribute = 'name';
-                schema_search_obj.hash_values = [describe_schema_object.schema];
-                schema_search_obj.get_attributes = ['name'];
-
-                search.searchByHash(schema_search_obj, function (search_err, schema) {
-                    if (search_err) {
-                        logger.error(search_err);
-                        callback(search_err);
-                        return;
-                    }
-                    if(schema && schema.length < 1){
-                        return callback('schema not found');
-
-                    }else{
-                        return callback(null, {});
-
-                    }
-                });
-            }else{
-                let results = [];
-                async.map(tables, function (table, caller) {
-                    descTable({"schema": describe_schema_object.schema, "table":table.name}, function(describe_err, data){
-                        if(describe_err){
-                            caller(describe_err);
+        } else {
+            let results = [];
+            await Promise.all(
+                tables.map(async (table) => {
+                    try {
+                        let data = await descTable({"schema": describe_schema_object.schema, "table": table.name});
+                        if (data) {
+                            results.push(data);
                         }
-
-                        results.push(data);
-                        caller();
-                    });
-
-                },function(error, data){
-                    return callback(null, results);
-
-                });
-            }
-        });
-    } catch (e) {
-        callback(e);
+                    } catch (err) {
+                        logger.error('Error describing table.');
+                        logger.error(err);
+                    }
+                })
+            );
+            return results;
+        }
+    } catch(err) {
+        logger.error('Error calling describeSchema');
+        logger.error(err);
+        return new Error('Error during describeSchema.  Please check the logs and try again.');
     }
 }
