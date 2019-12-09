@@ -41,10 +41,6 @@ directive2_0_0.environment_variables.push(
 );
 
 directive2_0_0.environment_variables.push(
-    new env_variable(`${HDB_SETTINGS_NAMES.HELIUM_VOLUME_PATH_KEY}`, ``, [`Specify the file system path to where the Helium volume will reside.`])
-);
-
-directive2_0_0.environment_variables.push(
     new env_variable(`${HDB_SETTINGS_NAMES.LOG_MAX_DAILY_FILES_KEY}`, `false`, [`Set the number of daily log files to maintain when LOG_DAILY_ROTATE is enabled`,
     'If no integer value is set, no limit will be set for',
     'daily log files which may consume a large amount of storage depending on your log settings'])
