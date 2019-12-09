@@ -46,11 +46,6 @@ directive2_0_0.environment_variables.push(
     'daily log files which may consume a large amount of storage depending on your log settings'])
 );
 
-directive2_0_0.environment_variables.push(
-    new env_variable(`${HDB_SETTINGS_NAMES.HELIUM_SERVER_HOST}`, HDB_SETTINGS_DEFAULT_VALUES.HELIUM_SERVER_HOST,
-        [`specify the host & port where your helium server is running. NOTE for most installs this will not change from ${HDB_SETTINGS_DEFAULT_VALUES.HELIUM_SERVER_HOST}`])
-);
-
 // Move the utilities/keys/060493.ks file to its new home in ~/.harperdb/keys/
 directive2_0_0.functions.push(() => {
     let old_keys_path = undefined;
