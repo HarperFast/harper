@@ -5103,8 +5103,8 @@
 									"    \"message\": \"updated 2 of 2 records\",\r",
 									"    \"skipped_hashes\": [],\r",
 									"    \"update_hashes\": [\r",
-									"        11,\r",
-									"        21\r",
+									"        111,\r",
+									"        121\r",
 									"    ]\r",
 									"}\r",
 									"\r",
@@ -5157,7 +5157,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"update\",\n\t\"schema\":\"{{con_schema}}\",\n\t\"table\":\"{{con_rpm_table}}\",\n\t\"records\": [\n\t  {\n\t    \"rpm\": 11,\n\t    \"hz\": \"harper\"\n\n\t  },\n\t  {\n\t    \"rpm\": 21,\n\t    \"hz\": \"alby\"\n\t  }\n\t]\n}\n\n"
+							"raw": "{\n\t\"operation\":\"update\",\n\t\"schema\":\"{{con_schema}}\",\n\t\"table\":\"{{con_rpm_table}}\",\n\t\"records\": [\n\t  {\n\t    \"rpm\": 111,\n\t    \"hz\": \"harper\"\n\n\t  },\n\t  {\n\t    \"rpm\": 121,\n\t    \"hz\": \"alby\"\n\t  }\n\t]\n}\n\n"
 						},
 						"url": {
 							"raw": "http://{{node4_host}}:{{node_port}}",
@@ -5180,11 +5180,11 @@
 								"exec": [
 									"let expected_result = [\r",
 									"    {\r",
-									"        \"rpm\": 11,\r",
+									"        \"rpm\": 111,\r",
 									"        \"hz\": \"harper\"\r",
 									"    },\r",
 									"    {\r",
-									"        \"rpm\": 21,\r",
+									"        \"rpm\": 121,\r",
 									"        \"hz\": \"alby\"\r",
 									"    }\r",
 									"]\r",
@@ -5238,7 +5238,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_hash\",\n\t\"schema\": \"{{con_schema}}\",\n\t\"table\": \"{{con_rpm_table}}\",\n\t\"hash_values\":[11,21],\n\t\"get_attributes\": [\"rpm\", \"hz\"]\n}\n"
+							"raw": "{\n\t\"operation\":\"search_by_hash\",\n\t\"schema\": \"{{con_schema}}\",\n\t\"table\": \"{{con_rpm_table}}\",\n\t\"hash_values\":[111,121],\n\t\"get_attributes\": [\"rpm\", \"hz\"]\n}\n"
 						},
 						"url": {
 							"raw": "http://{{node4_host}}:{{node_port}}",
@@ -5261,11 +5261,11 @@
 								"exec": [
 									"let expected_result = [\r",
 									"    {\r",
-									"        \"rpm\": 11,\r",
+									"        \"rpm\": 111,\r",
 									"        \"hz\": \"harper\"\r",
 									"    },\r",
 									"    {\r",
-									"        \"rpm\": 21,\r",
+									"        \"rpm\": 121,\r",
 									"        \"hz\": \"alby\"\r",
 									"    }\r",
 									"]\r",
@@ -5328,7 +5328,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_hash\",\n\t\"schema\": \"{{con_schema}}\",\n\t\"table\": \"{{con_rpm_table}}\",\n\t\"hash_values\":[11,21],\n\t\"get_attributes\": [\"rpm\", \"hz\"]\n}\n"
+							"raw": "{\n\t\"operation\":\"search_by_hash\",\n\t\"schema\": \"{{con_schema}}\",\n\t\"table\": \"{{con_rpm_table}}\",\n\t\"hash_values\":[111,121],\n\t\"get_attributes\": [\"rpm\", \"hz\"]\n}\n"
 						},
 						"url": {
 							"raw": "http://{{node5_host}}:{{node_port}}",
@@ -5351,12 +5351,12 @@
 								"exec": [
 									"let updated_values = [\r",
 									"    {\r",
-									"        \"rpm\": 11,\r",
-									"        \"hz\": \"harper\"\r",
+									"        \"rpm\": 111,\r",
+									"        \"hz\": 19\r",
 									"    },\r",
 									"    {\r",
-									"        \"rpm\": 21,\r",
-									"        \"hz\": \"alby\"\r",
+									"        \"rpm\": 121,\r",
+									"        \"hz\": 29\r",
 									"    }\r",
 									"]\r",
 									"\r",
@@ -5418,7 +5418,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_hash\",\n\t\"schema\": \"{{con_schema}}\",\n\t\"table\": \"{{con_rpm_table}}\",\n\t\"hash_values\":[11,21],\n\t\"get_attributes\": [\"rpm\", \"hz\"]\n}\n"
+							"raw": "{\n\t\"operation\":\"search_by_hash\",\n\t\"schema\": \"{{con_schema}}\",\n\t\"table\": \"{{con_rpm_table}}\",\n\t\"hash_values\":[111,121],\n\t\"get_attributes\": [\"rpm\", \"hz\"]\n}\n"
 						},
 						"url": {
 							"raw": "http://{{node3_host}}:{{node_port}}",
