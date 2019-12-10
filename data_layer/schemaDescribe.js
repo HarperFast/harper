@@ -87,12 +87,11 @@ async function describeAll(op_obj) {
 
 async function descTable(describe_table_object) {
     let table_result = {};
+    let validation = validator.describe_table(describe_table_object);
+    if (validation) {
+        throw validation;
+    }
     try {
-        let validation = validator.describe_table(describe_table_object);
-        if (validation) {
-            throw validation;
-        }
-
         if (describe_table_object.schema === 'system') {
             return global.hdb_schema['system'][describe_table_object.table];
         }
@@ -110,27 +109,32 @@ async function descTable(describe_table_object) {
 
         await Promise.all(
             tables.map(async (table) => {
-                if (table.schema === describe_table_object.schema) {
-                    table_result = table;
+                try {
+                    if (table.schema === describe_table_object.schema) {
+                        table_result = table;
+                    }
+                    if (!table_result.hash_attribute) {
+                        throw new Error("Invalid table");
+                    }
+
+                    let attribute_search_obj = {};
+                    attribute_search_obj.schema = 'system';
+                    attribute_search_obj.table = 'hdb_attribute';
+                    attribute_search_obj.hash_attribute = 'id';
+                    attribute_search_obj.search_attribute = 'schema_table';
+                    attribute_search_obj.search_value = describe_table_object.schema + "." + describe_table_object.table;
+                    attribute_search_obj.get_attributes = ['attribute'];
+
+                    let attributes = await p_search_search_by_value(attribute_search_obj);
+                    attributes = _.uniqBy(attributes, (attribute) => {
+                        return attribute.attribute;
+                    });
+
+                    table_result.attributes = attributes;
+                } catch(err) {
+                    logger.error('There was an error getting table attributes.');
+                    logger.error(err);
                 }
-                if (!table_result.hash_attribute) {
-                    throw new Error("Invalid table");
-                }
-
-                let attribute_search_obj = {};
-                attribute_search_obj.schema = 'system';
-                attribute_search_obj.table = 'hdb_attribute';
-                attribute_search_obj.hash_attribute = 'id';
-                attribute_search_obj.search_attribute = 'schema_table';
-                attribute_search_obj.search_value = describe_table_object.schema + "." + describe_table_object.table;
-                attribute_search_obj.get_attributes = ['attribute'];
-
-                let attributes = await p_search_search_by_value(attribute_search_obj);
-                attributes = _.uniqBy(attributes, (attribute) => {
-                    return attribute.attribute;
-                });
-
-                table_result.attributes = attributes;
             })
         );
     } catch(err) {
@@ -141,12 +145,11 @@ async function descTable(describe_table_object) {
 }
 
 async function describeSchema(describe_schema_object) {
+    let validation_msg = validator.schema_object(describe_schema_object);
+    if (validation_msg) {
+        throw validation_msg;
+    }
     try {
-        let validation_msg = validator.schema_object(describe_schema_object);
-        if (validation_msg) {
-            throw validation_msg;
-        }
-
         let table_search_obj = {};
         table_search_obj.schema = 'system';
         table_search_obj.table = 'hdb_table';
