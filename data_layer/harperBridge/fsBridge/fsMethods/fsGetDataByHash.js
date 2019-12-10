@@ -1,6 +1,5 @@
 "use strict";
 
-const consolidateSearchData = require('../fsUtility/consolidateSearchData');
 const evaluateTableGetAttributes = require('../../bridgeUtility/evaluateTableGetAttributes');
 const getAttributeFileValues = require('../fsUtility/getAttributeFileValues');
 const search_validator = require('../../../../validation/searchValidator');
@@ -16,19 +15,15 @@ module.exports = fsGetDataByHash;
 // }
 
 async function fsGetDataByHash(search_object) {
-    try {
-        const validation_error = search_validator(search_object, 'hashes');
-        if (validation_error) {
-            throw validation_error;
-        }
-        // NOTE: this is replacing the getAllAttributeNames() method that was finding attributes w/ file_search.findDirectoriesByRegex()
-        let table_info = global.hdb_schema[search_object.schema][search_object.table];
-        let final_get_attrs = evaluateTableGetAttributes(search_object.get_attributes, table_info.attributes);
-
-        const final_results = await getAttributeFileValues(final_get_attrs, search_object, table_info.hash_attribute);
-
-        return final_results;
-    } catch(err) {
-        throw err;
+    const validation_error = search_validator(search_object, 'hashes');
+    if (validation_error) {
+        throw validation_error;
     }
+    // NOTE: this is replacing the getAllAttributeNames() method that was finding attributes w/ file_search.findDirectoriesByRegex()
+    let table_info = global.hdb_schema[search_object.schema][search_object.table];
+    let final_get_attrs = evaluateTableGetAttributes(search_object.get_attributes, table_info.attributes);
+
+    const final_results = await getAttributeFileValues(final_get_attrs, search_object, table_info.hash_attribute);
+
+    return final_results;
 }
