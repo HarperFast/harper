@@ -5,7 +5,6 @@ const async = require('async');
 const logger = require('../../../../utility/logging/harper_logger');
 const util = require('util');
 
-const consolidateSearchData = require('../fsUtility/consolidateSearchData');
 const evaluateTableGetAttributes = require('../../bridgeUtility/evaluateTableGetAttributes');
 const getAttributeFileValues = require('../fsUtility/getAttributeFileValues');
 const getBasePath = require('../fsUtility/getBasePath');
@@ -28,24 +27,20 @@ module.exports = fsSearchByConditions;
 const p_multiConditionSearch = util.promisify(multiConditionSearch);
 
 async function fsSearchByConditions(search_object) {
-    try {
-        let validation_error = search_validator(search_object, 'conditions');
+    let validation_error = search_validator(search_object, 'conditions');
 
-        if (validation_error) {
-            throw validation_error;
-        }
-
-        let table_info = global.hdb_schema[search_object.schema][search_object.table];
-
-        const final_get_attrs = evaluateTableGetAttributes(search_object.get_attributes, table_info.attributes);
-        const final_hash_results = await p_multiConditionSearch(search_object.conditions, table_info);
-
-        const final_results = await getAttributeFileValues(final_get_attrs, search_object, table_info.hash_attribute, final_hash_results);
-
-        return Object.values(final_results);
-    } catch(err){
-        throw err;
+    if (validation_error) {
+        throw validation_error;
     }
+
+    let table_info = global.hdb_schema[search_object.schema][search_object.table];
+
+    const final_get_attrs = evaluateTableGetAttributes(search_object.get_attributes, table_info.attributes);
+    const final_hash_results = await p_multiConditionSearch(search_object.conditions, table_info);
+
+    const final_results = await getAttributeFileValues(final_get_attrs, search_object, table_info.hash_attribute, final_hash_results);
+
+    return Object.values(final_results);
 }
 
 function multiConditionSearch(conditions, table_schema, callback) {
