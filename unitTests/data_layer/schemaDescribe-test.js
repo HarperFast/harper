@@ -140,7 +140,12 @@ describe('Test describeSchema', function() {
     it('describeSchema, test search exception', async function () {
         let search_stub_throw = sandbox.stub().throws(new Error('search error'));
         schema_describe.__set__('p_search_search_by_value', search_stub_throw);
-        let desc_schema = await schema_describe.describeSchema(DESCRIBE_SCHEMA_MESSAGE);
+        let desc_schema = undefined;
+        try {
+            desc_schema = await schema_describe.describeSchema(DESCRIBE_SCHEMA_MESSAGE);
+        } catch(err) {
+            desc_schema = err;
+        }
         assert.strictEqual((desc_schema instanceof Error), true, 'expected exception');
         schema_describe.__set__('p_search_search_by_value', search_orig);
     });
@@ -148,7 +153,12 @@ describe('Test describeSchema', function() {
     it('describeSchema, test descTable exception', async function () {
         let desc_table_stub_throw = sandbox.stub().throws(new Error('descTable error'));
         schema_describe.__set__('descTable', desc_table_stub_throw);
-        let desc_schema = await schema_describe.describeSchema(DESCRIBE_SCHEMA_MESSAGE);
+        let desc_schema = undefined;
+        try {
+            desc_schema = await schema_describe.describeSchema(DESCRIBE_SCHEMA_MESSAGE);
+        } catch(err) {
+            desc_schema = err;
+        }
         assert.strictEqual(Object.keys(desc_schema).length, 0, 'expected empty results');
         // restore the original search
         schema_describe.__set__('descTable', desc_table_orig);

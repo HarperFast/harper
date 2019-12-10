@@ -149,52 +149,48 @@ async function describeSchema(describe_schema_object) {
     if (validation_msg) {
         throw validation_msg;
     }
-    try {
-        let table_search_obj = {};
-        table_search_obj.schema = 'system';
-        table_search_obj.table = 'hdb_table';
-        table_search_obj.hash_attribute = 'id';
-        table_search_obj.search_attribute = 'schema';
-        table_search_obj.search_value = describe_schema_object.schema;
-        table_search_obj.hash_values = [];
-        table_search_obj.get_attributes = ['hash_attribute', 'id', 'name', 'schema'];
+    let table_search_obj = {};
+    table_search_obj.schema = 'system';
+    table_search_obj.table = 'hdb_table';
+    table_search_obj.hash_attribute = 'id';
+    table_search_obj.search_attribute = 'schema';
+    table_search_obj.search_value = describe_schema_object.schema;
+    table_search_obj.hash_values = [];
+    table_search_obj.get_attributes = ['hash_attribute', 'id', 'name', 'schema'];
 
-        let tables = await p_search_search_by_value(table_search_obj);
+    let tables = await p_search_search_by_value(table_search_obj);
 
-        if (tables && tables.length < 1) {
-            let schema_search_obj = {};
-            schema_search_obj.schema = 'system';
-            schema_search_obj.table = 'hdb_schema';
-            schema_search_obj.hash_attribute = 'name';
-            schema_search_obj.hash_values = [describe_schema_object.schema];
-            schema_search_obj.get_attributes = ['name'];
+    if (tables && tables.length < 1) {
+        let schema_search_obj = {};
+        schema_search_obj.schema = 'system';
+        schema_search_obj.table = 'hdb_schema';
+        schema_search_obj.hash_attribute = 'name';
+        schema_search_obj.hash_values = [describe_schema_object.schema];
+        schema_search_obj.get_attributes = ['name'];
+        schema_search_obj.search_value = '*';
+        schema_search_obj.search_attribute = '*';
 
-            let schema = await p_search_search_by_value(schema_search_obj);
-            if (schema && schema.length < 1) {
-                throw new Error('schema not found');
-            } else {
-                return {};
-            }
+        let schema = await p_search_search_by_value(schema_search_obj);
+        if (schema && schema.length < 1) {
+            throw new Error('schema not found');
         } else {
-            let results = [];
-            await Promise.all(
-                tables.map(async (table) => {
-                    try {
-                        let data = await descTable({"schema": describe_schema_object.schema, "table": table.name});
-                        if (data) {
-                            results.push(data);
-                        }
-                    } catch (err) {
-                        logger.error('Error describing table.');
-                        logger.error(err);
-                    }
-                })
-            );
-            return results;
+            return {};
         }
-    } catch(err) {
-        logger.error('Error calling describeSchema');
-        logger.error(err);
-        return new Error('Error during describeSchema.  Please check the logs and try again.');
+    } else {
+        let results = [];
+        await Promise.all(
+            tables.map(async (table) => {
+                try {
+                    let data = await descTable({"schema": describe_schema_object.schema, "table": table.name});
+                    if (data) {
+                        results.push(data);
+                    }
+                } catch (err) {
+                    logger.error('Error describing table.');
+                    logger.error(err);
+                }
+            })
+        );
+        return results;
     }
 }
