@@ -5157,7 +5157,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"update\",\n\t\"schema\":\"{{con_schema}}\",\n\t\"table\":\"{{con_rpm_table}}\",\n\t\"records\": [\n\t  {\n\t    \"rpm\": 111,\n\t    \"hz\": \"harper\"\n\n\t  },\n\t  {\n\t    \"rpm\": 121,\n\t    \"hz\": \"alby\"\n\t  }\n\t]\n}\n\n"
+							"raw": "{\n\t\"operation\":\"update\",\n\t\"schema\":\"{{con_schema}}\",\n\t\"table\":\"{{con_rpm_table}}\",\n\t\"records\": [\n\t  {\n\t    \"rpm\": 11,\n\t    \"hz\": \"harper\"\n\n\t  },\n\t  {\n\t    \"rpm\": 21,\n\t    \"hz\": \"alby\"\n\t  }\n\t]\n}\n\n"
 						},
 						"url": {
 							"raw": "http://{{node4_host}}:{{node_port}}",
@@ -5238,7 +5238,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_hash\",\n\t\"schema\": \"{{con_schema}}\",\n\t\"table\": \"{{con_rpm_table}}\",\n\t\"hash_values\":[111,121],\n\t\"get_attributes\": [\"rpm\", \"hz\"]\n}\n"
+							"raw": "{\n\t\"operation\":\"search_by_hash\",\n\t\"schema\": \"{{con_schema}}\",\n\t\"table\": \"{{con_rpm_table}}\",\n\t\"hash_values\":[11,21],\n\t\"get_attributes\": [\"rpm\", \"hz\"]\n}\n"
 						},
 						"url": {
 							"raw": "http://{{node4_host}}:{{node_port}}",
@@ -5328,7 +5328,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_hash\",\n\t\"schema\": \"{{con_schema}}\",\n\t\"table\": \"{{con_rpm_table}}\",\n\t\"hash_values\":[111,121],\n\t\"get_attributes\": [\"rpm\", \"hz\"]\n}\n"
+							"raw": "{\n\t\"operation\":\"search_by_hash\",\n\t\"schema\": \"{{con_schema}}\",\n\t\"table\": \"{{con_rpm_table}}\",\n\t\"hash_values\":[11,21],\n\t\"get_attributes\": [\"rpm\", \"hz\"]\n}\n"
 						},
 						"url": {
 							"raw": "http://{{node5_host}}:{{node_port}}",
@@ -5349,16 +5349,16 @@
 							"script": {
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
-									"let updated_values = [\r",
+									"let expected_values = [\r",
 									"    {\r",
-									"        \"rpm\": 111,\r",
-									"        \"hz\": 19\r",
+									"        \"rpm\": 11,\r",
+									"        \"hz\": \"Test\"\r",
 									"    },\r",
 									"    {\r",
-									"        \"rpm\": 121,\r",
-									"        \"hz\": 29\r",
+									"        \"rpm\": 21,\r",
+									"        \"hz\": \"null\"\r",
 									"    }\r",
-									"]\r",
+									"];\r",
 									"\r",
 									"pm.test(\"Status code is 200\", function () {\r",
 									"    try {\r",
@@ -5368,11 +5368,11 @@
 									"    }\r",
 									"});\r",
 									"\r",
-									"pm.test(\"Updated record exists as expected\", function () {\r",
+									"pm.test(\"Records not updated\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
 									"    \r",
 									"    try {\r",
-									"        pm.expect(jsonData).to.eql(updated_values);\r",
+									"        pm.expect(jsonData).to.eql(expected_values);\r",
 									"    } catch (error) {\r",
 									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
 									"    }\r",
@@ -5418,7 +5418,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_hash\",\n\t\"schema\": \"{{con_schema}}\",\n\t\"table\": \"{{con_rpm_table}}\",\n\t\"hash_values\":[111,121],\n\t\"get_attributes\": [\"rpm\", \"hz\"]\n}\n"
+							"raw": "{\n\t\"operation\":\"search_by_hash\",\n\t\"schema\": \"{{con_schema}}\",\n\t\"table\": \"{{con_rpm_table}}\",\n\t\"hash_values\":[11,21],\n\t\"get_attributes\": [\"rpm\", \"hz\"]\n}\n"
 						},
 						"url": {
 							"raw": "http://{{node3_host}}:{{node_port}}",
