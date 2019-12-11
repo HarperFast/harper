@@ -34,7 +34,7 @@ async function describeAll(op_obj) {
         }
 
         let schema_list = {};
-        for(let s in schemas){
+        for (let s in schemas) {
             schema_list[schemas[s].name] = true;
         }
 
@@ -54,10 +54,10 @@ async function describeAll(op_obj) {
             tables.map(async (table) => {
                 try {
                     let desc = await descTable({"schema": table.schema, "table": table.name});
-                    if(desc) {
+                    if (desc) {
                         t_results.push(desc);
                     }
-                } catch(e) {
+                } catch (e) {
                     logger.error(e);
                 }
             })
@@ -69,16 +69,16 @@ async function describeAll(op_obj) {
             }
 
             hdb_description[t_results[t].schema][t_results[t].name] = t_results[t];
-            if(schema_list[t_results[t].schema]){
+            if (schema_list[t_results[t].schema]) {
                 delete schema_list[t_results[t].schema];
             }
         }
 
-        for(let schema in schema_list){
+        for (let schema in schema_list) {
             hdb_description[schema] = {};
         }
         return hdb_description;
-    } catch(e) {
+    } catch (e) {
         logger.error('Got an error in describeAll');
         logger.error(e);
         return new Error("There was an error during describeAll.  Please check the logs and try again.");
@@ -91,56 +91,55 @@ async function descTable(describe_table_object) {
     if (validation) {
         throw validation;
     }
-    try {
-        if (describe_table_object.schema === 'system') {
-            return global.hdb_schema['system'][describe_table_object.table];
-        }
-
-        let table_search_obj = {};
-        table_search_obj.schema = 'system';
-        table_search_obj.table = 'hdb_table';
-        table_search_obj.hash_attribute = 'id';
-        table_search_obj.search_attribute = 'name';
-        table_search_obj.search_value = describe_table_object.table;
-        table_search_obj.hash_values = [];
-        table_search_obj.get_attributes = ['*'];
-
-        let tables = await p_search_search_by_value(table_search_obj);
-
-        await Promise.all(
-            tables.map(async (table) => {
-                try {
-                    if (table.schema === describe_table_object.schema) {
-                        table_result = table;
-                    }
-                    if (!table_result.hash_attribute) {
-                        throw new Error("Invalid table");
-                    }
-
-                    let attribute_search_obj = {};
-                    attribute_search_obj.schema = 'system';
-                    attribute_search_obj.table = 'hdb_attribute';
-                    attribute_search_obj.hash_attribute = 'id';
-                    attribute_search_obj.search_attribute = 'schema_table';
-                    attribute_search_obj.search_value = describe_table_object.schema + "." + describe_table_object.table;
-                    attribute_search_obj.get_attributes = ['attribute'];
-
-                    let attributes = await p_search_search_by_value(attribute_search_obj);
-                    attributes = _.uniqBy(attributes, (attribute) => {
-                        return attribute.attribute;
-                    });
-
-                    table_result.attributes = attributes;
-                } catch(err) {
-                    logger.error('There was an error getting table attributes.');
-                    logger.error(err);
-                }
-            })
-        );
-    } catch(err) {
-        logger.error('There was an error during describeTable.');
-        logger.error(err);
+    if (describe_table_object.schema === 'system') {
+        return global.hdb_schema['system'][describe_table_object.table];
     }
+
+    let table_search_obj = {};
+    table_search_obj.schema = 'system';
+    table_search_obj.table = 'hdb_table';
+    table_search_obj.hash_attribute = 'id';
+    table_search_obj.search_attribute = 'name';
+    table_search_obj.search_value = describe_table_object.table;
+    table_search_obj.hash_values = [];
+    table_search_obj.get_attributes = ['*'];
+
+    let tables = await p_search_search_by_value(table_search_obj);
+
+    if (!tables || tables.length === 0) {
+        throw new Error("Invalid table");
+    }
+
+    await Promise.all(
+        tables.map(async (table) => {
+            try {
+                if (table.schema === describe_table_object.schema) {
+                    table_result = table;
+                }
+                if (!table_result.hash_attribute) {
+                    throw new Error("Invalid table");
+                }
+
+                let attribute_search_obj = {};
+                attribute_search_obj.schema = 'system';
+                attribute_search_obj.table = 'hdb_attribute';
+                attribute_search_obj.hash_attribute = 'id';
+                attribute_search_obj.search_attribute = 'schema_table';
+                attribute_search_obj.search_value = describe_table_object.schema + "." + describe_table_object.table;
+                attribute_search_obj.get_attributes = ['attribute'];
+
+                let attributes = await p_search_search_by_value(attribute_search_obj);
+                attributes = _.uniqBy(attributes, (attribute) => {
+                    return attribute.attribute;
+                });
+
+                table_result.attributes = attributes;
+            } catch (err) {
+                logger.error('There was an error getting table attributes.');
+                logger.error(err);
+            }
+        })
+    );
     return table_result;
 }
 

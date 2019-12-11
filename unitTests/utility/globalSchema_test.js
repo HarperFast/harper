@@ -2,11 +2,70 @@
 
 const assert = require('assert');
 const async = require('async');
-const sinon = require('sinon');
 const system_schema = require('../../json/systemSchema.json');
 const rewire = require('rewire');
-const schema = require('../../data_layer/schemaDescribe');
+const schema = rewire('../../data_layer/schemaDescribe');
 const global_schema = rewire('../../utility/globalSchema');
+const test_util = require('../test_utils');
+test_util.preTestPrep();
+
+const TEST_DATA_BIRD = [
+    {
+        "age": 2,
+        "breed": "parakeet",
+        "id": 1,
+        "name": "Britt"
+    },
+];
+
+const TEST_DATA_CAT = [
+    {
+        "age": 18,
+        "breed": "tabby",
+        "id": 1,
+        "name": "Beepers"
+    },
+];
+
+const TEST_DATA_DOG = [
+    {
+        "age": 5,
+        "breed": "Mutt",
+        "id": 1,
+        "name": "Sam"
+    },
+    {
+        "age": 4,
+        "breed": "Golden Retriever",
+        "id": 2,
+        "name": "David"
+    },
+    {
+        "age": 10,
+        "breed": "Pit Bull",
+        "id": 3,
+        "name": "Kyle"
+    },
+    {
+        "age": 10,
+        "breed": "Pit",
+        "id": 4,
+        "name": "Sam"
+    },
+    {
+        "age": 15,
+        "breed": "Poodle",
+        "id": 5,
+        "name": "Eli"
+    },
+    {
+        "age": 8,
+        "breed": "Poodle",
+        "id": 6,
+        "name": "Sarah"
+    }
+];
+
 const DEV_SCHEMA = {
     'dog': {
         'hash_attribute': 'dog_id',
@@ -76,6 +135,14 @@ const TABLE_INFO_DEV_BIRD = {
     attributes: [{ attribute: 'bird_age' }, { attribute: 'bird_id' }]
 };
 
+const SCHEMA_NAME = 'dev';
+const DOG_TABLE_NAME = 'dog';
+const DOG_TABLE_HASH_ATTRIBUTE = 'id';
+const CAT_TABLE_NAME = 'cat';
+const CAT_TABLE_HASH_ATTRIBUTE = 'id';
+const BIRD_TABLE_NAME = 'bird';
+const BIRD_TABLE_HASH_ATTRIBUTE = 'id';
+
 describe('Test setSchemaDataToGlobal function', function () {
     it('Has data["systems"] in global.hdb_schema', function (done) {
         async.parallel(
@@ -91,14 +158,13 @@ describe('Test setSchemaDataToGlobal function', function () {
 
 describe('Test returnSchema function', function () {
     beforeEach(function () {
-        system_schema.dev = DEV_SCHEMA;
-        global.hdb_schema.dev = DEV_SCHEMA;
-
+        test_util.createMockFS(DOG_TABLE_HASH_ATTRIBUTE,SCHEMA_NAME,DOG_TABLE_NAME,TEST_DATA_DOG);
+        test_util.createMockFS(BIRD_TABLE_HASH_ATTRIBUTE,SCHEMA_NAME,CAT_TABLE_NAME,TEST_DATA_CAT);
+        test_util.createMockFS(CAT_TABLE_HASH_ATTRIBUTE,SCHEMA_NAME,BIRD_TABLE_NAME,TEST_DATA_BIRD);
     });
 
     afterEach(function () {
-        delete system_schema['dev'];
-        delete global.hdb_schema.dev;
+        test_util.tearDownMockFS();
     });
 
     it('Can return system schema from global', function (done) {
@@ -118,221 +184,253 @@ describe('Test returnSchema function', function () {
 
     it('Can return dev schema from global', function (done) {
         let returnSchema = global_schema.__get__('returnSchema');
-
-        assert.deepEqual(returnSchema('dev', 'dog'), system_schema['dev']['dog']);
-        assert.deepEqual(returnSchema('dev', 'cat'), system_schema['dev']['cat']);
-        assert.deepEqual(returnSchema('dev', 'bird'), system_schema['dev']['bird']);
+        let temp = returnSchema('dev', 'dog');
+        assert.deepEqual(returnSchema('dev', 'dog'), global.hdb_schema['dev']['dog']);
+        assert.deepEqual(returnSchema('dev', 'cat'), global.hdb_schema['dev']['cat']);
+        assert.deepEqual(returnSchema('dev', 'bird'), global.hdb_schema['dev']['bird']);
         done();
     });
 });
 
 describe('Test getTableSchema function', function () {
     beforeEach(function () {
-        system_schema.dev = DEV_SCHEMA;
-        global.hdb_schema.dev = DEV_SCHEMA;
-
+        test_util.createMockFS(DOG_TABLE_HASH_ATTRIBUTE,SCHEMA_NAME,DOG_TABLE_NAME,TEST_DATA_DOG);
+        test_util.createMockFS(BIRD_TABLE_HASH_ATTRIBUTE,SCHEMA_NAME,CAT_TABLE_NAME,TEST_DATA_CAT);
+        test_util.createMockFS(CAT_TABLE_HASH_ATTRIBUTE,SCHEMA_NAME,BIRD_TABLE_NAME,TEST_DATA_BIRD);
     });
 
     afterEach(function () {
-        delete system_schema['dev'];
-        delete global.hdb_schema.dev;
+        test_util.tearDownMockFS();
     });
 
-    it('Can get table from dev schema', function (done) {
+    it('Can get dog table from dev schema', function (done) {
         let getTableSchema = global_schema.__get__('getTableSchema');
         getTableSchema('dev', 'cat', function (err, result) {
-            assert.deepEqual(result, DEV_SCHEMA['cat']);
+            assert.deepEqual(result.name, DEV_SCHEMA['cat'].name);
+            done();
         });
-        getTableSchema('dev', 'bird', function (err, result) {
-
-            assert.deepEqual(result, DEV_SCHEMA['bird']);
-        });
-        getTableSchema('dev', 'dog', function (err, result) {
-            assert.deepEqual(result, DEV_SCHEMA['dog']);
-        });
-        done();
     });
 
-    it('Can get table from system schema', function (done) {
+    it('Can get table from dog schema', function (done) {
         let getTableSchema = global_schema.__get__('getTableSchema');
-        getTableSchema('system', 'hdb_drop_schema', function (err, result) {
-            assert.deepEqual(result, system_schema['hdb_drop_schema']);
+        getTableSchema('dev', 'dog', function (err, result) {
+            assert.deepEqual(result.name, DEV_SCHEMA['dog'].name);
+            done();
         });
+    });
+
+    it('Can get table from bird schema', function (done) {
+        let getTableSchema = global_schema.__get__('getTableSchema');
+        getTableSchema('dev', 'bird', function (err, result) {
+            assert.deepEqual(result.name, DEV_SCHEMA['bird'].name);
+            done();
+        });
+    });
+
+    it('Can get table hdb_attribute from system schema', function (done) {
+        let getTableSchema = global_schema.__get__('getTableSchema');
         getTableSchema('system', 'hdb_attribute', function (err, result) {
-
-            assert.deepEqual(result, system_schema['hdb_attribute']);
+            assert.deepEqual(result.name, system_schema['hdb_attribute'].name);
+            done();
         });
+    });
+
+    it('Can get table hdb_schema from system schema', function (done) {
+        let getTableSchema = global_schema.__get__('getTableSchema');
         getTableSchema('system', 'hdb_schema', function (err, result) {
-            assert.deepEqual(result, system_schema['hdb_schema']);
+            assert.deepEqual(result.name, system_schema['hdb_schema'].name);
+            done();
         });
+    });
 
+    it('Can get table hdb_user from system schema', function (done) {
+        let getTableSchema = global_schema.__get__('getTableSchema');
         getTableSchema('system', 'hdb_user', function (err, result) {
-            assert.deepEqual(result, system_schema['hdb_user']);
+            assert.deepEqual(result.name, system_schema['hdb_user'].name);
+            done();
         });
+    });
+
+    it('Can get table hdb_role from system schema', function (done) {
+        let getTableSchema = global_schema.__get__('getTableSchema');
         getTableSchema('system', 'hdb_role', function (err, result) {
-            assert.deepEqual(result, system_schema['hdb_role']);
+            assert.deepEqual(result.name, system_schema['hdb_role'].name);
+            done();
         });
+    });
+
+    it('Can get table hdb_job from system schema', function (done) {
+        let getTableSchema = global_schema.__get__('getTableSchema');
         getTableSchema('system', 'hdb_job', function (err, result) {
-            assert.deepEqual(result, system_schema['hdb_job']);
+            assert.deepEqual(result.name, system_schema['hdb_job'].name);
+            done();
         });
+    });
+
+    it('Can get table hdb_license from system schema', function (done) {
+        let getTableSchema = global_schema.__get__('getTableSchema');
         getTableSchema('system', 'hdb_license', function (err, result) {
-            assert.deepEqual(result, system_schema['hdb_license']);
+            assert.deepEqual(result.name, system_schema['hdb_license'].name);
+            done();
         });
+    });
+
+    it('Can get table hdb_nodes from system schema', function (done) {
+        let getTableSchema = global_schema.__get__('getTableSchema');
         getTableSchema('system', 'hdb_nodes', function (err, result) {
-            assert.deepEqual(result, system_schema['hdb_nodes']);
+            assert.deepEqual(result.name, system_schema['hdb_nodes'].name);
+            done();
         });
-        getTableSchema('system', 'emptyTable', function (err, result) {
-            assert.deepEqual(result, system_schema['emptyTable']);
-        });
-        done();
     });
 
     it('Error should be shown when trying to get the table that doesn\'t have in system and dev schema', function (done) {
         let getTableSchema = global_schema.__get__('getTableSchema');
         getTableSchema('system', 'notable', function (err) {
             assert.equal(err, 'table system.notable does not exist');
+            done();
         });
+    });
 
+    it('Error should be shown when trying to get the table that doesn\'t have in system and dev', function (done) {
+        let getTableSchema = global_schema.__get__('getTableSchema');
         getTableSchema('dev', 'notable', function (err) {
-            assert.equal(err, 'Invalid table');
+            assert.equal(err.message, 'Invalid table');
+            done();
         });
-        done();
     });
 });
 
-describe('Test setTableDataToGlobal function', function () {
-    describe('Test if no table object', function () {
-        it('Should show error when get not have table on dev schema', function (done) {
-            let setTableDataToGlobal = global_schema.__get__('setTableDataToGlobal');
-            setTableDataToGlobal('dev', 'dogs', (err) => {
-                assert.equal(err, 'Invalid table');
-            });
+describe('Test if no table object', function () {
+    beforeEach(function () {
+        test_util.createMockFS(DOG_TABLE_HASH_ATTRIBUTE,SCHEMA_NAME,DOG_TABLE_NAME,TEST_DATA_DOG);
+        test_util.createMockFS(BIRD_TABLE_HASH_ATTRIBUTE,SCHEMA_NAME,CAT_TABLE_NAME,TEST_DATA_CAT);
+        test_util.createMockFS(CAT_TABLE_HASH_ATTRIBUTE,SCHEMA_NAME,BIRD_TABLE_NAME,TEST_DATA_BIRD);
+    });
+
+    afterEach(function () {
+        test_util.tearDownMockFS();
+    });
+
+    it('Should show error when get not have table on dev schema', function (done) {
+        let setTableDataToGlobal = global_schema.__get__('setTableDataToGlobal');
+        setTableDataToGlobal('dev', 'dogs', (err, results) => {
+            assert.equal(err.message, 'Invalid table');
+            done();
+        });
+    });
+});
+
+describe('Test if have dog table object', function () {
+    beforeEach(function () {
+        test_util.createMockFS(DOG_TABLE_HASH_ATTRIBUTE,SCHEMA_NAME,DOG_TABLE_NAME,TEST_DATA_DOG);
+        test_util.createMockFS(BIRD_TABLE_HASH_ATTRIBUTE,SCHEMA_NAME,CAT_TABLE_NAME,TEST_DATA_CAT);
+        test_util.createMockFS(CAT_TABLE_HASH_ATTRIBUTE,SCHEMA_NAME,BIRD_TABLE_NAME,TEST_DATA_BIRD);
+    });
+
+    afterEach(function () {
+        test_util.tearDownMockFS();
+    });
+
+    it('global.hdb_schema["dev"]["dog"] Should equal TABLE_INFO_DEV_DOG', function (done) {
+        let setTableDataToGlobal = global_schema.__get__('setTableDataToGlobal');
+        setTableDataToGlobal('dev', 'dog', () => {
+            assert.deepEqual(global.hdb_schema['dev']['dog'].name, TABLE_INFO_DEV_DOG.name);
             done();
         });
     });
 
-    describe('Test if have dog table object', function () {
-        let describeTable_stub = undefined;
-
-        beforeEach(function () {
-            system_schema.dev = DEV_SCHEMA;
-            delete global.hdb_schema.dev;
-            describeTable_stub = sinon.stub(schema, 'describeTable').yields('', TABLE_INFO_DEV_DOG);
-        });
-
-        afterEach(function () {
-            delete system_schema['dev'];
-            delete global.hdb_schema.dev;
-            describeTable_stub.restore();
-        });
-
-        it('global.hdb_schema["dev"]["dog"] Should equal TABLE_INFO_DEV_DOG', function (done) {
-            let setTableDataToGlobal = global_schema.__get__('setTableDataToGlobal');
-            setTableDataToGlobal('dev', 'dog', () => {
-                assert.deepEqual(global.hdb_schema['dev']['dog'], TABLE_INFO_DEV_DOG);
-            });
-            done();
-        });
-
-        it('if global.hdb_schema is empty ', function (done) {
-            delete global.hdb_schema;
-            let setTableDataToGlobal = global_schema.__get__('setTableDataToGlobal');
-            setTableDataToGlobal('dev', 'dog', () => {
-                assert.deepEqual(global.hdb_schema['dev']['dog'], TABLE_INFO_DEV_DOG);
-            });
-            done();
-        });
-
-        it('if dev schema is empty', function (done) {
-            delete global.hdb_schema.dev;
-            let getTableSchema = global_schema.__get__('getTableSchema');
-            getTableSchema('dev', 'dog', function () {
-                assert.deepEqual(global.hdb_schema['dev']['dog'], TABLE_INFO_DEV_DOG);
-            });
+    it('if global.hdb_schema is empty ', function (done) {
+        delete global.hdb_schema;
+        let setTableDataToGlobal = global_schema.__get__('setTableDataToGlobal');
+        setTableDataToGlobal('dev', 'dog', () => {
+            assert.deepEqual(global.hdb_schema['dev']['dog'].name, TABLE_INFO_DEV_DOG.name);
             done();
         });
     });
 
-    describe('Test if have cat table object', function () {
-        let describeTable_stub = undefined;
-
-        beforeEach(function () {
-            system_schema.dev = DEV_SCHEMA;
-            delete global.hdb_schema.dev;
-            describeTable_stub = sinon.stub(schema, 'describeTable').yields('', TABLE_INFO_DEV_CAT);
-        });
-
-        afterEach(function () {
-            delete system_schema['dev'];
-            delete global.hdb_schema.dev;
-            describeTable_stub.restore();
-        });
-
-        it('global.hdb_schema["dev"]["cat"] Should equal TABLE_INFO_DEV_CAT', function (done) {
-            let setTableDataToGlobal = global_schema.__get__('setTableDataToGlobal');
-            setTableDataToGlobal('dev', 'cat', () => {
-                assert.deepEqual(global.hdb_schema['dev']['cat'], TABLE_INFO_DEV_CAT);
-            });
+    it('if dev schema is empty', function (done) {
+        delete global.hdb_schema.dev;
+        let getTableSchema = global_schema.__get__('getTableSchema');
+        getTableSchema('dev', 'dog', function () {
+            assert.deepEqual(global.hdb_schema['dev']['dog'].name, TABLE_INFO_DEV_DOG.name);
             done();
         });
+    });
+});
 
-        it('if global.hdb_schema is empty ', function (done) {
-            delete global.hdb_schema;
-            let setTableDataToGlobal = global_schema.__get__('setTableDataToGlobal');
-            setTableDataToGlobal('dev', 'cat', () => {
-                assert.deepEqual(global.hdb_schema['dev']['cat'], TABLE_INFO_DEV_CAT);
-            });
-            done();
-        });
+describe('Test if have cat table object', function () {
+    beforeEach(function () {
+        test_util.createMockFS(DOG_TABLE_HASH_ATTRIBUTE,SCHEMA_NAME,DOG_TABLE_NAME,TEST_DATA_DOG);
+        test_util.createMockFS(BIRD_TABLE_HASH_ATTRIBUTE,SCHEMA_NAME,CAT_TABLE_NAME,TEST_DATA_CAT);
+        test_util.createMockFS(CAT_TABLE_HASH_ATTRIBUTE,SCHEMA_NAME,BIRD_TABLE_NAME,TEST_DATA_BIRD);
+    });
 
-        it('if dev schema is empty', function (done) {
-            delete global.hdb_schema.dev;
-            let getTableSchema = global_schema.__get__('getTableSchema');
-            getTableSchema('dev', 'cat', function () {
-                assert.deepEqual(global.hdb_schema['dev']['cat'], TABLE_INFO_DEV_CAT);
-            });
+    afterEach(function () {
+        test_util.tearDownMockFS();
+    });
+
+    it('global.hdb_schema["dev"]["cat"] Should equal TABLE_INFO_DEV_CAT', function (done) {
+        let setTableDataToGlobal = global_schema.__get__('setTableDataToGlobal');
+        setTableDataToGlobal('dev', 'cat', () => {
+            assert.deepEqual(global.hdb_schema['dev']['cat'].name, TABLE_INFO_DEV_CAT.name);
             done();
         });
     });
 
-    describe('Test if have bird table object', function () {
-        let describeTable_stub = undefined;
-
-        beforeEach(function () {
-            system_schema.dev = DEV_SCHEMA;
-            delete global.hdb_schema.dev;
-            describeTable_stub = sinon.stub(schema, 'describeTable').yields('', TABLE_INFO_DEV_BIRD);
-        });
-
-        afterEach(function () {
-            delete system_schema['dev'];
-            delete global.hdb_schema.dev;
-            describeTable_stub.restore();
-        });
-
-        it('global.hdb_schema["dev"]["bird"] Should equal TABLE_INFO_DEV_BIRD', function (done) {
-            let setTableDataToGlobal = global_schema.__get__('setTableDataToGlobal');
-            setTableDataToGlobal('dev', 'bird', () => {
-                assert.deepEqual(global.hdb_schema['dev']['bird'], TABLE_INFO_DEV_BIRD);
-            });
+    it('if global.hdb_schema is empty ', function (done) {
+        delete global.hdb_schema;
+        let setTableDataToGlobal = global_schema.__get__('setTableDataToGlobal');
+        setTableDataToGlobal('dev', 'cat', () => {
+            assert.deepEqual(global.hdb_schema['dev']['cat'].name, TABLE_INFO_DEV_CAT.name);
             done();
         });
+    });
 
-        it('if global.hdb_schema is empty ', function (done) {
-            delete global.hdb_schema;
-            let setTableDataToGlobal = global_schema.__get__('setTableDataToGlobal');
-            setTableDataToGlobal('dev', 'bird', () => {
-                assert.deepEqual(global.hdb_schema['dev']['bird'], TABLE_INFO_DEV_BIRD);
-            });
+    it('if dev schema is empty', function (done) {
+        delete global.hdb_schema.dev;
+        let getTableSchema = global_schema.__get__('getTableSchema');
+        getTableSchema('dev', 'cat', function () {
+            assert.deepEqual(global.hdb_schema['dev']['cat'].name, TABLE_INFO_DEV_CAT.name);
             done();
         });
+    });
+});
 
-        it('if dev schema is empty', function (done) {
-            delete global.hdb_schema.dev;
-            let getTableSchema = global_schema.__get__('getTableSchema');
-            getTableSchema('dev', 'bird', function () {
-                assert.deepEqual(global.hdb_schema['dev']['bird'], TABLE_INFO_DEV_BIRD);
-            });
+describe('Test if have bird table object', function () {
+    let describeTable_stub = undefined;
+
+    beforeEach(function () {
+        test_util.createMockFS(DOG_TABLE_HASH_ATTRIBUTE,SCHEMA_NAME,DOG_TABLE_NAME,TEST_DATA_DOG);
+        test_util.createMockFS(BIRD_TABLE_HASH_ATTRIBUTE,SCHEMA_NAME,CAT_TABLE_NAME,TEST_DATA_CAT);
+        test_util.createMockFS(CAT_TABLE_HASH_ATTRIBUTE,SCHEMA_NAME,BIRD_TABLE_NAME,TEST_DATA_BIRD);
+    });
+
+    afterEach(function () {
+        test_util.tearDownMockFS();
+    });
+
+    it('global.hdb_schema["dev"]["bird"] Should equal TABLE_INFO_DEV_BIRD', function (done) {
+        let setTableDataToGlobal = global_schema.__get__('setTableDataToGlobal');
+        setTableDataToGlobal('dev', 'bird', () => {
+            assert.deepEqual(global.hdb_schema['dev']['bird'].name, TABLE_INFO_DEV_BIRD.name);
+            done();
+        });
+    });
+
+    it('if global.hdb_schema is empty ', function (done) {
+        delete global.hdb_schema;
+        let setTableDataToGlobal = global_schema.__get__('setTableDataToGlobal');
+        setTableDataToGlobal('dev', 'bird', () => {
+            assert.deepEqual(global.hdb_schema['dev']['bird'].name, TABLE_INFO_DEV_BIRD.name);
+            done();
+        });
+    });
+
+    it('if dev schema is empty', function (done) {
+        delete global.hdb_schema.dev;
+        let getTableSchema = global_schema.__get__('getTableSchema');
+        getTableSchema('dev', 'bird', function () {
+            assert.deepEqual(global.hdb_schema['dev']['bird'].name, TABLE_INFO_DEV_BIRD.name);
             done();
         });
     });
