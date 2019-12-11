@@ -5171,7 +5171,7 @@
 					"response": []
 				},
 				{
-					"name": "Confirm noSQL update node 4",
+					"name": "Confirm noSQL update node 4 B",
 					"event": [
 						{
 							"listen": "test",
@@ -5180,11 +5180,11 @@
 								"exec": [
 									"let expected_result = [\r",
 									"    {\r",
-									"        \"rpm\": 111,\r",
+									"        \"rpm\": 11,\r",
 									"        \"hz\": \"harper\"\r",
 									"    },\r",
 									"    {\r",
-									"        \"rpm\": 121,\r",
+									"        \"rpm\": 21,\r",
 									"        \"hz\": \"alby\"\r",
 									"    }\r",
 									"]\r",
@@ -5252,7 +5252,7 @@
 					"response": []
 				},
 				{
-					"name": "Confirm noSQL update node 5",
+					"name": "Confirm noSQL update node 5 B",
 					"event": [
 						{
 							"listen": "test",
@@ -5261,11 +5261,11 @@
 								"exec": [
 									"let expected_result = [\r",
 									"    {\r",
-									"        \"rpm\": 111,\r",
+									"        \"rpm\": 11,\r",
 									"        \"hz\": \"harper\"\r",
 									"    },\r",
 									"    {\r",
-									"        \"rpm\": 121,\r",
+									"        \"rpm\": 21,\r",
 									"        \"hz\": \"alby\"\r",
 									"    }\r",
 									"]\r",
@@ -5349,16 +5349,16 @@
 							"script": {
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
-									"let expected_values = [\r",
+									"let expected_result = [\r",
 									"    {\r",
 									"        \"rpm\": 11,\r",
-									"        \"hz\": \"Test\"\r",
+									"        \"hz\": \"update\"\r",
 									"    },\r",
 									"    {\r",
 									"        \"rpm\": 21,\r",
-									"        \"hz\": \"null\"\r",
+									"        \"hz\": \"update\"\r",
 									"    }\r",
-									"];\r",
+									"]\r",
 									"\r",
 									"pm.test(\"Status code is 200\", function () {\r",
 									"    try {\r",
@@ -5372,7 +5372,7 @@
 									"    var jsonData = pm.response.json();\r",
 									"    \r",
 									"    try {\r",
-									"        pm.expect(jsonData).to.eql(expected_values);\r",
+									"        pm.expect(jsonData).to.eql(expected_result);\r",
 									"    } catch (error) {\r",
 									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
 									"    }\r",
