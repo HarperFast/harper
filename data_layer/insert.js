@@ -120,7 +120,7 @@ async function insertData(insert_object){
         convertOperationToTransaction(insert_object, bridge_insert_result.written_hashes, bridge_insert_result.schema_table.hash_attribute);
         await p_schema_to_global();
 
-        return returnObject(INSERT_ACTION, bridge_insert_result.written_hashes, insert_object, bridge_insert_result.skipped_hashes);
+        return returnObject(INSERT_ACTION, bridge_insert_result.written_hashes, insert_object, bridge_insert_result.skipped_hashes, bridge_insert_result.new_attributes);
     } catch(e){
         throw (e);
     }
@@ -173,9 +173,10 @@ async function updateData(update_object){
  * @param written_hashes
  * @param object
  * @param skipped
- * @returns {{skipped_hashes: *, update_hashes: *, message: string}}
+ * @param new_attributes
+ * @returns {{skipped_hashes: *, message: string}}
  */
-function returnObject(action, written_hashes, object, skipped) {
+function returnObject(action, written_hashes, object, skipped, new_attributes) {
     let return_object = {
         message: `${action} ${written_hashes.length} of ${object.records.length} records`,
         skipped_hashes: skipped
@@ -183,6 +184,7 @@ function returnObject(action, written_hashes, object, skipped) {
 
     if (action === INSERT_ACTION) {
         return_object.inserted_hashes = written_hashes;
+        return_object.new_attributes = new_attributes;
         return return_object;
     }
 

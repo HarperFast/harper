@@ -182,6 +182,19 @@ function postOperationHandler(request_body, result, orig_req) {
         case terms.OPERATIONS_ENUM.INSERT:
             try {
                 sendOperationTransaction(transaction_msg, request_body, result.inserted_hashes, orig_req);
+
+                if (!common_utils.isEmptyOrZeroLength(result.new_attributes)) {
+                    result.new_attributes.forEach((attribute) => {
+                        transaction_msg.transaction = {
+                            operation: terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE,
+                            schema: request_body.schema,
+                            table: request_body.table,
+                            attribute: attribute
+                        };
+
+                        sendSchemaTransaction(transaction_msg, terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, request_body, orig_req);
+                    });
+                }
             } catch(err) {
                 harper_logger.error('There was an error calling insert followup function.');
                 harper_logger.error(err);
