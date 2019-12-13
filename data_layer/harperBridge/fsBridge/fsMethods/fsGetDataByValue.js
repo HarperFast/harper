@@ -27,47 +27,51 @@ module.exports = fsGetDataByValue;
 // }
 
 async function fsGetDataByValue(search_object, comparator) {
-    let comparator_search = !common_utils.isEmpty(comparator);
-    if (comparator_search && !hdb_terms.FS_VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP[comparator]) {
-        throw new Error(`Value search comparator - ${comparator} - is not valid`);
-    }
-    let validation_error = search_validator(search_object, 'value');
-    if (validation_error) {
-        throw validation_error;
-    }
-    let operation = '=';
-    if (search_object.search_value !== '*' && search_object.search_value !== '%'
-        && (search_object.search_value.includes('*') || search_object.search_value.includes('%'))) {
-        operation = 'like';
-    }
-    if (comparator_search) {
-        operation = comparator;
-    }
-    let condition = {};
-    condition[operation] = [search_object.search_attribute, search_object.search_value];
+    try {
+        let comparator_search = !common_utils.isEmpty(comparator);
+        if (comparator_search && !hdb_terms.FS_VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP[comparator]) {
+            throw new Error(`Value search comparator - ${comparator} - is not valid`);
+        }
+        let validation_error = search_validator(search_object, 'value');
+        if (validation_error) {
+            throw validation_error;
+        }
+        let operation = '=';
+        if (search_object.search_value !== '*' && search_object.search_value !== '%'
+            && (search_object.search_value.includes('*') || search_object.search_value.includes('%'))) {
+            operation = 'like';
+        }
+        if (comparator_search) {
+            operation = comparator;
+        }
+        let condition = {};
+        condition[operation] = [search_object.search_attribute, search_object.search_value];
 
-    let table_info = null;
-    if (search_object.schema === hdb_terms.SYSTEM_SCHEMA_NAME) {
-        table_info = system_schema[search_object.table];
-    } else {
-        table_info = global.hdb_schema[search_object.schema][search_object.table];
+        let table_info = null;
+        if (search_object.schema === hdb_terms.SYSTEM_SCHEMA_NAME) {
+            table_info = system_schema[search_object.table];
+        } else {
+            table_info = global.hdb_schema[search_object.schema][search_object.table];
+        }
+
+        const patterns = condition_patterns.createPatterns(condition, {
+            name: search_object.table,
+            schema: search_object.schema,
+            hash_attribute: table_info.hash_attribute
+        }, getBasePath());
+
+        let final_hash_results;
+        if (search_object.search_value === '*' || search_object.search_value === '%') {
+            final_hash_results = await getAllAttrHashValues(patterns.hash_path);
+        } else {
+            final_hash_results = await p_find_ids_by_regex(patterns.folder_search_path, patterns.folder_search, patterns.blob_regex);
+        }
+
+        const final_get_attrs = evaluateTableGetAttributes(search_object.get_attributes, table_info.attributes);
+        const final_results = await getAttributeFileValues(final_get_attrs, search_object, table_info.hash_attribute, final_hash_results);
+
+        return final_results;
+    } catch(err) {
+        throw err;
     }
-
-    const patterns = condition_patterns.createPatterns(condition, {
-        name: search_object.table,
-        schema: search_object.schema,
-        hash_attribute: table_info.hash_attribute
-    }, getBasePath());
-
-    let final_hash_results;
-    if (search_object.search_value === '*' || search_object.search_value === '%') {
-        final_hash_results = await getAllAttrHashValues(patterns.hash_path);
-    } else {
-        final_hash_results = await p_find_ids_by_regex(patterns.folder_search_path, patterns.folder_search, patterns.blob_regex);
-    }
-
-    const final_get_attrs = evaluateTableGetAttributes(search_object.get_attributes, table_info.attributes);
-    const final_results = await getAttributeFileValues(final_get_attrs, search_object, table_info.hash_attribute, final_hash_results);
-
-    return final_results;
 }
