@@ -333,9 +333,17 @@ function chooseOperation(json, callback) {
             let sql_statement = (json.operation === 'sql' ? json.sql : json.search_operation.sql);
             let parsed_sql_object = sql.convertSQLToAST(sql_statement);
             json.parsed_sql_object = parsed_sql_object;
-            if (!sql.checkASTPermissions(json, parsed_sql_object)) {
+            let ast_perm_check = sql.checkASTPermissions(json, parsed_sql_object);
+            if (ast_perm_check && ast_perm_check.length > 0) {
+                let perms_list = {};
+                ast_perm_check.forEach((perm) => {
+                    if(!perms_list[perm.attribute]) {
+                        perms_list[perm.attribute] = [];
+                    }
+                    perms_list[perm.attribute].push(perm.restriction);
+                });
                 harper_logger.error(`${UNAUTH_RESPONSE} from operation ${json.search_operation}`);
-                return callback(UNAUTH_RESPONSE, `${UNAUTH_RESPONSE} from operation ${json.search_operation}`);
+                return callback(`You do not have the required permissions: ${util.inspect(perms_list)}`, null);
             }
         } else {
             let function_to_check = (job_operation_function === undefined ? operation_function : job_operation_function);
@@ -343,9 +351,10 @@ function chooseOperation(json, callback) {
             if (!operation_json.hdb_user) {
                 operation_json.hdb_user = json.hdb_user;
             }
-            if (!op_auth.verifyPerms(operation_json, function_to_check)) {
+            let verify_perms_result = op_auth.verifyPerms(operation_json, function_to_check);
+            if (verify_perms_result && verify_perms_result.length > 0) {
                 harper_logger.error(`${UNAUTH_RESPONSE} from operation ${json.search_operation}`);
-                return callback(UNAUTH_RESPONSE, null);
+                return callback({"response": UNAUTH_RESPONSE, "required_perms":verify_perms_result}, null);
             }
         }
     } catch (e) {

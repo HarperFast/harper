@@ -79,11 +79,11 @@ function checkASTPermissions(json_message, parsed_sql_object) {
     } catch(e) {
         throw e;
     }
-    if (!verify_result) {
+    if (verify_result && verify_result.length > 0) {
         parsed_sql_object.permissions_checked = true;
-        return false;
+        return verify_result;
     }
-    return true;
+    return [];
 }
 
 function convertSQLToAST(sql) {
@@ -110,8 +110,9 @@ function processAST(json_message, parsed_sql_object, callback) {
         let sql_function = nullFunction;
 
         if (!parsed_sql_object.permissions_checked) {
-            if (!checkASTPermissions(json_message, parsed_sql_object)) {
-                return callback(UNAUTHORIZED_RESPONSE, null);
+            let permissions_check = checkASTPermissions(json_message, parsed_sql_object);
+            if (permissions_check && permissions_check.length > 0) {
+                return callback(UNAUTHORIZED_RESPONSE, permissions_check);
             }
         }
         switch (parsed_sql_object.variant) {
