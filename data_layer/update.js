@@ -12,6 +12,7 @@ const cb_insert_update = util.callbackify(write.update);
 const terms = require('../utility/hdbTerms');
 const hdb_utils = require('../utility/common_utils');
 const env = require('../utility/environment/environmentManager');
+const server_utils = require('../server/serverUtilities');
 
 module.exports = {
     update: update
@@ -112,20 +113,39 @@ function updateRecords(table, records, callback){
     };
 
     cb_insert_update(update_object, (err, res) => {
-        if(err){
+        if (err) {
             callback(err);
             return;
         }
+
         // With non SQL CUD actions, the `post` operation passed into OperationFunctionCaller would send the transaction to the cluster.
         // Since we don`t send Most SQL options to the cluster, we need to explicitly send it.
-        if(res.update_hashes.length > 0) {
-            if (update_object.schema !== terms.SYSTEM_SCHEMA_NAME) {
-                let update_msg = hdb_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
+        if (update_object.schema !== terms.SYSTEM_SCHEMA_NAME) {
+            let update_msg = hdb_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION); // TODO: Should we be setting transacted to true here?
+
+            if (res.update_hashes.length > 0) {
                 update_msg.transaction = update_object;
                 update_msg.transaction.operation = terms.OPERATIONS_ENUM.UPDATE;
                 hdb_utils.sendTransactionToSocketCluster(`${update_object.schema}:${update_object.table}`, update_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
             }
+
+            // If any new attributes are created we need to propagate them across the entire cluster
+            if (!hdb_utils.isEmptyOrZeroLength(res.new_attributes)) {
+                update_msg.__transacted = true;
+
+                res.new_attributes.forEach((attribute) => {
+                    update_msg.transaction = {
+                        operation: terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE,
+                        schema: res.schema,
+                        table: res.table,
+                        attribute: attribute
+                    };
+
+                    server_utils.sendSchemaTransaction(update_msg, terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, res, null);
+                });
+            }
         }
+
         callback(null, res);
     });
 }

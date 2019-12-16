@@ -20,6 +20,7 @@ const alasql_function_importer = require('./alasqlFunctionImporter');
 const hdb_utils = require('../utility/common_utils');
 const terms = require('../utility/hdbTerms');
 const env = require('../utility/environment/environmentManager');
+const server_utils = require('../server/serverUtilities');
 
 //here we call to define and import custom functions to alasql
 alasql_function_importer(alasql);
@@ -168,14 +169,32 @@ function convertInsert(statement, callback) {
         if (err) {
             return callback(err);
         }
+
         // With non SQL CUD actions, the `post` operation passed into OperationFunctionCaller would send the transaction to the cluster.
         // Since we don`t send Most SQL options to the cluster, we need to explicitly send it.
-        if(res.inserted_hashes.length > 0) {
-            if (insert_object.schema !== terms.SYSTEM_SCHEMA_NAME) {
-                let insert_msg = hdb_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
+        if (insert_object.schema !== terms.SYSTEM_SCHEMA_NAME) {
+            let insert_msg = hdb_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION); // TODO: Should we be setting transacted to true here?
+
+            if (res.inserted_hashes.length > 0) {
                 insert_msg.transaction = insert_object;
                 insert_msg.transaction.operation = terms.OPERATIONS_ENUM.INSERT;
                 hdb_utils.sendTransactionToSocketCluster(`${insert_object.schema}:${insert_object.table}`, insert_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
+            }
+
+            // If any new attributes are created we need to propagate them across the entire cluster
+            if (!hdb_utils.isEmptyOrZeroLength(res.new_attributes)) {
+                insert_msg.__transacted = true;
+
+                res.new_attributes.forEach((attribute) => {
+                    insert_msg.transaction = {
+                        operation: terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE,
+                        schema: res.schema,
+                        table: res.table,
+                        attribute: attribute
+                    };
+
+                    server_utils.sendSchemaTransaction(insert_msg, terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, res, null);
+                });
             }
         }
         callback(null, res);
