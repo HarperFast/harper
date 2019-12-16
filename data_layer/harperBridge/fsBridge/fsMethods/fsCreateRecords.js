@@ -39,7 +39,9 @@ async function createRecords(insert_obj) {
     }
 }
 
+
 async function checkAttributes(hdb_auth_header, table_schema, data_attributes) {
+    // Due to circular dependencies there are duplicate modules that check for new attributes. This one from bridgeUtility.
     let new_attributes = checkForNewAttributes(table_schema, data_attributes);
 
     if (hdb_utils.isEmptyOrZeroLength(new_attributes)) {

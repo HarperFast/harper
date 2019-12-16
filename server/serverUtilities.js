@@ -183,7 +183,7 @@ function postOperationHandler(request_body, result, orig_req) {
             try {
                 sendOperationTransaction(transaction_msg, request_body, result.inserted_hashes, orig_req);
 
-                if (!common_utils.isEmptyOrZeroLength(result.new_attributes)) {
+                if (!common_utils.isEmptyOrZeroLength(result.new_attributes) && request_body.schema !== terms.SYSTEM_SCHEMA_NAME) {
                     result.new_attributes.forEach((attribute) => {
                         transaction_msg.transaction = {
                             operation: terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE,
@@ -211,6 +211,19 @@ function postOperationHandler(request_body, result, orig_req) {
         case terms.OPERATIONS_ENUM.UPDATE:
             try {
                 sendOperationTransaction(transaction_msg, request_body, result.update_hashes, orig_req);
+
+                if (!common_utils.isEmptyOrZeroLength(result.new_attributes) && request_body.schema !== terms.SYSTEM_SCHEMA_NAME) {
+                    result.new_attributes.forEach((attribute) => {
+                        transaction_msg.transaction = {
+                            operation: terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE,
+                            schema: request_body.schema,
+                            table: request_body.table,
+                            attribute: attribute
+                        };
+
+                        sendSchemaTransaction(transaction_msg, terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, request_body, orig_req);
+                    });
+                }
             } catch(err) {
                 harper_logger.error('There was an error calling delete followup function.');
                 harper_logger.error(err);

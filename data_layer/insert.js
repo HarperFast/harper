@@ -161,7 +161,7 @@ async function updateData(update_object){
         }
         convertOperationToTransaction(update_object, bridge_update_result.written_hashes, bridge_update_result.schema_table.hash_attribute);
 
-        return returnObject(UPDATE_ACTION, bridge_update_result.written_hashes, update_object, bridge_update_result.skipped_hashes);
+        return returnObject(UPDATE_ACTION, bridge_update_result.written_hashes, update_object, bridge_update_result.skipped_hashes, bridge_update_result.new_attributes);
     } catch(e){
         throw (e);
     }
