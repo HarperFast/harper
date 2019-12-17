@@ -25,6 +25,7 @@ const cluster_utilities = require('../server/clustering/clusterUtilities');
 const data_export = require('../data_layer/export');
 const reg = require('./registration/registrationHandler');
 const stop = require('../bin/stop');
+const terms = require('./hdbTerms');
 
 const required_permissions = new Map();
 const DELETE_PERM = 'delete';
@@ -110,7 +111,7 @@ module.exports = {
  * @param ast - The SQL statement in Syntax Tree form.
  * @param user_object - The user and role specification
  * @param operation - The operation specified in the call.
- * @returns {Array} - True if permissions match, false if not authorized.
+ * @returns {Array} - empty array if permissions match, errors are an array of objects.
  */
 function verifyPermsAst(ast, user_object, operation) {
     if (common_utils.isEmptyOrZeroLength(ast)) {
@@ -174,7 +175,7 @@ function verifyPermsAst(ast, user_object, operation) {
  * @param user_object - the hdb_user specified in the request body
  * @param op - the name of the operation
  * @param schema_table_map - A map in the format [schema_key, [tables]].
- * @returns {Array} - True if permissions match, false if not authorized.
+ * @returns {Array} - empty array if permissions match, errors are an array of objects.
  */
 function hasPermissions(user_object, op, schema_table_map ) {
     let unauthorized_table = [];
@@ -221,7 +222,7 @@ function hasPermissions(user_object, op, schema_table_map ) {
                     harper_logger.info(e);
                     // If we are here, either there are not any permissions specified for the operation, or the schema/table was not found
                     // In those cases we want to return true, as we assume wide open access unless specified otherwise.
-                    //return true;
+                    return [];
                 }
             }
         }
@@ -232,13 +233,13 @@ function hasPermissions(user_object, op, schema_table_map ) {
 /**
  * Verifies permissions and restrictions for the NoSQL operation based on the user's assigned role.
  * @param request_json - The request body as json
- * @param operation - The name of the operation specifed in the request.
- * @returns {boolean} - True if permissions match, false if not authorized.
+ * @param operation - The name of the operation specified in the request.
+ * @returns {Array} - empty array if permissions match, errors are an array of objects.
  */
 function verifyPerms(request_json, operation) {
     if (request_json === null || operation === null || request_json.hdb_user === undefined || request_json.hdb_user === null) {
         harper_logger.info(`null required parameter in verifyPerms`);
-        return false;
+        return [{"error": "invalid request"}];
     }
 
     //passing in the function rather than the function name is an easy mistake to make, so taking care of that case here.
@@ -257,21 +258,27 @@ function verifyPerms(request_json, operation) {
 
     if (common_utils.isEmptyOrZeroLength(request_json.hdb_user.role) || common_utils.isEmptyOrZeroLength(request_json.hdb_user.role.permission)) {
         harper_logger.error(`User ${request_json.hdb_user.username }has no role or permissions.  Please assign the user a valid role.`);
-        return false;
+        return [{"error": `User ${request_json.hdb_user.username }has no role or permissions.  Please assign the user a valid role.`}];
     }
     // set to true if this operation affects a system table.  Only su can read from system tables, but can't update/delete.
-    let is_su_system_operation = schema_table_map.has('system');
+    let is_su_system_operation = schema_table_map.has(terms.SYSTEM_SCHEMA_NAME);
     if (request_json.hdb_user.role.permission.super_user && !is_su_system_operation) {
         //admins can do (almost) anything through the hole in sheet!
-        return true;
+        return [];
     }
 
     // go
-    if (hasPermissions(request_json.hdb_user, op, schema_table_map)) {
-        let unauthorized_attributes = checkAttributePerms(getRecordAttributes(request_json), getAttributeRestrictions(request_json.hdb_user, operation_schema, table),op);
+    let failed_table_permissions = hasPermissions(request_json.hdb_user, op, schema_table_map);
+    if(failed_table_permissions && failed_table_permissions.length > 0) {
+        return failed_table_permissions;
+    }
+    // TODO - after testing, just return the result of the checkAttributePerms call
+    let unauthorized_attributes = checkAttributePerms(getRecordAttributes(request_json), getAttributeRestrictions(request_json.hdb_user, operation_schema, table),op);
+    if(unauthorized_attributes && unauthorized_attributes.length > 0) {
         return unauthorized_attributes;
     }
-    return false;
+    // as with verifyPerms, we assume wide open permissions unless otherwise specified.  If we get here, just let it go.
+    return [];
 }
 
 /**
@@ -280,7 +287,7 @@ function verifyPerms(request_json, operation) {
  * @param record_attributes - An array of the attributes specified in the operation
  * @param role_attribute_restrictions - A Map of each restriction in the user role, specified as [table_name, [attribute_restrictions]].
  * @param operation
- * @returns {boolean} - True if permissions match, false if not authorized.
+ * @returns {Array} - empty array if permissions match, errors are an array of objects.
  */
 function checkAttributePerms(record_attributes, role_attribute_restrictions, operation) {
     if (!record_attributes || !role_attribute_restrictions) {
@@ -300,7 +307,7 @@ function checkAttributePerms(record_attributes, role_attribute_restrictions, ope
     // leave early if the role has no attribute permissions set
     if (!role_attribute_restrictions || role_attribute_restrictions.size === 0) {
         harper_logger.info(`No role restrictions set (this is OK).`);
-        return true;
+        return [];
     }
     let unauthorized_attributes = [];
     // Check if each specified attribute in the call (record_attributes) has a restriction specified in the role.  If there is
@@ -333,7 +340,6 @@ function checkAttributePerms(record_attributes, role_attribute_restrictions, ope
         }
     }
     return unauthorized_attributes;
-    //return true;
 }
 
 /**
