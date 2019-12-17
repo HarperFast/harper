@@ -12,7 +12,6 @@ const cb_insert_update = util.callbackify(write.update);
 const terms = require('../utility/hdbTerms');
 const hdb_utils = require('../utility/common_utils');
 const env = require('../utility/environment/environmentManager');
-const server_utils = require('../server/serverUtilities');
 
 module.exports = {
     update: update
@@ -141,7 +140,7 @@ function updateRecords(table, records, callback){
                         attribute: attribute
                     };
 
-                    server_utils.sendSchemaTransaction(update_msg, terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, update_object, null);
+                    hdb_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, update_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
                 });
             }
         }

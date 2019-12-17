@@ -52,7 +52,6 @@ module.exports = {
     processLocalTransaction,
     postOperationHandler,
     createLimitsTimeout,
-    sendSchemaTransaction,
     UNAUTH_RESPONSE,
     UNAUTHORIZED_TEXT
 };

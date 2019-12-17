@@ -20,7 +20,6 @@ const alasql_function_importer = require('./alasqlFunctionImporter');
 const hdb_utils = require('../utility/common_utils');
 const terms = require('../utility/hdbTerms');
 const env = require('../utility/environment/environmentManager');
-const server_utils = require('../server/serverUtilities');
 
 //here we call to define and import custom functions to alasql
 alasql_function_importer(alasql);
@@ -193,7 +192,7 @@ function convertInsert(statement, callback) {
                         attribute: attribute
                     };
 
-                    server_utils.sendSchemaTransaction(insert_msg, terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, insert_object, null);
+                    hdb_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, insert_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
                 });
             }
         }
