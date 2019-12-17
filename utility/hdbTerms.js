@@ -214,6 +214,7 @@ const OPERATIONS_ENUM = {
     UPDATE_JOB: 'update_job',
     GET_FINGERPRINT: 'get_fingerprint',
     SET_LICENSE: 'set_license',
+    GET_REGISTRATION_INFO: 'registration_info',
     CONFIGURE_CLUSTER: 'configure_cluster',
     CLUSTER_STATUS: 'cluster_status',
     DROP_ATTRIBUTE: 'drop_attribute',
