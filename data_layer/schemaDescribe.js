@@ -7,6 +7,7 @@ const validator = require('../validation/schema_validator');
 const _ = require('lodash');
 const hdb_utils = require('../utility/common_utils');
 const {promisify} = require('util');
+const terms = require('../utility/hdbTerms');
 
 // Promisified functions
 let p_search_search_by_value = promisify(search.searchByValue);
@@ -121,9 +122,9 @@ async function descTable(describe_table_object) {
                 }
 
                 let attribute_search_obj = {};
-                attribute_search_obj.schema = 'system';
-                attribute_search_obj.table = 'hdb_attribute';
-                attribute_search_obj.hash_attribute = 'id';
+                attribute_search_obj.schema = terms.SYSTEM_SCHEMA_NAME;
+                attribute_search_obj.table = terms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME;
+                attribute_search_obj.hash_attribute = terms.HDB_;
                 attribute_search_obj.search_attribute = 'schema_table';
                 attribute_search_obj.search_value = describe_table_object.schema + "." + describe_table_object.table;
                 attribute_search_obj.get_attributes = ['attribute'];

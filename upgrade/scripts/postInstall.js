@@ -85,7 +85,7 @@ function getCurrentVersion() {
     let info_dir_path = path.join(env.getHdbBasePath(),
         SCHEMA_DIR_NAME,
         terms.SYSTEM_SCHEMA_NAME,
-        terms.HDB_INFO_TABLE_NAME,
+        terms.SYSTEM_TABLE_NAMES.INFO_TABLE_NAME,
         DATA_VERSION_FIELD_NAME
     );
     try {
