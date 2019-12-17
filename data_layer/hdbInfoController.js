@@ -50,9 +50,9 @@ async function updateHdbInfo(new_version_string) {
     //Insert the new version into the hdb_info table.
     let insert_object = new DataLayerObjects.InsertObject(hdb_terms.OPERATIONS_ENUM.INSERT,
         hdb_terms.SYSTEM_SCHEMA_NAME,
-        hdb_terms.HDB_INFO_TABLE_NAME,
+        hdb_terms.SYSTEM_TABLE_NAMES.INFO_TABLE_NAME,
         // This could be called outside of harperdb where global is not instantiated, so we have to hard code it.
-        hdb_terms.HDB_INTO_TABLE_HASH_ATTRIBUTE,
+        hdb_terms.SYSTEM_TABLE_HASH_ATTRIBUTES.INFO_TABLE_ATTRIBUTE,
         [info_table_insert_object]);
 
     let result = null;
@@ -66,9 +66,9 @@ async function updateHdbInfo(new_version_string) {
 async function searchInfo() {
     // get the latest hdb_info id
     let search_obj = new DataLayerObjects.NoSQLSeachObject(hdb_terms.SYSTEM_SCHEMA_NAME,
-        hdb_terms.HDB_INFO_TABLE_NAME,
+        hdb_terms.SYSTEM_TABLE_NAMES.INFO_TABLE_NAME,
         HDB_INFO_SEARCH_ATTRIBUTE,
-        hdb_terms.HDB_INTO_TABLE_HASH_ATTRIBUTE,
+        hdb_terms.SYSTEM_TABLE_HASH_ATTRIBUTES.INFO_TABLE_ATTRIBUTE,
         ['*'],
         '*'
     );
