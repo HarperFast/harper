@@ -96,8 +96,8 @@ async function descTable(describe_table_object) {
     if (validation) {
         throw validation;
     }
-    if (describe_table_object.schema === 'system') {
-        return global.hdb_schema['system'][describe_table_object.table];
+    if (describe_table_object.schema === terms.SYSTEM_SCHEMA_NAME) {
+        return global.hdb_schema[terms.SYSTEM_SCHEMA_NAME][describe_table_object.table];
     }
 
     let table_search_obj = {};
