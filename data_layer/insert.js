@@ -179,12 +179,12 @@ async function updateData(update_object){
 function returnObject(action, written_hashes, object, skipped, new_attributes) {
     let return_object = {
         message: `${action} ${written_hashes.length} of ${object.records.length} records`,
-        skipped_hashes: skipped
+        skipped_hashes: skipped,
+        new_attributes
     };
 
     if (action === INSERT_ACTION) {
         return_object.inserted_hashes = written_hashes;
-        return_object.new_attributes = new_attributes;
         return return_object;
     }
 
