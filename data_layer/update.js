@@ -121,7 +121,7 @@ function updateRecords(table, records, callback){
         // With non SQL CUD actions, the `post` operation passed into OperationFunctionCaller would send the transaction to the cluster.
         // Since we don`t send Most SQL options to the cluster, we need to explicitly send it.
         if (update_object.schema !== terms.SYSTEM_SCHEMA_NAME) {
-            let update_msg = hdb_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION); // TODO: Should we be setting transacted to true here?
+            let update_msg = hdb_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
 
             if (res.update_hashes.length > 0) {
                 update_msg.transaction = update_object;
@@ -129,19 +129,19 @@ function updateRecords(table, records, callback){
                 hdb_utils.sendTransactionToSocketCluster(`${update_object.schema}:${update_object.table}`, update_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
             }
 
-            // If any new attributes are created we need to propagate them across the entire cluster
+            // If any new attributes are created we need to propagate them across the entire cluster.
             if (!hdb_utils.isEmptyOrZeroLength(res.new_attributes)) {
                 update_msg.__transacted = true;
 
                 res.new_attributes.forEach((attribute) => {
                     update_msg.transaction = {
                         operation: terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE,
-                        schema: res.schema,
-                        table: res.table,
+                        schema: update_object.schema,
+                        table: update_object.table,
                         attribute: attribute
                     };
 
-                    server_utils.sendSchemaTransaction(update_msg, terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, res, null);
+                    server_utils.sendSchemaTransaction(update_msg, terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, update_object, null);
                 });
             }
         }

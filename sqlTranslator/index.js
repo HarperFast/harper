@@ -173,7 +173,7 @@ function convertInsert(statement, callback) {
         // With non SQL CUD actions, the `post` operation passed into OperationFunctionCaller would send the transaction to the cluster.
         // Since we don`t send Most SQL options to the cluster, we need to explicitly send it.
         if (insert_object.schema !== terms.SYSTEM_SCHEMA_NAME) {
-            let insert_msg = hdb_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION); // TODO: Should we be setting transacted to true here?
+            let insert_msg = hdb_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
 
             if (res.inserted_hashes.length > 0) {
                 insert_msg.transaction = insert_object;
@@ -181,22 +181,23 @@ function convertInsert(statement, callback) {
                 hdb_utils.sendTransactionToSocketCluster(`${insert_object.schema}:${insert_object.table}`, insert_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
             }
 
-            // If any new attributes are created we need to propagate them across the entire cluster
+            // If any new attributes are created we need to propagate them across the entire cluster.
             if (!hdb_utils.isEmptyOrZeroLength(res.new_attributes)) {
                 insert_msg.__transacted = true;
 
                 res.new_attributes.forEach((attribute) => {
                     insert_msg.transaction = {
                         operation: terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE,
-                        schema: res.schema,
-                        table: res.table,
+                        schema: insert_object.schema,
+                        table: insert_object.table,
                         attribute: attribute
                     };
 
-                    server_utils.sendSchemaTransaction(insert_msg, terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, res, null);
+                    server_utils.sendSchemaTransaction(insert_msg, terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, insert_object, null);
                 });
             }
         }
+
         callback(null, res);
     });
 }
