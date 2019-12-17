@@ -328,11 +328,11 @@ describe('Test compareTableKeys with filesystem', () => {
             found_table = err;
         }
         // get table returns an error string rather than an error :(
-        assert.strictEqual(found_table , 'Invalid table', 'Expected exception');
+        assert.strictEqual(found_table.message.includes('Invalid table'), true, 'Expected exception');
         assert.strictEqual(global.hdb_schema[SCHEMA_1_NAME][SCHEMA_1_NEW_TABLE_NAME], undefined, 'Expected no new tables.');
     });
 
-    it(`test compareTableKeys 1 new table.`, async () => {
+    it(`test compareTableKeys 1 new table updated message.`, async () => {
         let test_message = test_utils.deepClone(global.hdb_schema);
         test_message[SCHEMA_1_NAME][SCHEMA_1_NEW_TABLE_NAME] = {
             "hash_attribute": `id`,

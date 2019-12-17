@@ -1,6 +1,7 @@
 const async = require('async');
 const system_schema = require('../json/systemSchema.json');
 const logger = require('../utility/logging/harper_logger');
+const {callbackify} = require('util');
 
 module.exports = {
     setSchemaDataToGlobal: setSchemaDataToGlobal,
@@ -12,8 +13,12 @@ module.exports = {
 // These require statements were moved below the module.exports to resolve circular dependencies within the harperBridge module.
 const schema = require('../data_layer/schemaDescribe');
 
+// callbackified functions
+let c_schema_describe_all = callbackify(schema.describeAll);
+let c_schema_describe_table = callbackify(schema.describeTable);
+
 function setSchemaDataToGlobal(callback) {
-    schema.describeAll(null, (err, data) => {
+    c_schema_describe_all(null, (err, data) => {
         if (err) {
             callback(err);
             return;
@@ -68,8 +73,7 @@ function setTableDataToGlobal(schema_name, table, callback){
         callback();
         return;
     }
-
-    schema.describeTable(describe_object, (err, table_info)=>{
+    c_schema_describe_table(describe_object, (err, table_info)=>{
         if(err){
             callback(err);
             return;
