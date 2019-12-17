@@ -47,12 +47,12 @@ function update(statement, callback){
             search.search.bind(null, search_statement),
             buildUpdateRecords.bind(null, update_record),
             updateRecords.bind(null, table_clone)
-        ], (err, results)=>{
-            if(err){
-                if(err.hdb_code){
-                    return callback(null, err.message);
+        ], (waterfall_err, results) => {
+            if (waterfall_err) {
+                if (waterfall_err.hdb_code) {
+                    return callback(null, waterfall_err.message);
                 }
-                return callback(err);
+                return callback(waterfall_err);
             }
 
             callback(null, results);
