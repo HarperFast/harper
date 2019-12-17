@@ -44,6 +44,7 @@ const ESCAPED_PERIOD_REGEX = /^U\+002E$/;
 const ESCAPED_DOUBLE_PERIOD_REGEX = /^U\+002EU\+002E$/;
 const MOMENT_DAYS_TAG = 'd';
 const API_TURNOVER_SEC = 999999;
+const WILDCARD_SEARCH_VALUE = '*';
 
 // Name of the System schema
 const SYSTEM_SCHEMA_NAME = 'system';
@@ -62,6 +63,7 @@ const BLOB_FOLDER_NAME = 'blob';
 const HDB_TRASH_DIR = 'trash';
 const SCHEMA_DIR_NAME = 'schema';
 const LIMIT_COUNT_NAME = '.count';
+const ID_ATTRIBUTE_STRING = 'id';
 
 const HELIUM_URL_PREFIX = 'he://';
 
@@ -516,6 +518,7 @@ module.exports = {
     HDB_FILE_PERMISSIONS,
     SCHEMA_DIR_NAME,
     LIMIT_COUNT_NAME,
+    ID_ATTRIBUTE_STRING,
     INSERT_MODULE_ENUM,
     UPGRADE_JSON_FIELD_NAMES_ENUM,
     RESTART_CODE,
@@ -560,5 +563,6 @@ module.exports = {
     LOOPBACK,
     CODE_EXTENSION,
     COMPILED_EXTENSION,
-    JAVASCRIPT_EXTENSION
+    JAVASCRIPT_EXTENSION,
+    WILDCARD_SEARCH_VALUE
 };
