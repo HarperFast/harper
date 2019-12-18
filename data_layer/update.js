@@ -145,6 +145,9 @@ function updateRecords(table, records, callback){
             }
         }
 
+        // We do not want the API returning the new attributes property.
+        delete res.new_attributes;
+
         callback(null, res);
     });
 }
