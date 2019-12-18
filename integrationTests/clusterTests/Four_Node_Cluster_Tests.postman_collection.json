@@ -7431,7 +7431,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"csv_file_load\",\n\t\"action\": \"update\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"transact_to_cluster\":true,\n\t\"file_path\":\"{{CSV_BASE_PATH}}/clusteringCsvs/dog_blog_data.csv\"\n}"
+							"raw": "{\n\t\"operation\":\"csv_file_load\",\n\t\"action\": \"update\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"transact_to_cluster\":true,\n\t\"file_path\":\"{{CSV_BASE_PATH}}/clusteringCsvs/dog_blob_data.csv\"\n}"
 						},
 						"url": {
 							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
