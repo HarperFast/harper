@@ -35,9 +35,6 @@ const p_search_search_by_hash = util.promisify(search.searchByHash);
 const p_search_search_by_value = util.promisify(search.searchByValue);
 const p_search_search = util.promisify(search.search);
 const p_sql_evaluate_sql = util.promisify(sql.evaluateSQL);
-const p_schema_describe_schema = util.promisify(schema_describe.describeSchema);
-const p_schema_describe_table = util.promisify(schema_describe.describeTable);
-const p_schema_describe_all = util.promisify(schema_describe.describeAll);
 const p_delete = util.promisify(delete_.delete);
 
 const GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM = {
@@ -410,13 +407,13 @@ function getOperationFunction(json){
             operation_function = schema.dropAttribute;
             break;
         case terms.OPERATIONS_ENUM.DESCRIBE_SCHEMA:
-            operation_function = p_schema_describe_schema;
+            operation_function = schema_describe.describeSchema;
             break;
         case terms.OPERATIONS_ENUM.DESCRIBE_TABLE:
-            operation_function = p_schema_describe_table;
+            operation_function = schema_describe.describeTable;
             break;
         case terms.OPERATIONS_ENUM.DESCRIBE_ALL:
-            operation_function = p_schema_describe_all;
+            operation_function = schema_describe.describeAll;
             break;
         case terms.OPERATIONS_ENUM.DELETE:
             operation_function = p_delete;

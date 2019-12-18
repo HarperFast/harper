@@ -22,7 +22,7 @@ async function createTable(table_system_data, create_table_obj) {
         operation: terms.OPERATIONS_ENUM.INSERT,
         schema: terms.SYSTEM_SCHEMA_NAME,
         table: terms.SYSTEM_TABLE_NAMES.TABLE_TABLE_NAME,
-        hash_attribute: terms.SYSTEM_TABLE_HASH,
+        hash_attribute: terms.SYSTEM_TABLE_HASH_ATTRIBUTES.TABLE_TABLE_HASH_ATTRIBUTE,
         records: [table_system_data]
     };
 
