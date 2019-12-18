@@ -1,6 +1,5 @@
 "use strict";
 
-const consolidateSearchData = require('../fsUtility/consolidateSearchData');
 const evaluateTableGetAttributes = require('../../bridgeUtility/evaluateTableGetAttributes');
 const getAttributeFileValues = require('../fsUtility/getAttributeFileValues');
 const search_validator = require('../../../../validation/searchValidator');
@@ -25,8 +24,7 @@ async function fsGetDataByHash(search_object) {
         let table_info = global.hdb_schema[search_object.schema][search_object.table];
         let final_get_attrs = evaluateTableGetAttributes(search_object.get_attributes, table_info.attributes);
 
-        const attributes_data = await getAttributeFileValues(final_get_attrs, search_object, table_info.hash_attribute);
-        const final_results = consolidateSearchData(table_info.hash_attribute, attributes_data);
+        const final_results = await getAttributeFileValues(final_get_attrs, search_object, table_info.hash_attribute);
 
         return final_results;
     } catch(err) {
