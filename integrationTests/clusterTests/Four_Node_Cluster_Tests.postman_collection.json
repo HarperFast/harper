@@ -1,6 +1,6 @@
 {
 	"info": {
-		"_postman_id": "9522e383-bf6b-4bd2-ab93-d4d5acd9db90",
+		"_postman_id": "7fac5a4e-7a23-4114-ac4e-feea451e05ff",
 		"name": "Four Node Cluster Tests",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
 	},
@@ -4891,7 +4891,7 @@
 									"            } else {",
 									"                pm.expect(row.weight_lbs).to.be.null;",
 									"            }",
-									"            pm.expect(Object.keys(row)).to.be.length(5);",
+									"            pm.expect(Object.keys(row)).to.be.length(6);",
 									"        });",
 									"    } catch (error) {",
 									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);",
@@ -5030,7 +5030,7 @@
 									"            } else {",
 									"                pm.expect(row.weight_lbs).to.be.null;",
 									"            }",
-									"            pm.expect(Object.keys(row)).to.be.length(5);",
+									"            pm.expect(Object.keys(row)).to.be.length(6);",
 									"        });",
 									"    } catch (error) {",
 									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);",
@@ -5162,7 +5162,7 @@
 									"    var response = pm.response.json();",
 									"    pm.expect(response).to.have.lengthOf(2);  ",
 									"    response.forEach(row => {",
-									"        pm.expect(Object.keys(row)).to.be.length(4);",
+									"        pm.expect(Object.keys(row)).to.be.length(6);",
 									"        pm.expect(row.id).to.be.oneOf([3,4]);",
 									"    });",
 									"});"
@@ -5718,7 +5718,7 @@
 									"    var response = pm.response.json();",
 									"    pm.expect(response).to.have.lengthOf(2);  ",
 									"    response.forEach(row => {",
-									"        pm.expect(Object.keys(row)).to.be.length(4);",
+									"        pm.expect(Object.keys(row)).to.be.length(6);",
 									"        pm.expect(row.id).to.be.oneOf([3,4]);",
 									"    });",
 									"});"
@@ -6264,7 +6264,7 @@
 									"        } else if (row.id === 4) {",
 									"            pm.expect(row.name).to.equal('Sarah');",
 									"        }",
-									"        pm.expect(Object.keys(row)).to.be.length(4);",
+									"        pm.expect(Object.keys(row)).to.be.length(6);",
 									"    });",
 									"});"
 								],
