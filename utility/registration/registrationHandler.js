@@ -163,7 +163,7 @@ async function getRegistrationInfo() {
         license_expiration_date: null,
         daily_api_calls_current: null,
         daily_api_calls_limit: null
-    }
+    };
 
     let license;
     let current_api_calls;
@@ -176,20 +176,20 @@ async function getRegistrationInfo() {
     }
 
     if (hdb_utils.isEmptyOrZeroLength(license)) {
-        throw new Error('There were no licenses found.')
+        throw new Error('There were no licenses found.');
     }
 
     try {
         current_api_calls = await apiLimiter.getDailyAPICalls();
     } catch(e) {
         log.error(`There was an error when calculating daily api calls due to: ${e.message}`);
-        //TODO - should we throw this error or just log it?
+        throw e;
     }
 
     reg_info_obj.registered = license.enterprise;
     reg_info_obj.version = version.version();
     reg_info_obj.storage_type = license.storage_type;
-    reg_info_obj.license_expiration_date = license.exp_date;
+    reg_info_obj.license_expiration_date = license.enterprise ? license.exp_date : null;
     reg_info_obj.daily_api_calls_limit = license.api_call;
     reg_info_obj.daily_api_calls_current = current_api_calls._consumedPoints;
 

@@ -86,9 +86,9 @@ async function removeLimiter(limiter_name_string) {
 async function getDailyAPICalls() {
     try {
         const daily_api_calls = await limiter.get(hdb_util.getLimitKey());
-        return daily_api_calls
+        return daily_api_calls;
     } catch(err) {
-        throw err
+        throw err;
     }
 }
 
