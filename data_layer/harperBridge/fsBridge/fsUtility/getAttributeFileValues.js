@@ -44,13 +44,12 @@ async function getAttributeFileValues(get_attributes, search_object, hash_attr, 
             }, {});
 
             //Create final result object with row templates that will be updated if hash values are found in attr value dir scan
-            final_attributes_data = hash_values.reduce((acc, hash) => {
-                acc[hash] = Object.assign({}, row_value_template);
+            for (let i = 0; i < hash_values.length; i++) {
+                final_attributes_data[hash_values[i]] = Object.assign({}, row_value_template);
                 if (hash_requested) {
-                    acc[hash][hash_attr] = common_utils.autoCast(hash);
+                    final_attributes_data[hash_values[i]][hash_attr] = common_utils.autoCast(hash_values[i]);
                 }
-                return acc;
-            }, {});
+            }
 
             for (const attr of get_attributes) {
                 try {
@@ -112,13 +111,13 @@ async function getAttributeFileValues(get_attributes, search_object, hash_attr, 
             }
         } else {
             //If there are less than or equal to 1000 hashes, find values via hash file read
-            final_attributes_data = hash_values.reduce((acc, hash) => {
-                acc[hash] = {};
+            for (let i = 0; i < hash_values.length; i++) {
+                final_attributes_data[hash_values[i]] = {};
                 if (hash_requested) {
-                    acc[hash][hash_attr] = common_utils.autoCast(hash);
+                    final_attributes_data[hash_values[i]][hash_attr] = common_utils.autoCast(hash_values[i]);
                 }
-                return acc;
-            }, {});
+            }
+
             for (const attribute of get_attributes) {
                 //evaluate if an array of strings or objects has been passed in and assign values accordingly
                 const attribute_name = (typeof attribute === 'string') ? attribute : attribute.attribute;

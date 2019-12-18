@@ -15,10 +15,13 @@ async function getAllAttrHashValues(hash_dir_path) {
         if (common_utils.isEmptyOrZeroLength(hash_results)) {
             return final_hash_results;
         } else {
-            final_hash_results = hash_results.map(hash_file => common_utils.autoCast(common_utils.stripFileExtension(hash_file)));
+            for (let i = 0; i < hash_results.length; i++) {
+                final_hash_results.push(common_utils.autoCast(common_utils.stripFileExtension(hash_results[i])));
+            }
         }
-    } catch (e) {
+    } catch(e) {
         log.error(e);
     }
+
     return final_hash_results;
 }
