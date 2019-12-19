@@ -58,7 +58,7 @@ async function addUser(user) {
 
     let search_obj = {
         schema: 'system',
-        table : 'hdb_role',
+        table: 'hdb_role',
         hash_values: [clean_user.role],
         hash_attribute: 'id',
         get_attributes: ['id', 'permission', 'role']
