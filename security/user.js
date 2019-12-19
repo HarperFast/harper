@@ -69,11 +69,17 @@ async function addUser(user) {
         logger.error(err);
         throw err;
     });
-    if(!search_role || search_role.length < 1){
-        throw new Error("Role not found.");
+    if (!search_role || search_role.length < 1) {
+        throw new Error('Role not found.');
     }
 
-    if(search_role[0].permission.cluster_user === true){
+    if (search_role[0].role !== terms.SYSTEM_USERS.SUPER_USER && search_role[0].role !== terms.SYSTEM_USERS.CLUSTER_USER) {
+        if (!(await license.getLicense()).enterprise) {
+            throw new Error('No enterprise license found. System is limited to 1 clustering role and 1 user role.');
+        }
+    }
+
+    if (search_role[0].permission.cluster_user === true) {
         clean_user.hash = crypto_hash.encrypt(clean_user.password);
     }
 
