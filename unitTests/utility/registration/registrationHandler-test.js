@@ -129,10 +129,10 @@ describe(`Test getFingerprint`, function () {
 });
 
 describe(`Test getRegistrationInfo`,function() {
-    let getLicense_stub = undefined;
-    let getDailyAPICalls_stub = undefined;
-    let version_stub = undefined;
-    let log_spy = undefined;
+    let getLicense_stub;
+    let getDailyAPICalls_stub;
+    let version_stub;
+    let log_spy;
     let test_license = {
         enterprise: true,
         storage_type: 'fs',
@@ -142,8 +142,8 @@ describe(`Test getRegistrationInfo`,function() {
     let test_api_calls = 55;
     let test_version = '2.0.000';
     let err_msg = 'Error message';
-    let sandbox = null;
-    let err = undefined;
+    let sandbox;
+    let err;
 
     beforeEach(() => {
         sandbox = sinon.createSandbox();
