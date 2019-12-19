@@ -92,8 +92,8 @@ async function addRole(role){
         records: [role]
     };
 
-    let success = await insert.insert(insert_object).catch((err) => {
-       throw err;
+    await insert.insert(insert_object).catch((err) => {
+        throw err;
     });
     signalling.signalUserChange({type: 'user'});
 
@@ -108,8 +108,7 @@ function checkClusterUserRole(add_role, roles){
             let role = roles[x];
             let permission = role.permission;
             if(!hdb_utils.isEmpty(permission) && permission.cluster_user === true){
-                has_cluster_role = true;
-                return;
+                return true;
             }
         }
     }
