@@ -60,7 +60,7 @@ async function addUser(user) {
         schema: 'system',
         table : 'hdb_role',
         hash_values: [clean_user.role],
-        hash_attribute : 'id',
+        hash_attribute: 'id',
         get_attributes: ['id', 'permission', 'role']
     };
 
@@ -71,12 +71,6 @@ async function addUser(user) {
     });
     if (!search_role || search_role.length < 1) {
         throw new Error('Role not found.');
-    }
-
-    if (search_role[0].role !== terms.SYSTEM_USERS.SUPER_USER && search_role[0].role !== terms.SYSTEM_USERS.CLUSTER_USER) {
-        if (!(await license.getLicense()).enterprise) {
-            throw new Error('No enterprise license found. System is limited to 1 clustering role and 1 user role.');
-        }
     }
 
     if (search_role[0].permission.cluster_user === true) {

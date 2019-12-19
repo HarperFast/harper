@@ -56,8 +56,7 @@ async function addRole(role){
             throw new Error(`Your current license only supports ${terms.BASIC_LICENSE_MAX_CLUSTER_USER_ROLES} cluster_user role. ${terms.SUPPORT_HELP_MSG}`);
         }
 
-        let role_count = await listRoles().length;
-        if(role_count > 0) {
+        if (roles.length >= 2) {
             throw new Error(`Your current license only supports ${terms.BASIC_LICENSE_MAX_NON_CU_ROLES + terms.BASIC_LICENSE_MAX_CLUSTER_USER_ROLES} roles.  ${terms.SUPPORT_HELP_MSG}`);
         }
     }
