@@ -337,10 +337,10 @@ function chooseOperation(json, callback) {
             if (ast_perm_check && ast_perm_check.length > 0) {
                 let perms_list = {};
                 ast_perm_check.forEach((perm) => {
-                    if(!perms_list[perm.attribute]) {
-                        perms_list[perm.attribute] = [];
+                    if(!perms_list[perm.table]) {
+                        perms_list[perm.table] = [];
                     }
-                    perms_list[perm.attribute].push(perm.restriction);
+                    perms_list[perm.table].push({"attribute":perm.attribute.attribute_name, "required permission": perm.restriction});
                 });
                 harper_logger.error(`${UNAUTH_RESPONSE} from operation ${json.search_operation}`);
                 return callback(`You do not have the required permissions: ${util.inspect(perms_list)}`, null);

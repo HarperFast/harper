@@ -186,6 +186,21 @@ function getSelectAttributes(ast, affected_attributes, table_lookup) {
         }
         affected_attributes.get(schema).get(table_name).push(col.columnid);
     });
+    if(ast.where) {
+        let table, col = undefined;
+
+        if(ast.where.expression.left.tableid) {
+            table = ast.where.expression.left.tableid;
+        } else if(ast.from[0].tableid) {
+            table = ast.from[0].tableid;
+        }
+        if(ast.where.expression.left.columnid) {
+            col = ast.where.expression.left.columnid;
+        }
+        if(table && col) {
+            affected_attributes.get(schema).get(table).push(col);
+        }
+    }
 }
 
 /**
