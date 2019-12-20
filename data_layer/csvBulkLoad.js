@@ -69,11 +69,11 @@ async function csvDataLoad(json_message) {
             converted_msg.data = json_message.data;
         }
         bulk_load_result = await op_func_caller.callOperationFunctionAsAwait(callBulkLoad, converted_msg, postCSVLoadFunction);
+
+        return `successfully loaded ${bulk_load_result.number_written} of ${bulk_load_result.records} records`;
     } catch(e) {
         throw e;
     }
-
-    return bulk_load_result.message;
 }
 
 /**

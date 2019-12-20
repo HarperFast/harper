@@ -1,6 +1,6 @@
 {
 	"info": {
-		"_postman_id": "ca781c25-7146-489f-985e-2cee898543cc",
+		"_postman_id": "7c1d0881-c977-4603-9254-2dbf24c1ba45",
 		"name": "HarperDB Integration Tests",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
 	},
@@ -2457,7 +2457,6 @@
 								},
 								"url": {
 									"raw": "{{host}}:9925",
-
 									"host": [
 										"{{host}}"
 									],
@@ -4370,7 +4369,6 @@
 										},
 										"url": {
 											"raw": "{{host}}:9925",
-
 											"host": [
 												"{{host}}"
 											],
@@ -12423,8 +12421,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -12489,8 +12487,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -12555,8 +12553,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -12621,8 +12619,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -12687,8 +12685,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -12753,8 +12751,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -12819,8 +12817,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -12885,8 +12883,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -12951,8 +12949,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13017,8 +13015,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13083,8 +13081,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13149,8 +13147,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13215,8 +13213,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13281,8 +13279,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13347,8 +13345,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13413,8 +13411,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13479,8 +13477,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13545,8 +13543,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13611,8 +13609,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -13674,8 +13672,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -14288,8 +14286,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -14365,8 +14363,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -14432,8 +14430,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -14507,8 +14505,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -14570,8 +14568,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -14636,8 +14634,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -14702,8 +14700,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -14768,8 +14766,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -14834,8 +14832,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -14900,8 +14898,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -14966,8 +14964,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15032,8 +15030,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15098,8 +15096,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15164,8 +15162,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15230,8 +15228,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15296,8 +15294,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15362,8 +15360,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15428,8 +15426,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15494,8 +15492,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15560,8 +15558,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15622,8 +15620,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15695,8 +15693,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -15765,8 +15763,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -15921,8 +15919,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -16891,8 +16889,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -16959,8 +16957,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -17035,8 +17033,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -17106,8 +17104,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -17168,8 +17166,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -17245,8 +17243,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -17316,8 +17314,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -17396,8 +17394,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						}
@@ -17463,8 +17461,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						}
@@ -17526,8 +17524,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						}
@@ -17593,8 +17591,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						}
@@ -17655,8 +17653,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -17721,8 +17719,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -17783,8 +17781,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -17845,8 +17843,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -17907,8 +17905,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -17969,8 +17967,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -18031,8 +18029,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -18097,8 +18095,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -18160,8 +18158,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -21346,8 +21344,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -21425,8 +21423,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -21478,8 +21476,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -21557,8 +21555,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -21620,8 +21618,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -21754,8 +21752,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -21825,8 +21823,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -21896,8 +21894,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -21972,8 +21970,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -22035,8 +22033,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -22098,8 +22096,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -22207,7 +22205,6 @@
 								},
 								"url": {
 									"raw": "{{host}}:9925",
-
 									"host": [
 										"{{host}}"
 									],
@@ -22828,7 +22825,6 @@
 								},
 								"url": {
 									"raw": "{{host}}:9925",
-
 									"host": [
 										"{{host}}"
 									],
@@ -22986,7 +22982,6 @@
 								},
 								"url": {
 									"raw": "{{host}}:9925",
-
 									"host": [
 										"{{host}}"
 									],
@@ -23102,8 +23097,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -23132,7 +23127,6 @@
 								},
 								"url": {
 									"raw": "{{host}}:9925",
-
 									"host": [
 										"{{host}}"
 									],
@@ -23260,8 +23254,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -23290,7 +23284,6 @@
 								},
 								"url": {
 									"raw": "{{host}}:9925",
-
 									"host": [
 										"{{host}}"
 									],
@@ -23418,8 +23411,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -23448,7 +23441,6 @@
 								},
 								"url": {
 									"raw": "{{host}}:9925",
-
 									"host": [
 										"{{host}}"
 									],
@@ -23571,8 +23563,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -23601,7 +23593,6 @@
 								},
 								"url": {
 									"raw": "{{host}}:9925",
-
 									"host": [
 										"{{host}}"
 									],
@@ -23726,8 +23717,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -23756,7 +23747,6 @@
 								},
 								"url": {
 									"raw": "{{host}}:9925",
-
 									"host": [
 										"{{host}}"
 									],
@@ -24053,19 +24043,23 @@
 									"let attribute_found = true;",
 									"let schema_northnwd_exists = false;",
 									"for (let schema in expected_result) {",
-									"    if (schema === \"northnwd\") {",
+									"    try {",
+									"         if (schema === \"northnwd\") {",
 									"        schema_northnwd_exists = true;",
 									"        break;",
-									"    }",
-									"    for (let table in expected_result[schema]) {",
-									"        let json_data_attr_array = json_data[schema][table][\"attributes\"].map(obj => obj.attribute);",
-									"        expected_result[schema][table].attributes.forEach((value) => {",
-									"            if (!json_data_attr_array.includes(value.attribute)) {",
-									"                attribute_found = false;",
-									"                console.log(`Attribute: ${value.attribute}`);",
-									"                console.log(`Searching schema: ${schema} and table: ${table}`);",
-									"            }",
-									"        });",
+									"        }",
+									"        for (let table in expected_result[schema]) {",
+									"            let json_data_attr_array = json_data[schema][table][\"attributes\"].map(obj => obj.attribute);",
+									"            expected_result[schema][table].attributes.forEach((value) => {",
+									"                if (!json_data_attr_array.includes(value.attribute)) {",
+									"                    attribute_found = false;",
+									"                    console.log(`Attribute: ${value.attribute}`);",
+									"                    console.log(`Searching schema: ${schema} and table: ${table}`);",
+									"                }",
+									"            });",
+									"        }",
+									"    } catch(err) {",
+									"        console.log(err);",
 									"    }",
 									"}",
 									"",
