@@ -8,6 +8,8 @@ const terms = require('../hdbTerms');
 const fs = require('fs-extra');
 const path = require('path');
 const hdb_utils = require('../common_utils');
+const apiLimiter = require('../../server/apiLimiter/apiLimiterClusterRateLimiter');
+const version = require('../../bin/version');
 
 //Promisified function
 let p_prompt_get = promisify(prompt.get);
@@ -18,7 +20,8 @@ module.exports = {
     getFingerprint: getFingerprint,
     setLicense: setLicense,
     parseLicense: parseLicense,
-    register: register
+    register: register,
+    getRegistrationInfo
 };
 
 /**
@@ -150,4 +153,45 @@ async function promptForRegistration() {
     });
 
     return data;
+}
+
+async function getRegistrationInfo() {
+    const reg_info_obj = {
+        registered: false,
+        version: null,
+        storage_type: null,
+        license_expiration_date: null,
+        daily_api_calls_current: null,
+        daily_api_calls_limit: null
+    };
+
+    let license;
+    let current_api_calls;
+
+    try {
+        license = await hdb_license.getLicense();
+    } catch(e) {
+        log.error(`There was an error when searching licenses due to: ${e.message}`);
+        throw e;
+    }
+
+    if (hdb_utils.isEmptyOrZeroLength(license)) {
+        throw new Error('There were no licenses found.');
+    }
+
+    try {
+        current_api_calls = await apiLimiter.getDailyAPICalls();
+    } catch(e) {
+        log.error(`There was an error when calculating daily api calls due to: ${e.message}`);
+        throw e;
+    }
+
+    reg_info_obj.registered = license.enterprise;
+    reg_info_obj.version = version.version();
+    reg_info_obj.storage_type = license.storage_type;
+    reg_info_obj.license_expiration_date = license.enterprise ? license.exp_date : null;
+    reg_info_obj.daily_api_calls_limit = license.api_call;
+    reg_info_obj.daily_api_calls_current = current_api_calls._consumedPoints;
+
+    return reg_info_obj;
 }
