@@ -12,6 +12,9 @@ const test_utils = require('../../test_utils');
 test_utils.preTestPrep();
 const reg = rewire('../../../utility/registration/registrationHandler');
 const hdb_license = require('../../../utility/registration/hdb_license');
+const apiLimiter = require('../../../server/apiLimiter/apiLimiterClusterRateLimiter');
+const version = require('../../../bin/version');
+const log = require('../../../utility/logging/harper_logger');
 const check_permissions = require('../../../utility/check_permissions');
 
 const parse_orig = reg.__get__('parseLicense');
@@ -121,6 +124,105 @@ describe(`Test getFingerprint`, function () {
             err = e;
         }
         assert.equal(err.message,'Error generating fingerprint.', 'expected error message');
+    });
+
+});
+
+describe(`Test getRegistrationInfo`,function() {
+    let getLicense_stub;
+    let getDailyAPICalls_stub;
+    let version_stub;
+    let log_spy;
+    let test_license = {
+        enterprise: true,
+        storage_type: 'fs',
+        exp_date: 12345,
+        api_call: 1000
+    }
+    let test_api_calls = 55;
+    let test_version = '2.0.000';
+    let err_msg = 'Error message';
+    let sandbox;
+    let err;
+
+    beforeEach(() => {
+        sandbox = sinon.createSandbox();
+        getLicense_stub = sandbox.stub(hdb_license, "getLicense").resolves(test_license);
+        getDailyAPICalls_stub = sandbox.stub(apiLimiter, "getDailyAPICalls").resolves({ _consumedPoints: test_api_calls });
+        version_stub = sandbox.stub(version, "version").returns(test_version);
+        log_spy = sandbox.spy(log, "error");
+    });
+    afterEach(() => {
+        sandbox.restore();
+        err = undefined;
+    });
+
+    it('Should return correct license and api info', async function () {
+        let result;
+        try {
+            result = await reg.getRegistrationInfo();
+        } catch (e) {
+            err = e;
+        }
+
+        assert.equal(result.registered, test_license.enterprise, 'Expected value to be true');
+        assert.equal(result.version, test_version, `Expected value to be ${test_version}`);
+        assert.equal(result.storage_type, test_license.storage_type, `Expected value to be ${test_license.storage_type}`);
+        assert.equal(result.license_expiration_date, test_license.exp_date, `Expected value to be ${test_license.exp_date}`);
+        assert.equal(result.daily_api_calls_current, test_api_calls, `Expected value to be ${test_api_calls}`);
+        assert.equal(result.daily_api_calls_limit, test_license.api_call, `Expected value to be ${test_license.api_call}`);
+    });
+
+    it('Should return null for expiration date if not registered', async function () {
+        const test_default_license = Object.assign(test_license, {enterprise: false});
+        getLicense_stub.resolves(test_default_license);
+        let result;
+        try {
+            result = await reg.getRegistrationInfo();
+        } catch (e) {
+            err = e;
+        }
+
+        assert.equal(result.registered, test_default_license.enterprise, `Expected value to be ${test_default_license.enterprise}`);
+        assert.equal(result.license_expiration_date, null, `Expected value to be null`);
+    });
+
+    it('Should throw an error is a license is not found', async function () {
+        getLicense_stub.resolves(null);
+        let result;
+        try {
+            await reg.getRegistrationInfo();
+        } catch (e) {
+            err = e;
+        }
+
+        assert.equal(err.message,'There were no licenses found.', 'expected error message');
+    });
+
+    it('Should throw and log an error if getLicense throws an error', async function () {
+        getLicense_stub.throws(new Error(err_msg));
+        let result;
+        try {
+            await reg.getRegistrationInfo();
+        } catch (e) {
+            err = e;
+        }
+
+        assert.equal(err.message, err_msg,'expected error message');
+        assert.equal(log_spy.calledOnce,true, 'expected error to be logged');
+    });
+
+    it('Should throw and log an error if getDailyAPICalls throws an error', async function () {
+        getDailyAPICalls_stub.throws(new Error(err_msg));
+        let result;
+        try {
+            await reg.getRegistrationInfo();
+        } catch (e) {
+            err = e;
+        }
+
+        assert.equal(err.message, err_msg,'expected error message');
+        assert.equal(log_spy.calledOnce,true, 'expected error to be logged');
     });
 
 });
