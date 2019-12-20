@@ -120,13 +120,13 @@ function compareSearchResultsWithRequest(not_found_hashes, delete_object) {
     for(let i=0; i<delete_object.hash_values.length; ++i) {
         let was_returned = false;
         for(let search_result_index = 0; search_result_index < delete_object.records.length; ++search_result_index) {
-            if(delete_object.records[search_result_index][table_hash_attribute] === delete_object.hash_values[i]) {
+            if (delete_object.records[search_result_index][table_hash_attribute] === common_utils.autoCast(delete_object.hash_values[i])) {
                 was_returned = true;
                 break;
             }
         }
         if(!was_returned) {
-            not_found_hashes.push(delete_object.hash_values[i]);
+            not_found_hashes.push(common_utils.autoCast(delete_object.hash_values[i]));
         }
     }
 }
