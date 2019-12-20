@@ -493,6 +493,9 @@ function getOperationFunction(json){
         case terms.OPERATIONS_ENUM.SET_LICENSE:
             operation_function = reg.setLicense;
             break;
+        case terms.OPERATIONS_ENUM.GET_REGISTRATION_INFO:
+            operation_function = reg.getRegistrationInfo;
+            break;
         case terms.OPERATIONS_ENUM.RESTART:
             operation_function = stop.restartProcesses;
             break;

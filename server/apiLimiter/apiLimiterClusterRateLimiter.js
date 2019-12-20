@@ -83,8 +83,18 @@ async function removeLimiter(limiter_name_string) {
     return remove_result;
 }
 
+async function getDailyAPICalls() {
+    try {
+        const daily_api_calls = await limiter.get(hdb_util.getLimitKey());
+        return daily_api_calls;
+    } catch(err) {
+        throw err;
+    }
+}
+
 module.exports = {
     rateLimiter,
     init,
-    removeLimiter
+    removeLimiter,
+    getDailyAPICalls
 };
