@@ -179,19 +179,7 @@ function postOperationHandler(request_body, result, orig_req) {
         case terms.OPERATIONS_ENUM.INSERT:
             try {
                 sendOperationTransaction(transaction_msg, request_body, result.inserted_hashes, orig_req);
-
-                if (!common_utils.isEmptyOrZeroLength(result.new_attributes) && request_body.schema !== terms.SYSTEM_SCHEMA_NAME) {
-                    result.new_attributes.forEach((attribute) => {
-                        transaction_msg.transaction = {
-                            operation: terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE,
-                            schema: request_body.schema,
-                            table: request_body.table,
-                            attribute: attribute
-                        };
-
-                        sendSchemaTransaction(transaction_msg, terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, request_body, orig_req);
-                    });
-                }
+                sendAttributeTransaction(result, request_body, transaction_msg, orig_req);
             } catch(err) {
                 harper_logger.error('There was an error calling insert followup function.');
                 harper_logger.error(err);
@@ -208,19 +196,7 @@ function postOperationHandler(request_body, result, orig_req) {
         case terms.OPERATIONS_ENUM.UPDATE:
             try {
                 sendOperationTransaction(transaction_msg, request_body, result.update_hashes, orig_req);
-
-                if (!common_utils.isEmptyOrZeroLength(result.new_attributes) && request_body.schema !== terms.SYSTEM_SCHEMA_NAME) {
-                    result.new_attributes.forEach((attribute) => {
-                        transaction_msg.transaction = {
-                            operation: terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE,
-                            schema: request_body.schema,
-                            table: request_body.table,
-                            attribute: attribute
-                        };
-
-                        sendSchemaTransaction(transaction_msg, terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, request_body, orig_req);
-                    });
-                }
+                sendAttributeTransaction(result, request_body, transaction_msg, orig_req);
             } catch(err) {
                 harper_logger.error('There was an error calling delete followup function.');
                 harper_logger.error(err);
@@ -610,8 +586,30 @@ function createLimitsTimeout(limiter_name_string, master_rate_limiter, timout_in
             harper_logger.debug('Restoring limits');
             let points = master_rate_limiter._rateLimiters[`apiclusterlimiter`].points;
 
-        } catch(err) {
+        } catch (err) {
             harper_logger.log(err);
         }
     }, timout_interval_ms);
+}
+
+/**
+ * Propagates attribute metadata across the entire cluster.
+ * @param result
+ * @param request_body
+ * @param transaction_msg
+ * @param original_req
+ */
+function sendAttributeTransaction(result, request_body, transaction_msg, original_req) {
+    if (!common_utils.isEmptyOrZeroLength(result.new_attributes) && request_body.schema !== terms.SYSTEM_SCHEMA_NAME) {
+        result.new_attributes.forEach((attribute) => {
+            transaction_msg.transaction = {
+                operation: terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE,
+                schema: request_body.schema,
+                table: request_body.table,
+                attribute: attribute
+            };
+
+            sendSchemaTransaction(transaction_msg, terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, request_body, original_req);
+        });
+    }
 }
