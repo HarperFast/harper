@@ -34,7 +34,9 @@ const CSV_URL_TEMP_DIR = `${env.get('HDB_ROOT')}/tmp`;
 const TEMP_CSV_FILE = `tempCSVURLLoad.csv`;
 
 const BULK_LOAD_RESPONSE = {
-    message: 'successfully loaded 3 of 3 records'
+    message: 'successfully loaded 3 of 3 records',
+    number_written: '3',
+    records: '3'
 };
 
 const DATA_LOAD_MESSAGE = {
@@ -171,10 +173,14 @@ describe('Test csvBulkLoad.js', () => {
 
         it('Test csvDataLoad incomplete csv data, expect nothing loaded message' , async function() {
             test_msg.data = 'a, b, c, d\n1,';
-            bulk_load_stub = sandbox.stub().returns({message:'successfully loaded 1 of 1 records'});
+            bulk_load_stub = sandbox.stub().returns({
+                message: 'successfully loaded 1 of 1 records',
+                number_written: '1',
+                records: '1'
+            });
             csv_rewire.__set__('bulkLoad', bulk_load_stub);
             let response = undefined;
-            response = await csv_rewire.csvDataLoad(test_msg).catch( (e) => {
+            response = await csv_rewire.csvDataLoad(test_msg).catch((e) => {
                 response = e;
             });
             assert.equal(response, 'successfully loaded 1 of 1 records', 'Did not get expected response message');

@@ -14,6 +14,7 @@ const env = require('../utility/environment/environmentManager');
 const socket_cluster_util = require('../server/socketcluster/util/socketClusterUtils');
 const op_func_caller = require('../utility/OperationFunctionCaller');
 
+const CSV_NO_RECORDS_MSG = 'No records parsed from csv file.';
 const TEMP_CSV_FILE = `tempCSVURLLoad.csv`;
 const TEMP_DOWNLOAD_DIR = `${env.get('HDB_ROOT')}/tmp`;
 const NEWLINE = '\n';
@@ -70,7 +71,11 @@ async function csvDataLoad(json_message) {
         }
         bulk_load_result = await op_func_caller.callOperationFunctionAsAwait(callBulkLoad, converted_msg, postCSVLoadFunction);
 
-        return `successfully loaded ${bulk_load_result.number_written} of ${bulk_load_result.records} records`;
+        if (bulk_load_result.message === CSV_NO_RECORDS_MSG) {
+            return CSV_NO_RECORDS_MSG;
+        }
+
+        return buildCSVResponseMsg(bulk_load_result.records, bulk_load_result.number_written);
     } catch(e) {
         throw e;
     }
@@ -183,7 +188,7 @@ async function csvFileLoad(json_message) {
         await fs.access(json_message.file_path, fs.constants.R_OK | fs.constants.F_OK);
         let bulk_load_result = await callPapaParse(json_message);
 
-        return `successfully loaded ${bulk_load_result.number_written} of ${bulk_load_result.records} records`;
+        return buildCSVResponseMsg(bulk_load_result.records, bulk_load_result.number_written);
     } catch(err) {
         logger.error(err);
         throw err;
@@ -424,4 +429,13 @@ async function postCSVLoadFunction(orig_bulk_msg, result, orig_req) {
         socket_cluster_util.concatSourceMessageHeader(transaction_msg, orig_req);
     }
     hdb_utils.sendTransactionToSocketCluster(`${orig_bulk_msg.schema}:${orig_bulk_msg.table}`, transaction_msg, env.getProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
+}
+
+/**
+ * Builds the response message returned by CSV operations.
+ * @param total_records
+ * @param number_written
+ */
+function buildCSVResponseMsg(total_records, number_written) {
+    return `successfully loaded ${number_written} of ${total_records} records`;
 }
