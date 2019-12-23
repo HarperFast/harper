@@ -20875,12 +20875,27 @@
 							"listen": "test",
 							"script": {
 								"id": "b053fde5-fab4-4952-a272-47fef8043499",
-								"type": "text/javascript",
 								"exec": [
+									"let expected_result = {",
+									"    \"message\": \"2 of 2 records successfully deleted\",",
+									"    \"deleted_hashes\": [",
+									"        924,",
+									"        927",
+									"    ],",
+									"    \"skipped_hashes\": []",
+									"};",
+									"",
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
-									"});"
-								]
+									"});",
+									"",
+									"pm.test(\"Correct response from NoSQL delete\", function () {",
+									"   let jsonData = pm.response.json();",
+									"   pm.expect(jsonData).to.eql(expected_result);",
+									"});",
+									""
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -20918,7 +20933,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n  \"operation\":\"delete\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{emps_tb}}\",\n  \"hash_values\":[924,927]\n}"
+							"raw": "{\n  \"operation\":\"delete\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{emps_tb}}\",\n  \"hash_values\":[\"924\",927]\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
