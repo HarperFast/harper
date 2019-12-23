@@ -56,8 +56,7 @@ async function addRole(role){
             throw new Error(`Your current license only supports ${terms.BASIC_LICENSE_MAX_CLUSTER_USER_ROLES} cluster_user role. ${terms.SUPPORT_HELP_MSG}`);
         }
 
-        let role_count = await listRoles().length;
-        if(role_count > 0) {
+        if (roles.length >= 2) {
             throw new Error(`Your current license only supports ${terms.BASIC_LICENSE_MAX_NON_CU_ROLES + terms.BASIC_LICENSE_MAX_CLUSTER_USER_ROLES} roles.  ${terms.SUPPORT_HELP_MSG}`);
         }
     }
@@ -93,8 +92,8 @@ async function addRole(role){
         records: [role]
     };
 
-    let success = await insert.insert(insert_object).catch((err) => {
-       throw err;
+    await insert.insert(insert_object).catch((err) => {
+        throw err;
     });
     signalling.signalUserChange({type: 'user'});
 
@@ -109,8 +108,7 @@ function checkClusterUserRole(add_role, roles){
             let role = roles[x];
             let permission = role.permission;
             if(!hdb_utils.isEmpty(permission) && permission.cluster_user === true){
-                has_cluster_role = true;
-                return;
+                return true;
             }
         }
     }
