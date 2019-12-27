@@ -25,43 +25,25 @@ const terms = require('../hdbTerms');
 const WIN = 1;
 const PIN = 2;
 
+const DEFAULT_LOG_FILE_NAME = 'hdb_log.log';
+
 let daily_rotate = undefined;
 let max_daily_files = undefined;
 let log_level = undefined;
 let log_type = undefined;
+
 let log_location = undefined;
 // Variables used for log daily rotation
 let log_directory = undefined;
-let hdb_log_file_name = undefined;
+let log_file_name = undefined;
 
 // read environment settings to get preferred logger and default log level
 const PropertiesReader = require('properties-reader');
 let hdb_properties = undefined;
 let boot_props_file_path = getPropsFilePath();
 
-try {
-    hdb_properties = PropertiesReader(boot_props_file_path);
-    hdb_properties.append(hdb_properties.get('settings_path'));
-
-    // read environment settings to get log settings
-    daily_rotate = hdb_properties.get('LOG_DAILY_ROTATE').toLowerCase() === 'true' ? true : false;
-    const daily_max = hdb_properties.get('LOG_MAX_DAILY_FILES');
-    max_daily_files = daily_max ? daily_max + 'd' : null;
-    log_level = hdb_properties.get('LOG_LEVEL');
-    log_type = hdb_properties.get('LOGGER');
-    log_location = hdb_properties.get('LOG_PATH');
-
-    //if log location isn't defined, assume HDB_ROOT/log/hdb_log.log
-    if (log_location === undefined || log_location === 0 || log_location === null) {
-        log_location = (hdb_properties.get('HDB_ROOT') + '/log/hdb_log.log');
-    }
-
-    //setting directory location for Winston daily logs
-    log_directory = getLogDirectory(log_location);
-    hdb_log_file_name = path.parse(log_location).base;
-} catch (e) {
-    // in early stage like install or run, settings file and folder is not available yet so let it takes default settings below
-}
+let pin_logger = undefined;
+let win_logger = undefined;
 
 //  RFC5424: severity of all levels is assumed to be numerically ascending from most important to least important
 const winston_log_levels = {
@@ -98,6 +80,22 @@ const LOGGER_PATH = {
     RUN_LOG: "../run_log.log"
 };
 
+try {
+    hdb_properties = PropertiesReader(boot_props_file_path);
+    hdb_properties.append(hdb_properties.get('settings_path'));
+
+    // read environment settings to get log settings
+    daily_rotate = hdb_properties.get('LOG_DAILY_ROTATE').toLowerCase() === 'true' ? true : false;
+    const daily_max = hdb_properties.get('LOG_MAX_DAILY_FILES');
+    max_daily_files = daily_max ? daily_max + 'd' : null;
+    log_level = hdb_properties.get('LOG_LEVEL');
+    log_type = hdb_properties.get('LOGGER');
+
+    setLogLocation();
+} catch (e) {
+    // in early stage like install or run, settings file and folder is not available yet so let it takes default settings below
+}
+
 //TODO: All of this should be happening in an env variable module (yet to be written).
 if (log_level === undefined || log_level === 0 || log_level === null) {
     log_level = ERR;
@@ -113,11 +111,6 @@ if (log_location === undefined || log_location === null) {
     log_location = '../run_log.log';
 }
 
-//TODO: not sure if this set to global is needed or useful.  This should be happening in a module.
-global.log_level = log_level;
-global.log_location = log_location;
-global.log_directory = log_directory;
-
 module.exports = {
     trace:trace,
     debug:debug,
@@ -126,10 +119,9 @@ module.exports = {
     error:error,
     fatal:fatal,
     notify:notify,
-    setLogLevel:setLogLevel,
-    setLogType:setLogType,
+    // setLogLevel:setLogLevel,
+    // setLogType:setLogType,
     write_log:write_log,
-    setLogLocation:setLogLocation,
     readLog:readLog,
     log_level,
     NOTIFY,
@@ -140,9 +132,6 @@ module.exports = {
     DEBUG,
     TRACE
 };
-
-let pin_logger = undefined;
-let win_logger = undefined;
 
 /**
  * initialize the winston logger
@@ -167,7 +156,7 @@ function initWinstonLogger() {
             win_logger = new (winston.Logger)({
                 transports: [
                     new (winston.transports.DailyRotateFile)({
-                        filename: path.join(log_directory, `%DATE%_${hdb_log_file_name}`),
+                        filename: log_location,
                         handleExceptions: true,
                         level: log_level,
                         maxFiles: max_daily_files,
@@ -234,7 +223,7 @@ function write_log(level, message) {
             //WINSTON
             if (!win_logger) {
                 initWinstonLogger();
-                trace(`initialized winston logger writing to ${log_location}`);
+                trace(`initialized winston logger writing to ${log_directory}`);
             }
             win_logger.log(level, message);
             break;
@@ -252,7 +241,7 @@ function write_log(level, message) {
             //WINSTON is default
             if (!win_logger) {
                 initWinstonLogger();
-                trace(`initialized winston logger writing to ${log_location}`);
+                trace(`initialized winston logger writing to ${log_directory}`);
             }
             win_logger.log(level, message);
             break;
@@ -319,126 +308,123 @@ function notify(message) {
  * Set the log level for the HDB Processes.  Default is error.  Options are trace, debug, info, error, fatal.
  * @param {string} level - The logging level for the HDB processes.
  */
-function setLogLevel(level) {
-    let log_index = Object.keys(winston_log_levels).indexOf(level);
-
-    if (log_index !== -1) {
-        switch (log_type) {
-            case WIN:
-                //WINSTON
-                if (win_logger === undefined) {
-                    log_level = level;
-                    global.log_level = level;
-                    return;
-                }
-
-                //Winston is strange, it has a log level at the logger level, the transport level, and each individual transport.
-                win_logger.level = level;
-                win_logger.transports.level = level;
-                if (daily_rotate) {
-                    win_logger.transports.dailyRotateFile.level = level;
-                } else {
-                win_logger.transports.file.level = level;
-                }
-                break;
-
-            case PIN:
-                //PINO
-                if(pin_logger === undefined) {
-                    log_level = level;
-                    global.log_level = level;
-                    return;
-                }
-                pin_logger.level = level;
-                break;
-
-            default:
-                //WINSTON is default
-                if (win_logger === undefined) {
-                    log_level = level;
-                    global.log_level = level;
-                    return;
-                }
-                //Winston is strange, it has a log level at the logger level, the transport level, and each individual transport.
-                win_logger.level = level;
-                win_logger.transports.level = level;
-                if (daily_rotate) {
-                    win_logger.transports.dailyRotateFile.level = level;
-                } else {
-                    win_logger.transports.file.level = level;
-                }
-                break;
-        }
-
-        log_level = level;
-        global.log_level = level;
-    } else {
-        write_log(INFO, `Log level could not be updated to ${level}, that level is not valid.`);
-    }
-}
+// function setLogLevel(level) {
+//     let log_index = Object.keys(winston_log_levels).indexOf(level);
+//
+//     if (log_index !== -1) {
+//         switch (log_type) {
+//             case WIN:
+//                 //WINSTON
+//                 if (win_logger === undefined) {
+//                     log_level = level;
+//                     return;
+//                 }
+//
+//                 //Winston is strange, it has a log level at the logger level, the transport level, and each individual transport.
+//                 win_logger.level = level;
+//                 win_logger.transports.level = level;
+//                 if (daily_rotate) {
+//                     win_logger.transports.dailyRotateFile.level = level;
+//                 } else {
+//                 win_logger.transports.file.level = level;
+//                 }
+//                 break;
+//
+//             case PIN:
+//                 //PINO
+//                 if(pin_logger === undefined) {
+//                     log_level = level;
+//                     return;
+//                 }
+//                 pin_logger.level = level;
+//                 break;
+//
+//             default:
+//                 //WINSTON is default
+//                 if (win_logger === undefined) {
+//                     log_level = level;
+//                     return;
+//                 }
+//                 //Winston is strange, it has a log level at the logger level, the transport level, and each individual transport.
+//                 win_logger.level = level;
+//                 win_logger.transports.level = level;
+//                 if (daily_rotate) {
+//                     win_logger.transports.dailyRotateFile.level = level;
+//                 } else {
+//                     win_logger.transports.file.level = level;
+//                 }
+//                 break;
+//         }
+//
+//         log_level = level;
+//     } else {
+//         write_log(INFO, `Log level could not be updated to ${level}, that level is not valid.`);
+//     }
+// }
 
 /**
  * Set the logger type used by the HDB process.
  * @param type = The logger to use.  1 = Winston, 2 = Pino.  Any other values
  * will be ignored with an error logged.
  */
-function setLogType(type) {
-    if (type > PIN || type < WIN) {
-        write_log(ERR, `logger type ${type} is invalid`);
-        return;
-    }
-    log_type = type;
-}
-
-/**
- * Parses file path and returns directory path
- * @param log_path file path
- * @returns {string} directory path
- */
-function getLogDirectory(log_path) {
-    return path.parse(log_path).dir;
-}
+// function setLogType(type) {
+//     if (type > PIN || type < WIN) {
+//         write_log(ERR, `logger type ${type} is invalid`);
+//         return;
+//     }
+//     log_type = type;
+// }
 
 /**
  * Set a location for the log file to be written.  Will stop writing to any existing logs and start writing to the new location.
  * @param log_path file path for logging
  */
-function setLogLocation(log_path) {
-    if (!log_path || log_path.length === 0) {
-        error(`An invalid log path was sent to the logger.`);
-        return;
+function setLogLocation() {
+    const log_location_setting = hdb_properties.get('LOG_PATH');
+
+    //if log location isn't defined, assume HDB_ROOT/log/hdb_log.log
+    if (log_location_setting === undefined || log_location_setting === 0 || log_location_setting === null) {
+        log_directory = hdb_properties.get('HDB_ROOT') + '/log/';
+        log_file_name = DEFAULT_LOG_FILE_NAME;
+    } else {
+        const has_log_ext = path.extname(log_location_setting) === '.log';
+        if (has_log_ext) {
+            log_directory = path.parse(log_location_setting).dir;
+            log_file_name = path.parse(log_location_setting).base;
+        } else {
+            log_directory = log_location_setting;
+            log_file_name = DEFAULT_LOG_FILE_NAME;
+        }
     }
+
+    log_location = daily_rotate ? path.join(log_directory, `%DATE%_${log_file_name}`) : path.join(log_directory, log_file_name);
+
     win_logger = undefined;
     pin_logger = undefined;
-    log_location = log_path;
-    global.log_location = log_path;
-    log_directory = getLogDirectory(log_path);
-    global.log_directory = log_directory;
-    hdb_log_file_name = path.parse(log_path).base;
 
     switch (log_type) {
         case WIN:
             //WINSTON
-            if (!win_logger) {
+            // if (!win_logger) {
                 initWinstonLogger();
                 trace(`initialized winston logger writing to ${daily_rotate ? log_directory : log_location}`);
-            }
+            // }
             break;
 
         case PIN:
             //PINO
-            if (!pin_logger) {
+            // if (!pin_logger) {
                 initPinoLogger();
                 trace(`initialized pino logger writing to ${log_location}`);
-            }
+            // }
             break;
 
         default:
             //WINSTON is default
-            if (!win_logger) {
+            // if (!win_logger) {
                 initWinstonLogger();
                 trace(`initialized winston logger writing to ${daily_rotate ? log_directory : log_location}`);
-            }
+            // }
             break;
     }
 }
@@ -527,7 +513,7 @@ function configureWinstonForQuery(log_path) {
         bones.configure({
             transports: [
                 new (winston.transports.DailyRotateFile)({
-                    filename: path.join(log_directory, `%DATE%_${hdb_log_file_name}`),
+                    filename: path.join(log_directory, `%DATE%_${log_file_name}`),
                     json: true,
                 })
             ],
