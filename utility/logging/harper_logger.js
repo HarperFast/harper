@@ -90,8 +90,9 @@ try {
     max_daily_files = daily_max ? daily_max + 'd' : null;
     log_level = hdb_properties.get('LOG_LEVEL');
     log_type = hdb_properties.get('LOGGER');
+    const log_path_setting = hdb_properties.get('LOG_PATH');
 
-    setLogLocation();
+    setLogLocation(log_path_setting);
 } catch (e) {
     // in early stage like install or run, settings file and folder is not available yet so let it takes default settings below
 }
@@ -119,8 +120,9 @@ module.exports = {
     error:error,
     fatal:fatal,
     notify:notify,
-    // setLogLevel:setLogLevel,
-    // setLogType:setLogType,
+    setLogLevel:setLogLevel,
+    setLogType:setLogType,
+    setLogLocation:setLogLocation,
     write_log:write_log,
     readLog:readLog,
     log_level,
@@ -308,80 +310,80 @@ function notify(message) {
  * Set the log level for the HDB Processes.  Default is error.  Options are trace, debug, info, error, fatal.
  * @param {string} level - The logging level for the HDB processes.
  */
-// function setLogLevel(level) {
-//     let log_index = Object.keys(winston_log_levels).indexOf(level);
-//
-//     if (log_index !== -1) {
-//         switch (log_type) {
-//             case WIN:
-//                 //WINSTON
-//                 if (win_logger === undefined) {
-//                     log_level = level;
-//                     return;
-//                 }
-//
-//                 //Winston is strange, it has a log level at the logger level, the transport level, and each individual transport.
-//                 win_logger.level = level;
-//                 win_logger.transports.level = level;
-//                 if (daily_rotate) {
-//                     win_logger.transports.dailyRotateFile.level = level;
-//                 } else {
-//                 win_logger.transports.file.level = level;
-//                 }
-//                 break;
-//
-//             case PIN:
-//                 //PINO
-//                 if(pin_logger === undefined) {
-//                     log_level = level;
-//                     return;
-//                 }
-//                 pin_logger.level = level;
-//                 break;
-//
-//             default:
-//                 //WINSTON is default
-//                 if (win_logger === undefined) {
-//                     log_level = level;
-//                     return;
-//                 }
-//                 //Winston is strange, it has a log level at the logger level, the transport level, and each individual transport.
-//                 win_logger.level = level;
-//                 win_logger.transports.level = level;
-//                 if (daily_rotate) {
-//                     win_logger.transports.dailyRotateFile.level = level;
-//                 } else {
-//                     win_logger.transports.file.level = level;
-//                 }
-//                 break;
-//         }
-//
-//         log_level = level;
-//     } else {
-//         write_log(INFO, `Log level could not be updated to ${level}, that level is not valid.`);
-//     }
-// }
+function setLogLevel(level) {
+    let log_index = Object.keys(winston_log_levels).indexOf(level);
+
+    if (log_index !== -1) {
+        switch (log_type) {
+            case WIN:
+                //WINSTON
+                if (win_logger === undefined) {
+                    log_level = level;
+                    return;
+                }
+
+                //Winston is strange, it has a log level at the logger level, the transport level, and each individual transport.
+                win_logger.level = level;
+                win_logger.transports.level = level;
+                if (daily_rotate) {
+                    win_logger.transports.dailyRotateFile.level = level;
+                } else {
+                    win_logger.transports.file.level = level;
+                }
+                break;
+
+            case PIN:
+                //PINO
+                if(pin_logger === undefined) {
+                    log_level = level;
+                    return;
+                }
+                pin_logger.level = level;
+                break;
+
+            default:
+                //WINSTON is default
+                if (win_logger === undefined) {
+                    log_level = level;
+                    return;
+                }
+                //Winston is strange, it has a log level at the logger level, the transport level, and each individual transport.
+                win_logger.level = level;
+                win_logger.transports.level = level;
+                if (daily_rotate) {
+                    win_logger.transports.dailyRotateFile.level = level;
+                } else {
+                    win_logger.transports.file.level = level;
+                }
+                break;
+        }
+
+        log_level = level;
+    } else {
+        write_log(INFO, `Log level could not be updated to ${level}, that level is not valid.`);
+    }
+}
 
 /**
  * Set the logger type used by the HDB process.
  * @param type = The logger to use.  1 = Winston, 2 = Pino.  Any other values
  * will be ignored with an error logged.
  */
-// function setLogType(type) {
-//     if (type > PIN || type < WIN) {
-//         write_log(ERR, `logger type ${type} is invalid`);
-//         return;
-//     }
-//     log_type = type;
-// }
+function setLogType(type) {
+    if (type > PIN || type < WIN) {
+        write_log(ERR, `logger type ${type} is invalid`);
+        return;
+    }
+    win_logger = undefined;
+    pin_logger = undefined;
+    log_type = type;
+}
 
 /**
  * Set a location for the log file to be written.  Will stop writing to any existing logs and start writing to the new location.
  * @param log_path file path for logging
  */
-function setLogLocation() {
-    const log_location_setting = hdb_properties.get('LOG_PATH');
-
+function setLogLocation(log_location_setting) {;
     //if log location isn't defined, assume HDB_ROOT/log/hdb_log.log
     if (log_location_setting === undefined || log_location_setting === 0 || log_location_setting === null) {
         log_directory = hdb_properties.get('HDB_ROOT') + '/log/';
