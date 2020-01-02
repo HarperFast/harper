@@ -120,9 +120,10 @@ module.exports = {
     error:error,
     fatal:fatal,
     notify:notify,
+    setLogLevel:setLogLevel,
+    setLogType:setLogType,
     write_log:write_log,
     readLog:readLog,
-    log_level,
     NOTIFY,
     FATAL,
     ERR,
@@ -380,18 +381,48 @@ function setLogType(type) {
  * Set a location for the log file to be written.  Will stop writing to any existing logs and start writing to the new location.
  * @param log_path file path for logging
  */
-function setLogLocation(log_location_setting) {;
+function setLogLocation(log_location_setting) {
+    const default_log_directory = hdb_properties.get('HDB_ROOT') + '/log/';
     //if log location isn't defined, assume HDB_ROOT/log/hdb_log.log
     if (log_location_setting === undefined || log_location_setting === 0 || log_location_setting === null) {
-        log_directory = hdb_properties.get('HDB_ROOT') + '/log/';
+        log_directory = default_log_directory;
         log_file_name = DEFAULT_LOG_FILE_NAME;
     } else {
-        const has_log_ext = path.extname(log_location_setting) === '.log';
-        if (has_log_ext) {
-            log_directory = path.parse(log_location_setting).dir;
-            log_file_name = path.parse(log_location_setting).base;
-        } else {
-            log_directory = log_location_setting;
+        try {
+            const has_log_ext = path.extname(log_location_setting) === '.log';
+            if (has_log_ext) {
+                const log_settings_directory = path.parse(log_location_setting).dir;
+                const log_settings_name = path.parse(log_location_setting).base;
+
+                if (fs.existsSync(log_settings_directory)) {
+                    log_directory = log_settings_directory;
+                    log_file_name = log_settings_name;
+                } else {
+                    log_directory = log_settings_directory;
+                    log_file_name = log_settings_name;
+                    fs.mkdir(log_settings_directory, (err) => {
+                        write_log(INFO, `Attempted to create log directory from settings file but failed.  Using default log path - 'hdb/log/hdb_log.log'`);
+                        log_directory = default_log_directory;
+                        log_file_name = DEFAULT_LOG_FILE_NAME;
+                    });
+                }
+            } else {
+                if (fs.existsSync(log_location_setting)) {
+                    log_directory = log_location_setting;
+                    log_file_name = DEFAULT_LOG_FILE_NAME;
+                } else {
+                    log_directory = log_location_setting;
+                    fs.mkdir(log_location_setting, (err) => {
+                        write_log(INFO, `Attempted to create log directory from settings file but failed.  Using default log path - 'hdb/log/hdb_log.log'`);
+                        log_directory = default_log_directory;
+                    });
+
+                    log_file_name = DEFAULT_LOG_FILE_NAME;
+                }
+            }
+        } catch(e) {
+            write_log(INFO, `Attempted to create log directory from settings file but failed.  Using default log path - 'hdb/log/hdb_log.log'`);
+            log_directory = default_log_directory;
             log_file_name = DEFAULT_LOG_FILE_NAME;
         }
     }
@@ -403,27 +434,18 @@ function setLogLocation(log_location_setting) {;
 
     switch (log_type) {
         case WIN:
-            //WINSTON
-            // if (!win_logger) {
-                initWinstonLogger();
-                trace(`initialized winston logger writing to ${daily_rotate ? log_directory : log_location}`);
-            // }
+            initWinstonLogger();
+            trace(`initialized winston logger writing to ${daily_rotate ? log_directory : log_location}`);
             break;
 
         case PIN:
-            //PINO
-            // if (!pin_logger) {
-                initPinoLogger();
-                trace(`initialized pino logger writing to ${log_location}`);
-            // }
+            initPinoLogger();
+            trace(`initialized pino logger writing to ${log_location}`);
             break;
 
         default:
-            //WINSTON is default
-            // if (!win_logger) {
-                initWinstonLogger();
-                trace(`initialized winston logger writing to ${daily_rotate ? log_directory : log_location}`);
-            // }
+            initWinstonLogger();
+            trace(`initialized winston logger writing to ${daily_rotate ? log_directory : log_location}`);
             break;
     }
 }
