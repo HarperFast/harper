@@ -594,9 +594,9 @@ describe('Test FileSystem Class',function() {
             expect(columns[0].columnid).to.equal("id");
             expect(columns[0].tableid).to.equal("d");
             expect(columns[0].as).to.equal("id");
-            const { columnid, tableid } = test_instance.statement.order[0].expression;
-            expect(columnid).to.equal("id");
-            expect(tableid).to.equal("d");
+            const order_by_expression = test_instance.statement.order[0].expression;
+            expect(order_by_expression.columnid).to.equal("id");
+            expect(Object.keys(order_by_expression).length).to.equal(1);
         });
     });
 
