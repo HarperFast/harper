@@ -353,7 +353,7 @@ function chooseOperation(json, callback) {
             }
             let verify_perms_result = op_auth.verifyPerms(operation_json, function_to_check);
             if (verify_perms_result && verify_perms_result.length > 0) {
-                harper_logger.error(`${UNAUTH_RESPONSE} from operation ${json.search_operation}`);
+                harper_logger.error(`${UNAUTH_RESPONSE} from operation ${json.operation}`);
                 return callback({"response": UNAUTH_RESPONSE, "required_perms":verify_perms_result}, null);
             }
         }
