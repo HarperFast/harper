@@ -1,6 +1,6 @@
 {
 	"info": {
-		"_postman_id": "2831f251-bd64-4a15-8c8e-a9a119324db8",
+		"_postman_id": "ca781c25-7146-489f-985e-2cee898543cc",
 		"name": "HarperDB Integration Tests",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
 	},
@@ -21147,12 +21147,27 @@
 							"listen": "test",
 							"script": {
 								"id": "b053fde5-fab4-4952-a272-47fef8043499",
-								"type": "text/javascript",
 								"exec": [
+									"let expected_result = {",
+									"    \"message\": \"2 of 2 records successfully deleted\",",
+									"    \"deleted_hashes\": [",
+									"        924,",
+									"        927",
+									"    ],",
+									"    \"skipped_hashes\": []",
+									"};",
+									"",
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
-									"});"
-								]
+									"});",
+									"",
+									"pm.test(\"Correct response from NoSQL delete\", function () {",
+									"   let jsonData = pm.response.json();",
+									"   pm.expect(jsonData).to.eql(expected_result);",
+									"});",
+									""
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -21190,7 +21205,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n  \"operation\":\"delete\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{emps_tb}}\",\n  \"hash_values\":[924,927]\n}"
+							"raw": "{\n  \"operation\":\"delete\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{emps_tb}}\",\n  \"hash_values\":[\"924\",927]\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -24388,19 +24403,23 @@
 									"let attribute_found = true;",
 									"let schema_northnwd_exists = false;",
 									"for (let schema in expected_result) {",
-									"    if (schema === \"northnwd\") {",
+									"    try {",
+									"         if (schema === \"northnwd\") {",
 									"        schema_northnwd_exists = true;",
 									"        break;",
-									"    }",
-									"    for (let table in expected_result[schema]) {",
-									"        let json_data_attr_array = json_data[schema][table][\"attributes\"].map(obj => obj.attribute);",
-									"        expected_result[schema][table].attributes.forEach((value) => {",
-									"            if (!json_data_attr_array.includes(value.attribute)) {",
-									"                attribute_found = false;",
-									"                console.log(`Attribute: ${value.attribute}`);",
-									"                console.log(`Searching schema: ${schema} and table: ${table}`);",
-									"            }",
-									"        });",
+									"        }",
+									"        for (let table in expected_result[schema]) {",
+									"            let json_data_attr_array = json_data[schema][table][\"attributes\"].map(obj => obj.attribute);",
+									"            expected_result[schema][table].attributes.forEach((value) => {",
+									"                if (!json_data_attr_array.includes(value.attribute)) {",
+									"                    attribute_found = false;",
+									"                    console.log(`Attribute: ${value.attribute}`);",
+									"                    console.log(`Searching schema: ${schema} and table: ${table}`);",
+									"                }",
+									"            });",
+									"        }",
+									"    } catch(err) {",
+									"        console.log(err);",
 									"    }",
 									"}",
 									"",
