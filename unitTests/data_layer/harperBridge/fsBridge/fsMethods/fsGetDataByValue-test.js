@@ -32,7 +32,7 @@ const TEST_SEARCH_OBJ = {
     table: TEST_TABLE_DOG,
     search_attribute: test_search_attr,
     search_value: `${test_search_value}*`,
-    get_attributes: "*"
+    get_attributes: ['*']
 };
 
 const ERR_MSGS = {
