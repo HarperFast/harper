@@ -202,8 +202,7 @@ function convertInsert(statement, callback) {
             delete res.new_attributes;
         } catch (delete_err) {
             logger.error(`Error delete new_attributes from insert response`);
-            callback(delete_err);
-            return;
+            return callback(delete_err);
         }
 
         callback(null, res);
