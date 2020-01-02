@@ -144,9 +144,14 @@ function updateRecords(table, records, callback){
                 });
             }
         }
-
-        // We do not want the API returning the new attributes property.
-        delete res.new_attributes;
+        try {
+            // We do not want the API returning the new attributes property.
+            delete res.new_attributes;
+        } catch (delete_err) {
+            logger.error(`Error delete new_attributes from update response`);
+            callback(delete_err);
+            return;
+        }
 
         callback(null, res);
     });
